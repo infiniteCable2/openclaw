@@ -301,6 +301,50 @@ describe("model provider localService config", () => {
   });
 });
 
+describe("TTS provider localService config", () => {
+  it("accepts on-demand local speech service settings", () => {
+    const result = OpenClawSchema.safeParse({
+      tts: {
+        provider: "local-speech",
+        providers: {
+          "local-speech": {
+            baseUrl: "http://127.0.0.1:8080/v1",
+            localService: {
+              command: "C:\\speech\\server.exe",
+              args: ["--port", "8080"],
+              cwd: "C:\\speech",
+              env: { CUDA_VISIBLE_DEVICES: "0" },
+              healthUrl: "http://127.0.0.1:8080/health",
+              readyTimeoutMs: 180_000,
+              idleStopMs: 30_000,
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects malformed local speech service settings", () => {
+    const result = OpenClawSchema.safeParse({
+      tts: {
+        providers: {
+          "local-speech": {
+            localService: {
+              command: "",
+              idleStopMs: -1,
+              shell: true,
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
 describe("$schema key in config (#14998)", () => {
   it("accepts config with $schema string", () => {
     const result = OpenClawSchema.safeParse({

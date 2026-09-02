@@ -5,6 +5,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { canonicalizeSpeechProviderId, getSpeechProvider } from "./provider-registry.js";
 import type { SpeechProviderConfig, SpeechProviderOverrides } from "./provider-types.js";
+import { acquireSpeechProviderLocalService } from "./tts-local-service.js";
 import {
   getResolvedSpeechProviderConfigForVoiceModel,
   mergeProviderConfigWithPersona,
@@ -74,6 +75,7 @@ type TtsProviderReadyResolution =
       kind: "ready";
       provider: NonNullable<ReturnType<typeof getSpeechProvider>>;
       providerConfig: SpeechProviderConfig;
+      localServiceProviderConfig: SpeechProviderConfig;
       personaProviderConfig?: SpeechProviderConfig;
       synthesisPersona?: ResolvedTtsPersona;
       personaBinding: "applied" | "missing" | "none";
@@ -147,6 +149,7 @@ function resolveReadySpeechProvider(params: {
     kind: "ready",
     provider: resolvedProvider,
     providerConfig: merged.providerConfig,
+    localServiceProviderConfig: providerConfig,
     personaProviderConfig: merged.personaProviderConfig,
     synthesisPersona:
       params.persona?.fallbackPolicy === "provider-defaults" && merged.personaBinding === "missing"
@@ -254,6 +257,7 @@ type TtsProviderOperation<TSynthesis> =
         target: "audio-file" | "voice-note" | "telephony";
         timeoutMs: number;
       }) => Promise<TSynthesis>;
+      retainLocalServiceUntilRelease?: boolean;
     }
   | {
       kind: "skip";
@@ -353,43 +357,61 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         config,
         provider: resolvedProvider.provider,
       });
-      const prepared = await prepareSpeechSynthesis({
-        provider: resolvedProvider.provider,
-        text: params.synthesisText,
-        cfg,
-        providerConfig: resolvedProvider.providerConfig,
-        providerOverrides: params.providerOverrides?.[resolvedProvider.provider.id],
-        persona: resolvedProvider.synthesisPersona,
-        personaProviderConfig: resolvedProvider.personaProviderConfig,
-        target: params.target,
-        timeoutMs,
+      const localServiceLease = await acquireSpeechProviderLocalService({
+        providerId: resolvedProvider.provider.id,
+        providerConfig: resolvedProvider.localServiceProviderConfig,
       });
-      const synthesis = await operation.synthesize({
-        prepared,
-        cfg,
-        target: params.target,
-        timeoutMs,
-      });
-      const latencyMs = Date.now() - providerStart;
-      attempts.push({
-        provider,
-        outcome: "success",
-        reasonCode: "success",
-        persona: persona?.id,
-        personaBinding: resolvedProvider.personaBinding,
-        latencyMs,
-      });
-      return params.buildSuccess({
-        synthesis,
-        latencyMs,
-        provider,
-        providerModel: resolveTtsResultModel(prepared.providerConfig, prepared.providerOverrides),
-        providerVoice: resolveTtsResultVoice(prepared.providerConfig, prepared.providerOverrides),
-        persona: persona?.id,
-        fallbackFrom: provider !== primaryProvider ? primaryProvider : undefined,
-        attemptedProviders,
-        attempts,
-      });
+      let localServiceLeaseTransferred = false;
+      try {
+        const prepared = await prepareSpeechSynthesis({
+          provider: resolvedProvider.provider,
+          text: params.synthesisText,
+          cfg,
+          providerConfig: resolvedProvider.providerConfig,
+          providerOverrides: params.providerOverrides?.[resolvedProvider.provider.id],
+          persona: resolvedProvider.synthesisPersona,
+          personaProviderConfig: resolvedProvider.personaProviderConfig,
+          target: params.target,
+          timeoutMs,
+        });
+        let synthesis = await operation.synthesize({
+          prepared,
+          cfg,
+          target: params.target,
+          timeoutMs,
+        });
+        if (operation.retainLocalServiceUntilRelease && localServiceLease) {
+          synthesis = attachLocalServiceLeaseToSynthesis(synthesis, localServiceLease);
+        }
+        const latencyMs = Date.now() - providerStart;
+        attempts.push({
+          provider,
+          outcome: "success",
+          reasonCode: "success",
+          persona: persona?.id,
+          personaBinding: resolvedProvider.personaBinding,
+          latencyMs,
+        });
+        const result = params.buildSuccess({
+          synthesis,
+          latencyMs,
+          provider,
+          providerModel: resolveTtsResultModel(prepared.providerConfig, prepared.providerOverrides),
+          providerVoice: resolveTtsResultVoice(prepared.providerConfig, prepared.providerOverrides),
+          persona: persona?.id,
+          fallbackFrom: provider !== primaryProvider ? primaryProvider : undefined,
+          attemptedProviders,
+          attempts,
+        });
+        localServiceLeaseTransferred = Boolean(
+          operation.retainLocalServiceUntilRelease && localServiceLease,
+        );
+        return result;
+      } finally {
+        if (!localServiceLeaseTransferred) {
+          localServiceLease?.release();
+        }
+      }
     } catch (err) {
       const errorMsg = formatTtsProviderError(provider, err);
       const latencyMs = Date.now() - providerStart;
@@ -416,6 +438,35 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   }
 
   return buildTtsFailureResult(errors, attemptedProviders, attempts, persona?.id);
+}
+
+function attachLocalServiceLeaseToSynthesis<TSynthesis>(
+  synthesis: TSynthesis,
+  localServiceLease: { release: () => void },
+): TSynthesis {
+  if (synthesis === null || typeof synthesis !== "object") {
+    throw new Error(
+      "streaming TTS synthesis must return an object to retain a local service lease",
+    );
+  }
+  const originalRelease = (synthesis as { release?: unknown }).release;
+  if (originalRelease !== undefined && typeof originalRelease !== "function") {
+    throw new Error("streaming TTS synthesis release must be a function");
+  }
+  let releasePromise: Promise<void> | undefined;
+  return {
+    ...synthesis,
+    release: () => {
+      releasePromise ??= Promise.resolve()
+        .then(async () => {
+          if (typeof originalRelease === "function") {
+            await originalRelease.call(synthesis);
+          }
+        })
+        .finally(() => localServiceLease.release());
+      return releasePromise;
+    },
+  } as TSynthesis;
 }
 
 function resolveTtsResultModel(

@@ -8,6 +8,7 @@ import type {
 } from "../llm/types.js";
 import { isStringOption } from "../utils/string-readers.js";
 import type { AgentRuntimePolicyConfig } from "./types.agents-shared.js";
+import type { ProviderLocalServiceConfig } from "./types.provider-local-service.js";
 import type { ConfiguredModelProviderRequest } from "./types.provider-request.js";
 import type { SecretInput } from "./types.secrets.js";
 
@@ -135,22 +136,8 @@ export type ModelMediaInputConfig = {
 /** Authentication mode expected by a configured model provider. */
 export type ModelProviderAuthMode = "api-key" | "aws-sdk" | "oauth" | "token";
 
-export type ModelProviderLocalServiceConfig = {
-  /** Executable started before model requests are sent. */
-  command: string;
-  /** Arguments passed without shell expansion. */
-  args?: string[];
-  /** Working directory for the local service process. */
-  cwd?: string;
-  /** Environment variables added to the service process. */
-  env?: Record<string, string>;
-  /** Optional health endpoint polled before the provider is considered ready. */
-  healthUrl?: string;
-  /** Startup readiness timeout in milliseconds. */
-  readyTimeoutMs?: number;
-  /** Idle timeout in milliseconds before stopping the local service. */
-  idleStopMs?: number;
-};
+/** Compatibility name retained for model-provider callers. */
+export type ModelProviderLocalServiceConfig = ProviderLocalServiceConfig;
 
 export type ModelDefinitionConfig = {
   /** Provider-facing model id. */

@@ -93,6 +93,7 @@ describe("isSensitiveConfigPath", () => {
     expect(isSensitiveConfigPath("channels.feishu.encryptKey")).toBe(true);
     expect(isSensitiveConfigPath("models.providers.local.localService.env.HF_HOME")).toBe(true);
     expect(isSensitiveConfigPath("models.providers.local.localService.env.MAX_TOKENS")).toBe(true);
+    expect(isSensitiveConfigPath("tts.providers.local.localService.env.ACCESS_TOKEN")).toBe(true);
   });
 });
 
@@ -231,6 +232,7 @@ describe("mapSensitivePaths", () => {
     expect(hints["gateway.auth.token"]?.sensitive).toBe(true);
     expect(hints["models.providers.*.headers.*"]?.sensitive).toBe(true);
     expect(hints["models.providers.*.localService.env.*"]?.sensitive).toBe(true);
+    expect(hints["tts.providers.*.localService.env.*"]?.sensitive).toBe(true);
     expect(hints["models.providers.*.request.headers.*"]?.sensitive).toBe(true);
     expect(hints["models.providers.*.request.proxy.tls.cert"]?.sensitive).toBe(true);
     expect(hints["proxy.proxyUrl"]?.sensitive).toBe(true);

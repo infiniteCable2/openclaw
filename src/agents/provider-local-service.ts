@@ -1,6 +1,6 @@
 /**
- * Manages optional local provider sidecar processes attached to models. Leases
- * keep shared services alive while requests run and stop them after idle.
+ * Manages optional local provider sidecar processes. Leases keep shared
+ * services alive while requests run and stop them after idle.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -11,8 +11,8 @@ import {
   resolvePositiveTimerTimeoutMs,
 } from "@openclaw/normalization-core/number-coercion";
 import { sleepWithAbort } from "@openclaw/retry";
-import type { ModelProviderLocalServiceConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { ProviderLocalServiceConfig } from "../config/types.provider-local-service.js";
 import { toErrorObject } from "../infra/errors.js";
 import { mergeProcessEnv } from "../infra/process-env.js";
 import type { Model } from "../llm/types.js";
@@ -38,7 +38,7 @@ const LOCAL_SERVICE_OUTPUT_TAIL_MAX_BYTES = 8 * 1024;
 const MODEL_PROVIDER_LOCAL_SERVICE_SYMBOL = Symbol.for("openclaw.modelProviderLocalService");
 
 type ModelWithProviderLocalService = {
-  [MODEL_PROVIDER_LOCAL_SERVICE_SYMBOL]?: ModelProviderLocalServiceConfig;
+  [MODEL_PROVIDER_LOCAL_SERVICE_SYMBOL]?: ProviderLocalServiceConfig;
 };
 
 type ManagedLocalService = {
@@ -77,7 +77,8 @@ export type ProviderLocalServiceTarget = {
   providerId: string;
   baseUrl: string;
   headers?: HeadersInit;
-  service?: ModelProviderLocalServiceConfig;
+  service?: ProviderLocalServiceConfig;
+  configPath?: string;
 };
 
 /** Configured provider endpoint whose host-owned local service may be leased. */
@@ -180,7 +181,7 @@ function isConfiguredProviderBaseUrl(targetBaseUrl: string, configuredBaseUrl?: 
 /** Attach local-service startup metadata to a model without mutating the original object. */
 export function attachModelProviderLocalService<TModel extends object>(
   model: TModel,
-  service: ModelProviderLocalServiceConfig | undefined,
+  service: ProviderLocalServiceConfig | undefined,
 ): TModel {
   if (!service) {
     return model;
@@ -193,7 +194,7 @@ export function attachModelProviderLocalService<TModel extends object>(
 /** Read local-service startup metadata attached to a model. */
 export function getModelProviderLocalService(
   model: object,
-): ModelProviderLocalServiceConfig | undefined {
+): ProviderLocalServiceConfig | undefined {
   return (model as ModelWithProviderLocalService)[MODEL_PROVIDER_LOCAL_SERVICE_SYMBOL];
 }
 
@@ -226,7 +227,10 @@ export async function ensureProviderLocalService(
   }
   throwIfAborted(signal);
 
-  validateLocalServiceConfig(service, target.providerId);
+  validateLocalServiceConfig(
+    service,
+    target.configPath ?? `models.providers.${target.providerId}.localService`,
+  );
   const healthUrl = resolveHealthUrl(service, target.baseUrl);
   const healthHeaders = buildHealthProbeHeaders(target.headers, undefined);
   const key = localServiceKey(target.providerId, service, healthUrl);
@@ -310,19 +314,19 @@ export function getManagedProviderLocalServiceDiagnosticsForTest(): LocalService
   );
 }
 
-function validateLocalServiceConfig(service: ModelProviderLocalServiceConfig, provider: string) {
+function validateLocalServiceConfig(service: ProviderLocalServiceConfig, configPath: string) {
   if (!path.isAbsolute(service.command)) {
-    throw new Error(`models.providers.${provider}.localService.command must be an absolute path`);
+    throw new Error(`${configPath}.command must be an absolute path`);
   }
 }
 
-function resolveHealthUrl(service: ModelProviderLocalServiceConfig, baseUrl: string): string {
+function resolveHealthUrl(service: ProviderLocalServiceConfig, baseUrl: string): string {
   return service.healthUrl?.trim() || `${baseUrl.replace(/\/+$/, "")}/models`;
 }
 
 function localServiceKey(
   provider: string,
-  service: ModelProviderLocalServiceConfig,
+  service: ProviderLocalServiceConfig,
   healthUrl: string,
 ): string {
   return JSON.stringify({
@@ -397,7 +401,7 @@ async function probeHealth(
 
 async function startAndWaitForLocalService(params: {
   provider: string;
-  service: ModelProviderLocalServiceConfig;
+  service: ProviderLocalServiceConfig;
   healthUrl: string;
   healthHeaders: HeadersInit | undefined;
   managed: ManagedLocalService;
@@ -579,7 +583,7 @@ function formatLocalServiceDiagnosticTail(diagnostics: LocalServiceDiagnostics):
 function scheduleIdleStop(
   key: string,
   managed: ManagedLocalService,
-  service: ModelProviderLocalServiceConfig,
+  service: ProviderLocalServiceConfig,
 ) {
   const idleStopMs = clampPositiveTimerTimeoutMs(service.idleStopMs);
   if (managed.active > 0) {
@@ -618,7 +622,7 @@ async function stopManagedService(key: string, managed: ManagedLocalService, rea
   services.delete(key);
   setManagedProviderLocalServicesActive(services.size > 0);
   if (managed.process && !hasLocalServiceProcessExited(managed.process)) {
-    log.info(`stopping local model service: reason=${reason}`);
+    log.info(`stopping local provider service: reason=${reason}`);
   }
   await stopManagedProcess(managed, new AbortController().signal);
 }

@@ -263,7 +263,7 @@ function resolveLazyProviderConfig(
       : rawProviders,
     ...(shouldInjectCanonicalProviderConfig ? { [canonical]: compatRawProviderConfig } : {}),
   };
-  const next = withSpeakerSelectionCompat(
+  const resolvedConfig =
     effectiveCfg && resolvedProvider?.resolveConfig
       ? resolvedProvider.resolveConfig({
           cfg: effectiveCfg,
@@ -276,8 +276,15 @@ function resolveLazyProviderConfig(
           providerConfig: rawConfig,
           provider: resolvedProvider,
           voiceModel,
-        }),
-  );
+        });
+  // Process lifecycle is host configuration, not provider-owned synthesis data.
+  // Preserve it when a provider normalizer intentionally selects only API fields.
+  const next = withSpeakerSelectionCompat({
+    ...resolvedConfig,
+    ...(compatRawProviderConfig.localService === undefined
+      ? {}
+      : { localService: compatRawProviderConfig.localService }),
+  });
   if (!voiceModel) {
     config.providerConfigs[canonical] = next;
   }

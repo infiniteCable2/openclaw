@@ -34,6 +34,9 @@ const synthesizeMock = vi.hoisted(() =>
 const prepareSynthesisMock = vi.hoisted(() =>
   vi.fn(async (_ctx: SpeechProviderPrepareSynthesisContext) => undefined),
 );
+const acquireSpeechProviderLocalServiceMock = vi.hoisted(() =>
+  vi.fn(async () => undefined as { release: () => void } | undefined),
+);
 
 const listSpeechProvidersMock = vi.hoisted(() => vi.fn());
 const getSpeechProviderMock = vi.hoisted(() => vi.fn());
@@ -115,6 +118,10 @@ vi.mock("./tts-core.js", async () => {
   const actual = await vi.importActual<typeof import("./tts-core.js")>("./tts-core.js");
   return { ...actual, scheduleCleanup: vi.fn() };
 });
+
+vi.mock("./tts-local-service.js", () => ({
+  acquireSpeechProviderLocalService: acquireSpeechProviderLocalServiceMock,
+}));
 
 export const {
   testApi,
@@ -283,7 +290,12 @@ export async function expectTtsPayloadResult(params: {
   }
 }
 
-export { prepareSynthesisMock, synthesizeMock, transcodeAudioBufferMock };
+export {
+  acquireSpeechProviderLocalServiceMock,
+  prepareSynthesisMock,
+  synthesizeMock,
+  transcodeAudioBufferMock,
+};
 export type {
   OpenClawConfig,
   ReplyPayload,

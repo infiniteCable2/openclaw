@@ -1,4 +1,5 @@
 // Defines text-to-speech configuration types.
+import type { ProviderLocalServiceConfig } from "./types.provider-local-service.js";
 export type TtsProvider = string;
 
 export type TtsMode = "final" | "all";
@@ -24,7 +25,12 @@ export type TtsModelOverrideConfig = {
   allowSeed?: boolean;
 };
 
-export type TtsProviderConfigMap = Record<string, Record<string, unknown>>;
+export type TtsProviderConfig = Record<string, unknown> & {
+  /** Optional local speech service started and leased around synthesis requests. */
+  localService?: ProviderLocalServiceConfig;
+};
+
+export type TtsProviderConfigMap = Record<string, TtsProviderConfig>;
 
 export type TtsPersonaFallbackPolicy = "preserve-persona" | "provider-defaults" | "fail";
 

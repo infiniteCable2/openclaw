@@ -524,7 +524,7 @@ const ModelDefinitionSchema = z
   })
   .strict();
 
-const ModelProviderLocalServiceSchema = z
+const ProviderLocalServiceSchema = z
   .object({
     command: z.string().min(1),
     args: z.array(z.string()).optional(),
@@ -553,7 +553,7 @@ const ModelProviderSchema = z
     injectNumCtxForOpenAICompat: z.boolean().optional(),
     params: z.record(z.string(), z.unknown()).optional(),
     agentRuntime: ModelAgentRuntimePolicySchema,
-    localService: ModelProviderLocalServiceSchema,
+    localService: ProviderLocalServiceSchema,
     headers: z.record(z.string(), SecretInputSchema.register(sensitive)).optional(),
     authHeader: z.boolean().optional(),
     request: ConfiguredModelProviderRequestSchema,
@@ -760,6 +760,7 @@ export const TtsAutoSchema = z.enum(["off", "always", "inbound", "tagged"]);
 const TtsProviderConfigSchema = z
   .object({
     apiKey: SecretInputSchema.optional().register(sensitive),
+    localService: ProviderLocalServiceSchema,
   })
   .catchall(
     z.union([

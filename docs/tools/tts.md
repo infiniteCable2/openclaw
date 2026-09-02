@@ -930,6 +930,9 @@ Reply -> TTS enabled?
     <ParamField path="providers.<id>" type="object">
       Provider-owned settings keyed by speech provider id. Legacy direct blocks (`tts.openai`, `.elevenlabs`, `.microsoft`, `.edge`) are rewritten by `openclaw doctor --fix`; commit only `tts.providers.<id>`.
     </ParamField>
+    <ParamField path="providers.<id>.localService" type="object">
+      Optional on-demand process manager for a local speech server. Set the provider `baseUrl` plus an absolute `localService.command`; OpenClaw probes `healthUrl` (default: `baseUrl + "/models"`), shares one startup across concurrent model and synthesis requests with the same provider/service definition, and stops an OpenClaw-started process after `idleStopMs` without interrupting buffered or streaming audio. The remaining fields (`args`, `cwd`, `env`, `readyTimeoutMs`) have the same semantics as model-provider local services.
+    </ParamField>
     <ParamField path="maxTextLength" type="number" default="4096">
       Hard cap for TTS input characters. `/tts audio`, `tts.convert`, and `tts.speak` fail if exceeded.
     </ParamField>

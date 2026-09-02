@@ -1,7 +1,7 @@
 // TTS provider types describe speech provider config and synthesize APIs.
 import type { TalkProviderConfig } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.js";
-import type { ResolvedTtsPersona } from "../config/types.tts.js";
+import type { ResolvedTtsPersona, TtsProviderConfig } from "../config/types.tts.js";
 
 /** Canonical speech provider identifier after provider registry normalization. */
 export type SpeechProviderId = string;
@@ -10,7 +10,7 @@ export type SpeechProviderId = string;
 export type SpeechSynthesisTarget = "audio-file" | "voice-note" | "telephony";
 
 /** Provider-owned normalized config map. */
-export type SpeechProviderConfig = Record<string, unknown>;
+export type SpeechProviderConfig = TtsProviderConfig;
 
 /** Provider-owned per-request directive/persona overrides. */
 export type SpeechProviderOverrides = Record<string, unknown>;

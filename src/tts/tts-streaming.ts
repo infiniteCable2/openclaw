@@ -54,6 +54,7 @@ export async function streamSpeech(params: {
       }
       return {
         kind: "ready",
+        retainLocalServiceUntilRelease: true,
         synthesize: ({ prepared, cfg: runtimeCfg, target: synthesisTarget, timeoutMs }) =>
           resolvedProvider.provider.streamSynthesize!({
             text: prepared.text,

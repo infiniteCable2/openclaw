@@ -24,6 +24,7 @@ export * from "./types.models.js";
 export type * from "./types.node-host.js";
 export type * from "./types.msteams.js";
 export type * from "./types.plugins.js";
+export type * from "./types.provider-local-service.js";
 export type * from "./types.provider-request.js";
 export type * from "./types.queue.js";
 export type * from "./types.sandbox.js";
