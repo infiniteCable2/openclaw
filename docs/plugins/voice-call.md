@@ -1,5 +1,5 @@
 ---
-summary: "Place outbound and accept inbound voice calls via Twilio, Telnyx, or Plivo, with optional realtime voice and streaming transcription"
+summary: "Place outbound calls via hosted carriers and accept inbound calls via Twilio, Telnyx, Plivo, or Asterisk"
 read_when:
   - You want to place an outbound voice call from OpenClaw
   - You are configuring or developing the voice-call plugin
@@ -14,7 +14,7 @@ inbound calls with allowlist policies.
 
 **Providers:** `mock` (dev, no network), `plivo` (Voice API + XML transfer +
 GetInput speech), `telnyx` (Call Control v2), `twilio` (Programmable Voice +
-Media Streams).
+Media Streams), and `asterisk` (authenticated inbound AudioSocket).
 
 <Note>
 The Voice Call plugin runs **inside the Gateway process**. If you use a
@@ -49,7 +49,9 @@ Gateway, then restart the Gateway to load it.
   <Step title="Configure provider and webhook">
     Set config under `plugins.entries.voice-call.config` (see
     [Configuration](#configuration) below). At minimum: `provider`, provider
-    credentials, `fromNumber`, and a publicly reachable webhook URL. With
+    credentials, `fromNumber`, and a publicly reachable webhook URL. Asterisk
+    inbound calls instead use a local registration token and AudioSocket, and
+    do not require `fromNumber` or a public URL. With
     multiple agents, also set `agentId` to the agent that should own calls.
 
     For an inbound Twilio number, set its **Voice webhook** to the public Voice
@@ -99,7 +101,7 @@ starting the runtime. Commands, RPC calls, and agent tools still return the
 exact missing configuration when used.
 
 <Note>
-Voice-call credentials accept SecretRefs. `plugins.entries.voice-call.config.twilio.authToken`, `plugins.entries.voice-call.config.realtime.providers.*.apiKey`, `plugins.entries.voice-call.config.streaming.providers.*.apiKey`, and `plugins.entries.voice-call.config.tts.providers.*.apiKey` resolve through the standard SecretRef surface; see [SecretRef credential surface](/reference/secretref-credential-surface).
+Voice-call credentials accept SecretRefs. `plugins.entries.voice-call.config.twilio.authToken`, `plugins.entries.voice-call.config.asterisk.registrationToken`, `plugins.entries.voice-call.config.realtime.providers.*.apiKey`, `plugins.entries.voice-call.config.streaming.providers.*.apiKey`, and `plugins.entries.voice-call.config.tts.providers.*.apiKey` resolve through the standard SecretRef surface; see [SecretRef credential surface](/reference/secretref-credential-surface).
 </Note>
 
 ```json5
@@ -109,10 +111,12 @@ Voice-call credentials accept SecretRefs. `plugins.entries.voice-call.config.twi
       "voice-call": {
         enabled: true,
         config: {
-          provider: "twilio", // or "telnyx" | "plivo" | "mock"
+          provider: "twilio", // or "telnyx" | "plivo" | "asterisk" | "mock"
           fromNumber: "+15550001234", // or TWILIO_FROM_NUMBER for Twilio
           toNumber: "+15550005678",
           sessionScope: "per-phone", // per-phone | per-call | main
+          inboundPolicy: "allowlist",
+          allowFrom: ["+15550005678"],
           numbers: {
             "+15550009999": {
               inboundGreeting: "Silver Fox Cards, how can I help?",
@@ -141,6 +145,15 @@ Voice-call credentials accept SecretRefs. `plugins.entries.voice-call.config.twi
             authId: "MAxxxxxxxxxxxxxxxxxxxx",
             authToken: "...",
           },
+          asterisk: {
+            registrationToken: "replace-with-a-long-random-secret",
+            registrationPath: "/voice/asterisk/register",
+            audioSocket: {
+              bind: "127.0.0.1",
+              port: 9092,
+              sampleRate: 8000,
+            },
+          },
 
           // Webhook server
           serve: {
@@ -163,7 +176,7 @@ Voice-call credentials accept SecretRefs. `plugins.entries.voice-call.config.twi
             defaultMode: "notify", // notify | conversation
           },
 
-          streaming: { enabled: true /* Twilio only; see Streaming transcription */ },
+          streaming: { enabled: true /* Twilio or Asterisk; see Streaming transcription */ },
           realtime: { enabled: false /* see Realtime voice conversations */ },
         },
       },
@@ -252,6 +265,33 @@ that Region. See
 
   </Accordion>
 </AccordionGroup>
+
+## Asterisk inbound AudioSocket
+
+The Asterisk provider is deliberately inbound-only in this first integration. It reuses OpenClaw's existing transcription, response-agent, session, and telephony-TTS paths; it does not introduce a second media planner or agent runtime. Outbound Asterisk calls remain unavailable until they can use a restricted ARI route with explicit destination policy.
+
+Each call uses a two-step admission:
+
+1. Asterisk posts `{ uuid, from, to }` to the authenticated registration endpoint.
+2. Only that one-time UUID may connect to the loopback AudioSocket listener before its registration TTL expires.
+
+The registration is also checked against `inboundPolicy` and `allowFrom` before the call is answered. Use E.164 numbers for `from` and `to`.
+
+```ini
+[openclaw-inbound]
+exten => 700,1,Set(OPENCLAW_UUID=${UUID()})
+ same => n,Set(CURLOPT(httpheader)=Authorization: Bearer ${OPENCLAW_ASTERISK_TOKEN})
+ same => n,Set(CURLOPT(httpheader)=Content-Type: application/json)
+ same => n,Set(OPENCLAW_BODY={"uuid":"${OPENCLAW_UUID}"\,"from":"${CALLERID(num)}"\,"to":"+49123456700"})
+ same => n,Set(OPENCLAW_REG=${CURL(http://127.0.0.1:3334/voice/asterisk/register,${OPENCLAW_BODY})})
+ same => n,GotoIf($["${OPENCLAW_REG}" = "Accepted"]?admit:reject)
+ same => n(admit),Answer()
+ same => n,AudioSocket(${OPENCLAW_UUID},127.0.0.1:9092)
+ same => n,Hangup()
+ same => n(reject),Hangup(21)
+```
+
+Keep `serve.bind` and `asterisk.audioSocket.bind` on loopback when both processes share a host. Store `OPENCLAW_ASTERISK_TOKEN` in a root-readable Asterisk include, not in version control. The standard Asterisk [`AudioSocket()` dialplan application](https://docs.asterisk.org/Latest_API/API_Documentation/Dialplan_Applications/AudioSocket/) sends 8 kHz signed-linear PCM, so the default `sampleRate: 8000` is the safest starting point. Higher [AudioSocket protocol](https://docs.asterisk.org/Configuration/Channel-Drivers/AudioSocket/) sample rates should only be selected when the chosen Asterisk channel path is configured for the matching format.
 
 ## Session scope
 
