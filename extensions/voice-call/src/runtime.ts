@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { isLoopbackHost } from "openclaw/plugin-sdk/gateway-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { resolveConfiguredCapabilityProvider } from "openclaw/plugin-sdk/provider-selection-runtime";
 import {
   assertRealtimeVoiceAgentConsultModelSelectionUnlocked,
   consultRealtimeVoiceAgent,
@@ -24,6 +25,8 @@ import {
   validateProviderConfig,
 } from "./config.js";
 import { CallManager } from "./manager.js";
+import { resolveAsteriskRegistrationToken } from "./provider-config.js";
+import type { AsteriskProvider } from "./providers/asterisk.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import type { TwilioProvider } from "./providers/twilio.js";
 import { buildRealtimeVoiceInstructions } from "./realtime-agent-context.js";
@@ -78,6 +81,12 @@ const loadPlivoProvider = createLazyRuntimeModule(() => import("./providers/pliv
 
 const loadMockProvider = createLazyRuntimeModule(() => import("./providers/mock.js"));
 
+const loadAsteriskProvider = createLazyRuntimeModule(() => import("./providers/asterisk.js"));
+
+const loadRealtimeTranscriptionRuntime = createLazyRuntimeModule(
+  () => import("./realtime-transcription.runtime.js"),
+);
+
 const loadRealtimeVoiceRuntime = createLazyRuntimeModule(
   () => import("./realtime-voice.runtime.js"),
 );
@@ -124,6 +133,7 @@ function mapVoiceCallConsultTranscript(
 function createRuntimeResourceLifecycle(params: {
   config: VoiceCallConfig;
   webhookServer: VoiceCallWebhookServer;
+  stopProvider?: () => Promise<void>;
 }): {
   setTunnelResult: (result: TunnelResult | null) => void;
   stop: (opts?: { suppressErrors?: boolean }) => Promise<void>;
@@ -158,6 +168,9 @@ function createRuntimeResourceLifecycle(params: {
           await cleanupTailscaleExposure(params.config);
         }, suppressErrors);
         await runStep(async () => {
+          await params.stopProvider?.();
+        }, suppressErrors);
+        await runStep(async () => {
           await params.webhookServer.stop();
         }, suppressErrors);
       })();
@@ -166,7 +179,11 @@ function createRuntimeResourceLifecycle(params: {
   };
 }
 
-async function resolveProvider(config: VoiceCallConfig): Promise<VoiceCallProvider> {
+async function resolveProvider(
+  config: VoiceCallConfig,
+  cfg: OpenClawConfig,
+  logger: Logger,
+): Promise<VoiceCallProvider> {
   const allowNgrokFreeTierLoopbackBypass =
     config.tunnel?.provider === "ngrok" &&
     isLoopbackHost(config.serve?.bind ?? "") &&
@@ -217,6 +234,39 @@ async function resolveProvider(config: VoiceCallConfig): Promise<VoiceCallProvid
           webhookSecurity: config.webhookSecurity,
         },
       );
+    }
+    case "asterisk": {
+      const registrationToken = resolveAsteriskRegistrationToken(config.asterisk);
+      if (!registrationToken) {
+        throw new Error("Asterisk registration token is not resolved");
+      }
+      const { getRealtimeTranscriptionProvider, listRealtimeTranscriptionProviders } =
+        await loadRealtimeTranscriptionRuntime();
+      const resolution = resolveConfiguredCapabilityProvider({
+        configuredProviderId: config.streaming.provider,
+        providerConfigs: config.streaming.providers,
+        cfg,
+        cfgForResolve: cfg,
+        getConfiguredProvider: (providerId) => getRealtimeTranscriptionProvider(providerId, cfg),
+        listProviders: () =>
+          listRealtimeTranscriptionProviders(cfg, Object.keys(config.streaming.providers)),
+        resolveProviderConfig: ({ provider, cfg: runtimeConfig, rawConfig }) =>
+          provider.resolveConfig?.({ cfg: runtimeConfig, rawConfig }) ?? rawConfig,
+        isProviderConfigured: ({ provider, cfg: runtimeConfig, providerConfig }) =>
+          provider.isConfigured({ cfg: runtimeConfig, providerConfig }),
+      });
+      if (!resolution.ok) {
+        throw new Error(`Asterisk streaming transcription is unavailable (${resolution.code})`);
+      }
+      const { AsteriskProvider } = await loadAsteriskProvider();
+      return new AsteriskProvider({
+        config: config.asterisk,
+        registrationToken,
+        coreConfig: cfg,
+        transcriptionProvider: resolution.provider,
+        transcriptionProviderConfig: resolution.providerConfig,
+        logger,
+      });
     }
     case "mock": {
       const { MockProvider } = await loadMockProvider();
@@ -325,7 +375,7 @@ export async function createVoiceCallRuntime(params: {
     throw new Error(`Invalid voice-call config: ${validation.errors.join("; ")}`);
   }
 
-  const provider = await resolveProvider(config);
+  const provider = await resolveProvider(config, cfg, log);
   if (stateRuntime) {
     setVoiceCallStateRuntime({ state: stateRuntime });
   }
@@ -340,6 +390,11 @@ export async function createVoiceCallRuntime(params: {
     agentRuntime,
     log,
   );
+  if (provider.name === "asterisk") {
+    (provider as AsteriskProvider).setEventSink((event) => {
+      webhookServer.processProviderEvent(event);
+    });
+  }
   if (realtimeVoiceRuntime) {
     const { RealtimeCallHandler } = await loadRealtimeHandler();
     const resolveRealtimeInstructions = await createRealtimeInstructionsResolver({
@@ -462,7 +517,12 @@ export async function createVoiceCallRuntime(params: {
     }
     webhookServer.setRealtimeHandler(realtimeHandler);
   }
-  const lifecycle = createRuntimeResourceLifecycle({ config, webhookServer });
+  const lifecycle = createRuntimeResourceLifecycle({
+    config,
+    webhookServer,
+    stopProvider:
+      provider.name === "asterisk" ? () => (provider as AsteriskProvider).stop() : undefined,
+  });
 
   const localUrl = await webhookServer.start();
 
@@ -550,11 +610,31 @@ export async function createVoiceCallRuntime(params: {
       }
     }
 
+    if (provider.name === "asterisk") {
+      const asteriskProvider = provider as AsteriskProvider;
+      if (!ttsRuntime?.textToSpeechTelephony) {
+        throw new Error("Asterisk requires an available telephony TTS runtime");
+      }
+      asteriskProvider.setTTSProvider(
+        await createTelephonyTtsProvider({
+          coreConfig: cfg,
+          ttsOverride: config.tts,
+          runtime: ttsRuntime,
+          logger: log,
+        }),
+      );
+    }
+
     if (realtimeVoiceRuntime) {
       log.info("[voice-call] Realtime voice enabled");
     }
 
     await manager.initialize(provider, webhookUrl);
+
+    if (provider.name === "asterisk") {
+      const address = await (provider as AsteriskProvider).start();
+      log.info(`[voice-call] Asterisk AudioSocket listening on ${address.host}:${address.port}`);
+    }
 
     const stop = () => lifecycle.stop();
 

@@ -36,6 +36,7 @@ import { getHeader } from "./http-headers.js";
 import type { CallManager } from "./manager.js";
 import type { MediaStreamConfig } from "./media-stream.js";
 import { MediaStreamHandler } from "./media-stream.js";
+import type { AsteriskProvider } from "./providers/asterisk.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import { isProviderStatusTerminal } from "./providers/shared/call-status.js";
 import type { TwilioProvider } from "./providers/twilio.js";
@@ -53,6 +54,8 @@ import {
 const MAX_WEBHOOK_BODY_BYTES = WEBHOOK_BODY_READ_DEFAULTS.preAuth.maxBytes;
 const WEBHOOK_BODY_TIMEOUT_MS = WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs;
 const MISSING_REMOTE_ADDRESS_IN_FLIGHT_KEY = "__voice_call_no_remote__";
+const MAX_ASTERISK_REGISTRATION_BYTES = 8 * 1024;
+const ASTERISK_REGISTRATION_TIMEOUT_MS = 5_000;
 
 type Logger = {
   info: (message: string) => void;
@@ -277,6 +280,11 @@ export class VoiceCallWebhookServer {
 
   setRealtimeHandler(handler: RealtimeCallHandler): void {
     this.realtimeHandler = handler;
+  }
+
+  /** Admit a provider-native event through the same manager and auto-response path as webhooks. */
+  processProviderEvent(event: NormalizedEvent): void {
+    this.processEventWithAutoResponse(event);
   }
 
   getStreamDisconnectLifecycle(): StreamDisconnectLifecycle {
@@ -524,7 +532,11 @@ export class VoiceCallWebhookServer {
       return this.listeningUrl ?? this.resolveListeningUrl(bind, webhookPath);
     }
 
-    if (this.config.streaming.enabled && !this.mediaStreamHandler) {
+    if (
+      this.config.streaming.enabled &&
+      this.provider.name !== "asterisk" &&
+      !this.mediaStreamHandler
+    ) {
       await this.initializeMediaStreaming();
     }
 
@@ -699,6 +711,13 @@ export class VoiceCallWebhookServer {
       };
     }
 
+    if (
+      this.provider.name === "asterisk" &&
+      this.isWebhookPathMatch(url.pathname, this.config.asterisk.registrationPath)
+    ) {
+      return await this.handleRateLimitedAsteriskRegistration(req);
+    }
+
     if (!this.isWebhookPathMatch(url.pathname, webhookPath)) {
       return { statusCode: 404, body: "Not Found" };
     }
@@ -832,6 +851,92 @@ export class VoiceCallWebhookServer {
       );
     } finally {
       this.webhookInFlightLimiter.release(inFlightKey);
+    }
+  }
+
+  private async handleRateLimitedAsteriskRegistration(
+    req: http.IncomingMessage,
+  ): Promise<WebhookResponsePayload> {
+    const remoteAddress = req.socket.remoteAddress;
+    const inFlightKey = remoteAddress || MISSING_REMOTE_ADDRESS_IN_FLIGHT_KEY;
+    if (!this.webhookInFlightLimiter.tryAcquire(inFlightKey)) {
+      this.logger.warn("Asterisk registration rejected: too many in-flight requests");
+      return { statusCode: 429, body: "Too Many Requests" };
+    }
+    try {
+      return await this.handleAsteriskRegistration(req);
+    } finally {
+      this.webhookInFlightLimiter.release(inFlightKey);
+    }
+  }
+
+  private async handleAsteriskRegistration(
+    req: http.IncomingMessage,
+  ): Promise<WebhookResponsePayload> {
+    if (req.method !== "POST") {
+      return { statusCode: 405, body: "Method Not Allowed" };
+    }
+    const authorization = getHeader(req.headers, "authorization") ?? "";
+    const match = /^Bearer (?<token>\S+)$/u.exec(authorization);
+    if (!match?.groups?.token) {
+      return { statusCode: 401, body: "Unauthorized" };
+    }
+    const provider = this.provider as AsteriskProvider;
+    if (!provider.verifyRegistrationToken(match.groups.token)) {
+      return { statusCode: 401, body: "Unauthorized" };
+    }
+    let rawBody: string;
+    try {
+      rawBody = await this.readBody(
+        req,
+        MAX_ASTERISK_REGISTRATION_BYTES,
+        ASTERISK_REGISTRATION_TIMEOUT_MS,
+      );
+    } catch {
+      return { statusCode: 400, body: "Invalid registration" };
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return { statusCode: 400, body: "Invalid registration" };
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return { statusCode: 400, body: "Invalid registration" };
+    }
+    const registration = body as Record<string, unknown>;
+    if (
+      typeof registration.uuid !== "string" ||
+      typeof registration.from !== "string" ||
+      typeof registration.to !== "string"
+    ) {
+      return { statusCode: 400, body: "Invalid registration" };
+    }
+    if (!this.shouldAcceptInboundCaller(registration.from)) {
+      this.logger.info("Asterisk inbound call rejected before AudioSocket admission");
+      return { statusCode: 403, body: "Forbidden" };
+    }
+    try {
+      provider.registerInboundCall(
+        {
+          uuid: registration.uuid,
+          from: registration.from,
+          to: registration.to,
+          direction: "inbound",
+        },
+        match.groups.token,
+      );
+      return { statusCode: 202, body: "Accepted" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("Unauthorized")) {
+        return { statusCode: 401, body: "Unauthorized" };
+      }
+      this.logger.warn(`Asterisk registration rejected: ${message}`);
+      return {
+        statusCode: message.includes("already registered") ? 409 : 400,
+        body: "Invalid registration",
+      };
     }
   }
 
@@ -995,15 +1100,16 @@ export class VoiceCallWebhookServer {
   }
 
   private shouldAcceptRealtimeInboundRequest(params: URLSearchParams): boolean {
+    return this.shouldAcceptInboundCaller(params.get("From") ?? undefined);
+  }
+
+  private shouldAcceptInboundCaller(from: string | undefined): boolean {
     switch (this.config.inboundPolicy) {
       case "open":
         return true;
       case "allowlist":
       case "pairing":
-        return isAllowlistedCaller(
-          normalizePhoneNumber(params.get("From") ?? undefined),
-          this.config.allowFrom,
-        );
+        return isAllowlistedCaller(normalizePhoneNumber(from), this.config.allowFrom);
       default:
         return false;
     }

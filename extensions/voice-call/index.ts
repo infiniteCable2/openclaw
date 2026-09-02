@@ -188,7 +188,7 @@ function stopVoiceCallRuntimeGeneration(
 export default definePluginEntry({
   id: "voice-call",
   name: "Voice Call",
-  description: "Voice-call plugin with Telnyx/Twilio/Plivo providers",
+  description: "Voice-call plugin with Telnyx/Twilio/Plivo/Asterisk providers",
   configSchema: voiceCallConfigSchema,
   register(api: OpenClawPluginApi) {
     const config = resolveVoiceCallConfig(voiceCallConfigSchema.parse(api.pluginConfig));

@@ -5,7 +5,7 @@
     "stateMigrations": true
   },
   "name": "Voice Call",
-  "description": "OpenClaw voice-call plugin for Twilio, Telnyx, and Plivo phone calls.",
+  "description": "OpenClaw voice-call plugin for Twilio, Telnyx, Plivo, and Asterisk phone calls.",
   "cliCommands": [
     {
       "name": "voicecall",
@@ -25,7 +25,7 @@
   "uiHints": {
     "provider": {
       "label": "Provider",
-      "help": "Use twilio, telnyx, or mock for dev/no-network."
+      "help": "Use asterisk for a local PBX, or twilio, telnyx, plivo, and mock for other deployments."
     },
     "fromNumber": {
       "label": "From Number",
@@ -70,6 +70,38 @@
     },
     "twilio.region": {
       "label": "Twilio Region",
+      "advanced": true
+    },
+    "asterisk.registrationToken": {
+      "label": "Asterisk Registration Token",
+      "sensitive": true
+    },
+    "asterisk.registrationPath": {
+      "label": "Asterisk Registration Path",
+      "advanced": true
+    },
+    "asterisk.audioSocket.bind": {
+      "label": "Asterisk AudioSocket Bind",
+      "advanced": true
+    },
+    "asterisk.audioSocket.port": {
+      "label": "Asterisk AudioSocket Port",
+      "advanced": true
+    },
+    "asterisk.audioSocket.sampleRate": {
+      "label": "Asterisk AudioSocket Sample Rate",
+      "advanced": true
+    },
+    "asterisk.audioSocket.handshakeTimeoutMs": {
+      "label": "Asterisk Handshake Timeout (ms)",
+      "advanced": true
+    },
+    "asterisk.audioSocket.registrationTtlMs": {
+      "label": "Asterisk Registration TTL (ms)",
+      "advanced": true
+    },
+    "asterisk.audioSocket.maxConnections": {
+      "label": "Asterisk Maximum Connections",
       "advanced": true
     },
     "outbound.defaultMode": {
@@ -120,7 +152,7 @@
     },
     "streaming.enabled": {
       "label": "Enable Streaming",
-      "help": "Classic streaming transcription currently requires the Twilio call provider.",
+      "help": "Enables transcription for Twilio Media Streams or local Asterisk AudioSocket calls.",
       "advanced": true
     },
     "streaming.provider": {
@@ -272,7 +304,7 @@
       },
       "provider": {
         "type": "string",
-        "enum": ["telnyx", "twilio", "plivo", "mock"]
+        "enum": ["telnyx", "twilio", "plivo", "asterisk", "mock"]
       },
       "telnyx": {
         "type": "object",
@@ -314,6 +346,50 @@
           },
           "authToken": {
             "type": "string"
+          }
+        }
+      },
+      "asterisk": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "registrationToken": {
+            "type": ["string", "object"]
+          },
+          "registrationPath": {
+            "type": "string",
+            "minLength": 1
+          },
+          "audioSocket": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "bind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "sampleRate": {
+                "type": "integer",
+                "enum": [8000, 12000, 16000, 24000, 32000, 44100, 48000, 96000, 192000]
+              },
+              "handshakeTimeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "registrationTtlMs": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxConnections": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
           }
         }
       },
@@ -963,6 +1039,7 @@
     "secretInputs": {
       "paths": [
         { "path": "twilio.authToken", "expected": "string" },
+        { "path": "asterisk.registrationToken", "expected": "string" },
         { "path": "realtime.providers.*.apiKey", "expected": "string" },
         { "path": "streaming.providers.*.apiKey", "expected": "string" },
         { "path": "tts.providers.*.apiKey", "expected": "string" }

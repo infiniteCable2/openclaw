@@ -3,12 +3,23 @@ import type { VoiceCallConfig } from "./config.js";
 import { DEFAULT_VOICE_CALL_REALTIME_INSTRUCTIONS } from "./realtime-defaults.js";
 
 export function createVoiceCallBaseConfig(params?: {
-  provider?: "telnyx" | "twilio" | "plivo" | "mock";
+  provider?: "telnyx" | "twilio" | "plivo" | "asterisk" | "mock";
   tunnelProvider?: "none" | "ngrok";
 }): VoiceCallConfig {
   return {
     enabled: true,
     provider: params?.provider ?? "mock",
+    asterisk: {
+      registrationPath: "/voice/asterisk/register",
+      audioSocket: {
+        bind: "127.0.0.1",
+        port: 9092,
+        sampleRate: 8_000,
+        handshakeTimeoutMs: 5_000,
+        registrationTtlMs: 30_000,
+        maxConnections: 16,
+      },
+    },
     fromNumber: "+15550001234",
     inboundPolicy: "disabled",
     allowFrom: [],

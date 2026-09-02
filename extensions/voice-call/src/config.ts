@@ -3,7 +3,6 @@ import { mergeDeep } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_POLICIES } from "openclaw/plugin-sdk/realtime-voice";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import {
-  buildSecretInputSchema,
   hasConfiguredSecretInput,
   normalizeResolvedSecretInputString,
   type SecretInput,
@@ -16,9 +15,17 @@ import { resolveSpeechProviderApiKey } from "openclaw/plugin-sdk/speech-core";
 import { normalizeWebhookPath } from "openclaw/plugin-sdk/webhook-ingress";
 import { z } from "zod";
 import { TtsConfigSchema } from "../api.js";
-import { TWILIO_REGIONS } from "./providers/twilio-region.js";
+import {
+  AsteriskConfigSchema,
+  PlivoConfigSchema,
+  TelnyxConfigSchema,
+  TwilioConfigSchema,
+  validateAsteriskProviderConfig,
+} from "./provider-config.js";
 import { DEFAULT_VOICE_CALL_REALTIME_INSTRUCTIONS } from "./realtime-defaults.js";
 import { isTailscalePortAllowed, VoiceCallTailscaleConfigSchema } from "./tailscale-config.js";
+
+export type { AsteriskConfig, PlivoConfig, TelnyxConfig } from "./provider-config.js";
 
 // -----------------------------------------------------------------------------
 // Phone Number Validation
@@ -44,45 +51,6 @@ const E164Schema = z
  * - "open": Accept all inbound calls (dangerous!)
  */
 const InboundPolicySchema = z.enum(["disabled", "allowlist", "pairing", "open"]);
-
-// -----------------------------------------------------------------------------
-// Provider-Specific Configuration
-// -----------------------------------------------------------------------------
-
-const SecretInputSchema = buildSecretInputSchema();
-
-const TelnyxConfigSchema = z
-  .object({
-    /** Telnyx API v2 key */
-    apiKey: z.string().min(1).optional(),
-    /** Telnyx connection ID (from Call Control app) */
-    connectionId: z.string().min(1).optional(),
-    /** Public key for webhook signature verification */
-    publicKey: z.string().min(1).optional(),
-  })
-  .strict();
-export type TelnyxConfig = z.infer<typeof TelnyxConfigSchema>;
-
-const TwilioConfigSchema = z
-  .object({
-    /** Twilio Account SID */
-    accountSid: z.string().min(1).optional(),
-    /** Twilio Auth Token */
-    authToken: SecretInputSchema.optional(),
-    /** Twilio processing Region (for example, ie1) */
-    region: z.enum(TWILIO_REGIONS).optional(),
-  })
-  .strict();
-
-const PlivoConfigSchema = z
-  .object({
-    /** Plivo Auth ID (starts with MA/SA) */
-    authId: z.string().min(1).optional(),
-    /** Plivo Auth Token */
-    authToken: z.string().min(1).optional(),
-  })
-  .strict();
-export type PlivoConfig = z.infer<typeof PlivoConfigSchema>;
 
 export type VoiceCallTtsConfig = z.infer<typeof TtsConfigSchema>;
 
@@ -387,8 +355,8 @@ export const VoiceCallConfigSchema = z
     /** Enable voice call functionality */
     enabled: z.boolean().default(false),
 
-    /** Active provider (telnyx, twilio, plivo, or mock) */
-    provider: z.enum(["telnyx", "twilio", "plivo", "mock"]).optional(),
+    /** Active provider (telnyx, twilio, plivo, asterisk, or mock) */
+    provider: z.enum(["telnyx", "twilio", "plivo", "asterisk", "mock"]).optional(),
 
     /** Telnyx-specific configuration */
     telnyx: TelnyxConfigSchema.optional(),
@@ -398,6 +366,9 @@ export const VoiceCallConfigSchema = z
 
     /** Plivo-specific configuration */
     plivo: PlivoConfigSchema.optional(),
+
+    /** Asterisk AudioSocket configuration */
+    asterisk: AsteriskConfigSchema,
 
     /** Phone number to call from (E.164) */
     fromNumber: E164Schema.optional(),
@@ -560,7 +531,7 @@ export function resolveVoiceCallStreamExposurePaths(
       publicPath: `${publicPathPrefix}${localPath}`,
     });
   }
-  if (config.streaming.enabled) {
+  if (config.streaming.enabled && config.provider !== "asterisk") {
     const localPath = normalizeWebhookPath(config.streaming.streamPath);
     if (
       !exposurePaths.some((path) => path.localPath === localPath && path.publicPath === localPath)
@@ -712,6 +683,14 @@ export function normalizeVoiceCallConfig(config: VoiceCallConfigInput): VoiceCal
       (config.numbers ?? defaults.numbers) as Record<string, unknown>,
     ),
     outbound: { ...defaults.outbound, ...config.outbound },
+    asterisk: {
+      ...defaults.asterisk,
+      ...config.asterisk,
+      audioSocket: {
+        ...defaults.asterisk.audioSocket,
+        ...config.asterisk?.audioSocket,
+      },
+    },
     serve,
     tailscale: { ...defaults.tailscale, ...config.tailscale },
     tunnel: { ...defaults.tunnel, ...config.tunnel },
@@ -906,7 +885,7 @@ export function validateProviderConfig(config: VoiceCallConfig): {
     errors.push("plugins.entries.voice-call.config.provider is required");
   }
 
-  if (!config.fromNumber && config.provider !== "mock") {
+  if (!config.fromNumber && config.provider !== "mock" && config.provider !== "asterisk") {
     errors.push(
       config.provider === "twilio"
         ? "plugins.entries.voice-call.config.fromNumber is required (or set TWILIO_FROM_NUMBER env)"
@@ -958,6 +937,10 @@ export function validateProviderConfig(config: VoiceCallConfig): {
     }
   }
 
+  if (config.provider === "asterisk") {
+    errors.push(...validateAsteriskProviderConfig(config.asterisk, config.streaming.enabled));
+  }
+
   if (config.realtime.enabled && config.inboundPolicy === "disabled") {
     errors.push(
       'plugins.entries.voice-call.config.inboundPolicy must not be "disabled" when realtime.enabled is true',
@@ -970,9 +953,14 @@ export function validateProviderConfig(config: VoiceCallConfig): {
     );
   }
 
-  if (config.streaming.enabled && config.provider && config.provider !== "twilio") {
+  if (
+    config.streaming.enabled &&
+    config.provider &&
+    config.provider !== "twilio" &&
+    config.provider !== "asterisk"
+  ) {
     errors.push(
-      'plugins.entries.voice-call.config.provider must be "twilio" when streaming.enabled is true',
+      'plugins.entries.voice-call.config.provider must be "twilio" or "asterisk" when streaming.enabled is true',
     );
   }
 

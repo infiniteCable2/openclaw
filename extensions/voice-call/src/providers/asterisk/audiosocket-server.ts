@@ -48,6 +48,7 @@ type ActiveConnection = {
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_CONNECTIONS = 64;
+const DEFAULT_DRAIN_TIMEOUT_MS = 5_000;
 const MAX_BUFFERED_PRE_FRAME_BYTES = AUDIOSOCKET_MAX_PAYLOAD_BYTES + 3;
 const VALID_DTMF = /^[0-9A-D*#]$/iu;
 
@@ -135,6 +136,31 @@ export class AsteriskAudioSocketServer {
       return false;
     }
     return connection.socket.write(encodeAudioSocketFrame(type, pcm));
+  }
+
+  waitForDrain(uuid: string, timeoutMs = DEFAULT_DRAIN_TIMEOUT_MS): Promise<boolean> {
+    const connection = this.sessions.get(uuid.toLowerCase());
+    if (!connection || connection.socket.destroyed || !connection.socket.writable) {
+      return Promise.resolve(false);
+    }
+    if (!connection.socket.writableNeedDrain) {
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      const socket = connection.socket;
+      const finish = (recovered: boolean) => {
+        clearTimeout(timer);
+        socket.off("drain", onDrain);
+        socket.off("close", onClose);
+        resolve(recovered && this.sessions.get(uuid.toLowerCase()) === connection);
+      };
+      const onDrain = () => finish(true);
+      const onClose = () => finish(false);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      timer.unref?.();
+      socket.once("drain", onDrain);
+      socket.once("close", onClose);
+    });
   }
 
   sendDtmf(uuid: string, digit: string): boolean {

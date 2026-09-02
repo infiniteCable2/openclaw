@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VoiceCallConfigSchema, resolveVoiceCallConfig, type VoiceCallConfig } from "./config.js";
 import type { CallManager } from "./manager.js";
 import type { MediaStreamConfig } from "./media-stream.js";
+import { AsteriskProvider } from "./providers/asterisk.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import { MockProvider } from "./providers/mock.js";
 import { PlivoProvider } from "./providers/plivo.js";
@@ -314,6 +315,75 @@ function createTwilioStreamingProvider(
     ...overrides,
   };
 }
+
+function createAsteriskRegistrationFixture() {
+  const base = createConfig();
+  const config = createConfig({
+    provider: "asterisk",
+    inboundPolicy: "allowlist",
+    allowFrom: ["+49111111111"],
+    streaming: { ...base.streaming, enabled: true },
+    asterisk: {
+      ...base.asterisk,
+      registrationToken: "registration-secret",
+      audioSocket: { ...base.asterisk.audioSocket, port: 0 },
+    },
+  });
+  const asteriskProvider = new AsteriskProvider({
+    config: config.asterisk,
+    registrationToken: "registration-secret",
+    coreConfig: {},
+    transcriptionProvider: {
+      id: "test-stt",
+      isConfigured: () => true,
+      createSession: () => ({
+        connect: async () => {},
+        sendAudio: () => {},
+        close: () => {},
+        isConnected: () => true,
+      }),
+    },
+    transcriptionProviderConfig: {},
+  });
+  const { manager } = createManager([]);
+  const server = new VoiceCallWebhookServer(config, manager, asteriskProvider);
+  return { config, provider: asteriskProvider, server };
+}
+
+describe("VoiceCallWebhookServer Asterisk registration", () => {
+  it("authenticates and applies inbound policy before reserving a UUID", async () => {
+    const fixture = createAsteriskRegistrationFixture();
+    const register = vi.spyOn(fixture.provider, "registerInboundCall");
+    try {
+      const baseUrl = await fixture.server.start();
+      const requestUrl = requireBoundRequestUrl(fixture.server, baseUrl);
+      requestUrl.pathname = fixture.config.asterisk.registrationPath;
+      const post = async (token: string, from: string) =>
+        await fetch(requestUrl, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            uuid: "123e4567-e89b-12d3-a456-426614174000",
+            from,
+            to: "+49222222222",
+          }),
+        });
+
+      expect((await post("wrong-secret", "+49111111111")).status).toBe(401);
+      expect((await post("registration-secret", "+49333333333")).status).toBe(403);
+      const accepted = await post("registration-secret", "+49111111111");
+      expect(accepted.status).toBe(202);
+      expect(await accepted.text()).toBe("Accepted");
+      expect(register).toHaveBeenCalledTimes(1);
+    } finally {
+      await fixture.server.stop();
+      await fixture.provider.stop();
+    }
+  });
+});
 
 describe("VoiceCallWebhookServer realtime transcription provider selection", () => {
   it("auto-selects the first registered provider when streaming.provider is unset", async () => {

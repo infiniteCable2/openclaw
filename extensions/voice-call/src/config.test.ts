@@ -397,7 +397,7 @@ describe("validateProviderConfig", () => {
 
         expect(result.valid).toBe(false);
         expect(result.errors).toContain(
-          'plugins.entries.voice-call.config.provider must be "twilio" when streaming.enabled is true',
+          'plugins.entries.voice-call.config.provider must be "twilio" or "asterisk" when streaming.enabled is true',
         );
       },
     );
@@ -408,6 +408,19 @@ describe("validateProviderConfig", () => {
       config.twilio = {
         accountSid: "AC123",
         authToken: { source: "env", provider: "default", id: "TWILIO_AUTH_TOKEN" },
+      };
+
+      expect(validateProviderConfig(config)).toEqual({ valid: true, errors: [] });
+    });
+
+    it("accepts inbound Asterisk streaming without an outbound fromNumber", () => {
+      const config = createBaseConfig("asterisk");
+      config.fromNumber = undefined;
+      config.streaming.enabled = true;
+      config.asterisk.registrationToken = {
+        source: "env",
+        provider: "default",
+        id: "ASTERISK_REGISTRATION_TOKEN",
       };
 
       expect(validateProviderConfig(config)).toEqual({ valid: true, errors: [] });
@@ -934,6 +947,15 @@ describe("resolveVoiceCallStreamExposurePaths", () => {
       },
       { localPath: "/voice/stream", publicPath: "/voice/stream" },
     ]);
+  });
+
+  it("does not expose the Twilio WebSocket path for local Asterisk AudioSocket media", () => {
+    const config = normalizeVoiceCallConfig({
+      provider: "asterisk",
+      streaming: { enabled: true },
+    });
+
+    expect(resolveVoiceCallStreamExposurePaths(config)).toEqual([]);
   });
 });
 
