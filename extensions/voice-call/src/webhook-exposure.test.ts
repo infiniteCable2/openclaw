@@ -1,8 +1,19 @@
 // Voice Call tests cover webhook exposure plugin behavior.
 import { describe, expect, it } from "vitest";
-import { isProviderUnreachableWebhookUrl } from "./webhook-exposure.js";
+import {
+  isProviderUnreachableWebhookUrl,
+  resolveWebhookExposureStatus,
+} from "./webhook-exposure.js";
 
 describe("webhook exposure host classification", () => {
+  it("accepts local Asterisk without a public webhook URL", () => {
+    expect(resolveWebhookExposureStatus({ provider: "asterisk" })).toEqual({
+      ok: true,
+      configured: true,
+      message: "Asterisk uses local authenticated registration and AudioSocket listeners",
+    });
+  });
+
   it.each([
     "http://[::]:3334/voice/webhook",
     "http://[::1]:3334/voice/webhook",

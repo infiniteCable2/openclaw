@@ -54,6 +54,14 @@ export function resolveWebhookExposureStatus(
     };
   }
 
+  if (config.provider === "asterisk") {
+    return {
+      ok: true,
+      configured: true,
+      message: "Asterisk uses local authenticated registration and AudioSocket listeners",
+    };
+  }
+
   if (config.publicUrl) {
     if (isProviderUnreachableWebhookUrl(config.publicUrl)) {
       return {
