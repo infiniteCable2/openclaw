@@ -22,6 +22,7 @@ import {
 } from "../plugins/hook-agent-context.js";
 import { resolveBlockMessage } from "../plugins/hook-decision-types.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import { assertAgentCanRun } from "./agent-scope.js";
 import {
   loadAuthProfileStoreForRuntime,
   markAuthProfileFailure,
@@ -135,6 +136,13 @@ export async function isCliBindingFlushed(
 
 /** Prepares and runs one CLI-backed agent turn. */
 export function runCliAgent(paramsInput: RunCliAgentParams): Promise<EmbeddedAgentRunResult> {
+  if (paramsInput.config) {
+    assertAgentCanRun({
+      cfg: paramsInput.config,
+      agentId: paramsInput.agentId ?? paramsInput.sessionTarget?.agentId,
+      sessionKey: paramsInput.sessionKey ?? paramsInput.sessionTarget?.sessionKey,
+    });
+  }
   const lifecycleGeneration =
     paramsInput.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(paramsInput.runId);
   const params = {

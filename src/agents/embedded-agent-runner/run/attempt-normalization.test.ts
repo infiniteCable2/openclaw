@@ -194,6 +194,21 @@ describe("fixed-store session bootstrap", () => {
     session: { store: "/tmp/shared-sessions.json" },
   };
 
+  it("rejects a null agent before detached execution or session reads", () => {
+    expect(() =>
+      assertAgentHarnessRunAdmission({
+        agentId: "main",
+        config: {
+          agents: { entries: { main: { nullAgent: true } } },
+        },
+        sessionId: "null-agent-session",
+        sessionKey: "agent:main:main",
+        sessionPersistence: "detached",
+      } as never),
+    ).toThrow("configured as a null agent");
+    expect(sessionAccessorMocks.loadSessionEntry).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])(
     "keeps the prepared reset target and its commit owner (closed=%s)",
     async (closeBeforeCommit) => {

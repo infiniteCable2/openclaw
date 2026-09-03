@@ -309,6 +309,7 @@ const inboundSkippedReasonSchema = Type.Union([
   Type.Literal("reply_operation_active"),
   Type.Literal("reply_operation_aborted"),
   Type.Literal("acp_dispatch_aborted"),
+  Type.Literal("null_agent"),
 ]);
 
 /** V1 inbound-message activity record. */
@@ -578,7 +579,8 @@ type AuditActivityInboundMessageV1Terminal =
         | "duplicate"
         | "reply_operation_active"
         | "reply_operation_aborted"
-        | "acp_dispatch_aborted";
+        | "acp_dispatch_aborted"
+        | "null_agent";
     }
   | {
       status: "failed";

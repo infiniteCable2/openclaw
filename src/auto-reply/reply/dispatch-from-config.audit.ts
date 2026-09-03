@@ -62,6 +62,8 @@ function resolveSkippedInboundAuditReason(
       return "reply_operation_active";
     case "reply_operation_aborted":
       return "reply_operation_aborted";
+    case "null_agent":
+      return "null_agent";
     default:
       return undefined;
   }
@@ -162,14 +164,16 @@ export function emitInboundMessageAuditTerminal(params: {
     params.terminal.options?.reason,
   );
   let agentId = normalizeOptionalString(ctx.AgentId);
-  try {
-    agentId = resolveSessionAgentId({
-      sessionKey,
-      config: cfg,
-      agentId: ctx.AgentId,
-    });
-  } catch {
-    // Malformed setup must still produce a content-free terminal with available attribution.
+  if (params.terminal.options?.reason !== "null_agent") {
+    try {
+      agentId = resolveSessionAgentId({
+        sessionKey,
+        config: cfg,
+        agentId: ctx.AgentId,
+      });
+    } catch {
+      // Malformed setup must still produce a content-free terminal with available attribution.
+    }
   }
   try {
     emitTrustedMessageAuditEvent({
