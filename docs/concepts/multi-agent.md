@@ -147,6 +147,35 @@ Each configured `agentId` is a distinct persona boundary for core agent state:
 
 This lets multiple people share one Gateway while keeping core agent state separate.
 
+### Null-agent fallback
+
+Use a null agent when unmatched or untrusted traffic must fail closed instead
+of reaching a persona or model:
+
+```json5
+{
+  agents: {
+    entries: {
+      main: { default: true, nullAgent: true },
+      steffen: {},
+    },
+  },
+  bindings: [
+    {
+      agentId: "steffen",
+      match: { channel: "matrix", peer: { kind: "channel", id: "<room-id>" } },
+    },
+  ],
+}
+```
+
+`nullAgent: true` is an execution boundary, not a prompt. OpenClaw silently
+finishes channel dispatch before session lookup or model preparation and also
+rejects direct agent, CLI-backed, embedded, and isolated-completion execution.
+The agent does not run tools, memory, agent-side media processing, workspace
+bootstrap, or model inference. Exact channel and sender allowlists still belong in the
+channel configuration; the null agent is the last-resort routing sink.
+
 ## Per-agent Memory Wiki vaults
 
 Memory Wiki uses one global vault by default. To keep a support agent's

@@ -85,6 +85,11 @@ export type AgentConfig = {
   id: string;
   /** @deprecated Raw legacy list compatibility only; canonical agents.entries rejects this key. */
   default?: boolean;
+  /**
+   * Fail-closed routing sink. Null agents never execute a model, tools, memory,
+   * agent-side media processing, or workspace bootstrap and produce no channel reply.
+   */
+  nullAgent?: boolean;
   name?: string;
   /** Optional human-authored agent description. */
   description?: string;

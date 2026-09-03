@@ -30,6 +30,14 @@ describe("agent roster ownership", () => {
     ).toBe(true);
   });
 
+  it("accepts a null agent as the legacy fallback in a multi-agent roster", () => {
+    expect(
+      AgentsSchema.safeParse({
+        entries: { main: { default: true, nullAgent: true }, steffen: {} },
+      }).success,
+    ).toBe(true);
+  });
+
   it("rejects multiple legacy default markers", () => {
     expect(
       AgentsSchema.safeParse({
