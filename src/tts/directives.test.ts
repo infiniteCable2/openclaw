@@ -95,6 +95,16 @@ describe("parseTtsDirectives provider-aware routing", () => {
     expect(result.overrides.providerOverrides?.elevenlabs).toBeUndefined();
   });
 
+  it("removes an empty colon directive from visible text", () => {
+    const result = parseTtsDirectives("[[tts:]] Hallo", fullPolicy, {
+      providers: [elevenlabs],
+    });
+
+    expect(result.cleanedText).toBe(" Hallo");
+    expect(result.hasDirective).toBe(true);
+    expect(result.overrides).toEqual({});
+  });
+
   it("routes correctly when provider appears after the generic token", () => {
     const result = parseTtsDirectives("[[tts:speed=1.2 provider=minimax]] hi", fullPolicy, {
       providers: [elevenlabs, minimax],
