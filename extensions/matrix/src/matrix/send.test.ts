@@ -35,6 +35,7 @@ const loadConfigMock = vi.fn(() => ({}));
 const withResolvedRuntimeMatrixClientMock = vi.hoisted(() => vi.fn());
 const getImageMetadataMock = vi.fn().mockResolvedValue(null);
 const resizeToJpegMock = vi.fn();
+const getAudioWaveformMock = vi.fn().mockResolvedValue([1, 512, 1024]);
 const mediaKindFromMimeMock = vi.fn((_mime: string | null | undefined) => "image");
 const isVoiceCompatibleAudioMock = vi.fn(
   (_options: { contentType?: string | null; fileName?: string | null }) => false,
@@ -74,6 +75,7 @@ const runtimeStub = {
     mediaKindFromMime: (mime?: string | null) => mediaKindFromMimeMock(mime),
     isVoiceCompatibleAudio: (opts: { contentType?: string | null; fileName?: string | null }) =>
       isVoiceCompatibleAudioMock(opts),
+    getAudioWaveform: (...args: unknown[]) => getAudioWaveformMock(...args),
     getImageMetadata: (...args: unknown[]) => getImageMetadataMock(...args),
     resizeToJpeg: (...args: unknown[]) => resizeToJpegMock(...args),
   },
@@ -230,6 +232,7 @@ function resetMatrixSendRuntimeMocks() {
     kind: "image",
   });
   loadConfigMock.mockReset().mockReturnValue({});
+  getAudioWaveformMock.mockReset().mockResolvedValue([1, 512, 1024]);
   withResolvedRuntimeMatrixClientMock
     .mockReset()
     .mockImplementation(
@@ -830,37 +833,51 @@ describe("sendMessageMatrix media", () => {
     expect(content.info?.thumbnail_file?.url).toBe("mxc://example/thumb");
   });
 
-  it("keeps reply context on voice transcript follow-ups outside threads", async () => {
-    const { client, sendMessage } = makeClient();
-    sendMessage.mockReset().mockResolvedValueOnce("$voice").mockResolvedValueOnce("$transcript");
-    mediaKindFromMimeMock.mockReturnValue("audio");
-    isVoiceCompatibleAudioMock.mockReturnValue(true);
-    loadWebMediaMock.mockResolvedValueOnce({
-      buffer: Buffer.from("audio"),
-      fileName: "clip.mp3",
-      contentType: "audio/mpeg",
-      kind: "audio",
-    });
+  it.each([false, true])(
+    "keeps voice and transcript delivery with waveform failure=%s",
+    async (fails) => {
+      if (fails) {
+        getAudioWaveformMock.mockRejectedValueOnce(new Error("decoder unavailable"));
+      }
+      const { client, sendMessage } = makeClient();
+      sendMessage.mockReset().mockResolvedValueOnce("$voice").mockResolvedValueOnce("$transcript");
+      mediaKindFromMimeMock.mockReturnValue("audio");
+      isVoiceCompatibleAudioMock.mockReturnValue(true);
+      loadWebMediaMock.mockResolvedValueOnce({
+        buffer: Buffer.from("audio"),
+        fileName: "clip.mp3",
+        contentType: "audio/mpeg",
+        kind: "audio",
+      });
 
-    const result = await sendMessageMatrix("room:!room:example", "voice caption", {
-      client,
-      cfg: {} as never,
-      mediaUrl: "file:///tmp/clip.mp3",
-      audioAsVoice: true,
-      replyToId: "$reply",
-    });
+      const result = await sendMessageMatrix("room:!room:example", "voice caption", {
+        client,
+        cfg: {} as never,
+        mediaUrl: "file:///tmp/clip.mp3",
+        audioAsVoice: true,
+        replyToId: "$reply",
+      });
 
-    const transcriptContent = sentContent(sendMessage, 1);
+      const transcriptContent = sentContent(sendMessage, 1);
+      const voiceContent = sentContent(sendMessage, 0);
 
-    expect(transcriptContent.body).toBe("voice caption");
-    expect(requireRecord(transcriptContent["m.relates_to"], "relation")["m.in_reply_to"]).toEqual({
-      event_id: "$reply",
-    });
-    expect(result.receipt.parts).toMatchObject([
-      { platformMessageId: "$voice", kind: "voice", index: 0, replyToId: "$reply" },
-      { platformMessageId: "$transcript", kind: "text", index: 1, replyToId: "$reply" },
-    ]);
-  });
+      expect(transcriptContent.body).toBe("voice caption");
+      expect(voiceContent["org.matrix.msc1767.audio"]).toEqual(
+        fails ? undefined : { waveform: [1, 512, 1024] },
+      );
+      expect(voiceContent["org.matrix.msc3245.voice"]).toEqual({});
+      expect(getAudioWaveformMock).toHaveBeenCalledOnce();
+      expect(requireRecord(transcriptContent["m.relates_to"], "relation")["m.in_reply_to"]).toEqual(
+        {
+          event_id: "$reply",
+        },
+      );
+      expect(result.receipt.parts).toMatchObject([
+        { platformMessageId: "$voice", kind: "voice", index: 0, replyToId: "$reply" },
+        { platformMessageId: "$transcript", kind: "text", index: 1, replyToId: "$reply" },
+      ]);
+    },
+  );
 
   it("keeps regular audio payload when audioAsVoice media is incompatible", async () => {
     const { client, sendMessage } = makeClient();
@@ -889,6 +906,7 @@ describe("sendMessageMatrix media", () => {
     expect(mediaContent.msgtype).toBe("m.audio");
     expect(mediaContent.body).toBe("voice caption");
     expect(mediaContent["org.matrix.msc3245.voice"]).toBeUndefined();
+    expect(getAudioWaveformMock).not.toHaveBeenCalled();
   });
 
   it("keeps thumbnail_url metadata for unencrypted large images", async () => {

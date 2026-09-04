@@ -434,6 +434,7 @@ export type PluginRuntimeCore = {
     detectMime: typeof import("@openclaw/media-core/mime").detectMime;
     mediaKindFromMime: typeof import("@openclaw/media-core/constants").mediaKindFromMime;
     isVoiceCompatibleAudio: typeof import("../../media/audio.js").isVoiceCompatibleAudio;
+    getAudioWaveform: typeof import("../../media/media-services.js").getAudioWaveform;
     getImageMetadata: typeof import("../../media/media-services.js").getImageMetadata;
     resizeToJpeg: typeof import("../../media/media-services.js").resizeToJpeg;
   };

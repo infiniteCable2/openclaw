@@ -971,6 +971,14 @@ snapshots; OpenClaw owns all persistence and lifecycle coordination.
     const mime = await api.runtime.media.detectMime(buffer);
     const kind = api.runtime.media.mediaKindFromMime("image/jpeg"); // "image"
     const isVoice = api.runtime.media.isVoiceCompatibleAudio(filePath);
+    const waveform = await api.runtime.media.getAudioWaveform({
+      audioBuffer: buffer,
+      inputFileName: "voice.ogg",
+      inputContentType: "audio/ogg",
+    });
+    // Up to 200 integer peaks (0-1024), sampled over at most 20 minutes.
+    // Requires system ffmpeg; rejects on decode failure. Display metadata
+    // is optional: channels should still deliver audio when decoding fails.
     const metadata = await api.runtime.media.getImageMetadata(filePath);
     const resized = await api.runtime.media.resizeToJpeg(buffer, { maxWidth: 800 });
     const terminalQr = await api.runtime.media.renderQrTerminal("https://openclaw.ai");
