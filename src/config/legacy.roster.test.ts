@@ -547,24 +547,46 @@ describe("persisted implicit-main roster migration", () => {
     });
   });
 
-  it("keeps a shipped single-marker fleet valid while retaining its owner", async () => {
-    await withTempHome(async (home) => {
-      const configPath = path.join(home, ".openclaw", "openclaw.json");
-      const entries = { ops: {}, research: { default: true } };
-      await fs.mkdir(path.dirname(configPath), { recursive: true });
-      await fs.writeFile(configPath, JSON.stringify({ agents: { entries } }));
-      resetConfigRuntimeState();
+  it.each([
+    {
+      name: "legacy ambient owner",
+      defaults: undefined,
+      heartbeatAgentId: "research",
+      systemAgentId: "research",
+    },
+    {
+      name: "explicit system owner",
+      defaults: { systemAgent: { agentId: "ops" } },
+      heartbeatAgentId: undefined,
+      systemAgentId: "ops",
+    },
+    {
+      name: "explicit heartbeat owner",
+      defaults: { systemAgent: { agentId: "ops" }, heartbeat: { agentId: "research" } },
+      heartbeatAgentId: "research",
+      systemAgentId: "ops",
+    },
+  ])(
+    "keeps a shipped single-marker fleet valid with its $name",
+    async ({ defaults, heartbeatAgentId, systemAgentId }) => {
+      await withTempHome(async (home) => {
+        const configPath = path.join(home, ".openclaw", "openclaw.json");
+        const entries = { ops: {}, research: { default: true } };
+        await fs.mkdir(path.dirname(configPath), { recursive: true });
+        await fs.writeFile(configPath, JSON.stringify({ agents: { entries, defaults } }));
+        resetConfigRuntimeState();
 
-      const snapshot = await readConfigFileSnapshot();
+        const snapshot = await readConfigFileSnapshot();
 
-      expect(snapshot.valid).toBe(true);
-      expect(snapshot.sourceConfig.agents?.entries).toMatchObject({ ops: {}, research: {} });
-      expect(snapshot.sourceConfig.agents?.defaults?.heartbeat?.agentId).toBe("research");
-      expect(snapshot.sourceConfig.agents?.defaults?.systemAgent?.agentId).toBe("research");
-      expect(snapshot.sourceConfig.agents?.defaults?.authInheritance?.agentId).toBe("research");
-      expect(snapshot.sourceConfig.talk?.agentId).toBe("research");
-    });
-  });
+        expect(snapshot.valid).toBe(true);
+        expect(snapshot.sourceConfig.agents?.entries).toMatchObject({ ops: {}, research: {} });
+        expect(snapshot.sourceConfig.agents?.defaults?.heartbeat?.agentId).toBe(heartbeatAgentId);
+        expect(snapshot.sourceConfig.agents?.defaults?.systemAgent?.agentId).toBe(systemAgentId);
+        expect(snapshot.sourceConfig.agents?.defaults?.authInheritance?.agentId).toBe("research");
+        expect(snapshot.sourceConfig.talk?.agentId).toBe("research");
+      });
+    },
+  );
 
   it("leaves non-boolean default markers for schema validation", async () => {
     await withTempHome(async (home) => {
