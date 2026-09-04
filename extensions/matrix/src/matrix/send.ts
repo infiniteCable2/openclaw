@@ -38,6 +38,7 @@ import {
   buildMediaContent,
   prepareImageInfo,
   resolveMediaDurationMs,
+  resolveMatrixVoiceWaveform,
   uploadMediaWithEncryption,
 } from "./send/media.js";
 import { normalizeThreadId, resolveMatrixRoomId } from "./send/targets.js";
@@ -274,6 +275,7 @@ export async function sendMessageMatrix(
             contentType: media.contentType,
             fileName: media.fileName,
           });
+          const waveform = await resolveMatrixVoiceWaveform(media, useVoice);
           const msgtype = useVoice ? MsgType.Audio : baseMsgType;
           const receiptKind: MessageReceiptPartKind = useVoice ? "voice" : "media";
           const imageInfo =
@@ -295,6 +297,7 @@ export async function sendMessageMatrix(
             mimetype: media.contentType,
             size: media.buffer.byteLength,
             durationMs,
+            waveform,
             relation,
             isVoice: useVoice,
             imageInfo,

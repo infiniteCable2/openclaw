@@ -17,6 +17,22 @@ import type {
   MatrixRelation,
 } from "./types.js";
 
+export async function resolveMatrixVoiceWaveform(
+  media: { buffer: Buffer; fileName?: string; contentType?: string },
+  isVoice: boolean,
+): Promise<number[] | undefined> {
+  if (!isVoice) {
+    return undefined;
+  }
+  return await getMatrixRuntime()
+    .media.getAudioWaveform({
+      audioBuffer: media.buffer,
+      inputFileName: media.fileName,
+      inputContentType: media.contentType,
+    })
+    .catch(() => undefined);
+}
+
 function buildMatrixMediaInfo(params: {
   size: number;
   mimetype?: string;
@@ -67,6 +83,7 @@ export function buildMediaContent(params: {
   relation?: MatrixRelation;
   isVoice?: boolean;
   durationMs?: number;
+  waveform?: number[];
   imageInfo?: DimensionalFileInfo;
   file?: EncryptedFile;
 }): MatrixMediaContent {
@@ -92,9 +109,10 @@ export function buildMediaContent(params: {
   }
   if (params.isVoice) {
     base["org.matrix.msc3245.voice"] = {};
-    if (typeof params.durationMs === "number") {
+    if (typeof params.durationMs === "number" || params.waveform?.length) {
       base["org.matrix.msc1767.audio"] = {
-        duration: params.durationMs,
+        ...(typeof params.durationMs === "number" ? { duration: params.durationMs } : {}),
+        ...(params.waveform?.length ? { waveform: params.waveform } : {}),
       };
     }
   }

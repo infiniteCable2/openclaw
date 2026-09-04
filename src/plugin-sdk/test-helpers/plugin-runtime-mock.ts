@@ -675,6 +675,7 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
       detectMime: vi.fn<PluginRuntime["media"]["detectMime"]>(),
       mediaKindFromMime: vi.fn<PluginRuntime["media"]["mediaKindFromMime"]>(),
       isVoiceCompatibleAudio: vi.fn<PluginRuntime["media"]["isVoiceCompatibleAudio"]>(),
+      getAudioWaveform: vi.fn<PluginRuntime["media"]["getAudioWaveform"]>(),
       getImageMetadata: vi.fn<PluginRuntime["media"]["getImageMetadata"]>(),
       resizeToJpeg: vi.fn<PluginRuntime["media"]["resizeToJpeg"]>(),
     },

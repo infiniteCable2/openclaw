@@ -2,7 +2,7 @@
 import { mediaKindFromMime } from "@openclaw/media-core/constants";
 import { detectMime } from "@openclaw/media-core/mime";
 import { isVoiceMessageCompatibleAudio } from "../../media/audio.js";
-import { getImageMetadata, resizeToJpeg } from "../../media/media-services.js";
+import { getAudioWaveform, getImageMetadata, resizeToJpeg } from "../../media/media-services.js";
 import { loadWebMedia } from "../../media/web-media.js";
 import type { PluginRuntime } from "./types.js";
 
@@ -13,6 +13,7 @@ export function createRuntimeMedia(): PluginRuntime["media"] {
     detectMime,
     mediaKindFromMime,
     isVoiceCompatibleAudio: isVoiceMessageCompatibleAudio,
+    getAudioWaveform,
     getImageMetadata,
     resizeToJpeg,
   };
