@@ -28,7 +28,7 @@ import { formatErrorMessage } from "../../../infra/errors.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { resolvePreferredSessionKeyForSessionIdMatches } from "../../../sessions/session-id-resolution.js";
 import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
-import { assertAgentCanRun, resolveSessionAgentId } from "../../agent-scope.js";
+import { resolveSessionAgentId } from "../../agent-scope.js";
 import {
   resolveSessionKeyForRequestCore,
   resolveStoredSessionKeyForSessionId,
@@ -288,13 +288,6 @@ type AgentSessionWriterAdmissionSnapshot = {
 export function assertAgentHarnessRunAdmission(
   params: RunEmbeddedAgentParams,
 ): AgentSessionWriterAdmissionSnapshot | undefined {
-  if (params.config) {
-    assertAgentCanRun({
-      cfg: params.config,
-      agentId: params.sessionTarget?.agentId ?? params.agentId,
-      sessionKey: params.sessionTarget?.sessionKey ?? params.sessionKey,
-    });
-  }
   if (params.sessionPersistence === "detached") {
     return undefined;
   }

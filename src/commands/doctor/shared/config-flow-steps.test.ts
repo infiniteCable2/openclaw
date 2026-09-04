@@ -75,6 +75,40 @@ describe("doctor config flow steps", () => {
     expect(result.state.pendingChanges).toBe(true);
   });
 
+  it.each([
+    {
+      name: "keyed config without legacy diagnostics",
+      parsed: { agents: { entries: { sink: { nullAgent: true }, worker: {} } } },
+      sourceConfig: {},
+    },
+    {
+      name: "legacy list",
+      parsed: { agents: { list: [{ id: "sink", nullAgent: true }] } },
+      sourceConfig: {},
+    },
+    {
+      name: "include-resolved roster",
+      parsed: { agents: { $include: "./agents.json5" } },
+      sourceConfig: { agents: { entries: { sink: { nullAgent: true }, worker: {} } } },
+    },
+  ])("blocks automatic null-agent retirement for $name", ({ parsed, sourceConfig }) => {
+    const result = createLegacyStepResult({
+      parsed,
+      sourceConfig: sourceConfig as OpenClawConfig,
+      legacyIssues: [],
+      valid: false,
+    });
+
+    expect(migrateLegacyConfigMock).not.toHaveBeenCalled();
+    expect(result.blocksWrite).toBe(true);
+    expect(result.state.pendingChanges).toBe(false);
+    expect(result.changeLines).toEqual([]);
+    expect(result.issueLines.join("\n")).toContain("nullAgent");
+    expect(result.issueLines.join("\n")).toContain("bindings");
+    expect(result.issueLines.join("\n")).toContain('agents.ownership="explicit"');
+    expect(result.issueLines.join("\n")).toContain("No config files were changed.");
+  });
+
   it("migrates the resolved config so single-file include values are repairable", () => {
     const sourceConfig = {
       mcp: { servers: { local: { command: "node", disabled: true } } },

@@ -14,11 +14,7 @@ import type {
   AgentDefaultsConfig,
 } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.js";
-import {
-  LEGACY_IMPLICIT_AGENT_ID,
-  normalizeAgentId,
-  parseAgentSessionKey,
-} from "../routing/session-key.js";
+import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
 import { registerResolvedAgentDir } from "./agent-dir-registry.js";
 import { resolveDefaultAgentWorkspaceDir } from "./workspace-default.js";
@@ -53,17 +49,6 @@ export class AgentSelectionRequiredError extends Error {
     this.agentIds = agentIds;
     this.surface = surface;
     this.hint = hint;
-  }
-}
-
-export class NullAgentRunBlockedError extends Error {
-  readonly code = "NULL_AGENT_RUN_BLOCKED";
-  readonly agentId: string;
-
-  constructor(agentId: string) {
-    super(`Agent "${agentId}" is configured as a null agent and cannot execute.`);
-    this.name = "NullAgentRunBlockedError";
-    this.agentId = agentId;
   }
 }
 
@@ -380,57 +365,6 @@ export function resolveAgentEntry(cfg: OpenClawConfig, agentId: string): AgentEn
     );
   }
   return undefined;
-}
-
-/** Returns whether the exact configured agent is a fail-closed null agent. */
-export function isNullAgent(cfg: OpenClawConfig, agentId: string | undefined | null): boolean {
-  const raw = agentId?.trim();
-  return raw ? resolveAgentEntry(cfg, raw)?.nullAgent === true : false;
-}
-
-/**
- * Resolves a null-agent marker without consulting session storage. Any null
- * identity present in a conflicting request wins so malformed attribution
- * cannot bypass the sink.
- */
-export function resolveNullAgentId(params: {
-  cfg: OpenClawConfig;
-  agentId?: string | null;
-  sessionKey?: string | null;
-}): string | undefined {
-  const candidates = new Set<string>();
-  const rawAgentId = params.agentId?.trim();
-  if (rawAgentId) {
-    candidates.add(normalizeAgentId(rawAgentId));
-  }
-  const parsedSessionAgentId = parseAgentSessionKey(params.sessionKey)?.agentId;
-  if (parsedSessionAgentId) {
-    candidates.add(normalizeAgentId(parsedSessionAgentId));
-  }
-  if (candidates.size === 0) {
-    const defaultAgentId = tryResolveDefaultAgentId(params.cfg);
-    if (defaultAgentId) {
-      candidates.add(defaultAgentId);
-    }
-  }
-  for (const candidate of candidates) {
-    if (isNullAgent(params.cfg, candidate)) {
-      return candidate;
-    }
-  }
-  return undefined;
-}
-
-/** Throws before an execution boundary can prepare a null agent. */
-export function assertAgentCanRun(params: {
-  cfg: OpenClawConfig;
-  agentId?: string | null;
-  sessionKey?: string | null;
-}): void {
-  const nullAgentId = resolveNullAgentId(params);
-  if (nullAgentId) {
-    throw new NullAgentRunBlockedError(nullAgentId);
-  }
 }
 
 /**

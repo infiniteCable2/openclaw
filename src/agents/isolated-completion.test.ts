@@ -44,7 +44,6 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./agent-scope.js", () => ({
-  assertAgentCanRun: () => undefined,
   resolveAgentDir: () => "/tmp/agent",
   resolveAgentWorkspaceDir: () => "/tmp/workspace",
   resolveDefaultAgentId: () => "main",

@@ -15,12 +15,7 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import type { AssistantMessage } from "../llm/types.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { prepareSystemAgentRunAdmission } from "./admitted-run-context.js";
-import {
-  assertAgentCanRun,
-  resolveAgentDir,
-  resolveAgentWorkspaceDir,
-  resolveDefaultAgentId,
-} from "./agent-scope.js";
+import { resolveAgentDir, resolveAgentWorkspaceDir, resolveDefaultAgentId } from "./agent-scope.js";
 import { resolveCliBackendConfig, resolveCliRuntimeCanonicalProvider } from "./cli-backends.js";
 import { normalizeCliModel } from "./cli-runner/helpers.js";
 import { resolveEmbeddedCliBackendDispatchEligibility } from "./embedded-agent-runner/cli-backend-dispatch-eligibility.js";
@@ -441,7 +436,6 @@ export async function runIsolatedCompletion(
   assertCurrent();
   const config = request.config ?? {};
   const agentId = request.agentId ?? resolveDefaultAgentId(config);
-  assertAgentCanRun({ cfg: config, agentId });
   const agentDir = request.agentDir ?? resolveAgentDir(config, agentId);
   const workspaceDir = request.workspaceDir ?? resolveAgentWorkspaceDir(config, agentId);
   const canonicalProvider = resolveCliRuntimeCanonicalProvider({

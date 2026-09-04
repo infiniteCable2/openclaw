@@ -1,6 +1,6 @@
 // Route resolution tests cover resolving channel route targets from input.
 import { describe, expect, test, vi } from "vitest";
-import { resolveAgentConfig } from "../agents/agent-scope-config.js";
+import { AgentSelectionRequiredError, resolveAgentConfig } from "../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../config/config.js";
 import * as routingBindings from "./bindings.js";
 import {
@@ -116,6 +116,65 @@ describe("resolveAgentRoute", () => {
       lastRoutePolicy: "main",
       matchedBy: "default",
     });
+  });
+
+  describe("explicit ownership with an ambient system agent", () => {
+    const sender = { kind: "direct", id: "@alice:example.org" } as const;
+    const room = { kind: "channel", id: "!personal:example.org" } as const;
+    const cfg = {
+      agents: {
+        ownership: "explicit",
+        entries: { personal: {}, ops: {} },
+        defaults: { systemAgent: { agentId: "ops" } },
+      },
+      bindings: [sender, room].map((peer) => ({
+        type: "route" as const,
+        agentId: "personal",
+        match: { channel: "matrix", accountId: "work", peer },
+      })),
+    } satisfies OpenClawConfig;
+
+    test.each([
+      { name: "sender", peer: sender },
+      { name: "room", peer: room },
+    ])("routes an exactly bound $name to its persona", ({ peer }) => {
+      expectResolvedRoute(resolveAgentRoute({ cfg, channel: "matrix", accountId: "work", peer }), {
+        agentId: "personal",
+        matchedBy: "binding.peer",
+      });
+    });
+
+    test.each([
+      {
+        name: "sender",
+        route: {
+          channel: "matrix",
+          accountId: "work",
+          peer: { kind: "direct", id: "@unknown:example.org" },
+        },
+      },
+      {
+        name: "room",
+        route: {
+          channel: "matrix",
+          accountId: "work",
+          peer: { kind: "channel", id: "!unknown:example.org" },
+        },
+      },
+      {
+        name: "account",
+        route: { channel: "matrix", accountId: "other", peer: sender },
+      },
+      {
+        name: "channel",
+        route: { channel: "telegram", accountId: "work", peer: sender },
+      },
+    ] as const)(
+      "rejects an unbound $name without falling back to the system agent",
+      ({ route }) => {
+        expect(() => resolveAgentRoute({ cfg, ...route })).toThrow(AgentSelectionRequiredError);
+      },
+    );
   });
 
   test("preserves explicit main bindings when agents.entries has other agents", () => {

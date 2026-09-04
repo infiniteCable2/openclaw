@@ -1,5 +1,4 @@
 /** Main reply dispatch pipeline from finalized config/context to delivery payloads. */
-import { resolveNullAgentId } from "../../agents/agent-scope.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { isDispatchReplyOperationAbortedError } from "./dispatch-from-config.abort.js";
 import { createInboundMessageAuditTerminal } from "./dispatch-from-config.audit.js";
@@ -41,21 +40,6 @@ async function dispatchReplyFromConfigWithQueuePolicy(
   allowActiveQueueResolution: boolean,
 ): Promise<DispatchFromConfigResult> {
   const messageAuditTerminal = createInboundMessageAuditTerminal(params);
-  const nullAgentId = resolveNullAgentId({
-    cfg: params.cfg,
-    agentId: params.ctx.AgentId,
-    sessionKey: params.ctx.CommandTargetSessionKey ?? params.ctx.SessionKey,
-  });
-  if (nullAgentId) {
-    const result: DispatchFromConfigResult = {
-      queuedFinal: false,
-      counts: params.dispatcher.getQueuedCounts(),
-      deliberateSilentTerminalReply: true,
-    };
-    messageAuditTerminal?.note("skipped", { reason: "null_agent" });
-    messageAuditTerminal?.finishSuccess(result);
-    return result;
-  }
   const ticket = reserveReplyAdmissionTicket([
     params.ctx.SessionKey,
     params.ctx.CommandTargetSessionKey,
