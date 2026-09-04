@@ -14,13 +14,28 @@ import {
 const HELD_COORDINATORS_KEY = Symbol.for("openclaw.stateDatabaseCoordinator.held.v1");
 type HeldCoordinator = { coordinator: { release: () => void }; references: number };
 
+function isMapAcrossRealms(value: unknown): value is Map<unknown, unknown> {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  try {
+    Map.prototype.has.call(value, HELD_COORDINATORS_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolveHeldCoordinators(): Map<string, HeldCoordinator> {
   const processStore = process as NodeJS.Process & Record<PropertyKey, unknown>;
   const processRegistry = processStore[HELD_COORDINATORS_KEY];
-  if (processRegistry instanceof Map) {
+  if (processRegistry !== undefined) {
+    if (!isMapAcrossRealms(processRegistry)) {
+      throw new SqliteCoordinatorError("state lifecycle process registry must be a Map");
+    }
     // Bundled Doctor commands can load the same runtime through distinct Jiti
-    // globalThis contexts. Rehydrate this context from the shared Node process
-    // before asking the generic singleton helper for the registry.
+    // realms. Rehydrate this context from the shared Node process before asking
+    // the generic singleton helper for the registry; instanceof is realm-local.
     (globalThis as Record<PropertyKey, unknown>)[HELD_COORDINATORS_KEY] = processRegistry;
   }
   const registry = resolveGlobalMap<string, HeldCoordinator>(HELD_COORDINATORS_KEY);
