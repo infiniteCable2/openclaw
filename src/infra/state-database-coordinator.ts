@@ -1,8 +1,9 @@
 // Coordinates Gateway presence and shared-state lifecycle operations outside removable state.
+import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
 import { threadId } from "node:worker_threads";
-import { resolveGlobalMap } from "../shared/global-singleton.js";
+import { resolveGlobalMap, resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
 import { sha256HexPrefixCore } from "./crypto-digest.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "./node-sqlite.js";
@@ -13,7 +14,47 @@ import {
 } from "./sqlite-coordinator.js";
 
 const HELD_COORDINATORS_KEY = Symbol.for("openclaw.stateDatabaseCoordinator.held.v1");
-type HeldCoordinator = { coordinator: { release: () => void }; references: number };
+const WORKER_AUTHORITY_STORAGE_KEY = Symbol.for(
+  "openclaw.stateDatabaseCoordinator.workerAuthority.v1",
+);
+const WORKER_AUTHORITY_ACTIVE_INDEX = 0;
+const WORKER_AUTHORITY_BORROWERS_INDEX = 1;
+const WORKER_AUTHORITY_STATE_LENGTH = 2;
+
+export type StateDatabaseCoordinatorWorkerAuthority = {
+  coordinatorPath: string;
+  state: SharedArrayBuffer;
+  version: 1;
+};
+
+type HeldCoordinator = {
+  coordinator: { release: () => void };
+  family: CoordinatorFamily;
+  references: number;
+  workerAuthorityState?: SharedArrayBuffer;
+};
+
+function resolveWorkerAuthorityStorage(): AsyncLocalStorage<StateDatabaseCoordinatorWorkerAuthority> {
+  const processStore = process as NodeJS.Process & Record<PropertyKey, unknown>;
+  const processStorage = processStore[WORKER_AUTHORITY_STORAGE_KEY];
+  if (processStorage !== undefined) {
+    const storage = processStorage as Partial<
+      AsyncLocalStorage<StateDatabaseCoordinatorWorkerAuthority>
+    >;
+    if (typeof storage.getStore !== "function" || typeof storage.run !== "function") {
+      throw new SqliteCoordinatorError("state lifecycle Worker authority storage is invalid");
+    }
+    (globalThis as Record<PropertyKey, unknown>)[WORKER_AUTHORITY_STORAGE_KEY] = processStorage;
+  }
+  const storage = resolveGlobalSingleton(
+    WORKER_AUTHORITY_STORAGE_KEY,
+    () => new AsyncLocalStorage<StateDatabaseCoordinatorWorkerAuthority>(),
+  );
+  processStore[WORKER_AUTHORITY_STORAGE_KEY] = storage;
+  return storage;
+}
+
+const workerAuthority = resolveWorkerAuthorityStorage();
 
 function traceCoordinator(
   action: string,
@@ -74,6 +115,84 @@ type CoordinatorOptions = {
   uid?: number;
   busyTimeoutMs?: number;
 };
+
+function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  try {
+    return (
+      Object.prototype.toString.call(value) === "[object SharedArrayBuffer]" &&
+      (value as SharedArrayBuffer).byteLength ===
+        WORKER_AUTHORITY_STATE_LENGTH * Int32Array.BYTES_PER_ELEMENT
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isStateDatabaseCoordinatorWorkerAuthority(
+  value: unknown,
+): value is StateDatabaseCoordinatorWorkerAuthority {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.version === 1 &&
+    typeof candidate.coordinatorPath === "string" &&
+    candidate.coordinatorPath.length > 0 &&
+    isSharedArrayBuffer(candidate.state)
+  );
+}
+
+function resolveHeldWorkerAuthorityState(held: HeldCoordinator): SharedArrayBuffer {
+  if (held.workerAuthorityState) {
+    return held.workerAuthorityState;
+  }
+  const state = new SharedArrayBuffer(WORKER_AUTHORITY_STATE_LENGTH * Int32Array.BYTES_PER_ELEMENT);
+  Atomics.store(new Int32Array(state), WORKER_AUTHORITY_ACTIVE_INDEX, 1);
+  held.workerAuthorityState = state;
+  return state;
+}
+
+function tryBorrowWorkerAuthority(coordinatorPath: string): { release: () => void } | undefined {
+  const authority = workerAuthority.getStore();
+  if (!authority || authority.coordinatorPath !== coordinatorPath) {
+    return undefined;
+  }
+  const state = new Int32Array(authority.state);
+  if (Atomics.load(state, WORKER_AUTHORITY_ACTIVE_INDEX) !== 1) {
+    return undefined;
+  }
+  Atomics.add(state, WORKER_AUTHORITY_BORROWERS_INDEX, 1);
+  if (Atomics.load(state, WORKER_AUTHORITY_ACTIVE_INDEX) !== 1) {
+    Atomics.sub(state, WORKER_AUTHORITY_BORROWERS_INDEX, 1);
+    Atomics.notify(state, WORKER_AUTHORITY_BORROWERS_INDEX);
+    return undefined;
+  }
+  let released = false;
+  return {
+    release() {
+      if (released) {
+        return;
+      }
+      released = true;
+      Atomics.sub(state, WORKER_AUTHORITY_BORROWERS_INDEX, 1);
+      Atomics.notify(state, WORKER_AUTHORITY_BORROWERS_INDEX);
+    },
+  };
+}
+
+export function runWithStateDatabaseCoordinatorWorkerAuthority<T>(
+  authority: StateDatabaseCoordinatorWorkerAuthority,
+  run: () => Promise<T>,
+): Promise<T> {
+  if (!isStateDatabaseCoordinatorWorkerAuthority(authority)) {
+    throw new SqliteCoordinatorError("state lifecycle Worker authority is invalid");
+  }
+  return workerAuthority.run(authority, run);
+}
 
 export class StateDatabaseCoordinatorContentionError extends SqliteCoordinatorError {
   constructor(family: CoordinatorFamily) {
@@ -145,6 +264,11 @@ function acquireLifecycleCoordinator(
     held.references += 1;
     traceCoordinator("acquire-reentrant", { family, references: held.references });
   } else {
+    const borrowed = tryBorrowWorkerAuthority(coordinatorPath);
+    if (borrowed) {
+      traceCoordinator("acquire-worker-reentrant", { family });
+      return { path: coordinatorPath, release: borrowed.release };
+    }
     ensurePrivateSqliteCoordinatorDirectory(path.dirname(coordinatorPath), `${family} coordinator`);
     const coordinator = tryAcquireExclusiveSqliteCoordinator(coordinatorPath, {
       busyTimeoutMs: params.busyTimeoutMs,
@@ -153,7 +277,7 @@ function acquireLifecycleCoordinator(
       traceCoordinator("acquire-contended", { entries: heldCoordinators.size, family });
       throw new StateDatabaseCoordinatorContentionError(family);
     }
-    heldCoordinators.set(coordinatorPath, { coordinator, references: 1 });
+    heldCoordinators.set(coordinatorPath, { coordinator, family, references: 1 });
     traceCoordinator("acquire-new", { entries: heldCoordinators.size, family, references: 1 });
   }
 
@@ -174,6 +298,15 @@ function acquireLifecycleCoordinator(
       if (current.references > 0) {
         return;
       }
+      if (current.workerAuthorityState) {
+        const workerState = new Int32Array(current.workerAuthorityState);
+        Atomics.store(workerState, WORKER_AUTHORITY_ACTIVE_INDEX, 0);
+        if (Atomics.load(workerState, WORKER_AUTHORITY_BORROWERS_INDEX) > 0) {
+          throw new SqliteCoordinatorError(
+            `cannot release ${family} coordinator while an authorized Worker is active`,
+          );
+        }
+      }
       heldCoordinators.delete(coordinatorPath);
       try {
         current.coordinator.release();
@@ -190,6 +323,32 @@ export function acquireGatewayLifecycleCoordinator(params: CoordinatorOptions) {
 
 export function acquireStateDatabaseCoordinator(params: CoordinatorOptions) {
   return acquireLifecycleCoordinator("state-lifecycle", params);
+}
+
+/** Grant one explicitly spawned Worker access to a currently held state lifecycle. */
+export function createStateDatabaseCoordinatorWorkerAuthority(
+  _params: Record<string, never> = {},
+): StateDatabaseCoordinatorWorkerAuthority | undefined {
+  const active = [...heldCoordinators].filter(
+    ([, held]) => held.family === "state-lifecycle" && held.references > 0,
+  );
+  traceCoordinator("create-worker-authority", {
+    activeStateCoordinators: active.length,
+    entries: heldCoordinators.size,
+  });
+  if (active.length !== 1) {
+    return undefined;
+  }
+  const [coordinatorPath, held] = active[0]!;
+  const state = resolveHeldWorkerAuthorityState(held);
+  if (Atomics.load(new Int32Array(state), WORKER_AUTHORITY_ACTIVE_INDEX) !== 1) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    coordinatorPath,
+    state,
+  };
 }
 
 /** Fence schema mutation against another process's live Gateway owner. */

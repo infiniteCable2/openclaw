@@ -4,6 +4,7 @@ import { Worker, type WorkerOptions } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { acquireStateDatabaseCoordinator } from "../../infra/state-database-coordinator.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   closeOpenClawAgentDatabasesForTest,
@@ -106,6 +107,58 @@ async function waitForCurrentProjection(databasePath: string, sessionId: string)
 }
 
 describe("session transcript reconcile worker lifecycle", () => {
+  it("reconciles while Doctor owns the parent state lifecycle", async () => {
+    const stateDir = tempDirs.make("openclaw-reconcile-maintenance-");
+    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+      const scope = {
+        agentId: "main",
+        sessionId: "maintenance-reconcile",
+        sessionKey: "agent:main:maintenance-reconcile",
+      };
+      try {
+        await persistSessionTranscriptTurn(scope, {
+          messages: [
+            {
+              eventId: "maintenance-message",
+              message: { role: "user", content: "maintenance" },
+            },
+          ],
+          touchSessionEntry: false,
+        });
+        await waitForSessionTranscriptIndexReconcile(scope);
+
+        const database = openOpenClawAgentDatabase(scope);
+        database.db
+          .prepare(
+            "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",
+          )
+          .run(scope.sessionId);
+        const coordinator = acquireStateDatabaseCoordinator({
+          databasePath: resolveOpenClawStateSqlitePath(process.env),
+        });
+        try {
+          await expect(
+            reconcileSessionTranscriptIndexes({
+              ...scope,
+              // Built maintenance callers can retain an explicit database path
+              // while their options carry a separately materialized environment.
+              env: {
+                ...process.env,
+                OPENCLAW_STATE_DIR: tempDirs.make("openclaw-reconcile-caller-env-"),
+              },
+              path: database.path,
+            }),
+          ).resolves.toEqual({ reconciledSessions: 1 });
+        } finally {
+          coordinator.release();
+        }
+      } finally {
+        closeOpenClawAgentDatabasesForTest();
+        closeOpenClawStateDatabaseForTest();
+      }
+    });
+  });
+
   it("drains later fixture owners without waiting for an unrelated state directory", async () => {
     const root = tempDirs.make("openclaw-reconcile-scope-");
     const stateDir = path.join(root, "state");

@@ -7,6 +7,7 @@ import { toStringifiedError } from "@openclaw/normalization-core/error-coercion"
 import { isPathInside } from "../../infra/path-guards.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import { createStateDatabaseCoordinatorWorkerAuthority } from "../../infra/state-database-coordinator.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   openOpenClawAgentDatabase,
@@ -213,10 +214,12 @@ export async function reconcileSessionTranscriptIndexes(
   }
   const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscriptReconcile);
   const sourceWorkerExecArgv = workerUrl.pathname.endsWith(".ts") ? ["--import", "tsx"] : undefined;
+  const stateCoordinatorAuthority = createStateDatabaseCoordinatorWorkerAuthority();
   const input: SessionTranscriptReconcileWorkerInput = {
     agentId: params.agentId,
     path: databasePath,
     ...(params.preferredSessionId ? { preferredSessionId: params.preferredSessionId } : {}),
+    ...(stateCoordinatorAuthority ? { stateCoordinatorAuthority } : {}),
   };
   let worker: Worker;
   try {
