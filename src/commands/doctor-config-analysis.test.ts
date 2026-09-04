@@ -112,6 +112,18 @@ describe("doctor config analysis helpers", () => {
     expect((result.config as Record<string, unknown>).hooks).toStrictEqual({});
   });
 
+  it.each([
+    { name: "keyed active marker", agents: { entries: { sink: { nullAgent: true } } } },
+    { name: "keyed inactive marker", agents: { entries: { sink: { nullAgent: false } } } },
+    { name: "legacy list", agents: { list: [{ id: "sink", nullAgent: true }] } },
+  ])("preserves the whole config pending null-agent retirement: $name", ({ agents }) => {
+    const config = { agents, unexpected: true } as unknown as OpenClawConfig;
+    const result = stripUnknownConfigKeys(config);
+
+    expect(result.config).toEqual(config);
+    expect(result.removed).toEqual([]);
+  });
+
   it("strips unknown root model metadata while preserving supported agent metadata", () => {
     const result = stripUnknownConfigKeys({
       defaultModel: "minimax/MiniMax-M2.7",

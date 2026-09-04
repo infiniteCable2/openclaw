@@ -29,7 +29,6 @@ import { isDeliverableMessageChannel, resolveMessageChannel } from "../../utils/
 import { resolveAgentRuntimeConfig } from "../agent-runtime-config.js";
 import { resolveAgentRunCwd } from "../agent-scope-config.js";
 import {
-  assertAgentCanRun,
   listAgentIds,
   resolveAgentDir,
   resolveSessionAgentId,
@@ -261,7 +260,6 @@ export async function prepareAgentCommandExecution(
   const sessionAgentId =
     agentIdOverride ??
     resolveSessionAgentId({ sessionKey: sessionKey ?? explicitSessionKey, config: cfg });
-  assertAgentCanRun({ cfg, agentId: sessionAgentId, sessionKey });
   const outboundSession = buildOutboundSessionContext({
     cfg,
     agentId: sessionAgentId,

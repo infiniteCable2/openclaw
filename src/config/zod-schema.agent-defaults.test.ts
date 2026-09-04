@@ -364,13 +364,6 @@ describe("agent defaults schema", () => {
     expect(agent.bootstrapTotalMaxChars).toBe(16384);
   });
 
-  it("accepts a fail-closed null-agent marker", () => {
-    expect(AgentEntrySchema.parse({ id: "main", nullAgent: true })).toEqual({
-      id: "main",
-      nullAgent: true,
-    });
-  });
-
   it("rejects invalid per-agent bootstrap profile overrides", () => {
     expectSchemaFailurePath(
       AgentEntrySchema.safeParse({ id: "worker", contextInjection: "unknown" }),

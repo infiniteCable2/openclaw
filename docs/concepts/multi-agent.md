@@ -147,34 +147,47 @@ Each configured `agentId` is a distinct persona boundary for core agent state:
 
 This lets multiple people share one Gateway while keeping core agent state separate.
 
-### Null-agent fallback
+### Explicit routing without a fallback agent
 
-Use a null agent when unmatched or untrusted traffic must fail closed instead
-of reaching a persona or model:
+For a multi-agent roster, use explicit ownership and bind only the conversations
+each persona should receive. A separate system owner can handle ambient internal
+work without becoming the fallback for unbound channel messages:
 
 ```json5
 {
   agents: {
+    ownership: "explicit",
+    defaults: { systemAgent: { agentId: "ops" } },
     entries: {
-      main: { default: true, nullAgent: true },
-      steffen: {},
+      personal: { heartbeat: { every: "30m" } },
+      ops: { tools: { profile: "minimal" }, skills: [] },
     },
   },
   bindings: [
     {
-      agentId: "steffen",
+      agentId: "personal",
       match: { channel: "matrix", peer: { kind: "channel", id: "<room-id>" } },
     },
   ],
 }
 ```
 
-`nullAgent: true` is an execution boundary, not a prompt. OpenClaw silently
-finishes channel dispatch before session lookup or model preparation and also
-rejects direct agent, CLI-backed, embedded, and isolated-completion execution.
-The agent does not run tools, memory, agent-side media processing, workspace
-bootstrap, or model inference. Exact channel and sender allowlists still belong in the
-channel configuration; the null agent is the last-resort routing sink.
+With this two-agent roster, unbound Matrix traffic has no owner and is rejected.
+The system owner does not inherit those messages. Channel account and sender
+allowlists still control who may enter a bound conversation; a room binding
+alone does not authenticate its participants.
+
+`main` is an ordinary agent id, not a required supervisor. Each persona still has
+its own main session, such as `agent:personal:main`. The explicit heartbeat block
+above keeps recurring heartbeats on `personal`, independently of system ownership.
+System ownership does not grant extra tool permissions or create a hard sandbox.
+See [System agent configuration](/gateway/config-agents#agentsdefaultssystemagent)
+and [Sandboxing](/gateway/sandboxing).
+
+When replacing a legacy fallback, remove its agent entry and broad fallback
+bindings together, and check that no binding still names the removed agent.
+Preserve its historical state separately. Keeping only one configured agent
+restores the sole-agent fallback, even with explicit ownership.
 
 ## Per-agent Memory Wiki vaults
 

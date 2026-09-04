@@ -301,7 +301,6 @@ export const TARGET_KEYS = [
   "plugins.entries.*.apiKey",
   "plugins.entries.*.env",
   "plugins.entries.*.config",
-  "agents.entries.*.nullAgent",
   "auth",
   "models",
   "models.providers",

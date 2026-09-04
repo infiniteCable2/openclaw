@@ -5,9 +5,6 @@ import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   AgentSelectionRequiredError,
-  NullAgentRunBlockedError,
-  assertAgentCanRun,
-  isNullAgent,
   listAgentEntriesWithSource,
   listAgentIds,
   resolveConfiguredAgentId,
@@ -17,7 +14,6 @@ import {
   resolveAmbientOwnerAgentId,
   resolveDefaultAgentDir,
   resolveDefaultAgentId,
-  resolveNullAgentId,
   resolveSoleAgentId,
   tryResolveAmbientOwnerAgentId,
   tryResolveDefaultAgentId,
@@ -27,26 +23,6 @@ import {
 vi.unmock("./agent-scope-config.js");
 
 describe("agent roster resolution", () => {
-  it("identifies and fail-closes configured null agents", () => {
-    const cfg = {
-      agents: {
-        entries: {
-          main: { default: true, nullAgent: true },
-          steffen: {},
-        },
-      },
-    } satisfies OpenClawConfig;
-
-    expect(isNullAgent(cfg, "MAIN")).toBe(true);
-    expect(isNullAgent(cfg, "steffen")).toBe(false);
-    expect(resolveNullAgentId({ cfg, agentId: "steffen", sessionKey: "agent:main:main" })).toBe(
-      "main",
-    );
-    expect(resolveNullAgentId({ cfg, agentId: "steffen" })).toBeUndefined();
-    expect(() => assertAgentCanRun({ cfg, agentId: "main" })).toThrow(NullAgentRunBlockedError);
-    expect(() => assertAgentCanRun({ cfg, agentId: "steffen" })).not.toThrow();
-  });
-
   it("rejects unknown configured-agent selections with canonical CLI guidance", () => {
     const cfg = { agents: { entries: { main: {}, ops: {} } } };
 

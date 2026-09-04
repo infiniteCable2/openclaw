@@ -30,12 +30,22 @@ describe("agent roster ownership", () => {
     ).toBe(true);
   });
 
-  it("accepts a null agent as the legacy fallback in a multi-agent roster", () => {
-    expect(
-      AgentsSchema.safeParse({
-        entries: { main: { default: true, nullAgent: true }, steffen: {} },
-      }).success,
-    ).toBe(true);
+  it.each([true, false])("rejects the retired nullAgent marker %s", (nullAgent) => {
+    const result = AgentsSchema.safeParse({
+      ownership: "explicit",
+      entries: { retired: { nullAgent }, worker: {} },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({
+          code: "unrecognized_keys",
+          path: ["entries", "retired"],
+          keys: ["nullAgent"],
+        }),
+      );
+    }
   });
 
   it("rejects multiple legacy default markers", () => {

@@ -65,40 +65,6 @@ beforeAll(globalBeforeAll0);
 describe("dispatchReplyFromConfig", () => {
   beforeEach(describe0BeforeEach0);
 
-  it("silently drops a null-agent route before session or model preparation", async () => {
-    const dispatcher = createDispatcher();
-    const replyResolver = vi.fn(async () => ({ text: "must not run" }) satisfies ReplyPayload);
-
-    const result = await dispatchReplyFromConfig({
-      ctx: buildTestCtx({
-        AgentId: "main",
-        Provider: "matrix",
-        SessionKey: "agent:main:matrix:channel:fallback",
-      }),
-      cfg: {
-        agents: {
-          entries: {
-            main: { default: true, nullAgent: true },
-            steffen: {},
-          },
-        },
-      },
-      dispatcher,
-      replyResolver,
-    });
-
-    expect(result).toEqual({
-      queuedFinal: false,
-      counts: { tool: 0, block: 0, final: 0 },
-      deliberateSilentTerminalReply: true,
-    });
-    expect(replyResolver).not.toHaveBeenCalled();
-    expect(sessionStoreMocks.loadSessionEntry).not.toHaveBeenCalled();
-    expect(sessionStoreMocks.loadSessionStoreEntry).not.toHaveBeenCalled();
-    expect(sessionStoreMocks.loadSessionStore).not.toHaveBeenCalled();
-    expect(runtimePluginMocks.loadAgentRuntimePluginRegistryHandle).not.toHaveBeenCalled();
-  });
-
   function createActiveSlackThread(userId: string) {
     setNoAbort();
     const sessionKey = `agent:main:slack:direct:${userId}`;

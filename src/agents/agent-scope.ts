@@ -44,9 +44,6 @@ export {
   resolveMutableAgentEntry,
   toAgentEntriesRecord,
   resolveAgentConfig,
-  assertAgentCanRun,
-  isNullAgent,
-  resolveNullAgentId,
   resolveAgentContextLimits,
   resolveAgentDir,
   resolveDefaultAgentDir,
@@ -62,7 +59,6 @@ export {
   tryResolveSoleAgentId,
   tryResolveDefaultAgentId,
   AgentSelectionRequiredError,
-  NullAgentRunBlockedError,
 } from "./agent-scope-config.js";
 
 const AUTO_FALLBACK_PRIMARY_PROBE_INTERVAL_MS = 5 * 60 * 1000;

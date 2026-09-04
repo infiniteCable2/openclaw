@@ -17,6 +17,7 @@ import {
 } from "./include-migration-ownership.js";
 import { applyLegacyDoctorMigrations } from "./legacy-config-compat.js";
 import { migrateLegacyConfig } from "./legacy-config-migrate.js";
+import { hasRetiredNullAgentConfig } from "./retired-null-agent-config.js";
 
 /** Apply legacy config migrations and update preview/fix state for doctor config flow. */
 export function applyLegacyCompatibilityStep(params: {
@@ -31,6 +32,23 @@ export function applyLegacyCompatibilityStep(params: {
   partiallyValid?: boolean;
   blocksWrite?: boolean;
 } {
+  if (
+    [
+      params.snapshot.parsed,
+      params.snapshot.sourceConfigBeforeMigrations,
+      params.snapshot.sourceConfig,
+      params.state.candidate,
+    ].some(hasRetiredNullAgentConfig)
+  ) {
+    return {
+      state: params.state,
+      issueLines: [
+        '- nullAgent is retired. Back up configuration and agent state, remove the retired sink entries and their bindings, set agents.ownership="explicit", and explicitly assign system/heartbeat owners to runnable agents. Do not only remove nullAgent: that could activate the old sink. No config files were changed.',
+      ],
+      changeLines: [],
+      blocksWrite: true,
+    };
+  }
   if (params.snapshot.legacyIssues.length === 0) {
     return {
       state: params.state,
