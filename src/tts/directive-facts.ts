@@ -36,7 +36,7 @@ export function extractTtsDirectiveFacts(text: string): {
     return visible;
   });
 
-  const directiveRegex = /\[\[\s*tts\s*:\s*([^\]]+)\]\]/gi;
+  const directiveRegex = /\[\[\s*tts\s*:\s*([^\]]*)\]\]/gi;
   cleanedText = replaceOutsideCodeRegions(cleanedText, directiveRegex, (_match, [body]) => {
     const next = markTagged();
     const tokens = String(body).split(/\s+/).filter(Boolean);
