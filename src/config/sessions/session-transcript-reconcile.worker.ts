@@ -1,6 +1,11 @@
 /** Worker entrypoint for transcript parsing and active-branch resolution only. */
 import { parentPort, workerData } from "node:worker_threads";
 import {
+  isStateDatabaseCoordinatorWorkerAuthority,
+  runWithStateDatabaseCoordinatorWorkerAuthority,
+  type StateDatabaseCoordinatorWorkerAuthority,
+} from "../../infra/state-database-coordinator.js";
+import {
   closeOpenClawAgentDatabaseByPath,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
@@ -20,6 +25,7 @@ export type SessionTranscriptReconcileWorkerInput = {
   agentId: string;
   path: string;
   preferredSessionId?: string;
+  stateCoordinatorAuthority?: StateDatabaseCoordinatorWorkerAuthority;
 };
 
 export type EncodedTranscriptFtsChunk = {
@@ -58,11 +64,20 @@ function parseWorkerInput(value: unknown): SessionTranscriptReconcileWorkerInput
   if (input.preferredSessionId !== undefined && typeof input.preferredSessionId !== "string") {
     return undefined;
   }
+  if (
+    input.stateCoordinatorAuthority !== undefined &&
+    !isStateDatabaseCoordinatorWorkerAuthority(input.stateCoordinatorAuthority)
+  ) {
+    return undefined;
+  }
   return {
     agentId: input.agentId,
     path: input.path,
     ...(typeof input.preferredSessionId === "string"
       ? { preferredSessionId: input.preferredSessionId }
+      : {}),
+    ...(isStateDatabaseCoordinatorWorkerAuthority(input.stateCoordinatorAuthority)
+      ? { stateCoordinatorAuthority: input.stateCoordinatorAuthority }
       : {}),
   };
 }
@@ -168,7 +183,7 @@ async function streamPreparedProjection(plan: PreparedSessionTranscriptProjectio
   await postAndWait({ type: "plan-finish", sessionId: plan.sessionId });
 }
 
-async function run(): Promise<void> {
+async function executeReconcile(): Promise<void> {
   let terminalMessage: Extract<
     SessionTranscriptReconcileWorkerMessage,
     { type: "done" | "failed" }
@@ -204,6 +219,15 @@ async function run(): Promise<void> {
   } finally {
     port.close();
   }
+}
+
+async function run(): Promise<void> {
+  const authority = reconcileInput.stateCoordinatorAuthority;
+  if (authority) {
+    await runWithStateDatabaseCoordinatorWorkerAuthority(authority, executeReconcile);
+    return;
+  }
+  await executeReconcile();
 }
 
 void run();

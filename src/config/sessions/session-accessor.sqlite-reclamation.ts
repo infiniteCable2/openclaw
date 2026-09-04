@@ -1,4 +1,8 @@
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import {
+  createStateDatabaseCoordinatorWorkerAuthority,
+  type StateDatabaseCoordinatorWorkerAuthority,
+} from "../../infra/state-database-coordinator.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
@@ -112,6 +116,7 @@ export type SqliteSessionReclamationWorkerData = {
   commitGate?: SharedArrayBuffer;
   operation: "reclaim";
   plan: SqliteSessionReclamationPlan;
+  stateCoordinatorAuthority?: StateDatabaseCoordinatorWorkerAuthority;
   type: "sqlite-transcript-archive-v2";
 };
 
@@ -414,6 +419,7 @@ export async function runSqliteSessionReclamation(params: {
   const commitGate = assertCommitAllowed
     ? new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)
     : undefined;
+  const stateCoordinatorAuthority = createStateDatabaseCoordinatorWorkerAuthority();
   const recoveredCommitErrors: unknown[] = [];
   const [workerResult] =
     await runSqliteTranscriptArchiveWorkerOperation<SqliteSessionReclamationWorkerResult>({
@@ -435,6 +441,7 @@ export async function runSqliteSessionReclamation(params: {
         commitGate,
         operation: "reclaim",
         plan: params.plan,
+        ...(stateCoordinatorAuthority ? { stateCoordinatorAuthority } : {}),
         type: "sqlite-transcript-archive-v2",
       } satisfies SqliteSessionReclamationWorkerData,
     });

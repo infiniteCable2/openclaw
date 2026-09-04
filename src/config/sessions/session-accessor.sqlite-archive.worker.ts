@@ -8,6 +8,10 @@ import { pipeline } from "node:stream/promises";
 import { parentPort, workerData } from "node:worker_threads";
 import zlib from "node:zlib";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import {
+  isStateDatabaseCoordinatorWorkerAuthority,
+  runWithStateDatabaseCoordinatorWorkerAuthority,
+} from "../../infra/state-database-coordinator.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
@@ -480,7 +484,19 @@ if (isSqliteTranscriptArchiveWorkerData(workerData)) {
     runPublishWorkerPort(parentPort, plans);
   } else if (operation === "reclaim") {
     // SAFETY: the parent creates this internal structured-clone payload from the typed plan.
-    await runReclamationWorkerPort(parentPort, workerData as SqliteSessionReclamationWorkerData);
+    const data = workerData as SqliteSessionReclamationWorkerData;
+    const port = parentPort;
+    const authority = data.stateCoordinatorAuthority;
+    if (authority !== undefined && !isStateDatabaseCoordinatorWorkerAuthority(authority)) {
+      throw new Error("SQLite session reclamation Worker received invalid lifecycle authority");
+    }
+    if (authority) {
+      await runWithStateDatabaseCoordinatorWorkerAuthority(authority, () =>
+        runReclamationWorkerPort(port, data),
+      );
+    } else {
+      await runReclamationWorkerPort(port, data);
+    }
   } else {
     throw new Error("SQLite transcript archive worker requires a supported operation");
   }
