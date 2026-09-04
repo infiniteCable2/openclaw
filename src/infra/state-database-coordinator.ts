@@ -1,6 +1,7 @@
 // Coordinates Gateway presence and shared-state lifecycle operations outside removable state.
 import os from "node:os";
 import path from "node:path";
+import { resolveGlobalMap } from "../shared/global-singleton.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
 import { sha256HexPrefixCore } from "./crypto-digest.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "./node-sqlite.js";
@@ -10,10 +11,24 @@ import {
   SqliteCoordinatorError,
 } from "./sqlite-coordinator.js";
 
-const heldCoordinators = new Map<
-  string,
-  { coordinator: { release: () => void }; references: number }
->();
+const HELD_COORDINATORS_KEY = Symbol.for("openclaw.stateDatabaseCoordinator.held.v1");
+type HeldCoordinator = { coordinator: { release: () => void }; references: number };
+
+function resolveHeldCoordinators(): Map<string, HeldCoordinator> {
+  const processStore = process as NodeJS.Process & Record<PropertyKey, unknown>;
+  const processRegistry = processStore[HELD_COORDINATORS_KEY];
+  if (processRegistry instanceof Map) {
+    // Bundled Doctor commands can load the same runtime through distinct Jiti
+    // globalThis contexts. Rehydrate this context from the shared Node process
+    // before asking the generic singleton helper for the registry.
+    (globalThis as Record<PropertyKey, unknown>)[HELD_COORDINATORS_KEY] = processRegistry;
+  }
+  const registry = resolveGlobalMap<string, HeldCoordinator>(HELD_COORDINATORS_KEY);
+  processStore[HELD_COORDINATORS_KEY] = registry;
+  return registry;
+}
+
+const heldCoordinators = resolveHeldCoordinators();
 
 type CoordinatorFamily = "gateway-lifecycle" | "state-lifecycle";
 type CoordinatorOptions = {

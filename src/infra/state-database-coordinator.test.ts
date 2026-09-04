@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resolveGlobalMap } from "../shared/global-singleton.js";
 import {
   acquireGatewayLifecycleCoordinator,
   acquireStateDatabaseCoordinator,
@@ -36,6 +37,39 @@ describe("state database coordinator", () => {
       busyTimeoutMs: 0,
     });
     next.release();
+  });
+
+  it("shares same-process owners across duplicated loader globals", async () => {
+    const root = tempDirs.make("openclaw-state-database-coordinator-global-");
+    const databasePath = path.join(root, "selected-state", "state", "openclaw.sqlite");
+    const runtimeDirectory = path.join(root, "runtime");
+    await fs.mkdir(path.dirname(databasePath), { recursive: true });
+    const first = acquireStateDatabaseCoordinator({
+      databasePath,
+      runtimeDirectory,
+      busyTimeoutMs: 0,
+    });
+    try {
+      const registryKey = Symbol.for("openclaw.stateDatabaseCoordinator.held.v1");
+      delete (globalThis as Record<PropertyKey, unknown>)[registryKey];
+      vi.resetModules();
+      const duplicateRuntime = await import("./state-database-coordinator.js");
+      const nested = duplicateRuntime.acquireStateDatabaseCoordinator({
+        databasePath,
+        runtimeDirectory,
+        busyTimeoutMs: 0,
+      });
+      const duplicateChunkRegistry = resolveGlobalMap<
+        string,
+        { coordinator: { release: () => void }; references: number }
+      >(registryKey);
+      expect([...duplicateChunkRegistry.values()]).toContainEqual(
+        expect.objectContaining({ references: 2 }),
+      );
+      nested.release();
+    } finally {
+      first.release();
+    }
   });
 
   it("keeps Gateway presence independent from short state operations", async () => {
