@@ -1,6 +1,7 @@
 // Coordinates Gateway presence and shared-state lifecycle operations outside removable state.
 import os from "node:os";
 import path from "node:path";
+import { threadId } from "node:worker_threads";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
 import { sha256HexPrefixCore } from "./crypto-digest.js";
@@ -13,6 +14,22 @@ import {
 
 const HELD_COORDINATORS_KEY = Symbol.for("openclaw.stateDatabaseCoordinator.held.v1");
 type HeldCoordinator = { coordinator: { release: () => void }; references: number };
+
+function traceCoordinator(
+  action: string,
+  details: Record<string, boolean | number | string | undefined>,
+): void {
+  if (process.env.OPENCLAW_DEBUG_STATE_COORDINATOR !== "1") {
+    return;
+  }
+  const fields = { action, pid: process.pid, threadId, ...details };
+  process.stderr.write(
+    `[state-coordinator] ${Object.entries(fields)
+      .filter((entry) => entry[1] !== undefined)
+      .map(([key, value]) => `${key}=${String(value)}`)
+      .join(" ")}\n`,
+  );
+}
 
 function isMapAcrossRealms(value: unknown): value is Map<unknown, unknown> {
   if (typeof value !== "object" || value === null) {
@@ -40,6 +57,10 @@ function resolveHeldCoordinators(): Map<string, HeldCoordinator> {
   }
   const registry = resolveGlobalMap<string, HeldCoordinator>(HELD_COORDINATORS_KEY);
   processStore[HELD_COORDINATORS_KEY] = registry;
+  traceCoordinator("resolve-registry", {
+    entries: registry.size,
+    processRegistryPresent: processRegistry !== undefined,
+  });
   return registry;
 }
 
@@ -114,17 +135,26 @@ function acquireLifecycleCoordinator(
       uid: params.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined),
     });
   const held = heldCoordinators.get(coordinatorPath);
+  traceCoordinator("acquire-attempt", {
+    entries: heldCoordinators.size,
+    family,
+    held: held !== undefined,
+    references: held?.references,
+  });
   if (held) {
     held.references += 1;
+    traceCoordinator("acquire-reentrant", { family, references: held.references });
   } else {
     ensurePrivateSqliteCoordinatorDirectory(path.dirname(coordinatorPath), `${family} coordinator`);
     const coordinator = tryAcquireExclusiveSqliteCoordinator(coordinatorPath, {
       busyTimeoutMs: params.busyTimeoutMs,
     });
     if (!coordinator) {
+      traceCoordinator("acquire-contended", { entries: heldCoordinators.size, family });
       throw new StateDatabaseCoordinatorContentionError(family);
     }
     heldCoordinators.set(coordinatorPath, { coordinator, references: 1 });
+    traceCoordinator("acquire-new", { entries: heldCoordinators.size, family, references: 1 });
   }
 
   let released = false;
@@ -140,6 +170,7 @@ function acquireLifecycleCoordinator(
         return;
       }
       current.references -= 1;
+      traceCoordinator("release", { family, references: current.references });
       if (current.references > 0) {
         return;
       }
