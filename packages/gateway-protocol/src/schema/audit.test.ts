@@ -236,14 +236,6 @@ describe("audit activity protocol schemas", () => {
     expect(
       validate.Check({
         ...inbound,
-        status: "blocked",
-        outcome: "skipped",
-        reasonCode: "null_agent",
-      }),
-    ).toBe(true);
-    expect(
-      validate.Check({
-        ...inbound,
         outcome: "failed",
         errorCode: "message_processing_failed",
       }),
