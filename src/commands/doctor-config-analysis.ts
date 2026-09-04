@@ -10,7 +10,6 @@ import { resolveAgentModelFallbackValues } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { OpenClawSchema } from "../config/zod-schema.js";
 import { isRecord } from "../utils.js";
-import { hasRetiredNullAgentConfig } from "./doctor/shared/retired-null-agent-config.js";
 
 type UnrecognizedKeysIssue = ZodIssue & {
   code: "unrecognized_keys";
@@ -86,8 +85,7 @@ export function stripUnknownConfigKeys(config: OpenClawConfig): {
   config: OpenClawConfig;
   removed: string[];
 } {
-  // Preserve the complete roster until its retired sink and bindings are explicitly migrated.
-  if (isUpdateInProgress() || hasRetiredNullAgentConfig(config)) {
+  if (isUpdateInProgress()) {
     return { config, removed: [] };
   }
 

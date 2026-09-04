@@ -38,7 +38,6 @@ export const AUDIT_INBOUND_MESSAGE_SKIPPED_REASONS = [
   "reply_operation_active",
   "reply_operation_aborted",
   "acp_dispatch_aborted",
-  "null_agent",
 ] as const;
 
 export type AuditInboundMessageSkippedReasonCode =
