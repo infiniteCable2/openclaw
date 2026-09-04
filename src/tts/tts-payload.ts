@@ -16,6 +16,7 @@ import type { SpeechVoiceOption } from "./provider-types.js";
 import { assertSpeechRuntimeAvailable, isSpeechRuntimeAvailable } from "./runtime-availability.js";
 import { isCodeHeavySpeechText, normalizeSpeechText } from "./speech-text.js";
 import { summarizeText } from "./tts-core.js";
+import { acquireSpeechProviderLocalService } from "./tts-local-service.js";
 import {
   getResolvedSpeechProviderConfig,
   resolveSpeechProviderTimeoutMs,
@@ -70,13 +71,22 @@ export async function listSpeechVoices(params: {
     config,
     provider: resolvedProvider,
   });
-  return await resolvedProvider.listVoices({
-    cfg,
-    providerConfig: getResolvedSpeechProviderConfig(config, resolvedProvider.id, cfg),
-    apiKey: params.apiKey,
-    baseUrl: params.baseUrl,
-    timeoutMs,
+  const providerConfig = getResolvedSpeechProviderConfig(config, resolvedProvider.id, cfg);
+  const localServiceLease = await acquireSpeechProviderLocalService({
+    providerId: resolvedProvider.id,
+    providerConfig,
   });
+  try {
+    return await resolvedProvider.listVoices({
+      cfg,
+      providerConfig,
+      apiKey: params.apiKey,
+      baseUrl: params.baseUrl,
+      timeoutMs,
+    });
+  } finally {
+    localServiceLease?.release();
+  }
 }
 
 function hasLegacyFinalMediaDirective(text: string): boolean {

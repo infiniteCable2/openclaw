@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CODE_HEAVY_SPOKEN_FALLBACK,
   MAX_TIMER_TIMEOUT_MS,
+  acquireSpeechProviderLocalServiceMock,
   buildTtsSystemPromptHint,
   clearRuntimeConfigSnapshot,
   createMockSpeechProvider,
@@ -41,6 +42,8 @@ describe("TTS runtime native voice-note routing", () => {
     synthesizeMock.mockClear();
     prepareSynthesisMock.mockClear();
     transcodeAudioBufferMock.mockClear();
+    acquireSpeechProviderLocalServiceMock.mockReset();
+    acquireSpeechProviderLocalServiceMock.mockResolvedValue(undefined);
     installSpeechProviders([createMockSpeechProvider()]);
   });
 
@@ -396,6 +399,41 @@ describe("TTS runtime native voice-note routing", () => {
     });
 
     expect(listVoicesMock).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 45_000 }));
+  });
+
+  it("holds the speech provider local-service lease while listing voices", async () => {
+    const release = vi.fn();
+    acquireSpeechProviderLocalServiceMock.mockResolvedValueOnce({ release });
+    const listVoicesMock = vi.fn(async (_request: SpeechListVoicesRequest) => {
+      expect(release).not.toHaveBeenCalled();
+      return [];
+    });
+    installSpeechProviders([createMockSpeechProvider("mock", { listVoices: listVoicesMock })]);
+    const providerConfig = {
+      baseUrl: "http://127.0.0.1:8020/v1",
+      localService: {
+        command: "/srv/openclaw/workers/tts",
+        healthUrl: "http://127.0.0.1:8020/ready",
+      },
+    };
+
+    await listSpeechVoices({
+      provider: "mock",
+      cfg: {
+        tts: {
+          enabled: true,
+          provider: "mock",
+          providers: { mock: providerConfig },
+        },
+      } as OpenClawConfig,
+    });
+
+    expect(acquireSpeechProviderLocalServiceMock).toHaveBeenCalledWith({
+      providerId: "mock",
+      providerConfig,
+    });
+    expect(listVoicesMock).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("caps oversized provider default TTS timeouts before synthesis", async () => {
