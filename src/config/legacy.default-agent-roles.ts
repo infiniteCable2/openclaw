@@ -148,9 +148,13 @@ export function materializeLegacyDefaultAgentRoles(
       insertedPaths.push(["agents", "defaults", key, "agentId"]);
       changed = true;
     };
+    // Do not synthesize a specific heartbeat owner that would override an
+    // explicitly configured ambient system owner.
     materialize(
       "heartbeat",
-      !listAgentEntries(cfg).some((entry) => entry.heartbeat) && defaults?.heartbeat === undefined,
+      !listAgentEntries(cfg).some((entry) => entry.heartbeat) &&
+        defaults?.heartbeat === undefined &&
+        unset("systemAgent"),
     );
     materialize("systemAgent", unset("systemAgent"));
     // Auth transitions are pinned or refused by the roster write guard; fixed-store rows need
