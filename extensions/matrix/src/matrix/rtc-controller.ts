@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { CallMembership } from "matrix-js-sdk/lib/matrixrtc/CallMembership.js";
 import {
   MatrixRTCSessionEvent,
   type MatrixRTCSession,
@@ -62,6 +63,12 @@ function mediaKeyId(key: MatrixRtcMediaKey): string {
   return `${key.participantIdentity}\0${key.index}`;
 }
 
+function membershipIncarnation(
+  membership: Pick<CallMembership, "userId" | "deviceId" | "memberId" | "createdTs">,
+): string {
+  return `${membership.userId}\0${membership.deviceId}\0${membership.memberId}\0${membership.createdTs()}`;
+}
+
 async function waitForInitialMediaKeys(params: {
   keys: Map<string, MatrixRtcMediaKey>;
   remoteIdentity: string;
@@ -118,6 +125,7 @@ export function registerMatrixRtcController(params: {
   abortSignal?: AbortSignal;
 }): { startExisting(): void; stop(): Promise<void> } {
   const calls = new Map<string, ActiveCall>();
+  const failedRemoteMemberships = new Map<string, string>();
   const observedSessions = new Map<string, { session: MatrixRTCSession; dispose: () => void }>();
   let stopped = false;
   // Keep these bounded, identifier-free lifecycle markers visible while the
@@ -163,6 +171,16 @@ export function registerMatrixRtcController(params: {
     if (!admission) {
       return;
     }
+    const remoteIncarnations = session.memberships
+      .filter((membership) => membership.userId === admission.userId)
+      .map(membershipIncarnation);
+    const failedRemoteMembership = failedRemoteMemberships.get(roomId);
+    if (failedRemoteMembership) {
+      if (remoteIncarnations.includes(failedRemoteMembership)) {
+        return;
+      }
+      failedRemoteMemberships.delete(roomId);
+    }
     const abort = new AbortController();
     const disposeCallbacks: Array<() => void> = [];
     const call: ActiveCall = {
@@ -180,6 +198,7 @@ export function registerMatrixRtcController(params: {
     params.logger.warn("matrix rtc: admitted call start requested");
 
     void (async () => {
+      let remoteIncarnation: string | undefined;
       try {
         const self = params.client.matrixRtc.getSelfIdentity();
         const route = resolveMatrixInboundRoute({
@@ -204,6 +223,7 @@ export function registerMatrixRtcController(params: {
           routedAgentId: route.agentId,
           allowedAgentId: admission.agentId,
         });
+        remoteIncarnation = membershipIncarnation(remote);
         params.logger.info("matrix rtc: admission verified");
         if (session.slotId !== SLOT_ID) {
           throw new Error("MatrixRTC call uses an unsupported slot");
@@ -374,6 +394,9 @@ export function registerMatrixRtcController(params: {
         call.transport = undefined;
         params.logger.info("matrix rtc: admitted encrypted direct audio call");
       } catch (error) {
+        if (remoteIncarnation) {
+          failedRemoteMemberships.set(roomId, remoteIncarnation);
+        }
         params.logger.warn(`matrix rtc: call start failed: ${formatErrorMessage(error)}`);
         await endCall(roomId);
       }
@@ -395,6 +418,7 @@ export function registerMatrixRtcController(params: {
         params.logger.warn("matrix rtc: admitted room membership active");
         beginCall(roomId, session);
       } else {
+        failedRemoteMemberships.delete(roomId);
         params.logger.warn("matrix rtc: admitted room membership empty");
         void endCall(roomId);
       }
@@ -470,6 +494,7 @@ export function registerMatrixRtcController(params: {
       observed.dispose();
     }
     observedSessions.clear();
+    failedRemoteMemberships.clear();
     params.abortSignal?.removeEventListener("abort", abortListener);
     await Promise.all([...calls.keys()].map((roomId) => endCall(roomId)));
   };
