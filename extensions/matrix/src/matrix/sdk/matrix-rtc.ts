@@ -1,8 +1,10 @@
+import { EventType } from "matrix-js-sdk/lib/@types/event.js";
 import {
   ClientEvent,
   type IOpenIDToken,
   type MatrixClient as MatrixJsClient,
 } from "matrix-js-sdk/lib/client.js";
+import type { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
 import type { Room } from "matrix-js-sdk/lib/models/room.js";
 import type { CallMembership } from "matrix-js-sdk/lib/matrixrtc/CallMembership.js";
 import type { LivekitTransportConfig } from "matrix-js-sdk/lib/matrixrtc/LivekitTransport.js";
@@ -18,6 +20,7 @@ export type MatrixRtcClientFacade = {
   onSessionStarted(listener: (roomId: string, session: MatrixRTCSession) => void): () => void;
   onSessionEnded(listener: (roomId: string, session: MatrixRTCSession) => void): () => void;
   onRoomAvailable(listener: (roomId: string) => void): () => void;
+  onRtcMembershipEvent(listener: (roomId: string) => void): () => void;
   getRoomSession(roomId: string): MatrixRTCSession | undefined;
   getJoinedUserIds(roomId: string): string[];
   getOpenIdToken(): Promise<IOpenIDToken>;
@@ -50,6 +53,19 @@ export function createMatrixRtcClientFacade(client: MatrixJsClient): MatrixRtcCl
       const onRoom = (room: Room) => listener(room.roomId);
       client.on(ClientEvent.Room, onRoom);
       return () => client.off(ClientEvent.Room, onRoom);
+    },
+    onRtcMembershipEvent(listener) {
+      const onEvent = (event: MatrixEvent) => {
+        if (!event.unstableStickyExpiresAt || event.getType() !== EventType.RTCMembership) {
+          return;
+        }
+        const roomId = event.getRoomId();
+        if (roomId) {
+          listener(roomId);
+        }
+      };
+      client.on(ClientEvent.Event, onEvent);
+      return () => client.off(ClientEvent.Event, onEvent);
     },
     getRoomSession(roomId) {
       const room = client.getRoom(roomId);
