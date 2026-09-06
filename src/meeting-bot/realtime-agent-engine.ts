@@ -36,6 +36,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
   platform: MeetingRuntimePlatform;
   meetingSessionId: string;
   requesterSessionKey?: string;
+  ttsContext?: { agentId?: string; channelId?: string; accountId?: string };
   logPrefix?: "node";
   transport: MeetingRealtimeAudioTransport;
   logger: RuntimeLogger;
@@ -48,6 +49,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
   let realtimeReady = false;
   let ttsQueue = Promise.resolve();
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
+  const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
   const resolved = resolveMeetingRealtimeTranscriptionProvider({
     config: params.config,
     fullConfig: params.fullConfig,
@@ -134,6 +136,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
         const result = await params.runtime.tts.textToSpeechTelephony({
           text: normalized,
           cfg: params.fullConfig,
+          ...(ttsAgentId ? { agentId: ttsAgentId } : {}),
+          ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
+          ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
         });
         if (!result.success || !result.audioBuffer || !result.sampleRate) {
           throw new Error(result.error ?? "TTS conversion failed");
