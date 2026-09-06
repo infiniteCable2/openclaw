@@ -6,11 +6,11 @@ import { threadId } from "node:worker_threads";
 import { resolveGlobalMap, resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
 import { sha256HexPrefixCore } from "./crypto-digest.js";
-import { tryAcquireExclusiveSqliteCoordinator } from "./node-sqlite.js";
 import {
   ensurePrivateSqliteCoordinatorDirectory,
   runWithSqliteCoordinator,
   SqliteCoordinatorError,
+  tryAcquireExclusiveSqliteCoordinator,
 } from "./sqlite-coordinator.js";
 
 const HELD_COORDINATORS_KEY = Symbol.for("openclaw.stateDatabaseCoordinator.held.v1");
