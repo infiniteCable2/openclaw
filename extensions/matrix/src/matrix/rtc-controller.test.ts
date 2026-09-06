@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
+import { EventType } from "matrix-js-sdk/lib/@types/event.js";
+import { ClientEvent } from "matrix-js-sdk/lib/client.js";
 import { MatrixRTCSessionEvent } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
 import { RTC_SLOT_ENCRYPTION_PER_MEMBER } from "matrix-js-sdk/lib/matrixrtc/types.js";
+import { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -34,6 +37,7 @@ vi.mock("./rtc-media-transport.js", () => ({
 }));
 
 import { registerMatrixRtcController } from "./rtc-controller.js";
+import { createMatrixRtcClientFacade } from "./sdk/matrix-rtc.js";
 
 const roomId = "!owner-room:example.test";
 const ownerId = "@owner:example.test";
@@ -95,37 +99,46 @@ describe("registerMatrixRtcController", () => {
         );
       }),
     };
-    let sessionStarted: ((roomId: string, session: unknown) => void) | undefined;
-    let sessionEnded: ((roomId: string, session: unknown) => void) | undefined;
-    let roomAvailable: ((roomId: string) => void) | undefined;
-    let rtcMembershipEvent: ((roomId: string) => void) | undefined;
     let roomKnown = false;
-    const matrixRtc = {
-      onSessionStarted: vi.fn((listener) => {
-        sessionStarted = listener;
-        return vi.fn();
-      }),
-      onSessionEnded: vi.fn((listener) => {
-        sessionEnded = listener;
-        return vi.fn();
-      }),
-      onRoomAvailable: vi.fn((listener) => {
-        roomAvailable = listener;
-        return vi.fn();
-      }),
-      onRtcMembershipEvent: vi.fn((listener) => {
-        rtcMembershipEvent = listener;
-        return vi.fn();
-      }),
-      getRoomSession: vi.fn(() => (roomKnown ? session : undefined)),
-      getJoinedUserIds: vi.fn(() => [ownerId, selfId]),
-      getOpenIdToken: vi.fn(async () => ({ access_token: "openid-token" })),
-      getPreferredLivekitTransport: vi.fn(async () => ({
-        type: "livekit",
-        livekit_service_url: "https://rtc.example.test",
-      })),
-      getSelfIdentity: vi.fn(() => ({ userId: selfId, deviceId: "NOVADEVICE" })),
+    const room = {
+      roomId,
+      getJoinedMembers: vi.fn(() => [{ userId: ownerId }, { userId: selfId }]),
     };
+    const sdkEmitter = new EventEmitter();
+    const managerEmitter = new EventEmitter();
+    const getRoomSession = vi.fn(() => session);
+    const sdkClient = {
+      on: sdkEmitter.on.bind(sdkEmitter),
+      off: sdkEmitter.off.bind(sdkEmitter),
+      matrixRTC: {
+        on: managerEmitter.on.bind(managerEmitter),
+        off: managerEmitter.off.bind(managerEmitter),
+        getRoomSession,
+      },
+      getRoom: vi.fn((candidateRoomId: string) =>
+        roomKnown && candidateRoomId === roomId ? room : null,
+      ),
+      getOpenIdToken: vi.fn(async () => ({ access_token: "openid-token" })),
+      _unstable_getRTCTransports: vi.fn(async () => [
+        {
+          type: "livekit",
+          livekit_service_url: "https://rtc.example.test",
+        },
+      ]),
+      getUserId: vi.fn(() => selfId),
+      getDeviceId: vi.fn(() => "NOVADEVICE"),
+    };
+    const matrixRtc = createMatrixRtcClientFacade(sdkClient as never);
+    const stickyMembershipEvent = (candidateRoomId: string) =>
+      new MatrixEvent({
+        type: EventType.RTCMembership,
+        room_id: candidateRoomId,
+        sender: ownerId,
+        origin_server_ts: Date.now(),
+        content: {},
+        msc4354_sticky: { duration_ms: 60_000 },
+      });
+
     const controller = registerMatrixRtcController({
       client: {
         matrixRtc,
@@ -162,20 +175,21 @@ describe("registerMatrixRtcController", () => {
     });
 
     controller.startExisting();
-    expect(matrixRtc.getRoomSession).toHaveBeenCalledWith(roomId);
-    expect(sessionStarted).toBeTypeOf("function");
-    expect(sessionEnded).toBeTypeOf("function");
-    expect(roomAvailable).toBeTypeOf("function");
-    expect(rtcMembershipEvent).toBeTypeOf("function");
+    expect(sdkClient.getRoom).toHaveBeenCalledWith(roomId);
+    expect(managerEmitter.listenerCount("session_started")).toBe(1);
+    expect(managerEmitter.listenerCount("session_ended")).toBe(1);
+    expect(sdkEmitter.listenerCount(ClientEvent.Room)).toBe(1);
+    expect(sdkEmitter.listenerCount(ClientEvent.Event)).toBe(1);
 
-    rtcMembershipEvent?.("!other-room:example.test");
-    expect(matrixRtc.getRoomSession).toHaveBeenCalledTimes(1);
+    sdkEmitter.emit(ClientEvent.Event, stickyMembershipEvent("!other-room:example.test"));
+    expect(sdkClient.getRoom).toHaveBeenCalledTimes(1);
 
     roomKnown = true;
     session.memberships = [remoteMembership];
-    rtcMembershipEvent?.(roomId);
+    sdkEmitter.emit(ClientEvent.Event, stickyMembershipEvent(roomId));
     await flushPromises();
 
+    expect(getRoomSession).toHaveBeenCalledWith(room);
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
     expect(mocks.createMatrixRtcMediaTransport).toHaveBeenCalledOnce();
     expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
