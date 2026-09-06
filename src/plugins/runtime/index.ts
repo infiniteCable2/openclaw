@@ -22,6 +22,10 @@ import {
   listRuntimeVideoGenerationProviders,
 } from "../../video-generation/runtime.js";
 import { listWebSearchProviders, runWebSearch } from "../../web-search/runtime.js";
+import {
+  resolveNativePluginModelAuth,
+  resolveNativePluginModelConfig,
+} from "../loader-runtime-load.js";
 import { createRuntimeAgent } from "./runtime-agent.js";
 import { createRuntimeBase } from "./runtime-base.js";
 import { defineCachedValue } from "./runtime-cache.js";
@@ -37,9 +41,6 @@ const loadTtsRuntime = createLazyRuntimeModule(() => import("../../plugin-sdk/tt
 const loadTtsRequestRuntime = createLazyRuntimeModule(() => import("./runtime-tts-request.js"));
 const loadMediaUnderstandingRuntime = createLazyRuntimeModule(
   () => import("../../media-understanding/runtime.js"),
-);
-const loadModelAuthRuntime = createLazyRuntimeModule(
-  () => import("./runtime-model-auth.runtime.js"),
 );
 const loadGatewayPluginRuntime = createLazyRuntimeModule(
   () => import("../../gateway/server-plugins.js"),
@@ -135,41 +136,6 @@ function createRuntimeLlmFacade(): PluginRuntime["llm"] {
       const llm = await loadLlm();
       return llm.complete(params);
     },
-  };
-}
-
-function createRuntimeModelAuth(): PluginRuntime["modelAuth"] {
-  const getApiKeyForModel = createLazyRuntimeMethod(
-    loadModelAuthRuntime,
-    (runtime) => runtime.getApiKeyForModel,
-  );
-  const getRuntimeAuthForModel = createLazyRuntimeMethod(
-    loadModelAuthRuntime,
-    (runtime) => runtime.getRuntimeAuthForModelCore,
-  );
-  const resolveApiKeyForProvider = createLazyRuntimeMethod(
-    loadModelAuthRuntime,
-    (runtime) => runtime.resolveProviderRuntimeApiKey,
-  );
-  return {
-    getApiKeyForModel: (params) =>
-      getApiKeyForModel({
-        model: params.model,
-        cfg: params.cfg,
-        workspaceDir: params.workspaceDir,
-      }),
-    getRuntimeAuthForModel: (params) =>
-      getRuntimeAuthForModel({
-        model: params.model,
-        cfg: params.cfg,
-        workspaceDir: params.workspaceDir,
-      }),
-    resolveApiKeyForProvider: (params) =>
-      resolveApiKeyForProvider({
-        provider: params.provider,
-        cfg: params.cfg,
-        workspaceDir: params.workspaceDir,
-      }),
   };
 }
 
@@ -306,6 +272,7 @@ export const createPluginRuntime: PluginRuntimeFactory = (
     | "tts"
     | "mediaUnderstanding"
     | "modelAuth"
+    | "modelConfig"
     | "imageGeneration"
     | "videoGeneration"
     | "musicGeneration"
@@ -317,6 +284,7 @@ export const createPluginRuntime: PluginRuntimeFactory = (
         | "tts"
         | "mediaUnderstanding"
         | "modelAuth"
+        | "modelConfig"
         | "imageGeneration"
         | "videoGeneration"
         | "musicGeneration"
@@ -326,7 +294,16 @@ export const createPluginRuntime: PluginRuntimeFactory = (
 
   defineCachedValue(runtime, "tts", createRuntimeTts);
   defineCachedValue(runtime, "mediaUnderstanding", () => mediaUnderstanding);
-  defineCachedValue(runtime, "modelAuth", createRuntimeModelAuth);
+  defineCachedValue(
+    runtime,
+    "modelAuth",
+    () => _options.modelAuth ?? resolveNativePluginModelAuth(),
+  );
+  defineCachedValue(
+    runtime,
+    "modelConfig",
+    () => _options.modelConfig ?? resolveNativePluginModelConfig(),
+  );
   defineCachedValue(runtime, "imageGeneration", createRuntimeImageGeneration);
   defineCachedValue(runtime, "videoGeneration", createRuntimeVideoGeneration);
   defineCachedValue(runtime, "musicGeneration", createRuntimeMusicGeneration);

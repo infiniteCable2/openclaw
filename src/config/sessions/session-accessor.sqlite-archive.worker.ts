@@ -7,11 +7,11 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { parentPort, workerData } from "node:worker_threads";
 import zlib from "node:zlib";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import {
-  isStateDatabaseCoordinatorWorkerAuthority,
-  runWithStateDatabaseCoordinatorWorkerAuthority,
-} from "../../infra/state-database-coordinator.js";
+  executeSqliteQuerySync,
+  getNodeSqliteKysely,
+  iterateSqliteQuerySync,
+} from "../../infra/kysely-sync.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
@@ -180,18 +180,22 @@ function parseWorkerPlans(value: unknown): TranscriptArchiveWorkerPlan[] | undef
 }
 
 function stageTranscriptArchiveContent(
-  database: import("node:sqlite").DatabaseSync,
+  database: DatabaseSync,
   sessionId: string,
   stagedPath: string,
 ): number {
   const fd = fs.openSync(stagedPath, "wx", 0o600);
   let rowCount = 0;
   try {
-    const query = "SELECT event_json FROM transcript_events WHERE session_id = ? ORDER BY seq ASC";
-    const rows = database /* sqlite-allow-raw: the iterator keeps one row in memory at a time. */
-      .prepare(query)
-      .iterate(sessionId);
-    for (const row of rows) {
+    const db = getNodeSqliteKysely<TranscriptArchiveDatabase>(database);
+    for (const row of iterateSqliteQuerySync(
+      database,
+      db
+        .selectFrom("transcript_events")
+        .select("event_json")
+        .where("session_id", "=", sessionId)
+        .orderBy("seq", "asc"),
+    )) {
       if (typeof row.event_json !== "string") {
         throw new Error(`Invalid transcript event row for ${sessionId}`);
       }
@@ -484,19 +488,7 @@ if (isSqliteTranscriptArchiveWorkerData(workerData)) {
     runPublishWorkerPort(parentPort, plans);
   } else if (operation === "reclaim") {
     // SAFETY: the parent creates this internal structured-clone payload from the typed plan.
-    const data = workerData as SqliteSessionReclamationWorkerData;
-    const port = parentPort;
-    const authority = data.stateCoordinatorAuthority;
-    if (authority !== undefined && !isStateDatabaseCoordinatorWorkerAuthority(authority)) {
-      throw new Error("SQLite session reclamation Worker received invalid lifecycle authority");
-    }
-    if (authority) {
-      await runWithStateDatabaseCoordinatorWorkerAuthority(authority, () =>
-        runReclamationWorkerPort(port, data),
-      );
-    } else {
-      await runReclamationWorkerPort(port, data);
-    }
+    await runReclamationWorkerPort(parentPort, workerData as SqliteSessionReclamationWorkerData);
   } else {
     throw new Error("SQLite transcript archive worker requires a supported operation");
   }
