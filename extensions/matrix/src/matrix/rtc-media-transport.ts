@@ -9,6 +9,10 @@ import type { MeetingRealtimeAudioTransport } from "openclaw/plugin-sdk/meeting-
 const CONTROL_LINE_LIMIT = 128 * 1024;
 const START_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 5_000;
+const OUTPUT_FRAME_MAGIC = Buffer.from("OCAP", "ascii");
+const OUTPUT_FRAME_VERSION = 1;
+const OUTPUT_FRAME_HEADER_BYTES = 20;
+const OUTPUT_PCM_FRAME_BYTES = 480;
 
 export type MatrixRtcMediaKey = {
   participantIdentity: string;
@@ -19,8 +23,24 @@ export type MatrixRtcMediaKey = {
 type ControlEvent =
   | { type: "ready" }
   | { type: "connected" }
+  | { type: "output_cleared"; generation: number }
   | { type: "stopped" }
   | { type: "fatal"; code?: string };
+
+export function encodeMatrixRtcOutputFrame(generation: number, audio: Buffer): Buffer {
+  if (!Number.isSafeInteger(generation) || generation < 0) {
+    throw new Error("MatrixRTC media output generation is invalid");
+  }
+  if (audio.byteLength === 0 || audio.byteLength > OUTPUT_PCM_FRAME_BYTES || audio.byteLength % 2) {
+    throw new Error("MatrixRTC media output frame is invalid");
+  }
+  const header = Buffer.alloc(OUTPUT_FRAME_HEADER_BYTES);
+  OUTPUT_FRAME_MAGIC.copy(header, 0);
+  header.writeUInt8(OUTPUT_FRAME_VERSION, 4);
+  header.writeBigUInt64BE(BigInt(generation), 8);
+  header.writeUInt32BE(audio.byteLength, 16);
+  return Buffer.concat([header, audio]);
+}
 
 function wireKey(key: MatrixRtcMediaKey) {
   return {
@@ -95,7 +115,7 @@ async function connectControlSocket(
   throw new Error("MatrixRTC media bridge control socket timed out");
 }
 
-class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransport {
+export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransport {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #control: net.Socket;
   readonly #tempDir: string;
@@ -111,6 +131,8 @@ class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransport {
   #stopping = false;
   #stopped = false;
   #inputStarted = false;
+  #outputGeneration = 0;
+  #clearTail = Promise.resolve();
 
   constructor(params: {
     child: ChildProcessWithoutNullStreams;
@@ -246,17 +268,60 @@ class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransport {
     if (this.#fatal || this.#stopped || !this.#child.stdin.writable) {
       throw new Error("MatrixRTC media output is unavailable");
     }
-    if (!this.#child.stdin.write(audio)) {
-      await new Promise<void>((resolve, reject) => {
-        this.#child.stdin.once("drain", resolve);
-        this.#child.stdin.once("error", reject);
-      });
+    if (audio.byteLength % 2) {
+      throw new Error("MatrixRTC media output must contain complete PCM16 samples");
+    }
+    await this.#clearTail;
+    const generation = this.#outputGeneration;
+    for (let offset = 0; offset < audio.byteLength; offset += OUTPUT_PCM_FRAME_BYTES) {
+      if (generation !== this.#outputGeneration || this.#fatal || this.#stopped) {
+        return;
+      }
+      const payload = audio.subarray(
+        offset,
+        Math.min(offset + OUTPUT_PCM_FRAME_BYTES, audio.length),
+      );
+      const frame = encodeMatrixRtcOutputFrame(generation, payload);
+      if (!this.#child.stdin.write(frame)) {
+        await new Promise<void>((resolve, reject) => {
+          const onDrain = () => {
+            this.#child.stdin.off("error", onError);
+            resolve();
+          };
+          const onError = (error: Error) => {
+            this.#child.stdin.off("drain", onDrain);
+            reject(error);
+          };
+          this.#child.stdin.once("drain", onDrain);
+          this.#child.stdin.once("error", onError);
+        });
+      }
     }
   }
 
   async clearOutput(): Promise<void> {
-    // The native bridge writes 10 ms LiveKit frames and does not retain an
-    // application-level playback queue. Already published frames cannot be recalled.
+    if (this.#fatal || this.#stopped) {
+      return;
+    }
+    this.#outputGeneration += 1;
+    const generation = this.#outputGeneration;
+    const clear = this.#clearTail.then(async () => {
+      if (this.#fatal || this.#stopped) {
+        return;
+      }
+      this.sendControl({ type: "clear_output", generation });
+      const event = await this.waitForControlEvent("output_cleared");
+      if (event.type !== "output_cleared" || event.generation !== generation) {
+        throw new Error("MatrixRTC media bridge acknowledged the wrong output generation");
+      }
+    });
+    this.#clearTail = clear;
+    try {
+      await clear;
+    } catch (error) {
+      this.#markFatal();
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
@@ -264,6 +329,7 @@ class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransport {
       return;
     }
     this.#stopping = true;
+    this.#outputGeneration += 1;
     try {
       if (!this.#fatal && !this.#control.destroyed) {
         this.sendControl({ type: "stop" });
