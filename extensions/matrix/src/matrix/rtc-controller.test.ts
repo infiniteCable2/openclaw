@@ -98,6 +98,7 @@ describe("registerMatrixRtcController", () => {
     let sessionStarted: ((roomId: string, session: unknown) => void) | undefined;
     let sessionEnded: ((roomId: string, session: unknown) => void) | undefined;
     let roomAvailable: ((roomId: string) => void) | undefined;
+    let rtcMembershipEvent: ((roomId: string) => void) | undefined;
     let roomKnown = false;
     const matrixRtc = {
       onSessionStarted: vi.fn((listener) => {
@@ -110,6 +111,10 @@ describe("registerMatrixRtcController", () => {
       }),
       onRoomAvailable: vi.fn((listener) => {
         roomAvailable = listener;
+        return vi.fn();
+      }),
+      onRtcMembershipEvent: vi.fn((listener) => {
+        rtcMembershipEvent = listener;
         return vi.fn();
       }),
       getRoomSession: vi.fn(() => (roomKnown ? session : undefined)),
@@ -161,11 +166,14 @@ describe("registerMatrixRtcController", () => {
     expect(sessionStarted).toBeTypeOf("function");
     expect(sessionEnded).toBeTypeOf("function");
     expect(roomAvailable).toBeTypeOf("function");
+    expect(rtcMembershipEvent).toBeTypeOf("function");
+
+    rtcMembershipEvent?.("!other-room:example.test");
+    expect(matrixRtc.getRoomSession).toHaveBeenCalledTimes(1);
 
     roomKnown = true;
-    roomAvailable?.(roomId);
     session.memberships = [remoteMembership];
-    emitter.emit(MatrixRTCSessionEvent.MembershipsChanged, [], session.memberships);
+    rtcMembershipEvent?.(roomId);
     await flushPromises();
 
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
