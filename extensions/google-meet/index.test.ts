@@ -6472,6 +6472,7 @@ describe("google-meet plugin", () => {
     expect(runtime.tts.textToSpeechTelephony).toHaveBeenCalledWith({
       text: "Use the Portugal launch data.",
       cfg: {},
+      agentId: "jay",
     });
     expect(noopLogger.info).toHaveBeenCalledWith(
       "[google-meet] agent TTS: provider=elevenlabs model=eleven_multilingual_v2 voice=pMsXgVXv3BLzUgSXRplE outputFormat=pcm16 sampleRate=24000",

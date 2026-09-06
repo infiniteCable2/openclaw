@@ -385,6 +385,51 @@ describe("TTS runtime persona behavior", () => {
     expect(telephonyRequest).not.toHaveProperty("target");
   });
 
+  it("applies agent-scoped persona bindings to telephony synthesis", async () => {
+    const synthesizeTelephonyMock = vi.fn(async (_request: SpeechTelephonySynthesisRequest) => ({
+      audioBuffer: Buffer.from("voice"),
+      outputFormat: "pcm",
+      sampleRate: 24_000,
+    }));
+    installSpeechProviders([
+      createMockSpeechProvider("mock", {
+        synthesizeTelephony: synthesizeTelephonyMock,
+      }),
+    ]);
+
+    const result = await textToSpeechTelephony({
+      text: "Use the agent's telephony voice.",
+      agentId: "reader",
+      channelId: "matrix",
+      accountId: "personal",
+      cfg: {
+        tts: {
+          enabled: true,
+          provider: "mock",
+          persona: "default",
+          personas: {
+            default: { providers: { mock: { voice: "default-voice" } } },
+            narrator: { providers: { mock: { voice: "agent-voice" } } },
+          },
+        },
+        agents: {
+          list: [{ id: "reader", tts: { persona: "narrator" } }],
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.persona).toBe("narrator");
+    expect(result.providerVoice).toBe("agent-voice");
+    const telephonyRequest = requireRecord(
+      requireFirstCallParam(synthesizeTelephonyMock.mock.calls, "agent telephony synthesis"),
+      "agent telephony synthesis request",
+    );
+    expect(telephonyRequest.providerConfig).toEqual(
+      expect.objectContaining({ voice: "agent-voice" }),
+    );
+  });
+
   it("uses provider defaults when fallback policy allows missing persona bindings", async () => {
     await synthesizeSpeech({
       text: "Use neutral provider defaults.",

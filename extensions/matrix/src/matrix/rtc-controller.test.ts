@@ -249,6 +249,15 @@ describe("registerMatrixRtcController", () => {
     );
     expect(mocks.createMatrixRtcMediaTransport).toHaveBeenCalledOnce();
     expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
+    expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ttsContext: {
+          agentId: "example_owner",
+          channelId: "matrix",
+          accountId: "default",
+        },
+      }),
+    );
 
     await harness.controller.stop();
   });

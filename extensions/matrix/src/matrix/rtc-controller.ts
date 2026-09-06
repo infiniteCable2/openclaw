@@ -444,6 +444,11 @@ export function registerMatrixRtcController(params: {
           platform: bindings.platform,
           meetingSessionId: randomUUID(),
           requesterSessionKey: route.sessionKey,
+          ttsContext: {
+            agentId: admission.agentId,
+            channelId: "matrix",
+            accountId: params.accountId,
+          },
           transport: mediaTransport,
           logger: params.logger,
           consultAgent: bindings.consultAgent,

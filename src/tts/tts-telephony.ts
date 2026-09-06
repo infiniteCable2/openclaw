@@ -10,6 +10,9 @@ export async function textToSpeechTelephony(params: {
   prefsPath?: string;
   overrides?: TtsDirectiveOverrides;
   timeoutMs?: number;
+  agentId?: string;
+  channelId?: string;
+  accountId?: string;
 }): Promise<TtsTelephonyResult> {
   assertSpeechRuntimeAvailable();
   const setup = resolveTtsRequestSetup({
@@ -17,6 +20,9 @@ export async function textToSpeechTelephony(params: {
     cfg: params.cfg,
     prefsPath: params.prefsPath,
     providerOverride: params.overrides?.provider,
+    agentId: params.agentId,
+    channelId: params.channelId,
+    accountId: params.accountId,
   });
   if ("error" in setup) {
     return { success: false, error: setup.error };
