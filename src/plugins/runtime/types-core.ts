@@ -15,6 +15,8 @@ type PrepareTtsRequest = (
 ) => Promise<ReturnType<TtsRuntimeApi["prepareTtsRequest"]>>;
 type TextToSpeech = typeof import("../../tts/tts.js").textToSpeech;
 type TextToSpeechStream = TtsRuntimeApi["textToSpeechStream"];
+type PrepareTextToSpeechTelephony = TtsRuntimeApi["prepareTextToSpeechTelephony"];
+type StreamTextToSpeechTelephony = TtsRuntimeApi["streamTextToSpeechTelephony"];
 type TextToSpeechTelephony = TtsRuntimeApi["textToSpeechTelephony"];
 
 type RuntimeRequestHeartbeatOptions = Parameters<
@@ -440,6 +442,8 @@ export type PluginRuntimeCore = {
   };
   tts: {
     prepareTtsRequest: PrepareTtsRequest;
+    prepareTextToSpeechTelephony: PrepareTextToSpeechTelephony;
+    streamTextToSpeechTelephony: StreamTextToSpeechTelephony;
     textToSpeech: TextToSpeech;
     textToSpeechStream: TextToSpeechStream;
     textToSpeechTelephony: TextToSpeechTelephony;

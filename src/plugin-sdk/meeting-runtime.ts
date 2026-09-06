@@ -11,7 +11,11 @@ export {
   type MeetingRealtimeToolCallParams,
   type MeetingRuntimePlatform,
 } from "../meeting-bot/realtime-engine.js";
-export { startMeetingAgentRealtimeEngine } from "../meeting-bot/realtime-agent-engine.js";
+export {
+  prepareMeetingAgentRealtimeEngine,
+  startMeetingAgentRealtimeEngine,
+  type MeetingAgentRealtimePreparation,
+} from "../meeting-bot/realtime-agent-engine.js";
 export {
   type MeetingRealtimeAudioTransport,
   type MeetingRealtimeAudioTransportHealth,

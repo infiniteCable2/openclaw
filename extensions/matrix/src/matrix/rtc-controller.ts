@@ -7,7 +7,9 @@ import {
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   createMeetingRealtimeEngineBindings,
+  prepareMeetingAgentRealtimeEngine,
   startMeetingAgentRealtimeEngine,
+  type MeetingAgentRealtimePreparation,
   type MeetingRealtimeAudioEngineHandle,
   type MeetingRealtimeAudioTransport,
 } from "openclaw/plugin-sdk/meeting-runtime";
@@ -54,6 +56,7 @@ const MATRIX_RTC_PLATFORM = {
 type ActiveCall = {
   abort: AbortController;
   engine?: MeetingRealtimeAudioEngineHandle;
+  preparation?: MeetingAgentRealtimePreparation;
   transport?: MeetingRealtimeAudioTransport;
   session: MatrixRTCSession;
   joined: boolean;
@@ -111,8 +114,12 @@ async function stopCall(call: ActiveCall): Promise<void> {
       await call.transport.dispose();
     }
   } finally {
-    if (call.joined) {
-      await call.session.leaveRoomSession(LEAVE_TIMEOUT_MS).catch(() => false);
+    try {
+      if (call.joined) {
+        await call.session.leaveRoomSession(LEAVE_TIMEOUT_MS).catch(() => false);
+      }
+    } finally {
+      await call.preparation?.release();
     }
   }
 }
@@ -271,6 +278,27 @@ export function registerMatrixRtcController(params: {
           throw new Error("MatrixRTC compatibility transport is missing its LiveKit alias");
         }
         params.logger.info("matrix rtc: transport verified");
+
+        call.preparation = await prepareMeetingAgentRealtimeEngine({
+          config: {
+            chrome: { audioFormat: "pcm16-24khz" },
+            realtime: {
+              strategy: "agent",
+              agentId: admission.agentId,
+              transcriptionProvider: params.config.transcriptionProvider,
+              providers: params.config.providers,
+            },
+          },
+          fullConfig: params.cfg,
+          runtime: params.runtime,
+          ttsContext: {
+            agentId: admission.agentId,
+            channelId: "matrix",
+            accountId: params.accountId,
+          },
+          signal: abort.signal,
+        });
+        params.logger.info("matrix rtc: speech providers ready");
 
         const ownMembership: MatrixRtcMembershipIdentity = {
           ...self,

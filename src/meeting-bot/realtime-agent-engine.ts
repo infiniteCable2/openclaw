@@ -29,6 +29,67 @@ import {
   type MeetingRuntimePlatform,
 } from "./realtime-engine.js";
 
+const MEETING_AGENT_READINESS_TIMEOUT_MS = 120_000;
+
+export type MeetingAgentRealtimePreparation = {
+  release(): Promise<void>;
+};
+
+export async function prepareMeetingAgentRealtimeEngine(params: {
+  config: MeetingRealtimeEngineConfig;
+  fullConfig: OpenClawConfig;
+  runtime: PluginRuntime;
+  ttsContext?: { agentId?: string; channelId?: string; accountId?: string };
+  providers?: RealtimeTranscriptionProviderPlugin[];
+  signal?: AbortSignal;
+}): Promise<MeetingAgentRealtimePreparation> {
+  const resolved = resolveMeetingRealtimeTranscriptionProvider({
+    config: params.config,
+    fullConfig: params.fullConfig,
+    providers: params.providers,
+  });
+  const timeoutSignal = AbortSignal.timeout(MEETING_AGENT_READINESS_TIMEOUT_MS);
+  const signal = params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal;
+  const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
+  const sttPromise = resolved.provider.prepareSession?.({
+    cfg: params.fullConfig,
+    providerConfig: resolved.providerConfig,
+    signal,
+  });
+  const ttsPromise = params.runtime.tts.prepareTextToSpeechTelephony({
+    cfg: params.fullConfig,
+    signal,
+    ...(ttsAgentId ? { agentId: ttsAgentId } : {}),
+    ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
+    ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
+  });
+  const [sttResult, ttsResult] = await Promise.allSettled([sttPromise, ttsPromise]);
+  const releases: Array<() => void | Promise<void>> = [];
+  if (sttResult.status === "fulfilled" && sttResult.value) {
+    const sttPreparation = sttResult.value;
+    releases.push(() => sttPreparation.release());
+  }
+  if (ttsResult.status === "fulfilled" && ttsResult.value.release) {
+    releases.push(ttsResult.value.release);
+  }
+  const release = async () => {
+    await Promise.allSettled(releases.splice(0).map(async (releaseResource) => releaseResource()));
+  };
+  if (sttResult.status === "rejected") {
+    await release();
+    throw sttResult.reason;
+  }
+  if (ttsResult.status === "rejected") {
+    await release();
+    throw ttsResult.reason;
+  }
+  if (!ttsResult.value.success) {
+    await release();
+    throw new Error(ttsResult.value.error ?? "TTS telephony preparation failed");
+  }
+  return { release };
+}
+
 export async function startMeetingAgentRealtimeEngine(params: {
   config: MeetingRealtimeEngineConfig;
   fullConfig: OpenClawConfig;
@@ -48,6 +109,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
   let sttSession: RealtimeTranscriptionSession | null = null;
   let realtimeReady = false;
   let ttsQueue = Promise.resolve();
+  let activeTtsAbort: AbortController | undefined;
+  let activeTtsReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
   const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
   const resolved = resolveMeetingRealtimeTranscriptionProvider({
@@ -71,6 +134,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
     }
     stopped = true;
     stopPromise = (async () => {
+      activeTtsAbort?.abort(new Error("Meeting audio output stopped"));
+      await activeTtsReader?.cancel().catch(() => undefined);
+      await ttsQueue;
       harness.close();
       try {
         sttSession?.close();
@@ -101,11 +167,19 @@ export async function startMeetingAgentRealtimeEngine(params: {
     });
   };
 
-  const writeOutputAudio = async (audio: Buffer) => {
-    params.transport.beginOutput?.();
-    harness.outputActivity.markPlaybackStarted();
+  const writeOutputAudio = async (audio: Buffer, firstChunk: boolean) => {
+    if (firstChunk) {
+      params.transport.beginOutput?.();
+      harness.outputActivity.markPlaybackStarted();
+    }
     harness.recordOutputAudio(audio);
     await params.transport.writeOutput(audio);
+  };
+
+  const cancelActiveSpeech = () => {
+    activeTtsAbort?.abort(new Error("Meeting caller started speaking"));
+    void activeTtsReader?.cancel().catch(() => undefined);
+    void params.transport.clearOutput().catch(() => undefined);
   };
 
   const enqueueSpeakText = (text: string | undefined) => {
@@ -133,30 +207,64 @@ export async function startMeetingAgentRealtimeEngine(params: {
           final: true,
           payload: { meetingSessionId: params.meetingSessionId, text: normalized },
         });
-        const result = await params.runtime.tts.textToSpeechTelephony({
+        const controller = new AbortController();
+        activeTtsAbort = controller;
+        const result = await params.runtime.tts.streamTextToSpeechTelephony({
           text: normalized,
           cfg: params.fullConfig,
+          signal: controller.signal,
           ...(ttsAgentId ? { agentId: ttsAgentId } : {}),
           ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
           ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
         });
-        if (!result.success || !result.audioBuffer || !result.sampleRate) {
+        if (!result.success || !result.audioStream || !result.sampleRate) {
           throw new Error(result.error ?? "TTS conversion failed");
         }
         params.logger.info(
           formatMeetingAgentTtsResultLog(params.platform.logScope, agentLogScope, result),
         );
-        await writeOutputAudio(
-          convertMeetingTtsAudioForBridge(
-            result.audioBuffer,
-            result.sampleRate,
-            params.config.chrome.audioFormat,
-            result.outputFormat,
-            params.platform.displayName,
-          ),
-        );
-        harness.finishOutputAudio("completed");
-        harness.endTurn();
+        const reader = result.audioStream.getReader();
+        activeTtsReader = reader;
+        let firstChunk = true;
+        let bytesWritten = 0;
+        try {
+          for (;;) {
+            if (stopped) {
+              break;
+            }
+            const chunk = await reader.read();
+            if (chunk.done) {
+              break;
+            }
+            if (chunk.value.byteLength === 0) {
+              continue;
+            }
+            const output = convertMeetingTtsAudioForBridge(
+              Buffer.from(chunk.value),
+              result.sampleRate,
+              params.config.chrome.audioFormat,
+              result.outputFormat,
+              params.platform.displayName,
+            );
+            await writeOutputAudio(output, firstChunk);
+            firstChunk = false;
+            bytesWritten += output.byteLength;
+          }
+          if (bytesWritten === 0 && !stopped) {
+            throw new Error("TTS provider returned an empty audio stream");
+          }
+          harness.finishOutputAudio(stopped ? "cancelled" : "completed");
+          harness.endTurn(stopped ? "cancelled" : undefined);
+        } finally {
+          if (activeTtsReader === reader) {
+            activeTtsReader = undefined;
+          }
+          reader.releaseLock();
+          await result.release?.();
+          if (activeTtsAbort === controller) {
+            activeTtsAbort = undefined;
+          }
+        }
       })
       .catch((error: unknown) => {
         // TTS and sink failures happen after a turn, and sometimes output, has started.
@@ -231,6 +339,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
     sttSession = resolved.provider.createSession({
       cfg: params.fullConfig,
       providerConfig: resolved.providerConfig,
+      onSpeechStart: cancelActiveSpeech,
       onTranscript: (text) => {
         const trimmed = text.trim();
         if (!trimmed || stopped) {

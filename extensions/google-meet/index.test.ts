@@ -6419,9 +6419,14 @@ describe("google-meet plugin", () => {
     const sessionStore: Record<string, unknown> = {};
     const runtime = {
       tts: {
-        textToSpeechTelephony: vi.fn(async () => ({
+        streamTextToSpeechTelephony: vi.fn(async () => ({
           success: true,
-          audioBuffer: Buffer.from([1, 0, 2, 0]),
+          audioStream: new ReadableStream({
+            start(controller) {
+              controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+              controller.close();
+            },
+          }),
           sampleRate: 24_000,
           provider: "elevenlabs",
           providerModel: "eleven_multilingual_v2",
@@ -6469,11 +6474,14 @@ describe("google-meet plugin", () => {
     expect(Buffer.isBuffer(audioChunk)).toBe(true);
     expect(audioChunk.byteLength).toBeGreaterThan(0);
     expect(runtime.agent.runEmbeddedAgent).toHaveBeenCalled();
-    expect(runtime.tts.textToSpeechTelephony).toHaveBeenCalledWith({
-      text: "Use the Portugal launch data.",
-      cfg: {},
-      agentId: "jay",
-    });
+    expect(runtime.tts.streamTextToSpeechTelephony).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Use the Portugal launch data.",
+        cfg: {},
+        agentId: "jay",
+        signal: expect.any(AbortSignal),
+      }),
+    );
     expect(noopLogger.info).toHaveBeenCalledWith(
       "[google-meet] agent TTS: provider=elevenlabs model=eleven_multilingual_v2 voice=pMsXgVXv3BLzUgSXRplE outputFormat=pcm16 sampleRate=24000",
     );
@@ -6517,9 +6525,14 @@ describe("google-meet plugin", () => {
       fullConfig: {} as never,
       runtime: {
         tts: {
-          textToSpeechTelephony: vi.fn(async () => ({
+          streamTextToSpeechTelephony: vi.fn(async () => ({
             success: true,
-            audioBuffer: Buffer.from([1, 0, 2, 0]),
+            audioStream: new ReadableStream({
+              start(controller) {
+                controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+                controller.close();
+              },
+            }),
             sampleRate: 24_000,
             provider: "test",
             outputFormat: "pcm16",

@@ -6,6 +6,8 @@ import type {
   RealtimeTranscriptionProviderConfig,
   RealtimeTranscriptionProviderConfiguredContext,
   RealtimeTranscriptionProviderId,
+  RealtimeTranscriptionProviderPreparation,
+  RealtimeTranscriptionProviderPrepareRequest,
   RealtimeTranscriptionProviderResolveConfigContext,
   RealtimeTranscriptionSession,
   RealtimeTranscriptionSessionCreateRequest,
@@ -40,6 +42,8 @@ import type {
   SpeechSynthesisStreamResult,
   SpeechTelephonySynthesisRequest,
   SpeechTelephonySynthesisResult,
+  SpeechTelephonySynthesisStreamRequest,
+  SpeechTelephonySynthesisStreamResult,
   SpeechVoiceOption,
 } from "../tts/provider-types.js";
 import type { VideoGenerationProvider } from "../video-generation/types.js";
@@ -326,6 +330,9 @@ export type SpeechProviderPlugin = {
   synthesizeTelephony?: (
     req: SpeechTelephonySynthesisRequest,
   ) => Promise<SpeechTelephonySynthesisResult>;
+  streamSynthesizeTelephony?: (
+    req: SpeechTelephonySynthesisStreamRequest,
+  ) => Promise<SpeechTelephonySynthesisStreamResult>;
   listVoices?: (req: SpeechListVoicesRequest) => Promise<SpeechVoiceOption[]>;
 };
 
@@ -341,6 +348,9 @@ export type RealtimeTranscriptionProviderPlugin = {
     ctx: RealtimeTranscriptionProviderResolveConfigContext,
   ) => RealtimeTranscriptionProviderConfig;
   isConfigured: (ctx: RealtimeTranscriptionProviderConfiguredContext) => boolean;
+  prepareSession?: (
+    req: RealtimeTranscriptionProviderPrepareRequest,
+  ) => Promise<RealtimeTranscriptionProviderPreparation | undefined>;
   createSession: (req: RealtimeTranscriptionSessionCreateRequest) => RealtimeTranscriptionSession;
 };
 

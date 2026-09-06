@@ -17,6 +17,18 @@ export type RealtimeTranscriptionProviderConfiguredContext = {
   providerConfig: RealtimeTranscriptionProviderConfig;
 };
 
+/** Inputs used to make a realtime transcription provider ready before media starts. */
+export type RealtimeTranscriptionProviderPrepareRequest = {
+  cfg?: OpenClawConfig;
+  providerConfig: RealtimeTranscriptionProviderConfig;
+  signal?: AbortSignal;
+};
+
+/** Resources retained while a prepared realtime transcription session is in use. */
+export type RealtimeTranscriptionProviderPreparation = {
+  release(): void | Promise<void>;
+};
+
 /** Callback hooks emitted by realtime transcription sessions. */
 export type RealtimeTranscriptionSessionCallbacks = {
   onPartial?: (partial: string) => void;

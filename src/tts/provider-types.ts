@@ -95,6 +95,19 @@ export type SpeechTelephonySynthesisResult = {
   sampleRate: number;
 };
 
+/** Streaming telephony synthesis request with caller-owned cancellation. */
+export type SpeechTelephonySynthesisStreamRequest = SpeechTelephonySynthesisRequest & {
+  signal?: AbortSignal;
+};
+
+/** Ordered telephony audio stream plus sample-rate metadata. */
+export type SpeechTelephonySynthesisStreamResult = {
+  audioStream: ReadableStream<Uint8Array>;
+  outputFormat: string;
+  sampleRate: number;
+  release?: () => Promise<void>;
+};
+
 /** Provider hook input for applying persona/config before synthesis. */
 export type SpeechProviderPrepareSynthesisContext = {
   text: string;

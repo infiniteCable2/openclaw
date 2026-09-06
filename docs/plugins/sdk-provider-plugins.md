@@ -891,6 +891,12 @@ catalog, API-key auth, and dynamic model resolution.
         `redactProviderResponseErrorText(text, headers)` or the bounded
         `readProviderResponseErrorText(response, limitBytes, headers)` helper
         from the same SDK entrypoint.
+
+        Live transports can implement `streamSynthesizeTelephony(req)` in
+        addition to buffered `synthesizeTelephony(req)`. Each emitted chunk must
+        be an independently decodable, ordered unit in the declared telephony
+        format. Honor `req.signal`, bound the stream, and return a `release`
+        callback when provider-owned transport resources outlive setup.
       </Tab>
       <Tab title="Realtime transcription">
         Consumers can pass candidate provider IDs as the optional second argument
@@ -938,6 +944,12 @@ catalog, API-key auth, and dynamic model resolution.
           },
         });
         ```
+
+        A provider backed by a cold local worker can also implement
+        `prepareSession(req)`. OpenClaw calls this before a realtime consumer
+        accepts media; resolve only after the provider is ready, honor
+        `req.signal`, and return a lease whose `release()` keeps that readiness
+        resource alive for the session.
 
         Batch STT providers that POST multipart audio should use
         `buildAudioTranscriptionFormData(...)` from

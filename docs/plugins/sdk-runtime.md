@@ -830,6 +830,20 @@ snapshots; OpenClaw owns all persistence and lifecycle coordination.
       cfg: api.config,
     });
 
+    // Prepare the exact routed persona before accepting a live call,
+    // then consume ordered telephony audio as it is produced.
+    const ready = await api.runtime.tts.prepareTextToSpeechTelephony({
+      cfg: api.config,
+      agentId: "support",
+      signal,
+    });
+    const live = await api.runtime.tts.streamTextToSpeechTelephony({
+      text: "Hello from OpenClaw",
+      cfg: api.config,
+      agentId: "support",
+      signal,
+    });
+
     // List available voices
     const voices = await api.runtime.tts.listVoices({
       provider: "elevenlabs",
@@ -837,7 +851,10 @@ snapshots; OpenClaw owns all persistence and lifecycle coordination.
     });
     ```
 
-    Uses core `tts` configuration and provider selection. Returns PCM audio buffer + sample rate. `textToSpeechStream` is also available for streaming synthesis.
+    Uses core `tts` configuration, persona routing, and provider selection.
+    Buffered telephony returns an audio buffer plus sample rate; streaming
+    telephony returns ordered audio chunks plus sample rate. Release both the
+    preparation and stream handles when the live session ends.
 
   </Accordion>
   <Accordion title="api.runtime.mediaUnderstanding">

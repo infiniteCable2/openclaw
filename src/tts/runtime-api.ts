@@ -45,13 +45,19 @@ export {
 export { prepareTtsRequest, resolveExplicitTtsOverrides } from "./tts-request.js";
 export { streamSpeech, textToSpeechStream } from "./tts-streaming.js";
 export { synthesizeSpeech } from "./tts-synthesis.js";
-export { textToSpeechTelephony } from "./tts-telephony.js";
+export {
+  prepareTextToSpeechTelephony,
+  streamTextToSpeechTelephony,
+  textToSpeechTelephony,
+} from "./tts-telephony.js";
 export type { TtsDirectiveOverrides, TtsDirectiveParseResult } from "./provider-types.js";
 export type {
   TtsStreamResult,
   TtsSynthesisResult,
   TtsSynthesisStreamResult,
+  TtsTelephonyPreparationResult,
   TtsTelephonyResult,
+  TtsTelephonyStreamResult,
 } from "./tts-runtime-types.js";
 
 export function getTtsProvider(config: ResolvedTtsConfig, prefsPath: string): TtsProvider {
