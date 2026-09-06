@@ -274,6 +274,49 @@ Matrix uses the shared audio media provider under `tools.media.audio`, such as O
 - The attachment is marked as already transcribed so downstream media tools do not transcribe it again.
 - Set `tools.media.audio.enabled: false` to disable audio transcription globally.
 
+## MatrixRTC audio calls
+
+MatrixRTC call handling is an explicit opt-in. It uses the shared OpenClaw meeting audio engine for streaming transcription, agent turns, and queued speech output, while a separately installed native media bridge handles LiveKit audio and per-participant MatrixRTC encryption keys.
+
+```json5
+{
+  channels: {
+    matrix: {
+      rtc: {
+        enabled: true,
+        authServiceUrl: "https://rtc.example.org",
+        mediaBridgeCommand: "/usr/local/libexec/openclaw/matrix-rtc-media",
+        transcriptionProvider: "local-media",
+        providers: {
+          "local-media": {
+            baseUrl: "http://127.0.0.1:8010/v1",
+            language: "de",
+          },
+        },
+        toolPolicy: "safe-read-only",
+        admissions: [
+          {
+            roomId: "!exact-direct-room:example.org",
+            userId: "@exact-caller:example.org",
+            agentId: "personal-agent",
+          },
+        ],
+      },
+    },
+  },
+}
+```
+
+Each admission is fail-closed and requires all of the following:
+
+- the exact configured two-user DM and caller identity;
+- the same agent selected by normal Matrix routing;
+- exactly one active MatrixRTC membership for that caller;
+- per-member media encryption; and
+- both homeserver discovery and the caller membership pointing at the pinned authorization-service URL.
+
+The bridge executable must be an absolute, regular, non-symlink path and must not be group- or world-writable. Credentials and media keys are passed through a private mode-`0600` local control socket, not command-line arguments or environment variables. `toolPolicy` defaults to `"safe-read-only"`; choose `"owner"` only for an admission bound to an owner-controlled identity and room. Router, firewall, TURN, DNS, TLS, and LiveKit reachability remain deployment concerns and are not changed by this option.
+
 ## Reply controls and presentations
 
 Buttons and selection lists in agent replies include readable fallback text and
@@ -902,6 +945,7 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 - `encryption`: enable E2EE. Default: `false`.
 - `startupVerification`: `"if-unverified"` (default when E2EE is on) or `"off"`. Auto-requests self-verification on startup when this device is unverified.
 - `startupVerificationCooldownHours`: cooldown before the next automatic startup request. Default: `24`.
+- `rtc`: optional fail-closed MatrixRTC audio-call configuration. It requires a pinned `authServiceUrl`, an absolute `mediaBridgeCommand`, a registered `transcriptionProvider`, provider settings, and exact `{ roomId, userId, agentId }` admissions. Default: disabled.
 
 ### Access and policy
 

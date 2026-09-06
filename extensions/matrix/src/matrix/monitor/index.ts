@@ -36,6 +36,7 @@ import {
   resolveMatrixAuthContext,
   type SharedMatrixClientLease,
 } from "../client.js";
+import { resolveMatrixRtcConfig } from "../rtc-config.js";
 import type { MatrixClient } from "../sdk.js";
 import { isMatrixStartupAbortError } from "../startup-abort.js";
 import {
@@ -143,6 +144,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     cfg,
     accountId: effectiveAccountId,
   });
+  const rtcConfig = resolveMatrixRtcConfig(accountConfig.rtc);
 
   const allowlistOnly = accountConfig.allowlistOnly === true;
   const accountAllowBots = accountConfig.allowBots;
@@ -208,6 +210,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   let clientLease: SharedMatrixClientLease | null = null;
   let monitorLifecycleSignal = opts.abortSignal;
   let threadBindingManager: { accountId: string; stop: () => Promise<void> } | null = null;
+  let rtcController: { startExisting(): void; stop(): Promise<void> } | null = null;
   const monitorTaskRunner = createMatrixMonitorTaskRunner({
     logger,
     logVerboseMessage,
@@ -223,9 +226,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     cleanedUp = true;
     cleanupPromise = (async () => {
       try {
-        await clientLease?.release({
-          mode,
-        });
+        await rtcController?.stop();
+        await clientLease?.release({ mode });
       } finally {
         statusController.markStopped();
       }
@@ -306,7 +308,10 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       syncLifecycle?.dispose();
     },
     waitForTasks: monitorTaskRunner.waitForIdle,
-    cleanup: () => threadBindingManager?.stop(),
+    cleanup: async () => {
+      await rtcController?.stop();
+      await threadBindingManager?.stop();
+    },
   };
 
   try {
@@ -486,6 +491,20 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       runDetachedTask: monitorTaskRunner.runDetachedTask,
     });
 
+    if (rtcConfig) {
+      const { registerMatrixRtcController } = await import("../rtc-controller.js");
+      rtcController = registerMatrixRtcController({
+        client,
+        cfg,
+        accountConfig,
+        accountId: effectiveAccountId,
+        config: rtcConfig,
+        runtime: core,
+        logger,
+        abortSignal: monitorLifecycleSignal,
+      });
+    }
+
     // Register Matrix thread bindings before the client starts syncing so threaded
     // commands during startup never observe Matrix as "unavailable".
     logVerboseMessage("matrix: starting client");
@@ -495,6 +514,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       return;
     }
     logVerboseMessage("matrix: client started");
+    rtcController?.startExisting();
 
     logger.info(`matrix: logged in as ${auth.userId}`);
     void backfillMatrixAuthDeviceIdAfterStartup({

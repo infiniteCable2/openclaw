@@ -44,5 +44,26 @@ export const matrixChannelConfigUiHints = {
     label: "Matrix Display Name Matching",
     help: "Compatibility opt-in for resolving Matrix display names and joined room names in allowlists. Prefer full @user:server IDs and room IDs or aliases because names are mutable.",
   },
+  rtc: {
+    label: "MatrixRTC Audio Calls",
+    help: "Opt-in, fail-closed MatrixRTC audio calls. Each accepted call must match an exact room, user, and normal OpenClaw agent route.",
+  },
+  "rtc.authServiceUrl": {
+    label: "MatrixRTC Authorization URL",
+    help: "Pinned HTTPS authorization-service URL. It must match the LiveKit transport advertised by the homeserver.",
+  },
+  "rtc.mediaBridgeCommand": {
+    label: "MatrixRTC Media Bridge",
+    help: "Absolute path to the separately installed native LiveKit PCM/E2EE bridge.",
+  },
+  "rtc.transcriptionProvider": {
+    label: "MatrixRTC Transcription Provider",
+    help: "Registered realtime transcription provider used for inbound call audio.",
+  },
+  "rtc.toolPolicy": {
+    label: "MatrixRTC Tool Policy",
+    help: "Tool access for the configured agent during calls. Owner mode still requires an exact admitted identity and route.",
+    advanced: true,
+  },
   ...createChannelConfigUiHints({ channelLabel: "Matrix", progress: {} }),
 } satisfies Record<string, ChannelConfigUiHint>;
