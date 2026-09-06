@@ -50,7 +50,10 @@ async function flushPromises(): Promise<void> {
   });
 }
 
-function createHarness(mode: TestRtcMode, options: { emitInitialKeys?: boolean } = {}) {
+function createHarness(
+  mode: TestRtcMode,
+  options: { emitInitialKeys?: boolean; emitInitialRemoteKey?: boolean } = {},
+) {
   const emitter = new EventEmitter();
   const remoteTransport = {
     type: "livekit",
@@ -80,13 +83,15 @@ function createHarness(mode: TestRtcMode, options: { emitInitialKeys?: boolean }
       if (options.emitInitialKeys === false) {
         return;
       }
-      emitter.emit(
-        MatrixRTCSessionEvent.EncryptionKeyChanged,
-        Uint8Array.from([1]),
-        0,
-        remoteMembership,
-        remoteMembership.rtcBackendIdentity,
-      );
+      if (options.emitInitialRemoteKey !== false) {
+        emitter.emit(
+          MatrixRTCSessionEvent.EncryptionKeyChanged,
+          Uint8Array.from([1]),
+          0,
+          remoteMembership,
+          remoteMembership.rtcBackendIdentity,
+        );
+      }
       emitter.emit(
         MatrixRTCSessionEvent.EncryptionKeyChanged,
         Uint8Array.from([2]),
@@ -244,9 +249,41 @@ describe("registerMatrixRtcController", () => {
     expect(harness.session.joinRTCSession).toHaveBeenCalledWith(
       expect.any(Object),
       [harness.remoteTransport],
-      harness.remoteTransport,
+      undefined,
       expect.objectContaining({ unstableSendStickyEvents: false }),
     );
+    expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
+
+    await harness.controller.stop();
+  });
+
+  it("uses an encrypted RTC key received before the per-call SDK listener exists", async () => {
+    const harness = createHarness("compatibility", { emitInitialRemoteKey: false });
+    harness.sdkEmitter.emit(ClientEvent.ReceivedToDeviceMessage, {
+      message: {
+        type: EventType.CallEncryptionKeysPrefix,
+        sender: ownerId,
+        content: {
+          room_id: roomId,
+          keys: { index: 0, key: Buffer.alloc(16, 7).toString("base64") },
+          member: { claimed_device_id: "OWNERDEVICE", id: "owner-member" },
+          sent_ts: Date.now(),
+        },
+      },
+      encryptionInfo: {
+        sender: ownerId,
+        senderDevice: "OWNERDEVICE",
+        senderCurve25519KeyBase64: "curve-key",
+        senderVerified: false,
+      },
+    });
+    harness.setRoomKnown(true);
+    harness.session.memberships = [harness.remoteMembership];
+
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+
+    expect(mocks.createMatrixRtcMediaTransport).toHaveBeenCalledOnce();
     expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
 
     await harness.controller.stop();
