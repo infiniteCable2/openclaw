@@ -152,7 +152,7 @@ patchedDependencies:
   '@awesome.me/webawesome@3.12.0': 56965f5288ab449b79b5cf0920c37325444105bfc76f146d339c954804671fee
   '@novnc/novnc@1.7.0': bfde0e1bda172da3525f9f5014d85ad28073325b74f09609084598a65d2f412d
   '@vitest/runner@4.1.11': 55258cdf55f944f5e9bfbc52251b3696225ca2993e2d9f56b90b88f764193d93
-  matrix-js-sdk@42.2.0: ce375f480073458a10db6f848336537029010b93165c44236c3fc9aa56b5e794
+  matrix-js-sdk@42.2.0: 82ba898240ef01fcfa9d4070df1ad38308c0fd8268caaaedba27dd770c0aa7a9
   vitest@4.1.11: c21477c229514823498ab3a08311070cec46b1811e866bc1b3f6ff3f5720da2e
 
 importers:
@@ -1397,7 +1397,7 @@ importers:
         version: 15.0.1
       matrix-js-sdk:
         specifier: 42.2.0
-        version: 42.2.0(patch_hash=ce375f480073458a10db6f848336537029010b93165c44236c3fc9aa56b5e794)
+        version: 42.2.0(patch_hash=82ba898240ef01fcfa9d4070df1ad38308c0fd8268caaaedba27dd770c0aa7a9)
       music-metadata:
         specifier: 11.15.0
         version: 11.15.0(supports-color@10.2.2)
@@ -15236,7 +15236,7 @@ snapshots:
 
   matrix-events-sdk@0.0.1: {}
 
-  matrix-js-sdk@42.2.0(patch_hash=ce375f480073458a10db6f848336537029010b93165c44236c3fc9aa56b5e794):
+  matrix-js-sdk@42.2.0(patch_hash=82ba898240ef01fcfa9d4070df1ad38308c0fd8268caaaedba27dd770c0aa7a9):
     dependencies:
       '@babel/runtime': 8.0.0
       '@matrix-org/matrix-sdk-crypto-wasm': 18.5.0

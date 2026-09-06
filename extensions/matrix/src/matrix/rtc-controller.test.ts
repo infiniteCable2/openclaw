@@ -50,7 +50,7 @@ async function flushPromises(): Promise<void> {
   });
 }
 
-function createHarness(mode: TestRtcMode) {
+function createHarness(mode: TestRtcMode, options: { emitInitialKeys?: boolean } = {}) {
   const emitter = new EventEmitter();
   const remoteTransport = {
     type: "livekit",
@@ -62,6 +62,7 @@ function createHarness(mode: TestRtcMode) {
     deviceId: "OWNERDEVICE",
     memberId: "owner-member",
     rtcBackendIdentity: "owner-backend",
+    createdTs: vi.fn(() => 1),
     getAbsoluteExpiry: vi.fn(() => (mode === "compatibility" ? Date.now() + 60_000 : undefined)),
     getTransport: vi.fn(() => remoteTransport),
   };
@@ -76,6 +77,9 @@ function createHarness(mode: TestRtcMode) {
     reemitEncryptionKeys: vi.fn(),
     leaveRoomSession: vi.fn(async () => true),
     joinRTCSession: vi.fn((ownMembership: Record<string, string>) => {
+      if (options.emitInitialKeys === false) {
+        return;
+      }
       emitter.emit(
         MatrixRTCSessionEvent.EncryptionKeyChanged,
         Uint8Array.from([1]),
@@ -270,6 +274,34 @@ describe("registerMatrixRtcController", () => {
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
 
     await harness.controller.stop();
+  });
+
+  it("does not retry a failed remote call membership until that membership changes", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness("compatibility", { emitInitialKeys: false });
+    try {
+      harness.setRoomKnown(true);
+      harness.session.memberships = [harness.remoteMembership];
+      harness.managerEmitter.emit("session_started", roomId, harness.session);
+      await vi.advanceTimersByTimeAsync(15_100);
+
+      expect(harness.session.leaveRoomSession).toHaveBeenCalledOnce();
+      expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
+
+      harness.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
+
+      harness.remoteMembership.createdTs.mockReturnValue(2);
+      harness.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledTimes(2);
+    } finally {
+      await harness.controller.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("ends a call if its admitted membership changes protocol mode", async () => {

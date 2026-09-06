@@ -20,7 +20,7 @@ index 2cfc6b697f206c53d309c105915c1e7a04603a60..3b441441b89b5eab79af48115381cd7f
      [ClientEvent.ReceivedToDeviceMessage]: (payload: ReceivedToDeviceMessage) => void;
      [ClientEvent.AccountData]: (event: MatrixEvent, lastEvent?: MatrixEvent) => void;
 diff --git a/lib/client.js b/lib/client.js
-index eb0462b6d87934c7577299867786eb0f1790315b..14eafe15cc8448b140813f5319f34d648164a64a 100644
+index eb0462b6d87934c7577299867786eb0f1790315b..3349fe923aa7f352f6268e7a2f218d772c90b7d0 100644
 --- a/lib/client.js
 +++ b/lib/client.js
 @@ -227,6 +227,7 @@ export let ClientEvent = /*#__PURE__*/function (ClientEvent) {
@@ -45,7 +45,9 @@ index eb0462b6d87934c7577299867786eb0f1790315b..14eafe15cc8448b140813f5319f34d64
      });
  
      // re-emit the events emitted by the crypto impl
-@@ -1933,4 +1937,8 @@ export class MatrixClient extends TypedEventEmitter {
+@@ -1927,6 +1931,10 @@ export class MatrixClient extends TypedEventEmitter {
+    * This takes into account event type and room configuration.
+    */
    async shouldEncryptEventForRoom(event, room) {
 +    // MatrixRTC membership must remain visible for sticky-key indexing and peer discovery.
 +    if (event.getType() === EventType.RTCMembership) {
@@ -54,6 +56,17 @@ index eb0462b6d87934c7577299867786eb0f1790315b..14eafe15cc8448b140813f5319f34d64
      if (event.isEncrypted()) {
        // this event has already been encrypted; this happens if the
        // encryption step succeeded, but the send step failed on the first
+diff --git a/lib/matrixrtc/RTCEncryptionManager.js b/lib/matrixrtc/RTCEncryptionManager.js
+index 03b0c8ea35e2d222145411e304a0762092b3d494..3d931354c00bca8faf65be219b18f02e58634347 100644
+--- a/lib/matrixrtc/RTCEncryptionManager.js
++++ b/lib/matrixrtc/RTCEncryptionManager.js
+@@ -193,2 +193,6 @@ export class RTCEncryptionManager {
+     this.logger?.info(`Joining room`);
+     this.transport.start();
++    // A callee can join after the remote membership is already present. In
++    // that case there may be no later membership delta to trigger the first
++    // rollout, so bootstrap it from the memberships available at join time.
++    this.ensureKeyDistribution();
 diff --git a/lib/sync.js b/lib/sync.js
 index eaf158f49414ef510577b8e9397aff51f0630df6..33c86a52a5fe7268d097c0aacc8391aa2db58c03 100644
 --- a/lib/sync.js
@@ -116,7 +129,7 @@ index eaf158f49414ef510577b8e9397aff51f0630df6..33c86a52a5fe7268d097c0aacc8391aa
      }));
  
 diff --git a/src/client.ts b/src/client.ts
-index e8cadfb3cb11a4ea01807adf275b376fe363e16c..46e1b9e44a6a6cb23de805199b6f69a41946bd13 100644
+index e8cadfb3cb11a4ea01807adf275b376fe363e16c..9383b0ea12659f3f8e6b4007a3f0a0a14e3441d0 100644
 --- a/src/client.ts
 +++ b/src/client.ts
 @@ -1017,6 +1017,7 @@ export enum ClientEvent {
@@ -150,7 +163,9 @@ index e8cadfb3cb11a4ea01807adf275b376fe363e16c..46e1b9e44a6a6cb23de805199b6f69a4
          });
  
          // re-emit the events emitted by the crypto impl
-@@ -3008,4 +3012,8 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
+@@ -3002,6 +3006,10 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
+      * This takes into account event type and room configuration.
+      */
      private async shouldEncryptEventForRoom(event: MatrixEvent, room: Room): Promise<boolean> {
 +        // MatrixRTC membership must remain visible for sticky-key indexing and peer discovery.
 +        if (event.getType() === EventType.RTCMembership) {
@@ -159,6 +174,17 @@ index e8cadfb3cb11a4ea01807adf275b376fe363e16c..46e1b9e44a6a6cb23de805199b6f69a4
          if (event.isEncrypted()) {
              // this event has already been encrypted; this happens if the
              // encryption step succeeded, but the send step failed on the first
+diff --git a/src/matrixrtc/RTCEncryptionManager.ts b/src/matrixrtc/RTCEncryptionManager.ts
+index 0f380c18f326013cdc223aead59cb7ac4e1d42d8..4bdb3f2890d264c9bdd1a7c8dd5b052c6f243a63 100644
+--- a/src/matrixrtc/RTCEncryptionManager.ts
++++ b/src/matrixrtc/RTCEncryptionManager.ts
+@@ -228,2 +228,6 @@ export class RTCEncryptionManager implements IEncryptionManager {
+         this.logger?.info(`Joining room`);
+         this.transport.start();
++        // A callee can join after the remote membership is already present. In
++        // that case there may be no later membership delta to trigger the first
++        // rollout, so bootstrap it from the memberships available at join time.
++        this.ensureKeyDistribution();
 diff --git a/src/sync.ts b/src/sync.ts
 index 3e01c4b64494c19c3a13a57a6cc7e33a87f79f56..095d6809515dde949bd1c688beff133427ac011f 100644
 --- a/src/sync.ts
