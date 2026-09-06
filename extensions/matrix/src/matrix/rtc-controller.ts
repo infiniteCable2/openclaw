@@ -3,7 +3,6 @@ import {
   MatrixRTCSessionEvent,
   type MatrixRTCSession,
 } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
-import { RTC_SLOT_ENCRYPTION_PER_MEMBER } from "matrix-js-sdk/lib/matrixrtc/types.js";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   createMeetingRealtimeEngineBindings,
@@ -14,7 +13,11 @@ import {
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import type { CoreConfig, MatrixConfig } from "../types.js";
 import { resolveMatrixInboundRoute } from "./monitor/route.js";
-import { assertMatrixRtcCallAdmission, assertMatrixRtcPinnedTransports } from "./rtc-admission.js";
+import {
+  assertMatrixRtcCallAdmission,
+  assertMatrixRtcEncryptionCompatibility,
+  assertMatrixRtcPinnedTransports,
+} from "./rtc-admission.js";
 import { requestMatrixRtcCredentials, type MatrixRtcMembershipIdentity } from "./rtc-auth.js";
 import { findMatrixRtcAdmission, type ResolvedMatrixRtcConfig } from "./rtc-config.js";
 import { createMatrixRtcMediaTransport, type MatrixRtcMediaKey } from "./rtc-media-transport.js";
@@ -188,11 +191,7 @@ export function registerMatrixRtcController(params: {
         if (session.slotId !== SLOT_ID) {
           throw new Error("MatrixRTC call uses an unsupported slot");
         }
-        if (session.getRtcSlot()?.encryption?.type !== RTC_SLOT_ENCRYPTION_PER_MEMBER) {
-          throw new Error(
-            "MatrixRTC call does not advertise supported per-member media encryption",
-          );
-        }
+        assertMatrixRtcEncryptionCompatibility(session.getRtcSlot()?.encryption?.type);
 
         const preferredTransport = await params.client.matrixRtc.getPreferredLivekitTransport();
         const remoteTransport = remote.getTransport(session.getOldestMembership() ?? remote);
