@@ -1,4 +1,5 @@
 import type { IOpenIDToken } from "matrix-js-sdk/lib/client.js";
+import type { MatrixRtcMode } from "./rtc-mode.js";
 
 const MAX_AUTH_RESPONSE_BYTES = 64 * 1024;
 const MAX_JWT_BYTES = 16 * 1024;
@@ -14,9 +15,10 @@ export type MatrixRtcCredentials = {
   token: string;
 };
 
-function tokenEndpoint(authServiceUrl: string): URL {
+function tokenEndpoint(authServiceUrl: string, mode: MatrixRtcMode): URL {
   const endpoint = new URL(authServiceUrl);
-  endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, "")}/get_token`;
+  const route = mode === "compatibility" ? "sfu/get" : "get_token";
+  endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, "")}/${route}`;
   return endpoint;
 }
 
@@ -33,6 +35,7 @@ async function readBoundedResponse(response: Response): Promise<unknown> {
 }
 
 export async function requestMatrixRtcCredentials(params: {
+  mode: MatrixRtcMode;
   authServiceUrl: string;
   roomId: string;
   slotId: string;
@@ -41,20 +44,28 @@ export async function requestMatrixRtcCredentials(params: {
   fetchFn?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<MatrixRtcCredentials> {
-  const endpoint = tokenEndpoint(params.authServiceUrl);
+  const endpoint = tokenEndpoint(params.authServiceUrl, params.mode);
+  const requestBody =
+    params.mode === "compatibility"
+      ? {
+          room: params.roomId,
+          openid_token: params.openIdToken,
+          device_id: params.membership.deviceId,
+        }
+      : {
+          room_id: params.roomId,
+          slot_id: params.slotId,
+          openid_token: params.openIdToken,
+          member: {
+            id: params.membership.memberId,
+            claimed_user_id: params.membership.userId,
+            claimed_device_id: params.membership.deviceId,
+          },
+        };
   const response = await (params.fetchFn ?? fetch)(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      room_id: params.roomId,
-      slot_id: params.slotId,
-      openid_token: params.openIdToken,
-      member: {
-        id: params.membership.memberId,
-        claimed_user_id: params.membership.userId,
-        claimed_device_id: params.membership.deviceId,
-      },
-    }),
+    body: JSON.stringify(requestBody),
     signal: params.signal,
   });
   if (!response.ok) {
