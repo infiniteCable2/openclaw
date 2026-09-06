@@ -21,6 +21,7 @@ import {
 import { requestMatrixRtcCredentials, type MatrixRtcMembershipIdentity } from "./rtc-auth.js";
 import { findMatrixRtcAdmission, type ResolvedMatrixRtcConfig } from "./rtc-config.js";
 import { createMatrixRtcMediaTransport, type MatrixRtcMediaKey } from "./rtc-media-transport.js";
+import { resolveMatrixRtcMode } from "./rtc-mode.js";
 import type { MatrixClient } from "./sdk.js";
 
 const KEY_WAIT_TIMEOUT_MS = 15_000;
@@ -52,6 +53,8 @@ type ActiveCall = {
   transport?: MeetingRealtimeAudioTransport;
   session: MatrixRTCSession;
   joined: boolean;
+  stopping: boolean;
+  stopPromise?: Promise<void>;
   disposeListeners: () => void;
 };
 
@@ -135,8 +138,21 @@ export function registerMatrixRtcController(params: {
     if (!call) {
       return;
     }
-    calls.delete(roomId);
-    await stopCallSafely(call);
+    if (call.stopping) {
+      await call.stopPromise;
+      return;
+    }
+    // Keep ownership in the map until leaveRoomSession finishes. The SDK emits
+    // membership changes while leaving; dropping ownership first lets those
+    // self-generated events re-enter beginCall and fan one failure into retries.
+    call.stopping = true;
+    const stopPromise = stopCallSafely(call).finally(() => {
+      if (calls.get(roomId) === call) {
+        calls.delete(roomId);
+      }
+    });
+    call.stopPromise = stopPromise;
+    await stopPromise;
   };
 
   const beginCall = (roomId: string, session: MatrixRTCSession) => {
@@ -153,6 +169,7 @@ export function registerMatrixRtcController(params: {
       abort,
       session,
       joined: false,
+      stopping: false,
       disposeListeners: () => {
         for (const dispose of disposeCallbacks.splice(0)) {
           dispose();
@@ -195,12 +212,22 @@ export function registerMatrixRtcController(params: {
 
         const preferredTransport = await params.client.matrixRtc.getPreferredLivekitTransport();
         const remoteTransport = remote.getTransport(session.getOldestMembership() ?? remote);
+        const rtcMode = resolveMatrixRtcMode(remote);
         assertMatrixRtcPinnedTransports({
           pinnedAuthServiceUrl: params.config.authServiceUrl,
           homeserverLivekitServiceUrl: preferredTransport.livekit_service_url,
           remoteTransportType: remoteTransport?.type,
           remoteLivekitServiceUrl: remoteTransport?.livekit_service_url,
         });
+        if (
+          rtcMode === "compatibility" &&
+          (!remoteTransport ||
+            !("livekit_alias" in remoteTransport) ||
+            typeof remoteTransport.livekit_alias !== "string" ||
+            !remoteTransport.livekit_alias)
+        ) {
+          throw new Error("MatrixRTC compatibility transport is missing its LiveKit alias");
+        }
         params.logger.info("matrix rtc: transport verified");
 
         const ownMembership: MatrixRtcMembershipIdentity = {
@@ -208,6 +235,7 @@ export function registerMatrixRtcController(params: {
           memberId: randomUUID(),
         };
         const credentials = await requestMatrixRtcCredentials({
+          mode: rtcMode,
           authServiceUrl: params.config.authServiceUrl,
           roomId,
           slotId: SLOT_ID,
@@ -258,7 +286,7 @@ export function registerMatrixRtcController(params: {
         disposeCallbacks.push(() => session.off(MatrixRTCSessionEvent.EncryptionKeyChanged, onKey));
         const onMembershipsChanged = () => {
           try {
-            assertMatrixRtcCallAdmission({
+            const currentRemote = assertMatrixRtcCallAdmission({
               isDirectRoom: params.client.dms.isDm(roomId),
               joinedUserIds: params.client.matrixRtc.getJoinedUserIds(roomId),
               memberships: session.memberships,
@@ -267,6 +295,9 @@ export function registerMatrixRtcController(params: {
               routedAgentId: route.agentId,
               allowedAgentId: admission.agentId,
             });
+            if (resolveMatrixRtcMode(currentRemote) !== rtcMode) {
+              throw new Error("MatrixRTC membership mode changed during the call");
+            }
           } catch {
             void endCall(roomId);
           }
@@ -276,10 +307,11 @@ export function registerMatrixRtcController(params: {
           session.off(MatrixRTCSessionEvent.MembershipsChanged, onMembershipsChanged),
         );
 
-        session.joinRTCSession(ownMembership, [preferredTransport], preferredTransport, {
+        const ownTransport = rtcMode === "compatibility" ? remoteTransport! : preferredTransport;
+        session.joinRTCSession(ownMembership, [ownTransport], ownTransport, {
           callIntent: "audio",
           manageMediaKeys: true,
-          unstableSendStickyEvents: true,
+          unstableSendStickyEvents: rtcMode === "matrix_2_0",
         });
         call.joined = true;
         params.logger.info("matrix rtc: local membership joined");
@@ -439,9 +471,7 @@ export function registerMatrixRtcController(params: {
     }
     observedSessions.clear();
     params.abortSignal?.removeEventListener("abort", abortListener);
-    const active = [...calls.entries()];
-    calls.clear();
-    await Promise.all(active.map(([, call]) => stopCallSafely(call)));
+    await Promise.all([...calls.keys()].map((roomId) => endCall(roomId)));
   };
 
   return {

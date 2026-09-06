@@ -17,6 +17,7 @@ describe("MatrixRTC authorization", () => {
     );
     await expect(
       requestMatrixRtcCredentials({
+        mode: "matrix_2_0",
         authServiceUrl: "https://rtc.example.org/livekit/jwt",
         roomId: "!room:example.org",
         slotId: "m.call#ROOM",
@@ -44,6 +45,37 @@ describe("MatrixRTC authorization", () => {
     });
   });
 
+  it("uses the legacy token contract for compatibility memberships", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ url: "wss://rtc.example.org/livekit/sfu", jwt: "jwt" }), {
+        status: 200,
+      }),
+    );
+    await expect(
+      requestMatrixRtcCredentials({
+        mode: "compatibility",
+        authServiceUrl: "https://rtc.example.org/livekit/jwt",
+        roomId: "!room:example.org",
+        slotId: "m.call#ROOM",
+        membership: {
+          userId: "@bot:example.org",
+          deviceId: "DEVICE",
+          memberId: "member",
+        },
+        openIdToken,
+        fetchFn,
+      }),
+    ).resolves.toEqual({ url: "wss://rtc.example.org/livekit/sfu", token: "jwt" });
+
+    const [url, init] = fetchFn.mock.calls[0] as [URL, RequestInit];
+    expect(url.toString()).toBe("https://rtc.example.org/livekit/jwt/sfu/get");
+    expect(JSON.parse(String(init.body))).toEqual({
+      room: "!room:example.org",
+      openid_token: openIdToken,
+      device_id: "DEVICE",
+    });
+  });
+
   it("rejects a LiveKit URL redirected to another host", async () => {
     const fetchFn = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ url: "wss://attacker.example/sfu", jwt: "jwt" }), {
@@ -52,6 +84,7 @@ describe("MatrixRTC authorization", () => {
     );
     await expect(
       requestMatrixRtcCredentials({
+        mode: "matrix_2_0",
         authServiceUrl: "https://rtc.example.org/livekit/jwt",
         roomId: "!room:example.org",
         slotId: "m.call#ROOM",
