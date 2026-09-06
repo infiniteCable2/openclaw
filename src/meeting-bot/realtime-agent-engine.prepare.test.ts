@@ -183,4 +183,67 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     expect(release).toHaveBeenCalledOnce();
     await handle.stop();
   });
+
+  it("cancels synthesis and clears queued playback when the caller starts speaking", async () => {
+    const streamCancelled = vi.fn();
+    const clearOutput = vi.fn(async () => undefined);
+    let onSpeechStart: (() => void) | undefined;
+    const provider = createProvider(undefined);
+    provider.createSession.mockImplementation((params) => {
+      onSpeechStart = params.onSpeechStart;
+      return {
+        connect: vi.fn(async () => undefined),
+        sendAudio: vi.fn(),
+        close: vi.fn(),
+        isConnected: () => true,
+      };
+    });
+    const writeOutput = vi.fn(async () => undefined);
+    const handle = await startMeetingAgentRealtimeEngine({
+      config,
+      fullConfig: {} as never,
+      runtime: {
+        tts: {
+          streamTextToSpeechTelephony: vi.fn(async () => ({
+            success: true,
+            audioStream: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+              },
+              cancel: streamCancelled,
+            }),
+            outputFormat: "pcm",
+            sampleRate: 24_000,
+          })),
+        },
+      } as unknown as PluginRuntime,
+      platform: {
+        displayName: "Test meeting",
+        logScope: "test meeting",
+        sessionIdPrefix: "test-meeting",
+      },
+      meetingSessionId: "meeting-1",
+      transport: {
+        onFatal: vi.fn(),
+        startInput: vi.fn(),
+        writeOutput,
+        clearOutput,
+        stop: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+      },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      providers: [provider],
+      consultAgent: vi.fn(async () => ({ text: "unused" })),
+    });
+
+    handle.speak("Diese Ausgabe wird unterbrochen.");
+    await vi.waitFor(() => expect(writeOutput).toHaveBeenCalledOnce());
+    onSpeechStart?.();
+
+    await vi.waitFor(() => {
+      expect(streamCancelled).toHaveBeenCalledOnce();
+      expect(clearOutput).toHaveBeenCalledOnce();
+    });
+    await handle.stop();
+  });
 });
