@@ -135,8 +135,6 @@ export async function startMeetingAgentRealtimeEngine(params: {
     stopped = true;
     stopPromise = (async () => {
       activeTtsAbort?.abort(new Error("Meeting audio output stopped"));
-      await activeTtsReader?.cancel().catch(() => undefined);
-      await ttsQueue;
       harness.close();
       try {
         sttSession?.close();
@@ -150,8 +148,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
         final: true,
         payload: { meetingSessionId: params.meetingSessionId },
       });
+      const transportStopPromise = params.transport.stop();
+      await activeTtsReader?.cancel().catch(() => undefined);
+      await ttsQueue;
       try {
-        await params.transport.stop();
+        await transportStopPromise;
       } finally {
         await params.transport.dispose();
       }
