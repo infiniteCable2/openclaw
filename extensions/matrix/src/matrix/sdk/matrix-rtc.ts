@@ -4,12 +4,12 @@ import {
   type IOpenIDToken,
   type MatrixClient as MatrixJsClient,
 } from "matrix-js-sdk/lib/client.js";
-import type { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
-import type { Room } from "matrix-js-sdk/lib/models/room.js";
 import type { CallMembership } from "matrix-js-sdk/lib/matrixrtc/CallMembership.js";
 import type { LivekitTransportConfig } from "matrix-js-sdk/lib/matrixrtc/LivekitTransport.js";
 import type { MatrixRTCSession } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
 import { MatrixRTCSessionManagerEvents } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSessionManager.js";
+import type { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
+import type { Room } from "matrix-js-sdk/lib/models/room.js";
 
 export type MatrixRtcSelfIdentity = {
   userId: string;
