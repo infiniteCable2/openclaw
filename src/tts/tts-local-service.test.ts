@@ -42,12 +42,14 @@ describe("speech provider local service", () => {
         },
       }),
     ).resolves.toBe(lease);
-    expect(ensureProviderLocalServiceMock).toHaveBeenCalledWith({
-      providerId: "local-speech",
-      baseUrl: "http://127.0.0.1:8080/v1",
-      service: localService,
-      configPath: "tts.providers.local-speech.localService",
-    });
+    expect(ensureProviderLocalServiceMock).toHaveBeenCalledWith(
+      {
+        providerId: "local-speech",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        service: localService,
+      },
+      undefined,
+    );
   });
 
   it("requires an endpoint when local process management is enabled", async () => {
