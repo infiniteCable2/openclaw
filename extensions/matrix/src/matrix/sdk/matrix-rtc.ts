@@ -1,4 +1,9 @@
-import type { IOpenIDToken, MatrixClient as MatrixJsClient } from "matrix-js-sdk/lib/client.js";
+import {
+  ClientEvent,
+  type IOpenIDToken,
+  type MatrixClient as MatrixJsClient,
+} from "matrix-js-sdk/lib/client.js";
+import type { Room } from "matrix-js-sdk/lib/models/room.js";
 import type { CallMembership } from "matrix-js-sdk/lib/matrixrtc/CallMembership.js";
 import type { LivekitTransportConfig } from "matrix-js-sdk/lib/matrixrtc/LivekitTransport.js";
 import type { MatrixRTCSession } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
@@ -12,6 +17,7 @@ export type MatrixRtcSelfIdentity = {
 export type MatrixRtcClientFacade = {
   onSessionStarted(listener: (roomId: string, session: MatrixRTCSession) => void): () => void;
   onSessionEnded(listener: (roomId: string, session: MatrixRTCSession) => void): () => void;
+  onRoomAvailable(listener: (roomId: string) => void): () => void;
   getRoomSession(roomId: string): MatrixRTCSession | undefined;
   getJoinedUserIds(roomId: string): string[];
   getOpenIdToken(): Promise<IOpenIDToken>;
@@ -39,6 +45,11 @@ export function createMatrixRtcClientFacade(client: MatrixJsClient): MatrixRtcCl
     onSessionEnded(listener) {
       client.matrixRTC.on(MatrixRTCSessionManagerEvents.SessionEnded, listener);
       return () => client.matrixRTC.off(MatrixRTCSessionManagerEvents.SessionEnded, listener);
+    },
+    onRoomAvailable(listener) {
+      const onRoom = (room: Room) => listener(room.roomId);
+      client.on(ClientEvent.Room, onRoom);
+      return () => client.off(ClientEvent.Room, onRoom);
     },
     getRoomSession(roomId) {
       const room = client.getRoom(roomId);

@@ -372,6 +372,15 @@ export function registerMatrixRtcController(params: {
   const disposeEnded = params.client.matrixRtc.onSessionEnded((roomId) => {
     void endCall(roomId);
   });
+  const disposeRoomAvailable = params.client.matrixRtc.onRoomAvailable((roomId) => {
+    if (!findMatrixRtcAdmission(params.config, roomId)) {
+      return;
+    }
+    const session = params.client.matrixRtc.getRoomSession(roomId);
+    if (session) {
+      observeSession(roomId, session);
+    }
+  });
   const abortListener = () => {
     void stop();
   };
@@ -384,6 +393,7 @@ export function registerMatrixRtcController(params: {
     stopped = true;
     disposeStarted();
     disposeEnded();
+    disposeRoomAvailable();
     for (const observed of observedSessions.values()) {
       observed.dispose();
     }

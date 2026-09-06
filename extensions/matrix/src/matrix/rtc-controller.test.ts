@@ -97,6 +97,8 @@ describe("registerMatrixRtcController", () => {
     };
     let sessionStarted: ((roomId: string, session: unknown) => void) | undefined;
     let sessionEnded: ((roomId: string, session: unknown) => void) | undefined;
+    let roomAvailable: ((roomId: string) => void) | undefined;
+    let roomKnown = false;
     const matrixRtc = {
       onSessionStarted: vi.fn((listener) => {
         sessionStarted = listener;
@@ -106,7 +108,11 @@ describe("registerMatrixRtcController", () => {
         sessionEnded = listener;
         return vi.fn();
       }),
-      getRoomSession: vi.fn(() => session),
+      onRoomAvailable: vi.fn((listener) => {
+        roomAvailable = listener;
+        return vi.fn();
+      }),
+      getRoomSession: vi.fn(() => (roomKnown ? session : undefined)),
       getJoinedUserIds: vi.fn(() => [ownerId, selfId]),
       getOpenIdToken: vi.fn(async () => ({ access_token: "openid-token" })),
       getPreferredLivekitTransport: vi.fn(async () => ({
@@ -154,7 +160,10 @@ describe("registerMatrixRtcController", () => {
     expect(matrixRtc.getRoomSession).toHaveBeenCalledWith(roomId);
     expect(sessionStarted).toBeTypeOf("function");
     expect(sessionEnded).toBeTypeOf("function");
+    expect(roomAvailable).toBeTypeOf("function");
 
+    roomKnown = true;
+    roomAvailable?.(roomId);
     session.memberships = [remoteMembership];
     emitter.emit(MatrixRTCSessionEvent.MembershipsChanged, [], session.memberships);
     await flushPromises();
