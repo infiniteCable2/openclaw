@@ -1,3 +1,4 @@
+import { RTC_SLOT_ENCRYPTION_PER_MEMBER } from "matrix-js-sdk/lib/matrixrtc/types.js";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 
 type MatrixRtcMembershipLike = {
@@ -49,6 +50,19 @@ export function assertMatrixRtcCallAdmission<T extends MatrixRtcMembershipLike>(
 
 function normalizeServiceUrl(value: string): string {
   return new URL(value).toString().replace(/\/$/, "");
+}
+
+export function assertMatrixRtcEncryptionCompatibility(advertisedType: unknown): void {
+  // MSC4143 makes the slot's encryption descriptor optional. A missing
+  // descriptor is therefore not evidence of clear media: the controller joins
+  // with managed media keys and refuses to start its bridge until it has both
+  // the local key and a key from the exactly admitted remote membership.
+  if (advertisedType === undefined) {
+    return;
+  }
+  if (advertisedType !== RTC_SLOT_ENCRYPTION_PER_MEMBER) {
+    throw new Error("MatrixRTC call advertises an unsupported media encryption scheme");
+  }
 }
 
 export function assertMatrixRtcPinnedTransports(params: {

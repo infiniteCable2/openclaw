@@ -1,5 +1,10 @@
+import { RTC_SLOT_ENCRYPTION_PER_MEMBER } from "matrix-js-sdk/lib/matrixrtc/types.js";
 import { describe, expect, it } from "vitest";
-import { assertMatrixRtcCallAdmission, assertMatrixRtcPinnedTransports } from "./rtc-admission.js";
+import {
+  assertMatrixRtcCallAdmission,
+  assertMatrixRtcEncryptionCompatibility,
+  assertMatrixRtcPinnedTransports,
+} from "./rtc-admission.js";
 
 const selfUserId = "@nova:example.test";
 const allowedUserId = "@owner:example.test";
@@ -64,5 +69,23 @@ describe("assertMatrixRtcPinnedTransports", () => {
         remoteLivekitServiceUrl: remoteUrl,
       }),
     ).toThrow(/pinned|untrusted/);
+  });
+});
+
+describe("assertMatrixRtcEncryptionCompatibility", () => {
+  it("accepts the explicit per-member encryption descriptor", () => {
+    expect(() =>
+      assertMatrixRtcEncryptionCompatibility(RTC_SLOT_ENCRYPTION_PER_MEMBER),
+    ).not.toThrow();
+  });
+
+  it("accepts an omitted optional descriptor for dynamic key verification", () => {
+    expect(() => assertMatrixRtcEncryptionCompatibility(undefined)).not.toThrow();
+  });
+
+  it("rejects an explicitly unsupported encryption scheme", () => {
+    expect(() => assertMatrixRtcEncryptionCompatibility("example.clear-media")).toThrow(
+      "unsupported media encryption scheme",
+    );
   });
 });

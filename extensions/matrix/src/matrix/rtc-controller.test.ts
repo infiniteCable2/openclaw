@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { EventType } from "matrix-js-sdk/lib/@types/event.js";
 import { ClientEvent } from "matrix-js-sdk/lib/client.js";
 import { MatrixRTCSessionEvent } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
-import { RTC_SLOT_ENCRYPTION_PER_MEMBER } from "matrix-js-sdk/lib/matrixrtc/types.js";
 import { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -74,9 +73,10 @@ describe("registerMatrixRtcController", () => {
       // admission without producing an error.
       initialMembershipCalculated: new Promise<void>(() => {}),
       slotId: "m.call#ROOM",
-      getRtcSlot: vi.fn(() => ({
-        encryption: { type: RTC_SLOT_ENCRYPTION_PER_MEMBER },
-      })),
+      // Current Element X calls can omit the optional slot encryption
+      // descriptor. The real acceptance boundary is the managed key exchange
+      // below; the controller must not start media without both keys.
+      getRtcSlot: vi.fn(() => undefined),
       getOldestMembership: vi.fn(() => remoteMembership),
       on: emitter.on.bind(emitter),
       off: emitter.off.bind(emitter),
