@@ -22,7 +22,6 @@ export async function acquireSpeechProviderLocalService(params: {
       providerId: params.providerId,
       baseUrl,
       service,
-      configPath: `tts.providers.${params.providerId}.localService`,
     },
     params.signal,
   );
