@@ -114,7 +114,10 @@ export function registerMatrixRtcController(params: {
   const calls = new Map<string, ActiveCall>();
   const observedSessions = new Map<string, { session: MatrixRTCSession; dispose: () => void }>();
   let stopped = false;
-  params.logger.info("matrix rtc: controller registered");
+  // Keep these bounded, identifier-free lifecycle markers visible while the
+  // experimental inbound-call path is being proven in production. Matrix SDK
+  // diagnostics contain room/device metadata and must not be enabled broadly.
+  params.logger.warn("matrix rtc: controller registered");
 
   const stopCallSafely = async (call: ActiveCall) => {
     try {
@@ -154,7 +157,7 @@ export function registerMatrixRtcController(params: {
       },
     };
     calls.set(roomId, call);
-    params.logger.info("matrix rtc: admitted call start requested");
+    params.logger.warn("matrix rtc: admitted call start requested");
 
     void (async () => {
       try {
@@ -358,15 +361,17 @@ export function registerMatrixRtcController(params: {
         return;
       }
       if (session.memberships.length > 0) {
+        params.logger.warn("matrix rtc: admitted room membership active");
         beginCall(roomId, session);
       } else {
+        params.logger.warn("matrix rtc: admitted room membership empty");
         void endCall(roomId);
       }
     };
     session.on(MatrixRTCSessionEvent.MembershipsChanged, reconcile);
     const dispose = () => session.off(MatrixRTCSessionEvent.MembershipsChanged, reconcile);
     observedSessions.set(roomId, { session, dispose });
-    params.logger.info("matrix rtc: admitted room session observed");
+    params.logger.warn("matrix rtc: admitted room session observed");
     void session.initialMembershipCalculated.then(reconcile, (error: unknown) => {
       params.logger.warn(
         `matrix rtc: initial membership calculation failed: ${formatErrorMessage(error)}`,
@@ -381,15 +386,20 @@ export function registerMatrixRtcController(params: {
     if (!findMatrixRtcAdmission(params.config, roomId)) {
       return;
     }
+    if (source === "membership-event") {
+      params.logger.warn("matrix rtc: admitted membership event observed");
+    }
     const session = params.client.matrixRtc.getRoomSession(roomId);
     if (!session) {
-      if (source === "startup") {
-        params.logger.info("matrix rtc: admitted room pending initial sync");
-      }
+      params.logger.warn(
+        source === "startup"
+          ? "matrix rtc: admitted room pending initial sync"
+          : "matrix rtc: admitted room session unavailable",
+      );
       return;
     }
     observeSession(roomId, session);
-    params.logger.info(`matrix rtc: admitted session attached from ${source}`);
+    params.logger.warn(`matrix rtc: admitted session attached from ${source}`);
     if (session.memberships.length > 0) {
       beginCall(roomId, session);
     }
