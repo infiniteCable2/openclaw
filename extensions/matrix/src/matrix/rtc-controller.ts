@@ -24,10 +24,13 @@ import { findMatrixRtcAdmission, type ResolvedMatrixRtcConfig } from "./rtc-conf
 import { createMatrixRtcMediaTransport, type MatrixRtcMediaKey } from "./rtc-media-transport.js";
 import { resolveMatrixRtcMode } from "./rtc-mode.js";
 import type { MatrixClient } from "./sdk.js";
+import type { MatrixRtcIncomingMediaKey } from "./sdk/matrix-rtc.js";
 
 const KEY_WAIT_TIMEOUT_MS = 15_000;
 const LEAVE_TIMEOUT_MS = 5_000;
 const SLOT_ID = "m.call#ROOM";
+const INCOMING_KEY_BUFFER_TTL_MS = 60_000;
+const INCOMING_KEY_CLOCK_SKEW_MS = 5_000;
 
 const MATRIX_RTC_PLATFORM = {
   id: "matrix-rtc",
@@ -126,12 +129,28 @@ export function registerMatrixRtcController(params: {
 }): { startExisting(): void; stop(): Promise<void> } {
   const calls = new Map<string, ActiveCall>();
   const failedRemoteMemberships = new Map<string, string>();
+  const incomingKeys = new Map<string, MatrixRtcIncomingMediaKey[]>();
+  const incomingKeyConsumers = new Map<string, (key: MatrixRtcIncomingMediaKey) => void>();
   const observedSessions = new Map<string, { session: MatrixRTCSession; dispose: () => void }>();
   let stopped = false;
   // Keep these bounded, identifier-free lifecycle markers visible while the
   // experimental inbound-call path is being proven in production. Matrix SDK
   // diagnostics contain room/device metadata and must not be enabled broadly.
   params.logger.warn("matrix rtc: controller registered");
+
+  const disposeIncomingMediaKey = params.client.matrixRtc.onIncomingMediaKey((key) => {
+    const admission = findMatrixRtcAdmission(params.config, key.roomId);
+    if (!admission || key.userId !== admission.userId) {
+      return;
+    }
+    const cutoff = Date.now() - INCOMING_KEY_BUFFER_TTL_MS;
+    const buffered = (incomingKeys.get(key.roomId) ?? []).filter(
+      (candidate) => candidate.receivedAt >= cutoff,
+    );
+    buffered.push(key);
+    incomingKeys.set(key.roomId, buffered.slice(-16));
+    incomingKeyConsumers.get(key.roomId)?.(key);
+  });
 
   const stopCallSafely = async (call: ActiveCall) => {
     try {
@@ -174,6 +193,9 @@ export function registerMatrixRtcController(params: {
     const remoteIncarnations = session.memberships
       .filter((membership) => membership.userId === admission.userId)
       .map(membershipIncarnation);
+    if (remoteIncarnations.length !== 1) {
+      return;
+    }
     const failedRemoteMembership = failedRemoteMemberships.get(roomId);
     if (failedRemoteMembership) {
       if (remoteIncarnations.includes(failedRemoteMembership)) {
@@ -302,6 +324,35 @@ export function registerMatrixRtcController(params: {
             }
           }
         };
+        const acceptIncomingKey = (incoming: MatrixRtcIncomingMediaKey) => {
+          const membershipCreatedAt = remote.createdTs();
+          if (
+            incoming.userId !== remote.userId ||
+            incoming.deviceId !== remote.deviceId ||
+            incoming.memberId !== remote.memberId ||
+            incoming.receivedAt < membershipCreatedAt - INCOMING_KEY_CLOCK_SKEW_MS ||
+            (incoming.sentAt !== undefined &&
+              incoming.sentAt < membershipCreatedAt - INCOMING_KEY_CLOCK_SKEW_MS)
+          ) {
+            return;
+          }
+          const mediaKey = {
+            participantIdentity: remote.rtcBackendIdentity,
+            index: incoming.index,
+            key: Uint8Array.from(incoming.key),
+          };
+          keys.set(mediaKeyId(mediaKey), mediaKey);
+          params.logger.info("matrix rtc: buffered remote media key accepted");
+        };
+        incomingKeyConsumers.set(roomId, acceptIncomingKey);
+        disposeCallbacks.push(() => {
+          if (incomingKeyConsumers.get(roomId) === acceptIncomingKey) {
+            incomingKeyConsumers.delete(roomId);
+          }
+        });
+        for (const incoming of incomingKeys.get(roomId) ?? []) {
+          acceptIncomingKey(incoming);
+        }
         session.on(MatrixRTCSessionEvent.EncryptionKeyChanged, onKey);
         disposeCallbacks.push(() => session.off(MatrixRTCSessionEvent.EncryptionKeyChanged, onKey));
         const onMembershipsChanged = () => {
@@ -328,11 +379,16 @@ export function registerMatrixRtcController(params: {
         );
 
         const ownTransport = rtcMode === "compatibility" ? remoteTransport! : preferredTransport;
-        session.joinRTCSession(ownMembership, [ownTransport], ownTransport, {
-          callIntent: "audio",
-          manageMediaKeys: true,
-          unstableSendStickyEvents: rtcMode === "matrix_2_0",
-        });
+        session.joinRTCSession(
+          ownMembership,
+          [ownTransport],
+          rtcMode === "compatibility" ? undefined : ownTransport,
+          {
+            callIntent: "audio",
+            manageMediaKeys: true,
+            unstableSendStickyEvents: rtcMode === "matrix_2_0",
+          },
+        );
         call.joined = true;
         params.logger.info("matrix rtc: local membership joined");
         session.reemitEncryptionKeys();
@@ -495,6 +551,9 @@ export function registerMatrixRtcController(params: {
     }
     observedSessions.clear();
     failedRemoteMemberships.clear();
+    incomingKeys.clear();
+    incomingKeyConsumers.clear();
+    disposeIncomingMediaKey();
     params.abortSignal?.removeEventListener("abort", abortListener);
     await Promise.all([...calls.keys()].map((roomId) => endCall(roomId)));
   };
