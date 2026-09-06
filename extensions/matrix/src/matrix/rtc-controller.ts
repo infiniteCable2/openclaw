@@ -298,18 +298,19 @@ export function registerMatrixRtcController(params: {
           membership: MatrixRtcMembershipIdentity,
           rtcBackendIdentity: string,
         ) => {
-          const isOwn = membership.memberId === ownMembership.memberId;
-          const isRemote =
-            membership.userId === admission.userId &&
-            membership.deviceId === remote.deviceId &&
-            membership.memberId === remote.memberId &&
-            rtcBackendIdentity === remote.rtcBackendIdentity;
-          if (!isOwn && !isRemote) {
+          // Remote to-device keys are accepted only through the facade's
+          // ReceivedToDeviceMessage path, where encrypted sender/device
+          // metadata is still available for validation. This SDK callback is
+          // also fed by its deprecated compatibility event, which cannot
+          // reliably prove that a remote key was encrypted.
+          const isOwn =
+            membership.userId === self.userId &&
+            membership.deviceId === self.deviceId &&
+            membership.memberId === ownMembership.memberId;
+          if (!isOwn) {
             return;
           }
-          if (isOwn) {
-            ownIdentities.add(rtcBackendIdentity);
-          }
+          ownIdentities.add(rtcBackendIdentity);
           const mediaKey = {
             participantIdentity: rtcBackendIdentity,
             index,
@@ -329,7 +330,7 @@ export function registerMatrixRtcController(params: {
           if (
             incoming.userId !== remote.userId ||
             incoming.deviceId !== remote.deviceId ||
-            incoming.memberId !== remote.memberId ||
+            (rtcMode === "matrix_2_0" && incoming.memberId !== remote.memberId) ||
             incoming.receivedAt < membershipCreatedAt - INCOMING_KEY_CLOCK_SKEW_MS ||
             (incoming.sentAt !== undefined &&
               incoming.sentAt < membershipCreatedAt - INCOMING_KEY_CLOCK_SKEW_MS)
@@ -342,7 +343,7 @@ export function registerMatrixRtcController(params: {
             key: Uint8Array.from(incoming.key),
           };
           keys.set(mediaKeyId(mediaKey), mediaKey);
-          params.logger.info("matrix rtc: buffered remote media key accepted");
+          params.logger.info("matrix rtc: encrypted remote media key accepted");
         };
         incomingKeyConsumers.set(roomId, acceptIncomingKey);
         disposeCallbacks.push(() => {
