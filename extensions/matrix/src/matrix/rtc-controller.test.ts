@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
     platform: {},
     consultAgent: vi.fn(),
   })),
+  prepareMeetingAgentRealtimeEngine: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
   startMeetingAgentRealtimeEngine: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
   requestMatrixRtcCredentials: vi.fn(async () => ({
     url: "wss://rtc.example.test",
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("openclaw/plugin-sdk/meeting-runtime", () => ({
   createMeetingRealtimeEngineBindings: mocks.createMeetingRealtimeEngineBindings,
+  prepareMeetingAgentRealtimeEngine: mocks.prepareMeetingAgentRealtimeEngine,
   startMeetingAgentRealtimeEngine: mocks.startMeetingAgentRealtimeEngine,
 }));
 
@@ -238,6 +240,10 @@ describe("registerMatrixRtcController", () => {
 
     expect(harness.getRoomSession).toHaveBeenCalledOnce();
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
+    expect(mocks.prepareMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
+    expect(mocks.prepareMeetingAgentRealtimeEngine.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.session.joinRTCSession.mock.invocationCallOrder[0] ?? 0,
+    );
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledWith(
       expect.objectContaining({ mode: "matrix_2_0" }),
     );

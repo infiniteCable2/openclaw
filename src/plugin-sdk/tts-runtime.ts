@@ -24,6 +24,7 @@ export {
   isTtsProviderConfigured,
   listSpeechVoices,
   listTtsPersonas,
+  prepareTextToSpeechTelephony,
   resolveExplicitTtsOverrides,
   resolveTtsAutoMode,
   resolveTtsConfig,
@@ -38,6 +39,7 @@ export {
   setTtsProvider,
   synthesizeSpeech,
   streamSpeech,
+  streamTextToSpeechTelephony,
   textToSpeechStream,
   textToSpeechTelephony,
   testApi,
@@ -50,4 +52,6 @@ export {
   type TtsSynthesisStreamResult,
   type TtsStreamResult,
   type TtsTelephonyResult,
+  type TtsTelephonyPreparationResult,
+  type TtsTelephonyStreamResult,
 } from "../tts/runtime-api.js";

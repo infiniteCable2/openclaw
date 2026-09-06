@@ -130,6 +130,7 @@ export const {
   getTtsProvider,
   isTtsProviderConfigured,
   listSpeechVoices,
+  prepareTextToSpeechTelephony,
   prepareTtsRequest,
   resolveTtsConfig,
   resolveTtsPrefsPath,
@@ -137,6 +138,7 @@ export const {
   setSummarizationEnabled,
   setTtsMaxLength,
   synthesizeSpeech,
+  streamTextToSpeechTelephony,
   textToSpeechStream,
   textToSpeechTelephony,
 } = await import("./runtime-api.js");

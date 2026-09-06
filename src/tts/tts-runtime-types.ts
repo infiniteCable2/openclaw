@@ -66,6 +66,16 @@ export type TtsTelephonyResult = TtsProviderMediaOutcome & {
   sampleRate?: number;
 };
 
+export type TtsTelephonyStreamResult = TtsProviderMediaOutcome & {
+  audioStream?: ReadableStream<Uint8Array>;
+  sampleRate?: number;
+  release?: () => Promise<void>;
+};
+
+export type TtsTelephonyPreparationResult = TtsProviderMediaOutcome & {
+  release?: () => Promise<void>;
+};
+
 export type TtsStatusEntry = TtsAttemptOutcome & {
   timestamp: number;
   textLength: number;

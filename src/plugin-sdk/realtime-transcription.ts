@@ -6,6 +6,8 @@ export type {
   RealtimeTranscriptionProviderConfig,
   RealtimeTranscriptionProviderConfiguredContext,
   RealtimeTranscriptionProviderId,
+  RealtimeTranscriptionProviderPreparation,
+  RealtimeTranscriptionProviderPrepareRequest,
   RealtimeTranscriptionProviderResolveConfigContext,
   RealtimeTranscriptionSession,
   RealtimeTranscriptionSessionCallbacks,

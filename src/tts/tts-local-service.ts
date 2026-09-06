@@ -5,6 +5,7 @@ import type { SpeechProviderConfig } from "./provider-types.js";
 export async function acquireSpeechProviderLocalService(params: {
   providerId: string;
   providerConfig: SpeechProviderConfig;
+  signal?: AbortSignal;
 }): Promise<{ release: () => void } | undefined> {
   const service = readLocalServiceConfig(params.providerId, params.providerConfig.localService);
   if (!service) {
@@ -14,14 +15,17 @@ export async function acquireSpeechProviderLocalService(params: {
   if (!baseUrl) {
     throw new Error(`tts.providers.${params.providerId}.baseUrl is required with localService`);
   }
-  return await ensureProviderLocalService({
-    // Matching model and speech provider definitions intentionally share the
-    // same manager key when they own the same command and health endpoint.
-    providerId: params.providerId,
-    baseUrl,
-    service,
-    configPath: `tts.providers.${params.providerId}.localService`,
-  });
+  return await ensureProviderLocalService(
+    {
+      // Matching model and speech provider definitions intentionally share the
+      // same manager key when they own the same command and health endpoint.
+      providerId: params.providerId,
+      baseUrl,
+      service,
+      configPath: `tts.providers.${params.providerId}.localService`,
+    },
+    params.signal,
+  );
 }
 
 function readLocalServiceConfig(

@@ -94,6 +94,7 @@ function resolveReadySpeechProvider(params: {
   persona?: ResolvedTtsPersona;
   voiceModel?: VoiceModelRef;
   requireTelephony?: boolean;
+  requireStreamingTelephony?: boolean;
 }): TtsProviderReadyResolution {
   const resolvedProvider = getSpeechProvider(params.provider, params.cfg);
   if (!resolvedProvider) {
@@ -139,6 +140,17 @@ function resolveReadySpeechProvider(params: {
     };
   }
   if (params.requireTelephony && !resolvedProvider.synthesizeTelephony) {
+    return {
+      kind: "skip",
+      reasonCode: "unsupported_for_telephony",
+      message: `${params.provider}: unsupported for telephony`,
+    };
+  }
+  if (
+    params.requireStreamingTelephony &&
+    !resolvedProvider.streamSynthesizeTelephony &&
+    !resolvedProvider.synthesizeTelephony
+  ) {
     return {
       kind: "skip",
       reasonCode: "unsupported_for_telephony",
@@ -284,9 +296,12 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   synthesisText: string;
   providerOverrides?: Record<string, SpeechProviderOverrides>;
   timeoutMs?: number;
+  signal?: AbortSignal;
   target: "audio-file" | "voice-note" | "telephony";
   logLabel: string;
   requireTelephony?: boolean;
+  requireStreamingTelephony?: boolean;
+  prepareSynthesis?: boolean;
   selectOperation: (params: {
     provider: TtsProvider;
     resolvedProvider: ReadySpeechProvider;
@@ -318,6 +333,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         persona,
         voiceModel,
         requireTelephony: params.requireTelephony,
+        requireStreamingTelephony: params.requireStreamingTelephony,
       });
       if (resolvedProvider.kind === "skip") {
         errors.push(resolvedProvider.message);
@@ -360,20 +376,29 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
       const localServiceLease = await acquireSpeechProviderLocalService({
         providerId: resolvedProvider.provider.id,
         providerConfig: resolvedProvider.localServiceProviderConfig,
+        signal: params.signal,
       });
       let localServiceLeaseTransferred = false;
       try {
-        const prepared = await prepareSpeechSynthesis({
-          provider: resolvedProvider.provider,
-          text: params.synthesisText,
-          cfg,
-          providerConfig: resolvedProvider.providerConfig,
-          providerOverrides: params.providerOverrides?.[resolvedProvider.provider.id],
-          persona: resolvedProvider.synthesisPersona,
-          personaProviderConfig: resolvedProvider.personaProviderConfig,
-          target: params.target,
-          timeoutMs,
-        });
+        const providerOverrides = params.providerOverrides?.[resolvedProvider.provider.id];
+        const prepared =
+          params.prepareSynthesis === false
+            ? {
+                text: params.synthesisText,
+                providerConfig: resolvedProvider.providerConfig,
+                providerOverrides,
+              }
+            : await prepareSpeechSynthesis({
+                provider: resolvedProvider.provider,
+                text: params.synthesisText,
+                cfg,
+                providerConfig: resolvedProvider.providerConfig,
+                providerOverrides,
+                persona: resolvedProvider.synthesisPersona,
+                personaProviderConfig: resolvedProvider.personaProviderConfig,
+                target: params.target,
+                timeoutMs,
+              });
         let synthesis = await operation.synthesize({
           prepared,
           cfg,

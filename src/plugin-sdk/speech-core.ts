@@ -20,6 +20,8 @@ export type {
   SpeechSynthesisStreamResult,
   SpeechSynthesisTarget,
   SpeechTelephonySynthesisRequest,
+  SpeechTelephonySynthesisStreamRequest,
+  SpeechTelephonySynthesisStreamResult,
   SpeechVoiceOption,
   TtsDirectiveOverrides,
   TtsDirectiveParseResult,

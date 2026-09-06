@@ -16,7 +16,9 @@ import {
   installSpeechProviders,
   isTtsProviderConfigured,
   maybeApplyTtsToPayload,
+  prepareTextToSpeechTelephony,
   prepareSynthesisMock,
+  acquireSpeechProviderLocalServiceMock,
   requireAttempt,
   requireFirstCallParam,
   requireFirstSynthesisRequest,
@@ -25,6 +27,7 @@ import {
   setTtsMachinePrefsPathResolver,
   synthesizeMock,
   synthesizeSpeech,
+  streamTextToSpeechTelephony,
   textToSpeechTelephony,
   transcodeAudioBufferMock,
   type OpenClawConfig,
@@ -40,8 +43,94 @@ describe("TTS runtime persona behavior", () => {
     delete (Object.prototype as Record<string, unknown>).polluted;
     synthesizeMock.mockClear();
     prepareSynthesisMock.mockClear();
+    acquireSpeechProviderLocalServiceMock.mockClear();
     transcodeAudioBufferMock.mockClear();
     installSpeechProviders([createMockSpeechProvider()]);
+  });
+
+  it("prepares and retains the agent-scoped telephony provider without synthesizing", async () => {
+    const release = vi.fn();
+    acquireSpeechProviderLocalServiceMock.mockResolvedValueOnce({ release });
+    installSpeechProviders([
+      createMockSpeechProvider("mock", {
+        synthesizeTelephony: vi.fn(async () => ({
+          audioBuffer: Buffer.from("unused"),
+          outputFormat: "pcm",
+          sampleRate: 24_000,
+        })),
+      }),
+    ]);
+    const signal = new AbortController().signal;
+
+    const result = await prepareTextToSpeechTelephony({
+      cfg: {
+        tts: {
+          enabled: true,
+          provider: "mock",
+          personas: {
+            narrator: { providers: { mock: { voice: "agent-voice" } } },
+          },
+        },
+        agents: { list: [{ id: "reader", tts: { persona: "narrator" } }] },
+      },
+      agentId: "reader",
+      channelId: "matrix",
+      signal,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      persona: "narrator",
+      provider: "mock",
+      providerVoice: "agent-voice",
+    });
+    expect(synthesizeMock).not.toHaveBeenCalled();
+    expect(prepareSynthesisMock).not.toHaveBeenCalled();
+    expect(acquireSpeechProviderLocalServiceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: "mock", signal }),
+    );
+    await result.release?.();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("streams ordered telephony audio while retaining the local provider lease", async () => {
+    const releaseLease = vi.fn();
+    const releaseProvider = vi.fn(async () => undefined);
+    acquireSpeechProviderLocalServiceMock.mockResolvedValueOnce({ release: releaseLease });
+    installSpeechProviders([
+      createMockSpeechProvider("mock", {
+        streamSynthesizeTelephony: vi.fn(async () => ({
+          audioStream: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Uint8Array.from([1, 0]));
+              controller.enqueue(Uint8Array.from([2, 0]));
+              controller.close();
+            },
+          }),
+          outputFormat: "pcm",
+          sampleRate: 16_000,
+          release: releaseProvider,
+        })),
+      }),
+    ]);
+
+    const result = await streamTextToSpeechTelephony({
+      text: "Frühe Ausgabe.",
+      cfg: { tts: { enabled: true, provider: "mock" } },
+    });
+    expect(result).toMatchObject({ success: true, sampleRate: 16_000, outputFormat: "pcm" });
+    const chunks: Buffer[] = [];
+    if (!result.audioStream) {
+      throw new Error("expected telephony audio stream");
+    }
+    for await (const chunk of result.audioStream) {
+      chunks.push(Buffer.from(chunk));
+    }
+    expect(chunks).toEqual([Buffer.from([1, 0]), Buffer.from([2, 0])]);
+    expect(releaseLease).not.toHaveBeenCalled();
+    await result.release?.();
+    expect(releaseProvider).toHaveBeenCalledOnce();
+    expect(releaseLease).toHaveBeenCalledOnce();
   });
 
   it("selects persona preferred provider before config fallback", () => {
