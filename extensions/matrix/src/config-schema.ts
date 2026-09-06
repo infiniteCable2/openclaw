@@ -74,6 +74,29 @@ const matrixNetworkSchema = z
   .strict()
   .optional();
 
+const matrixRtcSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    authServiceUrl: z.string().url().optional(),
+    mediaBridgeCommand: z.string().min(1).optional(),
+    transcriptionProvider: z.string().min(1).optional(),
+    providers: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
+    toolPolicy: z.enum(["safe-read-only", "owner", "none"]).optional(),
+    admissions: z
+      .array(
+        z
+          .object({
+            roomId: z.string().min(1),
+            userId: z.string().min(1),
+            agentId: z.string().min(1),
+          })
+          .strict(),
+      )
+      .optional(),
+  })
+  .strict()
+  .optional();
+
 const matrixStreamingSchema = z
   .object({
     mode: z.enum(["partial", "quiet", "progress", "off"]).optional(),
@@ -189,6 +212,7 @@ const MatrixConfigSchema = z.object({
     threadReplies: z.enum(["off", "inbound", "always"]).optional(),
   }),
   execApprovals: matrixExecApprovalsSchema,
+  rtc: matrixRtcSchema,
   groups: z.object({}).catchall(matrixRoomSchema).optional(),
   rooms: z.object({}).catchall(matrixRoomSchema).optional(),
   actions: matrixActionSchema,

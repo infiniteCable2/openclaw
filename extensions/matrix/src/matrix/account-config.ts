@@ -121,7 +121,7 @@ export function resolveMatrixAccountConfig(params: {
       | undefined,
     accountId,
     normalizeAccountId,
-    nestedObjectKeys: ["dm", "actions", "execApprovals", "botLoopProtection"],
+    nestedObjectKeys: ["dm", "actions", "execApprovals", "botLoopProtection", "rtc"],
   });
   const accountConfig = findMatrixAccountConfig(params.cfg, accountId);
   const groups = mergeMatrixRoomEntries(

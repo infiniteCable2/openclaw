@@ -108,6 +108,32 @@ type MatrixNetworkConfig = {
   dangerouslyAllowPrivateNetwork?: boolean;
 };
 
+export type MatrixRtcAdmission = {
+  /** Exact Matrix room ID for the direct call. */
+  roomId: string;
+  /** Exact remote Matrix user ID admitted to the call. */
+  userId: string;
+  /** Exact OpenClaw agent selected by the normal Matrix route. */
+  agentId: string;
+};
+
+export type MatrixRtcConfig = {
+  /** Enable MatrixRTC audio-call handling. Default: false. */
+  enabled?: boolean;
+  /** Pinned MatrixRTC authorization-service URL advertised by the homeserver. */
+  authServiceUrl?: string;
+  /** Absolute path to the separately installed native LiveKit media bridge. */
+  mediaBridgeCommand?: string;
+  /** Registered realtime transcription provider. */
+  transcriptionProvider?: string;
+  /** Provider-specific realtime transcription configuration. */
+  providers?: Record<string, Record<string, unknown>>;
+  /** Tool access used by the agent consulted during a call. */
+  toolPolicy?: "safe-read-only" | "owner" | "none";
+  /** Exact room/user/agent tuples admitted to MatrixRTC calls. */
+  admissions?: MatrixRtcAdmission[];
+};
+
 /** Per-account Matrix config (excludes the accounts field to prevent recursion). */
 export type MatrixAccountConfig = Omit<MatrixConfig, "accounts">;
 
@@ -199,6 +225,8 @@ export type MatrixConfig = {
   dm?: MatrixDmConfig;
   /** Matrix-native exec approval delivery config. */
   execApprovals?: MatrixExecApprovalConfig;
+  /** MatrixRTC audio-call integration. */
+  rtc?: MatrixRtcConfig;
   /** Room config allowlist keyed by room ID or alias (names resolved to IDs when possible). */
   groups?: Record<string, MatrixRoomConfig>;
   /** @deprecated Use groups. */

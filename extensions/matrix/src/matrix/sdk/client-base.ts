@@ -34,6 +34,7 @@ import { matrixEventToRaw } from "./event-helpers.js";
 import { MatrixAuthedHttpClient } from "./http-client.js";
 import { MATRIX_IDB_PERSIST_INTERVAL_MS } from "./idb-persistence-lock.js";
 import { LogService, noop } from "./logger.js";
+import { createMatrixRtcClientFacade, type MatrixRtcClientFacade } from "./matrix-rtc.js";
 import { MatrixRecoveryKeyStore } from "./recovery-key-store.js";
 import { createMatrixGuardedFetch } from "./transport.js";
 import type { MatrixClientEventMap, MatrixCryptoBootstrapApi, MatrixRawEvent } from "./types.js";
@@ -159,6 +160,8 @@ export abstract class MatrixClientBase {
     isDm: (roomId: string): boolean => this.dmRoomIds.has(roomId),
   };
 
+  readonly matrixRtc: MatrixRtcClientFacade;
+
   crypto?: MatrixCryptoFacade;
 
   constructor(
@@ -234,6 +237,7 @@ export abstract class MatrixClientBase {
         VerificationMethod.Reciprocate,
       ],
     });
+    this.matrixRtc = createMatrixRtcClientFacade(this.client);
   }
 
   protected async withMessageWireDispatchGuard<T>(params: {

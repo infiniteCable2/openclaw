@@ -8,6 +8,39 @@ if (!MatrixConfigSchema) {
 }
 
 describe("MatrixConfigSchema SecretInput", () => {
+  it("accepts strict MatrixRTC room, user, and agent admissions", () => {
+    const result = MatrixConfigSchema.safeParse({
+      rtc: {
+        enabled: true,
+        authServiceUrl: "https://matrix.example.org/livekit/jwt",
+        mediaBridgeCommand: "/opt/openclaw/bin/openclaw-matrix-rtc-media",
+        transcriptionProvider: "local-media",
+        providers: {
+          "local-media": { baseUrl: "http://127.0.0.1:8010/v1" },
+        },
+        toolPolicy: "owner",
+        admissions: [
+          {
+            roomId: "!private:example.org",
+            userId: "@owner:example.org",
+            agentId: "steffen",
+          },
+        ],
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects incomplete or open-ended MatrixRTC admissions", () => {
+    const result = MatrixConfigSchema.safeParse({
+      rtc: {
+        enabled: true,
+        admissions: [{ roomId: "!private:example.org", userId: "*" }],
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("preserves root and account join-introduction overrides without materializing defaults", () => {
     const result = MatrixConfigSchema.safeParse({
       joinIntro: false,
