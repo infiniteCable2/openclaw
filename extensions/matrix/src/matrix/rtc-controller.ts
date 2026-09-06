@@ -166,7 +166,10 @@ export function registerMatrixRtcController(params: {
           dmSessionScope: params.accountConfig.dm?.sessionScope,
           resolveAgentRoute: params.runtime.channel.routing.resolveAgentRoute,
         }).route;
-        await session.initialMembershipCalculated;
+        // Every beginCall edge is already membership-ready: either the initial
+        // calculation resolved, or the SDK emitted MembershipsChanged / SessionStarted
+        // after a fresh calculation. Re-awaiting the constructor-time promise can
+        // deadlock sticky-event calls even though session.memberships is current.
         const remote = assertMatrixRtcCallAdmission({
           isDirectRoom: params.client.dms.isDm(roomId),
           joinedUserIds: params.client.matrixRtc.getJoinedUserIds(roomId),

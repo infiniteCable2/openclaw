@@ -50,7 +50,7 @@ describe("registerMatrixRtcController", () => {
     vi.clearAllMocks();
   });
 
-  it("starts an admitted call from a room membership change without SessionStarted", async () => {
+  it("starts from a membership change even while initial membership remains pending", async () => {
     const emitter = new EventEmitter();
     const remoteMembership = {
       userId: ownerId,
@@ -64,7 +64,11 @@ describe("registerMatrixRtcController", () => {
     };
     const session = {
       memberships: [] as Array<typeof remoteMembership>,
-      initialMembershipCalculated: Promise.resolve(),
+      // matrix-js-sdk may emit a freshly recalculated sticky membership while
+      // its constructor-time calculation is still pending. The event itself is
+      // the readiness boundary; waiting for this older promise deadlocks call
+      // admission without producing an error.
+      initialMembershipCalculated: new Promise<void>(() => {}),
       slotId: "m.call#ROOM",
       getRtcSlot: vi.fn(() => ({
         encryption: { type: RTC_SLOT_ENCRYPTION_PER_MEMBER },
