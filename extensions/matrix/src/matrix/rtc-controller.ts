@@ -112,6 +112,7 @@ export function registerMatrixRtcController(params: {
   abortSignal?: AbortSignal;
 }): { startExisting(): void; stop(): Promise<void> } {
   const calls = new Map<string, ActiveCall>();
+  const observedSessions = new Map<string, { session: MatrixRTCSession; dispose: () => void }>();
   let stopped = false;
 
   const stopCallSafely = async (call: ActiveCall) => {
@@ -334,7 +335,37 @@ export function registerMatrixRtcController(params: {
     })();
   };
 
-  const disposeStarted = params.client.matrixRtc.onSessionStarted(beginCall);
+  const observeSession = (roomId: string, session: MatrixRTCSession) => {
+    const existing = observedSessions.get(roomId);
+    if (existing?.session === session) {
+      return;
+    }
+    existing?.dispose();
+
+    const reconcile = () => {
+      if (stopped) {
+        return;
+      }
+      if (session.memberships.length > 0) {
+        beginCall(roomId, session);
+      } else {
+        void endCall(roomId);
+      }
+    };
+    session.on(MatrixRTCSessionEvent.MembershipsChanged, reconcile);
+    const dispose = () => session.off(MatrixRTCSessionEvent.MembershipsChanged, reconcile);
+    observedSessions.set(roomId, { session, dispose });
+    void session.initialMembershipCalculated.then(reconcile, (error: unknown) => {
+      params.logger.warn(
+        `matrix rtc: initial membership calculation failed: ${formatErrorMessage(error)}`,
+      );
+    });
+  };
+
+  const disposeStarted = params.client.matrixRtc.onSessionStarted((roomId, session) => {
+    observeSession(roomId, session);
+    beginCall(roomId, session);
+  });
   const disposeEnded = params.client.matrixRtc.onSessionEnded((roomId) => {
     void endCall(roomId);
   });
@@ -350,6 +381,10 @@ export function registerMatrixRtcController(params: {
     stopped = true;
     disposeStarted();
     disposeEnded();
+    for (const observed of observedSessions.values()) {
+      observed.dispose();
+    }
+    observedSessions.clear();
     params.abortSignal?.removeEventListener("abort", abortListener);
     const active = [...calls.entries()];
     calls.clear();
@@ -359,9 +394,12 @@ export function registerMatrixRtcController(params: {
   return {
     startExisting() {
       for (const admission of params.config.admissions) {
-        const session = params.client.matrixRtc.getActiveSession(admission.roomId);
+        // Pin and observe the canonical room session. matrix-js-sdk can update a
+        // sticky RTC membership before its manager emits SessionStarted, so the
+        // per-session membership signal is the reliable lifecycle boundary.
+        const session = params.client.matrixRtc.getRoomSession(admission.roomId);
         if (session) {
-          beginCall(admission.roomId, session);
+          observeSession(admission.roomId, session);
         }
       }
     },
