@@ -28,7 +28,7 @@ import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import type { TemplateContext } from "../templating.js";
 import { resolveRunAuthProfile } from "./agent-runner-auth-profile.js";
 import { buildEmbeddedRunBaseParams as buildEmbeddedRunBaseParamsCore } from "./agent-runner-run-params.js";
-import { hasInboundAudio } from "./inbound-media.js";
+import { hasInboundVoiceMessage } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import type { FollowupRun } from "./queue.js";
 import { readChannelSourceTurnId } from "./source-turn-id.js";
@@ -305,7 +305,7 @@ function buildEmbeddedContextFromTemplate(params: {
       config,
       hasRepliedRef: params.hasRepliedRef,
     }),
-    currentInboundAudio: hasInboundAudio(sessionCtx),
+    currentInboundAudio: hasInboundVoiceMessage(sessionCtx),
   };
 }
 

@@ -38,7 +38,7 @@ import {
   suppressUnresolvedPromptMedia,
   updateRoomEventAmbientTranscriptWatermark,
 } from "./get-reply-run-helpers.js";
-import { hasInboundAudio } from "./inbound-media.js";
+import { hasInboundVoiceMessage } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveReplyToMode } from "./reply-threading.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
@@ -357,7 +357,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     transcriptPrompt: transcriptCommandBody,
     ...(userTurnTranscriptRecorder ? { userTurnTranscriptRecorder } : {}),
     currentInboundEventKind: inboundEventKind,
-    currentInboundAudio: hasInboundAudio(sessionCtx),
+    currentInboundAudio: hasInboundVoiceMessage(sessionCtx),
     channelAdmissionEvidence:
       readChannelContextAdmissionEvidence(ctx) ?? readChannelContextAdmissionEvidence(sessionCtx),
     currentInboundContext,

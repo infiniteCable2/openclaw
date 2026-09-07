@@ -99,7 +99,10 @@ describe("canonical persisted media", () => {
       MediaTranscribedIndexes: [0],
       MediaStaged: true,
       MediaWorkspaceDir: "/media/workspace",
-      __openclaw: { traceId: "trace-1", media: [{ messageId: "m1" }] },
+      __openclaw: {
+        traceId: "trace-1",
+        media: [{ messageId: "m1", voiceMessage: false }],
+      },
     });
 
     expect(result.message).toEqual({
@@ -110,6 +113,7 @@ describe("canonical persisted media", () => {
             path: "/media/a.ogg",
             kind: "audio",
             transcribed: true,
+            voiceMessage: false,
             staged: true,
             workspaceDir: "/media/workspace",
             messageId: "m1",

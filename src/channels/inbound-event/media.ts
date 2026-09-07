@@ -25,6 +25,7 @@ export type ChannelInboundMediaInput = {
   width?: number | null;
   height?: number | null;
   transcribed?: boolean | null;
+  voiceMessage?: boolean | null;
   messageId?: string | null;
 };
 
@@ -168,6 +169,7 @@ export function toHistoryMediaEntries(
       contentType: entry.contentType,
       kind: entry.kind,
       messageId: entry.messageId,
+      voiceMessage: entry.voiceMessage,
     };
     if (entry.durationMs) {
       historyEntry.durationMs = entry.durationMs;

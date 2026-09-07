@@ -41,3 +41,16 @@ export function hasInboundAudio(ctx: InboundMediaContext): boolean {
     (media) => media.kind === "audio" || isAudio(normalizeMediaType(media.contentType)),
   );
 }
+
+/**
+ * Returns true for conversational voice messages. Channels that can distinguish voice messages
+ * from ordinary audio files must set `voiceMessage`; unmarked audio remains compatible with older
+ * channel adapters until they provide that proof.
+ */
+export function hasInboundVoiceMessage(ctx: InboundMediaContext): boolean {
+  const audio = normalizeMediaFacts(ctx.media).filter((media) => {
+    const type = normalizeMediaType(media.contentType);
+    return media.kind === "audio" || type === "audio" || type?.startsWith("audio/") === true;
+  });
+  return audio.some((media) => media.voiceMessage !== false);
+}

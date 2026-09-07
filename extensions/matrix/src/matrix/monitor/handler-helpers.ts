@@ -172,6 +172,12 @@ export function resolveMatrixInboundMediaContent(content: RoomMessageEventConten
   };
 }
 
+/** Matrix voice messages are audio events carrying the MSC3245 voice marker. */
+export function isMatrixVoiceMessageContent(content: RoomMessageEventContent): boolean {
+  const marker = (content as Record<string, unknown>)["org.matrix.msc3245.voice"];
+  return Boolean(marker && typeof marker === "object" && !Array.isArray(marker));
+}
+
 export function isMatrixAudioMediaEnabled(cfg: CoreConfig): boolean {
   const tools = cfg.tools as
     | {

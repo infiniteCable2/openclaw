@@ -34,7 +34,7 @@ import { buildCommandOutputFromToolResultEvent } from "./agent-runner-command-ou
 import type { AgentFallbackCandidateCommonParams } from "./agent-runner-fallback-cycle.types.js";
 import { resolveRunModelHasVision } from "./agent-runner-run-params.js";
 import { shouldBridgeCliPreambleEvents } from "./get-reply.types.js";
-import { hasInboundAudio } from "./inbound-media.js";
+import { hasInboundVoiceMessage } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveReplyOperationTerminationFields } from "./reply-operation-abort.js";
 
@@ -418,7 +418,7 @@ export async function runCliFallbackCandidate(
             currentThreadTs: cliCurrentThreadId != null ? String(cliCurrentThreadId) : undefined,
             currentMessageId: cliCurrentMessageId,
             replyToMode: turn.followupRun.originatingReplyToMode ?? turn.sessionCtx.ReplyToMode,
-            currentInboundAudio: hasInboundAudio(turn.sessionCtx),
+            currentInboundAudio: hasInboundVoiceMessage(turn.sessionCtx),
             agentAccountId: turn.followupRun.run.agentAccountId,
             senderIsOwner: turn.followupRun.run.senderIsOwner,
             approvalReviewerDeviceId: turn.followupRun.run.approvalReviewerDeviceId,

@@ -18,7 +18,10 @@ import { resolveMatrixReplyToEventId } from "../relations.js";
 import type { MatrixClient } from "../sdk.js";
 import { resolveMatrixAckReactionConfig } from "./ack-config.js";
 import { resolveMatrixAllowListMatch } from "./allowlist.js";
-import { resolveMatrixSharedDmContextNotice } from "./handler-helpers.js";
+import {
+  isMatrixVoiceMessageContent,
+  resolveMatrixSharedDmContextNotice,
+} from "./handler-helpers.js";
 import { loadMatrixSendModule } from "./handler-runtime.js";
 import type { MatrixLocationPayload } from "./location.js";
 import { createMatrixReplyContextResolver } from "./reply-context.js";
@@ -44,6 +47,7 @@ export async function resolveMatrixInboundContext(config: {
   logVerboseMessage: (message: string) => void;
   roomId: string;
   event: MatrixRawEvent;
+  content: RoomMessageEventContent;
   eventTs?: number;
   route: MatrixInboundRoute;
   isDirectMessage: boolean;
@@ -94,6 +98,7 @@ export async function resolveMatrixInboundContext(config: {
     logVerboseMessage,
     roomId,
     event,
+    content,
     eventTs,
     route: _route,
     isDirectMessage,
@@ -266,6 +271,7 @@ export async function resolveMatrixInboundContext(config: {
               url: media.path,
               contentType: media.contentType,
               transcribed: preflightAudioTranscript !== undefined,
+              voiceMessage: isMatrixVoiceMessageContent(content),
             },
           ]
         : undefined,
