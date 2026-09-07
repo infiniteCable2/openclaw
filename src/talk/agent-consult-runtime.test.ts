@@ -249,7 +249,7 @@ describe("realtime voice agent consult runtime", () => {
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
   });
 
-  it("streams only sanitized final-answer blocks and marks delivery complete", async () => {
+  it("streams only native visible answer blocks and marks delivery complete", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime([
       { text: "Erster Satz.\n\nZweiter Satz." },
     ]);
@@ -288,14 +288,14 @@ describe("realtime voice agent consult runtime", () => {
       { type: "done", text: "Erster Satz.\n\nZweiter Satz." },
     ]);
     const call = requireEmbeddedAgentCall(runEmbeddedAgent);
-    expect(call.enforceFinalTag).toBe(true);
+    expect(call.enforceFinalTag).toBeUndefined();
     expect(call.blockReplyBreak).toBe("text_end");
     expect(call.blockReplyChunking).toEqual({
       minChars: 48,
       maxChars: 320,
       breakPreference: "sentence",
     });
-    expect(call.prompt).toContain("<final>...</final>");
+    expect(call.prompt).not.toContain("<final>...</final>");
   });
 
   it("binds GPT-Live delegated runs to spoken confirmation until completion", async () => {

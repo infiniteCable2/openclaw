@@ -389,8 +389,8 @@ export async function consultRealtimeVoiceAgent(params: {
   fallbackText?: string;
   abortSignal?: AbortSignal;
   /**
-   * Optional low-latency speech sink. When present, the embedded run must mark its
-   * final answer explicitly; only OpenClaw's sanitized final-answer blocks reach it.
+   * Optional low-latency speech sink. Native visible answer blocks are forwarded as
+   * they complete; structured reasoning, commentary, and error blocks stay excluded.
    */
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
   onRunStarted?: (params: {
@@ -519,10 +519,8 @@ export async function consultRealtimeVoiceAgent(params: {
         }
       };
 
-      // Voice consults suppress verbose/reasoning output because the bridge needs a short,
-      // speakable answer, not agent-run diagnostics or hidden reasoning artifacts. Streaming
-      // additionally requires an explicit final-answer envelope so unphased provider text can
-      // never be mistaken for speech.
+      // Voice consults suppress verbose/reasoning presentation because the bridge needs a short,
+      // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
       const runPromise = params.agentRuntime.runEmbeddedAgent({
         sessionId,
         sessionKey: params.sessionKey,
@@ -553,7 +551,6 @@ export async function consultRealtimeVoiceAgent(params: {
           userLabel: params.userLabel,
           assistantLabel: params.assistantLabel,
           questionSourceLabel: params.questionSourceLabel,
-          requireFinalAnswerEnvelope: Boolean(params.onSpeakableText),
         }),
         provider: params.provider,
         model: params.model,
@@ -564,7 +561,6 @@ export async function consultRealtimeVoiceAgent(params: {
         toolResultFormat: "plain",
         ...(params.onSpeakableText
           ? {
-              enforceFinalTag: true,
               blockReplyBreak: "text_end" as const,
               blockReplyChunking: {
                 minChars: 48,
