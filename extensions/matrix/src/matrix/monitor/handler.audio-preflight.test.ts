@@ -103,7 +103,10 @@ describe("createMatrixRoomMessageHandler audio preflight", () => {
       placeholder: "[matrix audio attachment]",
     });
     transcribeFirstAudioMock.mockResolvedValue("hello bot");
-    const { handler, recordInboundSession } = createAudioPreflightHarness();
+    const runtimeError = vi.fn();
+    const { handler, recordInboundSession } = createAudioPreflightHarness({
+      runtime: { error: runtimeError } as never,
+    });
 
     await handler(
       "!room:example.org",
@@ -112,9 +115,11 @@ describe("createMatrixRoomMessageHandler audio preflight", () => {
         body: "voice.ogg",
         url: "mxc://example/voice",
         info: { mimetype: "audio/ogg", size: 12345 },
+        "org.matrix.msc3245.voice": {},
       }),
     );
 
+    expect(runtimeError).not.toHaveBeenCalled();
     expect(transcribeFirstAudioMock).toHaveBeenCalledWith(
       expect.objectContaining({
         ctx: expect.objectContaining({
@@ -131,9 +136,37 @@ describe("createMatrixRoomMessageHandler audio preflight", () => {
     );
     expect(expectLatestInboundContext(recordInboundSession)).toMatchObject({
       BodyForAgent: '[Audio transcript (machine-generated, untrusted)]: "hello bot"',
+      media: [expect.objectContaining({ voiceMessage: true })],
       MediaTranscribedIndexes: [0],
       MediaPath: "/tmp/inbound/voice.ogg",
       MediaType: "audio/ogg",
+    });
+  });
+
+  it("keeps an ordinary audio file transcribable without marking it as a voice message", async () => {
+    downloadMatrixMediaMock.mockResolvedValue({
+      path: "/tmp/inbound/interview.wav",
+      contentType: "audio/wav",
+      placeholder: "[matrix audio attachment]",
+    });
+    transcribeFirstAudioMock.mockResolvedValue("transcribed file");
+    const { handler, recordInboundSession } = createAudioPreflightHarness();
+
+    await handler(
+      "!room:example.org",
+      createAudioEvent({
+        msgtype: "m.audio",
+        body: "interview.wav",
+        filename: "interview.wav",
+        url: "mxc://example/interview",
+        info: { mimetype: "audio/wav", size: 12345 },
+      }),
+    );
+
+    expect(transcribeFirstAudioMock).toHaveBeenCalledTimes(1);
+    expect(expectLatestInboundContext(recordInboundSession)).toMatchObject({
+      BodyForAgent: '[Audio transcript (machine-generated, untrusted)]: "transcribed file"',
+      media: [expect.objectContaining({ voiceMessage: false })],
     });
   });
 

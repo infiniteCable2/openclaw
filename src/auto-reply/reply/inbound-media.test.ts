@@ -3,6 +3,7 @@ import {
   hasInboundAudio,
   hasInboundMedia,
   hasInboundMediaForUnderstanding,
+  hasInboundVoiceMessage,
 } from "./inbound-media.js";
 
 describe("hasInboundMedia", () => {
@@ -20,6 +21,21 @@ describe("hasInboundMedia", () => {
     expect(hasInboundMedia({ media: [{ path: "" }] })).toBe(false);
     expect(hasInboundMedia({ media: [{ path: "   " }] })).toBe(false);
     expect(hasInboundMedia({ media: [{}, { path: "/tmp/real.png" }] })).toBe(true);
+  });
+});
+
+describe("hasInboundVoiceMessage", () => {
+  it("accepts explicit voice-message proof and legacy unmarked audio", () => {
+    expect(hasInboundVoiceMessage({ media: [{ kind: "audio", voiceMessage: true }] })).toBe(true);
+    expect(hasInboundVoiceMessage({ media: [{ contentType: "audio/ogg" }] })).toBe(true);
+  });
+
+  it("does not treat an explicitly ordinary audio attachment as a voice message", () => {
+    expect(
+      hasInboundVoiceMessage({
+        media: [{ contentType: "audio/wav", voiceMessage: false }],
+      }),
+    ).toBe(false);
   });
 });
 

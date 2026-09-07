@@ -52,7 +52,7 @@ import { noteDispatchProcessedOutcome } from "./dispatch-processed-outcome.js";
 import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
 import type { ReplySessionBinding } from "./get-reply.types.js";
 import { finalizeInboundContext, isFinalizedInboundContext } from "./inbound-context.js";
-import { hasInboundAudio } from "./inbound-media.js";
+import { hasInboundVoiceMessage } from "./inbound-media.js";
 import { bindReplyDispatcherConversationContext } from "./reply-dispatcher.js";
 import {
   resolveReplyOperationRunState,
@@ -373,7 +373,7 @@ export async function gatherDispatchRequest(
   // Inherited sessions_send routes carry thread ids only when the stored route
   // proves the thread came from an explicit target, not session normalization.
   const routeReplyThreadId = replyRoute.threadId ?? routeThreadId;
-  const inboundAudio = hasInboundAudio(ctx);
+  const inboundAudio = hasInboundVoiceMessage(ctx);
   const sessionTtsAuto = normalizeTtsAutoMode(sessionStoreEntry.entry?.ttsAuto);
   // A bound ACP key names an external harness, not a configured model-runtime owner.
   // Keep the source owner for Gateway dispatch while ACP execution uses the bound target below.

@@ -499,6 +499,7 @@ export async function resolveMatrixIngressContent(config: {
 
   return {
     cfg,
+    content,
     liveDmAllowFrom,
     messageIngress,
     resolveMessageIngress,

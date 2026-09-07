@@ -25,6 +25,8 @@ export type MediaFact = {
   width?: number;
   height?: number;
   transcribed?: boolean;
+  /** Channel-authored proof that this audio attachment is a conversational voice message. */
+  voiceMessage?: boolean;
   messageId?: string;
   workspaceDir?: string;
   /** Internal proof that this exact fact was covered by a legacy staged projection. */
@@ -238,6 +240,7 @@ export function canonicalizePersistedUserMessageMedia<T extends object>(
       ...(fact.width ? { width: fact.width } : {}),
       ...(fact.height ? { height: fact.height } : {}),
       ...(fact.transcribed ? { transcribed: true } : {}),
+      ...(typeof fact.voiceMessage === "boolean" ? { voiceMessage: fact.voiceMessage } : {}),
       ...(fact.messageId ? { messageId: fact.messageId } : {}),
       ...(fact.workspaceDir ? { workspaceDir: fact.workspaceDir } : {}),
       ...(fact.staged || stagedMedia?.[index]?.staged ? { staged: true } : {}),
@@ -399,6 +402,7 @@ function normalizeMediaFact<TInput extends MediaFactInput>(
     ...(width ? { width } : {}),
     ...(height ? { height } : {}),
     transcribed: input.transcribed === true || defaults.transcribed?.(input, index) === true,
+    ...(typeof input.voiceMessage === "boolean" ? { voiceMessage: input.voiceMessage } : {}),
     messageId: normalizeOptionalString(input.messageId) ?? defaults.messageId,
     ...(workspaceDir ? { workspaceDir } : {}),
     ...(input.staged === true ? { staged: true } : {}),
@@ -488,6 +492,7 @@ function resolveMediaFactsWithPrecedence(
             ? fact.transcribed === true
             : transcribed.has(index)
           : fact?.transcribed === true || transcribed.has(index),
+        voiceMessage: fact?.voiceMessage,
         messageId: fact?.messageId,
         workspaceDir:
           normalizeOptionalString(fact?.workspaceDir) ??

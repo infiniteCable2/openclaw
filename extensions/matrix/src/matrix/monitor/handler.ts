@@ -269,6 +269,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
       }
 
       const {
+        content,
         cfg,
         liveDmAllowFrom,
         route: _route,
@@ -316,6 +317,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         logVerboseMessage,
         roomId,
         event,
+        content,
         eventTs: eventTs ?? undefined,
         route: _route,
         isDirectMessage,

@@ -4,7 +4,7 @@ import { resolveCommandAuthorization } from "../../auto-reply/command-auth.js";
 import { buildInboundMediaNoteProjection } from "../../auto-reply/media-note.js";
 import { emitInboundMessageAuditTerminal } from "../../auto-reply/reply/dispatch-from-config.audit.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
-import { hasInboundAudio } from "../../auto-reply/reply/inbound-media.js";
+import { hasInboundVoiceMessage } from "../../auto-reply/reply/inbound-media.js";
 import { emitMessageReceivedHooks } from "../../auto-reply/reply/message-received-hooks.js";
 import { resolveQueueSettings } from "../../auto-reply/reply/queue/settings-runtime.js";
 import {
@@ -165,7 +165,7 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
   const finalization = await finalizeReplyMessageInjectionAttempt({
     attempt: params.attempt,
     target: params.target,
-    inboundAudio: hasInboundAudio(finalizedCtx),
+    inboundAudio: hasInboundVoiceMessage(finalizedCtx),
   });
   if (finalization.status === "rejected") {
     return false;
