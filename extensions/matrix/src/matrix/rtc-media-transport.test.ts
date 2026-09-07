@@ -47,6 +47,12 @@ function acknowledgeClear(control: net.Socket, generation: number) {
 }
 
 describe("MatrixRTC media output framing", () => {
+  it("declares its remote participant track as full-duplex input", () => {
+    const { transport } = createTransportFixture();
+
+    expect(transport.supportsFullDuplexInput).toBe(true);
+  });
+
   it("encodes one bounded generation-tagged PCM frame", () => {
     const pcm = Buffer.from([1, 0, 2, 0]);
     const frame = encodeMatrixRtcOutputFrame(42, pcm);
@@ -73,8 +79,8 @@ describe("MatrixRTC media output framing", () => {
     await transport.writeOutput(Buffer.alloc(480, 2));
 
     expect(stdin.write).toHaveBeenCalledTimes(2);
-    expect((stdin.write.mock.calls[0]?.[0] as Buffer).readBigUInt64BE(8)).toBe(0n);
-    expect((stdin.write.mock.calls[1]?.[0] as Buffer).readBigUInt64BE(8)).toBe(1n);
+    expect((stdin.write.mock.calls[0]![0] as Buffer).readBigUInt64BE(8)).toBe(0n);
+    expect((stdin.write.mock.calls[1]![0] as Buffer).readBigUInt64BE(8)).toBe(1n);
   });
 
   it("fences a backpressured write as soon as output is cleared", async () => {

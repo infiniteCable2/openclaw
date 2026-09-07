@@ -78,6 +78,8 @@ type RealtimeVoiceSessionHarnessEchoSuppression = {
   bytesPerMs: number;
   tailMs: number;
   transcriptLookbackMs: number;
+  /** Keep false only for transport-isolated or actively echo-cancelled full-duplex input. */
+  suppressInputDuringOutput?: boolean;
 };
 
 type RealtimeVoiceSessionHarnessHealth = ReturnType<typeof getRealtimeVoiceTranscriptHealth> &
@@ -403,7 +405,10 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
       return Date.now() <= Math.max(lastOutputPlayableUntilMs, suppressInputUntilMs);
     },
     recordInputAudio(audio) {
-      if (Date.now() < suppressInputUntilMs) {
+      if (
+        params.echoSuppression?.suppressInputDuringOutput !== false &&
+        Date.now() < suppressInputUntilMs
+      ) {
         lastSuppressedInputAt = new Date().toISOString();
         suppressedInputBytes += audio.byteLength;
         return false;

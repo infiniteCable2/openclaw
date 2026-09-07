@@ -11,6 +11,11 @@ export type MeetingRealtimeAudioTransportHealth = {
 };
 
 export interface MeetingRealtimeAudioTransport {
+  /**
+   * True only when input remains usable while output is playing, because capture is
+   * transport-isolated from local playback or protected by active acoustic echo cancellation.
+   */
+  readonly supportsFullDuplexInput?: boolean;
   /** Delivers a prior failure immediately so provider setup cannot outrun transport teardown. */
   onFatal(handler: () => void): void;
   startInput(onAudio: (audio: Buffer) => void): void;
