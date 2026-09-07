@@ -30,7 +30,7 @@ import {
   type MeetingRealtimeEngineConfig,
   type MeetingRuntimePlatform,
 } from "./realtime-engine.js";
-import { playMeetingWaitingAudio, prepareMeetingWaitingAudio } from "./waiting-audio.js";
+import { createMeetingWaitingAudioPlayback, prepareMeetingWaitingAudio } from "./waiting-audio.js";
 
 const MEETING_AGENT_READINESS_TIMEOUT_MS = 120_000;
 
@@ -147,15 +147,16 @@ export async function startMeetingAgentRealtimeEngine(params: {
     params.config.realtime.waitingAudio,
     params.config.chrome.audioFormat,
   );
-  let waitingGeneration = 0;
-  let waitingStopTail = Promise.resolve();
-  let waitingPlayback:
-    | {
-        controller: AbortController;
-        started: boolean;
-        task: Promise<void>;
-      }
-    | undefined;
+  const waitingAudioPlayback = createMeetingWaitingAudioPlayback({
+    audio: waitingAudio,
+    transport: params.transport,
+    isStopped: () => stopped,
+    onError: (error) => {
+      params.logger.warn(
+        `${params.platform.logScope} ${agentLogScope} waiting audio failed: ${formatErrorMessage(error)}`,
+      );
+    },
+  });
   params.logger.info(
     formatMeetingAgentAudioModelLog({
       logScope: params.platform.logScope,
@@ -222,75 +223,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
     await params.transport.writeOutput(audio);
   };
 
-  const stopWaitingAudio = (): Promise<void> => {
-    waitingGeneration += 1;
-    const playback = waitingPlayback;
-    waitingPlayback = undefined;
-    if (!playback) {
-      return waitingStopTail;
-    }
-    playback.controller.abort(new Error("Meeting waiting audio stopped"));
-    const stopTask = waitingStopTail.then(async () => {
-      await playback.task.catch(() => undefined);
-      if (playback.started) {
-        await params.transport.clearOutput();
-      }
-    });
-    waitingStopTail = stopTask.catch(() => undefined);
-    return stopTask;
-  };
-
-  const scheduleWaitingAudio = () => {
-    if (!waitingAudio || stopped) {
-      return;
-    }
-    const generation = ++waitingGeneration;
-    const controller = new AbortController();
-    const playback = {
-      controller,
-      started: false,
-      task: Promise.resolve(),
-    };
-    playback.task = (async () => {
-      await waitingStopTail;
-      if (controller.signal.aborted || stopped || generation !== waitingGeneration) {
-        return;
-      }
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const onAbort = () => {
-            clearTimeout(timer);
-            reject(controller.signal.reason);
-          };
-          const timer = setTimeout(() => {
-            controller.signal.removeEventListener("abort", onAbort);
-            resolve();
-          }, waitingAudio.startDelayMs);
-          controller.signal.addEventListener("abort", onAbort, { once: true });
-        });
-      } catch {
-        return;
-      }
-      if (controller.signal.aborted || stopped || generation !== waitingGeneration) {
-        return;
-      }
-      await playMeetingWaitingAudio({
-        audio: waitingAudio,
-        transport: params.transport,
-        signal: controller.signal,
-        onStarted: () => {
-          playback.started = true;
-        },
-      });
-    })().catch((error: unknown) => {
-      if (!controller.signal.aborted && !stopped) {
-        params.logger.warn(
-          `${params.platform.logScope} ${agentLogScope} waiting audio failed: ${formatErrorMessage(error)}`,
-        );
-      }
-    });
-    waitingPlayback = playback;
-  };
+  const stopWaitingAudio = () => waitingAudioPlayback.stop();
+  const scheduleWaitingAudio = () => waitingAudioPlayback.schedule();
 
   const cancelActiveSpeech = () => {
     for (const controller of activeTtsAborts) {
