@@ -204,6 +204,9 @@ importers:
       '@openclaw/fs-safe':
         specifier: 0.8.3
         version: 0.8.3
+      '@openclaw/llm-core':
+        specifier: workspace:*
+        version: link:packages/llm-core
       '@openclaw/proxyline':
         specifier: 0.3.11
         version: 0.3.11(undici@8.10.2)
