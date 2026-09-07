@@ -34,7 +34,10 @@ import {
 } from "./auth-profile-success.js";
 import type { EmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { resolveFinalAssistantVisibleText } from "./helpers.js";
-import { hasComposedVisibleAnswerAfterSettledTools } from "./incomplete-turn-classification.js";
+import {
+  hasComposedVisibleAnswerAfterSettledTools,
+  isTextExplainedByPreToolCommentary,
+} from "./incomplete-turn-classification.js";
 import {
   resolveEmptyResponseRetryInstruction,
   resolveReasoningOnlyRetryInstruction,
@@ -144,9 +147,21 @@ export function resolveSettledTurnFinalizationRequest(input: {
           (canFinalizeProviderError && metadata?.terminalProviderError))
       );
     });
-  const preparedPayloadCount = hasOnlySyntheticErrorPayload
-    ? 0
-    : (input.payloadsWithToolMedia?.length ?? 0);
+  const hasOnlyPreToolCommentaryPayload =
+    (input.payloadsWithToolMedia?.length ?? 0) > 0 &&
+    input.payloadsWithToolMedia?.every(
+      (payload) =>
+        Object.keys(payload).every((key) => key === "text") &&
+        typeof payload.text === "string" &&
+        isTextExplainedByPreToolCommentary({
+          messagesSnapshot: input.attempt.messagesSnapshot,
+          text: payload.text,
+        }),
+    );
+  const preparedPayloadCount =
+    hasOnlySyntheticErrorPayload || hasOnlyPreToolCommentaryPayload
+      ? 0
+      : (input.payloadsWithToolMedia?.length ?? 0);
   const silentToolResultReplyPayload = resolveSilentToolResultReplyPayload({
     isCronTrigger: input.runParams.trigger === "cron",
     payloadCount: preparedPayloadCount,

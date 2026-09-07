@@ -196,6 +196,69 @@ describe("resolveSettledTurnFinalizationRequest", () => {
     ).toBeNull();
   });
 
+  it("does not mistake aggregated pre-tool commentary for the final answer", () => {
+    const first = buildEmbeddedRunnerAssistant({
+      stopReason: "toolUse",
+      content: [
+        { type: "text", text: "I am checking the source." },
+        { type: "toolCall", id: "tool-read", name: "read", arguments: {} },
+      ],
+    });
+    const second = buildEmbeddedRunnerAssistant({
+      stopReason: "toolUse",
+      content: [
+        { type: "text", text: "I am applying the result." },
+        { type: "toolCall", id: "tool-write", name: "write", arguments: {} },
+      ],
+    });
+    const terminal = buildEmbeddedRunnerAssistant({ stopReason: "stop", content: [] });
+    const commentary = "I am checking the source.\n\nI am applying the result.";
+    const messagesSnapshot = [
+      { role: "user", content: "Update it" },
+      first,
+      { role: "toolResult", toolCallId: "tool-read", toolName: "read", isError: false },
+      second,
+      { role: "toolResult", toolCallId: "tool-write", toolName: "write", isError: false },
+      terminal,
+    ] as never;
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [commentary],
+      messagesSnapshot,
+      lastAssistant: terminal,
+      currentAttemptAssistant: terminal,
+      currentAttemptCompletedAssistant: terminal,
+      toolMetas: [
+        { toolName: "read", toolCallId: "tool-read", replaySafe: true },
+        { toolName: "write", toolCallId: "tool-write", replaySafe: false },
+      ],
+      itemLifecycle: { startedCount: 2, completedCount: 2, activeCount: 0 },
+      replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+      settledTurnFinalizationContext: {
+        source: "openclaw-transcript",
+        messages: messagesSnapshot,
+      },
+    });
+
+    expect(
+      resolveSettledTurnFinalizationRequest({
+        runParams: {
+          sessionId: "session:settled-commentary",
+          runId: "run:settled-commentary",
+          terminalReplyExpectation: "required",
+        } as never,
+        attempt,
+        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        modelApi: "openai-responses",
+        executionContract: undefined,
+        payloadsWithToolMedia: [{ text: commentary }],
+        hasTerminalToolPresentation: false,
+        terminalState: resolveEmbeddedRunAttemptTerminalState({ attempt, assistant: terminal }),
+        settledTurnFinalizationAvailable: true,
+      }),
+    ).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+  });
+
   it("keeps explicit silence terminal across required and optional settled turns", () => {
     const toolUseAssistant = buildEmbeddedRunnerAssistant({
       stopReason: "toolUse",
