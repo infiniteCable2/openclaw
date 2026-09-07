@@ -143,6 +143,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
           `${params.platform.logScope} ${agentLogScope} transcription bridge close ignored: ${formatErrorMessage(error)}`,
         );
       }
+      harness.finishOutputAudio("stopped");
+      harness.endTurn("stopped");
       harness.emit({
         type: "session.closed",
         final: true,
@@ -218,6 +220,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
           ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
           ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
         });
+        if (stopped) {
+          return;
+        }
         if (!result.success || !result.audioStream || !result.sampleRate) {
           throw new Error(result.error ?? "TTS conversion failed");
         }
@@ -268,6 +273,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
       })
       .catch((error: unknown) => {
+        if (stopped) {
+          return;
+        }
         // TTS and sink failures happen after a turn, and sometimes output, has started.
         // Close both spans so later input cannot inherit stale playback suppression.
         harness.finishOutputAudio("failed");
@@ -314,12 +322,13 @@ export async function startMeetingAgentRealtimeEngine(params: {
       logPrefix: `${params.platform.logScope} ${agentLogScope}`,
       responseStyle: "Brief, natural spoken answer for a live meeting.",
       fallbackText: "I hit an error while checking that. Please try again.",
-      consult: ({ question, responseStyle }) =>
+      consult: ({ question, responseStyle, signal }) =>
         params.consultAgent({
           meetingSessionId: params.meetingSessionId,
           requesterSessionKey: params.requesterSessionKey,
           args: { question, responseStyle },
           transcript: harness.transcript,
+          abortSignal: signal,
         }),
       deliver: enqueueSpeakText,
     },
