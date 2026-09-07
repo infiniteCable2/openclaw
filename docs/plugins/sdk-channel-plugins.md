@@ -282,6 +282,25 @@ if the process dies or persistence fails after the effect succeeds but before
 the claim commits, or if the record expires while its ingress row is still
 pending.
 
+#### Dynamic policy publication
+
+Use `reload.noopPrefixes` only for fields whose consumers read the committed
+runtime config without replacing a channel resource. These writes still publish
+the validated runtime snapshot; “noop” means no component restart. A `*` path
+segment matches one nonempty config key, for example
+`channels.example.accounts.*.allowFrom`. Deeper boundaries take precedence;
+at the same depth, an exact path takes precedence over a wildcard.
+
+Bind `createRuntimeConfigReader` when the account starts, and derive a coherent
+policy snapshot at each new admission. Keep resolved-name caches with that
+account owner and recheck the current revision after asynchronous resolution.
+Do not retain startup-only allowlists in another message or interaction path.
+
+Keep credentials, transport settings, and account lifecycle changes on the
+restart path. Do not declare an entire `accounts` subtree dynamic merely to cover
+its policy fields. Writes containing both dynamic policy and restart-required
+settings retain the existing atomic reload and drain behavior.
+
 #### Account-scoped restart contract
 
 Channel config changes restart the whole channel by default. A multi-account
@@ -750,6 +769,14 @@ only: it defaults DMs to `pairing` and groups to `allowlist`. Do not apply
 those defaults to account entries or remove them from the root; the former
 shadows operator settings and the latter can leave group access open.
 This replaces `buildCommonChannelAccountShape` and its defaulting flags.
+
+Use `refineChannelDmPolicy({ channelId, value, ctx })` from the same subpath
+to validate the root policy against `allowFrom`. Pass `accountId` to validate
+one account with root-policy and allowlist inheritance, including explicit
+empty-array overrides. The helper emits the standard root/account error paths
+and messages for `open` and `allowlist` policies. Keep account iteration,
+disabled-account filtering, and ordering relative to other refinements in the
+channel, since those rules differ between plugins.
 
 Use `mergeAccountConfig` or `resolveMergedAccountConfig` through the existing
 `openclaw/plugin-sdk/account-helpers` export for runtime inheritance. Their
