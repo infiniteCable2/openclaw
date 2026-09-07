@@ -413,6 +413,39 @@ describe("attempt result projection", () => {
       expected: true,
     },
     {
+      label: "aggregated pre-tool commentary",
+      assistantTexts: ["Checking the state.\n\nReading the result."],
+      messagesSnapshot: [
+        makeAssistantMessageFixture({
+          stopReason: "toolUse",
+          errorMessage: undefined,
+          timestamp: 1,
+          content: [
+            { type: "text", text: "Checking the state." },
+            { type: "toolCall", id: "call-read-1", name: "read", arguments: {} },
+          ],
+        }),
+        { role: "toolResult", toolCallId: "call-read-1", toolName: "read", isError: false },
+        makeAssistantMessageFixture({
+          stopReason: "toolUse",
+          errorMessage: undefined,
+          timestamp: 2,
+          content: [
+            { type: "text", text: "Reading the result." },
+            { type: "toolCall", id: "call-read-2", name: "read", arguments: {} },
+          ],
+        }),
+        { role: "toolResult", toolCallId: "call-read-2", toolName: "read", isError: false },
+        makeAssistantMessageFixture({
+          stopReason: "error",
+          errorMessage: "Stream ended without finish_reason",
+          timestamp: 3,
+          content: [],
+        }),
+      ] as never,
+      expected: true,
+    },
+    {
       label: "unattributed visible text",
       assistantTexts: ["here is the answer"],
       messagesSnapshot: settledToolMessages(),

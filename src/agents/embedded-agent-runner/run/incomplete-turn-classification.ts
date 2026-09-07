@@ -46,6 +46,47 @@ function readAssistantSnapshotText(message: AgentMessage): string {
   return message.role === "assistant" ? extractEmbeddedAssistantText(message).trim() : "";
 }
 
+function normalizeVisibleTextForComparison(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function collectPreToolCommentaryTexts(params: {
+  messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"];
+}): string[] {
+  const latestUserIndex = params.messagesSnapshot.findLastIndex(
+    (message) => message.role === "user",
+  );
+  const currentMessages = params.messagesSnapshot.slice(latestUserIndex + 1);
+  const lastToolResultIndex = currentMessages.findLastIndex(
+    (message) => message.role === "toolResult",
+  );
+  if (lastToolResultIndex < 0) {
+    return [];
+  }
+  return currentMessages
+    .slice(0, lastToolResultIndex)
+    .map(readAssistantSnapshotText)
+    .filter(Boolean);
+}
+
+/** True when text is exactly one or the ordered aggregate of current-turn pre-tool commentary. */
+export function isTextExplainedByPreToolCommentary(params: {
+  messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"];
+  text: string;
+}): boolean {
+  const candidate = normalizeVisibleTextForComparison(params.text);
+  if (!candidate) {
+    return false;
+  }
+  const commentary = collectPreToolCommentaryTexts(params);
+  if (commentary.length === 0) {
+    return false;
+  }
+  const explained = new Set(commentary.map(normalizeVisibleTextForComparison));
+  explained.add(normalizeVisibleTextForComparison(commentary.join("\n\n")));
+  return explained.has(candidate);
+}
+
 /** Keeps pre-tool commentary distinct from a composed answer at both recovery gates. */
 export function hasComposedVisibleAnswerAfterSettledTools(params: {
   assistantTexts: readonly string[];
@@ -69,13 +110,12 @@ export function hasComposedVisibleAnswerAfterSettledTools(params: {
   ) {
     return true;
   }
-  // A repeated fragment is ambiguous; only whole commentary messages explain text.
-  const preToolTexts = new Set(
-    currentMessages.slice(0, lastToolResultIndex).map(readAssistantSnapshotText),
-  );
   return params.assistantTexts.some((text) => {
     const trimmed = text.trim();
-    return trimmed.length > 0 && !preToolTexts.has(trimmed);
+    return (
+      trimmed.length > 0 &&
+      !isTextExplainedByPreToolCommentary({ messagesSnapshot: params.messagesSnapshot, text })
+    );
   });
 }
 
