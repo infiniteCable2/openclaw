@@ -803,6 +803,33 @@ describe("TTS runtime provider fallback and delivery behavior", () => {
     });
   });
 
+  it("synthesizes short replies to configured inbound voice messages", async () => {
+    const cfg = createTtsConfig("openclaw-speech-core-short-inbound-voice-test");
+    if (cfg.tts) {
+      cfg.tts.auto = "inbound";
+    }
+    let mediaDir: string | undefined;
+    try {
+      const result = await maybeApplyTtsToPayload({
+        payload: { text: "Gerne." },
+        cfg,
+        channel: "matrix",
+        kind: "final",
+        inboundAudio: true,
+      });
+
+      expect(synthesizeMock).toHaveBeenCalled();
+      expect(requireFirstSynthesisRequest("short inbound voice request").text).toBe("Gerne.");
+      expect(result.text).toBe("Gerne.");
+      expect(result.mediaUrl).toMatch(/voice---[a-f0-9-]+\.ogg$/);
+      mediaDir = result.mediaUrl ? path.dirname(result.mediaUrl) : undefined;
+    } finally {
+      if (mediaDir) {
+        rmSync(mediaDir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("skips auto TTS for legacy final media directives", async () => {
     synthesizeMock.mockClear();
     const cfg = createTtsConfig("openclaw-speech-core-media-directive-tts-test");

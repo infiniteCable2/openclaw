@@ -189,6 +189,8 @@ export async function maybeApplyTtsToPayloadCore(
   if (!explicitTts && autoMode === "inbound" && params.inboundAudio !== true) {
     return nextPayload;
   }
+  const allowShortInboundVoiceReply =
+    !explicitTts && autoMode === "inbound" && params.inboundAudio === true;
 
   const mode = config.mode ?? "final";
   if (mode === "final" && params.kind && params.kind !== "final") {
@@ -201,7 +203,7 @@ export async function maybeApplyTtsToPayloadCore(
   if (reply.hasMedia || hasLegacyFinalMediaDirective(text)) {
     return nextPayload;
   }
-  if (!explicitTtsText && ttsText.trim().length < 10) {
+  if (!explicitTtsText && !allowShortInboundVoiceReply && ttsText.trim().length < 10) {
     return nextPayload;
   }
 
@@ -250,7 +252,7 @@ export async function maybeApplyTtsToPayloadCore(
   if (!normalizedTextForAudio) {
     return nextPayload;
   }
-  if (!explicitTtsText && normalizedTextForAudio.length < 10) {
+  if (!explicitTtsText && !allowShortInboundVoiceReply && normalizedTextForAudio.length < 10) {
     return nextPayload;
   }
 
