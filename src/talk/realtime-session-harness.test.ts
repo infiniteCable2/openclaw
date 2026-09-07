@@ -360,6 +360,27 @@ describe("realtime voice session harness", () => {
     });
   });
 
+  it("keeps isolated full-duplex input available during output playback", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const harness = createHarness({
+      echoSuppression: {
+        bytesPerMs: 48,
+        tailMs: 3_000,
+        transcriptLookbackMs: 45_000,
+        suppressInputDuringOutput: false,
+      },
+    });
+
+    harness.recordOutputAudio(Buffer.alloc(48_000));
+    vi.setSystemTime(1_100);
+    expect(harness.recordInputAudio(Buffer.from([1, 2, 3, 4]))).toBe(true);
+    expect(harness.getHealth({ providerConnected: true, realtimeReady: true })).toMatchObject({
+      lastInputBytes: 4,
+      suppressedInputBytes: 0,
+    });
+  });
+
   it("delegates debounced talkback fragments through one consult", async () => {
     vi.useFakeTimers();
     const consult = vi.fn(async ({ question }: { question: string }) => ({

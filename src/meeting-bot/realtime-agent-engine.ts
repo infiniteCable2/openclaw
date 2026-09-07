@@ -315,6 +315,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       bytesPerMs: meetingOutputBytesPerMs(params.config.chrome.audioFormat),
       tailMs: MEETING_OUTPUT_ECHO_SUPPRESSION_TAIL_MS,
       transcriptLookbackMs: MEETING_TRANSCRIPT_ECHO_LOOKBACK_MS,
+      suppressInputDuringOutput: params.transport.supportsFullDuplexInput !== true,
     },
     talkback: {
       debounceMs: MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS,

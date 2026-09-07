@@ -116,6 +116,8 @@ async function connectControlSocket(
 }
 
 export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransport {
+  /** LiveKit delivers the remote participant track separately from the agent's published output. */
+  readonly supportsFullDuplexInput = true;
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #control: net.Socket;
   readonly #tempDir: string;

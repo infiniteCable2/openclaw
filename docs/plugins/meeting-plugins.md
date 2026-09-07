@@ -38,6 +38,13 @@ In `bidi` mode, recoverable provider diagnostics are logged without stopping the
 
 Stopping a meeting requests cancellation of any active agent consult. In `agent` mode, OpenClaw finishes active output and turn events before closing the session, then ignores late speech synthesis and audio delivery results.
 
+Custom realtime audio transports may set `supportsFullDuplexInput: true` only
+when their input is isolated from local playback or protected by active acoustic
+echo cancellation. In `agent` mode, OpenClaw then keeps feeding input to the
+transcription provider during assistant playback so provider VAD can trigger
+barge-in. Transports that omit the capability retain the conservative default:
+input is suppressed through playback and its configured echo tail.
+
 The bounded live transcript remains available only in `transcribe` mode. In all
 three modes, browser joins also persist completed caption rows and a derived
 summary to the shared state database. Leaving the meeting finalizes visible

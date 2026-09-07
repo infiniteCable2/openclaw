@@ -246,4 +246,63 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     });
     await handle.stop();
   });
+
+  it("keeps isolated full-duplex input flowing while assistant playback is active", async () => {
+    const sendAudio = vi.fn();
+    let receiveInput: ((audio: Buffer) => void) | undefined;
+    const provider = createProvider(undefined);
+    provider.createSession.mockReturnValue({
+      connect: vi.fn(async () => undefined),
+      sendAudio,
+      close: vi.fn(),
+      isConnected: () => true,
+    });
+    const writeOutput = vi.fn(async () => undefined);
+    const handle = await startMeetingAgentRealtimeEngine({
+      config,
+      fullConfig: {} as never,
+      runtime: {
+        tts: {
+          streamTextToSpeechTelephony: vi.fn(async () => ({
+            success: true,
+            audioStream: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+                controller.close();
+              },
+            }),
+            outputFormat: "pcm",
+            sampleRate: 24_000,
+          })),
+        },
+      } as unknown as PluginRuntime,
+      platform: {
+        displayName: "Test meeting",
+        logScope: "test meeting",
+        sessionIdPrefix: "test-meeting",
+      },
+      meetingSessionId: "meeting-1",
+      transport: {
+        supportsFullDuplexInput: true,
+        onFatal: vi.fn(),
+        startInput: vi.fn((onAudio) => {
+          receiveInput = onAudio;
+        }),
+        writeOutput,
+        clearOutput: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+      },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      providers: [provider],
+      consultAgent: vi.fn(async () => ({ text: "unused" })),
+    });
+
+    handle.speak("Ausgabe mit gleichzeitigem Eingang.");
+    await vi.waitFor(() => expect(writeOutput).toHaveBeenCalledOnce());
+    receiveInput?.(Buffer.alloc(480, 1));
+
+    expect(sendAudio).toHaveBeenCalledOnce();
+    await handle.stop();
+  });
 });
