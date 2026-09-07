@@ -3,6 +3,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../plugins/types.js";
+import type {
+  RealtimeVoiceAgentConsultResult,
+  RealtimeVoiceAgentConsultSpeechEvent,
+} from "../talk/agent-consult-runtime.js";
 import type { RealtimeVoiceTool, RealtimeVoiceToolCallEvent } from "../talk/provider-types.js";
 import {
   createRealtimeVoiceSessionHarness,
@@ -55,6 +59,8 @@ export type MeetingRealtimeEngineConfig = {
     model?: string;
     instructions?: string;
     introMessage?: string;
+    /** Sentence-level final-answer speech streaming for the agent strategy. Default: off. */
+    responseStreaming?: "off" | "sentence";
     providers: Record<string, Record<string, unknown>>;
   };
 };
@@ -66,6 +72,8 @@ export type MeetingAgentConsultParams = {
   transcript: Array<{ role: "user" | "assistant"; text: string }>;
   /** Meeting-owned cancellation for the active consult. */
   abortSignal?: AbortSignal;
+  /** Final-answer-only stream for sentence-level TTS overlap with model generation. */
+  onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
 };
 
 export type MeetingRealtimeToolCallParams = {
@@ -114,7 +122,7 @@ export async function startMeetingRealtimeEngine(params: {
   transport: MeetingRealtimeAudioTransport;
   logger: RuntimeLogger;
   providers?: RealtimeVoiceProviderPlugin[];
-  consultAgent: (params: MeetingAgentConsultParams) => Promise<{ text: string }>;
+  consultAgent: (params: MeetingAgentConsultParams) => Promise<RealtimeVoiceAgentConsultResult>;
   tools: RealtimeVoiceTool[];
   handleToolCall: (params: MeetingRealtimeToolCallParams) => Promise<void>;
 }): Promise<MeetingRealtimeAudioEngineHandle> {

@@ -130,6 +130,8 @@ export type MatrixRtcConfig = {
   providers?: Record<string, Record<string, unknown>>;
   /** Tool access used by the agent consulted during a call. */
   toolPolicy?: "safe-read-only" | "owner" | "none";
+  /** Final-answer speech delivery: complete response or early sentence blocks. */
+  responseStreaming?: "off" | "sentence";
   /** Exact room/user/agent tuples admitted to MatrixRTC calls. */
   admissions?: MatrixRtcAdmission[];
 };

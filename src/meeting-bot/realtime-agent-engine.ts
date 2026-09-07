@@ -4,10 +4,12 @@ import { formatErrorMessage } from "../infra/errors.js";
 import type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
 import type { RealtimeTranscriptionSession } from "../realtime-transcription/provider-types.js";
+import type { RealtimeVoiceAgentConsultResult } from "../talk/agent-consult-runtime.js";
 import {
   createRealtimeVoiceSessionHarness,
   type RealtimeVoiceSessionHarness,
 } from "../talk/realtime-session-harness.js";
+import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
 import {
   convertMeetingBridgeAudioForStt,
   convertMeetingTtsAudioForBridge,
@@ -102,8 +104,16 @@ export async function startMeetingAgentRealtimeEngine(params: {
   transport: MeetingRealtimeAudioTransport;
   logger: RuntimeLogger;
   providers?: RealtimeTranscriptionProviderPlugin[];
-  consultAgent: (params: MeetingAgentConsultParams) => Promise<{ text: string }>;
+  consultAgent: (params: MeetingAgentConsultParams) => Promise<RealtimeVoiceAgentConsultResult>;
 }): Promise<MeetingRealtimeAudioEngineHandle> {
+  type SpeechUtterance = {
+    generation: number;
+    chunks: string[];
+    transcriptEntries: RealtimeVoiceTranscriptEntry[];
+    playbackStarted: boolean;
+    finalized: boolean;
+    failed: boolean;
+  };
   let stopped = false;
   let stopPromise: Promise<void> | undefined;
   let sttSession: RealtimeTranscriptionSession | null = null;
@@ -111,6 +121,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
   let ttsQueue = Promise.resolve();
   let activeTtsAbort: AbortController | undefined;
   let activeTtsReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let outputGeneration = 0;
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
   const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
   const resolved = resolveMeetingRealtimeTranscriptionProvider({
@@ -199,31 +210,49 @@ export async function startMeetingAgentRealtimeEngine(params: {
     cancelActiveSpeech();
   };
 
-  const enqueueSpeakText = (text: string | undefined) => {
+  const createSpeechUtterance = (): SpeechUtterance => ({
+    generation: outputGeneration,
+    chunks: [],
+    transcriptEntries: [],
+    playbackStarted: false,
+    finalized: false,
+    failed: false,
+  });
+
+  const isCurrentSpeechUtterance = (utterance: SpeechUtterance) =>
+    !stopped && utterance.generation === outputGeneration && !utterance.finalized;
+
+  const removeProvisionalTranscriptEntries = (utterance: SpeechUtterance) => {
+    for (const entry of utterance.transcriptEntries) {
+      const index = harness.transcript.indexOf(entry);
+      if (index >= 0) {
+        harness.transcript.splice(index, 1);
+      }
+    }
+    utterance.transcriptEntries.length = 0;
+  };
+
+  const enqueueSpeechChunk = (text: string | undefined, utterance: SpeechUtterance) => {
     const normalized = normalizeMeetingTtsPromptText(text);
-    if (!normalized || stopped) {
+    if (!normalized || !isCurrentSpeechUtterance(utterance)) {
       return;
     }
+    utterance.chunks.push(normalized);
     ttsQueue = ttsQueue
       .then(async () => {
-        if (stopped) {
+        if (!isCurrentSpeechUtterance(utterance)) {
           return;
         }
-        harness.recordTranscript("assistant", normalized);
+        const transcriptEntry = harness.recordTranscript("assistant", normalized);
+        utterance.transcriptEntries.push(transcriptEntry);
         params.logger.info(
           formatMeetingTranscriptSummaryLog(
             params.platform.logScope,
-            `${agentLogScope} assistant`,
+            `${agentLogScope} assistant stream`,
             normalized,
           ),
         );
-        const turnId = harness.ensureTurn();
-        harness.emit({
-          type: "output.text.done",
-          turnId,
-          final: true,
-          payload: { meetingSessionId: params.meetingSessionId, text: normalized },
-        });
+        harness.ensureTurn();
         const controller = new AbortController();
         activeTtsAbort = controller;
         const result = await params.runtime.tts.streamTextToSpeechTelephony({
@@ -234,7 +263,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
           ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
           ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
         });
-        if (stopped) {
+        if (!isCurrentSpeechUtterance(utterance)) {
+          await result.release?.();
+          if (activeTtsAbort === controller) {
+            activeTtsAbort = undefined;
+          }
           return;
         }
         if (!result.success || !result.audioStream || !result.sampleRate) {
@@ -245,7 +278,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
         );
         const reader = result.audioStream.getReader();
         activeTtsReader = reader;
-        let firstChunk = true;
+        let firstChunk = !utterance.playbackStarted;
         let bytesWritten = 0;
         try {
           for (;;) {
@@ -267,14 +300,15 @@ export async function startMeetingAgentRealtimeEngine(params: {
               params.platform.displayName,
             );
             await writeOutputAudio(output, firstChunk);
+            if (firstChunk) {
+              utterance.playbackStarted = true;
+            }
             firstChunk = false;
             bytesWritten += output.byteLength;
           }
           if (bytesWritten === 0 && !stopped) {
             throw new Error("TTS provider returned an empty audio stream");
           }
-          harness.finishOutputAudio(stopped ? "cancelled" : "completed");
-          harness.endTurn(stopped ? "cancelled" : undefined);
         } finally {
           if (activeTtsReader === reader) {
             activeTtsReader = undefined;
@@ -287,9 +321,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
       })
       .catch((error: unknown) => {
-        if (stopped) {
+        if (!isCurrentSpeechUtterance(utterance)) {
           return;
         }
+        utterance.failed = true;
+        utterance.finalized = true;
         // TTS and sink failures happen after a turn, and sometimes output, has started.
         // Close both spans so later input cannot inherit stale playback suppression.
         harness.finishOutputAudio("failed");
@@ -298,6 +334,57 @@ export async function startMeetingAgentRealtimeEngine(params: {
           `${params.platform.logScope} ${agentLogScope} TTS failed: ${formatErrorMessage(error)}`,
         );
       });
+  };
+
+  const finalizeSpeechUtterance = (utterance: SpeechUtterance, text: string | undefined) => {
+    const normalized = normalizeMeetingTtsPromptText(text);
+    if (!normalized || !isCurrentSpeechUtterance(utterance)) {
+      return;
+    }
+    if (utterance.chunks.length === 0) {
+      enqueueSpeechChunk(normalized, utterance);
+    }
+    ttsQueue = ttsQueue.then(() => {
+      if (!isCurrentSpeechUtterance(utterance) || utterance.failed) {
+        return;
+      }
+      removeProvisionalTranscriptEntries(utterance);
+      harness.recordTranscript("assistant", normalized);
+      params.logger.info(
+        formatMeetingTranscriptSummaryLog(
+          params.platform.logScope,
+          `${agentLogScope} assistant`,
+          normalized,
+        ),
+      );
+      const turnId = harness.ensureTurn();
+      harness.emit({
+        type: "output.text.done",
+        turnId,
+        final: true,
+        payload: { meetingSessionId: params.meetingSessionId, text: normalized },
+      });
+      harness.finishOutputAudio("completed");
+      harness.endTurn();
+      utterance.finalized = true;
+    });
+  };
+
+  const abortSpeechUtterance = (utterance: SpeechUtterance) => {
+    if (!isCurrentSpeechUtterance(utterance)) {
+      return;
+    }
+    outputGeneration += 1;
+    utterance.finalized = true;
+    cancelActiveSpeech();
+    harness.finishOutputAudio("cancelled");
+    harness.endTurn("cancelled");
+  };
+
+  const enqueueSpeakText = (text: string | undefined) => {
+    const utterance = createSpeechUtterance();
+    enqueueSpeechChunk(text, utterance);
+    finalizeSpeechUtterance(utterance, text);
   };
 
   // The closures above only run after harness creation; they capture this later `const`.
@@ -337,14 +424,29 @@ export async function startMeetingAgentRealtimeEngine(params: {
       logPrefix: `${params.platform.logScope} ${agentLogScope}`,
       responseStyle: "Brief, natural spoken answer for a live meeting.",
       fallbackText: "I hit an error while checking that. Please try again.",
-      consult: ({ question, responseStyle, signal }) =>
-        params.consultAgent({
+      consult: ({ question, responseStyle, signal }) => {
+        const utterance = createSpeechUtterance();
+        return params.consultAgent({
           meetingSessionId: params.meetingSessionId,
           requesterSessionKey: params.requesterSessionKey,
           args: { question, responseStyle },
           transcript: harness.transcript,
           abortSignal: signal,
-        }),
+          ...(params.config.realtime.responseStreaming === "sentence"
+            ? {
+                onSpeakableText: (event) => {
+                  if (event.type === "chunk") {
+                    enqueueSpeechChunk(event.text, utterance);
+                  } else if (event.type === "done") {
+                    finalizeSpeechUtterance(utterance, event.text);
+                  } else {
+                    abortSpeechUtterance(utterance);
+                  }
+                },
+              }
+            : {}),
+        });
+      },
       deliver: enqueueSpeakText,
     },
   });
@@ -372,6 +474,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
         // A sustained onset interrupts audible playback immediately. Before the first
         // output byte, wait for a final transcript so noise cannot discard a prepared reply.
+        outputGeneration += 1;
         cancelActiveSpeechForConfirmedTurn();
         // Shipped Meet semantics keep assistant echoes in transcript history and events.
         // Echo suppression only prevents the recorded line from entering talkback.

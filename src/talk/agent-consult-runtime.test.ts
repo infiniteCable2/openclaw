@@ -21,6 +21,7 @@ import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.
 import {
   consultRealtimeVoiceAgent,
   REALTIME_VOICE_AGENT_CONSULT_SENDER_AUTH_VERSION,
+  type RealtimeVoiceAgentConsultSpeechEvent,
 } from "./agent-consult-runtime.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL,
@@ -248,6 +249,55 @@ describe("realtime voice agent consult runtime", () => {
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
   });
 
+  it("streams only sanitized final-answer blocks and marks delivery complete", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime([
+      { text: "Erster Satz.\n\nZweiter Satz." },
+    ]);
+    runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
+      await runParams?.onBlockReply?.({ text: "interne Planung", isReasoning: true });
+      await runParams?.onBlockReply?.({ text: "Erster Satz." });
+      await runParams?.onBlockReply?.({ text: "Zweiter Satz." });
+      return {
+        payloads: [{ text: "Erster Satz.\n\nZweiter Satz." }],
+        meta: {},
+      };
+    });
+    const onSpeakableText = vi.fn(
+      async (_event: RealtimeVoiceAgentConsultSpeechEvent) => undefined,
+    );
+
+    const result = await consultRealtimeVoiceAgent({
+      cfg: {} as never,
+      agentRuntime: runtime as never,
+      logger: { warn: vi.fn() },
+      sessionKey: "voice:stream",
+      messageProvider: "voice",
+      lane: "voice",
+      runIdPrefix: "voice-realtime-consult:stream",
+      args: { question: "Antworte." },
+      transcript: [],
+      surface: "a live voice session",
+      userLabel: "User",
+      onSpeakableText,
+    });
+
+    expect(result).toEqual({ text: "Erster Satz.\n\nZweiter Satz.", delivered: true });
+    expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
+      { type: "chunk", text: "Erster Satz." },
+      { type: "chunk", text: "Zweiter Satz." },
+      { type: "done", text: "Erster Satz.\n\nZweiter Satz." },
+    ]);
+    const call = requireEmbeddedAgentCall(runEmbeddedAgent);
+    expect(call.enforceFinalTag).toBe(true);
+    expect(call.blockReplyBreak).toBe("text_end");
+    expect(call.blockReplyChunking).toEqual({
+      minChars: 48,
+      maxChars: 320,
+      breakPreference: "sentence",
+    });
+    expect(call.prompt).toContain("<final>...</final>");
+  });
+
   it("binds GPT-Live delegated runs to spoken confirmation until completion", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
     const started = createDeferred();
@@ -379,6 +429,8 @@ describe("realtime voice agent consult runtime", () => {
     expect(call.thinkLevel).toBe("high");
     expect(call.fastMode).toBe(true);
     expect(call.timeoutMs).toBe(10_000);
+    expect(call.enforceFinalTag).toBeUndefined();
+    expect(call.onBlockReply).toBeUndefined();
     expect(call.prompt).toBe(
       [
         "Live voice request from the caller during a live phone call.",

@@ -7,6 +7,7 @@ export type ResolvedMatrixRtcConfig = {
   transcriptionProvider: string;
   providers: Record<string, Record<string, unknown>>;
   toolPolicy: "safe-read-only" | "owner" | "none";
+  responseStreaming: "off" | "sentence";
   admissions: MatrixRtcAdmission[];
 };
 
@@ -80,6 +81,7 @@ export function resolveMatrixRtcConfig(
     transcriptionProvider,
     providers: config.providers ?? {},
     toolPolicy: config.toolPolicy ?? "safe-read-only",
+    responseStreaming: config.responseStreaming ?? "off",
     admissions,
   };
 }

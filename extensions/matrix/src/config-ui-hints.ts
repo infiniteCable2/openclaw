@@ -65,5 +65,10 @@ export const matrixChannelConfigUiHints = {
     help: "Tool access for the configured agent during calls. Owner mode still requires an exact admitted identity and route.",
     advanced: true,
   },
+  "rtc.responseStreaming": {
+    label: "MatrixRTC Speech Streaming",
+    help: 'Use "sentence" to begin TTS from sanitized final-answer sentence blocks while the agent is still generating. Default: off.',
+    advanced: true,
+  },
   ...createChannelConfigUiHints({ channelLabel: "Matrix", progress: {} }),
 } satisfies Record<string, ChannelConfigUiHint>;

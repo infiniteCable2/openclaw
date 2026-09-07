@@ -19,6 +19,7 @@ describe("MatrixConfigSchema SecretInput", () => {
           "local-media": { baseUrl: "http://127.0.0.1:8010/v1" },
         },
         toolPolicy: "owner",
+        responseStreaming: "sentence",
         admissions: [
           {
             roomId: "!private:example.org",

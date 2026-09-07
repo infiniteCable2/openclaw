@@ -4,7 +4,10 @@ import type { OpenClawConfig } from "../config/config.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import { consultRealtimeVoiceAgent } from "../talk/agent-consult-runtime.js";
+import {
+  consultRealtimeVoiceAgent,
+  type RealtimeVoiceAgentConsultResult,
+} from "../talk/agent-consult-runtime.js";
 import {
   buildRealtimeVoiceAgentConsultWorkingResponse,
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
@@ -56,7 +59,7 @@ export function createMeetingRealtimeEngineBindings(params: {
   logger: RuntimeLogger;
 }): {
   platform: MeetingRuntimePlatform;
-  consultAgent: (consult: MeetingAgentConsultParams) => Promise<{ text: string }>;
+  consultAgent: (consult: MeetingAgentConsultParams) => Promise<RealtimeVoiceAgentConsultResult>;
   tools: RealtimeVoiceTool[];
   handleToolCall: (call: MeetingRealtimeToolCallParams) => Promise<void>;
 } {
@@ -122,7 +125,8 @@ async function consultMeetingAgent(params: {
   args: unknown;
   transcript: Array<{ role: "user" | "assistant"; text: string }>;
   abortSignal?: AbortSignal;
-}): Promise<{ text: string }> {
+  onSpeakableText?: MeetingAgentConsultParams["onSpeakableText"];
+}): Promise<RealtimeVoiceAgentConsultResult> {
   const agentId = params.agentId
     ? normalizeAgentId(params.agentId)
     : resolveDefaultAgentId(params.config);
@@ -149,6 +153,7 @@ async function consultMeetingAgent(params: {
     toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow(params.toolPolicy),
     extraSystemPrompt: params.surface.extraSystemPrompt,
     abortSignal: params.abortSignal,
+    onSpeakableText: params.onSpeakableText,
   });
 }
 
