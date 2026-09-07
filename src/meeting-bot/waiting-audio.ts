@@ -21,6 +21,11 @@ export type PreparedMeetingWaitingAudio = {
   startDelayMs: number;
 };
 
+export type MeetingWaitingAudioPlayback = {
+  schedule(): void;
+  stop(): Promise<void>;
+};
+
 const preparedAudioCache = new Map<string, Promise<PreparedMeetingWaitingAudio>>();
 
 function readPcm16MonoWav(input: Buffer): { pcm: Buffer; sampleRate: number } {
@@ -182,4 +187,83 @@ export async function playMeetingWaitingAudio(params: {
       throw error;
     }
   }
+}
+
+export function createMeetingWaitingAudioPlayback(params: {
+  audio: PreparedMeetingWaitingAudio | undefined;
+  transport: Pick<MeetingRealtimeAudioTransport, "clearOutput" | "writeOutput">;
+  isStopped: () => boolean;
+  onError: (error: unknown) => void;
+}): MeetingWaitingAudioPlayback {
+  let generation = 0;
+  let stopTail = Promise.resolve();
+  let playback:
+    | {
+        controller: AbortController;
+        started: boolean;
+        task: Promise<void>;
+      }
+    | undefined;
+
+  const stop = (): Promise<void> => {
+    generation += 1;
+    const current = playback;
+    playback = undefined;
+    if (!current) {
+      return stopTail;
+    }
+    current.controller.abort(new Error("Meeting waiting audio stopped"));
+    const stopTask = stopTail.then(async () => {
+      await current.task.catch(() => undefined);
+      if (current.started) {
+        await params.transport.clearOutput();
+      }
+    });
+    stopTail = stopTask.catch(() => undefined);
+    return stopTask;
+  };
+
+  const schedule = () => {
+    const audio = params.audio;
+    if (!audio || params.isStopped()) {
+      return;
+    }
+    const previousStop = stop();
+    const currentGeneration = ++generation;
+    const controller = new AbortController();
+    const current = {
+      controller,
+      started: false,
+      task: Promise.resolve(),
+    };
+    current.task = (async () => {
+      await previousStop;
+      if (controller.signal.aborted || params.isStopped() || currentGeneration !== generation) {
+        return;
+      }
+      try {
+        await delay(audio.startDelayMs, undefined, { signal: controller.signal });
+      } catch {
+        return;
+      }
+      if (controller.signal.aborted || params.isStopped() || currentGeneration !== generation) {
+        return;
+      }
+      await playMeetingWaitingAudio({
+        audio,
+        transport: params.transport,
+        signal: controller.signal,
+        onStarted: () => {
+          current.started = true;
+        },
+      });
+    })().catch((error: unknown) => {
+      if (!controller.signal.aborted && !params.isStopped()) {
+        params.onError(error);
+      }
+    });
+    playback = current;
+  };
+
+  return { schedule, stop };
 }
