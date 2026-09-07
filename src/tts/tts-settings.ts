@@ -359,7 +359,7 @@ export function buildTtsSystemPromptHint(
   const structured = options?.messageToolOnly === true;
   const autoHint =
     settings.autoMode === "inbound"
-      ? "Only use TTS when the user's last message includes audio/voice."
+      ? "Use automatic TTS only when the user's last message is a conversational voice message; an ordinary audio-file attachment does not request an audio reply."
       : settings.autoMode === "tagged"
         ? structured
           ? "Use TTS only through message(action=send) speech fields."
@@ -372,12 +372,13 @@ export function buildTtsSystemPromptHint(
       ? `Active TTS persona: ${settings.persona.label ?? settings.persona.id}${settings.persona.description ? ` - ${settings.persona.description}` : ""}.`
       : undefined,
     `Keep spoken text ≤${settings.maxLength} chars to avoid auto-summary (summary ${settings.summarize ? "on" : "off"}).`,
+    "Keep the complete user-facing answer in normal visible text whenever an audio reply is produced.",
     structured
       ? "If workspace context (especially MEMORY.md) tells you not to use TTS or to use a local voice workflow, follow that workspace instruction instead."
       : "If workspace context (especially MEMORY.md) tells you not to use [[tts:...]] or to use a local/non-tagged voice workflow, follow that workspace instruction instead.",
     structured
-      ? "Use message(action=send) with voiceText and optional voiceProvider/voiceId."
-      : "Use [[tts:...]] and optional [[tts:text]]...[[/tts:text]] to control voice/expressiveness.",
+      ? "Use message(action=send) with voiceText and optional voiceProvider/voiceId; voiceText may be a shorter spoken rendering but must not replace the complete visible answer."
+      : "Use [[tts:...]] and optional [[tts:text]]...[[/tts:text]] to control voice/expressiveness; hidden TTS text may be a shorter spoken rendering but must not replace the complete visible answer.",
   ]
     .filter(Boolean)
     .join("\n");

@@ -80,8 +80,21 @@ describe("TTS runtime native voice-note routing", () => {
       "If workspace context (especially MEMORY.md) tells you not to use [[tts:...]] or to use a local/non-tagged voice workflow, follow that workspace instruction instead.",
     );
     expect(hint).toContain(
-      "Use [[tts:...]] and optional [[tts:text]]...[[/tts:text]] to control voice/expressiveness.",
+      "hidden TTS text may be a shorter spoken rendering but must not replace the complete visible answer.",
     );
+    expect(hint).toContain("Keep the complete user-facing answer in normal visible text");
+  });
+
+  it("distinguishes inbound voice messages from ordinary audio files in TTS guidance", () => {
+    const cfg = createTtsConfig("openclaw-speech-core-inbound-tts-hint-test");
+    if (cfg.tts) {
+      cfg.tts.auto = "inbound";
+    }
+
+    const hint = buildTtsSystemPromptHint(cfg);
+
+    expect(hint).toContain("conversational voice message");
+    expect(hint).toContain("ordinary audio-file attachment does not request an audio reply");
   });
 
   it("uses structured speech guidance for message-tool-only replies", () => {
