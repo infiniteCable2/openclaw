@@ -185,6 +185,20 @@ export async function startMeetingAgentRealtimeEngine(params: {
     void params.transport.clearOutput().catch(() => undefined);
   };
 
+  const cancelActivePlayback = () => {
+    if (!harness.isOutputPlaybackWindowActive()) {
+      return;
+    }
+    cancelActiveSpeech();
+  };
+
+  const cancelActiveSpeechForConfirmedTurn = () => {
+    if (!activeTtsAbort && !activeTtsReader && !harness.isOutputPlaybackWindowActive()) {
+      return;
+    }
+    cancelActiveSpeech();
+  };
+
   const enqueueSpeakText = (text: string | undefined) => {
     const normalized = normalizeMeetingTtsPromptText(text);
     if (!normalized || stopped) {
@@ -350,12 +364,15 @@ export async function startMeetingAgentRealtimeEngine(params: {
     sttSession = resolved.provider.createSession({
       cfg: params.fullConfig,
       providerConfig: resolved.providerConfig,
-      onSpeechStart: cancelActiveSpeech,
+      onSpeechStart: cancelActivePlayback,
       onTranscript: (text) => {
         const trimmed = text.trim();
         if (!trimmed || stopped) {
           return;
         }
+        // A sustained onset interrupts audible playback immediately. Before the first
+        // output byte, wait for a final transcript so noise cannot discard a prepared reply.
+        cancelActiveSpeechForConfirmedTurn();
         // Shipped Meet semantics keep assistant echoes in transcript history and events.
         // Echo suppression only prevents the recorded line from entering talkback.
         const turnId = harness.ensureTurn();

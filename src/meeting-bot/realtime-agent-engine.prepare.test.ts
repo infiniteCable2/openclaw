@@ -247,6 +247,68 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     await handle.stop();
   });
 
+  it("waits for confirmed speech before canceling pre-playback synthesis", async () => {
+    const clearOutput = vi.fn(async () => undefined);
+    let onSpeechStart: (() => void) | undefined;
+    let onTranscript: ((text: string) => void) | undefined;
+    let synthesisSignal: AbortSignal | undefined;
+    const provider = createProvider(undefined);
+    provider.createSession.mockImplementation((params) => {
+      onSpeechStart = params.onSpeechStart;
+      onTranscript = params.onTranscript;
+      return {
+        connect: vi.fn(async () => undefined),
+        sendAudio: vi.fn(),
+        close: vi.fn(),
+        isConnected: () => true,
+      };
+    });
+    const synthesize = vi.fn(
+      (params: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          synthesisSignal = params.signal;
+          params.signal?.addEventListener("abort", () => reject(params.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    const handle = await startMeetingAgentRealtimeEngine({
+      config,
+      fullConfig: {} as never,
+      runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
+      platform: {
+        displayName: "Test meeting",
+        logScope: "test meeting",
+        sessionIdPrefix: "test-meeting",
+      },
+      meetingSessionId: "meeting-1",
+      transport: {
+        supportsFullDuplexInput: true,
+        onFatal: vi.fn(),
+        startInput: vi.fn(),
+        writeOutput: vi.fn(async () => undefined),
+        clearOutput,
+        stop: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+      },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      providers: [provider],
+      consultAgent: vi.fn(async () => ({ text: "unused" })),
+    });
+
+    handle.speak("Die Synthese läuft noch.");
+    await vi.waitFor(() => expect(synthesize).toHaveBeenCalledOnce());
+    onSpeechStart?.();
+    expect(synthesisSignal?.aborted).toBe(false);
+
+    onTranscript?.("Bestätigter neuer Beitrag.");
+    await vi.waitFor(() => {
+      expect(synthesisSignal?.aborted).toBe(true);
+      expect(clearOutput).toHaveBeenCalledOnce();
+    });
+    await handle.stop();
+  });
+
   it("keeps isolated full-duplex input flowing while assistant playback is active", async () => {
     const sendAudio = vi.fn();
     let receiveInput: ((audio: Buffer) => void) | undefined;
