@@ -20,6 +20,11 @@ describe("MatrixConfigSchema SecretInput", () => {
         },
         toolPolicy: "owner",
         responseStreaming: "sentence",
+        waitingAudio: {
+          path: "/opt/openclaw/share/waiting.wav",
+          startDelayMs: 1200,
+          volume: 0.14,
+        },
         admissions: [
           {
             roomId: "!private:example.org",

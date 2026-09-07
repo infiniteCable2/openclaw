@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { findMatrixRtcAdmission, resolveMatrixRtcConfig } from "./rtc-config.js";
 
 const command = path.resolve("matrix-rtc-media");
+const waitingAudioPath = path.resolve("waiting.wav");
 
 function validConfig() {
   return {
@@ -11,6 +12,7 @@ function validConfig() {
     mediaBridgeCommand: command,
     transcriptionProvider: "local-media",
     responseStreaming: "sentence" as const,
+    waitingAudio: { path: waitingAudioPath },
     admissions: [
       {
         roomId: "!private:example.org",
@@ -32,6 +34,11 @@ describe("MatrixRTC config", () => {
     expect(resolved?.authServiceUrl).toBe("https://rtc.example.org/livekit/jwt");
     expect(findMatrixRtcAdmission(resolved!, "!private:example.org")?.agentId).toBe("steffen");
     expect(resolved?.responseStreaming).toBe("sentence");
+    expect(resolved?.waitingAudio).toEqual({
+      filePath: waitingAudioPath,
+      startDelayMs: 1_200,
+      volume: 0.14,
+    });
   });
 
   it("keeps agent speech streaming disabled unless explicitly selected", () => {
@@ -42,6 +49,10 @@ describe("MatrixRTC config", () => {
 
   it.each([
     [{ ...validConfig(), mediaBridgeCommand: "relative/bin" }, "absolute path"],
+    [
+      { ...validConfig(), waitingAudio: { path: "relative/waiting.wav" } },
+      "waitingAudio.path must be an absolute path",
+    ],
     [{ ...validConfig(), authServiceUrl: "http://rtc.example.org" }, "must use HTTPS"],
     [{ ...validConfig(), admissions: [] }, "at least one exact admission"],
     [

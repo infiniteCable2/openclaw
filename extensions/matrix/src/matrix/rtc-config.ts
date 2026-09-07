@@ -8,6 +8,7 @@ export type ResolvedMatrixRtcConfig = {
   providers: Record<string, Record<string, unknown>>;
   toolPolicy: "safe-read-only" | "owner" | "none";
   responseStreaming: "off" | "sentence";
+  waitingAudio?: { filePath: string; startDelayMs: number; volume: number };
   admissions: MatrixRtcAdmission[];
 };
 
@@ -64,6 +65,16 @@ export function resolveMatrixRtcConfig(
     config.transcriptionProvider,
     "transcriptionProvider",
   );
+  const waitingAudio = config.waitingAudio
+    ? {
+        filePath: requiredString(config.waitingAudio.path, "waitingAudio.path"),
+        startDelayMs: config.waitingAudio.startDelayMs ?? 1_200,
+        volume: config.waitingAudio.volume ?? 0.14,
+      }
+    : undefined;
+  if (waitingAudio && !path.isAbsolute(waitingAudio.filePath)) {
+    throw new Error("MatrixRTC waitingAudio.path must be an absolute path");
+  }
   const admissions = (config.admissions ?? []).map(validateAdmission);
   if (admissions.length === 0) {
     throw new Error("MatrixRTC requires at least one exact admission");
@@ -82,6 +93,7 @@ export function resolveMatrixRtcConfig(
     providers: config.providers ?? {},
     toolPolicy: config.toolPolicy ?? "safe-read-only",
     responseStreaming: config.responseStreaming ?? "off",
+    ...(waitingAudio ? { waitingAudio } : {}),
     admissions,
   };
 }

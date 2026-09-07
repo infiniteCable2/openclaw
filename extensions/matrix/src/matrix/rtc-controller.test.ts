@@ -165,6 +165,12 @@ function createHarness(
       transcriptionProvider: "local-stt",
       providers: {},
       toolPolicy: "owner",
+      responseStreaming: "sentence",
+      waitingAudio: {
+        filePath: "/var/lib/openclaw/audio/waiting.wav",
+        startDelayMs: 1_200,
+        volume: 0.14,
+      },
       admissions: [{ roomId, userId: ownerId, agentId: "steffen" }],
     },
     runtime: {
@@ -241,6 +247,20 @@ describe("registerMatrixRtcController", () => {
     expect(harness.getRoomSession).toHaveBeenCalledOnce();
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
     expect(mocks.prepareMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
+    expect(mocks.prepareMeetingAgentRealtimeEngine).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          realtime: expect.objectContaining({
+            responseStreaming: "sentence",
+            waitingAudio: {
+              filePath: "/var/lib/openclaw/audio/waiting.wav",
+              startDelayMs: 1_200,
+              volume: 0.14,
+            },
+          }),
+        }),
+      }),
+    );
     expect(mocks.prepareMeetingAgentRealtimeEngine.mock.invocationCallOrder[0]).toBeLessThan(
       harness.session.joinRTCSession.mock.invocationCallOrder[0] ?? 0,
     );
@@ -257,6 +277,16 @@ describe("registerMatrixRtcController", () => {
     expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
     expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledWith(
       expect.objectContaining({
+        config: expect.objectContaining({
+          realtime: expect.objectContaining({
+            responseStreaming: "sentence",
+            waitingAudio: {
+              filePath: "/var/lib/openclaw/audio/waiting.wav",
+              startDelayMs: 1_200,
+              volume: 0.14,
+            },
+          }),
+        }),
         ttsContext: {
           agentId: "steffen",
           channelId: "matrix",
