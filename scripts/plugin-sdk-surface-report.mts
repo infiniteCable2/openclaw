@@ -363,7 +363,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: add one tool policy object and retire two unused deprecated mode exports.
       // -1: one exec policy object replaces two deprecated comparator exports.
       // +2: realtime transcription provider registration and telephony preparation contracts.
-      4447,
+      // +1: approved bounded TAR inspection through the archive admission owner.
+      4448,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -495,7 +496,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -2: retire the deprecated mode projection callables.
       // -2: exec comparators are members of the shared policy object.
       // +1: telephony TTS preparation helper.
-      2628,
+      // +1: approved bounded TAR inspection through the archive admission owner.
+      2629,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
