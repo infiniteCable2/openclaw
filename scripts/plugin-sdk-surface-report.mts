@@ -360,7 +360,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared static UI guidance, separate from per-turn harness delivery policy.
       // +2: typed full-duplex input capability for meeting audio transports.
       // +1: shared root/account DM policy refinement for channel schemas.
-      4449,
+      // -1: add one tool policy object and retire two unused deprecated mode exports.
+      // -1: one exec policy object replaces two deprecated comparator exports.
+      // +2: realtime transcription provider registration and telephony preparation contracts.
+      4447,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -489,7 +492,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared static UI guidance, separate from per-turn harness delivery policy.
       // +1: typed full-duplex input capability for meeting audio transports.
       // +1: shared root/account DM policy refinement for channel schemas.
-      2632,
+      // -2: retire the deprecated mode projection callables.
+      // -2: exec comparators are members of the shared policy object.
+      // +1: telephony TTS preparation helper.
+      2628,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
