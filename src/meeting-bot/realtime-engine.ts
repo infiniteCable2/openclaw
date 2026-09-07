@@ -32,6 +32,7 @@ import {
 } from "./realtime-engine-support.js";
 import { createMeetingRealtimeOutputOwner } from "./realtime-output-owner.js";
 import { createMeetingRealtimeToolContinuity } from "./realtime-tool-continuity.js";
+import type { MeetingWaitingAudioConfig } from "./waiting-audio.js";
 
 export {
   formatMeetingAgentAudioModelLog,
@@ -61,6 +62,8 @@ export type MeetingRealtimeEngineConfig = {
     introMessage?: string;
     /** Sentence-level final-answer speech streaming for the agent strategy. Default: off. */
     responseStreaming?: "off" | "sentence";
+    /** Optional bounded waiting audio while an agent consult or TTS preparation is pending. */
+    waitingAudio?: MeetingWaitingAudioConfig;
     providers: Record<string, Record<string, unknown>>;
   };
 };

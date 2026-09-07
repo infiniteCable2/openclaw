@@ -67,7 +67,27 @@ export const matrixChannelConfigUiHints = {
   },
   "rtc.responseStreaming": {
     label: "MatrixRTC Speech Streaming",
-    help: 'Use "sentence" to begin TTS from sanitized final-answer sentence blocks while the agent is still generating. Default: off.',
+    help: 'Use "sentence" to begin TTS from native visible answer blocks while the agent is still generating. Default: off.',
+    advanced: true,
+  },
+  "rtc.waitingAudio": {
+    label: "MatrixRTC Waiting Audio",
+    help: "Play a trusted local mono PCM16 WAV loop after a short delay while agent work or first-segment TTS is pending.",
+    advanced: true,
+  },
+  "rtc.waitingAudio.path": {
+    label: "MatrixRTC Waiting Audio File",
+    help: "Absolute path to a regular mono PCM16 WAV file that is not group- or world-writable.",
+    advanced: true,
+  },
+  "rtc.waitingAudio.startDelayMs": {
+    label: "MatrixRTC Waiting Audio Delay",
+    help: "Delay in milliseconds after agent processing begins before waiting audio starts. Default: 1200.",
+    advanced: true,
+  },
+  "rtc.waitingAudio.volume": {
+    label: "MatrixRTC Waiting Audio Volume",
+    help: "Linear waiting-audio gain from 0 through 1. Default: 0.14.",
     advanced: true,
   },
   ...createChannelConfigUiHints({ channelLabel: "Matrix", progress: {} }),

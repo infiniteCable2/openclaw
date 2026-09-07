@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
@@ -34,6 +37,30 @@ const config = {
     providers: { "prepared-stt": {} },
   },
 };
+
+async function createWaitingAudioFixture(): Promise<{ dir: string; filePath: string }> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-meeting-waiting-"));
+  const filePath = path.join(dir, "waiting.wav");
+  const pcm = Buffer.alloc(960, 1);
+  const wav = Buffer.alloc(44 + pcm.byteLength);
+  wav.write("RIFF", 0, "ascii");
+  wav.writeUInt32LE(wav.byteLength - 8, 4);
+  wav.write("WAVE", 8, "ascii");
+  wav.write("fmt ", 12, "ascii");
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(24_000, 24);
+  wav.writeUInt32LE(48_000, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36, "ascii");
+  wav.writeUInt32LE(pcm.byteLength, 40);
+  pcm.copy(wav, 44);
+  await writeFile(filePath, wav);
+  await chmod(filePath, 0o600);
+  return { dir, filePath };
+}
 
 describe("prepareMeetingAgentRealtimeEngine", () => {
   it("prepares both speech directions and retains their resources", async () => {
@@ -205,6 +232,196 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       expect(assistantEntries.map((entry) => entry.text)).toEqual(["Erster Satz. Zweiter Satz."]);
     });
     await handle.stop();
+  });
+
+  it("prepares exactly one sentence ahead while preserving playback order", async () => {
+    let onTranscript: ((text: string) => void) | undefined;
+    const provider = createProvider(undefined);
+    provider.createSession.mockImplementation((params) => {
+      onTranscript = params.onTranscript;
+      return {
+        connect: vi.fn(async () => undefined),
+        sendAudio: vi.fn(),
+        close: vi.fn(),
+        isConnected: () => true,
+      };
+    });
+    const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const synthesize = vi.fn(async () => ({
+      success: true,
+      audioStream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamControllers.push(controller);
+          controller.enqueue(Uint8Array.from([streamControllers.length, 0]));
+        },
+      }),
+      outputFormat: "pcm" as const,
+      sampleRate: 24_000,
+    }));
+    let consult: MeetingAgentConsultParams | undefined;
+    let finishConsult: ((result: { text: string; delivered: true }) => void) | undefined;
+    const consultAgent = vi.fn(
+      (params: MeetingAgentConsultParams) =>
+        new Promise<{ text: string; delivered: true }>((resolve) => {
+          consult = params;
+          finishConsult = resolve;
+        }),
+    );
+    const writes: Buffer[] = [];
+    const handle = await startMeetingAgentRealtimeEngine({
+      config: {
+        ...config,
+        realtime: { ...config.realtime, responseStreaming: "sentence" },
+      },
+      fullConfig: {} as never,
+      runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
+      platform: {
+        displayName: "Test meeting",
+        logScope: "test meeting",
+        sessionIdPrefix: "test-meeting",
+      },
+      meetingSessionId: "meeting-one-ahead",
+      transport: {
+        onFatal: vi.fn(),
+        startInput: vi.fn(),
+        writeOutput: vi.fn(async (audio: Buffer) => {
+          writes.push(Buffer.from(audio));
+        }),
+        clearOutput: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+      },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      providers: [provider],
+      consultAgent,
+    });
+
+    onTranscript?.("Bitte drei Sätze.");
+    await vi.waitFor(() => expect(consultAgent).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    await consult?.onSpeakableText?.({ type: "chunk", text: "Satz eins." });
+    await vi.waitFor(() => {
+      expect(synthesize).toHaveBeenCalledOnce();
+      expect(writes).toHaveLength(1);
+    });
+
+    await consult?.onSpeakableText?.({ type: "chunk", text: "Satz zwei." });
+    await vi.waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
+    await consult?.onSpeakableText?.({ type: "chunk", text: "Satz drei." });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(synthesize).toHaveBeenCalledTimes(2);
+
+    streamControllers[0]?.close();
+    await vi.waitFor(() => {
+      expect(writes).toHaveLength(2);
+      expect(synthesize).toHaveBeenCalledTimes(3);
+    });
+    streamControllers[1]?.close();
+    await vi.waitFor(() => expect(writes).toHaveLength(3));
+    streamControllers[2]?.close();
+    await consult?.onSpeakableText?.({
+      type: "done",
+      text: "Satz eins. Satz zwei. Satz drei.",
+    });
+    finishConsult?.({ text: "Satz eins. Satz zwei. Satz drei.", delivered: true });
+
+    await vi.waitFor(() => {
+      expect(writes.map((audio) => audio[0])).toEqual([1, 2, 3]);
+    });
+    await handle.stop();
+  });
+
+  it("clears configured waiting audio before the first synthesized speech frame", async () => {
+    const fixture = await createWaitingAudioFixture();
+    let handle: Awaited<ReturnType<typeof startMeetingAgentRealtimeEngine>> | undefined;
+    try {
+      let onTranscript: ((text: string) => void) | undefined;
+      const provider = createProvider(undefined);
+      provider.createSession.mockImplementation((params) => {
+        onTranscript = params.onTranscript;
+        return {
+          connect: vi.fn(async () => undefined),
+          sendAudio: vi.fn(),
+          close: vi.fn(),
+          isConnected: () => true,
+        };
+      });
+      const synthesize = vi.fn(async () => ({
+        success: true,
+        audioStream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(Uint8Array.from([9, 0, 8, 0]));
+            controller.close();
+          },
+        }),
+        outputFormat: "pcm" as const,
+        sampleRate: 24_000,
+      }));
+      let consult: MeetingAgentConsultParams | undefined;
+      let finishConsult: ((result: { text: string; delivered: true }) => void) | undefined;
+      const consultAgent = vi.fn(
+        (params: MeetingAgentConsultParams) =>
+          new Promise<{ text: string; delivered: true }>((resolve) => {
+            consult = params;
+            finishConsult = resolve;
+          }),
+      );
+      const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
+      const clearOutput = vi.fn(async () => undefined);
+      handle = await startMeetingAgentRealtimeEngine({
+        config: {
+          ...config,
+          realtime: {
+            ...config.realtime,
+            responseStreaming: "sentence",
+            waitingAudio: { filePath: fixture.filePath, startDelayMs: 0, volume: 0.14 },
+          },
+        },
+        fullConfig: {} as never,
+        runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
+        platform: {
+          displayName: "Test meeting",
+          logScope: "test meeting",
+          sessionIdPrefix: "test-meeting",
+        },
+        meetingSessionId: "meeting-waiting-audio",
+        transport: {
+          onFatal: vi.fn(),
+          startInput: vi.fn(),
+          writeOutput,
+          clearOutput,
+          stop: vi.fn(async () => undefined),
+          dispose: vi.fn(async () => undefined),
+        },
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        providers: [provider],
+        consultAgent,
+      });
+
+      onTranscript?.("Bitte antworte.");
+      await vi.waitFor(() => expect(consultAgent).toHaveBeenCalledOnce(), { timeout: 2_000 });
+      await vi.waitFor(
+        () => expect(writeOutput.mock.calls.some(([audio]) => audio.byteLength === 960)).toBe(true),
+        { timeout: 2_000 },
+      );
+
+      await consult?.onSpeakableText?.({ type: "chunk", text: "Die Antwort ist bereit." });
+      await vi.waitFor(() => {
+        expect(synthesize).toHaveBeenCalledOnce();
+        expect(writeOutput.mock.calls.some(([audio]) => audio.byteLength === 4)).toBe(true);
+      });
+      const speechWriteIndex = writeOutput.mock.calls.findIndex(
+        ([audio]) => audio.byteLength === 4,
+      );
+      const speechWriteOrder = writeOutput.mock.invocationCallOrder[speechWriteIndex] ?? 0;
+      expect(clearOutput).toHaveBeenCalledOnce();
+      expect(clearOutput.mock.invocationCallOrder[0]).toBeLessThan(speechWriteOrder);
+
+      await consult?.onSpeakableText?.({ type: "done", text: "Die Antwort ist bereit." });
+      finishConsult?.({ text: "Die Antwort ist bereit.", delivered: true });
+    } finally {
+      await handle?.stop();
+      await rm(fixture.dir, { recursive: true, force: true });
+    }
   });
 
   it("invalidates later streamed chunks after a confirmed caller interruption", async () => {

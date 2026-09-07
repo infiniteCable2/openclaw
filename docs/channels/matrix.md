@@ -296,6 +296,12 @@ MatrixRTC call handling is an explicit opt-in. It uses the shared OpenClaw meeti
           },
         },
         toolPolicy: "safe-read-only",
+        responseStreaming: "sentence",
+        waitingAudio: {
+          path: "/var/lib/openclaw/audio/waiting.wav",
+          startDelayMs: 1200,
+          volume: 0.14,
+        },
         admissions: [
           {
             roomId: "!exact-direct-room:example.org",
@@ -318,6 +324,19 @@ Each admission is fail-closed and requires all of the following:
 - both homeserver discovery and the caller membership pointing at the pinned authorization-service URL.
 
 The bridge executable must be an absolute, regular, non-symlink path and must not be group- or world-writable. Credentials and media keys are passed through a private mode-`0600` local control socket, not command-line arguments or environment variables. `toolPolicy` defaults to `"safe-read-only"`; choose `"owner"` only for an admission bound to an owner-controlled identity and room. Router, firewall, TURN, DNS, TLS, and LiveKit reachability remain deployment concerns and are not changed by this option.
+
+Set `responseStreaming: "sentence"` to synthesize complete speakable sentences as the
+agent produces them. Playback remains ordered and preparation is bounded to one sentence
+ahead, so a caller interruption can cancel both audible and prepared output without a large
+stale queue.
+
+`waitingAudio` is optional. When configured, OpenClaw starts looping the trusted local WAV
+after `startDelayMs` while an agent turn is still waiting for speech output. It stops and clears
+the loop on caller speech, cancellation, or immediately before the first TTS frame. The file
+must be an absolute, regular, non-symlink, non-group/world-writable mono PCM16 WAV (8-48 kHz,
+at most 8 MiB). `volume` ranges from `0` to `1` and defaults to `0.14`; `startDelayMs` defaults
+to `1200`. Keep the file in an OpenClaw-owned data path rather than referencing another
+application's runtime tree.
 
 ## Reply controls and presentations
 

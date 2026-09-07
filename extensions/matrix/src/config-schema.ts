@@ -83,6 +83,14 @@ const matrixRtcSchema = z
     providers: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
     toolPolicy: z.enum(["safe-read-only", "owner", "none"]).optional(),
     responseStreaming: z.enum(["off", "sentence"]).optional(),
+    waitingAudio: z
+      .object({
+        path: z.string().min(1),
+        startDelayMs: z.number().int().min(0).max(30_000).optional(),
+        volume: z.number().min(0).max(1).optional(),
+      })
+      .strict()
+      .optional(),
     admissions: z
       .array(
         z

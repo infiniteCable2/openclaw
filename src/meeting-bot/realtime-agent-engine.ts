@@ -30,6 +30,7 @@ import {
   type MeetingRealtimeEngineConfig,
   type MeetingRuntimePlatform,
 } from "./realtime-engine.js";
+import { playMeetingWaitingAudio, prepareMeetingWaitingAudio } from "./waiting-audio.js";
 
 const MEETING_AGENT_READINESS_TIMEOUT_MS = 120_000;
 
@@ -65,7 +66,15 @@ export async function prepareMeetingAgentRealtimeEngine(params: {
     ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
     ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
   });
-  const [sttResult, ttsResult] = await Promise.allSettled([sttPromise, ttsPromise]);
+  const waitingAudioPromise = prepareMeetingWaitingAudio(
+    params.config.realtime.waitingAudio,
+    params.config.chrome.audioFormat,
+  );
+  const [sttResult, ttsResult, waitingAudioResult] = await Promise.allSettled([
+    sttPromise,
+    ttsPromise,
+    waitingAudioPromise,
+  ]);
   const releases: Array<() => void | Promise<void>> = [];
   if (sttResult.status === "fulfilled" && sttResult.value) {
     const sttPreparation = sttResult.value;
@@ -84,6 +93,10 @@ export async function prepareMeetingAgentRealtimeEngine(params: {
   if (ttsResult.status === "rejected") {
     await release();
     throw ttsResult.reason;
+  }
+  if (waitingAudioResult.status === "rejected") {
+    await release();
+    throw waitingAudioResult.reason;
   }
   if (!ttsResult.value.success) {
     await release();
@@ -119,8 +132,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
   let sttSession: RealtimeTranscriptionSession | null = null;
   let realtimeReady = false;
   let ttsQueue = Promise.resolve();
-  let activeTtsAbort: AbortController | undefined;
-  let activeTtsReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let nextTtsPreparationGate = Promise.resolve();
+  const activeTtsAborts = new Set<AbortController>();
+  const activeTtsReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
   let outputGeneration = 0;
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
   const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
@@ -129,6 +143,19 @@ export async function startMeetingAgentRealtimeEngine(params: {
     fullConfig: params.fullConfig,
     providers: params.providers,
   });
+  const waitingAudio = await prepareMeetingWaitingAudio(
+    params.config.realtime.waitingAudio,
+    params.config.chrome.audioFormat,
+  );
+  let waitingGeneration = 0;
+  let waitingStopTail = Promise.resolve();
+  let waitingPlayback:
+    | {
+        controller: AbortController;
+        started: boolean;
+        task: Promise<void>;
+      }
+    | undefined;
   params.logger.info(
     formatMeetingAgentAudioModelLog({
       logScope: params.platform.logScope,
@@ -145,7 +172,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
     }
     stopped = true;
     stopPromise = (async () => {
-      activeTtsAbort?.abort(new Error("Meeting audio output stopped"));
+      for (const controller of activeTtsAborts) {
+        controller.abort(new Error("Meeting audio output stopped"));
+      }
       harness.close();
       try {
         sttSession?.close();
@@ -161,8 +190,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
         final: true,
         payload: { meetingSessionId: params.meetingSessionId },
       });
+      await stopWaitingAudio();
       const transportStopPromise = params.transport.stop();
-      await activeTtsReader?.cancel().catch(() => undefined);
+      await Promise.allSettled(
+        [...activeTtsReaders].map(async (reader) => await reader.cancel().catch(() => undefined)),
+      );
       await ttsQueue;
       try {
         await transportStopPromise;
@@ -190,9 +222,83 @@ export async function startMeetingAgentRealtimeEngine(params: {
     await params.transport.writeOutput(audio);
   };
 
+  const stopWaitingAudio = (): Promise<void> => {
+    waitingGeneration += 1;
+    const playback = waitingPlayback;
+    waitingPlayback = undefined;
+    if (!playback) {
+      return waitingStopTail;
+    }
+    playback.controller.abort(new Error("Meeting waiting audio stopped"));
+    const stopTask = waitingStopTail.then(async () => {
+      await playback.task.catch(() => undefined);
+      if (playback.started) {
+        await params.transport.clearOutput();
+      }
+    });
+    waitingStopTail = stopTask.catch(() => undefined);
+    return stopTask;
+  };
+
+  const scheduleWaitingAudio = () => {
+    if (!waitingAudio || stopped) {
+      return;
+    }
+    const generation = ++waitingGeneration;
+    const controller = new AbortController();
+    const playback = {
+      controller,
+      started: false,
+      task: Promise.resolve(),
+    };
+    playback.task = (async () => {
+      await waitingStopTail;
+      if (controller.signal.aborted || stopped || generation !== waitingGeneration) {
+        return;
+      }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(controller.signal.reason);
+          };
+          const timer = setTimeout(() => {
+            controller.signal.removeEventListener("abort", onAbort);
+            resolve();
+          }, waitingAudio.startDelayMs);
+          controller.signal.addEventListener("abort", onAbort, { once: true });
+        });
+      } catch {
+        return;
+      }
+      if (controller.signal.aborted || stopped || generation !== waitingGeneration) {
+        return;
+      }
+      await playMeetingWaitingAudio({
+        audio: waitingAudio,
+        transport: params.transport,
+        signal: controller.signal,
+        onStarted: () => {
+          playback.started = true;
+        },
+      });
+    })().catch((error: unknown) => {
+      if (!controller.signal.aborted && !stopped) {
+        params.logger.warn(
+          `${params.platform.logScope} ${agentLogScope} waiting audio failed: ${formatErrorMessage(error)}`,
+        );
+      }
+    });
+    waitingPlayback = playback;
+  };
+
   const cancelActiveSpeech = () => {
-    activeTtsAbort?.abort(new Error("Meeting caller started speaking"));
-    void activeTtsReader?.cancel().catch(() => undefined);
+    for (const controller of activeTtsAborts) {
+      controller.abort(new Error("Meeting caller started speaking"));
+    }
+    for (const reader of activeTtsReaders) {
+      void reader.cancel().catch(() => undefined);
+    }
     void params.transport.clearOutput().catch(() => undefined);
   };
 
@@ -204,7 +310,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
   };
 
   const cancelActiveSpeechForConfirmedTurn = () => {
-    if (!activeTtsAbort && !activeTtsReader && !harness.isOutputPlaybackWindowActive()) {
+    if (
+      activeTtsAborts.size === 0 &&
+      activeTtsReaders.size === 0 &&
+      !harness.isOutputPlaybackWindowActive()
+    ) {
       return;
     }
     cancelActiveSpeech();
@@ -238,23 +348,36 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return;
     }
     utterance.chunks.push(normalized);
-    ttsQueue = ttsQueue
-      .then(async () => {
-        if (!isCurrentSpeechUtterance(utterance)) {
-          return;
-        }
-        const transcriptEntry = harness.recordTranscript("assistant", normalized);
-        utterance.transcriptEntries.push(transcriptEntry);
-        params.logger.info(
-          formatMeetingTranscriptSummaryLog(
-            params.platform.logScope,
-            `${agentLogScope} assistant stream`,
-            normalized,
-          ),
-        );
-        harness.ensureTurn();
-        const controller = new AbortController();
-        activeTtsAbort = controller;
+    const transcriptEntry = harness.recordTranscript("assistant", normalized);
+    utterance.transcriptEntries.push(transcriptEntry);
+    params.logger.info(
+      formatMeetingTranscriptSummaryLog(
+        params.platform.logScope,
+        `${agentLogScope} assistant stream`,
+        normalized,
+      ),
+    );
+    let allowNextPreparationResolve: (() => void) | undefined;
+    const allowNextPreparationPromise = new Promise<void>((resolve) => {
+      allowNextPreparationResolve = resolve;
+    });
+    let nextPreparationAllowed = false;
+    const allowNextPreparation = () => {
+      if (nextPreparationAllowed) {
+        return;
+      }
+      nextPreparationAllowed = true;
+      allowNextPreparationResolve?.();
+    };
+    const preparationGate = nextTtsPreparationGate;
+    nextTtsPreparationGate = allowNextPreparationPromise;
+    const prepared = preparationGate.then(async () => {
+      if (!isCurrentSpeechUtterance(utterance)) {
+        return { skipped: true } as const;
+      }
+      const controller = new AbortController();
+      activeTtsAborts.add(controller);
+      try {
         const result = await params.runtime.tts.streamTextToSpeechTelephony({
           text: normalized,
           cfg: params.fullConfig,
@@ -263,22 +386,51 @@ export async function startMeetingAgentRealtimeEngine(params: {
           ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
           ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
         });
+        return { result, controller } as const;
+      } catch (error) {
+        return { error, controller } as const;
+      }
+    });
+    ttsQueue = ttsQueue
+      .then(async () => {
+        const preparation = await prepared;
+        if ("skipped" in preparation) {
+          allowNextPreparation();
+          return;
+        }
+        const controller = preparation.controller;
+        if ("error" in preparation) {
+          activeTtsAborts.delete(controller);
+          allowNextPreparation();
+          throw preparation.error;
+        }
+        const result = preparation.result;
         if (!isCurrentSpeechUtterance(utterance)) {
           await result.release?.();
-          if (activeTtsAbort === controller) {
-            activeTtsAbort = undefined;
-          }
+          activeTtsAborts.delete(controller);
+          allowNextPreparation();
           return;
         }
         if (!result.success || !result.audioStream || !result.sampleRate) {
+          activeTtsAborts.delete(controller);
+          allowNextPreparation();
           throw new Error(result.error ?? "TTS conversion failed");
         }
         params.logger.info(
           formatMeetingAgentTtsResultLog(params.platform.logScope, agentLogScope, result),
         );
+        await stopWaitingAudio();
+        if (!isCurrentSpeechUtterance(utterance)) {
+          await result.release?.();
+          activeTtsAborts.delete(controller);
+          allowNextPreparation();
+          return;
+        }
+        harness.ensureTurn();
         const reader = result.audioStream.getReader();
-        activeTtsReader = reader;
-        let firstChunk = !utterance.playbackStarted;
+        activeTtsReaders.add(reader);
+        let firstSegmentChunk = true;
+        let firstUtteranceChunk = !utterance.playbackStarted;
         let bytesWritten = 0;
         try {
           for (;;) {
@@ -299,25 +451,26 @@ export async function startMeetingAgentRealtimeEngine(params: {
               result.outputFormat,
               params.platform.displayName,
             );
-            await writeOutputAudio(output, firstChunk);
-            if (firstChunk) {
+            await writeOutputAudio(output, firstUtteranceChunk);
+            if (firstUtteranceChunk) {
               utterance.playbackStarted = true;
             }
-            firstChunk = false;
+            if (firstSegmentChunk) {
+              allowNextPreparation();
+            }
+            firstSegmentChunk = false;
+            firstUtteranceChunk = false;
             bytesWritten += output.byteLength;
           }
           if (bytesWritten === 0 && !stopped) {
             throw new Error("TTS provider returned an empty audio stream");
           }
         } finally {
-          if (activeTtsReader === reader) {
-            activeTtsReader = undefined;
-          }
+          allowNextPreparation();
+          activeTtsReaders.delete(reader);
           reader.releaseLock();
           await result.release?.();
-          if (activeTtsAbort === controller) {
-            activeTtsAbort = undefined;
-          }
+          activeTtsAborts.delete(controller);
         }
       })
       .catch((error: unknown) => {
@@ -426,6 +579,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       fallbackText: "I hit an error while checking that. Please try again.",
       consult: ({ question, responseStyle, signal }) => {
         const utterance = createSpeechUtterance();
+        scheduleWaitingAudio();
         return params.consultAgent({
           meetingSessionId: params.meetingSessionId,
           requesterSessionKey: params.requesterSessionKey,
@@ -466,7 +620,14 @@ export async function startMeetingAgentRealtimeEngine(params: {
     sttSession = resolved.provider.createSession({
       cfg: params.fullConfig,
       providerConfig: resolved.providerConfig,
-      onSpeechStart: cancelActivePlayback,
+      onSpeechStart: () => {
+        void stopWaitingAudio().catch((error: unknown) => {
+          params.logger.warn(
+            `${params.platform.logScope} ${agentLogScope} waiting audio stop failed: ${formatErrorMessage(error)}`,
+          );
+        });
+        cancelActivePlayback();
+      },
       onTranscript: (text) => {
         const trimmed = text.trim();
         if (!trimmed || stopped) {
@@ -474,6 +635,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
         // A sustained onset interrupts audible playback immediately. Before the first
         // output byte, wait for a final transcript so noise cannot discard a prepared reply.
+        void stopWaitingAudio().catch((error: unknown) => {
+          params.logger.warn(
+            `${params.platform.logScope} ${agentLogScope} waiting audio stop failed: ${formatErrorMessage(error)}`,
+          );
+        });
         outputGeneration += 1;
         cancelActiveSpeechForConfirmedTurn();
         // Shipped Meet semantics keep assistant echoes in transcript history and events.

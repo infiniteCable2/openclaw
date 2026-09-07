@@ -117,6 +117,15 @@ export type MatrixRtcAdmission = {
   agentId: string;
 };
 
+export type MatrixRtcWaitingAudioConfig = {
+  /** Absolute path to a trusted mono PCM16 WAV file. Presence enables waiting audio. */
+  path: string;
+  /** Delay after agent work starts before waiting audio begins. Default: 1200 ms. */
+  startDelayMs?: number;
+  /** Linear PCM gain from 0 through 1. Default: 0.14. */
+  volume?: number;
+};
+
 export type MatrixRtcConfig = {
   /** Enable MatrixRTC audio-call handling. Default: false. */
   enabled?: boolean;
@@ -132,6 +141,8 @@ export type MatrixRtcConfig = {
   toolPolicy?: "safe-read-only" | "owner" | "none";
   /** Final-answer speech delivery: complete response or early sentence blocks. */
   responseStreaming?: "off" | "sentence";
+  /** Optional waiting audio while the agent or first TTS segment is being prepared. */
+  waitingAudio?: MatrixRtcWaitingAudioConfig;
   /** Exact room/user/agent tuples admitted to MatrixRTC calls. */
   admissions?: MatrixRtcAdmission[];
 };
