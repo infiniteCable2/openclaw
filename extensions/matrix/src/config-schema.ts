@@ -82,6 +82,7 @@ const matrixRtcSchema = z
     transcriptionProvider: z.string().min(1).optional(),
     providers: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
     toolPolicy: z.enum(["safe-read-only", "owner", "none"]).optional(),
+    responseStreaming: z.enum(["off", "sentence"]).optional(),
     admissions: z
       .array(
         z

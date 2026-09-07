@@ -253,6 +253,7 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
   userLabel: string;
   assistantLabel?: string;
   questionSourceLabel?: string;
+  requireFinalAnswerEnvelope?: boolean;
 }): string {
   const parsed = parseRealtimeVoiceAgentConsultArgs(params.args);
   const assistantLabel = params.assistantLabel ?? "Agent";
@@ -269,6 +270,9 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
     `Live voice request from the ${questionSourceLabel} during ${params.surface}.`,
     "Act as the configured OpenClaw agent on behalf of this user. Use available tools when the request asks you to do work.",
     "When finished, return only the concise result the realtime voice agent should speak back.",
+    params.requireFinalAnswerEnvelope
+      ? "Wrap that final spoken result in exactly one <final>...</final> envelope. Put no speakable text outside it."
+      : undefined,
     "Do not include markdown, tool logs, or private reasoning. Include citations only when the spoken answer needs them.",
     parsed.responseStyle ? `Spoken style: ${parsed.responseStyle}` : undefined,
     transcript ? `Recent voice transcript for context:\n${transcript}` : undefined,

@@ -10,6 +10,7 @@ function validConfig() {
     authServiceUrl: "https://rtc.example.org/livekit/jwt/",
     mediaBridgeCommand: command,
     transcriptionProvider: "local-media",
+    responseStreaming: "sentence" as const,
     admissions: [
       {
         roomId: "!private:example.org",
@@ -30,6 +31,13 @@ describe("MatrixRTC config", () => {
     const resolved = resolveMatrixRtcConfig(validConfig());
     expect(resolved?.authServiceUrl).toBe("https://rtc.example.org/livekit/jwt");
     expect(findMatrixRtcAdmission(resolved!, "!private:example.org")?.agentId).toBe("steffen");
+    expect(resolved?.responseStreaming).toBe("sentence");
+  });
+
+  it("keeps agent speech streaming disabled unless explicitly selected", () => {
+    const config = validConfig();
+    const resolved = resolveMatrixRtcConfig({ ...config, responseStreaming: undefined });
+    expect(resolved?.responseStreaming).toBe("off");
   });
 
   it.each([

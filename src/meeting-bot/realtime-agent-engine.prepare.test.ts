@@ -5,6 +5,7 @@ import {
   prepareMeetingAgentRealtimeEngine,
   startMeetingAgentRealtimeEngine,
 } from "./realtime-agent-engine.js";
+import type { MeetingAgentConsultParams } from "./realtime-engine.js";
 
 function createProvider(prepareSession: RealtimeTranscriptionProviderPlugin["prepareSession"]) {
   return {
@@ -123,6 +124,165 @@ describe("prepareMeetingAgentRealtimeEngine", () => {
 });
 
 describe("startMeetingAgentRealtimeEngine streaming output", () => {
+  it("starts sentence TTS before the agent consult completes and records one logical answer", async () => {
+    let onTranscript: ((text: string) => void) | undefined;
+    const provider = createProvider(undefined);
+    provider.createSession.mockImplementation((params) => {
+      onTranscript = params.onTranscript;
+      return {
+        connect: vi.fn(async () => undefined),
+        sendAudio: vi.fn(),
+        close: vi.fn(),
+        isConnected: () => true,
+      };
+    });
+    const synthesize = vi.fn(async () => ({
+      success: true,
+      audioStream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+          controller.close();
+        },
+      }),
+      outputFormat: "pcm" as const,
+      sampleRate: 24_000,
+    }));
+    let finishConsult: ((result: { text: string; delivered: true }) => void) | undefined;
+    const consultAgent = vi.fn(
+      (_params: MeetingAgentConsultParams) =>
+        new Promise<{ text: string; delivered: true }>((resolve) => {
+          finishConsult = resolve;
+        }),
+    );
+    const handle = await startMeetingAgentRealtimeEngine({
+      config: {
+        ...config,
+        realtime: { ...config.realtime, responseStreaming: "sentence" },
+      },
+      fullConfig: {} as never,
+      runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
+      platform: {
+        displayName: "Test meeting",
+        logScope: "test meeting",
+        sessionIdPrefix: "test-meeting",
+      },
+      meetingSessionId: "meeting-stream",
+      transport: {
+        onFatal: vi.fn(),
+        startInput: vi.fn(),
+        writeOutput: vi.fn(async () => undefined),
+        clearOutput: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+      },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      providers: [provider],
+      consultAgent,
+    });
+
+    onTranscript?.("Bitte antworte ausführlich.");
+    await vi.waitFor(() => expect(consultAgent).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    const consult = consultAgent.mock.calls[0]?.[0];
+    if (!consult) {
+      throw new Error("Expected meeting consult params");
+    }
+    await consult.onSpeakableText?.({ type: "chunk", text: "Erster Satz." });
+    await vi.waitFor(() => expect(synthesize).toHaveBeenCalledOnce());
+    expect(synthesize).toHaveBeenLastCalledWith(expect.objectContaining({ text: "Erster Satz." }));
+
+    await consult.onSpeakableText?.({ type: "chunk", text: "Zweiter Satz." });
+    await consult.onSpeakableText?.({
+      type: "done",
+      text: "Erster Satz. Zweiter Satz.",
+    });
+    finishConsult?.({ text: "Erster Satz. Zweiter Satz.", delivered: true });
+
+    await vi.waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => {
+      const assistantEntries = handle
+        .getHealth()
+        .recentRealtimeTranscript.filter((entry) => entry.role === "assistant");
+      expect(assistantEntries.map((entry) => entry.text)).toEqual(["Erster Satz. Zweiter Satz."]);
+    });
+    await handle.stop();
+  });
+
+  it("invalidates later streamed chunks after a confirmed caller interruption", async () => {
+    let onTranscript: ((text: string) => void) | undefined;
+    const provider = createProvider(undefined);
+    provider.createSession.mockImplementation((params) => {
+      onTranscript = params.onTranscript;
+      return {
+        connect: vi.fn(async () => undefined),
+        sendAudio: vi.fn(),
+        close: vi.fn(),
+        isConnected: () => true,
+      };
+    });
+    const synthesize = vi.fn(
+      (params: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          params.signal?.addEventListener("abort", () => reject(params.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    let firstConsult: MeetingAgentConsultParams | undefined;
+    let finishFirst: ((result: { text: string; delivered: true }) => void) | undefined;
+    const consultAgent = vi
+      .fn((params: MeetingAgentConsultParams) => {
+        firstConsult = params;
+        return new Promise<{ text: string; delivered: true }>((resolve) => {
+          finishFirst = resolve;
+        });
+      })
+      .mockImplementationOnce((params: MeetingAgentConsultParams) => {
+        firstConsult = params;
+        return new Promise<{ text: string; delivered: true }>((resolve) => {
+          finishFirst = resolve;
+        });
+      });
+    const handle = await startMeetingAgentRealtimeEngine({
+      config: {
+        ...config,
+        realtime: { ...config.realtime, responseStreaming: "sentence" },
+      },
+      fullConfig: {} as never,
+      runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
+      platform: {
+        displayName: "Test meeting",
+        logScope: "test meeting",
+        sessionIdPrefix: "test-meeting",
+      },
+      meetingSessionId: "meeting-barge-in",
+      transport: {
+        supportsFullDuplexInput: true,
+        onFatal: vi.fn(),
+        startInput: vi.fn(),
+        writeOutput: vi.fn(async () => undefined),
+        clearOutput: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        dispose: vi.fn(async () => undefined),
+      },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      providers: [provider],
+      consultAgent,
+    });
+
+    onTranscript?.("Erste Frage.");
+    await vi.waitFor(() => expect(consultAgent).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    await firstConsult?.onSpeakableText?.({ type: "chunk", text: "Erster Antwortsatz." });
+    await vi.waitFor(() => expect(synthesize).toHaveBeenCalledOnce());
+
+    onTranscript?.("Unterbrechung mit neuer Frage.");
+    await firstConsult?.onSpeakableText?.({ type: "chunk", text: "Darf nicht mehr erklingen." });
+    finishFirst?.({ text: "Erster Antwortsatz. Darf nicht mehr erklingen.", delivered: true });
+
+    await vi.waitFor(() => expect(consultAgent).toHaveBeenCalledTimes(2));
+    expect(synthesize).toHaveBeenCalledOnce();
+    await handle.stop();
+  });
+
   it("writes ordered TTS segments as they arrive and releases the stream", async () => {
     const release = vi.fn(async () => undefined);
     const beginOutput = vi.fn();

@@ -66,6 +66,26 @@ describe("realtime voice agent talkback queue", () => {
     expect(deliver).toHaveBeenCalledWith("answer:first\nsecond");
   });
 
+  it("does not replay a result already delivered through the consult speech stream", async () => {
+    vi.useFakeTimers();
+    const deliver = vi.fn();
+    const queue = createRealtimeVoiceAgentTalkbackQueue({
+      debounceMs: 1,
+      isStopped: () => false,
+      logger: makeLogger(),
+      logPrefix: "[test]",
+      responseStyle: "brief",
+      fallbackText: "fallback",
+      consult: vi.fn(async () => ({ text: "streamed answer", delivered: true })),
+      deliver,
+    });
+
+    queue.enqueue("question");
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
   it("accumulates pending questions while a consult is active", async () => {
     vi.useFakeTimers();
     const logger = makeLogger();

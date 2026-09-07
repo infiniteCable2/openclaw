@@ -13,6 +13,8 @@ const MAX_PENDING_QUESTION_CHARS = 32 * 1024;
 /** Text produced by a delegated voice consult. */
 export type RealtimeVoiceAgentTalkbackResult = {
   text: string;
+  /** The consult already delivered this answer through its low-latency speech sink. */
+  delivered?: boolean;
 };
 
 /** Minimal queue API owned by a realtime voice session. */
@@ -157,7 +159,7 @@ export function createRealtimeVoiceAgentTalkbackQueue(
         params.logger.info(
           `${params.logPrefix} consult done: elapsedMs=${Date.now() - consultStartedAt} answerChars=${text.length} queued=${pendingQuestions.length}`,
         );
-        if (!shouldStop() && text) {
+        if (!shouldStop() && text && result.delivered !== true) {
           params.deliver(text);
         }
         nextQuestion = shiftPendingQuestion();

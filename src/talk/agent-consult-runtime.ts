@@ -39,7 +39,13 @@ export type RealtimeVoiceAgentConsultRuntime = PluginRuntimeCore["agent"];
 /**
  * Speakable text returned to the realtime voice bridge after an agent consult.
  */
-export type RealtimeVoiceAgentConsultResult = { text: string };
+export type RealtimeVoiceAgentConsultResult = { text: string; delivered?: boolean };
+
+/** Safe, final-answer-only text events emitted while a realtime consult is running. */
+export type RealtimeVoiceAgentConsultSpeechEvent =
+  | { type: "chunk"; text: string }
+  | { type: "done"; text: string }
+  | { type: "abort" };
 
 /**
  * Sender-auth contract revision for official realtime voice plugins.
@@ -382,6 +388,11 @@ export async function consultRealtimeVoiceAgent(params: {
   extraSystemPrompt?: string;
   fallbackText?: string;
   abortSignal?: AbortSignal;
+  /**
+   * Optional low-latency speech sink. When present, the embedded run must mark its
+   * final answer explicitly; only OpenClaw's sanitized final-answer blocks reach it.
+   */
+  onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
   onRunStarted?: (params: {
     runId: string;
     sessionId: string;
@@ -483,8 +494,35 @@ export async function consultRealtimeVoiceAgent(params: {
         ? AbortSignal.any([lifecycleAbortController.signal, runRegistration.abortSignal])
         : lifecycleAbortController.signal;
 
+      const streamedChunks: string[] = [];
+      let speechDelivery = Promise.resolve();
+      let speechDeliveryError: unknown;
+      const emitSpeechEvent = (event: RealtimeVoiceAgentConsultSpeechEvent) => {
+        if (!params.onSpeakableText || speechDeliveryError) {
+          return;
+        }
+        speechDelivery = speechDelivery
+          .then(async () => await params.onSpeakableText?.(event))
+          .catch((error: unknown) => {
+            speechDeliveryError = error;
+          });
+      };
+      const abortSpeechDelivery = async () => {
+        if (!params.onSpeakableText) {
+          return;
+        }
+        await speechDelivery;
+        try {
+          await params.onSpeakableText({ type: "abort" });
+        } catch {
+          // Preserve the original consult or delivery failure.
+        }
+      };
+
       // Voice consults suppress verbose/reasoning output because the bridge needs a short,
-      // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
+      // speakable answer, not agent-run diagnostics or hidden reasoning artifacts. Streaming
+      // additionally requires an explicit final-answer envelope so unphased provider text can
+      // never be mistaken for speech.
       const runPromise = params.agentRuntime.runEmbeddedAgent({
         sessionId,
         sessionKey: params.sessionKey,
@@ -515,6 +553,7 @@ export async function consultRealtimeVoiceAgent(params: {
           userLabel: params.userLabel,
           assistantLabel: params.assistantLabel,
           questionSourceLabel: params.questionSourceLabel,
+          requireFinalAnswerEnvelope: Boolean(params.onSpeakableText),
         }),
         provider: params.provider,
         model: params.model,
@@ -523,6 +562,30 @@ export async function consultRealtimeVoiceAgent(params: {
         verboseLevel: "off",
         reasoningLevel: "off",
         toolResultFormat: "plain",
+        ...(params.onSpeakableText
+          ? {
+              enforceFinalTag: true,
+              blockReplyBreak: "text_end" as const,
+              blockReplyChunking: {
+                minChars: 48,
+                maxChars: 320,
+                breakPreference: "sentence" as const,
+              },
+              onBlockReply: (payload: {
+                text?: string;
+                isError?: boolean;
+                isReasoning?: boolean;
+                isCommentary?: boolean;
+              }) => {
+                const text = collectRealtimeVoiceAgentConsultVisibleText([payload]);
+                if (!text) {
+                  return;
+                }
+                streamedChunks.push(text);
+                emitSpeechEvent({ type: "chunk", text });
+              },
+            }
+          : {}),
         timeoutMs,
         runId,
         lane: params.lane,
@@ -533,21 +596,43 @@ export async function consultRealtimeVoiceAgent(params: {
         abortSignal,
       });
       const result = await runPromise
-        .catch((error: unknown) => {
+        .catch(async (error: unknown) => {
+          await abortSpeechDelivery();
           assertRealtimeVoiceConsultNotInterrupted(abortSignal);
           throw error;
         })
         .finally(() => runRegistration?.cleanup?.());
       assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
 
-      const text = collectRealtimeVoiceAgentConsultVisibleText(result.payloads ?? []);
+      const text =
+        collectRealtimeVoiceAgentConsultVisibleText(result.payloads ?? []) ??
+        collectRealtimeVoiceAgentConsultVisibleText(
+          streamedChunks.map((streamedText) => ({ text: streamedText })),
+        );
       if (!text) {
         params.logger.warn(
           "[talk] agent consult produced no answer: agent returned no speakable text",
         );
-        return { text: params.fallbackText ?? "I need a moment to verify that before answering." };
+        const fallbackText =
+          params.fallbackText ?? "I need a moment to verify that before answering.";
+        emitSpeechEvent({ type: "done", text: fallbackText });
+        await speechDelivery;
+        if (speechDeliveryError) {
+          await abortSpeechDelivery();
+          throw speechDeliveryError;
+        }
+        return {
+          text: fallbackText,
+          ...(params.onSpeakableText ? { delivered: true } : {}),
+        };
       }
-      return { text };
+      emitSpeechEvent({ type: "done", text });
+      await speechDelivery;
+      if (speechDeliveryError) {
+        await abortSpeechDelivery();
+        throw speechDeliveryError;
+      }
+      return { text, ...(params.onSpeakableText ? { delivered: true } : {}) };
     });
   } finally {
     params.abortSignal?.removeEventListener("abort", abortFromCaller);
