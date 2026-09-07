@@ -47,7 +47,12 @@ function createBindings(agentId: string | undefined) {
     config: {
       realtime: { ...(agentId ? { agentId } : {}), toolPolicy: "safe-read-only" },
     },
-    fullConfig: { agents: { list: [{ id: "operator", default: true }] } },
+    fullConfig: {
+      agents: {
+        defaults: { thinkingDefault: "low" },
+        list: [{ id: "operator", default: true }],
+      },
+    },
     runtime: { agent: {} } as never,
     logger: {} as never,
   });
@@ -80,6 +85,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
         agentId: "operator",
         sessionKey: "agent:operator:subagent:test-meeting:meeting-1",
         spawnedBy: "agent:operator:main",
+        thinkLevel: "low",
       }),
     );
   });
