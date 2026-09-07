@@ -304,6 +304,29 @@ function resolveAliasTargetForParentPath(
   return entries.find((entry) => isWithinRoot(parentFilename, entry.parentRoot))?.target;
 }
 
+function resolveInternalCorePackageDistAliasTarget(params: {
+  packageRoot: string;
+  packageDir: string;
+  subpath: string;
+}): string | null {
+  const packageDir = path.join(params.packageRoot, "packages", params.packageDir);
+  const packageName = `@openclaw/${params.packageDir}`;
+  const exportEntry = listWorkspacePackageExportAliasEntries({
+    packageRoot: params.packageRoot,
+    packageName,
+    packageDir: params.packageDir,
+  }).find((entry) => entry.subpath === params.subpath);
+  if (!exportEntry) {
+    return null;
+  }
+  const target = path.resolve(packageDir, "dist", exportEntry.distFile);
+  return isWithinRoot(target, packageDir) &&
+    isNativeLoadableSdkTarget(target) &&
+    pluginCacheExistsSync(target)
+    ? target
+    : null;
+}
+
 function listInternalCorePackageNativeAliases(
   options: InstallOpenClawPluginSdkNativeResolverOptions,
   packageRoot = resolveInternalCorePackageHostRoot(resolveLoaderModulePath(options)),
@@ -325,6 +348,10 @@ function listInternalCorePackageNativeAliases(
     target: string;
     parentRoots: string[];
   }> = [];
+  const loaderModulePath = normalizePathForBoundary(resolveLoaderModulePath(options));
+  const preferBuiltDist = ["dist", "dist-runtime"].some((segment) =>
+    isWithinRoot(loaderModulePath, path.join(packageRoot, segment)),
+  );
   const internalCorePackageAliases = [
     ...INTERNAL_CORE_PACKAGE_ALIASES,
     ...["media-core", "normalization-core", "acp-core"].map((packageDir) => ({
@@ -340,7 +367,15 @@ function listInternalCorePackageNativeAliases(
   for (const entry of internalCorePackageAliases) {
     for (const [subpath, srcFile] of entry.subpaths) {
       const request = subpath ? `${entry.packageName}/${subpath}` : entry.packageName;
-      const target = path.join(packageRoot, "packages", entry.packageDir, "src", srcFile);
+      const sourceTarget = path.join(packageRoot, "packages", entry.packageDir, "src", srcFile);
+      const target =
+        (preferBuiltDist
+          ? resolveInternalCorePackageDistAliasTarget({
+              packageRoot,
+              packageDir: entry.packageDir,
+              subpath,
+            })
+          : null) ?? sourceTarget;
       if (pluginCacheExistsSync(target)) {
         aliases.push({ request, target, parentRoots });
       }
