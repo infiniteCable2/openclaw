@@ -36,7 +36,7 @@ import type { EmbeddedRunContextRecoveryState } from "./context-recovery-state.j
 import { resolveFinalAssistantVisibleText } from "./helpers.js";
 import {
   hasComposedVisibleAnswerAfterSettledTools,
-  isTextExplainedByPreToolCommentary,
+  resolvePreparedPayloadCountAfterSettledTools,
 } from "./incomplete-turn-classification.js";
 import {
   resolveEmptyResponseRetryInstruction,
@@ -136,32 +136,17 @@ export function resolveSettledTurnFinalizationRequest(input: {
   const canFinalizeProviderError =
     input.attempt.settledTurnFinalizationContext &&
     !hasComposedVisibleAnswerAfterSettledTools(input.attempt);
-  const hasOnlySyntheticErrorPayload =
-    (input.payloadsWithToolMedia?.length ?? 0) > 0 &&
-    input.payloadsWithToolMedia?.every((payload) => {
+  const preparedPayloadCount = resolvePreparedPayloadCountAfterSettledTools({
+    messagesSnapshot: input.attempt.messagesSnapshot,
+    payloads: input.payloadsWithToolMedia,
+    acceptsSyntheticError: (payload) => {
       const metadata = getReplyPayloadMetadata(payload);
       return (
-        payload.isError === true &&
-        Object.keys(payload).every((key) => key === "text" || key === "isError") &&
-        ((hasNoAssistantText && metadata?.toolErrorWarning) ||
-          (canFinalizeProviderError && metadata?.terminalProviderError))
+        (hasNoAssistantText && metadata?.toolErrorWarning) ||
+        (canFinalizeProviderError && metadata?.terminalProviderError)
       );
-    });
-  const hasOnlyPreToolCommentaryPayload =
-    (input.payloadsWithToolMedia?.length ?? 0) > 0 &&
-    input.payloadsWithToolMedia?.every(
-      (payload) =>
-        Object.keys(payload).every((key) => key === "text") &&
-        typeof payload.text === "string" &&
-        isTextExplainedByPreToolCommentary({
-          messagesSnapshot: input.attempt.messagesSnapshot,
-          text: payload.text,
-        }),
-    );
-  const preparedPayloadCount =
-    hasOnlySyntheticErrorPayload || hasOnlyPreToolCommentaryPayload
-      ? 0
-      : (input.payloadsWithToolMedia?.length ?? 0);
+    },
+  });
   const silentToolResultReplyPayload = resolveSilentToolResultReplyPayload({
     isCronTrigger: input.runParams.trigger === "cron",
     payloadCount: preparedPayloadCount,
