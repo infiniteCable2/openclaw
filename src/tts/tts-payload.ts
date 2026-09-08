@@ -174,13 +174,20 @@ export async function maybeApplyTtsToPayloadCore(
   const visibleText = trimmedCleaned.length > 0 ? trimmedCleaned : "";
   const explicitTtsText = directives.ttsText?.trim() || "";
   const ttsText = explicitTtsText || visibleText;
+  const configuredInboundVoiceReply =
+    !explicitTts && autoMode === "inbound" && params.inboundAudio === true;
+  // A configured conversational voice reply always retains a visible caption. If the model
+  // supplied only a speech rendering, use it as the fail-safe caption instead of emitting audio
+  // without text.
+  const visibleTextForDelivery =
+    visibleText || (configuredInboundVoiceReply ? explicitTtsText : "");
 
   const nextPayload =
-    visibleText === text.trim()
+    visibleTextForDelivery === text.trim()
       ? params.payload
       : {
           ...params.payload,
-          text: visibleText.length > 0 ? visibleText : undefined,
+          text: visibleTextForDelivery.length > 0 ? visibleTextForDelivery : undefined,
         };
 
   if (!explicitTts && autoMode === "tagged" && !directives.hasDirective) {
@@ -189,8 +196,7 @@ export async function maybeApplyTtsToPayloadCore(
   if (!explicitTts && autoMode === "inbound" && params.inboundAudio !== true) {
     return nextPayload;
   }
-  const allowShortInboundVoiceReply =
-    !explicitTts && autoMode === "inbound" && params.inboundAudio === true;
+  const allowShortInboundVoiceReply = configuredInboundVoiceReply;
 
   const mode = config.mode ?? "final";
   if (mode === "final" && params.kind && params.kind !== "final") {
