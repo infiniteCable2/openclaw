@@ -830,6 +830,31 @@ describe("TTS runtime provider fallback and delivery behavior", () => {
     }
   });
 
+  it("retains a visible caption when configured inbound voice TTS has only spoken text", async () => {
+    const cfg = createTtsConfig("openclaw-speech-core-inbound-voice-caption-test");
+    if (cfg.tts) {
+      cfg.tts.auto = "inbound";
+    }
+    let mediaDir: string | undefined;
+    try {
+      const result = await maybeApplyTtsToPayload({
+        payload: { text: "[[tts:text]]Kurze gesprochene Zusammenfassung.[[/tts:text]]" },
+        cfg,
+        channel: "matrix",
+        kind: "final",
+        inboundAudio: true,
+      });
+
+      expect(result.text).toBe("Kurze gesprochene Zusammenfassung.");
+      expect(result.mediaUrl).toMatch(/voice---[a-f0-9-]+\.ogg$/);
+      mediaDir = result.mediaUrl ? path.dirname(result.mediaUrl) : undefined;
+    } finally {
+      if (mediaDir) {
+        rmSync(mediaDir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("skips auto TTS for legacy final media directives", async () => {
     synthesizeMock.mockClear();
     const cfg = createTtsConfig("openclaw-speech-core-media-directive-tts-test");
