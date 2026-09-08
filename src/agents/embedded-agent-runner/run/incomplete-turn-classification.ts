@@ -87,6 +87,43 @@ export function isTextExplainedByPreToolCommentary(params: {
   return explained.has(candidate);
 }
 
+export function arePayloadsOnlyPreToolCommentary<TPayload extends { text?: string }>(params: {
+  messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"];
+  payloads: readonly TPayload[] | undefined;
+}): boolean {
+  return (
+    (params.payloads?.length ?? 0) > 0 &&
+    params.payloads?.every(
+      (payload) =>
+        Object.keys(payload).every((key) => key === "text") &&
+        typeof payload.text === "string" &&
+        isTextExplainedByPreToolCommentary({
+          messagesSnapshot: params.messagesSnapshot,
+          text: payload.text,
+        }),
+    ) === true
+  );
+}
+
+export function resolvePreparedPayloadCountAfterSettledTools<
+  TPayload extends { text?: string; isError?: boolean },
+>(params: {
+  messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"];
+  payloads: readonly TPayload[] | undefined;
+  acceptsSyntheticError: (payload: TPayload) => unknown;
+}): number {
+  const payloads = params.payloads ?? [];
+  const hasOnlySyntheticErrors =
+    payloads.length > 0 &&
+    payloads.every(
+      (payload) =>
+        payload.isError === true &&
+        Object.keys(payload).every((key) => key === "text" || key === "isError") &&
+        Boolean(params.acceptsSyntheticError(payload)),
+    );
+  return hasOnlySyntheticErrors || arePayloadsOnlyPreToolCommentary(params) ? 0 : payloads.length;
+}
+
 /** Keeps pre-tool commentary distinct from a composed answer at both recovery gates. */
 export function hasComposedVisibleAnswerAfterSettledTools(params: {
   assistantTexts: readonly string[];
