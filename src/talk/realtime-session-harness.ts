@@ -20,6 +20,7 @@ import type {
   RealtimeVoiceResponseOutcome,
   RealtimeVoiceRole,
 } from "./provider-types.js";
+import { resolveRealtimeVoiceBargeIn } from "./realtime-session-policy.js";
 import {
   extendRealtimeVoiceOutputEchoSuppression,
   getRealtimeVoiceBridgeEventHealth,
@@ -143,6 +144,7 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
 }): RealtimeVoiceSessionHarness<TForcedConsultContext> {
   let closed = false;
   let bridge: RealtimeVoiceBridgeSession | undefined;
+  let bridgeCapabilities: RealtimeVoiceBridgeSessionParams["capabilities"];
   let lastInputAt: string | undefined;
   let lastOutputAt: string | undefined;
   let lastSuppressedInputAt: string | undefined;
@@ -311,6 +313,7 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
       responseOwnerId = undefined;
     },
     createBridge(bridgeParams) {
+      bridgeCapabilities = bridgeParams.capabilities;
       bridge = createRealtimeVoiceBridgeSession({
         ...bridgeParams,
         onResponseRequest: () => {
@@ -385,6 +388,16 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
       };
     },
     handleBargeIn(options, fallbackFlush) {
+      if (
+        !resolveRealtimeVoiceBargeIn({
+          configuredBargeIn: true,
+          interruptResponseOnInputAudio: true,
+          capabilities: bridgeCapabilities,
+          outputAudioMode: bridge?.bridge.outputAudioMode,
+        })
+      ) {
+        return;
+      }
       suppressInputUntilMs = 0;
       const flushGeneration = outputFlushGeneration;
       bridge?.handleBargeIn(options);

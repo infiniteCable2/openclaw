@@ -21,6 +21,12 @@ import { shouldPrintVitestThrottle } from "./vitest.system-load.ts";
 import { DEFAULT_VITEST_TEST_TIMEOUT_MS } from "./vitest.timeouts.ts";
 import { compiledSubprocessesPlugin } from "./vitest.worker-artifacts.ts";
 
+if (process.versions.bun) {
+  // Removal: delete this Vitest bootstrap after oven-sh/bun#42349 ships in supported Bun.
+  const { ensureSqliteLibrarySelected } = await import("../../src/infra/bun-sqlite-library.ts");
+  ensureSqliteLibrarySelected();
+}
+
 export type { LocalVitestScheduling };
 
 export const jsdomOptimizedDeps = {
@@ -256,6 +262,16 @@ export const sharedVitestConfig = {
         ),
       },
       {
+        find: "@openclaw/gateway-protocol/system-agent-context",
+        replacement: path.join(
+          repoRoot,
+          "packages",
+          "gateway-protocol",
+          "src",
+          "system-agent-context.ts",
+        ),
+      },
+      {
         find: "@openclaw/gateway-protocol/version",
         replacement: path.join(repoRoot, "packages", "gateway-protocol", "src", "version.ts"),
       },
@@ -307,6 +323,8 @@ export const sharedVitestConfig = {
         find: "@openclaw/llm-core/validation",
         replacement: path.join(repoRoot, "packages", "llm-core", "src", "validation.ts"),
       },
+      sourcePackageAlias("llm-core", "types"),
+      sourcePackageAlias("llm-core", "model-contracts/anthropic"),
       {
         find: "@openclaw/llm-core",
         replacement: path.join(repoRoot, "packages", "llm-core", "src", "index.ts"),
@@ -549,7 +567,7 @@ export const sharedVitestConfig = {
         "src/gateway/server-methods/config.ts",
         "src/gateway/server-methods/send.ts",
         "src/gateway/server-methods/skills.ts",
-        "src/gateway/server-methods/talk.ts",
+        "src/gateway/talk/handlers/index.ts",
         "src/gateway/server-methods/web.ts",
         "src/gateway/server-methods/wizard.ts",
         "src/gateway/call.ts",

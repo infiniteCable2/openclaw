@@ -1,8 +1,8 @@
 // Vitest scoped config helper builds test configs for scoped file patterns.
 import path from "node:path";
 import { defineConfig, type ViteUserConfig } from "vitest/config";
+import { intersectIncludePatterns } from "./vitest.include-patterns.ts";
 import {
-  intersectIncludePatterns,
   loadPatternListFromEnv,
   matchesVitestGlob,
   narrowIncludePatternsForCli,
@@ -110,6 +110,7 @@ const SCOPED_PROJECT_GROUP_ORDER_BY_NAME = new Map(
     "extension-providers",
     "extension-signal",
     "extension-slack",
+    "extension-database-workers",
     "extension-telegram",
     "extension-voice-call",
     "extension-whatsapp",
@@ -205,7 +206,7 @@ export function createScopedVitestConfig(
   const env = options?.env;
   const externalIncludePatterns = loadPatternListFromEnv("OPENCLAW_VITEST_INCLUDE_FILE", env);
   const includeFromEnv = options?.intersectIncludeFile
-    ? intersectIncludePatterns(include, externalIncludePatterns)
+    ? intersectIncludePatterns(include, externalIncludePatterns, matchesVitestGlob)
     : externalIncludePatterns;
   const cliInclude = narrowIncludePatternsForCli(include, options?.argv, {
     scopedDir,

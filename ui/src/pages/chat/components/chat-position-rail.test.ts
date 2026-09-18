@@ -1,13 +1,11 @@
 /* @vitest-environment jsdom */
 
 import { html, nothing, render } from "lit";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestTranscript } from "../chat-view.test-helpers.ts";
-import { renderChatPositionRail } from "./chat-position-rail.ts";
 import { getTranscriptState } from "./chat-thread-interactions.ts";
 import { renderChatThread } from "./chat-thread.ts";
 import { ChatTranscriptController } from "./chat-transcript-controller.ts";
-import { projectChatTranscript } from "./chat-transcript-projection.ts";
 import {
   installTranscriptDomMocks,
   mountTestTranscript,
@@ -31,6 +29,111 @@ describe("conversation position rail", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
 
+  it("keeps stream edits off target scans while reconciling bubble mounts and identities", async () => {
+    const observed = new Set<Element>();
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        observe = (element: Element) => observed.add(element);
+        unobserve = (element: Element) => observed.delete(element);
+        disconnect = () => observed.clear();
+      },
+    );
+    const props = {
+      ...threadProps("rail-mutations", "agent:main:rail-mutations", [
+        message("question", "user", "Earlier question", 1),
+        message("answer", "assistant", "Earlier answer", 2),
+      ]),
+      runActive: true,
+      stream: "Live **start**",
+      streamStartedAt: 3_000,
+    };
+    const transcript = createTestTranscript();
+    const container = document.body.appendChild(document.createElement("div"));
+    const rerender = () => {
+      render(renderChatThread(props, transcript), container);
+      transcript.hostUpdated();
+    };
+    const settleFrames = () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+    props.onRequestUpdate = rerender;
+    try {
+      rerender();
+      transcript.hostConnected();
+      const root = container.querySelector<HTMLElement>(".chat-thread");
+      const marks = container.querySelector<HTMLElement>(".chat-position-rail__marks");
+      const original = container.querySelector<HTMLElement>(
+        '.chat-bubble[data-entry-id="question"]',
+      );
+      assert(root && marks && original);
+      Object.defineProperty(marks, "clientHeight", { configurable: true, value: 600 });
+      await settleFrames();
+      expect(observed.has(original)).toBe(true);
+      const query = vi.spyOn(root, "querySelectorAll");
+      const targetScans = () =>
+        query.mock.calls.filter(([selector]) => selector === ".chat-bubble[data-entry-id]").length;
+
+      for (const word of ["one", "two", "three"]) {
+        props.stream = `Live **${word}**`;
+        rerender();
+        await settleFrames();
+        expect(container.querySelector(".chat-bubble strong")?.textContent).toBe(word);
+        expect(container.querySelector('.chat-bubble[data-entry-id="question"]')).toBe(original);
+      }
+      expect(targetScans()).toBe(0);
+
+      original.remove();
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(original)).toBe(false);
+      query.mockClear();
+
+      const replacement = original.cloneNode(true) as HTMLElement;
+      root.append(replacement);
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(true);
+      query.mockClear();
+      replacement.remove();
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(false);
+      query.mockClear();
+
+      const wrapper = document.createElement("section");
+      wrapper.append(replacement);
+      root.append(wrapper);
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(true);
+      query.mockClear();
+      wrapper.remove();
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(false);
+      query.mockClear();
+
+      replacement.removeAttribute("data-entry-id");
+      root.append(replacement);
+      await settleFrames();
+      expect(targetScans()).toBe(0);
+      replacement.dataset.entryId = "question";
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(true);
+      query.mockClear();
+      replacement.removeAttribute("data-entry-id");
+      await settleFrames();
+      expect(targetScans()).toBeGreaterThan(0);
+      expect(observed.has(replacement)).toBe(false);
+    } finally {
+      render(nothing, container);
+      transcript.hostDisconnected();
+    }
+  });
+
   it("publishes consecutive reader offsets even when the virtual row range is unchanged", async () => {
     transcriptDomState.measuredRowHeight = 120;
     const requestUpdate = vi.fn();
@@ -45,7 +148,11 @@ describe("conversation position rail", () => {
       key: `row-${index}`,
       content: html`<div>${index}</div>`,
     }));
-    const { container, session } = await mountTestTranscript("rail-notification", rows, transcript);
+    const { container, session, renderRows } = await mountTestTranscript(
+      "rail-notification",
+      rows,
+      transcript,
+    );
     try {
       Object.defineProperties(container, {
         clientHeight: { configurable: true, value: 600 },
@@ -55,23 +162,12 @@ describe("conversation position rail", () => {
         observer.emitTarget(container, 800, 600);
       }
       const ids = rows.map((row) => row.key);
-      session.syncMessageRows(new Map(ids.map((id) => [id, id])));
-      const rail = document.body.appendChild(document.createElement("div"));
-      const renderRail = () =>
-        render(
-          renderChatPositionRail({
-            messages: [
-              message("row-2", "user", "Second", 2),
-              message("row-3", "assistant", "Third", 3),
-            ],
-            transcript: session,
-            requestUpdate,
-          }),
-          rail,
-        );
-      requestUpdate.mockImplementation(renderRail);
-      const currentId = () =>
-        rail.querySelector('[aria-current="true"]')?.getAttribute("data-position-marker-id");
+      session.syncMessageRows(
+        new Map(ids.map((id) => [id, id])),
+        new Map(ids.map((id) => [id, id])),
+      );
+      renderRows(rows);
+      const currentId = () => session.activeMessageId(["row-2", "row-3"]);
       container.scrollTop = 50;
       container.dispatchEvent(new Event("scroll"));
       expect(currentId()).toBe("row-2");
@@ -115,7 +211,10 @@ describe("conversation position rail", () => {
       key: `row-${index}`,
       content: html`<div>${index}</div>`,
     }));
-    const { container, transcript, session } = await mountTestTranscript("rail-offset", rows);
+    const { container, transcript, session, renderRows } = await mountTestTranscript(
+      "rail-offset",
+      rows,
+    );
     try {
       Object.defineProperties(container, {
         clientHeight: { configurable: true, value: 600 },
@@ -126,7 +225,11 @@ describe("conversation position rail", () => {
         observer.emitTarget(container, 800, 600);
       }
       const ids = rows.map((row) => row.key);
-      session.syncMessageRows(new Map(ids.map((id) => [id, id])));
+      session.syncMessageRows(
+        new Map(ids.map((id) => [id, id])),
+        new Map(ids.map((id) => [id, id])),
+      );
+      renderRows(rows);
       // No scroll event or render between these queries: mounted rows are stale.
       container.scrollTop = 100;
       expect(session.activeMessageId(ids)).toBe("row-2");
@@ -143,7 +246,7 @@ describe("conversation position rail", () => {
   });
 
   it("keeps focused previews after pointer exit and resets interaction when the session changes", () => {
-    const messages = Array.from({ length: 12 }, (_, index) =>
+    const messages = Array.from({ length: 40 }, (_, index) =>
       message(
         `message-${index}`,
         index % 2 ? "assistant" : "user",
@@ -152,6 +255,8 @@ describe("conversation position rail", () => {
       ),
     );
     const props = threadProps("rail-interaction", "agent:main:first", messages);
+    const historyIntent = vi.fn();
+    props.onHistoryIntent = historyIntent;
     const transcript = createTestTranscript();
     const container = document.body.appendChild(document.createElement("div"));
     const rerender = () => {
@@ -166,25 +271,51 @@ describe("conversation position rail", () => {
     try {
       rerender();
       transcript.hostConnected();
-      expect(markers()).toHaveLength(10);
+      expect(markers()).toHaveLength(40);
+      // Rail wheel input belongs to its scrollport, never transcript history.
+      for (const type of ["wheel", "touchstart", "touchmove"]) {
+        container
+          .querySelector(".chat-position-rail__marks")!
+          .dispatchEvent(new Event(type, { bubbles: true }));
+      }
+      for (const key of ["PageUp", "PageDown"]) {
+        expect(
+          markers()[0]!.dispatchEvent(
+            new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+          ),
+        ).toBe(true);
+      }
+      expect(historyIntent).not.toHaveBeenCalled();
+      container
+        .querySelector(".chat-thread")!
+        .dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+      expect(historyIntent).toHaveBeenCalledOnce();
+      container
+        .querySelector(".chat-thread")!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true }));
+      expect(historyIntent).toHaveBeenCalledTimes(2);
       expect(preview()).toBeUndefined();
       markers()[4]!.focus();
-      expect(preview()).toContain("Checkpoint 5");
+      expect(preview()).toContain("Checkpoint 4");
       markers()[2]!.dispatchEvent(new Event("pointerenter"));
       expect(preview()).toContain("Checkpoint 2");
       container.querySelector(".chat-position-rail")!.dispatchEvent(new Event("pointerleave"));
-      expect(preview()).toContain("Checkpoint 5");
+      expect(preview()).toContain("Checkpoint 4");
       markers()[4]!.dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
       );
       expect(document.activeElement).toBe(markers()[5]);
-      expect(preview()).toContain("Checkpoint 6");
+      expect(preview()).toContain("Checkpoint 5");
       const focused = document.activeElement;
-      props.messages = [...messages, message("message-12", "user", "Checkpoint 12", 13)];
+      props.messages = [
+        ...messages,
+        message("message-40", "user", "Checkpoint 40", 41),
+        message("message-41", "assistant", "Checkpoint 41", 42),
+      ];
       rerender();
-      expect(markers()).toHaveLength(10);
+      expect(markers()).toHaveLength(42);
       expect(document.activeElement).toBe(focused);
-      expect(preview()).toContain("Checkpoint 6");
+      expect(preview()).toContain("Checkpoint 5");
       focused!.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
       );
@@ -208,7 +339,7 @@ describe("conversation position rail", () => {
       state.searchOpen = true;
       state.searchQuery = "Checkpoint 5";
       rerender();
-      expect(markers()).toHaveLength(0);
+      expect(markers()).toHaveLength(1);
       state.searchQuery = "not present";
       rerender();
       expect(markers()).toHaveLength(0);
@@ -217,66 +348,220 @@ describe("conversation position rail", () => {
     }
   });
 
-  it("uses the visible completed answer and keeps attachment-only user landmarks", () => {
-    const messages = [
-      message("question", "user", "Inspect the design", 1),
-      message("commentary", "assistant", "Checking the files", 2, "run-1"),
-      {
-        ...message("tool", "toolResult", "File contents", 3, "run-1"),
-        toolName: "read",
-        toolCallId: "read-1",
-      },
-      message("answer", "assistant", "The design is ready", 4, "run-1"),
-      message(
-        "attachment",
-        "user",
-        [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } }],
-        5,
-      ),
-    ];
-    const props = threadProps("rail-projection", "agent:main:projection", messages);
-    const transcript = createTestTranscript();
-    let landmarks: readonly unknown[] = [];
-    transcript.renderSession(props.paneId, props.sessionKey, (session) => {
-      landmarks = projectChatTranscript(props, session).positionMessages;
-      return html``;
-    });
-    expect(landmarks).toEqual([messages[0], messages[3], messages[4]]);
-    transcript.hostDisconnected();
-  });
+  it.each([
+    { role: "user", senderName: undefined, label: "User message" },
+    { role: "user", senderName: "Alice Example", label: "Alice Example" },
+    { role: "assistant", senderName: "Alice Example", label: "Assistant message" },
+  ])(
+    "renders safe Markdown and attribution in $role previews ($label)",
+    ({ role, senderName, label }) => {
+      const messages = [
+        message(
+          "formatted",
+          role,
+          "**Important** *detail* `code`\n\n- [Guide](https://example.com)\n<script>alert(1)</script>",
+          1,
+        ),
+        message("next", role === "user" ? "assistant" : "user", "Next turn", 2),
+      ];
+      Object.assign(messages[0]!["__openclaw"], { senderName });
+      const props = threadProps("rail-markdown", "agent:main:markdown", messages);
+      props.userName = "Local Viewer";
+      const transcript = createTestTranscript();
+      const container = document.body.appendChild(document.createElement("div"));
+      const rerender = () => {
+        render(renderChatThread(props, transcript), container);
+        transcript.hostUpdated();
+      };
+      props.onRequestUpdate = rerender;
+      try {
+        rerender();
+        transcript.hostConnected();
+        container.querySelector<HTMLButtonElement>(".chat-position-rail__marker")!.focus();
+        const preview = container.querySelector(".chat-position-rail__preview-copy")!;
+        expect(container.querySelector(".chat-position-rail__preview-label")?.textContent).toBe(
+          label,
+        );
+        const avatar = container.querySelector(".chat-position-rail__preview .chat-author-avatar");
+        expect(avatar?.getAttribute("aria-label") ?? null).toBe(
+          role === "user" ? (senderName ?? null) : null,
+        );
+        expect(preview.querySelector("strong")?.textContent).toBe("Important");
+        expect(preview.querySelector("em")?.textContent).toBe("detail");
+        expect(preview.querySelector("code")?.textContent).toBe("code");
+        expect(preview.querySelector("li a")?.textContent).toBe("Guide");
+        expect(preview.querySelector("script")).toBeNull();
+        expect(preview.closest("[inert]")).not.toBeNull();
+      } finally {
+        render(nothing, container);
+        transcript.hostDisconnected();
+      }
+    },
+  );
 
-  it("does not target a final-answer action owner folded behind dashboard work", () => {
+  it("indexes three assistant messages as one run when history starts mid-run", () => {
+    // A paginated history window can omit the user boundary of an existing run.
     const messages = [
-      message("question", "user", "Inspect the design", 1),
-      { ...message("final", "assistant", "Design ready", 2, "run-1"), phase: "final_answer" },
+      message("first", "assistant", "Checking the existing style", 1, "run-partial"),
+      message(
+        "call-1",
+        "assistant",
+        [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }],
+        2,
+        "run-partial",
+      ),
       {
-        ...message("tool-1", "toolResult", "File contents", 3, "run-1"),
-        toolName: "read",
+        ...message("result-1", "toolResult", "Styles loaded", 3, "run-partial"),
         toolCallId: "read-1",
-      },
-      {
-        ...message("tail", "assistant", "Checking the saved result", 4, "run-1"),
-        phase: "commentary",
-      },
-      {
-        ...message("tool-2", "toolResult", "Saved", 5, "run-1"),
         toolName: "read",
-        toolCallId: "read-2",
       },
+      message("second", "assistant", "Rendering the launch card", 4, "run-partial"),
+      message(
+        "call-2",
+        "assistant",
+        [{ type: "toolCall", id: "render-1", name: "exec", arguments: {} }],
+        5,
+        "run-partial",
+      ),
+      {
+        ...message("result-2", "toolResult", "Asset rendered", 6, "run-partial"),
+        toolCallId: "render-1",
+        toolName: "exec",
+      },
+      message("final", "assistant", "The launch card is ready", 7, "run-partial"),
+      message("thinking", "assistant", "<thinking>Private planning</thinking>", 8, "run-partial"),
     ];
     const props = {
-      ...threadProps("rail-folded", "agent:main:dashboard:audit", messages),
+      ...threadProps("rail-partial-run", "agent:main:main", messages),
       showToolCalls: true,
-      persistCommentary: true,
-      runWorking: false,
     };
     const transcript = createTestTranscript();
-    let landmarks: readonly unknown[] = [];
-    transcript.renderSession(props.paneId, props.sessionKey, (session) => {
-      landmarks = projectChatTranscript(props, session).positionMessages;
-      return html``;
+    const container = document.body.appendChild(document.createElement("div"));
+    props.onRequestUpdate = () => {
+      render(renderChatThread(props, transcript), container);
+      transcript.hostUpdated();
+    };
+    try {
+      props.onRequestUpdate();
+      transcript.hostConnected();
+      const markers = container.querySelectorAll<HTMLButtonElement>(".chat-position-rail__marker");
+      expect(markers).toHaveLength(1);
+      markers[0]!.focus();
+      expect(container.querySelector(".chat-position-rail__preview-copy")?.textContent).toContain(
+        "The launch card is ready",
+      );
+      expect(
+        container.querySelector(".chat-position-rail__preview-copy")?.textContent,
+      ).not.toContain("Styles loaded");
+    } finally {
+      render(nothing, container);
+      transcript.hostDisconnected();
+    }
+  });
+
+  it("keeps the focused run marker through streaming and retargets its persisted answer", async () => {
+    const observed = new Set<Element>();
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        observe = (element: Element) => observed.add(element);
+        unobserve = (element: Element) => observed.delete(element);
+        disconnect = () => observed.clear();
+      },
+    );
+    const settleFrames = () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+    const user = message("question", "user", "Review the card", 1, "stream-run");
+    const props = threadProps("rail-stream-handoff", "agent:main:main", [user]);
+    Object.assign(props, {
+      runId: "stream-run",
+      runActive: true,
+      runWorking: true,
+      stream: "<thinking>Private planning</thinking>",
+      streamStartedAt: 2_000,
     });
-    expect(landmarks).toEqual([messages[0], messages[3]]);
-    transcript.hostDisconnected();
+    const transcript = createTestTranscript();
+    const container = document.body.appendChild(document.createElement("div"));
+    const rerender = () => {
+      render(renderChatThread(props, transcript), container);
+      transcript.hostUpdated();
+    };
+    props.onRequestUpdate = rerender;
+    const marker = () =>
+      container.querySelector<HTMLButtonElement>('[data-position-marker-id="run:stream-run"]')!;
+    try {
+      rerender();
+      transcript.hostConnected();
+      expect(container.querySelectorAll(".chat-position-rail__marker")).toHaveLength(1);
+      props.stream = "Draft response";
+      rerender();
+      const provisional = marker();
+      provisional.focus();
+      expect(container.querySelector(".chat-position-rail__preview-copy")?.textContent).toContain(
+        "Draft response",
+      );
+      const streamBubble = [...container.querySelectorAll<HTMLElement>(".chat-bubble")].find(
+        (bubble) => bubble.textContent?.includes("Draft response"),
+      )!;
+      const root = container.querySelector<HTMLElement>(".chat-thread")!;
+      const marks = container.querySelector<HTMLElement>(".chat-position-rail__marks")!;
+      Object.defineProperty(marks, "clientHeight", { configurable: true, value: 600 });
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(true);
+      const query = vi.spyOn(root, "querySelectorAll");
+      props.stream = "Draft **updated** response";
+      rerender();
+      await settleFrames();
+      expect(streamBubble.querySelector("strong")?.textContent).toBe("updated");
+      expect(query.mock.calls.filter(([selector]) => selector.includes(".chat-bubble"))).toEqual(
+        [],
+      );
+      const streamParent = streamBubble.parentNode!;
+      const streamNext = streamBubble.nextSibling;
+      streamBubble.remove();
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(false);
+      const wrapper = document.createElement("section");
+      wrapper.append(streamBubble);
+      root.append(wrapper);
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(true);
+      const streamId = streamBubble.dataset.messageId!;
+      delete streamBubble.dataset.messageId;
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(false);
+      streamBubble.dataset.messageId = streamId;
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(true);
+      streamParent.insertBefore(streamBubble, streamNext);
+      wrapper.remove();
+      await settleFrames();
+      provisional.click();
+      await Promise.resolve();
+      expect(streamBubble.classList.contains("chat-bubble--reply-target")).toBe(true);
+      props.messages = [
+        user,
+        message("persisted-answer", "assistant", "Final response", 3, "stream-run"),
+      ];
+      Object.assign(props, { stream: null, runActive: false, runWorking: false, runId: null });
+      rerender();
+      expect(marker()).toBe(provisional);
+      expect(document.activeElement).toBe(provisional);
+      expect(container.querySelector(".chat-position-rail__preview-copy")?.textContent).toContain(
+        "Final response",
+      );
+      const persistedBubble = container.querySelector<HTMLElement>(
+        '[data-entry-id="persisted-answer"]',
+      )!;
+      marker().click();
+      await Promise.resolve();
+      expect(persistedBubble.classList.contains("chat-bubble--reply-target")).toBe(true);
+      expect(container.querySelectorAll(".chat-position-rail__marker")).toHaveLength(2);
+    } finally {
+      render(nothing, container);
+      transcript.hostDisconnected();
+    }
   });
 });

@@ -2,7 +2,14 @@
  * QuickJS worker for Code Mode guest execution and suspended VM snapshots.
  */
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { EvalFlags, JSException, QuickJS, type JSValueHandle, type Snapshot } from "quickjs-wasi";
+import {
+  EvalFlags,
+  JSException,
+  MAX_STACK_SIZE,
+  QuickJS,
+  type JSValueHandle,
+  type Snapshot,
+} from "quickjs-wasi";
 import { serveWorkerTasks, type WorkerTaskChannel } from "../infra/worker-task-pool.js";
 import { CODE_MODE_CONTROLLER_SOURCE } from "./code-mode-controller-source.js";
 import {
@@ -128,6 +135,9 @@ function createHostRequestHandler(params: {
       method !== "search" &&
       method !== "describe" &&
       method !== "callValue" &&
+      method !== "resultSave" &&
+      method !== "resultLoad" &&
+      method !== "resultDelete" &&
       method !== "nodes" &&
       method !== "yield" &&
       method !== "namespace" &&
@@ -197,6 +207,7 @@ async function createVm(input: CodeModeWorkerPayload, bridge: BridgeState): Prom
     // on restore so retained encoder/decoder instances keep their native methods.
     extensions: input.wasmExtensions,
     memoryLimit: input.config.memoryLimitBytes,
+    maxStackSize: MAX_STACK_SIZE,
     timezoneOffset: 0,
     onUnhandledRejection: trackPromiseRejection,
     interruptHandler: () => {
@@ -277,10 +288,21 @@ function takeOutputSafely(vm: QuickJS): unknown[] {
 function captureWorkerResult(
   result: CodeModeWorkerResult,
   config: CodeModeConfig,
+  retainFinalValue = false,
 ): CodeModeWorkerThreadResult {
   const output = captureCodeModeOutput(result.output, config.maxOutputBytes);
   if (result.status === "completed") {
-    return { ...result, output, value: captureCodeModeValue(result.value, config.maxOutputBytes) };
+    return {
+      ...result,
+      output,
+      value: captureCodeModeValue(
+        result.value,
+        config.maxOutputBytes,
+        retainFinalValue
+          ? Math.min(config.memoryLimitBytes, config.maxSnapshotBytes)
+          : config.maxOutputBytes,
+      ),
+    };
   }
   return result.status === "failed"
     ? { ...result, output, error: boundCodeModeError(result.error, config.maxOutputBytes) }
@@ -676,6 +698,7 @@ async function main(
           channel,
         ),
         config,
+        input.retainFinalValue === true,
       );
     }
     // SAFETY: This process's QuickJS workers produce snapshots; the host returns them unchanged.
@@ -699,6 +722,7 @@ async function main(
           channel,
         ),
         config,
+        input.retainFinalValue === true,
       );
     }
     return {

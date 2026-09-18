@@ -18,9 +18,18 @@ import {
   withOwnedSessionTranscriptWrites,
 } from "../../config/sessions/transcript-write-context.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
+import { textAssistant } from "../test-helpers/sparse-transcript.test-support.js";
 import { SessionManager } from "./session-manager.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    for (const stateDir of tempDirs.dirs) {
+      await cleanupSessionStateForTest({ stateDir });
+    }
+    cleanup();
+  }),
+);
 afterEach(() => vi.restoreAllMocks());
 
 describe("SessionManager branch replacement", () => {
@@ -265,10 +274,7 @@ describe("SessionManager branch replacement", () => {
       const assistant = await appendTranscriptMessage(scope, {
         cwd: dir,
         eventId: "branch-race-assistant",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "answer before raced branch" }],
-        },
+        message: textAssistant("answer before raced branch"),
         parentId: user.messageId,
       });
       const sessionManager = SessionManager.open(scope, dir);

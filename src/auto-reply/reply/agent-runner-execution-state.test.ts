@@ -11,18 +11,19 @@ import {
   fallbackAttemptOptions,
   initialFallbackAttemptOptions,
   createMinimalRunAgentTurnParams,
+  createRunAgentTurnParams,
 } from "./agent-runner-execution.test-support.js";
 import type { FallbackRunnerParams } from "./agent-runner-execution.test-support.js";
 
 const state = await setupAgentRunnerExecutionTestState();
 
 describe("executeAgentTurn: session state", () => {
-  it("restarts the active prompt when a live model switch is requested", async () => {
+  it("keeps thinking paired with the winning runtime when a live model switch restarts the prompt", async () => {
     let fallbackInvocation = 0;
     state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
       const isInitialInvocation = fallbackInvocation++ === 0;
       const provider = isInitialInvocation ? "anthropic" : "openai";
-      const model = isInitialInvocation ? "claude" : "gpt-5.4";
+      const model = isInitialInvocation ? "claude" : "gpt-5.6-luna";
       return {
         result: await params.run(provider, model, initialFallbackAttemptOptions(params)),
         provider,
@@ -34,7 +35,7 @@ describe("executeAgentTurn: session state", () => {
       .mockImplementationOnce(async () => {
         throw new LiveSessionModelSwitchError({
           provider: "openai",
-          model: "gpt-5.4",
+          model: "gpt-5.6-luna",
           agentRuntimeOverride: "codex",
         });
       })
@@ -45,7 +46,7 @@ describe("executeAgentTurn: session state", () => {
             agentMeta: {
               sessionId: "session",
               provider: "openai",
-              model: "gpt-5.4",
+              model: "gpt-5.6-luna",
             },
           },
         };
@@ -53,35 +54,30 @@ describe("executeAgentTurn: session state", () => {
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     const followupRun = createFollowupRun();
+    followupRun.run.thinkLevel = "ultra";
+    followupRun.run.thinkingCatalog?.push({
+      provider: "openai",
+      id: "gpt-5.6-luna",
+      input: ["text"],
+      reasoning: true,
+      compat: { supportedReasoningEfforts: ["medium", "high", "max"] },
+    });
+    const staleEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: 1,
+      agentRuntimeOverride: "openclaw",
+    };
     const result = await executeAgentTurn({
-      commandBody: "hello",
-      followupRun,
-      sessionCtx: {
-        Provider: "whatsapp",
-        MessageSid: "msg",
-      } as unknown as TemplateContext,
-      opts: {},
-      typingSignals: createMockTypingSignaler(),
-      blockReplyPipeline: null,
-      blockStreamingEnabled: false,
-      resolvedBlockStreamingBreak: "message_end",
-      applyReplyToMode: (payload) => payload,
-      shouldEmitToolResult: () => true,
-      shouldEmitToolOutput: () => false,
-      pendingToolTasks: new Set(),
-      resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
-      sessionKey: "main",
-      getActiveSessionEntry: () => undefined,
-      resolvedVerboseLevel: "off",
+      ...createRunAgentTurnParams(followupRun),
+      getActiveSessionEntry: () => staleEntry,
     });
 
     expect(result.kind).toBe("success");
     expect(state.runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
     expect(followupRun.run.provider).toBe("openai");
-    expect(followupRun.run.model).toBe("gpt-5.4");
+    expect(followupRun.run.model).toBe("gpt-5.6-luna");
     expect(state.runEmbeddedAgentMock.mock.calls[1]?.[0]).toEqual(
-      expect.objectContaining({ agentHarnessRuntimeOverride: "codex" }),
+      expect.objectContaining({ agentHarnessRuntimeOverride: "codex", thinkLevel: "max" }),
     );
   });
 
@@ -114,28 +110,7 @@ describe("executeAgentTurn: session state", () => {
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     const followupRun = createFollowupRun();
-    const result = await executeAgentTurn({
-      commandBody: "hello",
-      followupRun,
-      sessionCtx: {
-        Provider: "whatsapp",
-        MessageSid: "msg",
-      } as unknown as TemplateContext,
-      opts: {},
-      typingSignals: createMockTypingSignaler(),
-      blockReplyPipeline: null,
-      blockStreamingEnabled: false,
-      resolvedBlockStreamingBreak: "message_end",
-      applyReplyToMode: (payload) => payload,
-      shouldEmitToolResult: () => true,
-      shouldEmitToolOutput: () => false,
-      pendingToolTasks: new Set(),
-      resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
-      sessionKey: "main",
-      getActiveSessionEntry: () => undefined,
-      resolvedVerboseLevel: "off",
-    });
+    const result = await executeAgentTurn(createRunAgentTurnParams(followupRun));
 
     // After two retries the loop must break instead of continuing
     // forever. The result should be a final error, not an infinite hang.
@@ -202,28 +177,7 @@ describe("executeAgentTurn: session state", () => {
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     const followupRun = createFollowupRun();
-    const result = await executeAgentTurn({
-      commandBody: "hello",
-      followupRun,
-      sessionCtx: {
-        Provider: "whatsapp",
-        MessageSid: "msg",
-      } as unknown as TemplateContext,
-      opts: {},
-      typingSignals: createMockTypingSignaler(),
-      blockReplyPipeline: null,
-      blockStreamingEnabled: false,
-      resolvedBlockStreamingBreak: "message_end",
-      applyReplyToMode: (payload) => payload,
-      shouldEmitToolResult: () => true,
-      shouldEmitToolOutput: () => false,
-      pendingToolTasks: new Set(),
-      resetSessionAfterRoleOrderingConflict: async () => false,
-      isHeartbeat: false,
-      sessionKey: "main",
-      getActiveSessionEntry: () => undefined,
-      resolvedVerboseLevel: "off",
-    });
+    const result = await executeAgentTurn(createRunAgentTurnParams(followupRun));
 
     // Two switches (within the limit of 2) then success on third attempt
     expect(result.kind).toBe("success");

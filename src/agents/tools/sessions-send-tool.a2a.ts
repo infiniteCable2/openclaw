@@ -10,7 +10,11 @@ import { splitMediaFromOutput } from "../../media/parse.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
-import { type AgentWaitResult, waitForAgentRunReply } from "../run-wait.js";
+import {
+  type AgentWaitResult,
+  isTerminalAgentWaitTimeout,
+  waitForAgentRunReply,
+} from "../run-wait.js";
 import { runAgentStep } from "./agent-step.js";
 import {
   callAgentToolGatewayRequest,
@@ -45,8 +49,7 @@ function sameOwnedSession(params: {
 }
 function isDeliveryFailureWait(wait: AgentWaitResult): boolean {
   return (
-    (wait.status === "error" && !wait.retryableTransportError) ||
-    (wait.status === "timeout" && wait.pendingError === true)
+    (wait.status === "error" && !wait.retryableTransportError) || isTerminalAgentWaitTimeout(wait)
   );
 }
 
@@ -55,17 +58,14 @@ async function deliverAnnounceReply(params: {
   callGateway: AgentToolGatewayRequestCaller;
   message: string;
   runContextId: string;
-  targetSessionKey: string;
+  targetAgentId: string;
 }) {
-  // Gateway chooses media roots before its later outbound directive parse, so
-  // project the media and its producing agent at the announcement boundary.
+  // Gateway sends need the selected owner for text routing and media roots;
+  // carry the admitted target instead of relying on an implicit default.
   const { text: message, mediaUrls, audioAsVoice } = splitMediaFromOutput(params.message.trim());
   if (!message && !mediaUrls?.length) {
     return;
   }
-  const mediaAgentId = mediaUrls?.length
-    ? parseAgentSessionKey(params.targetSessionKey)?.agentId
-    : undefined;
   try {
     await params.callGateway({
       method: "send",
@@ -73,7 +73,7 @@ async function deliverAnnounceReply(params: {
         to: params.announceTarget.to,
         message,
         ...(mediaUrls?.length ? { mediaUrls } : {}),
-        ...(mediaAgentId ? { agentId: mediaAgentId } : {}),
+        agentId: params.targetAgentId,
         ...(audioAsVoice ? { asVoice: true } : {}),
         channel: params.announceTarget.channel,
         accountId: params.announceTarget.accountId,
@@ -95,7 +95,7 @@ async function deliverAnnounceReply(params: {
 export async function runSessionsSendA2AFlow(params: {
   callGateway?: AgentToolGatewayRequestCaller;
   targetSessionKey: string;
-  targetAgentId?: string;
+  targetAgentId: string;
   displayKey: string;
   message: string;
   announceTimeoutMs: number;
@@ -107,6 +107,7 @@ export async function runSessionsSendA2AFlow(params: {
   roundOneReply?: string;
   waitRunId?: string;
   notifyRequesterOnWaitFailure?: boolean;
+  replyMode?: "peer" | "result";
 }) {
   const runContextId = params.waitRunId ?? "unknown";
   const gatewayCall = params.callGateway ?? callAgentToolGatewayRequest;
@@ -118,6 +119,7 @@ export async function runSessionsSendA2AFlow(params: {
         runId: params.waitRunId,
         timeoutMs: Math.min(params.announceTimeoutMs, 60_000),
         callGateway: gatewayCall,
+        untilTerminal: true,
       });
       if (wait.status === "ok") {
         primaryReply = wait.replyText;
@@ -157,6 +159,26 @@ export async function runSessionsSendA2AFlow(params: {
       return;
     }
 
+    // Parent/child sends hand the late result back once. Their response belongs
+    // to the existing task, not another peer turn or target-channel announcement.
+    if (params.replyMode === "result") {
+      if (params.requesterSessionKey) {
+        await runAgentStep({
+          agentId: params.requesterAgentId,
+          sessionKey: params.requesterSessionKey,
+          message: latestReply,
+          extraSystemPrompt:
+            "A previous sessions_send has completed. Use this result to continue your existing task. This is a one-way result handoff; no reply-back or announcement is scheduled.",
+          timeoutMs: params.announceTimeoutMs,
+          sourceAgentId: params.targetAgentId,
+          sourceSessionKey: params.targetSessionKey,
+          sourceTool: "sessions_send",
+          callGateway: gatewayCall,
+        });
+      }
+      return;
+    }
+
     // A same-session send is a human-facing source-channel reply, not a true
     // agent-to-agent announcement. Asking the same session to decide whether to
     // announce can re-run the same prompt and duplicate source-reply side effects.
@@ -185,7 +207,7 @@ export async function runSessionsSendA2AFlow(params: {
         callGateway: gatewayCall,
         message: latestReply,
         runContextId,
-        targetSessionKey: params.targetSessionKey,
+        targetAgentId: params.targetAgentId,
       });
       return;
     }
@@ -197,7 +219,7 @@ export async function runSessionsSendA2AFlow(params: {
       let currentSessionKey = params.requesterSessionKey;
       let nextSessionKey = params.targetSessionKey;
       let currentAgentId = params.requesterAgentId;
-      let nextAgentId = params.targetAgentId;
+      let nextAgentId: string | undefined = params.targetAgentId;
       let currentRole: "requester" | "target" = "requester";
       let nextRole: "requester" | "target" = "target";
       let incomingMessage = latestReply;
@@ -275,7 +297,7 @@ export async function runSessionsSendA2AFlow(params: {
         callGateway: gatewayCall,
         message: announceReply,
         runContextId,
-        targetSessionKey: params.targetSessionKey,
+        targetAgentId: params.targetAgentId,
       });
     }
   } catch (err) {

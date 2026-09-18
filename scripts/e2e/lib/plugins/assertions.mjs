@@ -7,8 +7,9 @@ import {
   readBoundedResponseText,
 } from "../../../lib/bounded-response.mjs";
 import { createTimeoutError } from "../../../lib/timeout-error.mjs";
+import { assertClawHubArtifactMetadata } from "../clawhub-artifact-assertions.mjs";
 import { readPositiveIntEnv } from "../env-limits.mjs";
-import { resolveHomePath } from "../openclaw-state-paths.mjs";
+import { assertRealPathInside, resolveHomePath } from "../openclaw-state-paths.mjs";
 import {
   readPluginInstallIndex,
   readPluginInstallRecords,
@@ -154,7 +155,10 @@ function assertPluginUninstallConfigState(config, pluginId, label = pluginId) {
 
 function assertPluginRemoved(params) {
   const list = readJson(params.listFile);
-  if ((list.plugins || []).some((entry) => entry.id === params.pluginId)) {
+  if (
+    !params.allowLegacyRetainedListing &&
+    (list.plugins || []).some((entry) => entry.id === params.pluginId)
+  ) {
     throw new Error(`${params.pluginId} still listed after uninstall`);
   }
 
@@ -542,17 +546,6 @@ function assertGitPluginRemoved() {
   }
 }
 
-function assertRealPathInside(parentPath, childPath, label) {
-  const parentRealPath = fs.realpathSync(parentPath);
-  const childRealPath = fs.realpathSync(childPath);
-  if (
-    childRealPath !== parentRealPath &&
-    !childRealPath.startsWith(`${parentRealPath}${path.sep}`)
-  ) {
-    throw new Error(`${label} resolved outside ${parentPath}: ${childRealPath}`);
-  }
-}
-
 function assertClawHubExternalInstallContract(installPath) {
   const openclawPeerPath = path.join(installPath, "node_modules", "openclaw");
   if (!fs.existsSync(openclawPeerPath)) {
@@ -570,29 +563,6 @@ function assertClawHubExternalInstallContract(installPath) {
   const dependencyPackagePath = path.join(installPath, "node_modules", "is-number", "package.json");
   if (fs.existsSync(dependencyPackagePath)) {
     assertRealPathInside(installPath, dependencyPackagePath, "ClawHub isolated dependency");
-  }
-}
-
-function assertClawHubArtifactMetadata(record, pluginId) {
-  if (record.artifactKind === "legacy-zip") {
-    if (record.artifactFormat !== "zip") {
-      throw new Error(
-        `missing ClawHub legacy ZIP artifact metadata for ${pluginId}: ${JSON.stringify(record)}`,
-      );
-    }
-    return;
-  }
-
-  if (record.artifactKind !== "npm-pack" || record.artifactFormat !== "tgz") {
-    throw new Error(`missing ClawHub artifact metadata for ${pluginId}: ${JSON.stringify(record)}`);
-  }
-  if (!record.clawpackSha256 || typeof record.clawpackSize !== "number") {
-    throw new Error(`missing ClawHub ClawPack metadata for ${pluginId}: ${JSON.stringify(record)}`);
-  }
-  if (!record.npmIntegrity || !record.npmShasum || !record.npmTarballName) {
-    throw new Error(
-      `missing ClawHub npm artifact metadata for ${pluginId}: ${JSON.stringify(record)}`,
-    );
   }
 }
 
@@ -768,6 +738,10 @@ function assertNpmPluginRetained() {
   assertPluginRemoved({
     pluginId: "demo-plugin-npm",
     listFile: scratchFile("plugins-npm-retained.json"),
+    // Historical --keep-files removed config ownership but retained a
+    // discoverable plugin directory. Its list entry is expected until the
+    // subsequent reinstall; current releases persist an exact disabled marker.
+    allowLegacyRetainedListing: pluginUninstallMode === "legacy",
   });
   if (!fs.existsSync(installPath)) {
     throw new Error(`npm managed package was deleted by --keep-files: ${installPath}`);
@@ -988,7 +962,12 @@ function assertClawHubInstalled() {
   if (typeof record.installPath !== "string" || record.installPath.length === 0) {
     throw new Error(`missing ClawHub install path for ${pluginId}`);
   }
-  assertClawHubArtifactMetadata(record, pluginId);
+  assertClawHubArtifactMetadata(record, {
+    legacyZip: `missing ClawHub legacy ZIP artifact metadata for ${pluginId}`,
+    artifact: `missing ClawHub artifact metadata for ${pluginId}`,
+    clawpack: `missing ClawHub ClawPack metadata for ${pluginId}`,
+    npm: `missing ClawHub npm artifact metadata for ${pluginId}`,
+  });
 
   const installPath = resolveHomePath(record.installPath);
   if (!fs.existsSync(installPath)) {

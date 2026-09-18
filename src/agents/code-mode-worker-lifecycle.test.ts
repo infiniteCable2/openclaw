@@ -32,6 +32,10 @@ import {
   registerHeadlessToolSearchCatalog,
 } from "./tool-search.js";
 
+// Restore the WeakRef retention probe when Bun's node:v8 exposure can provide a synchronous
+// worker-local gc without stalling the instrumented QuickJS resume path.
+const v8GcIt = process.versions.bun ? it.skip : it;
+
 function parkExpiringRun(method: "callValue" | "agentWait") {
   const rawConfig = {
     tools: { codeMode: { enabled: true, snapshotTtlSeconds: 1 } },
@@ -179,7 +183,7 @@ describe("Code Mode worker lifecycle", () => {
     expect(result).toMatchObject({ status: "failed", error: "Error: prelude failure" });
   });
 
-  it("transfers snapshot heaps and releases consumed copies across resumes", async () => {
+  v8GcIt("transfers snapshot heaps and releases consumed copies across resumes", async () => {
     const tempDirs = useAutoCleanupTempDirTracker(onTestFinished);
     const dir = tempDirs.make("code-mode-snapshot-transfer-");
     const workerPath = path.join(dir, "snapshot-worker.ts");
@@ -336,6 +340,56 @@ describe("Code Mode worker lifecycle", () => {
       value: { kind: "complete", json: '"undefined"' },
     });
   });
+
+  it.each(["exec", "resume"] as const)(
+    "bounds recursive guest execution after %s VM creation",
+    async (kind) => {
+      const config = resolveCodeModeConfig({ tools: { codeMode: true } } as never);
+      const recursion = "function recurse() { return recurse(); } return recurse();";
+      let input: Parameters<typeof runCodeModeWorker>[0] = {
+        kind: "exec",
+        source: recursion,
+        config,
+        catalog: [],
+      };
+      if (kind === "resume") {
+        const suspended = await runCodeModeWorker(
+          {
+            kind: "exec",
+            source: `await yield_control(); ${recursion}`,
+            config,
+            catalog: [],
+          },
+          10_000,
+        );
+        expect(suspended.status).toBe("waiting");
+        if (suspended.status !== "waiting") {
+          throw new Error("expected a suspended guest before recursive execution");
+        }
+        input = {
+          kind,
+          snapshot: suspended.snapshot,
+          config,
+          settledRequests: suspended.pendingRequests.map(({ id }) => ({
+            id,
+            ok: true,
+            json: "null",
+          })),
+        };
+      }
+
+      const result = await runCodeModeWorker(input, 10_000);
+      expect(result).toMatchObject({
+        status: "failed",
+        code: "internal_error",
+        error: expect.stringContaining("RangeError: Maximum call stack size exceeded"),
+        failurePhase: "guest",
+      });
+      if (result.status === "failed") {
+        expect(result.error).not.toContain("memory access out of bounds");
+      }
+    },
+  );
 
   it.each(["exec", "resume"] as const)(
     "terminates a real CPU-active %s worker when its catalog closes",

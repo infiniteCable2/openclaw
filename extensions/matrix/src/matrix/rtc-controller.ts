@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { CallMembership } from "matrix-js-sdk/lib/matrixrtc/CallMembership.js";
 import {
   MatrixRTCSessionEvent,
@@ -61,6 +62,7 @@ type ActiveCall = {
   session: MatrixRTCSession;
   joined: boolean;
   stopping: boolean;
+  startup?: Promise<void>;
   stopPromise?: Promise<void>;
   disposeListeners: () => void;
 };
@@ -96,22 +98,26 @@ async function waitForInitialMediaKeys(params: {
     if (Date.now() >= deadline) {
       throw new Error("MatrixRTC media keys did not become ready in time");
     }
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 25);
-    });
+    await delay(25, undefined, { signal: params.signal });
   }
   return [...params.keys.values()];
 }
 
 async function stopCall(call: ActiveCall): Promise<void> {
   call.abort.abort();
+  // Startup owns every handle until it settles, even after cancellation. Only
+  // then can cleanup dispose a late transport or the engine that adopted it.
+  await call.startup;
   call.disposeListeners();
   try {
     if (call.engine) {
       await call.engine.stop();
     } else if (call.transport) {
-      await call.transport.stop();
-      await call.transport.dispose();
+      try {
+        await call.transport.stop();
+      } finally {
+        await call.transport.dispose();
+      }
     }
   } finally {
     try {
@@ -226,7 +232,7 @@ export function registerMatrixRtcController(params: {
     calls.set(roomId, call);
     params.logger.warn("matrix rtc: admitted call start requested");
 
-    void (async () => {
+    call.startup = Promise.resolve().then(async () => {
       let remoteIncarnation: string | undefined;
       try {
         const self = params.client.matrixRtc.getSelfIdentity();
@@ -260,6 +266,7 @@ export function registerMatrixRtcController(params: {
         assertMatrixRtcEncryptionCompatibility(session.getRtcSlot()?.encryption?.type);
 
         const preferredTransport = await params.client.matrixRtc.getPreferredLivekitTransport();
+        abort.signal.throwIfAborted();
         const remoteTransport = remote.getTransport(session.getOldestMembership() ?? remote);
         const rtcMode = resolveMatrixRtcMode(remote);
         assertMatrixRtcPinnedTransports({
@@ -300,21 +307,25 @@ export function registerMatrixRtcController(params: {
           },
           signal: abort.signal,
         });
+        abort.signal.throwIfAborted();
         params.logger.info("matrix rtc: speech providers ready");
 
         const ownMembership: MatrixRtcMembershipIdentity = {
           ...self,
           memberId: randomUUID(),
         };
+        const openIdToken = await params.client.matrixRtc.getOpenIdToken();
+        abort.signal.throwIfAborted();
         const credentials = await requestMatrixRtcCredentials({
           mode: rtcMode,
           authServiceUrl: params.config.authServiceUrl,
           roomId,
           slotId: SLOT_ID,
           membership: ownMembership,
-          openIdToken: await params.client.matrixRtc.getOpenIdToken(),
+          openIdToken,
           signal: abort.signal,
         });
+        abort.signal.throwIfAborted();
         params.logger.info("matrix rtc: credentials authorized");
 
         const keys = new Map<string, MatrixRtcMediaKey>();
@@ -322,6 +333,17 @@ export function registerMatrixRtcController(params: {
         const mediaTransportRef: {
           current?: Awaited<ReturnType<typeof createMatrixRtcMediaTransport>>;
         } = {};
+        const acceptMediaKey = (mediaKey: MatrixRtcMediaKey) => {
+          if (abort.signal.aborted) {
+            return;
+          }
+          keys.set(mediaKeyId(mediaKey), mediaKey);
+          try {
+            mediaTransportRef.current?.sendKey(mediaKey);
+          } catch {
+            void endCall(roomId);
+          }
+        };
         const onKey = (
           key: Uint8Array<ArrayBuffer>,
           index: number,
@@ -346,14 +368,7 @@ export function registerMatrixRtcController(params: {
             index,
             key: Uint8Array.from(key),
           };
-          keys.set(mediaKeyId(mediaKey), mediaKey);
-          if (mediaTransportRef.current) {
-            try {
-              mediaTransportRef.current.sendKey(mediaKey);
-            } catch {
-              abort.abort();
-            }
-          }
+          acceptMediaKey(mediaKey);
         };
         const acceptIncomingKey = (incoming: MatrixRtcIncomingMediaKey) => {
           const membershipCreatedAt = remote.createdTs();
@@ -372,7 +387,7 @@ export function registerMatrixRtcController(params: {
             index: incoming.index,
             key: Uint8Array.from(incoming.key),
           };
-          keys.set(mediaKeyId(mediaKey), mediaKey);
+          acceptMediaKey(mediaKey);
           params.logger.info("matrix rtc: encrypted remote media key accepted");
         };
         incomingKeyConsumers.set(roomId, acceptIncomingKey);
@@ -433,7 +448,6 @@ export function registerMatrixRtcController(params: {
         if (abort.signal.aborted) {
           throw new Error("MatrixRTC call start was cancelled");
         }
-
         const mediaTransport = await createMatrixRtcMediaTransport({
           command: params.config.mediaBridgeCommand,
           url: credentials.url,
@@ -446,6 +460,13 @@ export function registerMatrixRtcController(params: {
         params.logger.info("matrix rtc: media transport connected");
         if (abort.signal.aborted) {
           throw new Error("MatrixRTC call start was cancelled");
+        }
+        // Key events continue during bridge startup. Reconcile the latest map
+        // before starting audio; subsequent accepted rotations go straight through.
+        for (const key of keys.values()) {
+          if (!initialKeys.includes(key)) {
+            mediaTransport.sendKey(key);
+          }
         }
         const bindings = createMeetingRealtimeEngineBindings({
           platform: MATRIX_RTC_PLATFORM,
@@ -486,15 +507,17 @@ export function registerMatrixRtcController(params: {
           consultAgent: bindings.consultAgent,
         });
         call.transport = undefined;
+        abort.signal.throwIfAborted();
         params.logger.info("matrix rtc: admitted encrypted direct audio call");
       } catch (error) {
         if (remoteIncarnation) {
           failedRemoteMemberships.set(roomId, remoteIncarnation);
         }
         params.logger.warn(`matrix rtc: call start failed: ${formatErrorMessage(error)}`);
-        await endCall(roomId);
+        // Cleanup waits for startup; awaiting it here would wait on ourselves.
+        void endCall(roomId);
       }
-    })();
+    });
   };
 
   const observeSession = (roomId: string, session: MatrixRTCSession) => {

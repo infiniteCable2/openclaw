@@ -372,7 +372,7 @@ describe("deliverReplies", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
     const sent = firstSendText(sendMessage);
     expect(sent).toContain("Before");
-    expect(sent).toContain(`<pre><code>${table}\n</code></pre>`);
+    expect(sent).toContain("<pre><code>| A   | B   |\n| --- | --- |\n| 1   | 2   |\n</code></pre>");
     expect(sent).toContain("After");
     expectRecordFields(firstMockCallArg(sendMessage, 2), { parse_mode: "HTML" });
   });
@@ -1346,6 +1346,7 @@ describe("deliverReplies", () => {
   });
 
   it("uses single-photo document recovery after a definite album photo-limit rejection", async () => {
+    const runtime = createRuntime();
     const mediaUrls = mockPhotoMedia();
     const failure = createChunkRejection("PHOTO_INVALID_DIMENSIONS");
     const sendMediaGroup = vi.fn().mockRejectedValue(failure);
@@ -1358,7 +1359,7 @@ describe("deliverReplies", () => {
     await expect(
       deliverWith({
         replies: [{ text: "Caption", mediaUrls }],
-        runtime: createRuntime(),
+        runtime,
         bot: createBot({ sendMediaGroup, sendPhoto, sendDocument }),
       }),
     ).resolves.toEqual({ delivered: true });
@@ -1375,9 +1376,11 @@ describe("deliverReplies", () => {
     );
     expect(mockCallArg(sendPhoto, 1, 1)).toMatchObject({ filename: "photo-1.jpg" });
     expect(recordSentMessage.mock.calls.map((call) => call[1])).toEqual([101, 102]);
+    expect(runtime.error).not.toHaveBeenCalled();
   });
 
   it("does not replay an album after an ambiguous upload failure", async () => {
+    const runtime = createRuntime();
     const mediaUrls = mockPhotoMedia();
     const failure = createPlainHttpError("sendMediaGroup");
     const sendMediaGroup = vi.fn().mockRejectedValue(failure);
@@ -1387,7 +1390,7 @@ describe("deliverReplies", () => {
     await expect(
       deliverWith({
         replies: [{ mediaUrls }],
-        runtime: createRuntime(),
+        runtime,
         bot: createBot({ sendMediaGroup, sendPhoto, sendDocument }),
       }),
     ).rejects.toBe(failure);
@@ -1395,6 +1398,7 @@ describe("deliverReplies", () => {
     expect(sendPhoto).not.toHaveBeenCalled();
     expect(sendDocument).not.toHaveBeenCalled();
     expect(recordSentMessage).not.toHaveBeenCalled();
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("sendMediaGroup failed"));
   });
 
   it("stops a media follow-up when the provider returns the wrong topic", async () => {
@@ -2853,25 +2857,31 @@ describe("deliverReplies", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("falls back to plain text when a rich message is rejected for empty rich content", async () => {
+  it.each([
+    createRichContentRequiredError(),
+    new Error(
+      "GrammyError: Call to 'sendRichMessage' failed! (400: Bad Request: rich message must be non-empty)",
+    ),
+  ])("delivers a plain reply after a definite rich-content rejection: %s", async (error) => {
     const runtime = createRuntime();
     const sendMessage = vi.fn().mockResolvedValue({
       message_id: 15,
       chat: { id: "123" },
     });
     const bot = createBot({ sendMessage });
-    (bot.api.raw as unknown as { sendRichMessage: ReturnType<typeof vi.fn> }).sendRichMessage = vi
-      .fn()
-      .mockRejectedValue(createRichContentRequiredError());
-    const text = "delivery continues as plain text";
+    const sendRichMessage = vi.fn().mockRejectedValue(error);
+    Object.assign(bot.api.raw, { sendRichMessage });
+    const text = "system notice delivered through fallback";
 
-    await deliverWith({
+    const outcome = await deliverWith({
       replies: [{ text }],
       runtime,
       bot,
       richMessages: true,
     });
 
+    expect(outcome.delivered).toBe(true);
+    expect(sendRichMessage).toHaveBeenCalledOnce();
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(firstMockCallArg(sendMessage, 0)).toBe("123");
     expect(firstMockCallArg(sendMessage, 1)).toBe(text);

@@ -9,12 +9,13 @@ import {
   validateEnvironmentsCreateParams,
   validateEnvironmentsDestroyParams,
   validateEnvironmentsListParams,
+  validateEnvironmentsPrepareParams,
   validateEnvironmentsStatusParams,
   validateWorkerDesktopObserveParams,
   validateWorkerDesktopLaunchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { projectPairedDeviceNodeBindings } from "../../infra/device-pairing-node-state.js";
-import { listNodePairing } from "../../infra/device-pairing-node.js";
+import { projectNodePairing } from "../../infra/device-pairing-node.js";
 import { listDevicePairing } from "../../infra/device-pairing.js";
 import { NODE_DESKTOP_STREAM_COMMAND } from "../../shared/node-desktop-stream.js";
 import type { NodeListNode } from "../../shared/node-list-types.js";
@@ -123,6 +124,9 @@ function summarizeNodeEnvironment(
     ...(node.lastSeenReason ? { lastSeenReason: node.lastSeenReason } : {}),
     trust: "persistent",
     ...(desktop ? { desktop: true } : {}),
+    ...(liveNode?.desktopAvailability
+      ? { desktopAvailability: { ...liveNode.desktopAvailability } }
+      : {}),
     ...(capabilities.length > 0 ? { capabilities } : {}),
     ...(invocableCommands.length > 0 ? { invocableCommands } : {}),
     ...(requiredNodeCommand ? { requiredNodeCommand } : {}),
@@ -142,7 +146,11 @@ export function summarizeWorkerEnvironment(
       ? {}
       : { trust: record.sharedHost ? "persistent" : "disposable" }),
     ...(record.desktopAvailable ? { desktop: true } : {}),
+    ...(record.preparation
+      ? { preparation: { purpose: record.preparation.purpose, key: record.preparation.key } }
+      : {}),
     worker: {
+      profileId: record.profileId,
       providerId: record.providerId,
       ...(record.leaseId ? { leaseId: record.leaseId } : {}),
       state: record.state,
@@ -165,7 +173,8 @@ export async function listGatewayEnvironments(
   workers = listWorkerEnvironments(context),
   runtimeId?: string,
 ): Promise<EnvironmentSummary[]> {
-  const [devices, nodes] = await Promise.all([listDevicePairing(), listNodePairing()]);
+  const devices = await listDevicePairing();
+  const nodes = projectNodePairing(devices.paired);
   // Orphaned or failed rows that retain a node binding still own its pairing role.
   // Only destroyed proves enrollment retirement; teardown-failed rows clear nodeDeviceId.
   const managedCloudNodeIds = new Set(
@@ -239,9 +248,16 @@ async function listWorkerProfilesWithMachines(context: GatewayRequestContext) {
         executionMode ? { executionMode, executionModes } : {},
       );
       try {
-        const options = await context.workerEnvironmentService?.listMachineOptions?.(summary.id);
+        const [options, operatingSystems] = await Promise.all([
+          context.workerEnvironmentService?.listMachineOptions?.(summary.id),
+          context.workerEnvironmentService?.listOperatingSystems?.(summary.id),
+        ]);
         const machines = options ?? [];
-        return machines.length > 0 ? Object.assign(resolvedSummary, { machines }) : resolvedSummary;
+        return Object.assign(
+          resolvedSummary,
+          machines.length > 0 ? { machines } : {},
+          operatingSystems && operatingSystems.length > 1 ? { operatingSystems } : {},
+        );
       } catch (error) {
         context.logGateway.warn(
           `worker machine catalog unavailable (${summary.id}): ${formatForLog(error)}`,
@@ -542,6 +558,47 @@ export const environmentsHandlers: GatewayRequestHandlers = {
       ["profile_not_found", "invalid_profile"],
       "worker environment creation failed",
     );
+  },
+  "environments.prepare": async ({ params, respond, context, hasCurrentClientAuthority }) => {
+    if (
+      !assertValidParams(params, validateEnvironmentsPrepareParams, "environments.prepare", respond)
+    ) {
+      return;
+    }
+    const service = context.workerEnvironmentService;
+    if (!service) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "cloud worker environments are not configured"),
+      );
+      return;
+    }
+    try {
+      respond(
+        true,
+        await service.prepare(params, () => {
+          if (hasCurrentClientAuthority?.() === false) {
+            throw new Error("Worker preparation caller authority was revoked");
+          }
+        }),
+        undefined,
+      );
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      const invalid =
+        code === "profile_not_found" || code === "invalid_profile" || code === "invalid_project";
+      const known = invalid || code === "capacity";
+      respond(
+        false,
+        undefined,
+        errorShape(
+          invalid ? ErrorCodes.INVALID_REQUEST : ErrorCodes.UNAVAILABLE,
+          known && error instanceof Error ? error.message : "worker environment preparation failed",
+          known ? { details: { code } } : undefined,
+        ),
+      );
+    }
   },
   "environments.destroy": async ({ params, respond, context }) => {
     if (

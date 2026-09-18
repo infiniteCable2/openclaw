@@ -95,9 +95,10 @@ Speech, media understanding, generation, web search, and the low-level media uti
 
     // Structured image extraction through a specific provider/model.
     // Include at least one image; text inputs are supplemental context.
+    // receiptImageBuffer is your own image bytes, not an SDK-provided value.
     const evidence = await api.runtime.mediaUnderstanding.extractStructuredWithModel({
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6-astra",
       input: [
         {
           type: "image",
@@ -184,9 +185,9 @@ Speech, media understanding, generation, web search, and the low-level media uti
 
     ```typescript
     const webMedia = await api.runtime.media.loadWebMedia(url);
-    const mime = await api.runtime.media.detectMime(buffer);
+    const mime = await api.runtime.media.detectMime({ buffer });
     const kind = api.runtime.media.mediaKindFromMime("image/jpeg"); // "image"
-    const isVoice = api.runtime.media.isVoiceCompatibleAudio(filePath);
+    const isVoice = api.runtime.media.isVoiceCompatibleAudio({ fileName: filePath });
     const waveform = await api.runtime.media.getAudioWaveform({
       audioBuffer: buffer,
       inputFileName: "voice.ogg",
@@ -195,16 +196,24 @@ Speech, media understanding, generation, web search, and the low-level media uti
     // Up to 200 integer peaks (0-1024), sampled over at most 20 minutes.
     // Requires system ffmpeg; rejects on decode failure. Display metadata
     // is optional: channels should still deliver audio when decoding fails.
-    const metadata = await api.runtime.media.getImageMetadata(filePath);
-    const resized = await api.runtime.media.resizeToJpeg(buffer, { maxWidth: 800 });
-    const terminalQr = await api.runtime.media.renderQrTerminal("https://openclaw.ai");
-    const pngQr = await api.runtime.media.renderQrPngBase64("https://openclaw.ai", {
+    const metadata = await api.runtime.media.getImageMetadata(buffer);
+    const resized = await api.runtime.media.resizeToJpeg({ buffer, maxSide: 800, quality: 85 });
+    ```
+
+    QR helpers are exported by `openclaw/plugin-sdk/media-runtime`:
+
+    ```typescript
+    import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
+
+    const qr = await import("openclaw/plugin-sdk/media-runtime");
+    const terminalQr = await qr.renderQrTerminal("https://openclaw.ai");
+    const pngQr = await qr.renderQrPngBase64("https://openclaw.ai", {
       scale: 6, // 1-12
       marginModules: 4, // 0-16
     });
-    const pngQrDataUrl = await api.runtime.media.renderQrPngDataUrl("https://openclaw.ai");
+    const pngQrDataUrl = await qr.renderQrPngDataUrl("https://openclaw.ai");
     const tmpRoot = resolvePreferredOpenClawTmpDir();
-    const pngQrFile = await api.runtime.media.writeQrPngTempFile("https://openclaw.ai", {
+    const pngQrFile = await qr.writeQrPngTempFile("https://openclaw.ai", {
       tmpRoot,
       dirPrefix: "my-plugin-qr-",
       fileName: "qr.png",

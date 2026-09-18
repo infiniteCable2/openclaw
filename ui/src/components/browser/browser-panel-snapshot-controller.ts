@@ -1,15 +1,22 @@
-import type { NativeBrowserTab } from "../../app/native-browser-bridge.ts";
-import { isBrowserNavigationBlockedError, type BrowserPanelTab } from "./browser-client.ts";
+import {
+  isBrowserNavigationBlockedError,
+  listBrowserTabs,
+  type BrowserPanelTab,
+  type BrowserRequestClient,
+} from "./browser-client.ts";
+import type { BrowserPanelNativeController } from "./browser-panel-native-controller.ts";
 import {
   captureBrowserPanelOwnedView,
   type BrowserPanelControllerHost,
   type BrowserPanelOperationOwnership,
+  type BrowserPanelSnapshotOutcome,
 } from "./browser-panel-operation-ownership.ts";
 import type { BrowserPanelStream } from "./browser-panel-stream.ts";
 import type { BrowserPanelView } from "./browser-panel-surface.ts";
 import type { BrowserPanelViewportController } from "./browser-panel-viewport-controller.ts";
 
 type BrowserPanelSnapshotState = {
+  running: boolean | null;
   tabs: BrowserPanelTab[];
   view: BrowserPanelView | null;
   loading: boolean;
@@ -17,13 +24,14 @@ type BrowserPanelSnapshotState = {
 };
 
 interface BrowserPanelSnapshotHost extends BrowserPanelSnapshotState {
-  readonly host: Pick<BrowserPanelControllerHost, "resourceBasePath" | "authToken">;
-  readonly native: { readonly activeTab: NativeBrowserTab | undefined };
+  readonly host: Pick<BrowserPanelControllerHost, "resourceBasePath" | "authToken" | "fixedTab">;
+  readonly native: Pick<BrowserPanelNativeController, "activeTab" | "mergeRemoteTabs">;
   readonly stream: Pick<
     BrowserPanelStream,
     "ownsView" | "ensure" | "frameRevision" | "releaseReplacedView"
   >;
   readonly activeTargetId: string | null;
+  readonly mode: "interact" | "annotate" | "inspect";
   readonly operations: Pick<
     BrowserPanelOperationOwnership,
     | "epoch"
@@ -33,6 +41,9 @@ interface BrowserPanelSnapshotHost extends BrowserPanelSnapshotState {
     | "capturedTabs"
     | "route"
     | "completeCapture"
+    | "beginSnapshot"
+    | "acceptSnapshot"
+    | "retainTabSnapshot"
   >;
   setState<Key extends keyof BrowserPanelSnapshotState>(
     key: Key,
@@ -43,12 +54,61 @@ interface BrowserPanelSnapshotHost extends BrowserPanelSnapshotState {
   reportError(error: unknown): void;
 }
 
-/** A remote snapshot owns both its image and the page metrics used for input. */
+/** Coordinates remote tab snapshots and their owned page images and input metrics. */
 export class BrowserPanelSnapshotController {
   constructor(
     private readonly controller: BrowserPanelSnapshotHost,
     private readonly viewport: BrowserPanelViewportController,
   ) {}
+
+  async listTabs(client: BrowserRequestClient) {
+    const snapshot = await listBrowserTabs(client);
+    const fixed = this.controller.host.fixedTab;
+    if (!fixed) {
+      return snapshot;
+    }
+    const tabs = snapshot.tabs.filter(
+      (tab) => tab.id === fixed.targetId || tab.targetId === fixed.targetId,
+    );
+    for (const tab of tabs) {
+      tab.id = fixed.targetId;
+    }
+    return { ...snapshot, tabs };
+  }
+
+  async refreshTabs(
+    client: BrowserRequestClient,
+    current: () => boolean,
+  ): Promise<BrowserPanelSnapshotOutcome> {
+    const controller = this.controller;
+    const invocation = controller.operations.beginSnapshot(client);
+    try {
+      const snapshot = await this.listTabs(client);
+      if (
+        current() &&
+        controller.operations.acceptSnapshot(
+          invocation,
+          controller.activeTargetId,
+          controller.activeTargetId,
+        )
+      ) {
+        controller.setState("running", snapshot.running);
+        controller.setState(
+          "tabs",
+          controller.native.mergeRemoteTabs(
+            controller.operations.retainTabSnapshot(client, snapshot.tabs),
+          ),
+        );
+        controller.clearUnavailableView();
+        return "accepted";
+      }
+      return "rejected";
+    } catch {
+      // Best-effort tab reconciliation must not let an older failure settle
+      // loading or advance a document owned by a newer operation.
+      return current() && invocation.isCurrent() ? "failed" : "rejected";
+    }
+  }
 
   async capture(targetId: string, epoch = this.controller.operations.epoch): Promise<void> {
     const client = this.controller.operations.captureClient();
@@ -56,7 +116,8 @@ export class BrowserPanelSnapshotController {
       this.controller.native.activeTab ||
       !client ||
       !this.controller.operations.isLive(epoch, client) ||
-      this.controller.activeTargetId !== targetId
+      this.controller.activeTargetId !== targetId ||
+      this.controller.mode !== "interact"
     ) {
       return;
     }
@@ -76,7 +137,10 @@ export class BrowserPanelSnapshotController {
     const stream = this.controller.stream;
     let captureRevision = stream.frameRevision;
     const captureCurrent = () =>
-      current() && captureRevision === stream.frameRevision && !stream.ownsView(targetId);
+      current() &&
+      this.controller.mode === "interact" &&
+      captureRevision === stream.frameRevision &&
+      !stream.ownsView(targetId);
     try {
       if (
         (await stream.ensure(targetId, client, epoch)) ||

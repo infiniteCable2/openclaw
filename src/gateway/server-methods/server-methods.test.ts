@@ -6,6 +6,7 @@ import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
 import { expectDefined } from "@openclaw/normalization-core";
 import {
   afterEach,
@@ -19,7 +20,7 @@ import {
 } from "vitest";
 import { GATEWAY_CLIENT_IDS } from "../../../packages/gateway-protocol/src/client-info.js";
 import { validateExecApprovalRequestParams } from "../../../packages/gateway-protocol/src/index.js";
-import { STREAM_ERROR_FALLBACK_TEXT } from "../../agents/stream-message-shared.js";
+import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import { HEARTBEAT_PROMPT } from "../../auto-reply/heartbeat.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { registerLegacyContextEngine } from "../../context-engine/legacy.registration.js";
@@ -1960,11 +1961,7 @@ describe("projectChatDisplayMessages", () => {
 
   it("drops channel-final delivery mirrors that duplicate the preceding assistant reply", () => {
     const result = projectChatDisplayMessages([
-      {
-        role: "user",
-        content: "yo big boy",
-        timestamp: 1,
-      },
+      makeUserMessage("yo big boy", 1),
       assistantHistoryMessage("Yo Peter. I’m here.", {
         provider: "openai",
         model: "gpt-5.5",
@@ -1997,11 +1994,7 @@ describe("projectChatDisplayMessages", () => {
         __openclaw: { mirrorIdentity: "run-1:assistant" },
         timestamp: 1,
       }),
-      {
-        role: "user",
-        content: "",
-        timestamp: 2,
-      },
+      makeUserMessage("", 2),
       deliveryMirrorHistoryMessage("Repeated reply", "message-2", 3),
     ]);
 
@@ -2319,13 +2312,11 @@ describe("dropPreSessionStartAnnouncePairs (#85648)", () => {
 
 describe("resolveEffectiveChatHistoryMaxChars", () => {
   it("uses the RPC maxChars override when present", () => {
-    expect(resolveEffectiveChatHistoryMaxChars({}, 45)).toBe(45);
+    expect(resolveEffectiveChatHistoryMaxChars(45)).toBe(45);
   });
 
   it("falls back to the default hardcoded limit", () => {
-    expect(resolveEffectiveChatHistoryMaxChars({}, undefined)).toBe(
-      DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS,
-    );
+    expect(resolveEffectiveChatHistoryMaxChars()).toBe(DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS);
   });
 });
 
@@ -4562,14 +4553,17 @@ describe("gateway healthHandlers.status scope handling", () => {
     vi.mocked(statusModule.getStatusSummary).mockClear();
   });
 
-  async function runHealthStatus(scopes: string[]) {
+  async function runHealthStatus(
+    scopes: string[],
+    params: { includeChannelSummary?: boolean } = {},
+  ) {
     const respond = vi.fn();
 
     await expectDefined(healthHandlers.status, "healthHandlers.status test invariant").call(
       healthHandlers,
       {
         req: {} as never,
-        params: {} as never,
+        params,
         respond: respond as never,
         context: {} as never,
         client: { connect: { role: "operator", scopes } } as never,
@@ -4591,29 +4585,21 @@ describe("gateway healthHandlers.status scope handling", () => {
       expect(vi.mocked(statusModule.getStatusSummary)).toHaveBeenCalledWith({
         includeSensitive,
         includeChannelSummary: true,
+        includeCliProjection: false,
       });
       expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ ok: true }), undefined);
     },
   );
 
   it("can skip channel summary work for liveness-only status requests", async () => {
-    const respond = vi.fn();
-
-    await expectDefined(healthHandlers.status, "healthHandlers.status test invariant").call(
-      healthHandlers,
-      {
-        req: {} as never,
-        params: { includeChannelSummary: false },
-        respond: respond as never,
-        context: {} as never,
-        client: { connect: { role: "operator", scopes: ["operator.read"] } } as never,
-        isWebchatConnect: () => false,
-      },
-    );
+    const respond = await runHealthStatus(["operator.read"], {
+      includeChannelSummary: false,
+    });
 
     expect(vi.mocked(statusModule.getStatusSummary)).toHaveBeenCalledWith({
       includeSensitive: false,
       includeChannelSummary: false,
+      includeCliProjection: false,
     });
     expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ ok: true }), undefined);
   });
@@ -5029,8 +5015,10 @@ describe("gateway healthHandlers.health cache freshness", () => {
       prefix: "openclaw-health-cached-dq-",
     });
     try {
-      const { moveDeliveryQueueEntryToFailed, upsertDeliveryQueueEntry } =
-        await import("../../infra/delivery-queue-sqlite.js");
+      const { upsertDeliveryQueueEntry } = await import("../../infra/delivery-queue-sqlite.js");
+      const { prepareDeliveryQueueTerminalEntry, terminalizePendingDeliveryQueueEntryInDatabase } =
+        await import("../../infra/delivery-queue-sqlite.kernel.js");
+      const { openOpenClawStateDatabase } = await import("../../state/openclaw-state-db.js");
       const cachedPressure = [
         {
           channelId: "slack",
@@ -5045,11 +5033,20 @@ describe("gateway healthHandlers.health cache freshness", () => {
       const cached = createHealthSnapshot({
         deliveryQueues: { failed: [], ingressPressure: cachedPressure },
       });
-      upsertDeliveryQueueEntry({
-        queueName: "outbound",
-        entry: { id: "dead-1", enqueuedAt: 1_000, retryCount: 5, retainOnFailure: true },
-      });
-      moveDeliveryQueueEntryToFailed("outbound", "dead-1");
+      const entry = {
+        id: "dead-1",
+        enqueuedAt: 1_000,
+        retryCount: 5,
+        retainOnFailure: true as const,
+      };
+      upsertDeliveryQueueEntry({ queueName: "outbound", entry });
+      const database = openOpenClawStateDatabase();
+      expect(
+        terminalizePendingDeliveryQueueEntryInDatabase(
+          database,
+          prepareDeliveryQueueTerminalEntry({ queueName: "outbound", id: entry.id, entry }),
+        ),
+      ).toMatchObject({ status: "terminalized" });
       const { createChannelIngressQueue } = await import("../../channels/message/ingress-queue.js");
       const { DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS } =
         await import("../../channels/message/ingress-retry-policy.js");

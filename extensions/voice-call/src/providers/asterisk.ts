@@ -53,6 +53,7 @@ type PendingRegistration = AsteriskRegistration & { expiresAt: number };
 type ActiveSession = {
   registration: AsteriskAudioSocketSession;
   listening: boolean;
+  admitted: boolean;
   playbackGeneration: number;
   resampler: ReturnType<typeof createStreamingPcmResampler>;
   transcription?: RealtimeTranscriptionSession;
@@ -94,7 +95,8 @@ export class AsteriskProvider implements VoiceCallProvider {
   private readonly pending = new Map<string, PendingRegistration>();
   private readonly active = new Map<string, ActiveSession>();
   private readonly audioSocket: AsteriskAudioSocketServer;
-  private eventSink?: (event: NormalizedEvent) => void;
+  private eventSink?: (event: NormalizedEvent) => void | Promise<void>;
+  private readonly eventDeliveries = new Map<string, Promise<void>>();
   private ttsProvider?: TelephonyTtsProvider;
 
   constructor(options: AsteriskProviderOptions) {
@@ -116,7 +118,7 @@ export class AsteriskProvider implements VoiceCallProvider {
     });
   }
 
-  setEventSink(sink: (event: NormalizedEvent) => void): void {
+  setEventSink(sink: (event: NormalizedEvent) => void | Promise<void>): void {
     this.eventSink = sink;
   }
 
@@ -135,6 +137,7 @@ export class AsteriskProvider implements VoiceCallProvider {
     this.active.clear();
     this.pending.clear();
     await this.audioSocket.stop();
+    await Promise.all(this.eventDeliveries.values());
   }
 
   verifyRegistrationToken(bearerToken: string): boolean {
@@ -266,10 +269,19 @@ export class AsteriskProvider implements VoiceCallProvider {
     const state: ActiveSession = {
       registration,
       listening: true,
+      admitted: false,
       playbackGeneration: 0,
       resampler: createStreamingPcmResampler(this.options.config.audioSocket.sampleRate, 8_000),
     };
     this.active.set(registration.uuid, state);
+    const base = {
+      callId: registration.uuid,
+      providerCallId: registration.uuid,
+      timestamp: Date.now(),
+      direction: registration.direction,
+      from: registration.from,
+      to: registration.to,
+    } as const;
     const transcription = this.options.transcriptionProvider.createSession({
       cfg: this.options.coreConfig,
       providerConfig: this.options.transcriptionProviderConfig,
@@ -281,10 +293,10 @@ export class AsteriskProvider implements VoiceCallProvider {
       },
       onTranscript: (transcript) => {
         const text = transcript.trim();
-        if (!text || this.active.get(registration.uuid) !== state) {
+        if (!text || !state.admitted || this.active.get(registration.uuid) !== state) {
           return;
         }
-        emit({
+        void this.emitEvent({
           ...base,
           id: createEventId(registration.uuid, "speech"),
           type: "call.speech",
@@ -310,17 +322,20 @@ export class AsteriskProvider implements VoiceCallProvider {
       transcription.close();
       return;
     }
-    const emit = this.requireEventSink();
-    const base = {
-      callId: registration.uuid,
-      providerCallId: registration.uuid,
-      timestamp: Date.now(),
-      direction: registration.direction,
-      from: registration.from,
-      to: registration.to,
-    } as const;
-    emit({ ...base, id: createEventId(registration.uuid, "initiated"), type: "call.initiated" });
-    emit({ ...base, id: createEventId(registration.uuid, "answered"), type: "call.answered" });
+    await this.emitEvent({
+      ...base,
+      id: createEventId(registration.uuid, "initiated"),
+      type: "call.initiated",
+    });
+    if (this.active.get(registration.uuid) !== state) {
+      return;
+    }
+    await this.emitEvent({
+      ...base,
+      id: createEventId(registration.uuid, "answered"),
+      type: "call.answered",
+    });
+    state.admitted = this.active.get(registration.uuid) === state;
   }
 
   private handleAudio(
@@ -329,7 +344,7 @@ export class AsteriskProvider implements VoiceCallProvider {
     sampleRate: number,
   ): void {
     const state = this.active.get(registration.uuid);
-    if (!state || !state.listening || !state.transcription?.isConnected()) {
+    if (!state || !state.admitted || !state.listening || !state.transcription?.isConnected()) {
       return;
     }
     if (sampleRate !== this.options.config.audioSocket.sampleRate) {
@@ -346,7 +361,7 @@ export class AsteriskProvider implements VoiceCallProvider {
   }
 
   private handleDtmf(registration: AsteriskAudioSocketSession, digit: string): void {
-    this.requireEventSink()({
+    void this.emitEvent({
       id: createEventId(registration.uuid, "dtmf"),
       type: "call.dtmf",
       callId: registration.uuid,
@@ -364,7 +379,7 @@ export class AsteriskProvider implements VoiceCallProvider {
     state.playbackGeneration += 1;
     state.transcription?.close();
     this.active.delete(registration.uuid);
-    this.requireEventSink()({
+    void this.emitEvent({
       id: createEventId(registration.uuid, "ended"),
       type: "call.ended",
       callId: registration.uuid,
@@ -374,10 +389,26 @@ export class AsteriskProvider implements VoiceCallProvider {
     });
   }
 
-  private requireEventSink(): (event: NormalizedEvent) => void {
-    if (!this.eventSink) {
-      throw new Error("Asterisk event sink is not configured");
-    }
-    return this.eventSink;
+  private emitEvent(event: NormalizedEvent & { providerCallId: string }): Promise<void> {
+    const key = event.providerCallId;
+    const delivery = (this.eventDeliveries.get(key) ?? Promise.resolve()).then(async () => {
+      if (!this.eventSink) {
+        throw new Error("Asterisk event sink is not configured");
+      }
+      await this.eventSink(event);
+    });
+    // Store settlement, not rejection: an ended event must still be delivered after
+    // a failed admission. Different calls must not block one another's admission.
+    const settled = delivery.catch((error: unknown) => {
+      this.logger.error(`[voice-call] Asterisk event ${event.type} failed: ${String(error)}`);
+      this.audioSocket.hangup(key);
+    });
+    this.eventDeliveries.set(key, settled);
+    void settled.then(() => {
+      if (this.eventDeliveries.get(key) === settled) {
+        this.eventDeliveries.delete(key);
+      }
+    });
+    return delivery;
   }
 }

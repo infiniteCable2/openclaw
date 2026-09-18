@@ -33,7 +33,10 @@ describe("MatrixRTC authorization", () => {
 
     const [url, init] = fetchFn.mock.calls[0] as [URL, RequestInit];
     expect(url.toString()).toBe("https://rtc.example.org/livekit/jwt/get_token");
-    expect(JSON.parse(String(init.body))).toEqual({
+    if (typeof init.body !== "string") {
+      throw new Error("Expected a JSON string request body");
+    }
+    expect(JSON.parse(init.body)).toEqual({
       room_id: "!room:example.org",
       slot_id: "m.call#ROOM",
       openid_token: openIdToken,
@@ -69,7 +72,10 @@ describe("MatrixRTC authorization", () => {
 
     const [url, init] = fetchFn.mock.calls[0] as [URL, RequestInit];
     expect(url.toString()).toBe("https://rtc.example.org/livekit/jwt/sfu/get");
-    expect(JSON.parse(String(init.body))).toEqual({
+    if (typeof init.body !== "string") {
+      throw new Error("Expected a JSON string request body");
+    }
+    expect(JSON.parse(init.body)).toEqual({
       room: "!room:example.org",
       openid_token: openIdToken,
       device_id: "DEVICE",

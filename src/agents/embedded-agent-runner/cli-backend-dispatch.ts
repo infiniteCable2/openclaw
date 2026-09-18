@@ -21,12 +21,13 @@ import { normalizeToolPolicyName } from "../tool-policy.js";
 import { isToolResultError } from "../tool-result-error.js";
 import { resolveEmbeddedCliBackendDispatchEligibility } from "./cli-backend-dispatch-eligibility.js";
 import { createCliDispatchTranscriptRecorder } from "./cli-backend-dispatch-transcript.js";
+import type { RunEmbeddedAgentInternalParams } from "./run/internal-params.js";
 import type { RunEmbeddedAgentParams } from "./run/params.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 
 const log = createSubsystemLogger("agents/embedded-cli-dispatch");
 
-type CliBackendDispatchParams = RunEmbeddedAgentParams & {
+type CliBackendDispatchParams = RunEmbeddedAgentInternalParams & {
   sessionTarget: SessionTranscriptRuntimeTarget;
 };
 
@@ -231,9 +232,16 @@ async function runEmbeddedAgentViaCliBackend(
       media: params.media,
       provider: dispatch.provider,
       model: params.model,
+      ...(params.requestedRouteResolution === "resolved" && params.provider && params.model
+        ? { requesterModel: { provider: params.provider, model: params.model } }
+        : {}),
+      authProfileId: params.authProfileId,
       modelHasVision: params.modelHasVision,
       contextWindow: params.contextWindow,
       thinkLevel: params.thinkLevel,
+      fastMode: params.fastMode,
+      fastModeStartedAtMs: params.fastModeStartedAtMs,
+      fastModeAutoOnSeconds: params.fastModeAutoOnSeconds,
       timeoutMs: params.timeoutMs,
       runTimeoutOverrideMs: params.runTimeoutOverrideMs ?? params.timeoutMs,
       runId: params.runId,

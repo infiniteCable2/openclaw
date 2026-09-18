@@ -23,6 +23,7 @@ import {
   ensureProfileForTailscaleIdentity,
   setAvatar,
   syncGitHubIdentity,
+  linkEmail,
 } from "../../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { mintAgentRuntimeIdentityToken } from "../../agent-runtime-identity-token.js";
@@ -34,9 +35,10 @@ import type { GatewayAttributedIngress } from "../../ingress-attribution.js";
 import { getGatewayLocalUserIngress } from "../../local-user-ingress.js";
 import { getOperatorApprovalRuntimeToken } from "../../operator-approval-runtime-token.js";
 import { GatewayConnectionWork } from "../../server-connection-work.js";
-import { MAX_PREAUTH_PAYLOAD_BYTES } from "../../server-constants.js";
+import { HEALTH_REFRESH_INTERVAL_MS, MAX_PREAUTH_PAYLOAD_BYTES } from "../../server-constants.js";
 import { handleGatewayRequest } from "../../server-methods.js";
 import { resolveGatewayCronCreatorAuthorityAdmission } from "../../server-methods/cron-creator-authority-admission.js";
+import { healthHandlers } from "../../server-methods/health.js";
 import type { GatewayRequestContext } from "../../server-methods/types.js";
 import {
   enforceSharedGatewaySessionGenerationForConfigWrite,
@@ -372,6 +374,8 @@ function attachGatewayHarness(options: {
   } as unknown as WebSocket;
   const send = vi.fn((_frame: unknown) => ({ kind: "sent" }) as const);
   let client: unknown = options.client ?? null;
+  let registeredProfileId: string | undefined;
+  const refreshedProfileIds: Array<string | undefined> = [];
   const requestHost = options.requestHost ?? "127.0.0.1:19001";
   const remoteAddr = options.remoteAddr ?? "127.0.0.1";
   const localAddr = options.localAddr ?? "127.0.0.1";
@@ -384,10 +388,13 @@ function attachGatewayHarness(options: {
   const refreshConnectedUserProfile = vi.fn<
     NonNullable<GatewayRequestContext["refreshConnectedUserProfile"]>
   >((profile) => {
+    refreshedProfileIds.push(
+      (client as { preparedRecipientProfileId?: string } | null)?.preparedRecipientProfileId,
+    );
     const authenticatedUserProfile = (
       client as { authenticatedUserProfile?: Record<string, unknown> } | null
     )?.authenticatedUserProfile;
-    if (authenticatedUserProfile) {
+    if (authenticatedUserProfile && profile) {
       Object.assign(authenticatedUserProfile, {
         profileId: profile.id,
         displayName: profile.displayName,
@@ -399,6 +406,7 @@ function attachGatewayHarness(options: {
   });
   attachGatewayWsMessageHandler({
     socket,
+    prepareAuthenticatedReceive: () => ({ ok: true, value: vi.fn() }),
     connectionWork,
     bootId: "post-connect-health-test-boot",
     upgradeReq: {
@@ -450,6 +458,7 @@ function attachGatewayHarness(options: {
     clearHandshakeTimer: vi.fn(),
     getClient: () => client as never,
     setClient: (next) => {
+      registeredProfileId = next.preparedRecipientProfileId;
       client = next;
       return true;
     },
@@ -470,6 +479,7 @@ function attachGatewayHarness(options: {
     advanceHandshakePhase,
     logWsControl,
     refreshConnectedUserProfile,
+    refreshedProfileIds,
     send,
     socketSend,
     sendRequest: (
@@ -501,6 +511,9 @@ function attachGatewayHarness(options: {
     },
     get client() {
       return client;
+    },
+    get registeredProfileId() {
+      return registeredProfileId;
     },
   };
 }
@@ -675,6 +688,7 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
           connect: { scopes: string[] };
         };
         expect(client.authenticatedUserId).toBeUndefined();
+        expect(harness.registeredProfileId).toBe(client.authenticatedUserProfile?.profileId);
         expect(client.authenticatedUserProfile).toMatchObject({
           displayName: profileId ? "Saved Owner" : "Gateway Person",
         });
@@ -1036,6 +1050,84 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
     resolveRefresh?.();
   });
 
+  it.each(["connect", "cached health"] as const)(
+    "shares the background health cadence after %s without delaying explicit health",
+    async (first) => {
+      let now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const cached = createHealthSummary();
+      cached.ts = now;
+      const refreshHealthSnapshot = vi.fn<GatewayRequestContext["refreshHealthSnapshot"]>(
+        async () => cached,
+      );
+      let connection = 0;
+      const connect = async (refresh = refreshHealthSnapshot) => {
+        const id = `background-health-${++connection}`;
+        const harness = attachGatewayHarness({
+          connId: id,
+          connectNonce: id,
+          refreshHealthSnapshot: refresh,
+        });
+        harness.sendConnect(id, {
+          minProtocol: PROTOCOL_VERSION,
+          maxProtocol: PROTOCOL_VERSION,
+          client: { id: "gateway-client", version: "dev", platform: "test", mode: "backend" },
+          role: "operator",
+          caps: [],
+        });
+        await waitForFast(() => expect(harness.socketSend).toHaveBeenCalled());
+        await nextTurn();
+        const hello = JSON.parse(harness.socketSend.mock.calls[0]![0]);
+        expect(hello.ok).toBe(true);
+      };
+      const health = async (probe = false, snapshot: HealthSummary | null = cached) => {
+        const respond = vi.fn();
+        await healthHandlers.health!({
+          params: { probe },
+          context: {
+            getHealthCache: () => snapshot,
+            getRuntimeSnapshot: () => ({ channels: {}, channelAccounts: {} }),
+            refreshHealthSnapshot,
+            logHealth: createLogger(),
+          },
+          respond,
+        } as never);
+        expect(respond.mock.calls[0]?.[0]).toBe(true);
+      };
+      try {
+        if (first === "connect") {
+          await connect();
+          await health();
+        } else {
+          await health();
+          await connect();
+        }
+        await connect();
+        expect(refreshHealthSnapshot).toHaveBeenCalledTimes(1);
+
+        await health(true);
+        await health(false, null);
+        await health(false, { ...cached, ts: now - HEALTH_REFRESH_INTERVAL_MS });
+        expect(refreshHealthSnapshot).toHaveBeenCalledTimes(4);
+        expect(refreshHealthSnapshot).toHaveBeenNthCalledWith(2, {
+          probe: true,
+          includeSensitive: false,
+        });
+
+        now += HEALTH_REFRESH_INTERVAL_MS;
+        await connect();
+        expect(refreshHealthSnapshot).toHaveBeenCalledTimes(5);
+        const otherOwner = vi.fn<GatewayRequestContext["refreshHealthSnapshot"]>(
+          async () => cached,
+        );
+        await connect(otherOwner);
+        expect(otherOwner).toHaveBeenCalledOnce();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
   it("projects a stable durable profile into presence and refreshes avatar state on reconnect", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
     try {
@@ -1216,11 +1308,13 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
     });
   });
 
-  it.each([false, true])(
-    "completes deferred identity sync only while its socket is live (closed=%s)",
-    async (closedBeforeSync) => {
+  it.each(["live", "closed", "merged"] as const)(
+    "prepares deferred identity before publication only while its socket is live (%s)",
+    async (state) => {
       await withGatewayTestState({ label: "gateway-github-profile-deferred" }, async () => {
         const canonical = ensureProfileForEmail("canonical@example.test");
+        const mergedTarget = ensureProfileForEmail("canonical-target@example.test");
+        const expectedProfileId = state === "merged" ? mergedTarget.id : canonical.id;
         const syncCompletion = createGatewayHarnessGate<{ profileId: string; updatedAt: number }>();
         let finishSync: (() => void) | undefined;
         const sync = vi.fn(async () => {
@@ -1281,14 +1375,18 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
           ([key]) => key === "conn-github-identity-detached",
         )?.[1];
         expect(initialPresence).not.toHaveProperty("user");
+        expect(harness.registeredProfileId).toBeUndefined();
         expect(harness.socketSend.mock.invocationCallOrder[0]).toBeLessThan(
           sync.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
         );
         expect(finishSync).toBeTypeOf("function");
-        closed = closedBeforeSync;
+        closed = state === "closed";
+        if (state === "merged") {
+          linkEmail("canonical@example.test", mergedTarget.id);
+        }
         finishSync?.();
 
-        if (closedBeforeSync) {
+        if (closed) {
           await vi.dynamicImportSettled();
           expect(harness.client).not.toHaveProperty("authenticatedUserProfile");
           expect(harness.refreshConnectedUserProfile).not.toHaveBeenCalled();
@@ -1297,17 +1395,19 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
 
         await waitForFast(() => {
           expect(harness.client).toMatchObject({
-            authenticatedUserProfile: { profileId: canonical.id },
+            authenticatedUserProfile: { profileId: expectedProfileId },
+            preparedRecipientProfileId: expectedProfileId,
           });
           expect(localUserIngressFor(harness.client)).toMatchObject({
             facts: {
-              invoker: { state: "present", kind: "person", rawPrincipalRef: canonical.id },
+              invoker: { state: "present", kind: "person", rawPrincipalRef: expectedProfileId },
             },
           });
           expect(harness.refreshConnectedUserProfile).toHaveBeenCalledWith(
-            expect.objectContaining({ id: canonical.id }),
+            expect.objectContaining({ id: expectedProfileId }),
           );
         });
+        expect(harness.refreshedProfileIds).toEqual([expectedProfileId]);
       });
     },
   );
@@ -2259,7 +2359,7 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
             ? {
                 runId: "control-ui-admin-run",
                 callerOrigin: { kind: "unknown" },
-                controlUiAdmin: true,
+                managementEntitlement: { source: "control-ui-admin" },
               }
             : undefined,
         );

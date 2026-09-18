@@ -88,6 +88,113 @@ export type MemoryDreamingStorageConfig = {
   separateReports: boolean;
 };
 
+export type DreamingArtifactsAuditIssue = {
+  severity: "warn" | "error";
+  code:
+    | "dreaming-session-corpus-unreadable"
+    | "dreaming-session-corpus-self-ingested"
+    | "dreaming-session-ingestion-unreadable"
+    | "dreaming-diary-unreadable";
+  message: string;
+  fixable: boolean;
+};
+
+export type DreamingArtifactsAuditSummary = {
+  dreamsPath?: string;
+  sessionCorpusDir: string;
+  sessionCorpusFileCount: number;
+  suspiciousSessionCorpusFileCount: number;
+  suspiciousSessionCorpusLineCount: number;
+  sessionIngestionPath: string;
+  sessionIngestionExists: boolean;
+  issues: DreamingArtifactsAuditIssue[];
+};
+
+export type RepairDreamingArtifactsResult = {
+  changed: boolean;
+  archiveDir?: string;
+  archivedDreamsDiary: boolean;
+  archivedSessionCorpus: boolean;
+  archivedSessionIngestion: boolean;
+  archivedPaths: string[];
+  warnings: string[];
+};
+
+export type ShortTermAuditIssue = {
+  severity: "warn" | "error";
+  code:
+    | "recall-store-unreadable"
+    | "recall-store-empty"
+    | "recall-store-invalid"
+    | "recall-store-dangling"
+    | "recall-store-over-limit"
+    | "recall-lock-stale"
+    | "recall-lock-unreadable";
+  message: string;
+  fixable: boolean;
+};
+
+export type ShortTermAuditSummary<TConceptTagScripts = Record<string, unknown>> = {
+  storePath: string;
+  lockPath: string;
+  updatedAt?: string;
+  exists: boolean;
+  entryCount: number;
+  promotedCount: number;
+  spacedEntryCount: number;
+  conceptTaggedEntryCount: number;
+  conceptTagScripts?: TConceptTagScripts;
+  invalidEntryCount: number;
+  danglingEntryCount?: number;
+  issues: ShortTermAuditIssue[];
+};
+
+export type RepairShortTermPromotionArtifactsResult = {
+  changed: boolean;
+  removedInvalidEntries: number;
+  removedDanglingEntries?: number;
+  removedOverflowEntries?: number;
+  rewroteStore: boolean;
+  removedStaleLock: boolean;
+};
+
+export type ShortTermDreamingStatsEntry = {
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  snippet: string;
+  recallCount: number;
+  dailyCount: number;
+  groundedCount: number;
+  totalSignalCount: number;
+  lightHits: number;
+  remHits: number;
+  phaseHitCount: number;
+  promotedAt?: string;
+  lastRecalledAt?: string;
+};
+
+export type ShortTermDreamingStats = {
+  shortTermCount: number;
+  recallSignalCount: number;
+  dailySignalCount: number;
+  groundedSignalCount: number;
+  totalSignalCount: number;
+  phaseSignalCount: number;
+  lightPhaseHitCount: number;
+  remPhaseHitCount: number;
+  promotedTotal: number;
+  promotedToday: number;
+  storePath: string;
+  phaseSignalPath: string;
+  phaseSignalError?: string;
+  lastPromotedAt?: string;
+  shortTermEntries: ShortTermDreamingStatsEntry[];
+  signalEntries: ShortTermDreamingStatsEntry[];
+  promotedEntries: ShortTermDreamingStatsEntry[];
+};
+
 type MemoryLightDreamingConfig = {
   enabled: boolean;
   cron: string;
@@ -507,17 +614,26 @@ export function resolveMemoryRemDreamingConfig(params: {
   };
 }
 
+let memoryDreamingDayFormatter: { timezone: string; formatter: Intl.DateTimeFormat } | undefined;
+
 export function formatMemoryDreamingDay(epochMs: number, timezone?: string): string {
   if (!timezone) {
     return formatLocalIsoDay(epochMs);
   }
   try {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(new Date(epochMs));
+    // Cache only explicit timezones so host-local fallback follows timezone changes.
+    if (memoryDreamingDayFormatter?.timezone !== timezone) {
+      memoryDreamingDayFormatter = {
+        timezone,
+        formatter: new Intl.DateTimeFormat("en-CA", {
+          timeZone: timezone,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }),
+      };
+    }
+    const parts = memoryDreamingDayFormatter.formatter.formatToParts(new Date(epochMs));
     const values = new Map(parts.map((part) => [part.type, part.value]));
     const year = values.get("year");
     const month = values.get("month");
@@ -577,4 +693,15 @@ export function resolveMemoryDreamingWorkspaces(
     addWorkspace(primaryWorkspaceDir, options.primaryAgentId ?? resolveDefaultAgentId(cfg));
   }
   return [...byWorkspace.values()];
+}
+
+export function resolveMemoryDreamingWorkspace(
+  cfg: OpenClawConfig,
+  workspaceDir: string,
+  options: MemoryDreamingWorkspaceOptions = {},
+): MemoryDreamingWorkspace | undefined {
+  const workspacePath = resolveWorkspaceStateIdentity(workspaceDir).workspacePath;
+  return resolveMemoryDreamingWorkspaces(cfg, options).find(
+    (entry) => resolveWorkspaceStateIdentity(entry.workspaceDir).workspacePath === workspacePath,
+  );
 }

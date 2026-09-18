@@ -296,6 +296,7 @@ type ClawHubResolvedArtifactWire = {
   sha256?: string | null;
   npmIntegrity?: string | null;
   npmShasum?: string | null;
+  size?: number | null;
   downloadUrl?: string | null;
 };
 
@@ -316,6 +317,7 @@ function resolveTopLevelNpmPackArtifact(
     sha256: wire.artifactSha256 ?? wire.sha256 ?? null,
     npmIntegrity: wire.npmIntegrity,
     npmShasum: wire.npmShasum ?? null,
+    size: wire.size ?? null,
     downloadUrl: wire.downloadUrl ?? null,
   };
 }
@@ -1450,7 +1452,6 @@ export async function installPluginFromClawHub(
     const installResult = await installPluginFromArchive(
       copyPluginInstallTransactionRequest(params, {
         archivePath: archive.archivePath,
-        dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
         onInstallPolicyWarning: params.onInstallPolicyWarning,
         trustedSourceLinkedOfficialInstall:
           officialClawHubPackage || isTrustedSourceLinkedOfficialPackage(detail.package!),

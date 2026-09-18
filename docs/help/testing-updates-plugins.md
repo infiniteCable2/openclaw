@@ -15,6 +15,17 @@ install, load, update, and uninstall plugins from every supported source.
 For the broader test runner map, see [Testing](/help/testing). For live provider
 keys and network-touching suites, see [Testing live](/help/testing-live).
 
+## On this page
+
+- [What we protect](#what-we-protect) - the guarantees these lanes exist to defend.
+- [Local proof during development](#local-proof-during-development) - the commands to run while you iterate.
+- [Docker lanes](#docker-lanes) - lane reference: what each lane runs and when.
+- [Package Acceptance](#package-acceptance) - lane reference: the acceptance matrix and its gates.
+- [Release default](#release-default) - which lanes a release candidate must clear.
+- [Legacy compatibility](#legacy-compatibility) - older package and plugin states still covered.
+- [Adding coverage](#adding-coverage) - where a new regression belongs.
+- [Failure triage](#failure-triage) - what to do when a lane goes red.
+
 ## What we protect
 
 - A package tarball is complete, has a valid `dist/postinstall-inventory.json`,
@@ -146,16 +157,63 @@ pnpm test:docker:published-upgrade-survivor
 OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC=openclaw@2026.6.34 \
 OPENCLAW_UPGRADE_SURVIVOR_SCENARIO=legacy-operator-state \
 pnpm test:docker:published-upgrade-survivor
+
+OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS=openclaw@2026.9.4 \
+OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS=custom-plugin-siblings \
+pnpm test:docker:published-upgrade-survivor
 ```
 
 Available scenarios: `base`, `acpx-openclaw-tools-bridge`, `feishu-channel`,
 `bootstrap-persona`, `channel-post-core-restore`, `plugin-deps-cleanup`,
-`configured-plugin-installs`, `stale-source-plugin-shadow`, `tilde-log-path`,
+`configured-plugin-installs`, `custom-plugin-siblings`, `stale-source-plugin-shadow`, `tilde-log-path`,
 `meeting-transcripts-sqlite`, `versioned-runtime-deps`, `cron-scheduled-authority`,
 `legacy-operator-state`, and `sqlite-volume`. In aggregate runs,
 `OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS=reported-issues` expands the release-soak
 fixtures but excludes the expensive `sqlite-volume` scenario. Use
 `OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS=far-reaching` to include it.
+
+The `custom-plugin-siblings` scenario starts from published 2026.9.4 or later
+with an enabled custom memory plugin importing `../shared/value.mjs` from both
+its runtime entry and Doctor config-repair contract. It runs the published
+updater against the selected candidate tarball and requires both that contract
+and Gateway plugin registration to execute with the expected sibling value from
+private canary state. Readiness alone is insufficient. It also checks actual plugin loading
+before and after the update, preserved enablement, and unchanged original source
+files. Current-source Full Release Validation includes this scenario in its
+normal Package Acceptance coverage and in release soak.
+Those default release runs pin this scenario to the published 2026.9.4 driver,
+including when the source candidate still reports version 2026.9.4; other
+scenarios retain their existing baseline selection.
+
+The opt-in `projects-doctor`, `projects-startup-migration`, and `taskflow-restoration` scenarios require the exact
+published `openclaw@2026.9.4` baseline and a frozen candidate tarball. They use
+isolated state, manual restart, and no live providers or registry companion fixtures;
+none runs through `reported-issues` or `far-reaching`. They verify the original
+published driver and installed candidate payload bytes, including when their version
+strings are equal. Select one with `OPENCLAW_UPGRADE_SURVIVOR_SCENARIO` and set
+`OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC=openclaw@2026.9.4`.
+
+`projects-doctor` preserves one registered project and one configured workspace,
+then runs the real `doctor --lint --only core/doctor/project-clone-shape --json`
+twice. It checks stored rows, schema, sentinels, and read-only snapshot cleanup.
+`projects-startup-migration` creates a project and managed worktree through the
+published owners using local Git, then imports synthetic legacy session JSON/JSONL
+through published Doctor. It requires the updater's candidate Doctor repair to fill
+in the registered project's canonical workspace before the first Gateway startup.
+Both normal Gateway starts must leave the repaired session and transcript unchanged,
+perform no workspace backfill, become ready, and report clean shutdown before
+persisted readback. The fixture is a supported legacy-format import, not a
+historical runtime-generated session. No additional Doctor recovery pass runs. Set
+`OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS` to a reviewed JSON file containing the
+candidate `commit`, `agentSchema`, and `operations.prepare`/`operations.open`
+triples of compiled basename, exact export symbol, and SHA-256. The snapshot
+preparer and SQLite opener must match the installed candidate payload; the file
+is mounted read-only. This scenario uses no remote repository or model turn.
+`taskflow-restoration` preserves three terminal tasks and two flows, starts a fresh
+candidate Gateway, exercises awaited task SDK reads through a synthetic local plugin,
+and reads two task pages on the same Gateway connection. Complete task, delivery,
+and flow records are checked again after Gateway shutdown. The taskflow cell covers
+terminal persisted state; it does not exercise active task recovery or provider work.
 
 The `legacy-operator-state` scenario uses the published baseline's own CLI to
 create a second agent, allowlist exec approvals, and two command cron jobs: one
@@ -457,5 +515,28 @@ Start with the artifact identity:
   including baseline version, candidate version, scenario, phase timings, and
   config recipe coverage.
 
+The `legacy-operator-state` survivor installs a matching published companion
+through a moving tag (`latest`, `beta`, or `alpha`). If npm confirms that the
+exact companion version was never published, the row records that companion as
+unavailable in `baselineCompanion` and continues the remaining operator-state
+and external-plugin migration checks. Registry errors still fail fixture setup.
+An update that has not started reports an `unknown` outcome; a failed update
+attempt reports `failed`, independently of later scenario assertions.
+
+Failure capture retains the latest session SQLite migration manifest and Doctor
+issue report in the private diagnostics snapshot, subject to bounded size limits.
+The published diagnostics contain issue histograms and capture omissions rather
+than raw session details. Collect private artifacts before removing the test host.
+Container-owned observation directories can require `sudo tar` on that isolated
+host; keep their permissions intact. When collecting through a remote wrapper,
+use distinct success/failure download destinations. A successful download does
+not change the survivor exit code or `summary.status`.
+
 Prefer rerunning the failed exact lane with the same package artifact over
 rerunning the whole release umbrella.
+
+## Related
+
+- [Tests](/reference/test) - index of the testing reference, one page per reader job
+- [Testing](/help/testing) - the full testing kit: suites, live lanes, and Docker runners
+- [Release policy](/reference/RELEASING) - the release process this checklist gates

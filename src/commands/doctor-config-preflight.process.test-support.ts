@@ -4,8 +4,11 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { ensureOpenClawAgentDatabaseSchema } from "../state/openclaw-agent-db.js";
+import { removeCanonicalValidationFromHistoricalAgentFixture } from "../state/openclaw-agent-db.test-support.js";
+import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 
 const execFileAsync = promisify(execFile);
+const isolatedRuntimeNodeExecPath = resolveTestNodeExecPath();
 // The fixture owns its package assets; resolving linked source back to the checkout
 // makes Doctor repair that checkout instead, including building its Control UI.
 // Dependency realpaths still own their transitive packages under isolated installs.
@@ -40,7 +43,7 @@ export function runBuiltRuntime(
   maxBuffer?: number,
 ) {
   return spawnSync(
-    process.execPath,
+    isolatedRuntimeNodeExecPath,
     [...ISOLATED_RUNTIME_NODE_ARGS, path.join(runtimeRoot, "dist", "entry.js"), ...args],
     {
       cwd: runtimeRoot,
@@ -59,13 +62,17 @@ export function runSourceRuntime(
   timeout: number,
   maxBuffer?: number,
 ) {
-  return spawnSync(process.execPath, [...ISOLATED_RUNTIME_NODE_ARGS, "--import", "tsx", ...args], {
-    cwd: runtimeRoot,
-    encoding: "utf8",
-    env,
-    timeout,
-    ...(maxBuffer === undefined ? {} : { maxBuffer }),
-  });
+  return spawnSync(
+    isolatedRuntimeNodeExecPath,
+    [...ISOLATED_RUNTIME_NODE_ARGS, "--import", "tsx", ...args],
+    {
+      cwd: runtimeRoot,
+      encoding: "utf8",
+      env,
+      timeout,
+      ...(maxBuffer === undefined ? {} : { maxBuffer }),
+    },
+  );
 }
 
 export function runIsolatedModuleScript(
@@ -74,7 +81,7 @@ export function runIsolatedModuleScript(
   options: { runtimeRoot?: string; timeoutMs?: number } = {},
 ) {
   return execFileAsync(
-    process.execPath,
+    isolatedRuntimeNodeExecPath,
     [
       ...(options.runtimeRoot ? ISOLATED_RUNTIME_NODE_ARGS : []),
       "--import",
@@ -103,7 +110,14 @@ export function createSourceRuntime(root: string): string {
       process.platform === "win32" ? "junction" : "dir",
     );
   }
-  for (const filename of ["node-version.mjs", "package.json", "tsconfig.json"]) {
+  for (const filename of [
+    "node-version.mjs",
+    "node-sqlite.mjs",
+    "node-runtime-update.mjs",
+    "node-runtime-recovery.mjs",
+    "package.json",
+    "tsconfig.json",
+  ]) {
     fs.copyFileSync(path.resolve(filename), path.join(runtimeRoot, filename));
   }
   fs.writeFileSync(
@@ -159,6 +173,7 @@ export function seedV17AdditiveRepairDatabase(
       path: databasePath,
       register: false,
     });
+    removeCanonicalValidationFromHistoricalAgentFixture(database);
     database.exec(`
       DROP TABLE session_participants;
       DROP TRIGGER session_conversations_route_context_invalidate_after_update;

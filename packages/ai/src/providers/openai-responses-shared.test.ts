@@ -5,6 +5,7 @@ import type {
   Tool as OpenAIResponsesTool,
 } from "openai/resources/responses/responses.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeTextToolResult } from "../../../../test/helpers/text-tool-result.js";
 import { configureAiTransportHost } from "../host.js";
 import {
   buildOpenAIResponsesReasoningReplayMetadata,
@@ -16,11 +17,11 @@ import type { AssistantMessage, AssistantMessageEvent, Context, Model, Tool } fr
 import { createZeroUsage } from "../usage.test-support.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../utils/system-prompt-cache-boundary.js";
+import { resolveOpenAISimpleReasoningEffort } from "./openai-request-reasoning.js";
 import {
   applyCommonResponsesParams,
   createResponsesAssistantOutput,
   convertResponsesMessages,
-  resolveResponsesReasoningEffort,
   runResponsesStreamLifecycle,
 } from "./openai-responses-shared.js";
 import { convertResponsesToolPayload } from "./openai-responses-tools.js";
@@ -327,7 +328,7 @@ describe("Responses reasoning effort", () => {
   });
 
   it("passes max through for GPT-5.6 Sol", () => {
-    expect(resolveResponsesReasoningEffort(gpt56SolModel, "max")).toBe("max");
+    expect(resolveOpenAISimpleReasoningEffort(gpt56SolModel, "max")).toBe("max");
 
     const params = {} as never;
     applyCommonResponsesParams(
@@ -361,7 +362,7 @@ describe("Responses reasoning effort", () => {
         model,
         { messages: [] },
         {
-          reasoningEffort: resolveResponsesReasoningEffort(model, reasoning),
+          reasoningEffort: resolveOpenAISimpleReasoningEffort(model, reasoning),
         },
       );
       expect(params.reasoning).toEqual({ effort: expected, summary: "auto" });
@@ -374,7 +375,7 @@ describe("Responses reasoning effort", () => {
       thinkingLevelMap: { xhigh: "xhigh" },
     } satisfies Model<"openai-responses">;
 
-    expect(resolveResponsesReasoningEffort(gpt55WithXHigh, "max")).toBe("xhigh");
+    expect(resolveOpenAISimpleReasoningEffort(gpt55WithXHigh, "max")).toBe("xhigh");
   });
 });
 
@@ -575,14 +576,7 @@ describe("convertResponsesMessages", () => {
               },
             ],
           },
-          {
-            role: "toolResult",
-            toolCallId: "call_abc|fc_prior",
-            toolName: "price_lookup",
-            content: [{ type: "text", text: "$83.95" }],
-            isError: false,
-            timestamp: 2,
-          },
+          makeTextToolResult("call_abc|fc_prior", "price_lookup", "$83.95", false, 2),
         ],
       } satisfies Context,
       allowedToolCallProviders,
@@ -2184,14 +2178,7 @@ describe("processResponsesStream", () => {
         systemPrompt: "",
         messages: [
           output,
-          {
-            role: "toolResult",
-            toolCallId: "call_weather|fc_weather",
-            toolName: "weather",
-            content: [{ type: "text", text: "Rain" }],
-            isError: false,
-            timestamp: 1,
-          },
+          makeTextToolResult("call_weather|fc_weather", "weather", "Rain", false, 1),
         ],
       } satisfies Context,
       testAllowedToolCallProviders,

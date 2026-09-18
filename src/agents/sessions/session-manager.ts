@@ -21,14 +21,15 @@ import {
 import { loadTranscriptReadSnapshotSync } from "../../config/sessions/session-accessor.sqlite-read.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-transcript-state.js";
 import { assertCurrentSessionTranscriptHeader } from "../../config/sessions/session-entry-codec.js";
-import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-model-context-worker-runtime.js";
 import {
   resolveSessionTranscriptReadFence,
   withSessionContextAdmission,
 } from "../../config/sessions/session-transcript-read-fence.js";
+import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-worker-runtime.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { Message } from "../../llm/types.js";
+import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import { SessionManagerBranching } from "./session-manager-branching.js";
@@ -75,9 +76,10 @@ export class SessionManager extends SessionManagerBranching {
     persistenceTarget?: SessionManagerPersistenceTarget,
     loadedEntries?: FileEntry[],
     boundedContext?: SessionManagerBoundedContext,
+    transcriptMutationAt?: number | null,
     version?: SessionTranscriptContextVersion,
   ) {
-    super(cwd, persistenceTarget, loadedEntries, boundedContext, version);
+    super(cwd, persistenceTarget, loadedEntries, boundedContext, transcriptMutationAt, version);
     this.retainTranscriptWriter();
   }
 
@@ -164,6 +166,7 @@ export class SessionManager extends SessionManagerBranching {
         }
         const adopt = (version = prepared.transcriptVersion) => {
           prepared.transcriptVersion = version;
+          prepared.transcriptMutationAt = version?.updatedAt;
           Object.assign(this, prepared.captureTranscriptView());
         };
         if (publish) {
@@ -196,6 +199,7 @@ export class SessionManager extends SessionManagerBranching {
       target,
       entries,
       undefined,
+      snapshot.version.updatedAt,
       snapshot.version,
     );
   }
@@ -241,10 +245,11 @@ export class SessionManager extends SessionManagerBranching {
       cwd?: string;
       admission?: UserTurnTranscriptAdmissionReceipt;
       through?: TranscriptEntryAnchor;
+      limits?: SessionManagerBoundedContextLimits;
     } = {},
   ): SessionManager {
     const context = withSessionContextAdmission(target, options.admission, () =>
-      readSessionTranscriptModelContext(target, options.through),
+      readSessionTranscriptModelContext(target, options.through, options.limits),
     );
     return SessionManager.fromSelectedEntries(context.events, options.cwd);
   }
@@ -257,14 +262,26 @@ export class SessionManager extends SessionManagerBranching {
       admission?: UserTurnTranscriptAdmissionReceipt;
       signal?: AbortSignal;
       through?: TranscriptEntryAnchor;
+      limits?: SessionManagerBoundedContextLimits;
     } = {},
   ): Promise<SessionManager> {
     const readTarget = { ...target };
     const receipt = options.admission ?? resolveSessionTranscriptReadFence(readTarget);
     const admission = receipt ? { ...receipt } : undefined;
     const through = options.through ? { ...options.through } : undefined;
+    const limits = options.limits ? { ...options.limits } : undefined;
+    options.signal?.throwIfAborted();
     const context = await withSessionContextAdmission(readTarget, admission, () =>
-      readSessionTranscriptModelContextAsync(readTarget, admission, options.signal, through),
+      // Incognito belongs to this process; capture its snapshot before the first await.
+      isIncognitoSessionKey(readTarget.sessionKey)
+        ? readSessionTranscriptModelContext(readTarget, through, limits)
+        : readSessionTranscriptModelContextAsync(
+            readTarget,
+            admission,
+            options.signal,
+            through,
+            limits,
+          ),
     );
     options.signal?.throwIfAborted();
     // Even process-local reads yield here. Admitted history may exclude later

@@ -4,11 +4,12 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 // Control UI view renders usage render overview screen content.
 import { html, nothing } from "lit";
 import { ifDefined } from "lit/directives/if-defined.js";
+import { renderAgentRowChip } from "../../components/agent-row-chip.ts";
 import { handleCopyButton } from "../../components/copy-button.ts";
 import { renderSettingsSection, renderSettingsSegmented } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
 import "../../components/tooltip.ts";
-import { formatDurationCompact } from "../../lib/format.ts";
+import { formatDurationCompact } from "../../lib/format-duration.ts";
 import {
   buildUsageCostWindows,
   buildUsageCostWindowSummary,
@@ -168,6 +169,7 @@ function renderCostWindowComparison(
   daily: CostDailyEntry[],
   rangeStartDate: string,
   rangeEndDate: string,
+  timeZone: "local" | "utc",
 ) {
   const range = buildUsageCostWindowSummary(daily, rangeStartDate, rangeEndDate);
   if (!range || daily.length === 0) {
@@ -175,7 +177,7 @@ function renderCostWindowComparison(
   }
 
   const windows = buildUsageCostWindows(daily, rangeStartDate, rangeEndDate);
-  const today = formatIsoDate(new Date());
+  const today = formatIsoDate(new Date(), timeZone);
   const labelForWindow = (days: number, endDate: string) => {
     if (days === 1) {
       return endDate === today ? t("usage.presets.today") : formatDayLabel(endDate);
@@ -454,7 +456,7 @@ function renderCostBreakdownCompact(totals: UsageTotals, mode: "tokens" | "cost"
 
 function renderInsightList(
   title: string,
-  items: Array<{ label: string; value: string; sub?: string }>,
+  items: Array<{ label: string; value: string; sub?: string; agentId?: string }>,
   emptyLabel: string,
   options?: {
     className?: string;
@@ -485,7 +487,9 @@ function renderInsightList(
                       `
                     : html`
                         <div class="usage-list-item">
-                          <span>${item.label}</span>
+                          <span
+                            >${item.agentId ? renderAgentRowChip(item.agentId) : item.label}</span
+                          >
                           <span class="usage-list-value">
                             <span>${item.value}</span>
                             ${
@@ -645,6 +649,7 @@ function renderUsageInsights(
   }));
   const topAgents = aggregates.byAgent.slice(0, 5).map((entry) => ({
     label: entry.agentId,
+    agentId: entry.agentId,
     value: formatAnalysisCost(entry.totals.totalCost),
     sub: costAttributionSub(entry.totals.totalCost, entry.totals.totalTokens),
   }));
@@ -792,6 +797,8 @@ function renderSessionsCard(
   onClearSessions: () => void,
 ) {
   const showColumn = (id: UsageColumnId) => visibleColumns.includes(id);
+  const showAgent =
+    showColumn("agent") || new Set(sessions.map((session) => session.agentId)).size > 1;
   const formatSessionListLabel = (s: UsageSessionEntry): string => {
     const raw = s.label || s.key;
     // Agent session keys often include a token query param; remove it for readability.
@@ -803,7 +810,6 @@ function renderSessionsCard(
   const buildSessionMeta = (session: UsageSessionEntry): string[] =>
     [
       showColumn("channel") && session.channel && `channel:${session.channel}`,
-      showColumn("agent") && session.agentId && `agent:${session.agentId}`,
       showColumn("provider") &&
         (session.modelProvider || session.providerOverride) &&
         `provider:${session.modelProvider ?? session.providerOverride}`,
@@ -912,6 +918,7 @@ function renderSessionsCard(
         >
           <span class="session-bar-label">
             <span class="session-bar-title">${displayLabel}</span>
+            ${showAgent && s.agentId ? renderAgentRowChip(s.agentId) : nothing}
             ${
               meta.length > 0
                 ? html`<span class="session-bar-meta">${meta.join(" · ")}</span>`
@@ -945,6 +952,7 @@ function renderSessionsCard(
   const recentEntries = recentSessions
     .map((key) => sessionMap.get(key))
     .filter((entry) => entry !== undefined);
+  const displayedEntries = sessionsTab === "recent" ? recentEntries : sortedWithDir.slice(0, 50);
   const renderSessionBarRows = (entries: typeof sortedSessions) => {
     // Selection follows this rendered group, before a click reorders recently viewed sessions.
     const orderedKeys = entries.map((entry) => entry.session.key);
@@ -959,9 +967,9 @@ function renderSessionsCard(
       <div class="usage-panel sessions-card">
         <div class="sessions-card-header">
           <div class="sessions-card-count">
-            ${t("usage.sessions.shown", { count: String(sessions.length) })}
+            ${t("usage.sessions.shown", { count: String(displayedEntries.length) })}
             ${
-              totalSessions !== sessions.length
+              totalSessions !== displayedEntries.length
                 ? ` · ${t("usage.sessions.total", { count: String(totalSessions) })}`
                 : ""
             }
@@ -1042,23 +1050,25 @@ function renderSessionsCard(
         </div>
         ${
           sessionsTab === "recent"
-            ? recentEntries.length === 0
+            ? displayedEntries.length === 0
               ? html` <div class="usage-empty-block">${t("usage.sessions.noRecent")}</div> `
               : html`
                   <div class="session-bars session-bars--recent">
-                    ${renderSessionBarRows(recentEntries)}
+                    ${renderSessionBarRows(displayedEntries)}
                   </div>
                 `
-            : sessions.length === 0
+            : displayedEntries.length === 0
               ? html` <div class="usage-empty-block">${t("usage.sessions.noneInRange")}</div> `
               : html`
                   <div class="session-bars">
-                    ${renderSessionBarRows(sortedWithDir.slice(0, 50))}
+                    ${renderSessionBarRows(displayedEntries)}
                     ${
-                      sessions.length > 50
+                      sessions.length > displayedEntries.length
                         ? html`
                             <div class="usage-more-sessions">
-                              ${t("usage.sessions.more", { count: String(sessions.length - 50) })}
+                              ${t("usage.sessions.more", {
+                                count: String(sessions.length - displayedEntries.length),
+                              })}
                             </div>
                           `
                         : nothing

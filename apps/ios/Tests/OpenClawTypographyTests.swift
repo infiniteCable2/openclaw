@@ -22,6 +22,15 @@ struct RootSidebarTypographyTests {
 }
 
 struct OpenClawTypographyTests {
+    @Test func `gateway picker uses branded typography`() throws {
+        let source = try String(
+            contentsOf: Self.sourceURL("RootSidebarGatewayControl.swift"),
+            encoding: .utf8)
+        #expect(source.contains(".font(OpenClawType.subheadSemiBold)"))
+        #expect(source.contains(".font(OpenClawType.captionMedium)"))
+        #expect(!source.contains(".font(."))
+    }
+
     @Test func `thread controls use branded typography`() throws {
         let support = try String(
             contentsOf: Self.sourceURL("Design/CommandCenterSupport.swift"),
@@ -225,6 +234,8 @@ struct OpenClawTypographyTests {
         #expect(gatewayProblem.contains("Text(\"Connection problem\")"))
         #expect(gatewayProblem.contains("Text(\"Copy request ID\")"))
         #expect(gatewayProblem.contains("Text(\"Copy command\")"))
+        #expect(gatewayProblem.contains("? \"Set up Tailscale\" : \"Details\""))
+        #expect(gatewayProblem.contains("onSecondaryAction: self.secondaryAction"))
         #expect(gatewayProblem.contains(".font(OpenClawType.subheadSemiBold)"))
 
         #expect(onboardingSteps.contains("title: \"Connect Gateway\""))

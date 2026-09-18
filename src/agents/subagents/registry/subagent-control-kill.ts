@@ -8,6 +8,10 @@ import {
 } from "../../../infra/agent-events.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-contract.js";
+import {
+  captureTaskCancellationControl,
+  type TaskCancellationControl,
+} from "../../../tasks/task-cancellation-context.js";
 import type {
   SubagentAdminKillResult,
   TaskRegistryControlRuntime,
@@ -62,6 +66,7 @@ type KillSelection = {
 };
 
 type KillScope = {
+  cancellationControl: TaskCancellationControl | undefined;
   refresh: () => number;
   retarget: (tree: KillTree, successor: SubagentRunRecord) => boolean;
 };
@@ -72,6 +77,7 @@ async function withSubagentKillScope<T>(
   publish?: (result: T, trees: KillTree[]) => T,
 ): Promise<T> {
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
+  const cancellationControl = captureTaskCancellationControl();
   const selected = new Set<string>();
   const releaseRetirements: Array<() => void> = [];
   const holds: Array<NonNullable<ReturnType<typeof holdQueuedSwarmRun>>> = [];
@@ -227,10 +233,12 @@ async function withSubagentKillScope<T>(
       tree.errors.add(formatErrorMessage(error));
     }
   };
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
   try {
     const trees: KillTree[] = [];
     select(params.runs, trees, params.controller, undefined, params.ownsRoot);
     const scope: KillScope = {
+      cancellationControl,
       refresh: () => {
         trees.forEach(refreshTree);
         return selected.size;
@@ -250,11 +258,21 @@ async function withSubagentKillScope<T>(
     };
     scope.refresh();
     const result = await run(scope, trees);
-    return publish ? publish(result, trees) : result;
-  } finally {
-    holds.forEach((reservation) => reservation.release());
-    releaseRetirements.forEach((release) => release());
+    outcome = { ok: true, value: publish ? publish(result, trees) : result };
+  } catch (error) {
+    outcome = { ok: false, error };
   }
+  const released = await Promise.allSettled(holds.map((reservation) => reservation.release()));
+  const retired = await Promise.allSettled(releaseRetirements.map(async (release) => release()));
+  if (!outcome.ok) {
+    throw outcome.error;
+  }
+  for (const result of [...released, ...retired]) {
+    if (result.status === "rejected") {
+      throw result.reason;
+    }
+  }
+  return outcome.value;
 }
 
 async function killLatestSubagentRun(params: {
@@ -289,6 +307,7 @@ async function killLatestSubagentRun(params: {
           ...params,
           entry,
           session,
+          cancellationControl: scope.cancellationControl,
           isCurrent: (candidate) => tree.isCurrent(candidate) && matchesExpected(candidate),
           withdrawQueuedReservation: () => tree.dispatchHold?.withdraw(),
           refreshDescendants: scope.refresh,
@@ -383,7 +402,6 @@ async function killSubagentRunTree(
         result.descendants = true;
       }
       if (result.descendants && tree.canTraverse()) {
-        params.scope.refresh();
         await Promise.all(tree.children.map(visit));
       }
     } catch (error) {

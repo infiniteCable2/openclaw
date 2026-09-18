@@ -47,17 +47,21 @@ import {
 } from "../../config/sessions.js";
 import {
   persistCompactionBoundaryWithSessionEntrySync,
-  readRecentSessionTranscriptActiveEvents,
   readSessionTranscriptActiveStats,
   updateSessionEntry,
+  withRecentSessionTranscriptActiveEvents,
 } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
-import { selectSessionTranscriptLeafControlledPath } from "../../config/sessions/transcript-tree.js";
+import {
+  isSessionTranscriptLeafControl,
+  selectSessionTranscriptLeafControlledPath,
+} from "../../config/sessions/transcript-tree.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { readSessionMessagesAsync } from "../../gateway/session-transcript-readers.js";
 import { logVerbose } from "../../globals.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
+import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveMemoryFlushPlan, type MemoryFlushPlan } from "../../plugins/memory-state.js";
@@ -79,6 +83,7 @@ import {
   hasAlreadyFlushedForCurrentCompaction,
   resolveMaxActiveTranscriptBytes,
   resolveCompactionThreshold,
+  resolveEffectivePromptTokens,
   resolveResponsesServerCompactionThreshold,
   shouldRunMemoryFlush,
   shouldRunPreflightCompaction,
@@ -86,6 +91,7 @@ import {
 import { resolveContextTokens } from "./model-selection-context.js";
 import { readPostCompactionContext } from "./post-compaction-context.js";
 import { refreshQueuedFollowupSession, type FollowupRun } from "./queue.js";
+import { startFollowupRunPreAdoptionHeartbeat } from "./queue/lifecycle.js";
 import { isRenderablePayload } from "./reply-payloads-base.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { incrementCompactionCount } from "./session-updates.js";
@@ -175,19 +181,6 @@ function estimatePromptTokensForMemoryFlush(prompt?: string): number | undefined
     return undefined;
   }
   return Math.ceil(tokens);
-}
-
-function resolveEffectivePromptTokens(
-  basePromptTokens?: number,
-  lastOutputTokens?: number,
-  promptTokenEstimate?: number,
-): number {
-  const base = Math.max(0, basePromptTokens ?? 0);
-  const output = Math.max(0, lastOutputTokens ?? 0);
-  const estimate = Math.max(0, promptTokenEstimate ?? 0);
-  // Flush gating projects the next input context by adding the previous
-  // completion and the current user prompt estimate.
-  return base + output + estimate;
 }
 
 function resolveMemoryFlushModelFallbackOptions(
@@ -384,73 +377,85 @@ function deriveTranscriptUsageSnapshot(
   };
 }
 
-function readLatestNonzeroUsageSnapshotFromTranscriptEvents(events: readonly unknown[]):
-  | {
-      usage: NonNullable<ReturnType<typeof normalizeUsage>>;
-      trailingMessages: AgentMessage[];
-    }
-  | undefined {
-  const activeEvents = selectSessionTranscriptLeafControlledPath(events) ?? events;
+function readTranscriptAccountingSnapshot(
+  visit: (visitor: (event: unknown) => void) => void,
+  options: { includeUsage: boolean; includeTurnTaint?: boolean },
+): {
+  boundaryFound: boolean;
+  eventCount: number;
+  hasLeafControl: boolean;
+  tainted: boolean;
+  usage?: SessionTranscriptUsageSnapshot;
+} {
+  let scanUsage = options.includeUsage;
+  let scanTaint = options.includeTurnTaint === true;
+  let latestUsage: ReturnType<typeof normalizeUsage>;
   const trailingMessages: AgentMessage[] = [];
-  for (const event of activeEvents.toReversed()) {
+  let boundaryFound = false;
+  let tainted = false;
+  let eventCount = 0;
+  let hasLeafControl = false;
+  visit((event) => {
+    eventCount += 1;
+    hasLeafControl ||= isSessionTranscriptLeafControl(event);
     if (!event || typeof event !== "object" || Array.isArray(event)) {
-      continue;
+      return;
     }
     const record = event as { message?: unknown; type?: unknown; usage?: UsageLike };
-    if (record.type === "compaction" || record.type === "reset") {
-      return undefined;
-    }
     const message =
       record.message && typeof record.message === "object" && !Array.isArray(record.message)
         ? (record.message as AgentMessage & { api?: unknown; usage?: UsageLike })
         : undefined;
-    const rawUsage = message?.usage ?? record.usage;
-    if (message?.api === "cli" && rawUsage && rawUsage.contextUsage === undefined) {
-      return undefined;
+    if (scanUsage) {
+      const rawUsage = message?.usage ?? record.usage;
+      if (
+        record.type === "compaction" ||
+        record.type === "reset" ||
+        (message?.api === "cli" && rawUsage && rawUsage.contextUsage === undefined)
+      ) {
+        scanUsage = false;
+        trailingMessages.length = 0;
+      } else {
+        const usage = normalizeUsage(rawUsage);
+        if (usage && isUnavailableContextBarrier(usage)) {
+          scanUsage = false;
+          trailingMessages.length = 0;
+        } else if (usage && hasNonzeroUsage(usage)) {
+          latestUsage = usage;
+          scanUsage = false;
+        } else if (message) {
+          trailingMessages.push(message);
+        }
+      }
     }
-    const usage = normalizeUsage(rawUsage);
-    if (usage && isUnavailableContextBarrier(usage)) {
-      // This turn supersedes older context facts without supplying a replacement.
-      // Stop the reverse scan so pre-fix cumulative records cannot become fresh again.
-      return undefined;
+    if (scanTaint && message) {
+      if (message.role === "user") {
+        boundaryFound = true;
+        scanTaint = false;
+      } else {
+        const metadata = (message as { __openclaw?: unknown })["__openclaw"];
+        if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+          const openClaw = metadata as { resultContentSource?: unknown; turnTainted?: unknown };
+          if (openClaw.turnTainted === true || openClaw.resultContentSource === "network") {
+            tainted = true;
+            scanTaint = false;
+          }
+        }
+      }
     }
-    if (usage && hasNonzeroUsage(usage)) {
-      return { usage, trailingMessages: trailingMessages.toReversed() };
-    }
-    if (message) {
-      trailingMessages.push(message);
-    }
-  }
-  return undefined;
-}
-
-function readActiveTurnTaintFromTranscriptEvents(events: readonly unknown[]): {
-  boundaryFound: boolean;
-  tainted: boolean;
-} {
-  const activeEvents = selectSessionTranscriptLeafControlledPath(events) ?? events;
-  for (const event of activeEvents.toReversed()) {
-    if (!event || typeof event !== "object" || Array.isArray(event)) {
-      continue;
-    }
-    const message = (event as { message?: unknown }).message;
-    if (!message || typeof message !== "object" || Array.isArray(message)) {
-      continue;
-    }
-    const record = message as Record<string, unknown>;
-    if (record.role === "user") {
-      return { boundaryFound: true, tainted: false };
-    }
-    const metadata = record["__openclaw"];
-    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-      continue;
-    }
-    const openClaw = metadata as { resultContentSource?: unknown; turnTainted?: unknown };
-    if (openClaw.turnTainted === true || openClaw.resultContentSource === "network") {
-      return { boundaryFound: false, tainted: true };
-    }
-  }
-  return { boundaryFound: false, tainted: false };
+  });
+  return {
+    boundaryFound,
+    eventCount,
+    hasLeafControl,
+    tainted,
+    usage: latestUsage
+      ? deriveTranscriptUsageSnapshot({
+          usage: latestUsage,
+          trailingMessages: trailingMessages.toReversed(),
+        })
+      : undefined,
+  };
 }
 
 function readSqliteSessionLogSnapshot(
@@ -470,19 +475,37 @@ function readSqliteSessionLogSnapshot(
       snapshot.eventCount = stats.eventCount;
     }
     if (options.includeUsage || options.includeTurnTaint) {
-      const events = readRecentSessionTranscriptActiveEvents(
+      const accounting = withRecentSessionTranscriptActiveEvents(
         scope,
         options.usageEventLimit ?? SQLITE_USAGE_TAIL_MAX_EVENTS,
+        (visit) => {
+          const result = readTranscriptAccountingSnapshot(visit, options);
+          if (!result.hasLeafControl) {
+            return result;
+          }
+          // First-row and legacy flat projections can still contain leaf controls.
+          // Preserve their serialized navigation contract in this same snapshot.
+          const events: unknown[] = [];
+          visit((event) => events.push(event));
+          events.reverse();
+          const activeEvents = selectSessionTranscriptLeafControlledPath(events) ?? events;
+          return {
+            ...readTranscriptAccountingSnapshot((visitor) => {
+              for (let index = activeEvents.length - 1; index >= 0; index -= 1) {
+                visitor(activeEvents[index]);
+              }
+            }, options),
+            eventCount: result.eventCount,
+          };
+        },
       );
       if (options.includeUsage) {
-        snapshot.usage = deriveTranscriptUsageSnapshot(
-          readLatestNonzeroUsageSnapshotFromTranscriptEvents(events),
-        );
+        snapshot.usage = accounting.usage;
       }
       if (options.includeTurnTaint) {
-        const scan = readActiveTurnTaintFromTranscriptEvents(events);
         snapshot.turnTainted =
-          scan.tainted || (!scan.boundaryFound && events.length >= SQLITE_USAGE_TAIL_MAX_EVENTS);
+          accounting.tainted ||
+          (!accounting.boundaryFound && accounting.eventCount >= SQLITE_USAGE_TAIL_MAX_EVENTS);
       }
     }
   } catch {
@@ -1026,6 +1049,10 @@ export async function runSessionCompactionIfNeeded(params: {
       throw new Error("Session changed before compaction maintenance could be recorded");
     }
   };
+  const stopHeartbeat = startFollowupRunPreAdoptionHeartbeat(
+    params.followupRun.turnAdoptionLifecycle,
+    params.abortSignal,
+  );
   try {
     await notifyStartCompaction();
     assertActive();
@@ -1096,12 +1123,9 @@ export async function runSessionCompactionIfNeeded(params: {
               typeof activeTranscriptBytes === "number" &&
               typeof maxActiveTranscriptBytes === "number"
                 ? {
-                    withCompactionPersistence: (
-                      append: () => string,
-                      validateAppend: (entryId: string, appendedText: string) => boolean,
-                    ) => {
+                    withCompactionPersistence: (prepared) => {
                       assertActive();
-                      const entryId = persistCompactionBoundaryWithSessionEntrySync(
+                      const committed = persistCompactionBoundaryWithSessionEntrySync(
                         {
                           ...compactionTarget,
                           expectedLifecycleRevision: expectedSession.lifecycleRevision,
@@ -1109,34 +1133,34 @@ export async function runSessionCompactionIfNeeded(params: {
                           sessionId: expectedSession.sessionId,
                         },
                         {
-                          append,
+                          prepared,
                           transcriptByteCompactionLatch: {
                             activeBytes: activeTranscriptBytes,
                             sessionId: expectedSession.sessionId,
                             maxBytes: maxActiveTranscriptBytes,
                           },
-                          validateAppend,
                         },
                       );
                       hostAccountingCommitted = true;
-                      return entryId;
+                      return committed;
                     },
                   }
                 : {}),
-              onHostCompactionCommitted: async (commit) => {
-                await recordCompactionAccounting(
-                  commit.entry,
-                  commit.tokensAfter,
-                  commit.compactionKind,
-                  hostAccountingCommitted ? 0 : 1,
-                );
-                hostAccountingCommitted = true;
-              },
               onHostCompactionTranscriptSettled: async (commit) => {
                 await recordCompactionAccounting(commit.entry, undefined, undefined, 0);
               },
             }
           : {}),
+        // Record every host compaction while its session lane still excludes the next writer.
+        onHostCompactionCommitted: async (commit) => {
+          await recordCompactionAccounting(
+            commit.entry,
+            commit.tokensAfter,
+            commit.compactionKind,
+            hostAccountingCommitted ? 0 : 1,
+          );
+          hostAccountingCommitted = true;
+        },
         onCommitted: (accepted) => {
           expectedSession = accepted.entry;
           entry = accepted.entry;
@@ -1227,6 +1251,8 @@ export async function runSessionCompactionIfNeeded(params: {
       await notifyCompaction("incomplete");
     }
     throw err;
+  } finally {
+    stopHeartbeat?.();
   }
 }
 
@@ -1246,7 +1272,7 @@ export async function runMemoryFlushIfNeeded(params: {
   cfg: OpenClawConfig;
   followupRun: FollowupRun;
   promptForEstimate?: string;
-  opts?: Pick<GetReplyOptions, "promptCacheKey">;
+  opts?: Pick<GetReplyOptions, "promptCacheKey" | "runId">;
   defaultModel: string;
   resolvedVerboseLevel: VerboseLevel;
   sessionEntry?: SessionEntry;
@@ -1595,6 +1621,15 @@ export async function runMemoryFlushIfNeeded(params: {
   });
   const flushedCompactionCount = activeSessionEntry?.compactionCount ?? 0;
   let visibleErrorPayloads: ReplyPayload[] = [];
+  // Only the bounded phase belongs to the parent turn; maintenance content stays private.
+  const parentRunId = params.opts?.runId;
+  if (parentRunId) {
+    emitAgentRunStatusEvent({
+      runId: parentRunId,
+      sessionKey: params.sessionKey,
+      phase: "memory_flushing",
+    });
+  }
   // Only runnable maintenance owns a run context. The matching finally is
   // the sole cleanup path so setup, execution, and persistence exits cannot orphan it.
   try {
@@ -1703,6 +1738,7 @@ export async function runMemoryFlushIfNeeded(params: {
           allowEmptyAssistantReplyAsSilent: true,
           terminalReplyExpectation: "optional",
           trigger: "memory",
+          contextTokenBudget: contextWindowTokens,
           memoryFlushWritePath,
           initialTurnTainted:
             !params.followupRun.run.senderIsOwner || sessionLogSnapshot?.turnTainted === true,
@@ -1716,7 +1752,9 @@ export async function runMemoryFlushIfNeeded(params: {
           abortSignal: deferredLifecycle.signal,
           onDeferredLifecycleOwner: deferredLifecycle.adopt,
           onDeferredLifecycleAbort: deferredLifecycle.abort,
+          onRetryWait: deferredLifecycle.beginRetryWait,
           assistantErrorTranscript: runOptions.assistantErrorTranscript,
+          authProfileFailurePolicy: runOptions.authProfileFailurePolicy,
           contextEngineLogicalTurnLease: runOptions.contextEngineLogicalTurnLease,
           onContextEngineTurnCandidate: runOptions.onContextEngineTurnCandidate,
         });
@@ -1752,6 +1790,13 @@ export async function runMemoryFlushIfNeeded(params: {
   } catch (error) {
     return await recordFailure(error);
   } finally {
+    if (parentRunId && !abortSignal?.aborted) {
+      emitAgentRunStatusEvent({
+        runId: parentRunId,
+        sessionKey: params.sessionKey,
+        phase: "preparing_context",
+      });
+    }
     await deferredLifecycle.complete();
     if (flushRunRegistered) {
       clearAgentRunContext(flushRunId);

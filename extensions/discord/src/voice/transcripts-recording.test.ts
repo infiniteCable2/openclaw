@@ -51,7 +51,7 @@ defineDiscordVoiceTests((harness) => {
       try {
         if (phase === "fresh") {
           await f.manager.leave({ guildId: "g1" });
-        } else if (phase === "replacement") {
+        } else {
           expect(
             await discordVoiceTranscriptsSourceProvider.start!({
               cfg: config,
@@ -80,11 +80,7 @@ defineDiscordVoiceTests((harness) => {
           expectConnectedStatus(f.manager, "1001");
           await f.audio("100000000000000001", 1);
           expect(realtimeSessionMock.sendAudio).not.toHaveBeenCalled();
-          if (phase === "replacement") {
-            expect(f.sink).toHaveBeenCalledOnce();
-          } else {
-            expect(transcribeAudioFileMock).not.toHaveBeenCalled();
-          }
+          expect(f.sink).toHaveBeenCalledOnce();
         }
       } finally {
         await discordVoiceTranscriptsSourceProvider.stop!({ sessionId: "first", source });
@@ -202,9 +198,10 @@ defineDiscordVoiceTests((harness) => {
       }
       const writeWav = voiceAudio.writeVoiceWavFile;
       const wavSpy = vi.spyOn(voiceAudio, "writeVoiceWavFile").mockImplementation(async (pcm) => {
+        const wav = await writeWav(pcm);
         // Admission has completed; change the observed member roles before the chunk's queue check.
-        allowed = pcm[0] !== excluded;
-        return writeWav(pcm);
+        allowed = (await fs.readFile(wav.path))[44] !== excluded;
+        return wav;
       });
       transcribeAudioFileMock.mockImplementation(async ({ filePath }) => {
         const wav = await fs.readFile(filePath);
@@ -413,11 +410,12 @@ defineDiscordVoiceTests((harness) => {
         middle === "cleanup failure"
           ? vi.spyOn(voiceAudio, "writeVoiceWavFile").mockImplementation(async (pcm) => {
               const wav = await writeWav(pcm);
+              const failsCleanup = (await fs.readFile(wav.path))[44] === 2;
               return {
                 ...wav,
                 cleanup: async () => {
                   await wav.cleanup();
-                  if (pcm[0] === 2) {
+                  if (failsCleanup) {
                     throw new Error("synthetic cleanup failure after disposal");
                   }
                 },
@@ -465,6 +463,7 @@ defineDiscordVoiceTests((harness) => {
         );
       } else if (dispatch === "control") {
         expect(controlRealtimeVoiceAgentRunMock).toHaveBeenCalledExactlyOnceWith({
+          getToolAuthorityOverlay: expect.any(Function),
           sessionKey,
           text: texts.join("\n"),
         });

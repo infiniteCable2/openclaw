@@ -28,6 +28,14 @@ type PersistenceResult =
   | { status: "model-selection-locked"; entry: SessionEntry }
   | { status: "lifecycle-invalidated"; error: string; entry?: SessionEntry };
 
+// Runtime eligibility belongs to the published-owner tests; these cases exercise its consumers.
+vi.mock("../../agents/model-runtime-choice.js", () => ({
+  preparePublishedModelRuntimeChoice: vi.fn(async () => ({
+    kind: "ready",
+    validate: () => undefined,
+  })),
+}));
+
 vi.mock("../../agents/model-catalog.runtime.js", () => ({
   loadProviderScopedThinkingCatalog: vi.fn(async () => []),
 }));
@@ -642,6 +650,7 @@ describe("mixed inline directives", () => {
       authProfileOverrideCompactionCount: 2,
     });
     const { result } = await applyMixedDirectives({
+      cfg: { agents: { defaults: { model: "anthropic/claude-opus-4-6" } } },
       body: "/model default -s",
       senderIsOwner: true,
       sessionEntry,
@@ -656,7 +665,7 @@ describe("mixed inline directives", () => {
     });
     expect(sessionEntry.providerOverride).toBeUndefined();
     expect(sessionEntry.modelOverride).toBeUndefined();
-    expect(sessionEntry.modelOverrideSource).toBeUndefined();
+    expect(sessionEntry.modelOverrideSource).toBe("default");
     expect(sessionEntry.authProfileOverride).toBeUndefined();
     expect(sessionEntry.authProfileOverrideSource).toBeUndefined();
     expect(sessionEntry.authProfileOverrideCompactionCount).toBeUndefined();
@@ -676,6 +685,7 @@ describe("mixed inline directives", () => {
       authProfileOverrideCompactionCount: 2,
     });
     const { result } = await applyMixedDirectives({
+      cfg: { agents: { defaults: { model: "openai/gpt-5.6-luna" } } },
       body: "/model default -s",
       senderIsOwner: true,
       provider: "openai",
@@ -694,7 +704,7 @@ describe("mixed inline directives", () => {
     });
     expect(sessionEntry.providerOverride).toBeUndefined();
     expect(sessionEntry.modelOverride).toBeUndefined();
-    expect(sessionEntry.modelOverrideSource).toBeUndefined();
+    expect(sessionEntry.modelOverrideSource).toBe("default");
     expect(sessionEntry).toMatchObject({
       authProfileOverride: "openai:work",
       authProfileOverrideSource: "user",

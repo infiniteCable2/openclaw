@@ -17,17 +17,16 @@ import {
   goBrowserHistory,
   isBrowserEvaluateDisabledError,
   isBrowserNavigationBlockedError,
-  listBrowserTabs,
   navigateBrowser,
   openBrowserTab,
   startBrowser,
 } from "./browser-client.ts";
 import { BrowserPanelInputController } from "./browser-panel-controller-input.ts";
+import { BrowserPanelDownload } from "./browser-panel-download.ts";
 import { BrowserPanelNativeController } from "./browser-panel-native-controller.ts";
 import {
   BrowserPanelOperationOwnership,
   type BrowserPanelControllerHost,
-  type BrowserPanelSnapshotOutcome,
 } from "./browser-panel-operation-ownership.ts";
 import { BrowserPanelPendingInput } from "./browser-panel-pending-input.ts";
 import { BrowserPanelSnapshotController } from "./browser-panel-snapshot-controller.ts";
@@ -64,6 +63,7 @@ export class BrowserPanelController implements ReactiveController {
   readonly native: BrowserPanelNativeController;
   readonly operations: BrowserPanelOperationOwnership;
   readonly pendingInput = new BrowserPanelPendingInput();
+  readonly download = new BrowserPanelDownload(this);
   private readonly input: BrowserPanelInputController;
   readonly stream: BrowserPanelStream;
   private activeClient: GatewayBrowserClient | null = null;
@@ -95,7 +95,7 @@ export class BrowserPanelController implements ReactiveController {
   suspendView(): void {
     this.native.cancelCapture();
     this.native.presentation.hide();
-    this.input.cancelOverlayPointerGesture();
+    this.input.resetCaptureState();
     this.invalidateViewOperations();
     if (this.view?.dataUrl.startsWith("blob:")) {
       this.setState("view", null);
@@ -152,6 +152,7 @@ export class BrowserPanelController implements ReactiveController {
   }
 
   private invalidateViewOperations(): void {
+    this.download.cancel();
     this.stream.close();
     this.operations.invalidate();
     this.pendingInput.clear();
@@ -199,7 +200,7 @@ export class BrowserPanelController implements ReactiveController {
       this.setState("loading", true);
     }
     try {
-      const snapshot = await listBrowserTabs(client);
+      const snapshot = await this.snapshot.listTabs(client);
       // Tool results carry raw targets; preserve that selection when the list supplies its alias.
       const selected = snapshot.tabs.find(
         (tab) => tab.id === this.activeTargetId || tab.targetId === this.activeTargetId,
@@ -304,6 +305,9 @@ export class BrowserPanelController implements ReactiveController {
   }
 
   async startBrowserNow(): Promise<void> {
+    if (this.host.fixedTab) {
+      return;
+    }
     if (!this.operations.captureClient()) {
       return;
     }
@@ -318,6 +322,10 @@ export class BrowserPanelController implements ReactiveController {
   }
 
   async openUrl(url: string, options: { newTab: boolean; native?: boolean }): Promise<void> {
+    if (this.host.fixedTab && (options.newTab || options.native || !this.activeTargetId)) {
+      this.reportError(t("browser.tabUnavailable"));
+      return;
+    }
     if (
       hasNativeBrowserBridge() &&
       (options.native || options.newTab || this.native.activeTab || !this.activeTargetId)
@@ -339,7 +347,7 @@ export class BrowserPanelController implements ReactiveController {
         const tab = await openBrowserTab(client, url);
         if (!invocation.isCurrent()) {
           // An already-created stale tab still belongs in the surviving tab strip.
-          await this.refreshTabsOnly(
+          await this.snapshot.refreshTabs(
             client,
             this.operations.survivingInvocation(invocation, client),
           );
@@ -374,7 +382,7 @@ export class BrowserPanelController implements ReactiveController {
         }
         this.setState("view", null);
       }
-      const refreshed = await this.refreshTabsOnly(client, () => invocation.isCurrent());
+      const refreshed = await this.snapshot.refreshTabs(client, () => invocation.isCurrent());
       if (refreshed !== "rejected" && invocation.isCurrent() && this.activeTargetId) {
         const targetId = this.activeTargetId;
         await this.refreshView(targetId, invocation.epoch);
@@ -388,7 +396,7 @@ export class BrowserPanelController implements ReactiveController {
           const targetId = this.activeTargetId;
           // An earlier queued navigation may already have committed remotely.
           // Recover its actual document without replacing an unchanged view.
-          const refreshed = await this.refreshTabsOnly(client, () => invocation.isCurrent());
+          const refreshed = await this.snapshot.refreshTabs(client, () => invocation.isCurrent());
           const active = this.tabs.find((tab) => tab.id === targetId);
           if (refreshed === "accepted" && invocation.isCurrent() && active) {
             this.setState("view", null);
@@ -417,34 +425,20 @@ export class BrowserPanelController implements ReactiveController {
     }
   }
 
-  private async refreshTabsOnly(
-    client: BrowserRequestClient,
-    current: () => boolean,
-  ): Promise<BrowserPanelSnapshotOutcome> {
-    const invocation = this.operations.beginSnapshot(client);
-    try {
-      const snapshot = await listBrowserTabs(client);
-      if (
-        current() &&
-        this.operations.acceptSnapshot(invocation, this.activeTargetId, this.activeTargetId)
-      ) {
-        this.setState("running", snapshot.running);
-        this.setState(
-          "tabs",
-          this.native.mergeRemoteTabs(this.operations.retainTabSnapshot(client, snapshot.tabs)),
-        );
-        this.clearUnavailableView();
-        return "accepted";
-      }
-      return "rejected";
-    } catch {
-      // Best-effort tab reconciliation must not let an older failure settle
-      // loading or advance a document owned by a newer operation.
-      return current() && invocation.isCurrent() ? "failed" : "rejected";
+  async selectTab(
+    targetId: string,
+    route?: BrowserRoute,
+    options?: { focusBrowserTab?: boolean },
+  ): Promise<void> {
+    const fixed = this.host.fixedTab;
+    if (
+      fixed &&
+      ((route && browserRouteKey(route) !== browserRouteKey(fixed)) ||
+        (targetId !== fixed.targetId &&
+          !this.tabs.some((tab) => tab.id === targetId && tab.targetId === fixed.targetId)))
+    ) {
+      return;
     }
-  }
-
-  async selectTab(targetId: string, route?: BrowserRoute): Promise<void> {
     this.native.cancelPendingActivation(targetId);
     const nativeTab = this.native.tabs.find((tab) => tab.id === targetId);
     if (nativeTab) {
@@ -474,16 +468,21 @@ export class BrowserPanelController implements ReactiveController {
     if (!route && this.clearUnavailableView()) {
       return;
     }
-    const focused = await this.runAction(async (actionClient) => {
+    const selectionSucceeded = await this.runAction(async (actionClient) => {
       if (route) {
-        // Listing can observe stopped or blocked tabs; focus needs a running,
-        // accessible tab. A historical target cannot survive a browser restart.
-        await this.refreshTabsOnly(actionClient, () => this.operations.isLive(epoch, actionClient));
+        // Listing can observe stopped or blocked tabs; focus and capture need a
+        // running, accessible tab. A historical target cannot survive a browser restart.
+        const refreshed = await this.snapshot.refreshTabs(actionClient, () =>
+          this.operations.isLive(epoch, actionClient),
+        );
         if (!this.operations.isLive(epoch, actionClient)) {
           return;
         }
         const selected = this.tabs.find((tab) => tab.id === targetId || tab.targetId === targetId);
         this.setState("activeTargetId", this.running === false ? null : (selected?.id ?? targetId));
+        if (refreshed === "accepted" && this.running !== false && !selected) {
+          throw new Error(t("browser.tabUnavailable"));
+        }
         if (this.clearUnavailableView()) {
           return;
         }
@@ -492,7 +491,9 @@ export class BrowserPanelController implements ReactiveController {
       if (!selectedTargetId) {
         return;
       }
-      await focusBrowserTab(actionClient, selectedTargetId);
+      if (options?.focusBrowserTab !== false) {
+        await focusBrowserTab(actionClient, selectedTargetId);
+      }
       if (!this.operations.isLive(epoch, actionClient)) {
         return;
       }
@@ -505,7 +506,7 @@ export class BrowserPanelController implements ReactiveController {
         this.operations.markNavigationReconciled(actionClient, selectedTargetId);
       }
     }, false);
-    if (!focused && this.operations.isLive(epoch) && this.activeTargetId === targetId) {
+    if (!selectionSucceeded && this.operations.isLive(epoch) && this.activeTargetId === targetId) {
       if (this.operations.hasPendingNavigation(client, previous.targetId)) {
         // The prior remote document changed while selection failed. Expose an
         // unavailable state instead of restoring a screenshot that no longer owns it.
@@ -524,6 +525,9 @@ export class BrowserPanelController implements ReactiveController {
   }
 
   async closeTab(targetId: string): Promise<void> {
+    if (this.host.fixedTab) {
+      return;
+    }
     if (this.native.tabs.some((tab) => tab.id === targetId)) {
       await this.native.send({ type: "close", tabId: targetId });
       return;
@@ -544,7 +548,7 @@ export class BrowserPanelController implements ReactiveController {
         "tabs",
         this.tabs.filter((tab) => tab.id !== targetId),
       );
-      const snapshot = await this.refreshTabsOnly(client, () =>
+      const snapshot = await this.snapshot.refreshTabs(client, () =>
         this.operations.isLive(epoch, client),
       );
       if (!this.operations.isLive(epoch, client)) {
@@ -626,6 +630,9 @@ export class BrowserPanelController implements ReactiveController {
   }
 
   beginNewTab(): void {
+    if (this.host.fixedTab) {
+      return;
+    }
     if (hasNativeBrowserBridge()) {
       void this.native.beginNewTab();
       return;
@@ -638,10 +645,6 @@ export class BrowserPanelController implements ReactiveController {
         this.host.renderRoot.querySelector<HTMLInputElement>(".bp-url")?.focus();
       }
     });
-  }
-
-  setUrlDraft(value: string): void {
-    this.setState("urlDraft", value);
   }
 
   setUrlDraftEditing(editing: boolean): void {
@@ -723,6 +726,12 @@ export class BrowserPanelController implements ReactiveController {
     }
   }
 
+  handleViewportPaste(event: ClipboardEvent): void {
+    if (!this.native.activeTab) {
+      this.input.handleViewportPaste(event);
+    }
+  }
+
   handleOverlayPointerDown(event: PointerEvent): void {
     this.input.handleOverlayPointerDown(event);
   }
@@ -737,10 +746,6 @@ export class BrowserPanelController implements ReactiveController {
 
   handleOverlayPointerUp(event: PointerEvent): void {
     this.input.handleOverlayPointerUp(event);
-  }
-
-  cancelOverlayPointerGesture(): void {
-    this.input.cancelOverlayPointerGesture();
   }
 
   undoStroke(): void {
