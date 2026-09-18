@@ -1,5 +1,6 @@
 // Agent consult runtime starts agent consultation flows from talk sessions.
 import { randomUUID } from "node:crypto";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   buildAgentRunTerminalOutcomeFromLifecycleEvent,
   classifyAgentRunTerminalOutcome,
@@ -15,6 +16,7 @@ import {
 import { parseSessionThreadInfoFast } from "../config/sessions/thread-info.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { toErrorObject } from "../infra/errors.js";
 import type { RuntimeLogger, PluginRuntimeCore } from "../plugins/runtime/types-core.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { isModelSelectionLocked, ModelSelectionLockedError } from "../sessions/model-overrides.js";
@@ -39,13 +41,17 @@ export type RealtimeVoiceAgentConsultRuntime = PluginRuntimeCore["agent"];
 /**
  * Speakable text returned to the realtime voice bridge after an agent consult.
  */
-export type RealtimeVoiceAgentConsultResult = { text: string; delivered?: boolean };
+export type RealtimeVoiceAgentConsultResult = { text: string; delivered?: boolean; yielded?: true };
 
 /** Safe, final-answer-only text events emitted while a realtime consult is running. */
 export type RealtimeVoiceAgentConsultSpeechEvent =
   | { type: "chunk"; text: string }
   | { type: "done"; text: string }
   | { type: "abort" };
+
+const REALTIME_VOICE_YIELD_ACK_MAX_CHARS = 500;
+const REALTIME_VOICE_YIELD_ACK_FALLBACK =
+  "I started that work and will share the result when it is ready.";
 
 /**
  * Sender-auth contract revision for official realtime voice plugins.
@@ -93,12 +99,14 @@ export function assertRealtimeVoiceAgentConsultModelSelectionUnlocked(params: {
 
   remember(params.sessionKey, params.agentId, params.storePath);
   const requesterSessionKey = params.spawnedBy?.trim();
-  if (requesterSessionKey) {
-    const requesterAgentId = parseAgentSessionKey(requesterSessionKey)?.agentId ?? params.agentId;
-    remember(requesterSessionKey, requesterAgentId);
+  const requesterAgentId = parseAgentSessionKey(requesterSessionKey)?.agentId;
+  const targetAgentId = parseAgentSessionKey(params.sessionKey)?.agentId ?? params.agentId;
+  if (requesterSessionKey && (!requesterAgentId || requesterAgentId === targetAgentId)) {
+    const requesterAgent = requesterAgentId ?? params.agentId;
+    remember(requesterSessionKey, requesterAgent);
     const { baseSessionKey } = parseSessionThreadInfoFast(requesterSessionKey);
     if (baseSessionKey && baseSessionKey !== requesterSessionKey) {
-      remember(baseSessionKey, requesterAgentId);
+      remember(baseSessionKey, requesterAgent);
     }
   }
 
@@ -496,139 +504,193 @@ export async function consultRealtimeVoiceAgent(params: {
 
       const streamedChunks: string[] = [];
       let speechDelivery = Promise.resolve();
-      let speechDeliveryError: unknown;
+      let speechDeliveryError: Error | undefined;
+      let speechDeliveryAborted = false;
+      let speechAbortCompletion: Promise<void> | undefined;
       const emitSpeechEvent = (event: RealtimeVoiceAgentConsultSpeechEvent) => {
-        if (!params.onSpeakableText || speechDeliveryError) {
+        if (!params.onSpeakableText || speechDeliveryError || speechDeliveryAborted) {
           return;
         }
         speechDelivery = speechDelivery
-          .then(async () => await params.onSpeakableText?.(event))
+          .then(async () => {
+            if (!speechDeliveryAborted && !speechDeliveryError && !abortSignal.aborted) {
+              await params.onSpeakableText?.(event);
+            }
+          })
           .catch((error: unknown) => {
-            speechDeliveryError = error;
+            speechDeliveryError = toErrorObject(error, "Realtime voice speech delivery failed");
           });
       };
-      const abortSpeechDelivery = async () => {
+      const abortSpeechDelivery = (): Promise<void> => {
         if (!params.onSpeakableText) {
-          return;
+          return Promise.resolve();
         }
-        await speechDelivery;
-        try {
-          await params.onSpeakableText({ type: "abort" });
-        } catch {
-          // Preserve the original consult or delivery failure.
-        }
+        speechDeliveryAborted = true;
+        return (speechAbortCompletion ??= Promise.resolve().then(async () => {
+          try {
+            // Notify the sink before joining: abort may release an in-flight write.
+            await params.onSpeakableText?.({ type: "abort" });
+          } catch {
+            // Preserve the original consult or delivery failure.
+          }
+          await speechDelivery;
+        }));
       };
+      const onSpeechAbort = () => {
+        void abortSpeechDelivery();
+      };
+      abortSignal.addEventListener("abort", onSpeechAbort, { once: true });
 
-      // Voice consults suppress verbose/reasoning presentation because the bridge needs a short,
-      // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
-      const runPromise = params.agentRuntime.runEmbeddedAgent({
-        sessionId,
-        sessionKey: params.sessionKey,
-        sessionTarget: {
-          agentId,
+      try {
+        assertRealtimeVoiceConsultNotInterrupted(abortSignal);
+        // Voice consults suppress verbose/reasoning presentation because the bridge needs a short,
+        // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
+        const runPromise = params.agentRuntime.runEmbeddedAgent({
           sessionId,
           sessionKey: params.sessionKey,
-          storePath,
-        },
-        sandboxSessionKey: resolveRealtimeVoiceAgentSandboxSessionKey(agentId, params.sessionKey),
-        agentId,
-        ...toolAuthorityOverlay,
-        // ASR voice ingress has no trace/client-tool or privileged handoff capability.
-        messageProvider: toolAuthorityOverlay.messageProvider,
-        messageTo: consultDeliveryContext?.to,
-        messageThreadId: consultDeliveryContext?.threadId,
-        currentChannelId: consultDeliveryContext?.to,
-        currentThreadTs:
-          consultDeliveryContext?.threadId != null
-            ? String(consultDeliveryContext.threadId)
-            : undefined,
-        workspaceDir,
-        config: params.cfg,
-        prompt: buildRealtimeVoiceAgentConsultPrompt({
-          args: params.args,
-          transcript: params.transcript,
-          surface: params.surface,
-          userLabel: params.userLabel,
-          assistantLabel: params.assistantLabel,
-          questionSourceLabel: params.questionSourceLabel,
-        }),
-        provider: params.provider,
-        model: params.model,
-        thinkLevel: params.thinkLevel ?? "high",
-        fastMode: params.fastMode,
-        verboseLevel: "off",
-        reasoningLevel: "off",
-        toolResultFormat: "plain",
-        ...(params.onSpeakableText
-          ? {
-              blockReplyBreak: "text_end" as const,
-              blockReplyChunking: {
-                minChars: 48,
-                maxChars: 320,
-                breakPreference: "sentence" as const,
-              },
-              onBlockReply: (payload: {
-                text?: string;
-                isError?: boolean;
-                isReasoning?: boolean;
-                isCommentary?: boolean;
-              }) => {
-                const text = collectRealtimeVoiceAgentConsultVisibleText([payload]);
-                if (!text) {
-                  return;
-                }
-                streamedChunks.push(text);
-                emitSpeechEvent({ type: "chunk", text });
-              },
-            }
-          : {}),
-        timeoutMs,
-        runId,
-        lane: params.lane,
-        extraSystemPrompt:
-          params.extraSystemPrompt ??
-          "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
-        agentDir,
-        abortSignal,
-      });
-      const result = await runPromise
-        .catch(async (error: unknown) => {
-          await abortSpeechDelivery();
-          assertRealtimeVoiceConsultNotInterrupted(abortSignal);
-          throw error;
-        })
-        .finally(() => runRegistration?.cleanup?.());
-      assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
+          sessionTarget: {
+            agentId,
+            sessionId,
+            sessionKey: params.sessionKey,
+            storePath,
+          },
+          sandboxSessionKey: resolveRealtimeVoiceAgentSandboxSessionKey(agentId, params.sessionKey),
+          agentId,
+          ...toolAuthorityOverlay,
+          // ASR voice ingress has no trace/client-tool or privileged handoff capability.
+          messageProvider: toolAuthorityOverlay.messageProvider,
+          messageTo: consultDeliveryContext?.to,
+          messageThreadId: consultDeliveryContext?.threadId,
+          currentChannelId: consultDeliveryContext?.to,
+          currentThreadTs:
+            consultDeliveryContext?.threadId != null
+              ? String(consultDeliveryContext.threadId)
+              : undefined,
+          workspaceDir,
+          config: params.cfg,
+          prompt: buildRealtimeVoiceAgentConsultPrompt({
+            args: params.args,
+            transcript: params.transcript,
+            surface: params.surface,
+            userLabel: params.userLabel,
+            assistantLabel: params.assistantLabel,
+            questionSourceLabel: params.questionSourceLabel,
+          }),
+          provider: params.provider,
+          model: params.model,
+          thinkLevel: params.thinkLevel ?? "high",
+          fastMode: params.fastMode,
+          verboseLevel: "off",
+          reasoningLevel: "off",
+          toolResultFormat: "plain",
+          ...(params.onSpeakableText
+            ? {
+                blockReplyBreak: "text_end" as const,
+                blockReplyChunking: {
+                  minChars: 48,
+                  maxChars: 320,
+                  breakPreference: "sentence" as const,
+                },
+                onBlockReply: (payload: {
+                  text?: string;
+                  isError?: boolean;
+                  isReasoning?: boolean;
+                  isCommentary?: boolean;
+                }) => {
+                  const text = collectRealtimeVoiceAgentConsultVisibleText([payload]);
+                  if (!text) {
+                    return;
+                  }
+                  streamedChunks.push(text);
+                  emitSpeechEvent({ type: "chunk", text });
+                },
+              }
+            : {}),
+          execSession: sessionEntry,
+          toolsAllow: params.toolsAllow,
+          timeoutMs,
+          runId,
+          lane: params.lane,
+          extraSystemPrompt:
+            params.extraSystemPrompt ??
+            "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+          agentDir,
+          abortSignal,
+        });
+        const result = await runPromise;
+        assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
 
-      const text =
-        collectRealtimeVoiceAgentConsultVisibleText(result.payloads ?? []) ??
-        collectRealtimeVoiceAgentConsultVisibleText(
-          streamedChunks.map((streamedText) => ({ text: streamedText })),
-        );
-      if (!text) {
-        params.logger.warn(
-          "[talk] agent consult produced no answer: agent returned no speakable text",
-        );
-        const fallbackText =
-          params.fallbackText ?? "I need a moment to verify that before answering.";
-        emitSpeechEvent({ type: "done", text: fallbackText });
+        const yielded = result.meta?.yielded === true;
+        const acknowledgment = yielded
+          ? (typeof result.meta.yieldAcknowledgment === "string"
+              ? truncateUtf16Safe(
+                  result.meta.yieldAcknowledgment.replaceAll(/\s+/g, " ").trim(),
+                  REALTIME_VOICE_YIELD_ACK_MAX_CHARS,
+                )
+              : "") || REALTIME_VOICE_YIELD_ACK_FALLBACK
+          : undefined;
+        let yieldedSpeech = acknowledgment;
+        if (acknowledgment && streamedChunks.length > 0) {
+          const spoken = collectRealtimeVoiceAgentConsultVisibleText(
+            streamedChunks.map((chunk) => ({ text: chunk })),
+          );
+          const alreadyQueued =
+            streamedChunks.at(-1)?.replaceAll(/\s+/g, " ").trim() === acknowledgment ||
+            spoken?.replaceAll(/\s+/g, " ").trim() === acknowledgment;
+          // A done event consolidates already queued speech; it does not append new
+          // audio after chunks. Yield acknowledgments therefore need their own chunk.
+          if (!alreadyQueued) {
+            streamedChunks.push(acknowledgment);
+            emitSpeechEvent({ type: "chunk", text: acknowledgment });
+          }
+          yieldedSpeech =
+            collectRealtimeVoiceAgentConsultVisibleText(
+              streamedChunks.map((chunk) => ({ text: chunk })),
+            ) ?? acknowledgment;
+        }
+        const text =
+          yieldedSpeech ??
+          collectRealtimeVoiceAgentConsultVisibleText(result.payloads ?? []) ??
+          collectRealtimeVoiceAgentConsultVisibleText(
+            streamedChunks.map((streamedText) => ({ text: streamedText })),
+          );
+        if (!text) {
+          params.logger.warn(
+            "[talk] agent consult produced no answer: agent returned no speakable text",
+          );
+          const fallbackText =
+            params.fallbackText ?? "I need a moment to verify that before answering.";
+          emitSpeechEvent({ type: "done", text: fallbackText });
+          await speechDelivery;
+          assertRealtimeVoiceConsultNotInterrupted(abortSignal);
+          if (speechDeliveryError) {
+            throw speechDeliveryError;
+          }
+          return {
+            text: fallbackText,
+            ...(params.onSpeakableText ? { delivered: true } : {}),
+          };
+        }
+        emitSpeechEvent({ type: "done", text });
         await speechDelivery;
+        assertRealtimeVoiceConsultNotInterrupted(abortSignal);
         if (speechDeliveryError) {
-          await abortSpeechDelivery();
           throw speechDeliveryError;
         }
         return {
-          text: fallbackText,
+          text,
+          ...(yielded ? { yielded: true as const } : {}),
           ...(params.onSpeakableText ? { delivered: true } : {}),
         };
-      }
-      emitSpeechEvent({ type: "done", text });
-      await speechDelivery;
-      if (speechDeliveryError) {
+      } catch (error) {
         await abortSpeechDelivery();
-        throw speechDeliveryError;
+        assertRealtimeVoiceConsultNotInterrupted(abortSignal);
+        throw error;
+      } finally {
+        abortSignal.removeEventListener("abort", onSpeechAbort);
+        await speechAbortCompletion;
+        runRegistration?.cleanup?.();
       }
-      return { text, ...(params.onSpeakableText ? { delivered: true } : {}) };
     });
   } finally {
     params.abortSignal?.removeEventListener("abort", abortFromCaller);

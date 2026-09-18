@@ -10,7 +10,8 @@ import { loadChatBranches } from "./chat-history-branches.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { resetChatHistoryProjection, setChatError } from "./chat-history-state.ts";
 import { loadChatHistory } from "./chat-history.ts";
-import type { ChatState } from "./chat-state-contract.ts";
+import type { ChatHistoryHost, ChatState } from "./chat-state-contract.ts";
+import type { ChatAttachmentReadLifecycle } from "./components/chat-attachments.ts";
 import {
   captureChatComposerReplacement,
   loadChatComposerCommittedDraftRevision,
@@ -21,7 +22,7 @@ import { reconcileChatRunLifecycle } from "./run-lifecycle.ts";
 import { scheduleChatScroll } from "./scroll.ts";
 import { clearChatMessagesFromCache } from "./session-message-cache.ts";
 
-type ClearChatHistoryState = ChatState &
+type ClearChatHistoryState = ChatHistoryHost &
   Parameters<typeof reconcileChatRunLifecycle>[0] &
   Parameters<typeof scheduleChatScroll>[0] & {
     sessions: Pick<SessionCapability, "reset">;
@@ -36,14 +37,14 @@ type ClearChatViewOwner = {
   agentId?: string;
 };
 
-type RewindChatHistoryState = ChatState &
+type RewindChatHistoryState = ChatHistoryHost &
   Parameters<typeof persistChatComposerState>[0] &
   Parameters<typeof scheduleChatScroll>[0] & {
     handleChatDraftChange: (next: string, mentions?: ChatState["chatMentions"]) => void;
     sessions: Pick<SessionCapability, "rewind">;
   };
 
-type SwitchChatHistoryBranchState = ChatState &
+type SwitchChatHistoryBranchState = ChatHistoryHost &
   Parameters<typeof scheduleChatScroll>[0] & {
     sessions: Pick<SessionCapability, "listBranches" | "switchBranch">;
   };
@@ -214,6 +215,7 @@ export async function clearChatHistory(
 export async function rewindChatHistory(
   state: RewindChatHistoryState,
   entryId: string,
+  attachmentReads: Pick<ChatAttachmentReadLifecycle, "abortReads" | "readSignal">,
 ): Promise<{ editorText?: string } | null> {
   if (!state.client || !state.connected) {
     return null;
@@ -234,6 +236,7 @@ export async function rewindChatHistory(
       state.chatMentions,
     );
   const composerSignature = readComposer();
+  const attachmentReadSignal = attachmentReads.readSignal;
   const ownsComposer = captureChatComposerReplacement(state, sessionKey, agentParams.agentId);
   try {
     const result = await state.sessions.rewind(sessionKey, entryId, agentParams);
@@ -273,6 +276,10 @@ export async function rewindChatHistory(
       result.editorAttachments,
     );
     state.handleChatDraftChange(editorText, []);
+    // Publish the complete restored draft before cancellation notifies the pane.
+    if (attachmentReads.readSignal === attachmentReadSignal) {
+      attachmentReads.abortReads();
+    }
     return result;
   } catch (error) {
     if (viewIsCurrent()) {

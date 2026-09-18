@@ -25,6 +25,7 @@ import { t } from "../../i18n/index.ts";
 import { currentConfigObject } from "../../lib/config/config-state-model.ts";
 import { isMissingOperatorReadScopeError } from "../../lib/gateway-errors.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import { presenceConnectivitySignature } from "../../lib/nodes/inventory.ts";
 import {
   approveDevicePairing,
   approveNodePairingRequest,
@@ -38,8 +39,7 @@ import {
   updateExecApprovalsFormValue,
   type ExecApprovalsTarget,
   type DevicesPageDataState,
-} from "../../lib/nodes/index.ts";
-import { presenceConnectivitySignature } from "../../lib/nodes/inventory.ts";
+} from "../../lib/nodes/page-operations.ts";
 import {
   GatewayPageController,
   type GatewayPageChange,
@@ -567,8 +567,7 @@ class DevicesPage extends OpenClawLightDomElement {
             void this.reportRotationOutcome(device, role, scopes),
           onDeviceRevoke: (deviceId, role) => void this.dialogs.confirmTokenRevoke(deviceId, role),
           onDeviceRename: (device) => void this.dialogs.editAlias(device),
-          onLoadConfig: () =>
-            void this.context.runtimeConfig.refresh({ discardPendingChanges: true }),
+          onLoadConfig: () => void this.context.runtimeConfig.discardDraft({ reloadOnly: true }),
           onLoadExecApprovals: () =>
             this.canAdmin
               ? void this.runPageTask((pageState) =>

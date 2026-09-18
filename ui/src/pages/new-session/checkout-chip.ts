@@ -1,8 +1,11 @@
 import { html, nothing } from "lit";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
+import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import { renderSessionMenuItem } from "./cloud-target.ts";
 import type { DraftBranches } from "./discovery.ts";
+
+registerNewSessionSetupEnglish();
 
 type CheckoutChipState = Readonly<{
   label: string;
@@ -72,6 +75,13 @@ function renderWorktreeFields(params: {
         )}
       </datalist>
     </label>
+    <div class="new-session-page__menu-note">
+      ${t(
+        params.branches?.branchesUnavailable
+          ? "newSession.worktreeBranchesUnavailable"
+          : "newSession.worktreeBranchesLimited",
+      )}
+    </div>
     ${
       params.repository
         ? nothing

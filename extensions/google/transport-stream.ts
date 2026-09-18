@@ -57,10 +57,8 @@ import {
   type GoogleThinkingInputLevel,
   type GoogleThinkingLevel,
 } from "./thinking-api.js";
-import {
-  isGoogleVertexCredentialsMarker,
-  resolveGoogleVertexAuthorizedUserHeaders,
-} from "./vertex-adc.js";
+import { isGoogleVertexCredentialsMarker } from "./vertex-adc-config.js";
+import { resolveGoogleVertexAuthorizedUserHeaders } from "./vertex-adc.js";
 
 type CanonicalGoogleTransportApi = "google-generative-ai" | "google-vertex";
 type GoogleTransportApi = CanonicalGoogleTransportApi | "openclaw-google-generative-ai-transport";
@@ -660,16 +658,6 @@ function shouldRetryGoogleGemini3FirstResponse(params: {
   return isGoogleGemini3ProModel(params.model.id) || isGoogleGemini3FlashModel(params.model.id);
 }
 
-function resolveGoogleGemini3RetryThinkingLevel(modelId: string): GoogleThinkingLevel | undefined {
-  if (isGoogleGemini3ProModel(modelId)) {
-    return "LOW";
-  }
-  if (isGoogleGemini3FlashModel(modelId)) {
-    return "MINIMAL";
-  }
-  return undefined;
-}
-
 function cloneGoogleGenerateContentRequest(
   params: GoogleGenerateContentRequest,
 ): GoogleGenerateContentRequest {
@@ -681,7 +669,10 @@ function buildGoogleGemini3FirstResponseRetryParams(params: {
   model: GoogleTransportModel;
   request: GoogleGenerateContentRequest;
 }): GoogleGenerateContentRequest | undefined {
-  const thinkingLevel = resolveGoogleGemini3RetryThinkingLevel(params.model.id);
+  const thinkingLevel = resolveGoogleGemini3ThinkingLevel({
+    modelId: params.model.id,
+    thinkingLevel: "off",
+  });
   if (!thinkingLevel) {
     return undefined;
   }

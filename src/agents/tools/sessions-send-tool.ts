@@ -18,6 +18,8 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import type { AgentRouteBinding } from "../../config/types.agents.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
+import { enqueueSystemEventEntry } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   logSessionOwnershipLookupFailure,
@@ -25,7 +27,7 @@ import {
   lookupFailedOperationMessage,
   sessionOwnershipLookupFailure,
 } from "../../plugin-sdk/session-visibility-internal.js";
-import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
+import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-work-admission.js";
 import { normalizeRouteBindingChannelId } from "../../routing/binding-scope.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import {
@@ -66,7 +68,8 @@ import {
   queueEmbeddedAgentMessageWithOutcomeAsync,
 } from "../embedded-agent-runner/runs.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
-import { type AgentWaitResult, waitForAgentRunReply } from "../run-wait.js";
+import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../prepared-model-runtime-generation-scope.js";
+import { isTerminalAgentWaitTimeout, waitForAgentRunReply } from "../run-wait.js";
 import { loadSessionEntryByKey } from "../subagents/announce/subagent-announce-delivery.js";
 import {
   describeSessionsSendTool,
@@ -76,9 +79,14 @@ import { ToolInputError } from "../tool-input-error.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNonNegativeIntegerParam, readToolStringParam } from "./common.js";
 import {
+  captureGatewayToolCallerAssertion,
+  getGatewayToolCallerIdentity,
+} from "./gateway-caller-context.js";
+import {
   callAgentToolGatewayRequest,
   callInProcessGatewayToolWithCreation,
   hasInProcessGatewayToolContext,
+  runWithGatewayToolCleanupContext,
   type AgentToolGatewayRequestCaller,
 } from "./in-process-gateway.js";
 import { runWithScopedSessionAccess } from "./scoped-session-access.js";
@@ -94,6 +102,7 @@ import {
   resolveVisibleSessionReference,
 } from "./sessions-helpers.js";
 import { buildAgentToAgentMessageContext, resolvePingPongTurns } from "./sessions-send-helpers.js";
+import { resumeSessionsSendTask } from "./sessions-send-resume.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 
 const SessionsSendToolSchema = Type.Object({
@@ -103,6 +112,14 @@ const SessionsSendToolSchema = Type.Object({
   message: Type.String(),
   timeoutSeconds: Type.Optional(Type.Integer({ minimum: 0 })),
   watch: Type.Optional(Type.Boolean()),
+  mode: Type.Optional(
+    Type.Union([
+      Type.Literal("notify"),
+      Type.Literal("steer"),
+      Type.Literal("followup"),
+      Type.Literal("resume"),
+    ]),
+  ),
 });
 
 const log = createSubsystemLogger("agents/sessions-send");
@@ -116,6 +133,27 @@ const SessionsSendDeliverySchema = Type.Object(
 );
 
 const SessionsSendOutputSchema = Type.Union([
+  Type.Object(
+    {
+      status: Type.Literal("accepted"),
+      mode: Type.Literal("resume"),
+      runId: Type.String(),
+      taskRunId: Type.String(),
+      sessionKey: Type.String(),
+      completion: Type.Literal("task"),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      status: Type.Literal("queued"),
+      sessionKey: Type.String(),
+      notificationId: Type.String(),
+      durability: Type.Literal("process"),
+      runStarted: Type.Literal(false),
+    },
+    { additionalProperties: false },
+  ),
   Type.Object(
     {
       runId: Type.String(),
@@ -285,30 +323,18 @@ function isRequesterParentOfNativeSubagentSession(params: {
   requesterSessionKey: string | null | undefined;
   targetSessionKey: string;
 }): boolean {
-  if (
-    !params.entry ||
-    params.acpMeta ||
-    params.entry.acp ||
-    !isSubagentSessionKey(params.targetSessionKey)
-  ) {
-    return false;
-  }
   const requester = normalizeOptionalString(params.requesterSessionKey);
-  if (!requester) {
+  if (!requester || !params.entry || params.acpMeta || params.entry.acp) {
     return false;
   }
-  const spawnedBy = normalizeOptionalString(params.entry.spawnedBy);
-  const parentSessionKey = normalizeOptionalString(params.entry.parentSessionKey);
-  return requester === spawnedBy || requester === parentSessionKey;
-}
-
-function isTerminalAgentWaitTimeout(result: AgentWaitResult): boolean {
-  return result.endedAt !== undefined || Boolean(result.stopReason || result.livenessState);
-}
-
-function isPendingErrorAgentWaitTimeout(result: AgentWaitResult): boolean {
+  // spawnedBy is written only by the spawn policy, so it identifies a native
+  // child regardless of key shape: visible children live under persistent
+  // dashboard keys, not subagent keys. parentSessionKey also records ordinary
+  // UI threading and forks, so it only counts for subagent-keyed targets.
   return (
-    result.pendingError === true && typeof result.error === "string" && result.error.trim() !== ""
+    requester === normalizeOptionalString(params.entry.spawnedBy) ||
+    (isSubagentSessionKey(params.targetSessionKey) &&
+      requester === normalizeOptionalString(params.entry.parentSessionKey))
   );
 }
 
@@ -368,6 +394,7 @@ async function startAgentRun(params: {
   allowActiveRunQueueDelivery?: boolean;
   allowActiveRunQueueFallback?: boolean;
   expectedSessionId?: string;
+  mode?: "steer" | "followup";
 }): Promise<
   | {
       ok: true;
@@ -380,9 +407,17 @@ async function startAgentRun(params: {
 > {
   try {
     const activeRunSessionId =
-      params.allowActiveRunQueueDelivery && isRunScopedAgentSessionKey(params.sessionKey)
+      params.mode === "steer" ||
+      (params.mode !== "followup" &&
+        params.allowActiveRunQueueDelivery &&
+        isRunScopedAgentSessionKey(params.sessionKey))
         ? resolveActiveEmbeddedRunSessionId(params.sessionKey)
         : undefined;
+    if (params.mode === "steer" && !activeRunSessionId) {
+      throw new Error(
+        "Target has no active run that accepts steering. Use mode=followup to start a new turn.",
+      );
+    }
     if (
       activeRunSessionId &&
       params.expectedSessionId &&
@@ -402,7 +437,7 @@ async function startAgentRun(params: {
         debounceMs: 0,
         deliveryTimeoutMs: params.deliveryTimeoutMs,
         waitForTranscriptCommit: true,
-        sourceReplyDeliveryMode,
+        ...(params.mode === "steer" ? {} : { sourceReplyDeliveryMode }),
         // Carry the same input facts as a new run; transcript ownership stays
         // with the receiving runtime and its exact session incarnation.
         userTurnTranscriptRecorder: createUserTurnTranscriptRecorder({
@@ -442,6 +477,7 @@ async function startAgentRun(params: {
       const fallbackSessionKey = resolveCronRunScopedFallbackSessionKey(params.sessionKey);
       if (
         params.allowActiveRunQueueFallback !== false &&
+        params.mode !== "steer" &&
         fallbackSessionKey &&
         shouldFallbackCronRunScopedActiveDelivery(queueOutcome)
       ) {
@@ -521,7 +557,46 @@ export function createSessionsSendTool(opts?: {
       if (!message.trim()) {
         throw new ToolInputError("message required");
       }
-      const timeoutSeconds = readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30;
+      const mode = readToolStringParam(params, "mode");
+      if (
+        mode !== undefined &&
+        mode !== "notify" &&
+        mode !== "steer" &&
+        mode !== "followup" &&
+        mode !== "resume"
+      ) {
+        throw new ToolInputError("mode must be notify, steer, followup, or resume");
+      }
+      const caller = mode === "resume" ? getGatewayToolCallerIdentity() : undefined;
+      const assertCallerCurrent =
+        mode === "resume" ? captureGatewayToolCallerAssertion() : undefined;
+      const resumeCaller =
+        caller && assertCallerCurrent
+          ? {
+              agentId: caller.agentId,
+              sessionKey: caller.sessionKey,
+              assertCurrent: assertCallerCurrent,
+            }
+          : undefined;
+      if (mode === "resume" && !resumeCaller) {
+        return jsonResult({
+          runId: crypto.randomUUID(),
+          status: "forbidden",
+          error: "Task resume requires an admitted parent tool caller.",
+        });
+      }
+      if (
+        mode === "resume" &&
+        (params.watch === true || (readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 0) > 0)
+      ) {
+        throw new ToolInputError(
+          "mode=resume returns admission only; omit watch and timeoutSeconds or set timeoutSeconds=0. The task owner delivers completion.",
+        );
+      }
+      const timeoutSeconds =
+        mode === "steer" || mode === "resume"
+          ? 0
+          : (readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30);
       const {
         cfg,
         mainKey,
@@ -790,99 +865,106 @@ export function createSessionsSendTool(opts?: {
         isLiteralUnscopedMainTarget && normalizeAgentId(targetAgentId) === requesterAgentId;
       const rawRequesterSessionKey = opts?.agentSessionKey ? effectiveRequesterKey : undefined;
       const parsedRequesterSessionKey = parseAgentSessionKey(rawRequesterSessionKey);
-      const requesterRouteBindings = cfg.bindings?.filter(
-        (binding): binding is AgentRouteBinding => binding.type !== "acp",
-      );
-      const requesterDeliveryRoute = requesterRouteBindings?.length
-        ? parseSessionDeliveryRoute(rawRequesterSessionKey)
-        : null;
-      const bareRequesterPeerId = parsedRequesterSessionKey?.rest.startsWith("direct:")
-        ? parsedRequesterSessionKey.rest.slice("direct:".length)
-        : parsedRequesterSessionKey?.rest.startsWith("dm:")
-          ? parsedRequesterSessionKey.rest.slice("dm:".length)
-          : undefined;
-      const requesterRouteChannel = requesterDeliveryRoute?.channel ?? opts?.agentChannel;
-      const requesterRoutePeerId = requesterDeliveryRoute?.peerId ?? bareRequesterPeerId;
-      const requesterRoute =
-        requesterRouteBindings?.length && requesterRouteChannel && requesterRoutePeerId
-          ? resolveAgentRoute({
-              cfg,
-              channel: requesterRouteChannel,
-              accountId: requesterDeliveryRoute?.accountId,
-              peer: { kind: "direct", id: requesterRoutePeerId },
-            })
-          : undefined;
-      // Any configured route can transfer this peer to another agent. A key
-      // without enough route facts must never be reassigned to guessed ownership.
-      const hasUnresolvedRequesterRoute = Boolean(
-        requesterRouteBindings?.length &&
-        (!requesterRoute || requesterRoute.agentId !== parsedRequesterSessionKey?.agentId),
-      );
-      // Session keys can discard account, peer casing, team, guild, and roles.
-      // Preserve the authenticated caller whenever any possible binding would
-      // choose another agent or an isolated DM scope using those missing facts.
-      const hasUnsafeRequesterDmBinding = Boolean(
-        requesterRouteBindings?.some((binding) => {
-          const effectiveDmScope = binding.session?.dmScope ?? cfg.session?.dmScope ?? "main";
-          const isForeignAgent =
-            normalizeAgentId(binding.agentId) !== parsedRequesterSessionKey?.agentId;
-          if (!isForeignAgent && effectiveDmScope === "main") {
-            return false;
-          }
-          if (
-            requesterRouteChannel &&
-            normalizeRouteBindingChannelId(binding.match.channel) !==
-              normalizeRouteBindingChannelId(requesterRouteChannel)
-          ) {
-            return false;
-          }
-          const bindingAccountId = binding.match.accountId?.trim();
-          if (
-            requesterDeliveryRoute?.accountId &&
-            bindingAccountId !== "*" &&
-            normalizeAccountId(bindingAccountId) !==
-              normalizeAccountId(requesterDeliveryRoute.accountId)
-          ) {
-            return false;
-          }
-          const peer = binding.match.peer;
-          if (peer) {
-            const peerId = peer.id.trim();
-            if (
-              peer.kind !== "direct" ||
-              (peerId !== "*" &&
-                peerId.toLowerCase() !== requesterRoutePeerId?.trim().toLowerCase())
-            ) {
-              return false;
-            }
-          }
-          return true;
-        }),
-      );
-      const requesterDmScope =
-        requesterRoute && requesterRoute.agentId === parsedRequesterSessionKey?.agentId
-          ? (requesterRoute.dmScope ?? cfg.session?.dmScope ?? "main")
-          : (cfg.session?.dmScope ?? "main");
-      // Normalize legacy DM reply addresses only after exact-key visibility
-      // checks; global/binding-isolated DMs and non-DM owners stay private.
       const requesterSessionKey = rawRequesterSessionKey;
-      const replyRequesterSessionKey =
+      let replyRequesterSessionKey = rawRequesterSessionKey;
+      // Only unthreaded DMs need reply-address normalization. Resolving other
+      // requesters as direct peers can reject valid channel-only bindings.
+      if (
         rawRequesterSessionKey &&
         parsedRequesterSessionKey &&
         rawRequesterSessionKey !== resolvedKey &&
-        requesterDmScope === "main" &&
-        !hasUnresolvedRequesterRoute &&
-        !hasUnsafeRequesterDmBinding &&
         !parsedRequesterSessionKey.rest.startsWith("cron:") &&
         !parsedRequesterSessionKey.rest.startsWith("hook:") &&
         !isSubagentSessionKey(rawRequesterSessionKey) &&
-        !parseSessionThreadInfo(rawRequesterSessionKey).threadId &&
-        deriveSessionChatTypeFromKey(rawRequesterSessionKey) === "direct"
-          ? buildAgentMainSessionKey({
-              agentId: parsedRequesterSessionKey.agentId,
-              mainKey,
-            })
-          : rawRequesterSessionKey;
+        deriveSessionChatTypeFromKey(rawRequesterSessionKey) === "direct" &&
+        !parseSessionThreadInfo(rawRequesterSessionKey).threadId
+      ) {
+        const requesterRouteBindings = cfg.bindings?.filter(
+          (binding): binding is AgentRouteBinding => binding.type !== "acp",
+        );
+        const requesterDeliveryRoute = requesterRouteBindings?.length
+          ? parseSessionDeliveryRoute(rawRequesterSessionKey)
+          : null;
+        const bareRequesterPeerId = parsedRequesterSessionKey?.rest.startsWith("direct:")
+          ? parsedRequesterSessionKey.rest.slice("direct:".length)
+          : parsedRequesterSessionKey?.rest.startsWith("dm:")
+            ? parsedRequesterSessionKey.rest.slice("dm:".length)
+            : undefined;
+        const requesterRouteChannel = requesterDeliveryRoute?.channel ?? opts?.agentChannel;
+        const requesterRoutePeerId = requesterDeliveryRoute?.peerId ?? bareRequesterPeerId;
+        const requesterRoute =
+          requesterRouteBindings?.length && requesterRouteChannel && requesterRoutePeerId
+            ? resolveAgentRoute({
+                cfg,
+                channel: requesterRouteChannel,
+                accountId: requesterDeliveryRoute?.accountId,
+                peer: { kind: "direct", id: requesterRoutePeerId },
+              })
+            : undefined;
+        // Any configured route can transfer this peer to another agent. A key
+        // without enough route facts must never be reassigned to guessed ownership.
+        const hasUnresolvedRequesterRoute = Boolean(
+          requesterRouteBindings?.length &&
+          (!requesterRoute || requesterRoute.agentId !== parsedRequesterSessionKey?.agentId),
+        );
+        // Session keys can discard account, peer casing, team, guild, and roles.
+        // Preserve the authenticated caller whenever any possible binding would
+        // choose another agent or an isolated DM scope using those missing facts.
+        const hasUnsafeRequesterDmBinding = Boolean(
+          requesterRouteBindings?.some((binding) => {
+            const effectiveDmScope = binding.session?.dmScope ?? cfg.session?.dmScope ?? "main";
+            const isForeignAgent =
+              normalizeAgentId(binding.agentId) !== parsedRequesterSessionKey?.agentId;
+            if (!isForeignAgent && effectiveDmScope === "main") {
+              return false;
+            }
+            if (
+              requesterRouteChannel &&
+              normalizeRouteBindingChannelId(binding.match.channel) !==
+                normalizeRouteBindingChannelId(requesterRouteChannel)
+            ) {
+              return false;
+            }
+            const bindingAccountId = binding.match.accountId?.trim();
+            if (
+              requesterDeliveryRoute?.accountId &&
+              bindingAccountId !== "*" &&
+              normalizeAccountId(bindingAccountId) !==
+                normalizeAccountId(requesterDeliveryRoute.accountId)
+            ) {
+              return false;
+            }
+            const peer = binding.match.peer;
+            if (peer) {
+              const peerId = peer.id.trim();
+              if (
+                peer.kind !== "direct" ||
+                (peerId !== "*" &&
+                  peerId.toLowerCase() !== requesterRoutePeerId?.trim().toLowerCase())
+              ) {
+                return false;
+              }
+            }
+            return true;
+          }),
+        );
+        const requesterDmScope =
+          requesterRoute && requesterRoute.agentId === parsedRequesterSessionKey?.agentId
+            ? (requesterRoute.dmScope ?? cfg.session?.dmScope ?? "main")
+            : (cfg.session?.dmScope ?? "main");
+        // Normalize only the reply address after exact-key visibility checks;
+        // global/binding-isolated DMs keep their authenticated identity.
+        if (
+          requesterDmScope === "main" &&
+          !hasUnresolvedRequesterRoute &&
+          !hasUnsafeRequesterDmBinding
+        ) {
+          replyRequesterSessionKey = buildAgentMainSessionKey({
+            agentId: parsedRequesterSessionKey.agentId,
+            mainKey,
+          });
+        }
+      }
       const timeoutMs =
         finiteSecondsToTimerSafeMilliseconds(timeoutSeconds, {
           floorSeconds: true,
@@ -943,6 +1025,15 @@ export function createSessionsSendTool(opts?: {
         });
       }
       const expectedSessionId = opts?.expectedTargetSessionId ?? access.expectedSessionId;
+      if (mode === "notify" && expectedSessionId) {
+        return jsonResult({
+          runId,
+          status: "forbidden",
+          sessionKey: displayKey,
+          error:
+            "Notifications cannot outlive an exact-session access grant. Use steer or followup.",
+        });
+      }
 
       return await runWithScopedSessionAccess({
         cfg,
@@ -952,6 +1043,15 @@ export function createSessionsSendTool(opts?: {
         targetSessionKey: resolvedKey,
         run: async () => {
           if (visibleSession.missing) {
+            if (mode === "steer" || mode === "notify" || mode === "resume") {
+              return jsonResult({
+                runId,
+                status: "error",
+                error:
+                  "Cannot notify, steer, or resume a missing session. Use mode=followup to start a new turn.",
+                sessionKey: displayKey,
+              });
+            }
             const createdSession = await createConfiguredAgentMainSession({
               cfg,
               callGateway: gatewayCall,
@@ -1001,6 +1101,30 @@ export function createSessionsSendTool(opts?: {
             sourceChannel: requesterChannel,
             sourceTool: "sessions_send",
           };
+          if (mode === "notify") {
+            const event = enqueueSystemEventEntry(
+              annotateInterSessionPromptText(message, inputProvenance),
+              withSystemEventOwner(
+                { sessionKey: resolvedKey, contextKey: `session-notify:${idempotencyKey}` },
+                targetAgentId,
+              ),
+            );
+            if (!event?.id) {
+              return jsonResult({
+                runId,
+                status: "error",
+                sessionKey: displayKey,
+                error: "Notification was not queued.",
+              });
+            }
+            return jsonResult({
+              status: "queued",
+              sessionKey: displayKey,
+              notificationId: event.id,
+              durability: "process",
+              runStarted: false,
+            });
+          }
           const sendParams = {
             message: annotateInterSessionPromptText(message, inputProvenance),
             agentId: targetAgentId,
@@ -1013,24 +1137,27 @@ export function createSessionsSendTool(opts?: {
             extraSystemPrompt: agentMessageContext,
             inputProvenance,
           };
+          if (mode === "resume") {
+            if (!resumeCaller) {
+              throw new ToolInputError("Task resume requires an admitted parent tool caller.");
+            }
+            return await resumeSessionsSendTask({
+              cfg,
+              caller: resumeCaller,
+              targetAgentId,
+              sessionKey: resolvedKey,
+              displayKey,
+              runId,
+              expectedSessionId,
+              sendParams,
+              callGateway: gatewayCall,
+            });
+          }
           const maxPingPongTurns = resolvePingPongTurns();
 
-          // Skip the A2A ping-pong + announce flow when the current caller is the
-          // parent of a parent-owned child session it spawned itself and another
-          // parent-visible result path already exists.
-          //
-          // ACP background sessions report through the internal task completion
-          // path. Waited native subagent sends return the child reply inline. In
-          // both cases treating the child as a peer agent wakes the parent with
-          // the child's reply, can generate another user-facing response, and can
-          // forward that response back to the child as a new message — producing a
-          // ping-pong loop (bounded by maxPingPongTurns, but visible as duplicate
-          // conversation output).
-          //
-          // The skip is gated on requester ownership, not just target type: an
-          // unrelated sender that can see the same target (e.g. under
-          // `tools.sessions.visibility=all`) must still go through the normal A2A
-          // path so it actually receives a follow-up delivery.
+          // Spawn lineage distinguishes coordination from independent peers. ACP
+          // task completion owns its delivery; native sends return inline or hand
+          // off one late result without starting a peer conversation.
           const targetSessionEntry = loadSessionEntryByKey(resolvedKey, targetAgentId);
           const targetAcpMeta = readAcpSessionMeta({
             sessionKey: resolvedKey,
@@ -1045,18 +1172,29 @@ export function createSessionsSendTool(opts?: {
             targetSessionEntryWithAcp,
             effectiveRequesterKey,
           );
-          const skipNativeParentA2AFlow =
-            timeoutSeconds !== 0 &&
+          const nativeParentChild =
             isRequesterParentOfNativeSubagentSession({
               entry: targetSessionEntry,
               acpMeta: targetAcpMeta,
               requesterSessionKey: effectiveRequesterKey,
               targetSessionKey: resolvedKey,
-            });
-          // A scoped grant belongs to one exact session incarnation. Do not create
-          // post-return work or durable watches that could follow a reused key.
-          const skipA2AFlow =
-            skipAcpA2AFlow || skipNativeParentA2AFlow || Boolean(expectedSessionId);
+            }) ||
+            (requesterSessionKey !== undefined &&
+              isRequesterParentOfNativeSubagentSession({
+                entry: loadSessionEntryByKey(requesterSessionKey, requesterAgentId),
+                acpMeta: readAcpSessionMeta({
+                  sessionKey: requesterSessionKey,
+                  agentId: requesterAgentId,
+                  cfg,
+                }),
+                requesterSessionKey: resolvedKey,
+                targetSessionKey: requesterSessionKey,
+              }));
+          // Exact-incarnation grants cannot authorize detached work against a reused key.
+          const skipDelayedA2AFlow = skipAcpA2AFlow || Boolean(expectedSessionId);
+          // An ordinary send is not a registered spawn run. Preserve its late result
+          // even when the caller's wait ends; only an inline reply is already delivered.
+          const skipA2AFlow = skipDelayedA2AFlow || (timeoutSeconds !== 0 && nativeParentChild);
           const startA2AFlow = (
             reply?: Awaited<ReturnType<typeof waitForAgentRunReply>>,
             waitRunId?: string,
@@ -1064,38 +1202,46 @@ export function createSessionsSendTool(opts?: {
             flowDisplayKey = displayKey,
             notifyRequesterOnWaitFailure = false,
           ) => {
-            if (skipA2AFlow) {
+            if (reply === undefined ? skipDelayedA2AFlow : skipA2AFlow) {
               return;
             }
             // This detached flow can outlive the tool request that launched it.
-            // Own a fresh root so parent release cannot retire later nested turns.
-            void runWithGatewayIndependentRootWorkContinuation(
-              () =>
-                runWithoutOwnedSessionTranscriptWrites(() =>
-                  runSessionsSendA2AFlow({
-                    callGateway: gatewayCall,
-                    targetSessionKey: flowTargetSessionKey,
-                    targetAgentId,
-                    displayKey: flowDisplayKey,
-                    message,
-                    announceTimeoutMs,
-                    // Cron runs are isolated jobs; target replies must not become new
-                    // requester turns, but the target-side announce still runs.
-                    maxPingPongTurns: isIsolatedCronRequester ? 0 : maxPingPongTurns,
-                    requesterSessionKey: replyRequesterSessionKey,
-                    requesterAgentId,
-                    requesterChannel,
-                    roundOneReply: reply?.replyText,
-                    sourceReplyDelivered: reply?.sourceReplyDelivered,
-                    waitRunId,
-                    notifyRequesterOnWaitFailure,
-                  }),
-                ),
-              "session:a2a-send",
-            ).catch((err: unknown) => {
-              log.warn("sessions_send announce flow admission failed", {
-                runId: waitRunId ?? "unknown",
-                error: formatErrorMessage(err),
+            // Later turns need their own resource scope without retaining the
+            // completed caller or its prepared-runtime generation.
+            runWithGatewayToolCleanupContext(() => {
+              void runWithGatewayDetachedWorkContinuation(
+                () =>
+                  runOutsidePreparedModelRuntimePluginGenerationScope(() =>
+                    runWithoutOwnedSessionTranscriptWrites(() =>
+                      runSessionsSendA2AFlow({
+                        callGateway: gatewayCall,
+                        targetSessionKey: flowTargetSessionKey,
+                        targetAgentId,
+                        displayKey: flowDisplayKey,
+                        message,
+                        announceTimeoutMs,
+                        // Cron runs are isolated jobs; target replies must not become new
+                        // requester turns, but the target-side announce still runs.
+                        maxPingPongTurns: isIsolatedCronRequester ? 0 : maxPingPongTurns,
+                        requesterSessionKey: replyRequesterSessionKey,
+                        requesterAgentId,
+                        requesterChannel,
+                        roundOneReply: reply?.replyText,
+                        sourceReplyDelivered: reply?.sourceReplyDelivered,
+                        waitRunId,
+                        notifyRequesterOnWaitFailure,
+                        // Isolated jobs keep target-side announcement, never a requester wake.
+                        replyMode:
+                          nativeParentChild && !isIsolatedCronRequester ? "result" : "peer",
+                      }),
+                    ),
+                  ),
+                "session:a2a-send",
+              ).catch((err: unknown) => {
+                log.warn("sessions_send announce flow admission failed", {
+                  runId: waitRunId ?? "unknown",
+                  error: formatErrorMessage(err),
+                });
               });
             });
           };
@@ -1104,8 +1250,9 @@ export function createSessionsSendTool(opts?: {
             cfg,
             callGateway: gatewayCall,
             runId,
+            mode,
             sendParams,
-            sessionKey: displayKey,
+            sessionKey: mode ? resolvedKey : displayKey,
             deliveryTimeoutMs: announceTimeoutMs,
             ...(timeoutSeconds === 0
               ? {
@@ -1127,6 +1274,10 @@ export function createSessionsSendTool(opts?: {
           // caller never mistakes target admission for announcement delivery.
           const delivery =
             skipA2AFlow || start.targetDisposition === "steered"
+              ? ({ status: "skipped", mode: "announce" } as const)
+              : ({ status: "pending", mode: "announce" } as const);
+          const delayedDelivery =
+            skipDelayedA2AFlow || start.targetDisposition === "steered"
               ? ({ status: "skipped", mode: "announce" } as const)
               : ({ status: "pending", mode: "announce" } as const);
           recordSessionToolActionFact({
@@ -1166,7 +1317,7 @@ export function createSessionsSendTool(opts?: {
           });
 
           if (result.status === "timeout") {
-            if (isPendingErrorAgentWaitTimeout(result)) {
+            if (result.pendingError === true && result.error?.trim()) {
               startA2AFlow(undefined, runId);
               return jsonResult({
                 runId,
@@ -1174,7 +1325,7 @@ export function createSessionsSendTool(opts?: {
                 error: result.error,
                 sentBeforeError: true,
                 sessionKey: displayKey,
-                delivery,
+                delivery: delayedDelivery,
                 ...watchField,
               });
             }
@@ -1185,7 +1336,7 @@ export function createSessionsSendTool(opts?: {
                 status: "accepted",
                 sessionKey: displayKey,
                 targetDisposition: start.targetDisposition,
-                delivery,
+                delivery: delayedDelivery,
                 ...watchField,
               });
             }

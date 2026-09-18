@@ -1,4 +1,5 @@
 // Release check tests cover release validation script behavior.
+import { createHash } from "node:crypto";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath, win32 } from "node:path";
@@ -28,12 +29,14 @@ import {
   PACKED_BUNDLED_RUNTIME_DEPS_REPAIR_ARGS,
   PACKED_CLI_SMOKE_COMMANDS,
   PACKED_COMPLETION_SMOKE_ARGS,
+  packedPluginSdkSupportsSetupSurface,
   resolvePackedTarballPath,
   resolveReleaseNpmCommand,
   runReleaseCheckCommand,
 } from "../scripts/release-check.ts";
 import { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } from "../src/cli/completion-runtime.ts";
 import { resolveNpmJsonEntries as resolveRuntimeNpmJsonEntries } from "../src/infra/npm-registry-spec.js";
+import { RUNTIME_DEPENDENCY_OWNERSHIP_RELATIVE_PATH } from "../src/infra/runtime-dependency-ownership.js";
 import { withEnv } from "../src/test-utils/env.js";
 
 function makeItem(shortVersion: string, sparkleVersion: string, channel?: string): string {
@@ -372,14 +375,14 @@ describe("collectBundledExtensionManifestErrors", () => {
 });
 
 describe("bundled plugin package dependency checks", () => {
-  it("does not require root deps for root chunks sourced from the owning installed plugin", () => {
+  it("does not require root deps for byte-matched chunks owned by a bundled plugin", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "openclaw-root-owned-installed-"));
 
     try {
       mkdirSync(join(tempRoot, "dist", "extensions", "memory-lancedb"), { recursive: true });
       writeFileSync(
         join(tempRoot, "package.json"),
-        `{"name":"openclaw","dependencies":{}}\n`,
+        `{"name":"openclaw","version":"2026.7.33","dependencies":{}}\n`,
         "utf8",
       );
       writeFileSync(
@@ -387,9 +390,18 @@ describe("bundled plugin package dependency checks", () => {
         `{"name":"@openclaw/memory-lancedb","dependencies":{"root-owned-test-dep":"^1.0.0"}}\n`,
         "utf8",
       );
+      const source = 'import("root-owned-test-dep");\n';
+      writeFileSync(join(tempRoot, "dist", "lancedb-runtime-7TYK-Pto.js"), source, "utf8");
       writeFileSync(
-        join(tempRoot, "dist", "lancedb-runtime-7TYK-Pto.js"),
-        `//#region extensions/memory-lancedb/lancedb-runtime.ts\nimport("root-owned-test-dep");\n`,
+        join(tempRoot, RUNTIME_DEPENDENCY_OWNERSHIP_RELATIVE_PATH),
+        JSON.stringify({
+          chunks: {
+            "lancedb-runtime-7TYK-Pto.js": {
+              sha256: createHash("sha256").update(source).digest("hex"),
+              extensions: ["memory-lancedb"],
+            },
+          },
+        }),
         "utf8",
       );
 
@@ -609,6 +621,32 @@ describe("packed install verification", () => {
 });
 
 describe("createPackedPluginSdkTypescriptSmokeProject", () => {
+  it("limits setupSurface omission to the recorded frozen target", async () => {
+    const { packedPluginSdkMayOmitSetupSurface } = await import("../scripts/release-check.js");
+    expect(packedPluginSdkMayOmitSetupSurface("2026.7.33")).toBe(true);
+    expect(packedPluginSdkMayOmitSetupSurface("2026.9.4")).toBe(false);
+    expect(packedPluginSdkMayOmitSetupSurface("2026.10.1")).toBe(false);
+  });
+
+  it("detects whether both packed setup declarations expose setupSurface", () => {
+    const root = mkdtempSync(join(tmpdir(), "release-check-plugin-sdk-setup-surface-"));
+    try {
+      for (const relativePath of [
+        "dist/plugin-sdk/setup.d.ts",
+        "dist/plugin-sdk/setup-runtime.d.ts",
+      ]) {
+        const declarationPath = join(root, relativePath);
+        mkdirSync(dirname(declarationPath), { recursive: true });
+        writeFileSync(declarationPath, "export type Options = { setupSurface?: unknown };\n");
+      }
+      expect(packedPluginSdkSupportsSetupSurface(root)).toBe(true);
+      writeFileSync(join(root, "dist/plugin-sdk/setup-runtime.d.ts"), "export {};\n");
+      expect(packedPluginSdkSupportsSetupSurface(root)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes a consumer project that imports representative public SDK subpaths", () => {
     const root = mkdtempSync(join(tmpdir(), "release-check-plugin-sdk-types-"));
     try {

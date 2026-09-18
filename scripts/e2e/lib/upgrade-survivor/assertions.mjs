@@ -1,10 +1,11 @@
 import assertStrict from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 // Assertions for upgrade-survivor E2E scenarios.
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { UPGRADE_SURVIVOR_ASSERTION_SCENARIOS } from "../../../lib/upgrade-survivor-policy.mjs";
 import { validatePrepublishPluginRegistryArtifact } from "../../../prepublish-plugin-registry-artifact.mjs";
 import { readPluginInstallIndex } from "../plugin-index-sqlite.mjs";
 import { readPostCoreSnapshot } from "./diagnostics.mjs";
@@ -12,6 +13,12 @@ import {
   assertExecApprovalPolicySurvived,
   seedLegacyExecApprovalPolicy,
 } from "./exec-approval-fixture.mjs";
+import {
+  seedMSTeamsPollMigration,
+  assertMSTeamsPollMigration,
+  assertMSTeamsPluginFiles,
+} from "./msteams-polls.mjs";
+import * as sessionSourceFixture from "./session-source-fixture.mjs";
 import { assertUpgradeVolumeMigrated, seedUpgradeVolume } from "./sqlite-volume.mjs";
 
 const command = process.argv[2];
@@ -21,29 +28,7 @@ const legacyOperator =
   command?.includes("legacy-operator")
     ? await import("./legacy-operator-state.mjs")
     : undefined;
-const SCENARIOS = new Set([
-  "base",
-  "legacy-operator-state",
-  "mobile-pairing-reconnect",
-  "acpx-openclaw-tools-bridge",
-  "feishu-channel",
-  "bootstrap-persona",
-  "channel-post-core-restore",
-  "codex-allowlist-survival",
-  "plugin-deps-cleanup",
-  "configured-plugin-installs",
-  "stale-source-plugin-shadow",
-  "prerelease-plugin-registry",
-  "tilde-log-path",
-  "meeting-transcripts-sqlite",
-  "versioned-runtime-deps",
-  "cron-scheduled-authority",
-  "sqlite-volume",
-  "recovery-cleanup",
-  "auth-profile-v2026-7-2-beta-5",
-  "watchos-direct-node",
-]);
-
+const SCENARIOS = new Set(UPGRADE_SURVIVOR_ASSERTION_SCENARIOS);
 const PERSONA_FILES = new Map([
   ["BOOTSTRAP.md", "# Existing Bootstrap\n\nDo not overwrite me during update.\n"],
   ["SOUL.md", "# Existing Soul\n\nKeep this voice intact.\n"],
@@ -54,6 +39,23 @@ const PERSONA_FILES = new Map([
 const LEGACY_SESSION_MAIN_ID = "upgrade-main-session";
 const LEGACY_SESSION_DIRECT_ID = "upgrade-direct-session";
 const LEGACY_SESSION_GROUP_ID = "upgrade-group-session";
+const LEGACY_ACP_META = {
+  backend: "acpx",
+  agent: "codex",
+  runtimeSessionName: "upgrade-acp-session",
+  identity: {
+    state: "resolved",
+    acpxRecordId: "upgrade-acpx-record",
+    acpxSessionId: "upgrade-acpx-session",
+    agentSessionId: "upgrade-agent-session",
+    source: "ensure",
+    lastUpdatedAt: 1710000000000,
+  },
+  mode: "persistent",
+  runtimeOptions: { model: "gpt-5.5", runtimeMode: "plan", thinking: "low" },
+  state: "idle",
+  lastActivityAt: 1710000000000,
+};
 const PLUGIN_DECLARED_SURFACE_GROUPS = [
   "channels",
   "providers",
@@ -210,6 +212,7 @@ function seedLegacySessionMetadata(stateDir, perAgent) {
       updatedAt: baseUpdatedAt + 200,
       lastChannel: "slack",
       lastTo: "CUPGRADE",
+      ...(getScenario() === "acpx-openclaw-tools-bridge" ? { acp: LEGACY_ACP_META } : {}),
     },
   });
   for (const sessionId of [
@@ -396,7 +399,11 @@ function seedState() {
   });
   // Volume imports start in per-agent JSON; other scenarios cover the older shared-store move.
   seedLegacySessionMetadata(stateDir, scenario === "sqlite-volume");
+  sessionSourceFixture.recordLegacySessionSources(stateDir);
   seedLegacyExecApprovalPolicy(stateDir);
+  if (scenario === "msteams-polls") {
+    seedMSTeamsPollMigration(stateDir, requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"));
+  }
   if (scenario === "meeting-transcripts-sqlite") {
     seedLegacyMeetingTranscripts(stateDir);
   }
@@ -676,7 +683,14 @@ function assertStateSurvived() {
     "legacy session file missing",
   );
   if (stage !== "baseline") {
-    assertSessionMetadataMigrated(stateDir);
+    assertSessionMetadataMigrated(stateDir, stage);
+  }
+  if (scenario === "msteams-polls") {
+    assertMSTeamsPollMigration(
+      stateDir,
+      requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"),
+      stage,
+    );
   }
   if (scenario === "meeting-transcripts-sqlite") {
     assertMeetingTranscriptsMigrated(stateDir, stage);
@@ -965,22 +979,115 @@ function assertMeetingTranscriptExport(stateDir) {
   );
 }
 
-function assertSessionMetadataMigrated(stateDir) {
+async function assertRestartServingTurn(file) {
+  assert(file, "assert-restart-serving-turn requires an output path");
+  const sessionKey = "agent:main:main";
+  const marker = `OPENCLAW_E2E_SURVIVOR_${randomUUID().replaceAll("-", "").toUpperCase()}`;
+  const token = requireEnv("GATEWAY_AUTH_TOKEN_REF");
+  const deadline = Date.now() + 120_000;
+  const call = (method, params) => {
+    const remainingMs = deadline - Date.now();
+    assert(remainingMs > 0, "managed serving turn exceeded its two-minute budget");
+    const result = spawnSync(
+      "openclaw",
+      [
+        "gateway",
+        "call",
+        method,
+        "--url",
+        "ws://127.0.0.1:18789",
+        "--token",
+        token,
+        "--timeout",
+        String(remainingMs),
+        "--json",
+        "--params",
+        JSON.stringify(params),
+      ],
+      { timeout: remainingMs, maxBuffer: 2 * 1024 * 1024, encoding: "utf8" },
+    );
+    if (result.error || result.status !== 0) {
+      // Keep credential-bearing argv, stderr, and error objects out of failures.
+      throw new Error(
+        `${method} managed serving probe failed (status ${result.status ?? "unknown"})`,
+      );
+    }
+    return JSON.parse(result.stdout);
+  };
+  const accepted = call("chat.send", {
+    sessionKey,
+    message: `Reply with exactly ${marker} and no other text. Do not use tools.`,
+    idempotencyKey: randomUUID(),
+    thinking: "off",
+    deliver: false,
+    timeoutMs: 90_000,
+  });
+  assert(
+    accepted?.status === "started" &&
+      typeof accepted.runId === "string" &&
+      accepted.runId.length > 0,
+    "managed serving turn did not start",
+  );
+  let completion;
+  do {
+    completion = call("agent.wait", { runId: accepted.runId, timeoutMs: 90_000 });
+    assert(completion?.runId === accepted.runId, "managed serving wait changed the run identity");
+    if (completion.status === "pending" || completion.status === "timeout") {
+      await new Promise((resolve) => {
+        setTimeout(resolve, Math.min(500, Math.max(0, deadline - Date.now())));
+      });
+    }
+  } while (completion.status === "pending" || completion.status === "timeout");
+  assert(
+    completion?.runId === accepted.runId &&
+      completion.status === "ok" &&
+      Number.isFinite(completion.endedAt) &&
+      !completion.error,
+    "managed serving turn did not complete successfully",
+  );
+  const history = call("chat.history", { sessionKey, limit: 100 });
+  assert(
+    history?.sessionId === LEGACY_SESSION_MAIN_ID,
+    "serving turn changed the migrated main session",
+  );
+  const reply = history.messages?.find(
+    (message) =>
+      message?.role === "assistant" &&
+      (typeof message.content === "string"
+        ? message.content === marker
+        : Array.isArray(message.content) &&
+          message.content.some((block) => block?.type === "text" && block.text === marker)),
+  );
+  assert(reply, "managed serving reply was not persisted in migrated main history");
+  writeJson(file, {
+    sessionKey,
+    sessionId: history.sessionId,
+    marker,
+    runId: accepted.runId,
+    completion,
+    reply,
+  });
+}
+
+function assertSessionMetadataMigrated(stateDir, stage) {
   const legacyStorePath = path.join(stateDir, "sessions", "sessions.json");
   const agentSessionsDir = path.join(stateDir, "agents", "main", "sessions");
   const targetStorePath = path.join(agentSessionsDir, "sessions.json");
-  assert(
-    !fs.existsSync(legacyStorePath),
-    `legacy sessions.json survived migration: ${legacyStorePath}`,
-  );
-
   const { source, store } = readMigratedSessionStore(stateDir, targetStorePath);
+  sessionSourceFixture.assertLegacySessionSourceDisposition(legacyStorePath, source);
   const main = store["agent:main:main"];
   const direct = store["agent:main:+15551234567"];
   const group = store["agent:main:slack:channel:cupgrade"];
   assert(main?.sessionId === LEGACY_SESSION_MAIN_ID, "main legacy session row missing");
   assert(direct?.sessionId === LEGACY_SESSION_DIRECT_ID, "direct legacy session row missing");
   assert(group?.sessionId === LEGACY_SESSION_GROUP_ID, "channel legacy session row missing");
+  if (getScenario() === "acpx-openclaw-tools-bridge") {
+    assertStrict.deepEqual(
+      group.acp,
+      LEGACY_ACP_META,
+      "saved ACP session or model selection changed",
+    );
+  }
   const migratedSessions = [
     [LEGACY_SESSION_MAIN_ID, main],
     [LEGACY_SESSION_DIRECT_ID, direct],
@@ -1018,10 +1125,24 @@ function assertSessionMetadataMigrated(stateDir) {
       );
     }
   }
-  assert(
-    main.skillsSnapshot?.prompt === "legacy prompt survives as metadata",
-    "legacy session metadata prompt was not preserved",
-  );
+  // Migration preserves the legacy prompt. A completed serving turn rebuilds
+  // that cache; durable session identity and history must survive both stages.
+  if (stage === "post-inference") {
+    const snapshot = main.skillsSnapshot;
+    assert(
+      typeof snapshot?.prompt === "string" &&
+        snapshot.prompt !== "legacy prompt survives as metadata" &&
+        Array.isArray(snapshot.skills) &&
+        Number.isSafeInteger(snapshot.promptFormatVersion) &&
+        snapshot.promptFormatVersion > 0,
+      "serving turn did not persist a valid refreshed skills snapshot",
+    );
+  } else {
+    assert(
+      main.skillsSnapshot?.prompt === "legacy prompt survives as metadata",
+      "legacy session metadata prompt was not preserved",
+    );
+  }
   assert(
     main.skillsSnapshot?.resolvedSkills === undefined,
     "heavy resolvedSkills cache was persisted into migrated session metadata",
@@ -1103,14 +1224,15 @@ function readInstalledPluginIndex() {
   return index;
 }
 
-function assertBaselinePlugin([expectedVersion]) {
-  const record = readInstalledPluginIndex().installRecords.discord;
-  assert(record?.source === "npm", "baseline Discord plugin was not installed from npm");
-  assert(record.spec === "@openclaw/discord@latest", "baseline plugin selector became pinned");
+function assertBaselinePlugin([expectedVersion, pluginId, tag]) {
+  assert(["latest", "beta", "alpha"].includes(tag), "baseline plugin selector is not moving");
+  const record = readInstalledPluginIndex().installRecords[pluginId];
+  assert(record?.source === "npm", "baseline plugin was not installed from npm");
+  assert(record.spec === `@openclaw/${pluginId}@${tag}`, "baseline plugin selector changed");
   const installed = readJson(path.join(resolveHomePath(record.installPath), "package.json"));
-  assert(installed.name === "@openclaw/discord", "baseline plugin package identity changed");
+  assert(installed.name === `@openclaw/${pluginId}`, "baseline plugin package identity changed");
   assert(installed.version === expectedVersion, "baseline plugin is not the baseline version");
-  console.log(`Baseline npm plugin: @openclaw/discord@${expectedVersion}, selector=latest.`);
+  console.log(`Baseline npm plugin: @openclaw/${pluginId}@${expectedVersion}, selector=${tag}.`);
 }
 
 function assertExternalPluginInstall(records, pluginId, packageName) {
@@ -1266,6 +1388,12 @@ function assertNpmPluginInstall([
   const archive = fs.readFileSync(path.join(artifactDir, artifact.tarball));
   const integrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
   assert(record.integrity === integrity, `${pluginId} plugin registry artifact integrity changed`);
+  if (getScenario() === "msteams-polls" && pluginId === "msteams") {
+    assertMSTeamsPluginFiles(
+      resolveHomePath(record.installPath),
+      path.join(artifactDir, artifact.tarball),
+    );
+  }
 }
 
 function assertCompanionPluginInstalls([expectedVersion, capabilityConsentSupported]) {
@@ -1437,6 +1565,9 @@ function assertRecoverableUpdateJson([file, expectedVersion, observationRoot, ba
   // These are the reviewed packages in the base and scenario recipes.
   // Any other plugin or failure needs investigation before accepting it.
   const reviewed = new Set(["acpx", "brave", "codex", "discord", "feishu", "matrix", "whatsapp"]);
+  if (getScenario() === "msteams-polls") {
+    reviewed.add("msteams");
+  }
   const denied = new Set();
   assertStrict.ok(Array.isArray(plugins.npm?.outcomes));
   for (const outcome of plugins.npm.outcomes) {
@@ -1491,15 +1622,67 @@ function assertRecoverableUpdateJson([file, expectedVersion, observationRoot, ba
   return denied;
 }
 
+function assertExpectedMissingCodexOutcome(result, expectedVersion) {
+  const plugins = result.postUpdate?.plugins;
+  assert(result.before?.version === "2026.9.2", "missing Codex fixture used the wrong baseline");
+  assert(result.run?.status === "succeeded", "missing Codex update run did not finish");
+  assert(plugins?.status === "warning", "missing Codex update omitted its final plugin warning");
+  const failures = plugins.npm?.outcomes?.filter((outcome) => outcome?.status === "error") ?? [];
+  assert(
+    failures.length === 1,
+    "missing Codex update must retain exactly its named failed attempt",
+  );
+  const failure = failures[0];
+  const missingPackage =
+    `Failed to install missing configured plugin "codex" from @openclaw/codex: ` +
+    `Package not found on npm: @openclaw/codex@${expectedVersion}.`;
+  assert(
+    failure.pluginId === "codex" &&
+      failure.code === undefined &&
+      typeof failure.message === "string" &&
+      failure.message.startsWith(missingPackage),
+    "missing Codex update retained an unexpected plugin failure",
+  );
+  const repairCommand = "openclaw plugins update codex";
+  assert(
+    plugins.warnings?.some(
+      (warning) =>
+        warning.pluginId === "codex" &&
+        warning.reason === failure.message &&
+        warning.guidance?.includes(repairCommand) &&
+        warning.message?.includes(`Run \`${repairCommand}\``),
+    ),
+    "missing Codex update omitted matching actionable recovery guidance",
+  );
+  return failure;
+}
+
 function assertSuccessfulUpdateJson([file, expectedVersion, observationRoot]) {
   assert(file && expectedVersion, "assert-successful-update-json requires a path and version");
   const result = readUpdateJson(file, observationRoot);
   const plugins = result?.postUpdate?.plugins;
   assert(result?.status === "ok", `update did not report ok: ${String(result?.status)}`);
+  if (
+    ["projects-doctor", "projects-startup-migration", "taskflow-restoration"].includes(
+      getScenario(),
+    )
+  ) {
+    assertStrict.equal(
+      result.before?.version,
+      "2026.9.4",
+      "Worker cell used the wrong published driver",
+    );
+  }
+  const expectedMissingPluginFailure =
+    getScenario() === "missing-configured-plugin-migration"
+      ? assertExpectedMissingCodexOutcome(result, expectedVersion)
+      : undefined;
   assert(
     plugins?.status !== "error" &&
       !plugins?.sync?.errors?.length &&
-      !plugins?.npm?.outcomes?.some((outcome) => outcome?.status === "error") &&
+      !plugins?.npm?.outcomes?.some(
+        (outcome) => outcome?.status === "error" && outcome !== expectedMissingPluginFailure,
+      ) &&
       !plugins?.integrityDrifts?.length,
     "successful update failed plugin convergence",
   );
@@ -1512,7 +1695,14 @@ function assertSuccessfulUpdateJson([file, expectedVersion, observationRoot]) {
     `successful update version changed: ${String(result?.after?.version)}`,
   );
   assert(
-    Array.isArray(result?.steps) && result.steps.every((step) => step?.exitCode === 0),
+    Array.isArray(result?.steps) &&
+      result.steps.every(
+        (step) =>
+          step?.exitCode === 0 ||
+          (step?.name === "openclaw doctor" &&
+            step.exitCode === 86 &&
+            step.advisory?.kind === "package-post-install-doctor"),
+      ),
     "successful update contained a failed core step",
   );
 }
@@ -1762,8 +1952,20 @@ function assertMobilePairingEvidence(files) {
 
 if (command === "list-scenarios") {
   process.stdout.write(`${JSON.stringify([...SCENARIOS])}\n`);
+} else if (command === "missing-load-path") {
+  await import("./missing-load-path.mjs");
 } else if (command === "seed") {
   seedState();
+} else if (command === "seed-msteams-doctor") {
+  assert(
+    getScenario() === "msteams-polls",
+    "Teams Doctor seed requires the msteams-polls scenario",
+  );
+  seedMSTeamsPollMigration(
+    requireEnv("OPENCLAW_STATE_DIR"),
+    requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"),
+    "doctor",
+  );
 } else if (command === "seed-legacy-operator") {
   legacyOperator.seedLegacyOperatorState();
 } else if (command === "seed-legacy-operator-external-plugin") {
@@ -1799,6 +2001,8 @@ if (command === "list-scenarios") {
   seedUpgradeVolume(stateDir);
 } else if (command === "assert-config") {
   assertConfigSurvived();
+} else if (command === "assert-restart-serving-turn") {
+  await assertRestartServingTurn(process.argv[3]);
 } else if (command === "assert-state") {
   assertStateSurvived();
   assertConfiguredPluginInstalls();

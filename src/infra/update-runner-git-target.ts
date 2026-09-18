@@ -1,15 +1,23 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import {
   parsePackageOpenClawSchemaVersions,
   type OpenClawSchemaVersions,
 } from "../state/openclaw-schema-versions.js";
+import { gitNullConfigPath } from "./git-exec.js";
 import { isBetaTag, isStableTag, type UpdateChannel } from "./update-channels.js";
 import { compareSemverStrings } from "./update-check.js";
+import { cleanupUpdateTemporaryDirectory } from "./update-maintenance.js";
 import { runGitCandidatePreflight } from "./update-runner-git-preflight.js";
-import type { CommandRunner, UpdateRunnerOptions } from "./update-runner-types.js";
+import type {
+  CommandRunner,
+  UpdateRunnerOptions,
+  UpdateStepResult,
+} from "./update-runner-types.js";
 
 function quoteGitConfig(value: string): string {
   return `"${value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"').replace(/\n/gu, "\\n").replace(/\t/gu, "\\t").replaceAll("\b", "\\b")}"`;
@@ -25,7 +33,12 @@ function gitConfigEntry(key: string, value: string): string {
 
 /** Fetch and candidate selection must not update the installed repository before admission. */
 export async function withGitTargetInspectionRoot<T>(
-  params: { root: string; runCommand: CommandRunner; timeoutMs: number },
+  params: {
+    root: string;
+    runCommand: CommandRunner;
+    timeoutMs: number;
+    onWarning: (step: UpdateStepResult) => void;
+  },
   inspect: (root: string, runCommand: CommandRunner) => Promise<T>,
 ): Promise<T> {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-git-admission-"));
@@ -96,7 +109,7 @@ export async function withGitTargetInspectionRoot<T>(
               env: {
                 ...options.env,
                 GIT_CONFIG_NOSYSTEM: "1",
-                GIT_CONFIG_GLOBAL: os.devNull,
+                GIT_CONFIG_GLOBAL: gitNullConfigPath(),
                 GIT_CONFIG_COUNT: "0",
               },
             }
@@ -105,12 +118,17 @@ export async function withGitTargetInspectionRoot<T>(
     return await inspect(inspectionRoot, runInspectionCommand);
   } finally {
     // Only this invocation's private inspection clone, never the installed checkout.
-    await fs.rm(temporaryRoot, { recursive: true, force: true });
+    await cleanupUpdateTemporaryDirectory({
+      directory: temporaryRoot,
+      root: params.root,
+      name: "git target inspection cleanup",
+      onWarning: params.onWarning,
+    });
   }
 }
 
 type GitTargetSchemaMetadata =
-  | { status: "ok"; schemaVersions?: OpenClawSchemaVersions }
+  | { status: "ok"; version?: string; schemaVersions?: OpenClawSchemaVersions }
   | { status: "unreadable"; reason: string };
 
 export async function readGitTargetSchemaVersions(params: {
@@ -135,8 +153,14 @@ export async function readGitTargetSchemaVersions(params: {
     };
   }
   try {
-    const schemaVersions = parsePackageOpenClawSchemaVersions(JSON.parse(result.stdout) as unknown);
-    return { status: "ok", ...(schemaVersions ? { schemaVersions } : {}) };
+    const manifest: unknown = JSON.parse(result.stdout);
+    const schemaVersions = parsePackageOpenClawSchemaVersions(manifest);
+    const version = normalizeNullableString(asNullableRecord(manifest)?.version);
+    return {
+      status: "ok",
+      ...(version ? { version } : {}),
+      ...(schemaVersions ? { schemaVersions } : {}),
+    };
   } catch (error) {
     return { status: "unreadable", reason: `target package.json unparseable: ${String(error)}` };
   }
@@ -153,13 +177,18 @@ export async function prepareGitMutation(params: {
   allowGatewayActivation?: boolean;
 }> {
   const target = await readGitTargetSchemaVersions(params);
-  const preparation = await params.beforeGitMutation?.(
-    target.status === "ok"
-      ? target.schemaVersions
-        ? { schemaVersions: target.schemaVersions }
-        : {}
-      : { metadataUnreadable: target.reason },
-  );
+  const sha = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(params.revision)
+    ? params.revision.toLowerCase()
+    : undefined;
+  const preparation = await params.beforeGitMutation?.({
+    ...(sha ? { sha } : {}),
+    ...(target.status === "ok"
+      ? {
+          ...(target.version ? { version: target.version } : {}),
+          ...(target.schemaVersions ? { schemaVersions: target.schemaVersions } : {}),
+        }
+      : { metadataUnreadable: target.reason }),
+  });
   return preparation ?? {};
 }
 
@@ -205,6 +234,23 @@ async function listGitTags(
     timeoutMs,
   }).catch(() => null);
   return result?.code === 0 ? normalizeStringEntries(result.stdout.split("\n")) : [];
+}
+
+/**
+ * Picks the single remote release tags are force-fetched from. The checkout's
+ * retained tracking remote (`branch.<main>.remote`) wins when it is still
+ * declared, because a detached release checkout keeps that config and a fork
+ * `origin` can be tag-less; otherwise the clone's canonical `origin`, then the
+ * only declared remote. Multiple non-origin remotes need explicit tracking.
+ */
+export function resolveReleaseTagRemote(
+  remotes: readonly string[],
+  trackedUpdateRemote: string,
+): string | undefined {
+  if (trackedUpdateRemote && remotes.includes(trackedUpdateRemote)) {
+    return trackedUpdateRemote;
+  }
+  return remotes.includes("origin") ? "origin" : remotes.length === 1 ? remotes[0] : undefined;
 }
 
 export async function resolveChannelTag(

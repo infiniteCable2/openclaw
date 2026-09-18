@@ -22,7 +22,7 @@ import {
   validReview,
   writeReviewArtifacts,
 } from "./pr-review-artifact-fixture.js";
-import { copyPrWrapperSources } from "./pr-wrapper.test-support.js";
+import { copyPrWrapperSources, linkPrWrapperDependencies } from "./pr-wrapper.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -126,15 +126,7 @@ function makeMismatchedWrapperRepo({
   git(linked, ["commit", "-m", "test: local wrapper"]);
   const localRevision = git(linked, ["rev-parse", "HEAD"]).stdout.trim();
 
-  mkdirSync(join(canonical, "node_modules"));
-  // Use installed third-party packages only, never workspace source or loader mocks.
-  for (const dependency of ["tsx", "zod", "minimatch", "yaml"]) {
-    symlinkSync(
-      realpathSync(join("node_modules", dependency)),
-      join(canonical, "node_modules", dependency),
-      process.platform === "win32" ? "junction" : "dir",
-    );
-  }
+  linkPrWrapperDependencies(canonical);
 
   return {
     bin,
@@ -196,6 +188,30 @@ function parseDispatchedSubcommands(script: string): string[] {
 }
 
 describe("scripts/pr wrappers", () => {
+  it("refreshes wrapper dependencies idempotently", () => {
+    const destination = tempDirs.make("openclaw-pr-wrapper-dependencies-");
+
+    linkPrWrapperDependencies(destination);
+    linkPrWrapperDependencies(destination);
+
+    for (const dependency of ["tsx", "zod", "minimatch", "yaml"]) {
+      expect(realpathSync(join(destination, "node_modules", dependency))).toBe(
+        realpathSync(join("node_modules", dependency)),
+      );
+    }
+  });
+
+  it("loads the tooling include policy from the wrapper source inventory", () => {
+    const root = tempDirs.make("openclaw-wrapper-include-policy-");
+    copyPrWrapperSources(root);
+    const loaded = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", "await import('./test/vitest/vitest.include-patterns.ts')"],
+      { cwd: root, encoding: "utf8", env: isolatedWrapperEnv(root) },
+    );
+    expect(loaded.status, loaded.stderr).toBe(0);
+  });
+
   it("keeps the main PR helper usage and command table aligned", () => {
     const script = readScript("scripts/pr");
 
@@ -256,7 +272,7 @@ describe("scripts/pr wrappers", () => {
 
     expect(script).toContain('base_json=$(read_pr_view_json "$pr" "baseRefName")');
     expect(common).toContain('gh pr view "$pr" --json "$fields"');
-    expect(worktree).toContain('metadata=$(read_pr_view_json "$pr"');
+    expect(worktree).toContain('metadata=$(GH_REPO="$repo_nwo" read_pr_view_json "$pr"');
     expect(review).toContain('gh_plain pr edit "$pr" --add-assignee "$reviewer"');
     expect(push).toContain('gh_plain api graphql --input "$payload_file"');
     expect(push).not.toContain("gh_plain api graphql --input -");
@@ -367,7 +383,9 @@ describe("scripts/pr wrappers", () => {
       { cwd: caller, encoding: "utf8", env: fixture.env },
     );
     expect(result.status, result.stdout + result.stderr).toBe(0);
-    expect(result.stdout).toBe(`<123>\n<false>\n<>\n<>\n<${join(caller, "operator body.md")}>\n`);
+    expect(result.stdout).toBe(
+      `<123>\n<false>\n<>\n<>\n<${join(caller, "operator body.md")}>\n<>\n`,
+    );
   });
 
   itPosix(
@@ -451,10 +469,44 @@ describe("scripts/pr wrappers", () => {
         );
         expect(result.status, result.stdout + result.stderr).toBe(0);
         expect(result.stdout).toBe(
-          `<123>\n<false>\n<${"a".repeat(40)}>\n<${replacement[1] ?? ""}>\n<${body.length ? join(fixture.canonical, "message.md") : ""}>\n`,
+          `<123>\n<false>\n<${"a".repeat(40)}>\n<${replacement[1] ?? ""}>\n<${body.length ? join(fixture.canonical, "message.md") : ""}>\n<>\n`,
         );
       }
     }
+  });
+
+  itPosix("pins legacy refusal evidence and requires an explicit current recovery head", () => {
+    const fixture = makeMismatchedWrapperRepo();
+    const caller = join(fixture.canonical, "nested");
+    mkdirSync(caller);
+    writeFileSync(join(fixture.bin, "gh"), `#!/bin/sh\nprintf '{"baseRefName":"main"}\\n'\n`);
+    writeFileSync(
+      join(fixture.canonical, "scripts/pr-lib/merge.sh"),
+      `merge_run() { printf '<%s>\\n' "$@"; }\n`,
+    );
+    const args = [
+      "merge-recover",
+      "123",
+      "a".repeat(40),
+      "--confirmed-operator-recovery",
+      "--legacy-refusal",
+      "proof",
+    ];
+    const missing = spawnSync(join(fixture.canonical, "scripts/pr"), args, {
+      cwd: caller,
+      encoding: "utf8",
+      env: fixture.env,
+    });
+    expect(missing.status, missing.stdout + missing.stderr).toBe(2);
+    const result = spawnSync(
+      join(fixture.canonical, "scripts/pr"),
+      [...args, "--replacement-head", "b".repeat(40)],
+      { cwd: caller, encoding: "utf8", env: fixture.env },
+    );
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toBe(
+      `<123>\n<false>\n<${"a".repeat(40)}>\n<${"b".repeat(40)}>\n<>\n<${join(caller, "proof")}>\n`,
+    );
   });
 
   it("runs a mismatched advisory wrapper locally with an explicit developer opt-in", () => {
@@ -814,6 +866,27 @@ fi
         expect.soft(result.status, `${entry}\n${result.stdout}\n${result.stderr}`).toBe(exitCode);
         expect.soft(result.stderr, entry).toContain(message);
       }
+      // Import the actual adapter closure before it rejects missing arguments.
+      // Real provisioning and allocation-lease renewal have separate flows.
+      const provision = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          join(anchor, "scripts/tsx.mjs"),
+          join(anchor, "scripts/pr-lib/worktree-provision.mts"),
+        ],
+        {
+          cwd: fixture.linked,
+          encoding: "utf8",
+          env: { ...fixture.env, TSX_TSCONFIG_PATH: join(anchor, "tsconfig.json") },
+        },
+      );
+      expect.soft(provision.status, provision.stderr).toBe(1);
+      expect.soft(provision.stderr).toContain("Usage: worktree-provision.mts");
+      expect.soft(provision.stderr).toContain("[pr-worktree-provision] FAILED (exit 1)");
+      expect
+        .soft(fixture.git(fixture.canonical, ["for-each-ref", "refs/openclaw"]).stdout)
+        .toBe("");
       // A later install may remove or redirect the canonical package aliases.
       // The materialized owner must keep its original installed dependency.
       const canonicalYaml = join(fixture.canonical, "node_modules/yaml");
@@ -905,9 +978,16 @@ fi
     },
   );
 
-  itPosix.each(["tampered", "missing"])(
-    "refuses an extracted anchor with a %s dependency",
-    (fault) => {
+  itPosix.each(
+    [
+      "scripts/lib/anchor-review-record.mjs",
+      "src/agents/worktrees/checkout.ts",
+      "src/state/openclaw-state-schema.sql",
+      "tsconfig.json",
+    ].flatMap((resource) => ["tampered", "missing"].map((fault) => ({ resource, fault }))),
+  )(
+    "refuses an extracted anchor with a $fault source/resource $resource",
+    ({ resource, fault }) => {
       const fixture = makeMismatchedWrapperRepo({ realModules: true });
       advanceAnchorReviewDependency(fixture);
       parkCanonicalOffAnchor(fixture);
@@ -919,9 +999,9 @@ fi
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-C" ]; then
     if [ "$OPENCLAW_TEST_FAULT" = missing ]; then
-      rm "$2/scripts/lib/anchor-review-record.mjs"
+      rm "$2/$OPENCLAW_TEST_FAULT_PATH"
     else
-      printf '\\n// tampered\\n' >> "$2/scripts/lib/anchor-review-record.mjs"
+      printf '\\n// tampered\\n' >> "$2/$OPENCLAW_TEST_FAULT_PATH"
     fi
     exit
   fi
@@ -938,6 +1018,7 @@ exit 99
           ...fixture.env,
           OPENCLAW_TEST_TAR: resolveCommand("tar"),
           OPENCLAW_TEST_FAULT: fault,
+          OPENCLAW_TEST_FAULT_PATH: resource,
         },
       });
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
@@ -1093,10 +1174,96 @@ exit 99
     },
   );
 
-  it.each(["tsx", "zod", "minimatch", "yaml"])(
-    "refuses the missing %s toolchain before handoff without installing dependencies",
-    (dependency) => {
+  itPosix.each([
+    { installed: false, devWrapper: false },
+    { installed: false, devWrapper: true },
+    { installed: true, devWrapper: false },
+  ])(
+    "loads matching linked helper dependencies (installed=$installed, dev-wrapper=$devWrapper)",
+    ({ installed, devWrapper }) => {
+      const fixture = makeMismatchedWrapperRepo({
+        dispatchBody: 'node "$script_parent_dir/verify-pr-hosted-gates.mjs" --anchor-proof;',
+      });
+      fixture.git(fixture.linked, ["reset", "--hard", "refs/remotes/origin/main"]);
+      parkCanonicalOffAnchor(fixture);
+      const linkedModules = join(fixture.linked, "node_modules");
+      expect(existsSync(linkedModules)).toBe(false);
+      const dependencies = ["tsx", "zod", "minimatch", "yaml"];
+      const targets = dependencies.map((name) =>
+        realpathSync(join(fixture.canonical, "node_modules", name)),
+      );
+      if (installed) {
+        mkdirSync(linkedModules);
+        dependencies.forEach((name, index) =>
+          symlinkSync(targets[index]!, join(linkedModules, name), "dir"),
+        );
+      }
+      const ghCalled = join(fixture.root, "gh-called");
+      writeFileSync(join(fixture.bin, "gh"), `#!/bin/sh\ntouch "${ghCalled}"\nexit 99\n`);
+      const result = spawnSync(
+        join(fixture.linked, "scripts/pr"),
+        [...(devWrapper ? ["--dev-wrapper"] : []), "ci-dispatch", "123"],
+        { cwd: fixture.linked, encoding: "utf8", env: fixture.env },
+      );
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
+      expect(result.stderr).toContain("Unknown option: --anchor-proof");
+      expect(existsSync(ghCalled)).toBe(false);
+      expect(existsSync(linkedModules)).toBe(installed);
+      expect(result.stderr).not.toContain("dev-wrapper opt-in");
+      const anchors = readdirSync(fixture.root).filter((name) =>
+        name.startsWith("openclaw-pr-anchor."),
+      );
+      expect(anchors).toHaveLength(installed ? 0 : 1);
+      if (!installed) {
+        expect(result.stderr).toContain("matches origin/main but has no node_modules directory");
+        expect(result.stderr).toContain("running wrapper code materialized from");
+        expect(
+          dependencies.map((name) =>
+            realpathSync(join(fixture.root, anchors[0]!, "node_modules", name)),
+          ),
+        ).toEqual(targets);
+      }
+    },
+  );
+
+  itPosix.each([
+    { args: ["gc", "--dry-run"], status: 0, message: "No merged/closed PR worktrees eligible" },
+    {
+      args: ["lock-recover", "123", "a".repeat(40), "invalid-confirmation"],
+      status: 2,
+      message: "Recovery requires --confirmed-no-running-tools",
+    },
+    { args: ["unknown-command"], status: 2, message: "Usage:" },
+  ])("keeps matching linked $args dependency-free", ({ args, status, message }) => {
+    const fixture = makeMismatchedWrapperRepo();
+    fixture.git(fixture.linked, ["reset", "--hard", "refs/remotes/origin/main"]);
+    parkCanonicalOffAnchor(fixture);
+    rmSync(join(fixture.canonical, "node_modules"), { recursive: true });
+    const result = spawnSync(join(fixture.linked, "scripts/pr"), args, {
+      cwd: fixture.linked,
+      encoding: "utf8",
+      env: fixture.env,
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(status);
+    expect(`${result.stdout}${result.stderr}`).toContain(message);
+    expect(existsSync(join(fixture.linked, "node_modules"))).toBe(false);
+    expect(
+      readdirSync(fixture.root).filter((name) => name.startsWith("openclaw-pr-anchor.")),
+    ).toEqual([]);
+    expect(fixture.git(fixture.canonical, ["for-each-ref", "refs/openclaw"]).stdout).toBe("");
+  });
+
+  it.each(
+    ["tsx", "zod", "minimatch", "yaml", "@openclaw/fs-safe", "jiti", "kysely"].flatMap(
+      (dependency) => [false, true].map((matching) => ({ dependency, matching })),
+    ),
+  )(
+    "refuses missing $dependency before handoff (matching=$matching) without installing",
+    ({ dependency, matching }) => {
       const fixture = makeMismatchedWrapperRepo();
+      if (matching) {
+        fixture.git(fixture.linked, ["reset", "--hard", "refs/remotes/origin/main"]);
+      }
       const installedDependency = join(fixture.canonical, "node_modules", dependency);
       rmSync(installedDependency);
       writeFileSync(
@@ -1157,45 +1324,82 @@ exit 99
     },
   );
 
-  it("keeps merge wrapper modes delegated to the main PR helper", () => {
-    const script = readScript("scripts/pr-merge");
-
-    expect(script).toContain("scripts/pr-merge <PR>");
-    expect(script).toContain('exec "$base" merge-verify "$1"');
-    expect(script).toContain('exec "$base" merge-verify "$pr"');
-    expect(script).toContain('exec "$base" merge-run "$pr"');
-  });
-
-  it("defaults to squash and allows commit-preserving merge methods", () => {
-    const script = readScript("scripts/pr-lib/merge.sh");
-
-    expect(script).toContain("OPENCLAW_PR_MERGE_METHOD:-squash");
-    expect(script).toContain("--squash");
-    expect(script).toContain("--merge");
-    expect(script).toContain("--rebase");
-    expect(script).toContain("--auto");
-    expect(script).toContain('--match-head-commit "$PREP_HEAD_SHA"');
-  });
-
-  it("keeps prepare wrapper modes delegated to the main PR helper", () => {
-    const script = readScript("scripts/pr-prepare");
-
-    expect(script).toContain("scripts/pr-prepare <init|validate-commit|gates|push|run> <PR>");
-    for (const mode of ["init", "validate-commit", "gates", "push", "run"]) {
-      expect(script).toContain(`${mode})`);
+  describe("alias wrapper trust delegation", () => {
+    function makeAliasFixture() {
+      const fixture = makeMismatchedWrapperRepo({ realModules: true });
+      fixture.git(fixture.linked, ["checkout", "--detach", "refs/remotes/origin/main"]);
+      // Keep the Node recorder at the supervisor handoff, after dependency preparation.
+      linkPrWrapperDependencies(fixture.linked);
+      for (const alias of ["pr-prepare", "pr-review", "pr-merge"]) {
+        cpSync(join("scripts", alias), join(fixture.linked, "scripts", alias));
+      }
+      fixture.git(fixture.canonical, ["checkout", "-b", "parked"]);
+      writeFileSync(
+        join(fixture.canonical, "scripts/pr"),
+        '#!/bin/sh\necho "stale canonical wrapper executed"\nexit 91\n',
+      );
+      fixture.git(fixture.canonical, ["add", "scripts/pr"]);
+      fixture.git(fixture.canonical, ["commit", "-m", "test: stale canonical wrapper"]);
+      const recorder = join(fixture.bin, "node");
+      writeFileSync(recorder, '#!/bin/sh\nprintf \'%s\\0\' "$PWD" "$@"\nexit 73\n');
+      chmodSync(recorder, 0o755);
+      const caller = join(fixture.root, "caller directory");
+      mkdirSync(caller);
+      return { ...fixture, caller };
     }
-    expect(script).toContain('exec "$base" prepare-init "$pr"');
-    expect(script).toContain('exec "$base" prepare-validate-commit "$pr"');
-    expect(script).toContain('exec "$base" prepare-gates "$pr"');
-    expect(script).toContain('exec "$base" prepare-push "$pr"');
-    expect(script).toContain('exec "$base" prepare-run "$pr"');
-  });
 
-  it("keeps review wrapper delegated to review-init", () => {
-    const script = readScript("scripts/pr-review");
+    itPosix.each([
+      ...["init", "validate-commit", "gates", "push", "run"].map(
+        (mode) => ["pr-prepare", [mode, "123"], [`prepare-${mode}`, "123"]] as const,
+      ),
+      [
+        "pr-review",
+        ["123", "argument with spaces", ""],
+        ["review-init", "123", "argument with spaces", ""],
+      ],
+      ["pr-merge", ["123"], ["merge-verify", "123"]],
+      ["pr-merge", ["verify", "123"], ["merge-verify", "123"]],
+      ["pr-merge", ["run", "123"], ["merge-run", "123"]],
+    ] as const)("%s delegates %j through the trusted sibling", (alias, args, mapped) => {
+      const fixture = makeAliasFixture();
+      const result = spawnSync(join(fixture.linked, "scripts", alias), args, {
+        cwd: fixture.caller,
+        encoding: "utf8",
+        env: fixture.env,
+      });
+      expect(result.status, result.stderr).toBe(73);
+      expect(result.stderr).toBe("");
+      expect(result.stdout.split("\0")).toEqual([
+        fixture.caller,
+        join(fixture.linked, "scripts/pr-lib/process-group-runner.mjs"),
+        fixture.canonical,
+        join(fixture.linked, "scripts/pr"),
+        ...mapped,
+        "",
+      ]);
+    });
 
-    expect(script).toContain('base="$script_dir/pr"');
-    expect(script).toContain('exec "$base" review-init "$@"');
+    itPosix.each([
+      ["pr-prepare", ["run", "123"]],
+      ["pr-review", ["123"]],
+      ["pr-merge", ["run", "123"]],
+    ] as const)(
+      "%s preserves refusal with a spoofed anchor and developer opt-in",
+      (alias, args) => {
+        const fixture = makeAliasFixture();
+        fixture.git(fixture.linked, ["branch", "origin/main", "refs/remotes/origin/main"]);
+        fixture.git(fixture.linked, ["update-ref", "-d", "refs/remotes/origin/main"]);
+        const result = spawnSync(join(fixture.linked, "scripts", alias), args, {
+          cwd: fixture.caller,
+          encoding: "utf8",
+          env: { ...fixture.env, OPENCLAW_PR_DEV_WRAPPER: "1" },
+        });
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toContain("Refusing to silently substitute");
+        expect(result.stderr).toContain("classified landing; dev-wrapper opt-in is unavailable");
+        expect(result.stdout).toBe("");
+      },
+    );
   });
 
   it("refuses to substitute a different canonical wrapper implementation", () => {
@@ -1507,11 +1711,26 @@ exit 99
     { name: "successful last quota request", status: 200, code: 0, body: viewer, headers: quota },
   ];
 
+  const esmPreflightCase: (typeof preflightCases)[number] = {
+    name: "valid viewer below an ESM package",
+    status: 200,
+    code: 0,
+    body: viewer,
+  };
   it.each([
-    ...preflightCases.map((scenario) => ({ ...scenario, route: "default" })),
-    { ...preflightCases[0]!, route: "override" },
-  ])("GitHub API preflight: $name ($route)", ({ route, ...scenario }) => {
-    const dir = tempDirs.make("openclaw-pr-auth-");
+    ...preflightCases.map((scenario) => ({ ...scenario, route: "default", esmParent: false })),
+    { ...preflightCases[0]!, route: "override", esmParent: false },
+    { ...esmPreflightCase, route: "default", esmParent: true },
+    { ...esmPreflightCase, route: "override", esmParent: true },
+  ])("GitHub API preflight: $name ($route)", ({ route, esmParent, ...scenario }) => {
+    const root = tempDirs.make("openclaw-pr-auth-");
+    const dir = esmParent ? join(root, "fixture") : root;
+    if (esmParent) {
+      writeFileSync(join(root, "package.json"), '{"type":"module"}\n');
+      mkdirSync(dir);
+    }
+    // Both extensionless executables use CommonJS, even below a repo-local TMPDIR.
+    writeFileSync(join(dir, "package.json"), '{"type":"commonjs"}\n');
     const env = isolatedWrapperEnv(dir);
     const bin = join(dir, "bin");
     mkdirSync(bin);

@@ -15,8 +15,6 @@ import {
   INTERNAL_RUNTIME_CONTEXT_END,
 } from "./internal-runtime-context.js";
 
-const MAX_CHILD_RESULT_CHARS = 6_000;
-const CHILD_RESULT_TRUNCATION_NOTICE = "\n[child result truncated]";
 const MAX_STATUS_LABEL_CHARS = 500;
 const STATUS_LABEL_TRUNCATION_MARKER = "…[truncated]";
 
@@ -83,16 +81,42 @@ describe("agent internal events", () => {
     expect(media).toEqual(["https://example.test/report.png"]);
   });
 
-  it("bounds protected and plain child-result projections after escaping", () => {
-    const fullResult = `${"<".repeat(MAX_CHILD_RESULT_CHARS)}-unbounded-tail`;
-    const event = taskCompletionEvent(fullResult);
-    const protectedResult = extractChildResult(formatAgentInternalEventsForPrompt([event]));
-    const plainResult = extractChildResult(resolveAcpPromptBody("", [event]));
+  it("normalizes media references while preserving Unicode and delimiter modes", () => {
+    const unicode = "雪😀\ud800x\udc00\u0085\u200b\u2028Z";
+    const reference = ` /tmp/a\r\nb\rc\nd\te\u0000f\u001fg\u007fh/${unicode}/${INTERNAL_RUNTIME_CONTEXT_BEGIN}/${INTERNAL_RUNTIME_CONTEXT_END}.png `;
+    const normalized = `/tmp/a b c d e f g h/${unicode}/${INTERNAL_RUNTIME_CONTEXT_BEGIN}/${INTERNAL_RUNTIME_CONTEXT_END}.png`;
+    const protectedReference = `/tmp/a b c d e f g h/${unicode}/[[OPENCLAW_INTERNAL_CONTEXT_BEGIN]]/[[OPENCLAW_INTERNAL_CONTEXT_END]].png`;
+    const mediaUrls = [reference, normalized];
+    const raw = buildGeneratedMediaDeliveryContext(mediaUrls, false);
+    const protectedPrompt = formatAgentInternalEventsForPrompt([
+      { ...taskCompletionEvent("result"), mediaUrls },
+    ]);
 
+    expect(raw.find((fragment) => fragment.kind === "conversation-data")?.text).toBe(
+      `Generated media:\nMEDIA:${normalized}`,
+    );
+    expect(protectedPrompt).toContain(`\nGenerated media:\nMEDIA:${protectedReference}\n`);
+    expect(protectedPrompt.split("\nMEDIA:")).toHaveLength(2);
+    expect(mediaUrls).toEqual([reference, normalized]);
+  });
+
+  it("preserves complete child results in parent context and retained transcript projections", () => {
+    const fullResult = `${"<🚀>".repeat(2_000)}-required-tail`;
+    const event = taskCompletionEvent(fullResult);
+    const protectedPrompt = formatAgentInternalEventsForPrompt([event]);
+    const protectedResult = extractChildResult(protectedPrompt);
+    const plainResult = extractChildResult(resolveAcpPromptBody("", [event]));
+    const transcriptResult = extractChildResult(
+      resolveInternalEventTranscriptBody(protectedPrompt, [event]),
+    );
+    const data = buildAgentInternalEventContext([event]).find(
+      (fragment) => fragment.kind === "conversation-data",
+    );
+
+    expect(protectedResult).toBe(`${"&lt;🚀&gt;".repeat(2_000)}-required-tail`);
     expect(protectedResult).toBe(plainResult);
-    expect(protectedResult.length).toBeLessThanOrEqual(MAX_CHILD_RESULT_CHARS);
-    expect(protectedResult.endsWith(CHILD_RESULT_TRUNCATION_NOTICE)).toBe(true);
-    expect(protectedResult).not.toContain("unbounded-tail");
+    expect(transcriptResult).toBe(protectedResult);
+    expect(data?.text).toContain(fullResult);
     expect(event.result).toBe(fullResult);
   });
 

@@ -1,9 +1,11 @@
 import { vi } from "vitest";
+import { createInfoWarnErrorLogger } from "../../test/helpers/mock-logger.js";
 import type { scheduleGatewayPostReadyMaintenance } from "./server-runtime-services.js";
 
 type StartSessionDeliveryRuntime =
   typeof import("../infra/session-delivery-queue-runtime.js").startSessionDeliveryRuntime;
-type StartHeartbeatRunner = typeof import("../infra/heartbeat-runner.js").startHeartbeatRunner;
+type StartHeartbeatRunner =
+  typeof import("../infra/heartbeat-runner-scheduler.js").startHeartbeatRunner;
 type DrainPendingDeliveries =
   typeof import("../infra/outbound/delivery-queue-recovery.js").drainPendingDeliveriesCore;
 type RecoverPendingDeliveries =
@@ -52,11 +54,11 @@ const runtimeServiceMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../infra/heartbeat-runner.js", () => ({
-  resolveHeartbeatAgents: (cfg: { agents?: { defaults?: { heartbeat?: unknown } } }) => [
-    { agentId: "main", heartbeat: cfg.agents?.defaults?.heartbeat },
-  ],
+vi.mock("../infra/heartbeat-runner-scheduler.js", () => ({
   startHeartbeatRunner: runtimeServiceMocks.startHeartbeatRunner,
+}));
+
+vi.mock("../infra/heartbeat-runner-run.js", () => ({
   runHeartbeatOnce: runtimeServiceMocks.runHeartbeatOnce,
 }));
 
@@ -112,20 +114,14 @@ export function waitForFast<T>(
 
 export function createLog() {
   return {
-    child: vi.fn(() => ({
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    })),
+    child: vi.fn(() => createInfoWarnErrorLogger()),
     warn: vi.fn(),
     error: vi.fn(),
   };
 }
 
-export const createTestCron = () => ({ start: vi.fn<() => Promise<void>>(async () => {}) });
-
 export function createTestCronState(
-  cron: { start: () => Promise<void> } = createTestCron(),
+  cron: { start: () => Promise<void> } = { start: vi.fn(async () => {}) },
   cronEnabled = true,
 ) {
   return {
@@ -171,6 +167,7 @@ export function createMaintenanceHandles() {
     dedupeCleanup: setInterval(() => undefined, 60_000),
     startMediaCleanup: vi.fn(async () => undefined),
     stopMediaCleanup: vi.fn(async () => "drained" as const),
+    stopSessionColdStorageMaintenance: vi.fn(async () => {}),
     worktreeCleanup: setInterval(() => undefined, 60_000),
     skillUsageCleanup: vi.fn(),
   };

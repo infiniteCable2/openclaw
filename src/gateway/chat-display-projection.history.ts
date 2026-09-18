@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { expectDefined } from "@openclaw/normalization-core";
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE } from "../agents/internal-runtime-context.js";
 import { isHeartbeatOkResponse, isHeartbeatUserMessage } from "../auto-reply/heartbeat-filter.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
@@ -14,12 +13,14 @@ import {
 } from "../sessions/input-provenance.js";
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { projectAssistantDisplayContent } from "../shared/assistant-display-content.js";
+import { extractAssistantPhaseText } from "../shared/chat-message-content.js";
 import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-openclaw-assistant.js";
 import { extractChatHistoryBlockText } from "./chat-display-projection.canvas.js";
 import {
   asRoleContentMessage,
   extractProjectedText,
   hasAssistantNonTextContent,
+  hasAssistantDisplayableNonTextContent,
   hasTranscriptMediaFacts,
   isEmptyTextOnlyContent,
   isProjectedSessionsSendForwardedMessage,
@@ -74,6 +75,15 @@ function readAssistantTtsSupplementMarker(
     }
   }
   return hasSupplementBlock ? marker : undefined;
+}
+
+/** Recognize stored supplements using the same display content as full history. */
+export function isAssistantTtsSupplementMessage(message: unknown): boolean {
+  const record = readRecord(message);
+  return (
+    record !== undefined &&
+    readAssistantTtsSupplementMarker(projectAssistantDisplayContent(record)) !== undefined
+  );
 }
 
 function readTtsSupplementTargetText(message: Record<string, unknown>): string {
@@ -199,38 +209,45 @@ function isChatHistoryAssistantMessage(message: unknown): boolean {
   return readRecord(message)?.role === "assistant";
 }
 
+export function createPreSessionStartAnnouncePairFilter(sessionStartedAt: number | undefined) {
+  let precedingAnnounce = false;
+  return (messages: unknown[]): unknown[] => {
+    if (sessionStartedAt === undefined || messages.length === 0) {
+      return messages;
+    }
+    let changed = false;
+    const kept: unknown[] = [];
+    for (const current of messages) {
+      if (precedingAnnounce) {
+        precedingAnnounce = false;
+        const ts = isChatHistoryAssistantMessage(current)
+          ? readChatHistoryRecordTimestampMs(current)
+          : undefined;
+        if (typeof ts === "number" && ts < sessionStartedAt) {
+          changed = true;
+          continue;
+        }
+      }
+      if (isSubagentAnnounceInterSessionUserChatHistoryMessage(current)) {
+        const ts = readChatHistoryRecordTimestampMs(current);
+        if (typeof ts === "number" && ts < sessionStartedAt) {
+          // The adjacent assistant may arrive in the next appended chunk.
+          precedingAnnounce = true;
+          changed = true;
+          continue;
+        }
+      }
+      kept.push(current);
+    }
+    return changed ? kept : messages;
+  };
+}
+
 export function dropPreSessionStartAnnouncePairs(
   messages: unknown[],
   sessionStartedAt: number | undefined,
 ): unknown[] {
-  if (sessionStartedAt === undefined || messages.length === 0) {
-    return messages;
-  }
-  let changed = false;
-  const kept: unknown[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const current = messages[i];
-    if (isSubagentAnnounceInterSessionUserChatHistoryMessage(current)) {
-      const ts = readChatHistoryRecordTimestampMs(current);
-      if (typeof ts === "number" && ts < sessionStartedAt) {
-        const next = messages[i + 1];
-        const nextTs = readChatHistoryRecordTimestampMs(next);
-        if (
-          isChatHistoryAssistantMessage(next) &&
-          typeof nextTs === "number" &&
-          nextTs < sessionStartedAt
-        ) {
-          // Skip only an assistant reply that is also pre-session-start; recent
-          // or timestampless assistants may be real fresh-session context.
-          i++;
-        }
-        changed = true;
-        continue;
-      }
-    }
-    kept.push(current);
-  }
-  return changed ? kept : messages;
+  return createPreSessionStartAnnouncePairFilter(sessionStartedAt)(messages);
 }
 
 function isDisplayHiddenProjectedMessage(message: Record<string, unknown>): boolean {
@@ -356,6 +373,21 @@ function isDuplicateChannelFinalDeliveryMirror(
     return false;
   }
   const previousMeta = readRecord(previousVisible["__openclaw"]);
+  if (typeof deliveryMirror.sourceAssistantMessageId === "string") {
+    if (
+      !deliveryMirror.sourceAssistantMessageId ||
+      deliveryMirror.sourceAssistantMessageId !== previousMeta?.id ||
+      hasAssistantDisplayableNonTextContent(previousVisible) ||
+      hasAssistantNonTextContent(current) ||
+      hasTranscriptMediaFacts(previousVisible) ||
+      hasTranscriptMediaFacts(current)
+    ) {
+      return false;
+    }
+    const previousText = extractAssistantPhaseText(previousVisible)?.trim();
+    const currentText = extractAssistantPhaseText(current)?.trim();
+    return Boolean(previousText && currentText && previousText === currentText);
+  }
   if (typeof previousMeta?.mirrorIdentity !== "string" || !previousMeta.mirrorIdentity.trim()) {
     return false;
   }
@@ -455,25 +487,12 @@ function stripInterSessionPromptPrefixFromContent(content: unknown): unknown {
   });
 }
 
-function extractPromptPrefixField(text: string, field: string): string | undefined {
-  const prefixIndex = text.indexOf(INTER_SESSION_PROMPT_PREFIX_BASE);
-  if (prefixIndex === -1) {
-    return undefined;
-  }
-  const lineEnd = text.indexOf("\n", prefixIndex);
-  const header = lineEnd === -1 ? text.slice(prefixIndex) : text.slice(prefixIndex, lineEnd);
-  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`(?:^|\\s)${escapedField}=([^\\s]+)`).exec(header);
-  return normalizeOptionalString(match?.[1]);
-}
-
 function resolveSessionsSendForwardedSenderSession(
   message: Record<string, unknown>,
 ): { sessionKey?: string; agentId?: string } | undefined {
+  // Only structured provenance identifies the sender; prompt headers are display text.
   const provenance = normalizeInputProvenance(message.provenance);
-  const text = extractProjectedText(message.content ?? message.text);
-  const sourceSessionKey =
-    provenance?.sourceSessionKey ?? extractPromptPrefixField(text, "sourceSession");
+  const sourceSessionKey = provenance?.sourceSessionKey;
   const agentId = parseAgentSessionKey(sourceSessionKey)?.agentId;
   return sourceSessionKey
     ? { sessionKey: sourceSessionKey, ...(agentId ? { agentId } : {}) }

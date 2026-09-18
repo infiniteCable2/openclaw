@@ -90,13 +90,15 @@ export async function readMirroredSessionHistoryMessages(params: {
   sessionTarget?: Partial<SessionTranscriptTargetParams>;
   admission?: TranscriptTurnAdmission;
   signal?: AbortSignal;
+  contextTokenBudget?: number;
 }): Promise<AgentMessage[] | undefined> {
-  const { admission, signal, ...target } = params;
+  const { admission, signal, contextTokenBudget, ...target } = params;
   const messages = await readCodexMirroredSessionHistoryMessages(
     target,
     admission,
     "model-context",
     signal,
+    contextTokenBudget,
   );
   if (!messages) {
     embeddedAgentLog.warn("failed to read mirrored session history for codex harness hooks", {
@@ -754,7 +756,7 @@ function renderCodexWorkspaceBootstrapPromptContext(
     return undefined;
   }
   const lines = [
-    "OpenClaw loaded these user-editable workspace files for the current turn. Codex loads project-local AGENTS.md natively. When execution uses another folder, OpenClaw supplies the agent workspace AGENTS.md as thread-level developer instructions. SOUL.md, IDENTITY.md, and USER.md remain turn-scoped collaboration instructions. Those files are not repeated here.",
+    "OpenClaw loaded these user-editable workspace files for the current turn. Codex loads project-local AGENTS.md natively. When execution uses another folder, OpenClaw supplies the agent workspace AGENTS.md as thread-level developer instructions. SOUL.md, IDENTITY.md, and USER.md are prepared separately from user input and are not repeated here.",
     "",
     "# Project Context",
     "",

@@ -7,7 +7,10 @@ import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
-import { WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
+import {
+  WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
+  WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
+} from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../../infra/node-runner-inventory.js";
 import { WorkerProviderError, type WorkerProvider } from "../../plugins/types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -80,6 +83,7 @@ describe("worker environment service provision replay", () => {
     const physicalLeases = new Set<string>();
     const operationIds: string[] = [];
     const machineClasses: Array<string | undefined> = [];
+    const operatingSystems: Array<string | undefined> = [];
     const destroyed: string[] = [];
     let creates = 0;
     let loseFirstReply = true;
@@ -88,6 +92,7 @@ describe("worker environment service provision replay", () => {
         provision: async (_profile, operationId, options) => {
           operationIds.push(operationId);
           machineClasses.push(options?.machineClass);
+          operatingSystems.push(options?.os);
           if (!physicalLeases.has("lease-restarted")) {
             creates += 1;
             physicalLeases.add("lease-restarted");
@@ -106,7 +111,15 @@ describe("worker environment service provision replay", () => {
     const first = support.createService(provider());
 
     await expect(
-      first.create("development", "request-restart-replay", "large"),
+      first.create(
+        "development",
+        "request-restart-replay",
+        "large",
+        undefined,
+        undefined,
+        undefined,
+        "os-a",
+      ),
     ).rejects.toMatchObject({
       code: "provider_failure",
     } satisfies Partial<WorkerEnvironmentServiceError>);
@@ -149,6 +162,7 @@ describe("worker environment service provision replay", () => {
     expect(creates).toBe(1);
     expect(operationIds).toEqual([operationId, operationId]);
     expect(machineClasses).toEqual(["large", "large"]);
+    expect(operatingSystems).toEqual(["os-a", "os-a"]);
     expect(destroyed).toEqual(["lease-restarted"]);
     expect(physicalLeases.size).toBe(0);
     expect(support.testState.store.get(environmentId)).toMatchObject({
@@ -203,7 +217,10 @@ describe("worker environment service provision replay", () => {
     });
     support.testState.prepareInstallation = vi.fn(async () => ({
       ...support.BUNDLE_ARTIFACT,
-      protocolFeatures: [WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE],
+      protocolFeatures: [
+        WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
+        WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
+      ],
     }));
     let placements = createWorkerSessionPlacementStore({
       database: support.testState.stateDb,
@@ -222,7 +239,10 @@ describe("worker environment service provision replay", () => {
     const first = support.createService(provider, {
       ensureNodeWorkerBundle: async () => ({
         ...support.BOOTSTRAP_RECEIPT,
-        protocolFeatures: [WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE],
+        protocolFeatures: [
+          WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
+          WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
+        ],
       }),
       prepareNodeEnrollment: async () => {
         throw new Error("first provision reply was lost before node enrollment");
@@ -278,7 +298,10 @@ describe("worker environment service provision replay", () => {
     const restarted = support.createService(provider, {
       ensureNodeWorkerBundle: async () => ({
         ...support.BOOTSTRAP_RECEIPT,
-        protocolFeatures: [WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE],
+        protocolFeatures: [
+          WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
+          WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
+        ],
       }),
       prepareNodeEnrollment: async (record) => {
         const enrolled = support.testState.store.ensureNodeEnrollment(record.environmentId);
@@ -570,10 +593,7 @@ describe("worker environment service provision replay", () => {
     let active = 0;
     let maxActive = 0;
     let originalProvisionCalls = 0;
-    let finishFirstProvision: (() => void) | undefined;
-    const firstProvisionPending = new Promise<void>((resolve) => {
-      finishFirstProvision = resolve;
-    });
+    const { promise: firstProvisionPending, resolve: finishFirstProvision } = createDeferredCore();
     const destroy = vi.fn(async () => {
       events.push("destroy:start");
       active += 1;

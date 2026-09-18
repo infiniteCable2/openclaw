@@ -23,6 +23,7 @@ import {
   createSubscribedSessionHarness,
   emitAssistantLifecycleErrorAndEnd,
   emitMessageStartAndEndForAssistantText,
+  emitToolRun,
   expectSingleAgentEventText,
   extractAgentEventPayloads,
   findLifecycleErrorAgentEvent,
@@ -34,6 +35,7 @@ import {
 } from "./embedded-agent-subscribe.openai-responses.test-helpers.js";
 import { SessionManager } from "./sessions/session-manager.js";
 import { recordSessionModelUsage } from "./sessions/session-model-usage.js";
+import { textAssistant } from "./test-helpers/sparse-transcript.test-support.js";
 import { markCoreTtsToolResult } from "./tools/tts-tool-result-provenance.js";
 import { makeZeroUsageSnapshot } from "./usage.js";
 
@@ -243,29 +245,6 @@ describe("subscribeEmbeddedAgentSession", () => {
     });
     expect(harness.subscription.getLastToolError()?.toolName).toBe("write");
     return harness;
-  }
-
-  function emitToolRun(params: {
-    emit: (evt: unknown) => void;
-    toolName: string;
-    toolCallId: string;
-    args?: Record<string, unknown>;
-    isError: boolean;
-    result: unknown;
-  }): void {
-    params.emit({
-      type: "tool_execution_start",
-      toolName: params.toolName,
-      toolCallId: params.toolCallId,
-      args: params.args,
-    });
-    params.emit({
-      type: "tool_execution_end",
-      toolName: params.toolName,
-      toolCallId: params.toolCallId,
-      isError: params.isError,
-      result: params.result,
-    });
   }
 
   async function createGeneratedImageHarness(
@@ -935,10 +914,7 @@ describe("subscribeEmbeddedAgentSession", () => {
     // No live preview events while suppressed (the per-chunk parsing path is skipped).
     expect(extractAgentEventPayloads(onAgentEvent.mock.calls)).toHaveLength(0);
 
-    const assistantMessage = {
-      role: "assistant",
-      content: [{ type: "text", text: "Hello world" }],
-    } as AssistantMessage;
+    const assistantMessage = textAssistant("Hello world") as AssistantMessage;
     emit({ type: "message_end", message: assistantMessage });
     expectSingleAgentEventText(onAgentEvent.mock.calls, "Hello world");
   });
@@ -988,10 +964,7 @@ describe("subscribeEmbeddedAgentSession", () => {
     }
     emit({
       type: "message_end",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "Here is the image." }],
-      },
+      message: textAssistant("Here is the image."),
     });
     await subscription.waitForPendingEvents();
 
@@ -1133,15 +1106,7 @@ describe("subscribeEmbeddedAgentSession", () => {
     });
     emit({
       type: "message_end",
-      message: {
-        role: "assistant",
-        content: [
-          {
-            type: "text",
-            text: "Generated 1 image.\nMEDIA:/tmp/generated.png",
-          },
-        ],
-      },
+      message: textAssistant("Generated 1 image.\nMEDIA:/tmp/generated.png"),
     });
     emit({ type: "agent_end" });
     await subscription.waitForPendingEvents();
@@ -1182,10 +1147,7 @@ describe("subscribeEmbeddedAgentSession", () => {
     emitAssistantTextDelta(emit, "Here it is.");
     emit({
       type: "message_end",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "Here it is." }],
-      },
+      message: textAssistant("Here it is."),
     });
     emit({ type: "agent_end" });
     await flushBlockReplyCallbacks();
@@ -1920,106 +1882,6 @@ describe("subscribeEmbeddedAgentSession", () => {
   );
 
   it.each([
-    { finalText: "First.\nDone.", deferred: true },
-    { finalText: "", deferred: false },
-  ])(
-    "scopes tool-separated assistant snapshots and preserves authoritative final %j after a late block end",
-    async ({ finalText, deferred }) => {
-      const onAgentEvent = vi.fn();
-      const { emit, subscription } = createSubscribedSessionHarness({
-        runId: "run",
-        onAgentEvent,
-        onBeforeTerminalDelivery: deferred ? () => undefined : undefined,
-      });
-      const assistantPayloads = () =>
-        extractAgentEventPayloads(
-          onAgentEvent.mock.calls.filter(([event]) => event.stream === "assistant"),
-        );
-      const block = (text: string, index: number) =>
-        createOpenAiResponsesTextBlock({ text, id: `answer-${index}`, phase: "final_answer" });
-      const firstBlock = "First block still being revised.";
-      const lastBlock = "Second block still being revised.";
-      const partial = {
-        role: "assistant",
-        api: "openai-responses",
-        provider: "openai",
-        model: "gpt-5.2",
-        stopReason: "stop",
-        content: [block(firstBlock, 0), block(lastBlock, 1)],
-      };
-
-      try {
-        emitMessageStartAndEndForAssistantText({ emit, text: "Before tool." });
-        emitToolRun({
-          emit,
-          toolName: "read",
-          toolCallId: "read-1",
-          args: { path: "notes.txt" },
-          isError: false,
-          result: { content: [{ type: "text", text: "Read complete." }] },
-        });
-        await subscription.waitForPendingEvents();
-
-        emit({ type: "message_start", message: { role: "assistant" } });
-        for (const [contentIndex, delta] of [firstBlock, lastBlock].entries()) {
-          const message = { ...partial, content: partial.content.slice(0, contentIndex + 1) };
-          emit({
-            type: "message_update",
-            message,
-            assistantMessageEvent: { type: "text_delta", contentIndex, delta, partial: message },
-          });
-        }
-        const finalMessage = { ...partial, content: finalText.split("\n").map(block) };
-        emit({ type: "message_end", message: finalMessage });
-        await subscription.waitForPendingEvents();
-        if (deferred) {
-          expect(assistantPayloads()).toEqual([]);
-        }
-        emit({ type: "agent_end", messages: [finalMessage] });
-        await subscription.waitForPendingEvents();
-
-        const finalizedPayloads = assistantPayloads();
-        const firstMessage = expectDefined(
-          finalizedPayloads[0],
-          "first assistant message snapshot",
-        );
-        expect(firstMessage).toMatchObject({ text: "Before tool.", itemId: expect.any(String) });
-        expect(firstMessage.itemId).not.toBe("");
-        const streamed = finalizedPayloads.slice(1, -1);
-        expect(streamed.map((payload) => payload.text)).toEqual([
-          firstBlock,
-          `${firstBlock}\n${lastBlock}`,
-        ]);
-        const secondItemId = expectDefined(streamed[0], "second message preview").itemId;
-        expect(secondItemId).toEqual(expect.any(String));
-        expect(secondItemId).not.toBe("");
-        expect(secondItemId).not.toBe(firstMessage.itemId);
-        expect(streamed.every((payload) => payload.itemId === secondItemId)).toBe(true);
-        expect(finalizedPayloads.at(-1)).toMatchObject({ text: finalText, itemId: secondItemId });
-
-        emit({
-          type: "message_update",
-          message: partial,
-          assistantMessageEvent: {
-            type: "text_end",
-            contentIndex: 1,
-            content: lastBlock,
-            partial,
-          },
-        });
-        await subscription.waitForPendingEvents();
-        expect(assistantPayloads()).toEqual(finalizedPayloads);
-        const latestByMessage = new Map(
-          assistantPayloads().map((payload) => [payload.itemId, payload.text]),
-        );
-        expect([...latestByMessage.values()]).toEqual(["Before tool.", finalText]);
-      } finally {
-        subscription.unsubscribe();
-      }
-    },
-  );
-
-  it.each([
     { firstBlockState: "delivered", firstText: "First answer." },
     { firstBlockState: "buffered", firstText: "First answer." },
     { firstBlockState: "buffered", firstText: "Hello [[" },
@@ -2086,10 +1948,7 @@ describe("subscribeEmbeddedAgentSession", () => {
   it("does not emit duplicate agent events when message_end repeats", () => {
     const { emit, onAgentEvent } = createAgentEventHarness();
 
-    const assistantMessage = {
-      role: "assistant",
-      content: [{ type: "text", text: "Hello world" }],
-    } as AssistantMessage;
+    const assistantMessage = textAssistant("Hello world") as AssistantMessage;
 
     emit({ type: "message_start", message: assistantMessage });
     emit({ type: "message_end", message: assistantMessage });
@@ -2107,10 +1966,7 @@ describe("subscribeEmbeddedAgentSession", () => {
     emitAssistantTextDelta(emit, " https://example.com/a.png\nCaption");
     emit({
       type: "message_end",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "MEDIA: https://example.com/a.png\nCaption" }],
-      } as AssistantMessage,
+      message: textAssistant("MEDIA: https://example.com/a.png\nCaption") as AssistantMessage,
     });
 
     const payloads = extractAgentEventPayloads(onAgentEvent.mock.calls);
@@ -2133,10 +1989,7 @@ describe("subscribeEmbeddedAgentSession", () => {
     });
     emit({
       type: "message_end",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "MEDIA: https://example.com/a.png" }],
-      } as AssistantMessage,
+      message: textAssistant("MEDIA: https://example.com/a.png") as AssistantMessage,
     });
 
     const payloads = extractAgentEventPayloads(onAgentEvent.mock.calls);

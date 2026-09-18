@@ -2653,6 +2653,33 @@ describe("handleFeishuMessage command authorization", () => {
     expect(parseFeishuMessageEvent(event).content).toBe("Direct task\nStatus\nOpen");
   });
 
+  it("preserves native post inline styles in the agent body", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    const event = createFeishuTestEvent({
+      messageId: "msg-post-styles",
+      senderOpenId: "ou-styles",
+      messageType: "post",
+      content: JSON.stringify({
+        content: [
+          [
+            { tag: "text", text: "Urgent", style: ["bold"] },
+            { tag: "text", text: " " },
+            { tag: "a", text: "Docs", href: "https://example.com", style: ["italic"] },
+            { tag: "text", text: " " },
+            { tag: "at", user_name: "Bob", user_id: "ou_bob", style: ["underline"] },
+          ],
+        ],
+      }),
+    });
+
+    await dispatchMessage({ cfg: createFeishuTestConfig({ dmPolicy: "open" }), event });
+
+    const context = mockCallArg<{ BodyForAgent?: string }>(mockFinalizeInboundContext, 0, 0);
+    expect(context.BodyForAgent).toContain(
+      "ou-styles: **Urgent** *[Docs](https://example.com)* <u>@Bob</u>",
+    );
+  });
+
   it("expands merge_forward content from API sub-messages", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     mockGetMessageFeishu.mockResolvedValueOnce({
@@ -2696,7 +2723,7 @@ describe("handleFeishuMessage command authorization", () => {
   });
 
   it("does not partially parse malformed merge_forward create_time values", () => {
-    const content = JSON.stringify([
+    const items = [
       {
         message_id: "container",
         msg_type: "merge_forward",
@@ -2716,15 +2743,15 @@ describe("handleFeishuMessage command authorization", () => {
         body: { content: JSON.stringify({ text: "valid" }) },
         create_time: "1000",
       },
-    ]);
+    ];
 
-    expect(parseMergeForwardContent({ content })).toBe(
+    expect(parseMergeForwardContent(items)).toBe(
       "[Merged and Forwarded Messages]\n- partial\n- valid",
     );
   });
 
   it("bounds merged-forward prompt content and marks truncation", () => {
-    const content = JSON.stringify([
+    const items = [
       {
         message_id: "container",
         msg_type: "merge_forward",
@@ -2736,9 +2763,9 @@ describe("handleFeishuMessage command authorization", () => {
         msg_type: "text",
         body: { content: JSON.stringify({ text: "😀".repeat(20_000) }) },
       },
-    ]);
+    ];
 
-    const parsed = parseMergeForwardContent({ content });
+    const parsed = parseMergeForwardContent(items);
 
     expect(parsed.length).toBeLessThanOrEqual(20_000);
     expect(parsed.endsWith("\n... [Merged-forward content truncated]")).toBe(true);

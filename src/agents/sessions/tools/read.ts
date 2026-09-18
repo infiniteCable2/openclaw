@@ -17,13 +17,13 @@ import {
  */
 import { normalizeNativePathSeparators } from "../../../shared/ignore-rules.js";
 import { levenshteinDistance } from "../../../shared/levenshtein-distance.js";
-import { getReadmePath } from "../../config.js";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.js";
 import {
   getLanguageFromPath,
   highlightCode,
   type Theme,
 } from "../../modes/interactive/theme/theme.js";
+import { getReadmePath } from "../../package-metadata.js";
 import type { AgentTool } from "../../runtime/index.js";
 import type { ToolResultBudget } from "../../tool-result-limits.js";
 import { processImage } from "../../utils/image-resize.js";
@@ -603,10 +603,11 @@ export function createReadToolDefinition(
               if (textDetails) {
                 // A full-fit selection can still have a continuation and borrow the decoded file.
                 // Detach both bounded channels regardless of EOF, preserving exact UTF-16 units.
+                const sameContent = outputText === textDetails.content;
                 outputText = Buffer.from(outputText, "utf16le").toString("utf16le");
-                textDetails.content = Buffer.from(textDetails.content, "utf16le").toString(
-                  "utf16le",
-                );
+                textDetails.content = sameContent
+                  ? outputText
+                  : Buffer.from(textDetails.content, "utf16le").toString("utf16le");
               }
               content = [{ type: "text", text: outputText }];
             }

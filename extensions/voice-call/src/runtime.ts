@@ -134,20 +134,13 @@ function createRuntimeResourceLifecycle(params: {
   config: VoiceCallConfig;
   webhookServer: VoiceCallWebhookServer;
   stopProvider?: () => Promise<void>;
+  manager: CallManager;
 }): {
   setTunnelResult: (result: TunnelResult | null) => void;
   stop: (opts?: { suppressErrors?: boolean }) => Promise<void>;
 } {
   let tunnelResult: TunnelResult | null = null;
   let stopPromise: Promise<void> | null = null;
-
-  const runStep = async (step: () => Promise<void>, suppressErrors: boolean) => {
-    if (suppressErrors) {
-      await step().catch(() => {});
-      return;
-    }
-    await step();
-  };
 
   return {
     setTunnelResult: (result) => {
@@ -159,20 +152,27 @@ function createRuntimeResourceLifecycle(params: {
       }
       const suppressErrors = opts?.suppressErrors ?? false;
       stopPromise = (async () => {
-        await runStep(async () => {
-          if (tunnelResult) {
-            await tunnelResult.stop();
+        let failure: { error: unknown } | undefined;
+        for (const step of [
+          async () => {
+            await tunnelResult?.stop();
+          },
+          () => cleanupTailscaleExposure(params.config),
+          async () => {
+            await params.stopProvider?.();
+          },
+          () => params.webhookServer.stop(),
+          () => params.manager.stop(),
+        ]) {
+          try {
+            await step();
+          } catch (error) {
+            failure ??= { error };
           }
-        }, suppressErrors);
-        await runStep(async () => {
-          await cleanupTailscaleExposure(params.config);
-        }, suppressErrors);
-        await runStep(async () => {
-          await params.stopProvider?.();
-        }, suppressErrors);
-        await runStep(async () => {
-          await params.webhookServer.stop();
-        }, suppressErrors);
+        }
+        if (failure && !suppressErrors) {
+          throw failure.error;
+        }
       })();
       return stopPromise;
     },
@@ -379,7 +379,7 @@ export async function createVoiceCallRuntime(params: {
   if (stateRuntime) {
     setVoiceCallStateRuntime({ state: stateRuntime });
   }
-  const manager = new CallManager(config, undefined, cfg.session);
+  const manager = new CallManager(config, undefined, cfg.session, stateRuntime);
   const realtimeVoiceRuntime = config.realtime.enabled ? await loadRealtimeVoiceRuntime() : null;
   const webhookServer = new VoiceCallWebhookServer(
     config,
@@ -392,7 +392,7 @@ export async function createVoiceCallRuntime(params: {
   );
   if (provider.name === "asterisk") {
     (provider as AsteriskProvider).setEventSink((event) => {
-      webhookServer.processProviderEvent(event);
+      return webhookServer.processProviderEvent(event);
     });
   }
   if (realtimeVoiceRuntime) {
@@ -415,11 +415,14 @@ export async function createVoiceCallRuntime(params: {
         providerConfigs: effectiveConfig.realtime.providers,
         cfg,
         agentId,
+        surface: "gateway-relay",
+        useProviderDefaultModel: true,
       });
       return {
         agentId,
         provider: resolved.provider,
         providerConfig: resolved.providerConfig,
+        capabilities: resolved.capabilities,
         instructions: resolveRealtimeInstructions(call),
       };
     };
@@ -520,6 +523,7 @@ export async function createVoiceCallRuntime(params: {
   const lifecycle = createRuntimeResourceLifecycle({
     config,
     webhookServer,
+    manager,
     stopProvider:
       provider.name === "asterisk" ? () => (provider as AsteriskProvider).stop() : undefined,
   });

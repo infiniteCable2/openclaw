@@ -78,7 +78,9 @@ describe("AsteriskProvider", () => {
     });
     providers.push(provider);
     const events: NormalizedEvent[] = [];
-    provider.setEventSink((event) => events.push(event));
+    provider.setEventSink((event) => {
+      events.push(event);
+    });
     provider.setTTSProvider({
       synthesisTimeoutMs: 1_000,
       synthesizeForTelephony: vi.fn(async () => Buffer.alloc(160, 0xff)),
@@ -101,11 +103,13 @@ describe("AsteriskProvider", () => {
     ]);
 
     callbacks?.onTranscript?.("Guten Morgen");
-    expect(events.at(-1)).toMatchObject({
-      type: "call.speech",
-      providerCallId: UUID,
-      transcript: "Guten Morgen",
-    });
+    await vi.waitFor(() =>
+      expect(events.at(-1)).toMatchObject({
+        type: "call.speech",
+        providerCallId: UUID,
+        transcript: "Guten Morgen",
+      }),
+    );
 
     const received = new Promise<Buffer>((resolve) => {
       socket.once("data", resolve);
@@ -116,6 +120,71 @@ describe("AsteriskProvider", () => {
     expect(frames[0]).toMatchObject({ type: AudioSocketType.pcm16k });
     expect(frames[0]?.payload.byteLength).toBeGreaterThan(0);
   });
+
+  it.each([false, true])(
+    "awaits persisted admission before answering (failure=%s)",
+    async (fail) => {
+      const gate = Promise.withResolvers<void>();
+      const events: string[] = [];
+      const error = vi.fn();
+      let callbacks: RealtimeTranscriptionSessionCallbacks | undefined;
+      const provider = new AsteriskProvider({
+        config: config(),
+        registrationToken: "registration-secret",
+        coreConfig: {},
+        transcriptionProvider: {
+          id: "test-stt",
+          isConfigured: () => true,
+          createSession: (request) => {
+            callbacks = request;
+            return {
+              connect: async () => {},
+              sendAudio: () => {},
+              close: () => {},
+              isConnected: () => true,
+            };
+          },
+        },
+        transcriptionProviderConfig: {},
+        logger: { info: vi.fn(), warn: vi.fn(), error },
+      });
+      providers.push(provider);
+      provider.setEventSink(async (event) => {
+        events.push(event.type);
+        if (event.type === "call.initiated") {
+          await gate.promise;
+          if (fail) {
+            throw new Error("admission failed");
+          }
+        }
+      });
+      provider.registerInboundCall(
+        { uuid: UUID, from: "+49111111111", to: "+49222222222", direction: "inbound" },
+        "registration-secret",
+      );
+      const address = await provider.start();
+      const socket = await connect(address.port);
+      sockets.push(socket);
+      socket.write(encodeAudioSocketFrame(AudioSocketType.uuid, uuidToAudioSocketPayload(UUID)));
+      try {
+        await vi.waitFor(() => expect(events).toEqual(["call.initiated"]));
+        callbacks?.onTranscript?.("Not admitted yet");
+        await Promise.resolve();
+        expect(events).toEqual(["call.initiated"]);
+      } finally {
+        gate.resolve();
+      }
+      if (fail) {
+        await vi.waitFor(() => expect(events).toContain("call.ended"));
+        expect(events).not.toContain("call.answered");
+        expect(error).toHaveBeenCalledWith(expect.stringContaining("admission failed"));
+      } else {
+        await vi.waitFor(() => expect(events).toEqual(["call.initiated", "call.answered"]));
+        callbacks?.onTranscript?.("Now admitted");
+        await vi.waitFor(() => expect(events.at(-1)).toBe("call.speech"));
+      }
+    },
+  );
 
   it("rejects unauthenticated, malformed, and duplicate registrations", () => {
     const provider = new AsteriskProvider({

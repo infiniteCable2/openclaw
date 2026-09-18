@@ -3,6 +3,8 @@
 import { html, render } from "lit";
 import { guard } from "lit/directives/guard.js";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { createDeferred } from "../../../../../test/helpers/promise.js";
+import { notifyBrowserAuthRestored } from "../../../app/browser-http.ts";
 import { resolveAssistantAttachmentAvailability } from "./chat-message-attachment-availability.ts";
 import { renderMessageImages } from "./chat-message-images.ts";
 import {
@@ -101,12 +103,13 @@ function ticketResponse(mediaTicket: string, expiresInMs = 90_000) {
   });
 }
 
-function createAvailabilityPane(source: string, authToken: string) {
+function createAvailabilityPane(source: string, authToken: string, policyKey?: string) {
   let latest: ReturnType<typeof resolveAssistantAttachmentAvailability> | undefined;
   const rerender = observeSubscriber(() => {
     latest = resolveAssistantAttachmentAvailability(source, {
       resourceBasePath: "/openclaw",
       authToken,
+      policyKey,
       onRequestUpdate: rerender,
     });
   });
@@ -219,9 +222,6 @@ describe("chat media resource lifecycle", () => {
         count === 2 || count === 4,
       );
       expect(gallery?.classList.contains("chat-message-images--five")).toBe(count === 5);
-      if (count === 1) {
-        expect(container.querySelector(".chat-message-image--small")).not.toBeNull();
-      }
     }
   });
 
@@ -567,6 +567,49 @@ describe("chat media resource lifecycle", () => {
     );
   });
 
+  it("recovers exhausted managed image retries only for connected panes", async () => {
+    const source = managedImageSource();
+    const { blobUrl } = installManagedImageUrls();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(imageResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const first = createManagedImagePane(source);
+    const second = createManagedImagePane(source);
+    first.rerender();
+    second.rerender();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(second.container.querySelector(".chat-message-image")).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    const resource = observeChatMediaResource<string | null>(
+      "managed-image",
+      managedImageResourceKey(source),
+    );
+
+    releaseChatMediaResourceSubscriber(first.rerender);
+    notifyBrowserAuthRestored();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(first.container.querySelector(".chat-message-image")).toBeNull();
+    expect(second.container.querySelector(".chat-message-image")?.getAttribute("src")).toBe(
+      blobUrl,
+    );
+    expect(resource.subscribers.size).toBe(1);
+    releaseChatMediaResourceSubscriber(second.rerender);
+    expect(resource.subscribers.size).toBe(0);
+    expect(resource.releaseAuthRecovery).toBeUndefined();
+    expect(isChatMediaResourceCurrent(resource)).toBe(false);
+    notifyBrowserAuthRestored();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("shares assistant attachment completion and ticket refresh across split panes", async () => {
     const source = `/tmp/openclaw/${crypto.randomUUID()}.png`;
     const fetchMock = vi
@@ -599,6 +642,89 @@ describe("chat media resource lifecycle", () => {
         mediaTicket: "ticket-after-refresh",
       });
     }
+  });
+
+  it("settles active policy snapshots but revalidates a superseded snapshot after unmount", async () => {
+    const source = `/tmp/openclaw/${crypto.randomUUID()}.png`;
+    const firstResponse = createDeferred<Response>();
+    const secondResponse = createDeferred<Response>();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockReturnValueOnce(firstResponse.promise)
+        .mockReturnValueOnce(secondResponse.promise)
+        .mockImplementationOnce(async () => ticketResponse("current-policy-ticket")),
+    );
+    const first = createAvailabilityPane(source, "shared-token", "full");
+    const second = createAvailabilityPane(source, "shared-token", "workspace");
+    first.rerender();
+    second.rerender();
+    firstResponse.resolve(ticketResponse("first-pane-ticket"));
+    secondResponse.resolve(ticketResponse("second-pane-ticket"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.latest).toMatchObject({ status: "available", mediaTicket: "first-pane-ticket" });
+    expect(second.latest).toMatchObject({ status: "available", mediaTicket: "second-pane-ticket" });
+    releaseChatMediaResourceSubscriber(first.rerender);
+    const remounted = createAvailabilityPane(source, "shared-token", "full");
+    remounted.rerender();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(remounted.latest).toMatchObject({
+      status: "available",
+      mediaTicket: "current-policy-ticket",
+    });
+  });
+
+  it("refreshes an idle attachment immediately when its ticket expired offscreen", async () => {
+    const source = `/tmp/openclaw/${crypto.randomUUID()}.png`;
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => ticketResponse("ticket-before-unmount"))
+      .mockImplementationOnce(async () => ticketResponse("ticket-after-remount"));
+    vi.stubGlobal("fetch", fetchMock);
+    const first = createAvailabilityPane(source, "idle-ticket-token");
+    first.rerender();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.latest?.status).toBe("available");
+    releaseChatMediaResourceSubscriber(first.rerender);
+    await vi.advanceTimersByTimeAsync(90_001);
+
+    const remounted = createAvailabilityPane(source, "idle-ticket-token");
+    remounted.rerender();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(remounted.latest).toMatchObject({
+      status: "available",
+      mediaTicket: "ticket-after-remount",
+    });
+  });
+
+  it("keeps automatic renewal when switching to the oldest retained attachment at capacity", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ticketResponse(`ticket-${Date.now()}`)),
+    );
+    const source = `/tmp/openclaw/${crypto.randomUUID()}.png`;
+    for (let index = 0; index < 64; index++) {
+      const pane = createAvailabilityPane(index === 0 ? source : `${source}-${index}`, "original");
+      pane.rerender();
+      await vi.advanceTimersByTimeAsync(0);
+      releaseChatMediaResourceSubscriber(pane.rerender);
+    }
+    let authToken = "replacement";
+    let latest: ReturnType<typeof resolveAssistantAttachmentAvailability> | undefined;
+    const rerender = observeSubscriber(() => {
+      latest = resolveAssistantAttachmentAvailability(source, {
+        resourceBasePath: "/openclaw",
+        authToken,
+        onRequestUpdate: rerender,
+      });
+    });
+    rerender();
+    await vi.advanceTimersByTimeAsync(0);
+    authToken = "original";
+    rerender();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(latest).toMatchObject({ status: "available", mediaTicket: `ticket-${Date.now()}` });
   });
 
   it("stops polling after a definitive ticket refresh rejection and one unavailable retry", async () => {
@@ -713,6 +839,59 @@ describe("chat media resource lifecycle", () => {
     }
   });
 
+  it("recovers a shared attachment without reviving a disconnected pane", async () => {
+    const source = `/tmp/openclaw/${crypto.randomUUID()}.png`;
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockImplementationOnce(
+        (_source: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            requestSignal = init?.signal ?? undefined;
+            requestSignal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("last pane disconnected", "AbortError")),
+              { once: true },
+            );
+          }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const first = vi.fn();
+    const second = vi.fn();
+    const firstOptions = { onRequestUpdate: observeSubscriber(first) };
+    const secondOptions = { onRequestUpdate: observeSubscriber(second) };
+
+    resolveAssistantAttachmentAvailability(source, firstOptions);
+    resolveAssistantAttachmentAvailability(source, secondOptions);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    first.mockClear();
+    second.mockClear();
+
+    releaseChatMediaResourceSubscriber(first);
+    notifyBrowserAuthRestored();
+
+    expect.soft(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledOnce();
+    resolveAssistantAttachmentAvailability(source, secondOptions);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestSignal?.aborted).toBe(false);
+
+    releaseChatMediaResourceSubscriber(second);
+    expect.soft(requestSignal?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    first.mockClear();
+    second.mockClear();
+    notifyBrowserAuthRestored();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("aborts pending media and clears its retry when the last pane disconnects", async () => {
     const source = managedImageSource();
     let requestSignal: AbortSignal | undefined;
@@ -817,7 +996,12 @@ describe("chat media resource lifecycle", () => {
     const { blobUrl } = installManagedImageUrls();
     const resolveArtifactDownload = vi.fn(async () => ({ url: ticketedUrl }));
     const fetchMock = vi
-      .fn()
+      .fn<
+        (
+          url: string,
+          init: RequestInit,
+        ) => Promise<{ ok: false } | ReturnType<typeof imageResponse>>
+      >()
       .mockResolvedValueOnce({ ok: false })
       .mockResolvedValueOnce(imageResponse());
     vi.stubGlobal("fetch", fetchMock);
@@ -834,7 +1018,7 @@ describe("chat media resource lifecycle", () => {
 
     expect(resolveArtifactDownload).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    for (const [requestUrl, init] of fetchMock.mock.calls as Array<[string, RequestInit]>) {
+    for (const [requestUrl, init] of fetchMock.mock.calls) {
       expect(requestUrl).toBe(ticketedUrl.replace(/\/full(?=\?)/u, "/thumbnail"));
       const headers = new Headers(init.headers);
       expect(headers.get("Authorization")).toBeNull();

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 # Build and bundle OpenClaw with its matching private worker runtime.
@@ -55,7 +55,7 @@ if [[ "$BUILD_CONFIG" == "release" ]]; then
 fi
 BUILD_GIT_COMMIT="$(openclaw_resolve_git_commit "$ROOT_DIR")"
 if [[ "$BUILD_CONFIG" == "release" ]]; then
-  bash "$ROOT_DIR/scripts/apple-release-source-check.sh" \
+  /bin/bash "$ROOT_DIR/scripts/apple-release-source-check.sh" \
     --root "$ROOT_DIR" \
     --expected-commit "$BUILD_GIT_COMMIT"
 fi
@@ -462,7 +462,7 @@ fi
 
 echo "📦 Staging browser sign-in helper"
 for arch in "${BUILD_ARCHS[@]}"; do
-  bash "$ROOT_DIR/scripts/stage-cloudflared-macos.sh" "$arch" "$APP_ROOT/Contents/Resources/cloudflared"
+  /bin/bash "$ROOT_DIR/scripts/stage-cloudflared-macos.sh" "$arch" "$APP_ROOT/Contents/Resources/cloudflared"
 done
 
 echo "📦 Copying CLI installer"
@@ -475,22 +475,25 @@ cp "$INSTALL_CLI_SRC" "$APP_ROOT/Contents/Resources/install-cli.sh"
 chmod 0644 "$APP_ROOT/Contents/Resources/install-cli.sh"
 
 echo "📦 Provisioning the matching private node worker [${BUILD_ARCHS[*]}]"
-bash "$ROOT_DIR/scripts/stage-mac-node-worker.sh" "$APP_ROOT/Contents/Resources/node-worker" "${BUILD_ARCHS[@]}"
+/bin/bash "$ROOT_DIR/scripts/stage-mac-node-worker.sh" "$APP_ROOT/Contents/Resources/node-worker" "${BUILD_ARCHS[@]}"
 
 echo "🌐 Copying app localizations"
 node --import tsx "$ROOT_DIR/scripts/apple-app-i18n.ts" compile-macos \
   --output "$APP_ROOT/Contents/Resources"
 
-echo "📦 Copying Control UI assets"
-CONTROL_UI_SRC="$ROOT_DIR/dist/control-ui"
-CONTROL_UI_DEST="$APP_ROOT/Contents/Resources/control-ui"
-if [ -d "$CONTROL_UI_SRC" ] && [ -f "$CONTROL_UI_SRC/index.html" ]; then
-  rm -rf "$CONTROL_UI_DEST"
-  cp -R "$CONTROL_UI_SRC" "$CONTROL_UI_DEST"
-else
-  echo "ERROR: Control UI assets missing at $CONTROL_UI_SRC. Run pnpm ui:build first." >&2
+# The native dashboard loads the Gateway-served HTTP UI. Neither the app bundle
+# nor its private `node worker` runtime serves a second Control UI copy.
+if [[ -e "$APP_ROOT/Contents/Resources/control-ui" || -L "$APP_ROOT/Contents/Resources/control-ui" ]]; then
+  echo "ERROR: Standalone Control UI assets must not be embedded in OpenClaw.app" >&2
   exit 1
 fi
+for arch in "${BUILD_ARCHS[@]}"; do
+  worker_ui="$APP_ROOT/Contents/Resources/node-worker/$arch/lib/node_modules/openclaw/dist/control-ui"
+  if [[ -e "$worker_ui" || -L "$worker_ui" ]]; then
+    echo "ERROR: Private node worker must not embed Control UI assets: $worker_ui" >&2
+    exit 1
+  fi
+done
 
 echo "📦 Copying SwiftPM resource bundles"
 SWIFTPM_BUILD_PRODUCTS=("$(build_path_for_arch "$PRIMARY_ARCH")/$BUILD_CONFIG")

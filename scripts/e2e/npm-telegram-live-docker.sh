@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Bash 5.3+ can deadlock writing heredoc pipes on macOS before the reader starts.
+if [[ ${OSTYPE:-} == darwin* && $BASH != /bin/bash ]] && ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
+  exec /bin/bash "$0" "$@"
+fi
 # Installs an OpenClaw package candidate in Docker, performs Telegram
 # onboarding/doctor recovery, then runs the Telegram QA live harness.
 set -euo pipefail
@@ -288,6 +292,7 @@ for key in \
   OPENCLAW_NPM_TELEGRAM_MODEL \
   OPENCLAW_NPM_TELEGRAM_ALT_MODEL \
   OPENCLAW_NPM_TELEGRAM_SCENARIOS \
+  OPENCLAW_NPM_TELEGRAM_OMIT_DEFAULT_SCENARIOS \
   OPENCLAW_NPM_TELEGRAM_RTT_SAMPLES \
   OPENCLAW_NPM_TELEGRAM_RTT_CHECKS \
   OPENCLAW_NPM_TELEGRAM_RTT_TIMEOUT_MS \
@@ -358,7 +363,10 @@ process.stdin.on("end", () => {
 });
 '
     )"
-    mapfile -t package_fields <<<"$package_metadata"
+    package_fields=()
+    while IFS= read -r package_field; do
+      package_fields+=("$package_field")
+    done <<<"$package_metadata"
     registry_args+=("${package_fields[0]}" "${package_fields[1]}" "$package_tgz")
   done
   registry_port_file="$(mktemp)"
@@ -426,6 +434,7 @@ run_logged_print_heartbeat "npm-telegram-live-suite" 60 docker_e2e_run_with_harn
   -v "$ROOT_DIR/.artifacts:/app/.artifacts" \
   -v "$OUTPUT_DIR_HOST:$OUTPUT_DIR_CONTAINER" \
   -v "$harness_package_json:/app/package.json:ro" \
+  -v "$harness_package_json:/app/extensions/qa-lab/node_modules/openclaw/package.json:ro" \
   -v "$ROOT_DIR/dist:/app/dist:ro" \
   -v "$ROOT_DIR/node_modules:/trusted-harness/node_modules:ro" \
   -v "$ROOT_DIR/packages:/app/packages:ro" \

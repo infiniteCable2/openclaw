@@ -7,6 +7,7 @@ import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
 import type { AuthenticatedGitHubIdentitySync } from "../github-user-identity.js";
 import type { GatewayOperatorRoleActor } from "../operator-role-actor.js";
 import type { PluginNodeCapabilitySurface } from "../plugin-node-capability.js";
+import type { GatewayWsBrowserOrigin } from "../server/ws-types.js";
 import type { TrustedSessionCreation } from "./session-creation-provenance.js";
 
 /** Trusted in-process spawn control plane that already owns this run's task row.
@@ -18,6 +19,8 @@ export type GatewayAgentRunTaskOwner = "plugin_subagent" | "native_subagent";
 export type TrustedAgentToolCaller = Readonly<{
   agentId: string;
   sessionKey: string;
+  /** Exact admitted requester lifetime; identity alone does not establish live authority. */
+  assertCurrent?: () => void;
 }>;
 
 /** Closure-bound streaming hooks attached only to trusted plugin-owned synthetic clients. */
@@ -35,6 +38,8 @@ export type GatewayClient = {
   invalidated?: boolean;
   /** Host-owned transport retirement notification; does not cancel ordinary admitted RPCs. */
   connectionSignal?: AbortSignal;
+  /** Server-attested browser origin captured during the WebSocket handshake. */
+  browserOrigin?: GatewayWsBrowserOrigin;
   connId?: string;
   presenceKey?: string;
   clientIp?: string;
@@ -58,6 +63,8 @@ export type GatewayClient = {
   internal?: {
     /** Handshake-attested direct-local transport; never accepted from wire params. */
     isLocalClient?: true;
+    /** Authenticated Control UI operator ingress; never accepted from wire params. */
+    authenticatedControlUi?: true;
     /** Authenticated Control UI admin admission; never accepted from wire params. */
     controlUiAdmin?: true;
     /** Marks the server-constructed client used by trusted in-process dispatch. */

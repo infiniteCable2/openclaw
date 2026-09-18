@@ -16,6 +16,8 @@ export interface MeetingRealtimeAudioTransport {
    * transport-isolated from local playback or protected by active acoustic echo cancellation.
    */
   readonly supportsFullDuplexInput?: boolean;
+  /** Input contains browser playback only, excluding native microphone injection. */
+  inputAudioIsolated?: boolean;
   /** Delivers a prior failure immediately so provider setup cannot outrun transport teardown. */
   onFatal(handler: () => void): void;
   startInput(onAudio: (audio: Buffer) => void): void;

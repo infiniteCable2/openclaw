@@ -5,7 +5,8 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 import {
   installOpenClawInternalCorePackageNativeResolver,
@@ -18,6 +19,7 @@ type NativeEsmLazyImportProbe = {
   stdout: string;
 };
 let nativeEsmLazyImportProbe: NativeEsmLazyImportProbe;
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function writeJsonFile(targetPath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
@@ -597,6 +599,41 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
     expect(() => requireFromOutside.resolve("openclaw/plugin-sdk/channel-outbound")).toThrow();
   });
 
+  it.each(["src", "dist", "dist-runtime"])(
+    "selects matching internal package artifacts for a %s host",
+    (hostDirectory) => {
+      const root = tempDirs.make("openclaw-native-core-artifact-");
+      writeFakeOpenClawPackage(root);
+      const source = writeNormalizationCoreSource(root);
+      writeInternalCorePackageExports(root, "normalization-core", ["string-coerce"]);
+      const built = path.join(root, "packages", "normalization-core", "dist", "string-coerce.mjs");
+      fs.mkdirSync(path.dirname(built), { recursive: true });
+      fs.writeFileSync(built, "export const normalizeOptionalString = () => undefined;\n", "utf8");
+      const loaderModulePath = path.join(root, hostDirectory, "plugins", "loader.js");
+      fs.mkdirSync(path.dirname(loaderModulePath), { recursive: true });
+      fs.writeFileSync(loaderModulePath, "export {};\n", "utf8");
+      const sourceParent = path.join(root, "src", "host-probe.js");
+      fs.mkdirSync(path.dirname(sourceParent), { recursive: true });
+      fs.writeFileSync(sourceParent, "export {};\n", "utf8");
+      const externalEntry = writeExternalPluginEntry(path.join(root, "external-plugin"));
+
+      installOpenClawPluginSdkNativeResolver({
+        modulePath: loaderModulePath,
+        pluginModulePath: externalEntry,
+        pluginSdkResolution: "dist",
+      });
+
+      expect(
+        fs.realpathSync(
+          createRequire(sourceParent).resolve("@openclaw/normalization-core/string-coerce"),
+        ),
+      ).toBe(fs.realpathSync(hostDirectory === "src" ? source : built));
+      expect(() =>
+        createRequire(externalEntry).resolve("@openclaw/normalization-core/string-coerce"),
+      ).toThrow();
+    },
+  );
+
   it("resolves internal core packages only for OpenClaw-owned source parents", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sdk-native-core-internal-"));
     const { loaderModulePath } = writeFakeOpenClawPackage(root);
@@ -659,6 +696,11 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
     );
     writeInternalCorePackageExports(root, "acp-core", ["runtime/types"]);
     const llmCoreSource = writeInternalCorePackageSource(root, "llm-core", "index.ts");
+    const llmCoreModelContractSource = writeInternalCorePackageSource(
+      root,
+      "llm-core",
+      path.join("model-contracts", "anthropic.ts"),
+    );
     const externalPluginEntry = writeExternalPluginEntry(path.join(root, "external-plugin"));
     const coreSourceParent = path.join(root, "src", "config", "plugin-web-search-config.ts");
     fs.mkdirSync(path.dirname(coreSourceParent), { recursive: true });
@@ -721,6 +763,11 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
     expect(fs.realpathSync(requireFromCoreSource.resolve("@openclaw/llm-core"))).toBe(
       fs.realpathSync(llmCoreSource),
     );
+    expect(
+      fs.realpathSync(
+        requireFromCoreSource.resolve("@openclaw/llm-core/model-contracts/anthropic"),
+      ),
+    ).toBe(fs.realpathSync(llmCoreModelContractSource));
     expect(() => requireFromPlugin.resolve("@openclaw/normalization-core/string-coerce")).toThrow();
     expect(() =>
       requireFromPlugin.resolve("@openclaw/normalization-core/boolean-coercion"),
@@ -739,6 +786,9 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
     expect(() => requireFromPlugin.resolve("@openclaw/ai/internal/tool-schema")).toThrow();
     expect(() => requireFromPlugin.resolve("@openclaw/acp-core/runtime/types")).toThrow();
     expect(() => requireFromPlugin.resolve("@openclaw/llm-core")).toThrow();
+    expect(() =>
+      requireFromPlugin.resolve("@openclaw/llm-core/model-contracts/anthropic"),
+    ).toThrow();
   });
 
   it("does not register source-only SDK subpaths for native resolution", () => {

@@ -297,6 +297,7 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(execTool.description).toContain("Enabled tools are async global functions");
     expect(execTool.description).toContain("Await dependent calls in order");
     expect(execTool.description).toContain("independent calls may run with Promise.all");
+    expect(execTool.description).toContain("Emit output with `text(value)` or `json(value)`");
     expect(execTool.description).toContain(
       "Declared output fields may feed later calls in the same program",
     );
@@ -309,6 +310,14 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(execTool.description).toContain("`-> ?` means unknown output");
     expect(execTool.description).toContain("do not feed it into guessed field-dependent logic");
     expect(execTool.description).toContain("use a later `exec` for dependent composition");
+    expect(execTool.description).toContain("await results.save(value)");
+    expect(execTool.description).toContain(
+      "Oversized final objects/arrays may return `value.reference`",
+    );
+    expect(execTool.description).toContain("{id,bytes,count,shape,preview,previewTruncated}");
+    expect(execTool.description).toContain("emit that descriptor directly; full JSON stays stored");
+    expect(execTool.description).toContain("results.load(id)");
+    expect(execTool.description).toContain("results.delete(id)");
     expect(execTool.description).not.toContain("ALL_TOOLS");
     expect(execTool.description).not.toContain("tools.call");
     expect(execTool.description).not.toContain("exact id");
@@ -326,23 +335,6 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(parameters.properties?.code?.description).toContain(
       "a trailing expression yields `null`",
     );
-    expect(parameters.properties?.code?.description).toContain(
-      "Call enabled async globals directly",
-    );
-    expect(parameters.properties?.code?.description).toContain(
-      "independent calls may use Promise.all",
-    );
-    expect(parameters.properties?.code?.description).toContain(
-      "Declared output fields may feed later calls in the same program",
-    );
-    expect(parameters.properties?.code?.description).toContain(
-      'const [tool] = await catalog.search("..."); return await tool({...});',
-    );
-    expect(parameters.properties?.code?.description).toContain("`catalog.search(query)`");
-    expect(parameters.properties?.code?.description).toContain(
-      "cannot feed guessed dependent logic in the same program",
-    );
-    expect(parameters.properties?.code?.description).toContain("use a later `exec`");
     expect(parameters.properties?.code?.description).not.toContain("ALL_TOOLS");
     expect(parameters.properties?.code?.description).not.toContain("tools.call");
     expect(parameters.properties?.code?.description).toContain("`require`, or `import`");
@@ -664,7 +656,9 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(description).toContain("`catalog.search(query)`");
     expect(description).toContain("API.list");
     expect(description).toContain("tools/");
-    expect(description).not.toContain("MCP tools are available only through");
+    expect(description).not.toContain(
+      "MCP tools use the `MCP` namespace or callable `catalog.search` handles",
+    );
     expect(description).not.toContain("MCP namespace globals");
   });
 
@@ -693,7 +687,9 @@ describe("Code Mode catalog and model-visible surface", () => {
 
     const description = compacted.tools[0]?.description ?? "";
     expect(description).toContain("API.list(prefix?)");
-    expect(description).toContain("MCP tools are available only through");
+    expect(description).toContain(
+      "MCP tools use the `MCP` namespace or callable `catalog.search` handles",
+    );
     expect(description).toContain("- fake_noop ");
     expect(description).not.toContain("openclaw:fake-code-mode");
     expect(description).not.toContain("github__create_issue");

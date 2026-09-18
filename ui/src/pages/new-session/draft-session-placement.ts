@@ -9,22 +9,31 @@ export type PendingPlacementPlace = {
   profileId: string;
   deviceId?: string;
   autoDevice?: boolean;
+  os?: string;
   machineClass?: string;
   cwd?: string;
   repository?: SessionCreateParams["repository"];
+  worktreeSource?: SessionCreateParams["worktreeSource"];
 };
 
 export function resolveDraftSessionPlacement(
   pending: Pick<PendingSessionPlacementRecoveryState, "sessionKey" | "target">,
-  place: { autoDevice: boolean; cloudProfileId: string; deviceId: string; machineClass: string },
+  place: {
+    autoDevice: boolean;
+    cloudProfileId: string;
+    deviceId: string;
+    cloudSelection: Readonly<{ os: string; machineClass: string }>;
+  },
 ) {
+  const { os, machineClass } = place.cloudSelection;
   const target = pending.sessionKey
     ? pending.target
     : place.cloudProfileId
       ? {
           kind: "profile" as const,
           profileId: place.cloudProfileId,
-          ...(place.machineClass ? { machineClass: place.machineClass } : {}),
+          ...(os ? { os } : {}),
+          ...(machineClass ? { machineClass } : {}),
         }
       : place.deviceId
         ? { kind: "device" as const, deviceId: place.deviceId }
@@ -44,11 +53,14 @@ export function projectDraftSessionPlacementRecovery(recovery: SessionPlacementR
     agentId: recovery.agentId,
     profileId: recovery.target.kind === "profile" ? recovery.target.profileId : "",
     ...(recovery.target.kind === "profile"
-      ? { machineClass: recovery.target.machineClass }
+      ? { os: recovery.target.os, machineClass: recovery.target.machineClass }
       : recovery.target.kind === "device"
         ? { deviceId: recovery.target.deviceId }
         : { autoDevice: true }),
     cwd: recovery.createParams?.cwd,
+    ...(recovery.createParams?.worktreeSource
+      ? { worktreeSource: recovery.createParams.worktreeSource }
+      : {}),
     ...(recovery.createParams?.repository
       ? { repository: { ...recovery.createParams.repository } }
       : {}),

@@ -1,3 +1,10 @@
+import type { DaemonRuntimePinSnapshot } from "../../daemon/runtime-pin-types.js";
+const pinSnapshotMock = vi.hoisted(() =>
+  vi.fn<() => DaemonRuntimePinSnapshot>(() => ({ revision: "empty", stored: false })),
+);
+vi.mock("../../daemon/runtime-pin-state.js", () => ({
+  readDaemonRuntimePin: pinSnapshotMock,
+}));
 // Start repair tests cover stale service repair install-plan wiring.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayServiceState } from "../../daemon/service.js";
@@ -85,6 +92,7 @@ vi.mock("../../daemon/program-args.js", () => ({
 
 vi.mock("../../daemon/runtime-paths.js", () => ({
   resolveBunRuntimeInfo: resolveBunRuntimeInfoMock,
+  resolvePinnedDaemonRuntimePath: vi.fn(async (path) => path),
 }));
 
 vi.mock("../../daemon/service.js", () => ({
@@ -111,6 +119,7 @@ function readFirstInstallPlanArg(): Record<string, unknown> {
 
 describe("repairLoadedGatewayServiceForStart", () => {
   beforeEach(() => {
+    pinSnapshotMock.mockReset().mockReturnValue({ revision: "empty", stored: false });
     vi.stubEnv("HOME", "/home/openclaw");
     vi.stubEnv("OPENCLAW_CONFIG_PATH", "");
     vi.stubEnv("OPENCLAW_GATEWAY_PORT", "");
@@ -215,10 +224,16 @@ describe("repairLoadedGatewayServiceForStart", () => {
       install: installMock,
       isLoaded: isLoadedMock,
     };
+    pinSnapshotMock.mockReturnValue({
+      revision: "prior",
+      stored: true,
+      pin: { runtime: "bun", path: "/inactive/bun" },
+    });
     const existingEnvironment = {
       HOME: "/home/openclaw",
       OPENCLAW_SERVICE_VERSION: "2026.4.24",
       OPENCLAW_WRAPPER: "/usr/bin/openclaw",
+
       TELEGRAM_DEFAULT_BOTTOKEN: "existing-env-file-token",
     };
     const existingEnvironmentValueSources = {
@@ -273,6 +288,8 @@ describe("repairLoadedGatewayServiceForStart", () => {
     expect(planArg.existingEnvironmentValueSources).toBe(existingEnvironmentValueSources);
     expect(planArg.env).not.toHaveProperty("OPERATOR_DROPIN_ONLY");
     expect(resolveOpenClawWrapperPathMock).toHaveBeenCalledWith("/usr/bin/openclaw");
+    expect(planArg.pinnedRuntimePath).toBe("/inactive/bun");
+    expect(resolveBunRuntimeInfoMock).not.toHaveBeenCalled();
     expect(installMock).toHaveBeenCalledWith(
       expect.objectContaining({
         environment: { TELEGRAM_DEFAULT_BOTTOKEN: "existing-env-file-token" },
@@ -285,11 +302,18 @@ describe("repairLoadedGatewayServiceForStart", () => {
     { status: "supported", expectedRuntime: "bun" },
     { status: "unsupported", expectedRuntime: "node" },
     { status: "probe-failed", expectedRuntime: null },
+    { status: "unsupported", sqliteSelectionError: true, expectedRuntime: null },
   ])(
-    "repairs an installed Bun Gateway only when its probe result is known ($status)",
-    async ({ status, expectedRuntime }) => {
+    "repairs an installed Bun Gateway only when its probe result is known ($status, selection error: $sqliteSelectionError)",
+    async ({ status, sqliteSelectionError, expectedRuntime }) => {
       const error = new Error("Bun runtime probe failed (cwd /root): EACCES");
-      resolveBunRuntimeInfoMock.mockResolvedValue({ status, error });
+      const selectionError =
+        "Cannot use SQLite library /opt/broken/libsqlite3.dylib: missing file. Fix or unset OPENCLAW_SQLITE_LIBRARY; install a supported library with brew install sqlite.";
+      resolveBunRuntimeInfoMock.mockResolvedValue({
+        status,
+        error,
+        ...(sqliteSelectionError ? { sqliteSelectionError: selectionError } : {}),
+      });
       const service = {
         install: vi.fn(async () => {}),
         isLoaded: vi.fn(async () => true),
@@ -318,8 +342,11 @@ describe("repairLoadedGatewayServiceForStart", () => {
         json: true,
         stdout: process.stdout,
       });
-      if (status === "probe-failed") {
-        await expect(repair).rejects.toBe(error);
+      if (expectedRuntime === null) {
+        // Neither an unreadable probe nor an operator's broken override may rewrite the service to Node.
+        await expect(repair).rejects.toThrow(
+          status === "probe-failed" ? error.message : selectionError,
+        );
         expect(resolveGatewayInstallTokenMock).not.toHaveBeenCalled();
         expect(service.install).not.toHaveBeenCalled();
         return;

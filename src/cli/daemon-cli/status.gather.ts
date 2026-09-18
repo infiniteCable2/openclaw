@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
 import JSON5 from "json5";
-import type { classifyGatewayConnectFailure } from "../../../packages/gateway-protocol/src/connect-error-details.js";
 import {
   isDefaultInstallIdentity,
   resolveConfigPath,
@@ -15,34 +14,26 @@ import type {
 } from "../../config/types.js";
 import { resolveSecretInputRef } from "../../config/types.secrets.js";
 import { readLastGatewayErrorLine } from "../../daemon/diagnostics.js";
-import { inspectGatewayHeapLimit, type GatewayHeapLimitReport } from "../../daemon/gateway-heap.js";
-import type { ExtraGatewayService, FindExtraGatewayServicesOptions } from "../../daemon/inspect.js";
-import type { StaleOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js";
+import { inspectGatewayHeapLimit } from "../../daemon/gateway-heap.js";
+import type { FindExtraGatewayServicesOptions } from "../../daemon/inspect.js";
+import { formatServiceLabel } from "../../daemon/runtime-format.js";
 import type { ServiceConfigAudit } from "../../daemon/service-audit.js";
 import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
-import type { GatewayServiceRuntime } from "../../daemon/service-runtime.js";
-import type {
-  GatewayServiceCommandConfig,
-  GatewayServiceLoadState,
-} from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { gatewaySecretInputPathCanWin } from "../../gateway/credentials-secret-inputs.js";
 import { trimToUndefined } from "../../gateway/credentials.js";
-import type { HostDesktopStatus } from "../../gateway/desktop/host-source.js";
 import { resolveGatewayRequiredListenHosts } from "../../gateway/net.js";
 import { resolveGatewayProbeCredentialConfig } from "../../gateway/probe-auth.js";
 import {
   ALL_GATEWAY_SECRET_INPUT_PATHS,
   readGatewaySecretInputValue,
 } from "../../gateway/secret-input-paths.js";
+import { readGatewayLastShutdown } from "../../infra/gateway-boot-lifecycle.js";
 import { isGatewayExternallySupervised } from "../../infra/gateway-supervision.js";
 import { formatPortDiagnostics } from "../../infra/ports-format.js";
 import { inspectPortConnections } from "../../infra/ports-inspect.js";
 import type { PortConnection } from "../../infra/ports-types.js";
-import {
-  readGatewayRestartHandoffSync,
-  type GatewayRestartHandoff,
-} from "../../infra/restart-handoff.js";
+import { readGatewayRestartHandoffSync } from "../../infra/restart-handoff.js";
 import { inspectWindowsGatewayFirewall } from "../../infra/windows-gateway-firewall-diagnostics.js";
 import { resolveConfiguredLogFilePath } from "../../logging/log-file-path.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-record-reader.js";
@@ -61,8 +52,6 @@ import {
   inspectDaemonPortStatuses,
   resolveGatewayStatusProbeConfig,
   resolveGatewayStatusSummary,
-  type GatewayStatusSummary,
-  type PortStatusSummary,
 } from "./status.gateway.js";
 import type { GatewayRpcOpts } from "./types.js";
 
@@ -95,12 +84,10 @@ type CliStatusSummary = {
   entrypoint?: string;
 };
 
-type GatewayConnectFailureKind = ReturnType<typeof classifyGatewayConnectFailure>["kind"];
-
 const loadGatewayProbeAuthModule = createLazyPromise(() => import("../../gateway/probe-auth.js"));
 const loadConfigIoRuntime = createLazyPromise(() => import("../../config/io.runtime.js"));
 const loadDaemonInspectModule = createLazyPromise(() => import("../../daemon/inspect.js"));
-const loadLaunchdModule = createLazyPromise(() => import("../../daemon/launchd.js"));
+const loadLaunchdDiagnosticsModule = createLazyPromise(() => import("./status.launchd.js"));
 const loadServiceAuditModule = createLazyPromise(() => import("../../daemon/service-audit.js"));
 const loadGatewayTlsModule = createLazyPromise(() => import("../../infra/tls/gateway.js"));
 const loadDaemonProbeModule = createLazyPromise(() => import("./probe.js"));
@@ -202,77 +189,6 @@ async function readStatusConfig(params: {
   );
 }
 
-export type DaemonStatus = {
-  cli?: CliStatusSummary;
-  logFile?: string;
-  service: {
-    label: string;
-    loaded: boolean | null;
-    loadState: GatewayServiceLoadState;
-    loadedText: string;
-    notLoadedText: string;
-    targetRole?: "target" | "diagnostic-only";
-    command?: GatewayServiceCommandConfig | null;
-    runtime?: GatewayServiceRuntime;
-    configAudit?: ServiceConfigAudit;
-    gatewayHeap?: GatewayHeapLimitReport;
-    restartHandoff?: GatewayRestartHandoff;
-    staleUpdateLaunchdJobs?: StaleOpenClawUpdateLaunchdJob[];
-  };
-  config?: {
-    cli: ConfigSummary;
-    daemon?: ConfigSummary;
-    mismatch?: boolean;
-  };
-  gateway?: GatewayStatusSummary;
-  hostDesktop?: HostDesktopStatus;
-  port?: PortStatusSummary;
-  portCli?: PortStatusSummary;
-  connections?: {
-    port: number;
-    established: PortConnection[];
-  };
-  lastError?: string;
-  rpc?: {
-    ok: boolean;
-    gatewayReached?: true;
-    kind?: "connect" | "read";
-    capability?: string;
-    auth?: {
-      role?: string | null;
-      scopes?: string[];
-      capability?: string;
-    };
-    server?: {
-      version?: string | null;
-      buildId?: string | null;
-      connId?: string | null;
-    };
-    version?: string | null;
-    error?: string;
-    connectFailure?: {
-      kind: GatewayConnectFailureKind;
-      detailCode?: string;
-    };
-    url?: string;
-    authWarning?: string;
-  };
-  health?: {
-    healthy: boolean;
-    staleGatewayPids: number[];
-  };
-  extraServices: ExtraGatewayService[];
-  /**
-   * Plugin version drift report. Surfaces active official external plugins
-   * whose installed version does not match the running gateway version, which
-   * can happen after `npm install -g openclaw@<v>` updates the gateway binary
-   * without a corresponding `openclaw plugins update`.
-   */
-  pluginVersionDrift?: PluginVersionDriftReport;
-  /** Doctor-only comparison against the installed service package a restart will load. */
-  pluginVersionRestartReadiness?: PluginVersionRestartReadiness;
-};
-
 function resolveCliStatusSummary(argv: string[] = process.argv): CliStatusSummary {
   const entrypoint = argv[1]?.trim();
   return {
@@ -322,7 +238,7 @@ async function inspectEstablishedGatewayClients(params: {
   daemonPort: number;
   deep?: boolean;
   gatewayMode?: string;
-}): Promise<DaemonStatus["connections"] | undefined> {
+}): Promise<{ port: number; established: PortConnection[] } | undefined> {
   if (params.deep !== true || params.gatewayMode === "remote") {
     return undefined;
   }
@@ -373,7 +289,7 @@ function hasActiveGatewayExecProbeCredential(params: {
   });
 }
 
-export async function gatherDaemonStatus(
+async function gatherDaemonStatusImpl(
   opts: {
     rpc: GatewayRpcOpts;
     probe: boolean;
@@ -382,7 +298,7 @@ export async function gatherDaemonStatus(
     allowExecSecretRefs?: boolean;
     pluginVersionTarget?: "running" | "restart";
   } & FindExtraGatewayServicesOptions,
-): Promise<DaemonStatus> {
+) {
   const localPortOverride = resolveGatewayLocalPortOverride(opts.rpc);
   const timeoutMs = parseTimeoutMsWithFallback(opts.rpc.timeout, 10_000, {
     invalidType: "error",
@@ -398,9 +314,22 @@ export async function gatherDaemonStatus(
   // native service. Keep that service visible without borrowing its target or auth.
   const useNativeServiceTargetContext =
     localPortOverride === undefined &&
+    serviceState.inspectionReason !== "service-manager-unavailable" &&
     isDefaultInstallIdentity(process.env) &&
     !isGatewayExternallySupervised(process.env);
   const targetServiceCommand = useNativeServiceTargetContext ? command : null;
+  if (opts.deep && !trimToUndefined(opts.rpc.url)) {
+    const { preflightOpenClawDatabaseSchemas, OpenClawDatabaseSchemaPreflightError } =
+      await import("../../state/openclaw-database-preflight.js");
+    // Diagnose a refused database before config and lifecycle readers try to open it.
+    const schemas = await preflightOpenClawDatabaseSchemas({
+      env: { ...process.env, ...targetServiceCommand?.environment },
+      scope: "state",
+    });
+    if (schemas.incompatible.length > 0) {
+      throw new OpenClawDatabaseSchemaPreflightError(schemas.incompatible);
+    }
+  }
   const restartHandoff = opts.deep ? readGatewayRestartHandoffSync(serviceEnv) : null;
   const configAudit: ServiceConfigAudit = await loadServiceAuditModule().then(
     ({ auditGatewayServiceConfig }) =>
@@ -430,6 +359,17 @@ export async function gatherDaemonStatus(
   const hasUrlOverride = Boolean(probeUrlOverride);
   const serviceTargetsProbe = useNativeServiceTargetContext && !hasUrlOverride;
   const shouldInspectLocalGateway = !hasUrlOverride;
+  const lastShutdown =
+    opts.deep && shouldInspectLocalGateway ? readGatewayLastShutdown(mergedDaemonEnv) : undefined;
+  let duelingScopesWarning: string | null = null;
+  if (opts.deep && serviceTargetsProbe && process.platform === "linux") {
+    const { findSystemdGatewayInstallation, formatDuelingScopesWarning } =
+      await import("../../daemon/systemd-scope.js");
+    const installation = await findSystemdGatewayInstallation(serviceEnv).catch(() => null);
+    duelingScopesWarning = installation
+      ? formatDuelingScopesWarning(installation, daemonPort)
+      : null;
+  }
   const windowsFirewall =
     opts.deep === true && shouldInspectLocalGateway
       ? await inspectWindowsGatewayFirewall({
@@ -457,16 +397,22 @@ export async function gatherDaemonStatus(
             deep: true,
           }),
         )
+        .then((services) =>
+          services.filter(
+            (extra) =>
+              extra.platform !== "linux" ||
+              extra.scope !== runtime?.systemd?.scope ||
+              extra.label !== runtime?.systemd?.unit,
+          ),
+        )
         .catch(() => [])
     : [];
-  const staleUpdateLaunchdJobs =
-    opts.deep && process.platform === "darwin"
-      ? await loadLaunchdModule()
-          .then(({ findStaleOpenClawUpdateLaunchdJobs }) =>
-            findStaleOpenClawUpdateLaunchdJobs(serviceEnv),
-          )
-          .catch(() => [])
-      : [];
+  const launchdDiagnostics =
+    process.platform === "darwin"
+      ? await loadLaunchdDiagnosticsModule().then(({ gatherLaunchdJobDiagnostics }) =>
+          gatherLaunchdJobDiagnostics(serviceEnv, Boolean(opts.deep)),
+        )
+      : {};
 
   const tlsEnabled = daemonCfg.gateway?.tls?.enabled === true;
   const localCertificate =
@@ -658,7 +604,11 @@ export async function gatherDaemonStatus(
     cli: resolveCliStatusSummary(),
     logFile: resolveConfiguredLogFilePath(cliCfg),
     service: {
-      label: service.label,
+      inspectionReason: serviceState.inspectionReason,
+      label: formatServiceLabel(service.label, runtime),
+      ...(serviceState.systemdInstallation
+        ? { systemdInstallation: serviceState.systemdInstallation }
+        : {}),
       loaded: loadState.status === "unknown" ? null : loaded,
       loadState,
       loadedText: service.loadedText,
@@ -682,7 +632,7 @@ export async function gatherDaemonStatus(
           }
         : {}),
       ...(restartHandoff ? { restartHandoff } : {}),
-      ...(staleUpdateLaunchdJobs.length > 0 ? { staleUpdateLaunchdJobs } : {}),
+      ...launchdDiagnostics,
     },
     config: {
       cli: cliConfigSummary,
@@ -691,6 +641,8 @@ export async function gatherDaemonStatus(
     },
     gateway: {
       ...gateway,
+      ...(lastShutdown ? { lastShutdown } : {}),
+      ...(duelingScopesWarning ? { duelingScopesWarning } : {}),
       ...(windowsFirewall?.applies ? { windowsFirewall } : {}),
       ...(opts.probe
         ? {
@@ -724,6 +676,41 @@ export async function gatherDaemonStatus(
     ...(pluginVersionDrift ? { pluginVersionDrift } : {}),
     ...(pluginVersionRestartReadiness ? { pluginVersionRestartReadiness } : {}),
   };
+}
+
+type GatheredDaemonStatus = Awaited<ReturnType<typeof gatherDaemonStatusImpl>>;
+type GatheredDaemonService = GatheredDaemonStatus["service"];
+type GatheredDaemonRpc = NonNullable<GatheredDaemonStatus["rpc"]>;
+type UnionKeys<Value> = Value extends Value ? keyof Value : never;
+type UnionValue<Value, Key extends PropertyKey> = Value extends Value
+  ? Key extends keyof Value
+    ? Value[Key]
+    : never
+  : never;
+type RequiredDaemonServiceField = "label" | "loaded" | "loadState" | "loadedText" | "notLoadedText";
+type CompatibleDaemonRpcValue<Key extends PropertyKey> = Key extends "server" | "auth"
+  ? Partial<NonNullable<UnionValue<GatheredDaemonRpc, Key>>>
+  : Key extends "capability"
+    ? string
+    : UnionValue<GatheredDaemonRpc, Key>;
+
+export type DaemonStatus = Partial<
+  Omit<GatheredDaemonStatus, "service" | "extraServices" | "config" | "rpc">
+> & {
+  service: Pick<GatheredDaemonService, RequiredDaemonServiceField> &
+    Partial<Omit<GatheredDaemonService, RequiredDaemonServiceField>>;
+  extraServices: GatheredDaemonStatus["extraServices"];
+  config?: Pick<NonNullable<GatheredDaemonStatus["config"]>, "cli"> &
+    Partial<Omit<NonNullable<GatheredDaemonStatus["config"]>, "cli">>;
+  rpc?: { ok: GatheredDaemonRpc["ok"] } & {
+    [Key in Exclude<UnionKeys<GatheredDaemonRpc>, "ok">]?: CompatibleDaemonRpcValue<Key>;
+  };
+};
+
+export async function gatherDaemonStatus(
+  opts: Parameters<typeof gatherDaemonStatusImpl>[0],
+): Promise<DaemonStatus> {
+  return gatherDaemonStatusImpl(opts);
 }
 
 export function renderPortDiagnosticsForCli({ port }: DaemonStatus, rpcOk?: boolean): string[] {

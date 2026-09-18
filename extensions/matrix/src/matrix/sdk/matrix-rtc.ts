@@ -70,7 +70,10 @@ export function createMatrixRtcClientFacade(client: MatrixJsClient): MatrixRtcCl
     },
     onRtcMembershipEvent(listener) {
       const onEvent = (event: MatrixEvent) => {
-        if (!event.unstableStickyExpiresAt || event.getType() !== EventType.RTCMembership) {
+        if (
+          !event.unstableStickyExpiresAt ||
+          event.getType() !== EventType.RTCMembership.toString()
+        ) {
           return;
         }
         const roomId = event.getRoomId();
@@ -85,7 +88,7 @@ export function createMatrixRtcClientFacade(client: MatrixJsClient): MatrixRtcCl
       const onMessage = (payload: ReceivedToDeviceMessage) => {
         const { message, encryptionInfo } = payload;
         if (
-          message.type !== EventType.CallEncryptionKeysPrefix ||
+          message.type !== EventType.CallEncryptionKeysPrefix.toString() ||
           !encryptionInfo ||
           message.sender !== encryptionInfo.sender
         ) {

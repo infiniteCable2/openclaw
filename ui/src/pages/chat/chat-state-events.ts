@@ -2,8 +2,6 @@ import { readSessionMessageIdentity } from "@openclaw/gateway-client/browser";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import type { SessionObserverDigest } from "../../../../packages/gateway-protocol/src/schema/sessions.js";
 import type { GatewayEventFrame } from "../../api/gateway.ts";
-import { fireFirstReplyConfetti } from "../../components/confetti.ts";
-import { invalidateChatMetadataStore } from "../../lib/chat/chat-metadata-store.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
 import {
   isHiddenAssistantStreamText,
@@ -43,6 +41,7 @@ import {
 import { recordChatSendServerTiming } from "./chat-send-timing.ts";
 import { refreshCurrentChatSessionList } from "./chat-session.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import { applyChatModelCatalogSnapshot } from "./chat-state-refresh.ts";
 import { requestChatPageUpdate } from "./chat-state-render.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
 import { handleBackgroundTasksEvent } from "./components/chat-background-tasks.ts";
@@ -52,6 +51,7 @@ import {
 } from "./components/chat-session-workspace.ts";
 import {
   getChatSessionProjection,
+  observeChatRunModel,
   readChatSessionProjectionScope,
   reduceChatSessionProjection,
 } from "./history-merge.ts";
@@ -150,7 +150,7 @@ function handleSessionMessageEvent(
 ) {
   const event = readSessionChangedEvent(payload);
   if (!event || !globalSessionEventMatchesChat(state, event)) {
-    return;
+    return false;
   }
   const matchesChat = sessionMessageMatchesChat(state, event);
   const isUserMessage =
@@ -181,11 +181,11 @@ function handleSessionMessageEvent(
           supersedeInFlight: true,
         }).finally(() => state.requestUpdate?.());
       }
-      return;
+      return true;
     }
     if (finishSessionMessageRunReconcile(state, event.key, runId, result.row, presentation)) {
       state.pendingSessionMessageReloadSessionKey = null;
-      return;
+      return true;
     }
     void refreshCurrentChatSessionList(state).then(() => {
       if (!state.pendingSessionMessageReloadSessionKey || state.chatRunId !== runIdBeforeApply) {
@@ -203,7 +203,7 @@ function handleSessionMessageEvent(
         state.pendingSessionMessageReloadSessionKey = null;
       }
     });
-    return;
+    return true;
   }
   if (matchesChat) {
     state.pendingSessionMessageReloadSessionKey = null;
@@ -212,6 +212,7 @@ function handleSessionMessageEvent(
       supersedeInFlight: isUserMessage && event.hasActiveRun === true,
     }).finally(() => state.requestUpdate?.());
   }
+  return matchesChat;
 }
 
 function replayPendingSessionMessageReload(
@@ -375,17 +376,6 @@ function handleSessionsChangedEvent(
   if (resetsSelectedSession || changesBranchTopology) {
     retirePullRequestRefreshes(state);
   }
-  if (
-    matchesChat &&
-    state.client &&
-    (resetsSession || source?.reason === "command-metadata" || source?.reason === "patch")
-  ) {
-    // Selection commands and model patches can change the persisted profile without changing credentials.
-    invalidateChatMetadataStore(state.client, {
-      agentId: resolveChatAgentId(state) ?? undefined,
-      sessionKey: state.sessionKey,
-    });
-  }
   if (resetsSelectedSession) {
     const scope = readChatSessionProjectionScope(state, { agentId: resolveChatAgentId(state) });
     // Reset keeps the public session ID; the explicit reducer event is the
@@ -406,11 +396,29 @@ function handleSessionsChangedEvent(
     state.selectedChatSessionArchived = event.archived;
   }
   const result = reconcileSessionEvent(state, payload);
+  const modelRunId = event?.clientRunId ?? event?.runId;
+  if (
+    matchesChat &&
+    source?.phase === "model" &&
+    modelRunId &&
+    result.admittedRow &&
+    (state.chatSending
+      ? state.chatQueue.some(
+          (item) =>
+            item.sendState === "sending" &&
+            (item.queueMode === "steer" && state.chatRunId
+              ? state.chatRunId === modelRunId
+              : item.sendRunId === modelRunId),
+        )
+      : !state.chatRunId || state.chatRunId === modelRunId)
+  ) {
+    observeChatRunModel(state, modelRunId, result.admittedRow);
+  }
   if (resetsSelectedSession || (matchesChat && source?.reason === "compact")) {
     void loadChatHistory(state, { deferBranches: !presented }).finally(() =>
       state.requestUpdate?.(),
     );
-    return;
+    return true;
   }
   if (
     matchesChat &&
@@ -424,7 +432,7 @@ function handleSessionsChangedEvent(
     void loadChatHistory(state, { deferBranches: !presented }).finally(() =>
       state.requestUpdate?.(),
     );
-    return;
+    return true;
   }
   if (
     matchesChat &&
@@ -449,6 +457,7 @@ function handleSessionsChangedEvent(
       presentation,
     );
   }
+  return matchesChat;
 }
 
 function terminalOwnsActiveChatStream(
@@ -524,6 +533,10 @@ export function handlePageGatewayEvent(
   event: GatewayEventFrame,
   isPresented: ChatPanePresentation = () => true,
 ): void {
+  if (event.event === "models.snapshot") {
+    applyChatModelCatalogSnapshot(state);
+    return;
+  }
   if (event.event === "session.approval") {
     const payload = asNullableRecord(event.payload);
     if (!payload || typeof payload.sessionKey !== "string") {
@@ -575,15 +588,12 @@ export function handlePageGatewayEvent(
       if (payload?.state === "delta" && typeof payload.deltaText === "string" && sessionMatches) {
         refreshPullRequestsForStreamedLinks(state, payload.runId, payload.deltaText);
       }
-      const shouldCelebrateFirstReply = hasVisibleFinalAssistantReply(state, payload);
       const shouldRefreshPullRequests =
-        shouldCelebrateFirstReply && finalAssistantReplyHasPullRequestLink(state, payload);
-      const result = handleChatGatewayEvent(state, payload);
+        hasVisibleFinalAssistantReply(state, payload) &&
+        finalAssistantReplyHasPullRequestLink(state, payload);
+      handleChatGatewayEvent(state, payload);
       if (terminalPayload && sessionMatches) {
         clearPendingQueueItemsForRun(state, terminalPayload.runId);
-      }
-      if (shouldCelebrateFirstReply && result === "final") {
-        fireFirstReplyConfetti();
       }
       if (shouldRefreshPullRequests && payload) {
         refreshPullRequestsForFinalReply(state, payload.runId, payload.message);
@@ -614,7 +624,7 @@ export function handlePageGatewayEvent(
         replayPendingSessionMessageReload(state, payload, isPresented);
       }
       if (terminalPayload) {
-        void resumeStoredChatOutboxes(state);
+        void resumeStoredChatOutboxes(state, event);
         if (sessionMatches) {
           if (isPresented()) {
             refreshSessionWorkspace(state, isSidebarSlotVisible(state.sidebarLayout, "workspace"));
@@ -623,7 +633,9 @@ export function handlePageGatewayEvent(
           }
         }
       }
-      requestChatPageUpdate(state, payload?.state === "delta" ? "animation-frame" : "immediate");
+      if (sessionMatches) {
+        requestChatPageUpdate(state, payload?.state === "delta" ? "animation-frame" : "immediate");
+      }
     };
     if (!terminalPayload) {
       apply();
@@ -694,15 +706,19 @@ export function handlePageGatewayEvent(
     return;
   }
   if (event.event === "session.message") {
-    handleSessionMessageEvent(state, event.payload, isPresented);
-    void resumeStoredChatOutboxes(state);
-    requestChatPageUpdate(state, "animation-frame");
+    const scopedChange = handleSessionMessageEvent(state, event.payload, isPresented);
+    void resumeStoredChatOutboxes(state, event);
+    if (scopedChange) {
+      requestChatPageUpdate(state, "animation-frame");
+    }
     return;
   }
   if (event.event === "sessions.changed") {
-    handleSessionsChangedEvent(state, event.payload, isPresented);
-    void resumeStoredChatOutboxes(state);
-    requestChatPageUpdate(state, "animation-frame");
+    const scopedChange = handleSessionsChangedEvent(state, event.payload, isPresented);
+    void resumeStoredChatOutboxes(state, event);
+    if (scopedChange) {
+      requestChatPageUpdate(state, "animation-frame");
+    }
     return;
   }
   if (event.event === "task") {

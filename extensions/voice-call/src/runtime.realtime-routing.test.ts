@@ -1,7 +1,8 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
-  createPluginStateSyncKeyedStoreForTests,
+  createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import type {
@@ -9,10 +10,10 @@ import type {
   RealtimeVoiceBridgeCreateRequest,
   RealtimeVoiceProviderPlugin,
 } from "openclaw/plugin-sdk/realtime-voice";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
-import { finalizeTestManagerCalls } from "./manager.test-harness.js";
 import type { VoiceCallStateRuntime } from "./runtime-state.js";
 import { createVoiceCallRuntime, type VoiceCallRuntime } from "./runtime.js";
 import { createVoiceCallBaseConfig } from "./test-fixtures.js";
@@ -33,11 +34,8 @@ vi.mock("./realtime-voice.runtime.js", async (importOriginal) => {
 function createStateRuntime(): VoiceCallStateRuntime["state"] {
   return {
     resolveStateDir: () => "",
-    openKeyedStore: (() => {
-      throw new Error("openKeyedStore is not used by realtime routing tests");
-    }) as VoiceCallStateRuntime["state"]["openKeyedStore"],
-    openSyncKeyedStore: <T>(options: OpenKeyedStoreOptions) =>
-      createPluginStateSyncKeyedStoreForTests<T>("voice-call", options),
+    openKeyedStore: <T>(options: OpenKeyedStoreOptions) =>
+      createPluginStateKeyedStoreForTests<T>("voice-call", options),
     openChannelIngressQueue: (() => {
       throw new Error("openChannelIngressQueue is not used by realtime routing tests");
     }) as VoiceCallStateRuntime["state"]["openChannelIngressQueue"],
@@ -80,13 +78,17 @@ afterEach(() => {
 });
 
 describe("voice-call realtime route ownership", () => {
-  it("selects provider readiness and bridge auth from each inbound number owner", async () => {
+  it("selects provider readiness and bridge auth from each inbound number owner", async ({
+    signal,
+  }) => {
     const storePath = tempDirs.make("openclaw-voice-routing-");
     const sockets: WebSocket[] = [];
     const servers: Array<Awaited<ReturnType<typeof startUpgradeWsServer>>> = [];
     let runtime: VoiceCallRuntime | undefined;
-    const salesConnect = vi.fn(async () => {});
-    const supportConnect = vi.fn(async () => {});
+    const salesConnected = createDeferred<void>();
+    const supportConnected = createDeferred<void>();
+    const salesConnect = vi.fn(async () => salesConnected.resolve());
+    const supportConnect = vi.fn(async () => supportConnected.resolve());
     const salesRequests: RealtimeVoiceBridgeCreateRequest[] = [];
     const salesProvider = createRealtimeProvider({
       id: "openai",
@@ -180,12 +182,22 @@ describe("voice-call realtime route ownership", () => {
         );
       }
 
-      await vi.waitFor(() => {
-        expect(salesProvider.createBridge).toHaveBeenCalledTimes(1);
-        expect(supportProvider.createBridge).toHaveBeenCalledTimes(1);
-        expect(salesConnect).toHaveBeenCalledTimes(1);
-        expect(supportConnect).toHaveBeenCalledTimes(1);
-      });
+      const cancelled = createDeferred<never>();
+      const onAbort = () => cancelled.reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        signal.throwIfAborted();
+        await Promise.race([
+          Promise.all([salesConnected.promise, supportConnected.promise]),
+          cancelled.promise,
+        ]);
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+      }
+      expect(salesProvider.createBridge).toHaveBeenCalledTimes(1);
+      expect(supportProvider.createBridge).toHaveBeenCalledTimes(1);
+      expect(salesConnect).toHaveBeenCalledTimes(1);
+      expect(supportConnect).toHaveBeenCalledTimes(1);
       expect(salesProvider.createBridge).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: "sales",
@@ -234,20 +246,18 @@ describe("voice-call realtime route ownership", () => {
         ]),
       );
     } finally {
-      await runtime?.stop();
-      for (const ws of sockets) {
-        if (ws.readyState !== WebSocket.CLOSED) {
-          const closed = waitForClose(ws);
-          ws.terminate();
-          await closed;
-        }
-      }
-      await Promise.all(servers.map((server) => server.close()));
       try {
-        if (runtime) {
-          finalizeTestManagerCalls(runtime.manager);
-        }
+        await runtime?.stop();
       } finally {
+        for (const ws of sockets) {
+          if (ws.readyState !== WebSocket.CLOSED) {
+            const closed = waitForClose(ws);
+            ws.terminate();
+            await closed;
+          }
+        }
+        await Promise.all(servers.map((server) => server.close()));
+        await closeOpenClawStateDatabaseAsync();
         resetPluginStateStoreForTests();
       }
     }

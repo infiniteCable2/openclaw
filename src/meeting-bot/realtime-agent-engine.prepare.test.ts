@@ -2,6 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { toErrorObject } from "../infra/errors.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
 import {
@@ -150,7 +151,205 @@ describe("prepareMeetingAgentRealtimeEngine", () => {
   });
 });
 
+async function createControlledStreamingEngine() {
+  const provider = createProvider(undefined);
+  let callbacks: Parameters<RealtimeTranscriptionProviderPlugin["createSession"]>[0] | undefined;
+  provider.createSession.mockImplementation((params) => {
+    callbacks = params;
+    return {
+      connect: vi.fn(async () => undefined),
+      sendAudio: vi.fn(),
+      close: vi.fn(),
+      isConnected: () => true,
+    };
+  });
+  const streams: Array<{
+    controller: ReadableStreamDefaultController<Uint8Array>;
+    signal?: AbortSignal;
+    release: ReturnType<typeof vi.fn>;
+    firstRead: Promise<void>;
+    secondRead: Promise<void>;
+  }> = [];
+  const synthesize = vi.fn(async (params: { signal?: AbortSignal }) => {
+    const release = vi.fn(async () => undefined);
+    const readRequests = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const state = {
+      signal: params.signal,
+      release,
+      firstRead: readRequests[0]!.promise,
+      secondRead: readRequests[1]!.promise,
+    };
+    const audioStream = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          streams.push({ ...state, controller });
+        },
+        pull() {
+          readRequests.shift()?.resolve();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return { success: true, audioStream, release, sampleRate: 24_000, outputFormat: "pcm" };
+  });
+  const completion = Promise.withResolvers<{ text: string; delivered: true }>();
+  let consult: MeetingAgentConsultParams | undefined;
+  const consultAgent = vi.fn((params: MeetingAgentConsultParams) => {
+    consult = params;
+    return completion.promise;
+  });
+  const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
+  const clearOutput = vi.fn(async () => undefined);
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const handle = await startMeetingAgentRealtimeEngine({
+    config: { ...config, realtime: { ...config.realtime, responseStreaming: "sentence" } },
+    fullConfig: {},
+    runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
+    platform: {
+      displayName: "Test meeting",
+      logScope: "test meeting",
+      sessionIdPrefix: "test-meeting",
+    },
+    meetingSessionId: "controlled-stream",
+    transport: {
+      onFatal: vi.fn(),
+      startInput: vi.fn(),
+      writeOutput,
+      clearOutput,
+      stop: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined),
+    },
+    logger,
+    providers: [provider],
+    consultAgent,
+  });
+  callbacks?.onTranscript("Please answer my question.");
+  await vi.waitFor(() => expect(consultAgent).toHaveBeenCalledOnce(), { timeout: 2_000 });
+  return {
+    handle,
+    streams,
+    callbacks,
+    synthesize,
+    writeOutput,
+    clearOutput,
+    consultAgent,
+    logger,
+    streamAt(index: number) {
+      const stream = streams[index];
+      if (!stream) {
+        throw new Error(`Expected prepared speech stream ${index}`);
+      }
+      return stream;
+    },
+    speech: consult!.onSpeakableText!,
+    async stop() {
+      completion.resolve({ text: "", delivered: true });
+      await handle.stop();
+    },
+  };
+}
+
 describe("startMeetingAgentRealtimeEngine streaming output", () => {
+  it("does not resume prepared or later sentences after speech onset", async () => {
+    const fixture = await createControlledStreamingEngine();
+    try {
+      await fixture.speech({ type: "chunk", text: "This is the first sentence." });
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(1));
+      fixture.streamAt(0).controller.enqueue(Uint8Array.from([1, 0]));
+      await vi.waitFor(() => expect(fixture.writeOutput).toHaveBeenCalledOnce());
+      await fixture.speech({ type: "chunk", text: "This second sentence is prepared already." });
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(2));
+      fixture.streamAt(1).controller.enqueue(Uint8Array.from([2, 0]));
+      fixture.callbacks?.onSpeechStart?.();
+      await vi.waitFor(() => {
+        expect(fixture.streamAt(0).release).toHaveBeenCalledOnce();
+        expect(fixture.streamAt(1).release).toHaveBeenCalledOnce();
+      });
+      await fixture.speech({ type: "chunk", text: "This third sentence must be ignored." });
+      expect(fixture.synthesize).toHaveBeenCalledTimes(2);
+      expect(fixture.writeOutput).toHaveBeenCalledOnce();
+      expect(fixture.clearOutput).toHaveBeenCalledOnce();
+      expect(fixture.streams.every((stream) => stream.signal?.aborted)).toBe(true);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("fences an already fulfilled read when speech onset races its continuation", async () => {
+    const fixture = await createControlledStreamingEngine();
+    try {
+      await fixture.speech({ type: "chunk", text: "This sentence is still playing." });
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(1));
+      const stream = fixture.streamAt(0);
+      // With no prefetch, each pull admits an actual pending read. Wait before
+      // enqueueing so the first chunk cannot merely enter the stream's queue.
+      await stream.firstRead;
+      stream.controller.enqueue(Uint8Array.from([1, 0]));
+      await stream.secondRead;
+      expect(fixture.writeOutput).toHaveBeenCalledOnce();
+      // Enqueue fulfills read(), then cancellation precedes its await continuation.
+      stream.controller.enqueue(Uint8Array.from([2, 0]));
+      fixture.callbacks?.onSpeechStart?.();
+      await vi.waitFor(() => expect(stream.release).toHaveBeenCalledOnce());
+      expect(fixture.writeOutput).toHaveBeenCalledOnce();
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("records delayed assistant echoes without interrupting their playback", async () => {
+    const fixture = await createControlledStreamingEngine();
+    const text = "These are the details of your requested answer.";
+    try {
+      await fixture.speech({ type: "chunk", text });
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(1));
+      const stream = fixture.streamAt(0);
+      stream.controller.enqueue(Uint8Array.from([1, 0]));
+      await vi.waitFor(() => expect(fixture.writeOutput).toHaveBeenCalledOnce());
+      fixture.callbacks?.onTranscript(text);
+      expect(stream.signal?.aborted).toBe(false);
+      expect(fixture.clearOutput).not.toHaveBeenCalled();
+      stream.controller.enqueue(Uint8Array.from([2, 0]));
+      stream.controller.close();
+      await fixture.speech({ type: "done", text });
+      await vi.waitFor(() => expect(stream.release).toHaveBeenCalledOnce());
+      expect(fixture.writeOutput).toHaveBeenCalledTimes(2);
+      expect(fixture.consultAgent).toHaveBeenCalledOnce();
+      expect(
+        fixture.handle
+          .getHealth()
+          .recentTalkEvents?.filter((event) => event.type === "transcript.done"),
+      ).toHaveLength(2);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("publishes final text before audio and retains that event if the sink fails", async () => {
+    const fixture = await createControlledStreamingEngine();
+    try {
+      fixture.writeOutput.mockRejectedValueOnce(new Error("sink closed"));
+      await fixture.speech({ type: "done", text: "This final answer is available." });
+      expect(
+        fixture.handle
+          .getHealth()
+          .recentTalkEvents?.some((event) => event.type === "output.text.done"),
+      ).toBe(true);
+      expect(fixture.writeOutput).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(1));
+      fixture.streamAt(0).controller.enqueue(Uint8Array.from([1, 0]));
+      await vi.waitFor(() =>
+        expect(fixture.logger.warn).toHaveBeenCalledWith(expect.stringContaining("sink closed")),
+      );
+      const events = fixture.handle.getHealth().recentTalkEvents!.map((event) => event.type);
+      expect(events.indexOf("output.text.done")).toBeLessThan(
+        events.indexOf("output.audio.started"),
+      );
+      expect(events.slice(-2)).toEqual(["output.audio.done", "turn.ended"]);
+    } finally {
+      await fixture.stop();
+    }
+  });
   it("starts sentence TTS before the agent consult completes and records one logical answer", async () => {
     let onTranscript: ((text: string) => void) | undefined;
     const provider = createProvider(undefined);
@@ -307,7 +506,9 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     await consult?.onSpeakableText?.({ type: "chunk", text: "Satz zwei." });
     await vi.waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
     await consult?.onSpeakableText?.({ type: "chunk", text: "Satz drei." });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 20);
+    });
     expect(synthesize).toHaveBeenCalledTimes(2);
 
     streamControllers[0]?.close();
@@ -439,9 +640,13 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     const synthesize = vi.fn(
       (params: { signal?: AbortSignal }) =>
         new Promise<never>((_resolve, reject) => {
-          params.signal?.addEventListener("abort", () => reject(params.signal?.reason), {
-            once: true,
-          });
+          params.signal?.addEventListener(
+            "abort",
+            () => reject(toErrorObject(params.signal?.reason, "Speech synthesis aborted")),
+            {
+              once: true,
+            },
+          );
         }),
     );
     let firstConsult: MeetingAgentConsultParams | undefined;
@@ -644,9 +849,13 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       (params: { signal?: AbortSignal }) =>
         new Promise<never>((_resolve, reject) => {
           synthesisSignal = params.signal;
-          params.signal?.addEventListener("abort", () => reject(params.signal?.reason), {
-            once: true,
-          });
+          params.signal?.addEventListener(
+            "abort",
+            () => reject(toErrorObject(params.signal?.reason, "Speech synthesis aborted")),
+            {
+              once: true,
+            },
+          );
         }),
     );
     const handle = await startMeetingAgentRealtimeEngine({

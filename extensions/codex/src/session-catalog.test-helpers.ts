@@ -31,7 +31,9 @@ import {
 import type { SessionCatalogProvider as RegisteredSessionCatalogProvider } from "openclaw/plugin-sdk/session-catalog";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { withEnvAsync } from "openclaw/plugin-sdk/test-env";
@@ -62,7 +64,6 @@ import { catalogError, parseCatalogPage } from "./session-catalog-parsing.js";
 import {
   CODEX_TERMINAL_RESUME_COMMAND,
   CODEX_TERMINAL_START_COMMAND,
-  type CodexTerminalConfigSources,
 } from "./session-catalog-terminal.js";
 import type {
   CodexSessionCatalogControl,
@@ -107,12 +108,14 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await closeOpenClawAgentDatabasesAsync();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   resetPluginRuntimeStateForTest();
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
   vi.unstubAllEnvs();
   process.env.PATH = originalPath;
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
 const archiveLocalCodexSession = codexSessionCatalogRuntime.archiveLocal;
@@ -168,8 +171,13 @@ function asControlFactory(
   const forRequest = "forRequest" in control ? control.forRequest : () => control;
   return {
     forRequest,
-    homesForAgent: () => [],
-    forUpstream: (agentId) => forRequest(agentId),
+    forNode: async () => ({
+      control: forRequest("main"),
+      sourceHomeId: "node-native",
+      codexHome: resolveCodexAppServerUserHomeDir(),
+    }),
+    homesForAgent: async () => [],
+    forUpstream: async (agentId) => forRequest(agentId),
   };
 }
 
@@ -267,17 +275,9 @@ export function createCodexSessionCatalogNodeHostCommands(
     | CodexSessionCatalogControl
     | CodexSessionCatalogControlFactory
     | CodexSessionCatalogControlFactoryStub,
-  configSources: Omit<CodexTerminalConfigSources, "resolveRuntimeOptions"> = {
-    getPluginConfig: () => undefined,
-    getRuntimeConfig: () => config,
-  },
   bindingStore?: CodexAppServerBindingStore,
 ) {
-  return createCodexSessionCatalogNodeHostCommandsRuntime(
-    asControlFactory(control),
-    { ...configSources, resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions },
-    bindingStore,
-  );
+  return createCodexSessionCatalogNodeHostCommandsRuntime(asControlFactory(control), bindingStore);
 }
 
 type CreateSessionEntryParams = Parameters<

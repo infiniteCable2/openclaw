@@ -22,6 +22,7 @@ import {
 } from "./openclaw-state-db-schema-helpers.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import { FOLDED_SINGLETON_STATE_TABLES_V12 } from "./openclaw-state-db-schema-v12-foldin.js";
+import { readStateSchemaMigrationVersion } from "./openclaw-state-db-schema-version.js";
 import * as sessionWatchMigration from "./openclaw-state-db-session-watch-migration.js";
 import {
   hasRecognizedRetiredCommitmentsSchema,
@@ -33,7 +34,6 @@ import {
   resolveOpenClawAgentDatabaseStoredPath,
   resolveOpenClawStateDirForDatabasePath,
 } from "./openclaw-state-db.paths.js";
-import { readStateSchemaContentVersion } from "./openclaw-state-schema-publication.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.js";
 
 export function dropLegacyStateTables(db: DatabaseSync): void {
@@ -168,6 +168,16 @@ export function migrateAgentDatabaseRelativePaths(
   const hasPath = db.prepare(
     "SELECT 1 FROM agent_databases WHERE agent_id = ? AND path = ? LIMIT 1",
   );
+  const retainNewerFacts = db.prepare(`
+    UPDATE agent_databases AS canonical
+       SET schema_version = source.schema_version,
+           last_seen_at = source.last_seen_at,
+           size_bytes = source.size_bytes
+      FROM agent_databases AS source
+     WHERE canonical.agent_id = ? AND canonical.path = ?
+       AND source.agent_id = canonical.agent_id AND source.path = ?
+       AND source.last_seen_at > canonical.last_seen_at
+  `);
   let relativized = 0;
   const reanchored: string[] = [];
   const deleted: string[] = [];
@@ -182,8 +192,15 @@ export function migrateAgentDatabaseRelativePaths(
     }
     const storedPath = resolveOpenClawAgentDatabaseStoredPath(databasePath, registeredPath);
     if (!path.isAbsolute(storedPath)) {
-      updatePath.run(storedPath, agentId, registeredPath);
-      relativized += 1;
+      if (hasPath.get(agentId, storedPath)) {
+        // Namespace aliases can converge before the foreign-path repair pass.
+        retainNewerFacts.run(agentId, storedPath, registeredPath);
+        deletePath.run(agentId, registeredPath);
+        deleted.push(registeredPath);
+      } else {
+        updatePath.run(storedPath, agentId, registeredPath);
+        relativized += 1;
+      }
     }
   }
   const stateDir = resolveOpenClawStateDirForDatabasePath(databasePath);
@@ -367,7 +384,7 @@ export function detectOpenClawStateDatabaseSchemaMigrationsFromDatabase(
   pathname: string,
 ): OpenClawStateDatabaseSchemaMigration[] {
   const migrations: OpenClawStateDatabaseSchemaMigration[] = [];
-  const userVersion = readStateSchemaContentVersion(db);
+  const userVersion = readStateSchemaMigrationVersion(db);
   if (
     userVersion < RETIRED_COMMITMENTS_SCHEMA_VERSION &&
     tableExists(db, "commitments") &&
@@ -426,6 +443,13 @@ export function detectOpenClawStateDatabaseSchemaMigrationsFromDatabase(
       tableHasColumn(db, "skill_workshop_collection_reviews", "workspace_dir"))
   ) {
     migrations.push({ kind: "skill-workshop-directory-ownership-v16", path: pathname });
+  }
+  if (
+    userVersion < 17 &&
+    tableExists(db, "worker_environments") &&
+    !tableHasColumn(db, "worker_environments", "preparation_consumed_at_ms")
+  ) {
+    migrations.push({ kind: "prepared-worker-ownership-v17", path: pathname });
   }
   if (!hasCanonicalAgentDatabasesPrimaryKey(db)) {
     migrations.push({ kind: "agent-databases-composite-primary-key", path: pathname });

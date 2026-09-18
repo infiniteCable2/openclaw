@@ -26,9 +26,10 @@ function createTransportFixture(options: { backpressure?: boolean } = {}) {
     signalCode: null,
     kill: vi.fn(),
   }) as unknown as ChildProcessWithoutNullStreams;
+  const controlWrite = vi.fn();
   const control = Object.assign(new EventEmitter(), {
     destroyed: false,
-    write: vi.fn(),
+    write: controlWrite,
     destroy: vi.fn(),
   }) as unknown as net.Socket;
   const transport = new NativeMatrixRtcAudioTransport({
@@ -36,7 +37,7 @@ function createTransportFixture(options: { backpressure?: boolean } = {}) {
     control,
     tempDir: "/tmp/openclaw-matrix-rtc-test",
   });
-  return { child, control, stdin, transport };
+  return { child, control, controlWrite, stdin, transport };
 }
 
 function acknowledgeClear(control: net.Socket, generation: number) {
@@ -66,11 +67,11 @@ describe("MatrixRTC media output framing", () => {
   });
 
   it("advances and acknowledges the generation before sending later audio", async () => {
-    const { control, stdin, transport } = createTransportFixture();
+    const { control, controlWrite, stdin, transport } = createTransportFixture();
     await transport.writeOutput(Buffer.alloc(480, 1));
     const clearing = transport.clearOutput();
     await vi.waitFor(() => {
-      expect(control.write).toHaveBeenCalledWith(
+      expect(controlWrite).toHaveBeenCalledWith(
         `${JSON.stringify({ type: "clear_output", generation: 1 })}\n`,
       );
     });
@@ -84,7 +85,9 @@ describe("MatrixRTC media output framing", () => {
   });
 
   it("fences a backpressured write as soon as output is cleared", async () => {
-    const { control, stdin, transport } = createTransportFixture({ backpressure: true });
+    const { control, controlWrite, stdin, transport } = createTransportFixture({
+      backpressure: true,
+    });
     const writing = transport.writeOutput(Buffer.alloc(960, 1));
     await vi.waitFor(() => {
       expect(stdin.write).toHaveBeenCalledOnce();
@@ -92,7 +95,7 @@ describe("MatrixRTC media output framing", () => {
 
     const clearing = transport.clearOutput();
     await vi.waitFor(() => {
-      expect(control.write).toHaveBeenCalledOnce();
+      expect(controlWrite).toHaveBeenCalledOnce();
     });
     acknowledgeClear(control, 1);
     stdin.emit("drain");

@@ -4,6 +4,7 @@ import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { MeetingRealtimeAudioTransport } from "openclaw/plugin-sdk/meeting-runtime";
 
 const CONTROL_LINE_LIMIT = 128 * 1024;
@@ -86,9 +87,11 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
 async function connectControlSocket(
   socketPath: string,
   child: ChildProcessWithoutNullStreams,
+  signal: AbortSignal,
 ): Promise<net.Socket> {
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    signal.throwIfAborted();
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error("MatrixRTC media bridge exited before opening its control socket");
     }
@@ -98,7 +101,7 @@ async function connectControlSocket(
         throw new Error("MatrixRTC media bridge created an unsafe control socket");
       }
       return await new Promise<net.Socket>((resolve, reject) => {
-        const socket = net.createConnection(socketPath);
+        const socket = net.createConnection({ path: socketPath, signal });
         socket.once("connect", () => resolve(socket));
         socket.once("error", reject);
       });
@@ -107,9 +110,7 @@ async function connectControlSocket(
       if (code !== "ENOENT" && code !== "ECONNREFUSED") {
         throw error;
       }
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 25);
-      });
+      await delay(25, undefined, { signal });
     }
   }
   throw new Error("MatrixRTC media bridge control socket timed out");
@@ -367,14 +368,24 @@ export async function createMatrixRtcMediaTransport(params: {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-matrix-rtc-"));
   await chmod(tempDir, 0o700);
   const socketPath = path.join(tempDir, `${randomUUID().slice(0, 12)}.sock`);
-  const child = spawn(params.command, ["--control-socket", socketPath], {
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  child.stdout.pause();
+  const startup = new AbortController();
+  const onChildError = () => startup.abort(new Error("MatrixRTC media bridge failed to start"));
+  let child: ChildProcessWithoutNullStreams | undefined;
+  let control: net.Socket | undefined;
+  let transport: NativeMatrixRtcAudioTransport | undefined;
   try {
-    const control = await connectControlSocket(socketPath, child);
-    const transport = new NativeMatrixRtcAudioTransport({ child, control, tempDir });
+    child = spawn(params.command, ["--control-socket", socketPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    // Spawn errors are asynchronous and can arrive before the socket exists.
+    // Transfer error ownership only once the transport has installed its listener.
+    child.on("error", onChildError);
+    child.stdout.pause();
+    control = await connectControlSocket(socketPath, child, startup.signal);
+    startup.signal.throwIfAborted();
+    transport = new NativeMatrixRtcAudioTransport({ child, control, tempDir });
+    child.off("error", onChildError);
     await transport.waitForControlEvent("ready");
     transport.sendControl({
       type: "start",
@@ -387,9 +398,21 @@ export async function createMatrixRtcMediaTransport(params: {
     await transport.waitForControlEvent("connected");
     return transport;
   } catch (error) {
-    child.kill("SIGTERM");
-    await waitForExit(child, 1_000);
-    await rm(tempDir, { recursive: true, force: true });
+    try {
+      if (transport) {
+        await transport.stop();
+      } else if (child?.pid !== undefined) {
+        child.kill("SIGTERM");
+        await waitForExit(child, 1_000);
+      }
+    } finally {
+      if (transport) {
+        await transport.dispose();
+      } else {
+        control?.destroy();
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    }
     throw error;
   }
 }

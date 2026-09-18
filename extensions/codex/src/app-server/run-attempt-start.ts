@@ -179,10 +179,11 @@ export async function startCodexAttemptRuntime(resources: CodexAttemptResources)
     }
     if (state.thread.lifecycle.action === "started" || state.thread.lifecycle.action === "forked") {
       const activePolicy = resolveReviewerPolicyContext(state.thread);
-      const activeConfig = resolveRuntimeOptionsForCurrentBinding({
+      const activeConfig = await resolveRuntimeOptionsForCurrentBinding({
         modelProvider: activePolicy.modelProvider,
         model: activePolicy.model,
       });
+      connection.assertCurrent();
       const activeAppServer = resolveCodexAppServerForModelProvider({
         appServer: activeConfig,
         provider: activePolicy.modelProvider,
@@ -240,9 +241,10 @@ export async function startCodexAttemptRuntime(resources: CodexAttemptResources)
     await runCleanupStep("codex-start-failure-route-release", releaseCurrentRoute);
     const nativeHookRelay = state.nativeHookRelay;
     state.nativeHookRelay = undefined;
-    await runCleanupStep("codex-start-failure-native-hook-relay", () =>
-      nativeHookRelay?.unregister(),
-    );
+    await runCleanupStep("codex-start-failure-native-hook-relay", async () => {
+      nativeHookRelay?.unregister();
+      await nativeHookRelay?.drain();
+    });
     await runCleanupStep("codex-start-failure-sandbox-release", releaseSandboxExecEnvironment);
     await runCleanupStep(
       "codex-start-failure-shared-client-release",

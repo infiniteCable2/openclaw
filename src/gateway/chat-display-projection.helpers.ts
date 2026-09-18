@@ -1,7 +1,7 @@
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { isMeaningfulMediaFact, readPersistedMediaFacts } from "../media/media-facts.js";
-import { isRelativeAssistantMediaReference, splitMediaFromOutput } from "../media/parse.js";
+import { isRelativeAssistantMediaReference, splitMediaOutput } from "../media/parse-output.js";
 import { normalizeInputProvenance } from "../sessions/input-provenance.js";
 import { isSuppressedControlReplyText } from "./control-reply-text.js";
 
@@ -60,9 +60,8 @@ export function stripAssistantMediaDirectivesForDisplay(
     return text;
   }
   const managed = new Set(managedMediaUrls.map((url) => url.trim()).filter(Boolean));
-  const parsed = splitMediaFromOutput(text, {
+  const parsed = splitMediaOutput(text, {
     extractAudioDirectives: false,
-    extractMarkdownImages: false,
   });
   if (
     !parsed.mediaUrls?.some(
@@ -83,7 +82,7 @@ export function stripAssistantMediaDirectivesForDisplay(
 }
 
 /** Resolve the text cap used when projecting chat history for display. */
-export function resolveEffectiveChatHistoryMaxChars(_cfg: unknown, maxChars?: number): number {
+export function resolveEffectiveChatHistoryMaxChars(maxChars?: number): number {
   if (typeof maxChars === "number") {
     return maxChars;
   }

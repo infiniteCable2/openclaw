@@ -24,6 +24,10 @@ export function resolveIsNixMode(env: NodeJS.ProcessEnv = process.env): boolean 
 
 export let isNixMode = resolveIsNixMode();
 
+/** Config mutation policy is independent of Nix package and service ownership. */
+export function resolveIsConfigReadOnly(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OPENCLAW_CONFIG_READONLY === "1" || resolveIsNixMode(env);
+}
 const CONFIG_FILENAME = "openclaw.json";
 const LEGACY_CONFIG_FILENAMES = ["clawdbot.json"] as const;
 
@@ -314,6 +318,13 @@ export function pinRuntimePaths(env: NodeJS.ProcessEnv = process.env): {
   STATE_DIR = resolveStateDir(env);
   CONFIG_PATH = resolveConfigPathCandidate(env);
   return { configPath: CONFIG_PATH, stateDir: STATE_DIR };
+}
+
+export function captureRuntimeStateEnvironment(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR?.trim() || STATE_DIR,
+  };
 }
 
 /**

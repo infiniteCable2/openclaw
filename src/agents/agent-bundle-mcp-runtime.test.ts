@@ -18,6 +18,7 @@ import {
   useAutoCleanupTempDirTracker,
 } from "../../test/helpers/temp-dir.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createCombinedSessionMcpRuntime } from "./agent-bundle-mcp-combined.js";
 import { completeDeferredSessionMcpRuntimeRetirement } from "./agent-bundle-mcp-manager-api.js";
 import {
@@ -32,6 +33,7 @@ import {
   testing,
 } from "./agent-bundle-mcp-runtime.js";
 import {
+  createBundleMcpToolRuntime,
   materializeBundleMcpToolsForRun,
   peekSessionMcpRuntime,
   retireSessionMcpRuntime,
@@ -861,6 +863,35 @@ describe("session MCP runtime", () => {
     expect(mapValidator({ foo: 42 }).valid).toBe(false);
   });
 
+  it.each([
+    { $schema: undefined, validFormat: false },
+    { $schema: "http://json-schema.org/draft-07/schema#", validFormat: false },
+    { $schema: "https://json-schema.org/draft/2020-12/schema", validFormat: true },
+  ])(
+    "preserves format and non-mutating validation semantics for $schema",
+    ({ $schema, validFormat }) => {
+      const schema = {
+        ...($schema ? { $schema } : {}),
+        type: "object",
+        properties: {
+          url: { type: "string", format: "uri" },
+          count: { type: "integer", default: 7 },
+        },
+        required: ["url"],
+        additionalProperties: false,
+      };
+      const originalSchema = structuredClone(schema);
+      const validator = createBundleMcpJsonSchemaValidator().getValidator(schema);
+      const input = { url: "not a uri" };
+      expect(validator(input).valid).toBe(validFormat);
+      const validInput = { url: "https://example.test" };
+      expect(validator(validInput).data).toBe(validInput);
+      expect(validInput).toEqual({ url: "https://example.test" });
+      expect(validator({ url: "https://example.test", count: "7" }).valid).toBe(false);
+      expect(schema).toEqual(originalSchema);
+    },
+  );
+
   it("rejects invalid draft-2020-12 tool output schemas from external MCP catalogs", () => {
     for (const schema of [
       {
@@ -945,6 +976,27 @@ describe("session MCP runtime", () => {
         "Invalid MCP draft-2020-12 JSON Schema",
       );
     }
+  });
+
+  it("reports malformed annotation formats at their original schema path", () => {
+    expect(() =>
+      createBundleMcpJsonSchemaValidator().getValidator({
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        properties: {
+          node: {
+            type: ["object", "null"],
+            // Deliberately malformed external schema must reach runtime shape validation.
+            $defs: { Leaf: { type: "string", format: 42 as never } },
+          },
+        },
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        message: expect.stringContaining("<schema>.properties.node.$defs.Leaf.format"),
+        cause: expect.any(Error),
+      }),
+    );
   });
 
   it("accepts draft-2020-12 local refs to boolean schemas and anchors", () => {
@@ -1101,6 +1153,64 @@ describe("session MCP runtime", () => {
     expect(validator({ a: {}, b: {} }).valid).toBe(true);
     expect(validator({ a: {}, b: 1 }).valid).toBe(false);
   });
+
+  it.each([
+    { label: "valid leaf", structuredContent: { node: null, label: "leaf" }, valid: true },
+    { label: "invalid leaf", structuredContent: { node: null, label: 42 }, valid: false },
+  ])(
+    "validates nested union resource references over stdio: $label",
+    async ({ structuredContent, valid }) => {
+      const tempDir = tempDirTracker.make("bundle-mcp-nested-union-schema-");
+      const serverPath = path.join(tempDir, "server.mjs");
+      await writeListToolsMcpServer({
+        filePath: serverPath,
+        logPath: path.join(tempDir, "server.log"),
+        tools: [
+          {
+            name: "nested",
+            inputSchema: { type: "object" },
+            outputSchema: {
+              $schema: "https://json-schema.org/draft/2020-12/schema",
+              type: "object",
+              properties: {
+                node: { type: ["object", "null"], $defs: { Leaf: { type: "string" } } },
+                label: { $ref: "#/properties/node/$defs/Leaf" },
+              },
+              required: ["node", "label"],
+              additionalProperties: false,
+            },
+          },
+          { name: "healthy", inputSchema: { type: "object" } },
+        ],
+        callToolResult: { content: [], structuredContent },
+      });
+      const runtime = createSessionMcpRuntime({
+        sessionId: "session-nested-union-schema",
+        workspaceDir: tempDir,
+        cfg: { mcp: { servers: { docs: { command: process.execPath, args: [serverPath] } } } },
+      });
+      try {
+        expect((await runtime.getCatalog()).tools.map((entry) => entry.toolName)).toEqual([
+          "healthy",
+          "nested",
+        ]);
+        if (valid) {
+          await expect(runtime.callTool("docs", "nested", {})).resolves.toMatchObject({
+            structuredContent,
+          });
+        } else {
+          await expect(runtime.callTool("docs", "nested", {})).rejects.toThrow(
+            "does not match the tool's output schema",
+          );
+        }
+        await expect(runtime.callTool("docs", "healthy", {})).resolves.toMatchObject({
+          structuredContent,
+        });
+      } finally {
+        await runtime.dispose();
+      }
+    },
+  );
 
   it("enforces output schemas under the canonical trimmed tool name", async () => {
     const tempDir = tempDirTracker.make("bundle-mcp-canonical-schema-");
@@ -2239,6 +2349,93 @@ process.on("SIGINT", shutdown);`,
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it.each(["before-start", "initialize", "tools/list", "ready"] as const)(
+    "settles private MCP acquisition cancellation at %s",
+    async (phase) => {
+      const tempDir = tempDirTracker.make("bundle-mcp-private-cancel-");
+      const serverPath = path.join(tempDir, "server.mjs");
+      const logPath = path.join(tempDir, "server.log");
+      const pidPath = path.join(tempDir, "server.pid");
+      await writeListToolsMcpServer({
+        filePath: serverPath,
+        logPath,
+        pidPath,
+        initializeDelayMs: phase === "initialize" ? 30_000 : undefined,
+        listToolsReleasePath:
+          phase === "tools/list" ? path.join(tempDir, "release-list") : undefined,
+      });
+      const work = new AsyncWorkScope();
+      const reason = new Error("private MCP acquisition cancelled");
+      if (phase === "before-start") {
+        work.beginClose(reason);
+      }
+      let runtime: SessionMcpRuntime | undefined;
+      let materialized: Awaited<ReturnType<typeof createBundleMcpToolRuntime>> | undefined;
+      const pending = work.track(async () => {
+        materialized = await createBundleMcpToolRuntime({
+          workspaceDir: tempDir,
+          cfg: {
+            mcp: {
+              servers: {
+                private: {
+                  command: process.execPath,
+                  args: [serverPath],
+                  connectionTimeoutMs: 30_000,
+                  requestTimeoutMs: 30_000,
+                },
+              },
+            },
+          },
+          createRuntime: (params) => {
+            runtime = createSessionMcpRuntime(params);
+            return runtime;
+          },
+        });
+        return materialized;
+      });
+      void pending.catch(() => {});
+      try {
+        if (phase === "before-start") {
+          await expect(pending).rejects.toBe(reason);
+          expect(runtime).toBeUndefined();
+          await expect(fs.access(pidPath)).rejects.toMatchObject({ code: "ENOENT" });
+          return;
+        }
+        await waitForFileText(
+          logPath,
+          phase === "initialize" ? "recv initialize" : "recv tools/list",
+          LIST_TOOLS_SERVER_LOG_TIMEOUT_MS,
+        );
+        const pid = Number.parseInt((await fs.readFile(pidPath, "utf8")).trim(), 10);
+        expect(() => process.kill(pid, 0)).not.toThrow();
+        if (phase === "ready") {
+          const view = await pending;
+          expect(view.tools.map((tool) => tool.name)).toEqual(["private__slow_tool"]);
+          work.beginClose(reason);
+          expect(runtime?.peekCatalog()?.tools.map((tool) => tool.toolName)).toEqual(["slow_tool"]);
+          expect(() => process.kill(pid, 0)).not.toThrow();
+          await view.dispose();
+        } else {
+          work.beginClose(reason);
+          await expect(
+            withTestTimeout(
+              pending,
+              LIST_TOOLS_TEST_DEADLINE_MS,
+              "Private MCP startup did not settle",
+            ),
+          ).rejects.toBe(reason);
+        }
+        expect(runtime?.activeLeases).toBe(0);
+        expect(() => process.kill(pid, 0)).toThrow();
+      } finally {
+        await runtime?.dispose();
+        await pending.catch(() => {});
+        await materialized?.dispose();
+        await work.drain();
+      }
+    },
+  );
 
   it.each(["managed", "combined"] as const)(
     "cancels a %s catalog waiter without cancelling the shared producer",
@@ -3504,13 +3701,16 @@ process.on("SIGINT", shutdown);`,
         transport: "streamable-http" as const,
         url: "https://placeholder.invalid/mcp",
       };
-      const params = makeRequesterParams(
-        "session-real-requester-sweep",
-        {
-          mcp: { sessionIdleTtlMs: 600_000, servers: { "real-requester": declaredServer } },
-        },
-        "proof-requester",
-      );
+      const params = {
+        ...makeRequesterParams(
+          "session-real-requester-sweep",
+          {
+            mcp: { sessionIdleTtlMs: 600_000, servers: { "real-requester": declaredServer } },
+          },
+          "proof-requester",
+        ),
+        autoApproveCodexAppServerApprovals: true,
+      };
       const singletonStore = globalThis as Record<PropertyKey, unknown>;
       const hadRuntimeManager = Object.hasOwn(singletonStore, SESSION_MCP_RUNTIME_MANAGER_KEY);
       const previousRuntimeManager = singletonStore[SESSION_MCP_RUNTIME_MANAGER_KEY];
@@ -5467,6 +5667,7 @@ describe("requester-scoped MCP connection resolution", () => {
             workspaceDir: "/workspace",
             cfg: scopedConfig as never,
             requesterSenderId: "authed",
+            autoApproveCodexAppServerApprovals: true,
           });
           expect(first?.advertisedTools.map((tool) => tool.name)).toEqual(["user-mail__inbox"]);
           await first?.dispose();
@@ -5478,6 +5679,128 @@ describe("requester-scoped MCP connection resolution", () => {
             requesterSenderId: "guest",
           });
           expect(afterRemoval).toBeUndefined();
+        } finally {
+          await new Promise<void>((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+          });
+        }
+      });
+    },
+  );
+
+  it(
+    "gates requester MCP dispatch behind the approval boundary on a real transport",
+    { timeout: 15_000 },
+    async () => {
+      let toolsCallCount = 0;
+      const resolverRegistry = createMcpProofPluginRegistry();
+      await withPluginRuntimeRegistryScope(resolverRegistry.registry, async () => {
+        const server = http.createServer((request, response) => {
+          if (request.method === "DELETE") {
+            response.writeHead(204).end();
+            return;
+          }
+          if (request.method !== "POST") {
+            response.writeHead(405).end();
+            return;
+          }
+          let body = "";
+          request.setEncoding("utf8");
+          request.on("data", (chunk) => {
+            body += chunk;
+          });
+          request.on("end", () => {
+            const message = JSON.parse(body) as { id?: string | number; method?: string };
+            if (message.method === "notifications/initialized") {
+              response.writeHead(202).end();
+              return;
+            }
+            if (message.method === "tools/call") {
+              toolsCallCount += 1;
+            }
+            response.setHeader("content-type", "application/json");
+            response.setHeader("mcp-session-id", "session-approval-proof");
+            response.writeHead(200).end(
+              JSON.stringify(
+                message.method === "initialize"
+                  ? {
+                      jsonrpc: "2.0",
+                      id: message.id,
+                      result: {
+                        protocolVersion: "2025-03-26",
+                        capabilities: { tools: {} },
+                        serverInfo: { name: "approval-proof-server", version: "1.0.0" },
+                      },
+                    }
+                  : message.method === "tools/call"
+                    ? {
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        result: {
+                          content: [{ type: "text", text: "server-result" }],
+                        },
+                      }
+                    : {
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        result: {
+                          tools: [
+                            {
+                              name: "inbox",
+                              description: "read inbox",
+                              inputSchema: { type: "object", properties: {} },
+                            },
+                          ],
+                        },
+                      },
+              ),
+            );
+          });
+        });
+        await new Promise<void>((resolve) => {
+          server.listen(0, "127.0.0.1", resolve);
+        });
+        const address = server.address() as { port: number };
+
+        const resolverApi = resolverRegistry.apiFor("test-plugin");
+        resolverApi.registerMcpServerConnectionResolver({
+          serverName: "user-mail",
+          resolve: async () => ({ url: `http://127.0.0.1:${address.port}/mcp` }),
+        });
+        const scopedConfig = {
+          mcp: { servers: { "user-mail": { transport: "streamable-http" } } },
+        };
+
+        try {
+          // Unannotated auto-mode tool: approval required; a deny must produce zero
+          // server tool dispatches across the real transport.
+          const denied = await materializeRequesterScopedMcpToolsForHarnessRun({
+            sessionId: "session-approval-proof",
+            workspaceDir: "/workspace",
+            cfg: scopedConfig as never,
+            requesterSenderId: "authed",
+            requestInteractiveCodexApproval: async () => {
+              throw new Error("operator denied");
+            },
+          });
+          const gatedTool = expectDefined(denied?.tools[0], "gated requester tool");
+          await expect(gatedTool.execute("denied-call", {})).rejects.toThrow("operator denied");
+          expect(toolsCallCount).toBe(0);
+
+          // An approval grants exactly one dispatch through to the real server.
+          const allowed = await materializeRequesterScopedMcpToolsForHarnessRun({
+            sessionId: "session-approval-proof",
+            workspaceDir: "/workspace",
+            cfg: scopedConfig as never,
+            requesterSenderId: "authed",
+            requestInteractiveCodexApproval: async () => {},
+          });
+          const allowedTool = expectDefined(allowed?.tools[0], "approved requester tool");
+          const result = await allowedTool.execute("allowed-call", {});
+          expect(result.content[0]).toMatchObject({ type: "text", text: "server-result" });
+          expect(toolsCallCount).toBe(1);
+          await denied?.dispose();
+          await allowed?.dispose();
         } finally {
           await new Promise<void>((resolve, reject) => {
             server.close((error) => (error ? reject(error) : resolve()));

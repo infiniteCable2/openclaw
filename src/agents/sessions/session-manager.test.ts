@@ -4,6 +4,7 @@ import path from "node:path";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import {
   formatSqliteSessionFileMarker,
   parseSqliteSessionFileMarker,
@@ -17,6 +18,7 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
 import {
   buildSessionContext,
@@ -25,7 +27,14 @@ import {
   type SessionMessageEntry,
 } from "./session-manager.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    for (const stateDir of tempDirs.dirs) {
+      await cleanupSessionStateForTest({ stateDir });
+    }
+    cleanup();
+  }),
+);
 
 function openMarker(marker: string, sessionKey: string, cwd: string): SessionManager {
   const target = parseSqliteSessionFileMarker(marker);
@@ -296,11 +305,7 @@ describe("SessionManager.open", () => {
     expect(loadSessionEntry(scope)).toBeUndefined();
     const manager = SessionManager.open(scope, dir);
     expect(loadSessionEntry(scope)).toBeUndefined();
-    const messageId = manager.appendMessage({
-      role: "user",
-      content: "first message",
-      timestamp: 1,
-    });
+    const messageId = manager.appendMessage(makeUserMessage("first message", 1));
 
     await expect(loadTranscriptEvents(scope)).resolves.toEqual([
       expect.objectContaining({
