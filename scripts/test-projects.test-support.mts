@@ -945,9 +945,9 @@ const VITEST_NO_OUTPUT_TIMEOUT_ENV_KEY = "OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS";
 const VITEST_NO_OUTPUT_HEARTBEAT_ENV_KEY = "OPENCLAW_VITEST_NO_OUTPUT_HEARTBEAT_MS";
 const VITEST_NO_OUTPUT_RETRY_ENV_KEY = "OPENCLAW_VITEST_NO_OUTPUT_RETRY";
 /** Default no-output timeout applied to test-projects Vitest children. */
-export const DEFAULT_TEST_PROJECTS_VITEST_NO_OUTPUT_TIMEOUT_MS = String(900_000);
+const DEFAULT_TEST_PROJECTS_VITEST_NO_OUTPUT_TIMEOUT_MS = String(900_000);
 /** Default heartbeat interval applied to test-projects Vitest children. */
-export const DEFAULT_TEST_PROJECTS_VITEST_NO_OUTPUT_HEARTBEAT_MS = String(
+const DEFAULT_TEST_PROJECTS_VITEST_NO_OUTPUT_HEARTBEAT_MS = String(
   DEFAULT_VITEST_NO_OUTPUT_HEARTBEAT_MS,
 );
 
@@ -2749,12 +2749,30 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
   [/^scripts\/native-app-i18n\.ts$/u, ["native-app-i18n", workflowGuards]],
   [
     /^scripts\/github\/(?:dependency-guard|guard-shared)\.mjs$/u,
-    ["dependency-guard-script", "dependency-guard-workflow"],
+    ["dependency-guard-script", "security-review-workflow"],
   ],
   [
     /^scripts\/github\/(?:security-sensitive-guard|guard-shared)\.mjs$/u,
-    ["security-sensitive-guard-script", "security-sensitive-guard-workflow"],
+    ["security-sensitive-guard-script", "security-review-workflow"],
   ],
+  [
+    /^\.github\/workflows\/security-review\.yml$/u,
+    ["security-review-workflow", "security-review-event", "security-review-script", workflowGuards],
+  ],
+  [
+    /^scripts\/github\/(?:security-review|security-review-rollout)\.mjs$/u,
+    ["security-review-script", "security-review-rollout"],
+  ],
+  [
+    /^scripts\/github\/(?:guard-review|security-review-policy)\.mjs$/u,
+    [
+      "dependency-guard-script",
+      "security-sensitive-guard-script",
+      "security-review-script",
+      "security-review-rollout",
+    ],
+  ],
+  [/^scripts\/github\/guard-shared\.mjs$/u, ["security-review-script", "security-review-event"]],
   [/^scripts\/plugin-clawhub-release-check\.ts$/u, ["release-wrapper-scripts"]],
   [
     /^scripts\/generate-runtime-sidecar-paths-baseline\.ts$/u,
@@ -4046,16 +4064,19 @@ export function buildVitestRunPlans(
   }));
   const hasGatewayAggregateTarget = classifiedTargets.some(({ kind }) => kind === "gateway");
   const explicitConfigTargets = classifiedTargets.map(({ relative }) => relative);
+  const databaseWorkerPatterns = uniqueOrdered([
+    ...requestedTargetArgs,
+    ...activeTargetArgs,
+  ]).flatMap((targetArg) => {
+    const relative = toRepoRelativeTarget(targetArg, cwd);
+    return isTestFileTarget(relative) ||
+      isGlobTarget(relative) ||
+      isExistingDirectoryTarget(targetArg, cwd)
+      ? [toScopedIncludePattern(targetArg, cwd)]
+      : [];
+  });
   const impliedDatabaseWorkerTargets = databaseWorkerCoreTestFiles.filter((file) =>
-    [...requestedTargetArgs, ...activeTargetArgs].some((targetArg) => {
-      const relative = toRepoRelativeTarget(targetArg, cwd);
-      return (
-        (isTestFileTarget(relative) ||
-          isGlobTarget(relative) ||
-          isExistingDirectoryTarget(targetArg, cwd)) &&
-        includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file])
-      );
-    }),
+    databaseWorkerPatterns.some((pattern) => includePatternMatchesAnyFile(pattern, [file])),
   );
   const hasPackageFileTarget = classifiedTargets.some(
     ({ kind, relative }) =>

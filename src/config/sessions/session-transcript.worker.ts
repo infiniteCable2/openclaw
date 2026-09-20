@@ -1,99 +1,32 @@
 import type {
-  BuildSessionEntryOptions,
-  SessionFileEntry,
-  readSessionEntryResetRecallCutoff,
-} from "../../../packages/memory-host-sdk/src/host/session-files.js";
-import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-readonly-reader.js";
+  UsageCostWorkerInput,
+  UsageCostWorkerReply,
+} from "../../infra/session-cost-usage-worker.types.js";
 import { serveWorkerTasks } from "../../infra/worker-task-pool.js";
-import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
-import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
-import type {
-  SessionBranchSummaryReadRequest,
-  SessionBranchSummaryReadResult,
-} from "./session-accessor.sqlite-branches.js";
-import type {
-  readSessionTranscriptModelContext,
-  SessionModelContextLimits,
-} from "./session-accessor.sqlite-model-context.js";
-import type {
-  SessionAccessScope,
-  SessionTranscriptRuntimeTarget,
-} from "./session-accessor.types.js";
+import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
+import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
-import type {
-  SessionHistoryWorkerRequest,
-  SessionHistoryWorkerResult,
-} from "./session-history-types.js";
+import type { SessionHistoryWorkerResult } from "./session-history-types.js";
+import { sessionHistoryCleanupError } from "./session-history-worker-errors.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import {
   runWithSessionTranscriptReadFence,
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
-import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
-
-export type SessionModelContextWorkerInput = {
-  kind: "model-context";
-  target: SessionTranscriptRuntimeTarget;
-  admission?: UserTurnTranscriptAdmissionReceipt;
-  through?: TranscriptEntryAnchor;
-  limits?: SessionModelContextLimits;
-};
-
-export type SessionEntryWorkerInput = {
-  kind: "session-entry";
-  absPath: string;
-  options: Omit<BuildSessionEntryOptions, "onTranscriptMessage" | "parseYieldEveryLines"> & {
-    agentId: string;
-    sessionId: string;
-    storePath: string;
-  };
-  admission?: UserTurnTranscriptAdmissionReceipt;
-  redaction: SensitiveTextRedactionSnapshot;
-};
-
-export type SessionTranscriptHistoryWorkerInput = {
-  kind: "history-page";
-  database: { agentId: string; path: string };
-  request: SessionHistoryWorkerRequest;
-  target: Omit<PreparedSessionHistoryReadTarget, "database">;
-  admission?: UserTurnTranscriptAdmissionReceipt;
-};
-
-export type SessionRowPresenceWorkerInput = {
-  kind: "session-row-presence";
-  database: { agentId: string; path: string };
-  scope: SessionAccessScope & { databaseAgentId: string };
-};
-
-export type SessionBranchSummaryWorkerInput = {
-  kind: "branch-summaries";
-  request: SessionBranchSummaryReadRequest;
-};
-
-type SessionTranscriptWorkerValues = {
-  "branch-summaries": SessionBranchSummaryReadResult;
-  "history-page": SessionHistoryWorkerResult;
-  "session-row-presence": boolean;
-  "model-context": ReturnType<typeof readSessionTranscriptModelContext>;
-  "session-entry": {
-    entry: SessionFileEntry | null;
-    resetRecallCutoff: ReturnType<typeof readSessionEntryResetRecallCutoff>;
-  };
-};
-
-export type SessionTranscriptWorkerReply<Kind extends keyof SessionTranscriptWorkerValues> =
-  | {
-      ok: true;
-      value: SessionTranscriptWorkerValues[Kind];
-      closedHistoryDatabase?: SessionTranscriptHistoryWorkerInput["database"];
-    }
-  | {
-      ok: false;
-      error:
-        | { kind: "cold"; sessionId: string }
-        | { kind: "projection"; sessionId: string }
-        | { kind: "fence"; message: string };
-    };
+import type {
+  SessionBranchSummaryWorkerInput,
+  SessionEntryWorkerInput,
+  SessionEntryListWorkerInput,
+  SessionTargetInventoryWorkerInput,
+  SessionIdentityEvidenceWorkerInput,
+  SessionMembersWorkerInput,
+  SessionModelContextWorkerInput,
+  SessionRowPresenceWorkerInput,
+  SessionTranscriptHistoryWorkerInput,
+  SessionTranscriptWorkerReply,
+  SessionTranscriptWorkerValues,
+  SessionUsageCacheWorkerInput,
+} from "./session-transcript-worker.types.js";
 
 // Keep target switching within the existing serialized worker; no read snapshot survives a task.
 const MAX_RETAINED_HISTORY_DATABASES = 64;
@@ -134,25 +67,141 @@ async function withHistoryDatabase<T>(
     return { value };
   } catch (error) {
     // The parent joins worker retirement on failure, including a failed native close.
-    scope.close();
+    try {
+      scope.close();
+    } catch (cleanupError) {
+      throw sessionHistoryCleanupError(error, cleanupError, "database close");
+    }
     throw error;
   }
 }
 
 serveWorkerTasks(
-  async (input): Promise<SessionTranscriptWorkerReply<keyof SessionTranscriptWorkerValues>> => {
+  async (
+    input,
+    channel,
+    control,
+  ): Promise<
+    SessionTranscriptWorkerReply<keyof SessionTranscriptWorkerValues> | UsageCostWorkerReply
+  > => {
     // SAFETY: The paired runtime constructs this request; the SQLite snapshot validates admission.
     const request = input as
       | SessionModelContextWorkerInput
       | SessionEntryWorkerInput
+      | SessionEntryListWorkerInput
+      | SessionTargetInventoryWorkerInput
+      | SessionIdentityEvidenceWorkerInput
       | SessionTranscriptHistoryWorkerInput
       | SessionRowPresenceWorkerInput
-      | SessionBranchSummaryWorkerInput;
+      | SessionMembersWorkerInput
+      | SessionUsageCacheWorkerInput
+      | SessionBranchSummaryWorkerInput
+      | UsageCostWorkerInput;
+    if (request.kind === "usage-cost") {
+      const { executeUsageCostWorker, usageCostWorkerFailure } =
+        await import("../../infra/session-cost-usage-worker.js");
+      try {
+        if (!channel) {
+          throw new Error("Usage cost worker requires its host channel");
+        }
+        const closed = new Map<string, UsageCostWorkerInput["databases"][number]>();
+        const value = await executeUsageCostWorker(
+          request,
+          channel,
+          control,
+          async (database, read) => {
+            closed.delete(JSON.stringify(database));
+            const result = await withHistoryDatabase(database, read);
+            if (result.closedHistoryDatabase) {
+              closed.set(
+                JSON.stringify(result.closedHistoryDatabase),
+                result.closedHistoryDatabase,
+              );
+            }
+            return result.value;
+          },
+        );
+        return { ok: true, value, closedDatabases: [...closed.values()] };
+      } catch (error) {
+        return usageCostWorkerFailure(error);
+      }
+    }
     try {
+      if (request.kind === "session-target-inventory") {
+        const { readSessionStoreTargetInventory } =
+          await import("./session-store-target-inventory.js");
+        return { ok: true, value: readSessionStoreTargetInventory(request.request) };
+      }
+      if (request.kind === "session-identity-evidence") {
+        const { withOpenClawAgentDatabaseReadOnly } =
+          await import("../../state/openclaw-agent-db-readonly.js");
+        const { readSessionIdentityEvidenceInDatabase } =
+          await import("./session-accessor.sqlite-entry-availability.js");
+        const { readWithCanonicalSessionReaderContinuation } =
+          await import("./session-canonical-key.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => {
+            const result = withOpenClawAgentDatabaseReadOnly(
+              (database) =>
+                readWithCanonicalSessionReaderContinuation(database, request.continuation, () =>
+                  readSessionIdentityEvidenceInDatabase(database, request.identities),
+                ),
+              { ...request.database, env: cloneEnvWithPlatformSemantics(request.env) },
+            );
+            const evidence: SessionIdentityEvidenceResult[] = result.found
+              ? result.value
+              : request.identities.map(() =>
+                  result.reason === "database-missing"
+                    ? { status: "absent" }
+                    : { status: "unknown", reason: result.reason },
+                );
+            return { kind: "session-identity-evidence" as const, evidence };
+          })),
+        };
+      }
+      if (request.kind === "session-entry-list") {
+        const { listSessionEntriesReadOnly } = await import("./session-accessor.sqlite-entry.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => ({
+            kind: "session-entry-list" as const,
+            entries: listSessionEntriesReadOnly({
+              ...request.scope,
+              env: cloneEnvWithPlatformSemantics(request.scope.env ?? process.env),
+            }),
+          }))),
+        };
+      }
+      if (request.kind === "usage-cache") {
+        const { readSessionCostUsageCache } =
+          await import("../../infra/session-cost-usage-cache-read.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () =>
+            readSessionCostUsageCache({ ...request.database, env: request.env }, request.request),
+          )),
+        };
+      }
       if (request.kind === "branch-summaries") {
         const { readSessionBranchSummariesInWorker } =
           await import("./session-accessor.sqlite-branches.js");
         return { ok: true, value: readSessionBranchSummariesInWorker(request.request) };
+      }
+      if (request.kind === "session-members") {
+        const { withOpenClawAgentDatabaseReadOnly } =
+          await import("../../state/openclaw-agent-db-readonly.js");
+        const { listSessionMembersInDatabase } = await import("./session-sharing-store.kernel.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => {
+            const result = withOpenClawAgentDatabaseReadOnly(
+              (database) => listSessionMembersInDatabase(database, request.sessionKey),
+              { ...request.database, env: request.env },
+            );
+            return result.found ? result.value : [];
+          })),
+        };
       }
       if (request.kind === "session-row-presence") {
         const { loadSessionEntryReadOnlyInScope } =
@@ -161,7 +210,9 @@ serveWorkerTasks(
           ok: true,
           ...(await withHistoryDatabase(
             request.database,
-            () => loadSessionEntryReadOnlyInScope(request.scope) !== undefined,
+            () =>
+              loadSessionEntryReadOnlyInScope({ ...request.scope, projection: "list" }) !==
+              undefined,
           )),
         };
       }
@@ -195,6 +246,7 @@ serveWorkerTasks(
                     }),
                     readOnly: true,
                     deferProfileDisplay: true,
+                    resolveCronJobName: () => undefined,
                   };
                   if (request.request.kind === "rpc") {
                     const { readChatHistoryPageKernel } =

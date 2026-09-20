@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { isAgentsCoreIsolatedTestFile } from "./vitest.agents-paths.mjs";
 import { cliProcessTestFiles } from "./vitest.cli-process-paths.mjs";
 import { commandsLightTestFiles } from "./vitest.commands-light-paths.mjs";
 import { isDatabaseWorkerCoreTestFile } from "./vitest.database-worker-core-paths.mjs";
@@ -174,6 +175,15 @@ const ownerRoutedUnitTestPatterns = [
   "test/scripts/release-workflow-git-lifecycle.test.ts",
   "test/scripts/ci-linux-git.test.ts",
   "test/scripts/ci-platform-checkout.test.ts",
+  // Detached handoff and service-manager fixtures retain their infra owner when shared.
+  "src/infra/update-managed-service-handoff-lifecycle.test.ts",
+  "src/infra/update-managed-service-handoff-native-lifecycle.test.ts",
+  "src/infra/update-managed-service-handoff-recovery-systemd.test.ts",
+  "src/infra/update-managed-service-handoff-recovery-launchd.test.ts",
+  "src/infra/update-managed-service-handoff-terminal-result.test.ts",
+  "src/infra/update-managed-service-handoff-triage.test.ts",
+  "src/infra/update-managed-service-handoff-repair-validating.test.ts",
+  "src/infra/update-managed-service-handoff-repair-verifying.test.ts",
   // Command compaction tests need the scoped runtime registry even when their
   // mocks live in a shared helper.
   // Completion custody tests use real session/task SQLite and process-scoped state cleanup.
@@ -185,6 +195,8 @@ const ownerRoutedUnitTestPatterns = [
   "src/agents/embedded-agent-runner/run/attempt.abort-race.test.ts",
   "src/agents/embedded-agent-runner/run/attempt.settled-turn-finalization-context.test.ts",
   "src/agents/openai-transport-stream.*.test.ts",
+  // Split transport suites install module mocks through their shared harness.
+  "src/agents/provider-transport-fetch.*.test.ts",
   "src/agents/embedded-agent-runner/run.inherited-auth-owner.test.ts",
   "src/agents/embedded-agent-runner/run.session-permissions.test.ts",
   "src/agents/embedded-agent-runner/run.shared-integration.test.ts",
@@ -375,9 +387,9 @@ function collectRepoTestFilesFromGit(cwd) {
       "packages",
       "test",
     ],
-    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    { cwd, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] },
   );
-  if (result.status !== 0) {
+  if (result.error || result.status !== 0) {
     return null;
   }
   return result.stdout
@@ -521,6 +533,8 @@ function analyzeUnitFastTestFile(cwd, file) {
   let analysis;
   if (isDatabaseWorkerCoreTestFile(file) || gatewayDatabaseWorkerTestFiles.includes(file)) {
     analysis = { file, unitFast: false, reasons: ["database-worker-owner"] };
+  } else if (isAgentsCoreIsolatedTestFile(file)) {
+    analysis = { file, unitFast: false, reasons: ["agents-core-isolated-owner"] };
   } else if (isToolingIsolatedTestFile(file)) {
     // Explicit project ownership wins over inferred eligibility so full-suite
     // configs cannot run the same stateful tooling test in two worker pools.

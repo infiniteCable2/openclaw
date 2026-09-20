@@ -279,6 +279,7 @@ export type SessionsBranchesSwitchResult =
 
 export type SessionsPatchResult = SessionsPatchResultBase<{
   sessionId: string;
+  category?: GatewaySessionRow["category"];
   updatedAt?: number;
   createdAt?: number;
   pinnedAt?: number;
@@ -286,6 +287,7 @@ export type SessionsPatchResult = SessionsPatchResultBase<{
   lastActivityAt?: number;
   lastInteractionAt?: number;
   permissionMode?: GatewaySessionRow["permissionMode"];
+  nativeRuntimeConsent?: string;
   modelOverrideSource?: GatewayWireSessionsPatchResult["entry"]["modelOverrideSource"];
   boardPresentation?: GatewaySessionRow["boardPresentation"];
   archivedAt?: number;
@@ -338,8 +340,10 @@ export type CronRunResult =
     }
   | { ok: false };
 
-export type CronJobsListResult = {
-  jobs: ProtocolCronJob[];
+export type { CronCompactJob } from "../../../packages/gateway-protocol/src/index.js";
+
+export type CronJobsListResult<Row = ProtocolCronJob> = {
+  jobs: Row[];
   snapshotRevision: string;
   total: number;
   limit: number;
@@ -361,7 +365,7 @@ export type {
   SkillStatusEntry,
   SkillStatusReport,
 } from "../../../src/skills/discovery/status.types.js";
-export type { ClawHubSkillStatusLink as SkillClawHubLink } from "../../../src/skills/lifecycle/clawhub-status.js";
+export type { ClawHubSkillStatusLink as SkillClawHubLink } from "../../../src/skills/lifecycle/workspace-types.js";
 
 export type StatusSummary = Record<string, unknown>;
 

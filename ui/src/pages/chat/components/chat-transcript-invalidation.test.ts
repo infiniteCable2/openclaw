@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { expectDefined } from "@openclaw/normalization-core";
-import { nothing, render } from "lit";
+import { html, nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BoardProvider } from "../../../lib/board/provider.ts";
 import * as messageNormalizer from "../../../lib/chat/message-normalizer.ts";
@@ -16,11 +16,7 @@ import {
   getExpansionStateVersion,
 } from "../chat-thread.ts";
 import { createTestTranscript } from "../chat-view.test-helpers.ts";
-import {
-  isChatMediaResourceCurrent,
-  observeChatMediaResource,
-  releaseChatMediaResourceSubscriber,
-} from "./chat-message-media.ts";
+import { releaseChatMediaResourceSubscriber } from "./chat-message-media.ts";
 import * as chatMessage from "./chat-message.ts";
 import {
   renderTranscriptSearch,
@@ -251,6 +247,30 @@ describe("chat transcript invalidation", () => {
     });
   });
 
+  it("updates persisted named references when the connection catalog changes without transcript edits", () => {
+    const props = threadProps("pane-named", "agent:main:named", [
+      { role: "assistant", content: "ClawSweeper PR **#1576 opened**", timestamp: 1_000 },
+    ]);
+    props.githubRepo = { owner: "openclaw", repo: "openclaw" };
+    const transcript = createTestTranscript();
+    const container = document.body.appendChild(document.createElement("div"));
+    const rerender = () => render(renderChatThread(props, transcript), container);
+    const chip = () => container.querySelector<HTMLAnchorElement>("a.markdown-github-item");
+    rerender();
+    expect(chip()).toBeNull();
+    props.githubRepositories = [
+      { owner: "openclaw", repo: "clawsweeper", aliases: ["ClawSweeper"] },
+    ];
+    rerender();
+    expect(chip()?.href).toBe("https://github.com/openclaw/clawsweeper/pull/1576");
+    props.githubRepositories = [{ aliases: ["ClawSweeper"] }];
+    rerender();
+    expect(chip()).toBeNull();
+    props.githubRepositories = [{ owner: "fork", repo: "clawsweeper", aliases: ["ClawSweeper"] }];
+    rerender();
+    expect(chip()?.href).toBe("https://github.com/fork/clawsweeper/pull/1576");
+  });
+
   it("updates settled GitHub reference chips when the session repository arrives or changes", () => {
     vi.spyOn(Date, "now").mockReturnValue(60_000);
     const props = threadProps("pane-github-repository", "agent:main:github-repository", [
@@ -283,16 +303,17 @@ describe("chat transcript invalidation", () => {
         timestamp: index + 1,
         __openclaw: { id: `message-${index}` },
       }));
-      const transcript = {
-        expandedAssistantMessages: new Map(),
-        setContentReady: vi.fn(),
-        syncMessageRows: vi.fn(),
-      } as unknown as Parameters<typeof projectChatTranscript>[1];
+      const transcript = createTestTranscript();
       const props = threadProps("pane-offscreen-history", sessionKey, messages);
-      projectChatTranscript(props, transcript);
+      const project = () =>
+        transcript.renderSession(props.paneId, sessionKey, (session) => {
+          projectChatTranscript(props, session);
+          return html``;
+        });
+      project();
 
       const normalizeSpy = vi.spyOn(messageNormalizer, "normalizeMessage");
-      projectChatTranscript(props, transcript);
+      project();
 
       const historicalMessages = new Set<unknown>(messages);
       expect(normalizeSpy.mock.calls.some(([message]) => historicalMessages.has(message))).toBe(
@@ -680,13 +701,12 @@ describe("chat transcript invalidation", () => {
     transcript.hostUpdated();
     await flushDeferredRowPrune();
 
-    const thumbnailSource = source.replace(/\/full$/u, "/thumbnail");
-    const previousResource = observeChatMediaResource<string | null>(
-      "managed-image",
-      `${thumbnailSource}::test-auth-token::`,
-    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(previousResource.subscribers.size).toBe(1);
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe(
+      "Bearer test-auth-token",
+    );
+    expect(previousSignal?.aborted).toBe(false);
+    expect(container.querySelector(".chat-message-image")).toBeNull();
 
     pane.applyGatewaySnapshot({
       ...pane.context.gateway.snapshot,
@@ -698,19 +718,12 @@ describe("chat transcript invalidation", () => {
       } as typeof pane.context.gateway.snapshot.hello,
     });
     expect(previousSignal?.aborted).toBe(true);
-    expect(isChatMediaResourceCurrent(previousResource)).toBe(false);
     await flushDeferredRowPrune();
 
-    const nextResource = observeChatMediaResource<string | null>(
-      "managed-image",
-      `${thumbnailSource}::test-token::`,
-    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("Authorization")).toBe(
       "Bearer test-token",
     );
-    expect(isChatMediaResourceCurrent(nextResource)).toBe(true);
-    expect(nextResource.subscribers.size).toBe(1);
     expect(container.querySelector<HTMLImageElement>(".chat-message-image")?.src).toBe(blobUrl);
 
     releaseChatMediaResourceSubscriber(renderPane);

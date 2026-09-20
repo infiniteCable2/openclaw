@@ -8,7 +8,7 @@ import { quoteCliArg, quotePowerShellArg } from "../cli/quote-cli-arg.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "../cli/update-cli/update-command-service-maintenance.js";
 import { mockSystemAccountHome } from "../daemon/service.test-helpers.js";
 import { resolveOpenClawPackageRoot } from "../infra/openclaw-root.js";
-import { createUpdateRun } from "../infra/update-run-ledger.js";
+import { createUpdateRun, recordUpdateRunStep } from "../infra/update-run-ledger.js";
 import { buildUpdateDoctorEnv } from "../infra/update-runner-doctor.js";
 import { readConfiguredParsedLogTail } from "../logging/log-tail.js";
 import { flushLogger, resetLogger, setLoggerOverride } from "../logging/logger.js";
@@ -44,7 +44,7 @@ vi.mock("../infra/update-run-ledger.js", async (importOriginal) => ({
 }));
 
 const activationReason =
-  "The update parent owns Gateway activation. Stop the service through its owner before retrying the update; Doctor will not stop or restart it.";
+  "The update parent must stop the managed Gateway before Doctor maintenance; Doctor left the service unchanged.";
 const maintenanceSuffix =
   " Stop the Gateway service and other OpenClaw processes using this state, then run openclaw doctor --fix from an independent shell.";
 const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
@@ -195,11 +195,6 @@ async function withFixture(
           refreshDefinition: false,
         },
       });
-      setLoggerOverride({
-        level: "warn",
-        consoleLevel: "silent",
-        file: state.path("warnings.log"),
-      });
       const schemas: OpenClawDatabaseSchemaPreflight = {
         incompatible: [],
         indeterminate: [],
@@ -219,6 +214,12 @@ async function withFixture(
         before: { version: "2026.9.2" },
       });
       closeOpenClawStateDatabaseForTest();
+      await flushLogger();
+      setLoggerOverride({
+        level: "warn",
+        consoleLevel: "silent",
+        file: state.path("warnings.log"),
+      });
       try {
         await run({ state, root, schemas, ...commits });
       } finally {
@@ -328,7 +329,7 @@ describe("Doctor refusal recovery under the released Git update driver", () => {
     });
   });
 
-  it("keeps both npm-channel refusal messages byte-identical", async () => {
+  it("retains npm schema recovery and omits independent-shell advice for an update child", async () => {
     await withFixture("npm", async ({ root, schemas, state }) => {
       const expectedSchema =
         "Doctor refused update-time schema repair driven by OpenClaw 2026.9.2: this updater reopens the ledger with old code after migration, and version publication could not be deferred safely. " +
@@ -349,7 +350,7 @@ describe("Doctor refusal recovery under the released Git update driver", () => {
             }),
           )
         ).message,
-      ).toBe(`Doctor could not enter maintenance. Error: ${activationReason}${maintenanceSuffix}`);
+      ).toBe(`Doctor could not enter maintenance. Error: ${activationReason}`);
       expect(await warnings()).toBe("");
     });
   });
@@ -399,4 +400,25 @@ describe("Doctor refusal recovery under the released Git update driver", () => {
       });
     },
   );
+});
+
+it("preserves Git recovery instead of accepting its package-style early markers", async () => {
+  await withFixture("detached", async ({ root, previous, schemas }) => {
+    Object.assign(
+      process.env,
+      buildUpdateDoctorEnv({
+        allowGatewayServiceRepair: false,
+        allowGatewayActivation: false,
+        serviceRepairPolicy: "external",
+        deferConfiguredPluginInstallRepair: true,
+      }),
+    );
+    recordUpdateRunStep("3752a66b-275f-4fe0-b43b-1c9a7e6fe7ca", {
+      step: "openclaw doctor",
+      status: "in_progress",
+    });
+    const error = await refusalError(guardUpdateDoctorSchemaUpgrade({ schemas, runtime }));
+    expect(error).toMatchObject({ code: "update-schema-bump-unfenced" });
+    expectRecovery(error.message, root, previous);
+  });
 });

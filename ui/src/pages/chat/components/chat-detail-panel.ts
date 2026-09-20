@@ -9,8 +9,8 @@ import {
   retryStaleChunkReloadWhenReachable,
   scheduleStaleChunkReload,
 } from "../../../app/stale-chunk-reload.ts";
-import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
-import type { MarkdownRenderOptions } from "../../../components/markdown-render-options.ts";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
+import type { MarkdownGitHubContext } from "../../../components/markdown-render-options.ts";
 import type { SessionLinkTarget } from "../../../components/markdown-session-links.ts";
 import { t } from "../../../i18n/index.ts";
 import type { EmbedSandboxMode } from "../../../lib/chat/tool-display.ts";
@@ -26,6 +26,7 @@ import type {
   FileSidebarNavigation,
   AttachmentSidebarRuntime,
   SidebarContent,
+  ChatDetailPanelContent,
 } from "./chat-sidebar-content-types.ts";
 import {
   buildRawContent,
@@ -37,7 +38,6 @@ import { computeFileMatches } from "./chat-sidebar-file-view.ts";
 import type { FileEditorViewHandle } from "./file-editor-view.ts";
 
 type FileSidebarContent = Extract<SidebarContent, { kind: "file" }>;
-type ChatDetailPanelContent = Exclude<SidebarContent, { kind: "task" }>;
 
 const FILE_WRAP_PREFERENCE_KEY = "openclaw.control.fileView.wrap.v1";
 
@@ -66,7 +66,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   @property() canvasPluginSurfaceUrl: string | null = null;
   @property() embedSandboxMode: EmbedSandboxMode = "scripts";
   @property({ type: Boolean }) allowExternalEmbedUrls = false;
-  @property({ attribute: false }) githubRepo: MarkdownRenderOptions["githubRepo"] = null;
+  @property({ attribute: false }) githubContext: MarkdownGitHubContext = {};
   @property({ type: Boolean }) embedded = false;
   @property({ attribute: false }) onOpenWorkspaceFile?:
     | ((target: { path: string; line?: number | null }) => void)
@@ -735,7 +735,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       canvasPluginSurfaceUrl: this.canvasPluginSurfaceUrl,
       embedSandboxMode: this.embedSandboxMode,
       allowExternalEmbedUrls: this.allowExternalEmbedUrls,
-      githubRepo: this.githubRepo,
+      ...this.githubContext,
       embedded: this.embedded,
       onClose: this.close,
       onOpenImage: this.onOpenImage ?? undefined,

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
+import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import {
   consultRealtimeVoiceAgent,
   type RealtimeVoiceAgentConsultSpeechEvent,
@@ -245,6 +246,111 @@ describe("realtime voice agent consult speech delivery", () => {
     });
     expect(call.prompt).not.toContain("<final>...</final>");
   });
+
+  it.each([
+    { precedingInput: true, currentFinal: true },
+    { precedingInput: true, currentFinal: false },
+    { precedingInput: false, currentFinal: false },
+  ])(
+    "respects input ownership in streamed completion (precedingInput=$precedingInput, currentFinal=$currentFinal)",
+    async ({ precedingInput, currentFinal }) => {
+      const { runtime, runEmbeddedAgent } = createAgentRuntime();
+      const text = "The answer to your current question.";
+      runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
+        await runParams?.onBlockReply?.({ text });
+        return {
+          payloads: [
+            ...(precedingInput
+              ? [
+                  setReplyPayloadMetadata(
+                    { text: "Earlier answer." },
+                    { precedingInputAnswer: true },
+                  ),
+                ]
+              : []),
+            ...(currentFinal ? [{ text }] : []),
+          ],
+          meta: {},
+        };
+      });
+      const onSpeakableText = vi.fn();
+      const result = await consultRealtimeVoiceAgent({
+        cfg: {},
+        agentRuntime: runtime as never,
+        logger: { warn: vi.fn() },
+        sessionKey: "voice:current-input",
+        messageProvider: "voice",
+        lane: "voice",
+        runIdPrefix: "voice-current-input",
+        args: { question: "Answer my current question." },
+        transcript: [],
+        surface: "a live voice session",
+        userLabel: "Caller",
+        onSpeakableText,
+      });
+      const needsFallback = precedingInput && !currentFinal;
+      const finalText = needsFallback ? "I need a moment to verify that before answering." : text;
+      expect(result).toEqual({ text: finalText, delivered: true });
+      expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
+        { type: "chunk", text },
+        ...(needsFallback ? [{ type: "chunk", text: finalText }] : []),
+        { type: "done", text: finalText },
+      ]);
+    },
+  );
+
+  it.each(["none", "complete", "segmented"] as const)(
+    "speaks a current final answer after earlier-input speech exactly once (currentStream=%s)",
+    async (currentStream) => {
+      const { runtime, runEmbeddedAgent } = createAgentRuntime();
+      const earlierText = "Earlier answer.";
+      const currentChunks = ["Current answer.", "Here are the new details."];
+      const currentText = currentChunks.join("\n\n");
+      const emittedCurrent =
+        currentStream === "none"
+          ? []
+          : currentStream === "complete"
+            ? [currentText]
+            : currentChunks;
+      runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
+        await runParams?.onBlockReply?.({ text: earlierText });
+        for (const text of emittedCurrent) {
+          await runParams?.onBlockReply?.({ text });
+        }
+        return {
+          payloads: [
+            setReplyPayloadMetadata({ text: earlierText }, { precedingInputAnswer: true }),
+            { text: currentText },
+          ],
+          meta: {},
+        };
+      });
+      const onSpeakableText = vi.fn();
+      const result = await consultRealtimeVoiceAgent({
+        cfg: {},
+        agentRuntime: runtime as never,
+        logger: { warn: vi.fn() },
+        sessionKey: "voice:current-final",
+        messageProvider: "voice",
+        lane: "voice",
+        runIdPrefix: "voice-current-final",
+        args: { question: "Answer the new question." },
+        transcript: [],
+        surface: "a live voice session",
+        userLabel: "Caller",
+        onSpeakableText,
+      });
+      expect(result).toEqual({ text: currentText, delivered: true });
+      expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
+        { type: "chunk", text: earlierText },
+        ...(emittedCurrent.length > 0 ? emittedCurrent : [currentText]).map((text) => ({
+          type: "chunk",
+          text,
+        })),
+        { type: "done", text: currentText },
+      ]);
+    },
+  );
 
   it.each([false, true])(
     "delivers a yield acknowledgement after streamed speech without duplication (alreadyQueued=%s)",

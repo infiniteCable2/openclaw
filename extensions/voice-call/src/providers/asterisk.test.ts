@@ -3,6 +3,7 @@ import type {
   RealtimeTranscriptionSessionCallbacks,
   RealtimeTranscriptionSessionCreateRequest,
 } from "openclaw/plugin-sdk/realtime-transcription";
+import { pcmToMulaw } from "openclaw/plugin-sdk/realtime-voice";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AsteriskConfig } from "../config.js";
 import type { NormalizedEvent } from "../types.js";
@@ -46,6 +47,159 @@ describe("AsteriskProvider", () => {
       socket.destroy();
     }
     await Promise.all(providers.map((provider) => provider.stop()));
+  });
+
+  async function pendingAudioFixture(phase: "connect" | "initiated" | "answered") {
+    const gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const events: string[] = [];
+    const sendAudio = vi.fn();
+    const close = vi.fn();
+    let connected = false;
+    const provider = new AsteriskProvider({
+      config: { ...config(), audioSocket: { ...config().audioSocket, sampleRate: 8_000 } },
+      registrationToken: "registration-secret",
+      coreConfig: {},
+      transcriptionProvider: {
+        id: "test-stt",
+        isConfigured: () => true,
+        createSession: () => ({
+          connect: async () => {
+            if (phase === "connect") {
+              entered.resolve();
+              await gate.promise;
+            }
+            connected = true;
+          },
+          sendAudio,
+          close: () => {
+            connected = false;
+            close();
+          },
+          isConnected: () => connected,
+        }),
+      },
+      transcriptionProviderConfig: {},
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    providers.push(provider);
+    provider.setEventSink(async (event) => {
+      events.push(event.type);
+      if (event.type === `call.${phase}`) {
+        entered.resolve();
+        await gate.promise;
+      }
+    });
+    provider.registerInboundCall(
+      { uuid: UUID, from: "+49111111111", to: "+49222222222", direction: "inbound" },
+      "registration-secret",
+    );
+    const address = await provider.start();
+    const socket = await connect(address.port);
+    sockets.push(socket);
+    // Consume the protocol hangup frame so TCP EOF reaches this fixture's close event.
+    socket.resume();
+    const writeInitialAudio = (chunks: Buffer[]) => {
+      socket.write(
+        Buffer.concat([
+          encodeAudioSocketFrame(AudioSocketType.uuid, uuidToAudioSocketPayload(UUID)),
+          ...chunks.map((pcm) => encodeAudioSocketFrame(AudioSocketType.pcm8k, pcm)),
+        ]),
+      );
+    };
+    return { provider, socket, gate, entered, events, sendAudio, close, writeInitialAudio };
+  }
+
+  it.each(["connect", "initiated", "answered"] as const)(
+    "retains coalesced initial PCM until %s admission completes, then forwards it once in order",
+    async (phase) => {
+      const fixture = await pendingAudioFixture(phase);
+      const first = Buffer.alloc(160, 0x10);
+      const second = Buffer.alloc(160, 0x20);
+      try {
+        fixture.writeInitialAudio([first, second]);
+        await fixture.entered.promise;
+        expect(fixture.sendAudio).not.toHaveBeenCalled();
+        fixture.gate.resolve();
+        await vi.waitFor(() => expect(fixture.sendAudio).toHaveBeenCalledTimes(2));
+        expect(fixture.sendAudio.mock.calls.map(([audio]) => audio)).toEqual([
+          pcmToMulaw(first),
+          pcmToMulaw(second),
+        ]);
+        const live = Buffer.alloc(160, 0x30);
+        fixture.socket.write(encodeAudioSocketFrame(AudioSocketType.pcm8k, live));
+        await vi.waitFor(() => expect(fixture.sendAudio).toHaveBeenCalledTimes(3));
+        expect(fixture.sendAudio).toHaveBeenLastCalledWith(pcmToMulaw(live));
+      } finally {
+        fixture.gate.resolve();
+      }
+    },
+  );
+
+  it.each(["rejected", "disconnected", "stopped"] as const)(
+    "never replays pending PCM after admission is %s",
+    async (termination) => {
+      const fixture = await pendingAudioFixture("initiated");
+      try {
+        fixture.writeInitialAudio([Buffer.alloc(160, 0x10)]);
+        await fixture.entered.promise;
+        if (termination === "rejected") {
+          fixture.gate.reject(new Error("Admission denied"));
+        } else if (termination === "disconnected") {
+          fixture.socket.destroy();
+          await vi.waitFor(() => expect(fixture.close).toHaveBeenCalled());
+          fixture.gate.resolve();
+        } else {
+          const stopped = fixture.provider.stop();
+          fixture.gate.resolve();
+          await stopped;
+        }
+        await vi.waitFor(() => expect(fixture.close).toHaveBeenCalled());
+        await vi.waitFor(() => expect(fixture.socket.destroyed).toBe(true));
+        expect(fixture.sendAudio).not.toHaveBeenCalled();
+        expect(fixture.events).not.toContain("call.answered");
+      } finally {
+        fixture.gate.resolve();
+      }
+    },
+  );
+
+  it("ends an overflowing admission queue without replaying it after late readiness", async () => {
+    const fixture = await pendingAudioFixture("connect");
+    try {
+      fixture.writeInitialAudio(Array.from({ length: 321 }, () => Buffer.alloc(2)));
+      await fixture.entered.promise;
+      // Overflow must terminate this incarnation before the pending connection resolves.
+      await vi.waitFor(() => expect(fixture.socket.destroyed).toBe(true));
+      expect(fixture.close).toHaveBeenCalledOnce();
+      fixture.gate.resolve();
+      // The late connect completion must close again rather than revive admission.
+      await vi.waitFor(() => expect(fixture.close).toHaveBeenCalledTimes(2));
+      expect(fixture.sendAudio).not.toHaveBeenCalled();
+      expect(fixture.events).not.toContain("call.answered");
+    } finally {
+      fixture.gate.resolve();
+    }
+  });
+
+  it("discards admission audio when listening is explicitly stopped", async () => {
+    const fixture = await pendingAudioFixture("initiated");
+    try {
+      fixture.writeInitialAudio([Buffer.alloc(160, 0x10)]);
+      await fixture.entered.promise;
+      await fixture.provider.stopListening({ callId: "internal", providerCallId: UUID });
+      fixture.gate.resolve();
+      await vi.waitFor(() => expect(fixture.events).toContain("call.answered"));
+      expect(fixture.sendAudio).not.toHaveBeenCalled();
+      await fixture.provider.startListening({ callId: "internal", providerCallId: UUID });
+      const live = Buffer.alloc(160, 0x20);
+      fixture.socket.write(encodeAudioSocketFrame(AudioSocketType.pcm8k, live));
+      await vi.waitFor(() =>
+        expect(fixture.sendAudio).toHaveBeenCalledExactlyOnceWith(pcmToMulaw(live)),
+      );
+    } finally {
+      fixture.gate.resolve();
+    }
   });
 
   it("closes the authenticated inbound STT-agent-TTS media loop", async () => {

@@ -227,7 +227,6 @@ async function runExternalSupervisorRestart(opts: DaemonLifecycleOptions): Promi
       restartIntent,
       enforceRestartConfig: false,
       processLabel: "externally supervised",
-      requireLockIdentity: true,
       auditSource: "supervisor",
     });
   } catch (err) {
@@ -454,7 +453,6 @@ export async function runDaemonRestart(opts: DaemonLifecycleOptions = {}): Promi
             restartIntent,
             enforceRestartConfig: true,
             processLabel: "foreground",
-            requireLockIdentity: true,
             auditSource: "cli",
             ownerLease: owner,
             env: process.env,
@@ -527,8 +525,8 @@ export async function runDaemonRestart(opts: DaemonLifecycleOptions = {}): Promi
     postRestartCheck: async ({ warnings, fail, stdout, warn, activationAccepted: accepted }) => {
       let activationAccepted = accepted;
       if (restartedWithoutServiceManager) {
-        // Unmanaged restarts have no service-manager state to watch; use listener health and,
-        // when targeted delivery required it, prove the previous lock owner was replaced.
+        // Unmanaged restarts have no service-manager state to watch; prove
+        // listener health and replacement of the previous lock owner.
         const health = await waitForGatewayHealthyListener({
           port: unmanagedPort,
           env: process.env,
@@ -572,6 +570,9 @@ export async function runDaemonRestart(opts: DaemonLifecycleOptions = {}): Promi
           attempts: restartHealthAttempts,
           delayMs: POST_RESTART_HEALTH_DELAY_MS,
           env: managedRestartContext.env,
+          ...(managedRestartContext.env.OPENCLAW_UPDATE_IN_PROGRESS !== "1"
+            ? { requirePluginHealth: false }
+            : {}),
           supervisorKeepsAlive: process.platform === "darwin",
         });
       let health = await waitForHealthy();
@@ -618,7 +619,9 @@ export async function runDaemonRestart(opts: DaemonLifecycleOptions = {}): Promi
         defaultTimeoutSeconds: restartWaitSeconds,
       });
       const runningNoPortLine =
-        health.runtime.status === "running" && health.portUsage.status === "free"
+        health.waitOutcome !== "still-starting" &&
+        health.runtime.status === "running" &&
+        health.portUsage.status === "free"
           ? `Gateway process is running but port ${managedRestartPort} is still free (startup hang/crash loop or very slow VM startup).`
           : null;
       if (!jsonOutput) {
@@ -640,7 +643,14 @@ export async function runDaemonRestart(opts: DaemonLifecycleOptions = {}): Promi
       fail(
         failure.failMessage,
         [formatCliCommand("openclaw gateway status --deep"), formatCliCommand("openclaw doctor")],
-        activationAccepted ? "restart-health-failed" : undefined,
+        health.waitOutcome === "still-starting"
+          ? // Published updater parents recognize this envelope and continue readiness verification.
+            managedRestartContext.env.OPENCLAW_UPDATE_IN_PROGRESS === "1"
+            ? "restart-health-failed"
+            : "still-starting"
+          : activationAccepted
+            ? "restart-health-failed"
+            : undefined,
       );
       throw new Error("unreachable after gateway restart failure");
     },

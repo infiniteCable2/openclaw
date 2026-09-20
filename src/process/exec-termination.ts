@@ -137,20 +137,20 @@ export function createCommandTerminationController(params: {
           });
         }
       };
-      if (force) {
-        processTreeSettlement = forceAndObserve();
+      // A timeout signal is policy, not evidence of forced cleanup. Once the
+      // root and its group are gone, do not signal or relabel that normal exit.
+      if (!directChildAlive && !groupAlive()) {
         return false;
       }
-      // Failed roots can finish without descendants. Record graceful cleanup only
-      // when this invocation still owns a live or unproven tree to terminate.
-      if (!directChildAlive && !groupAlive()) {
+      if (force) {
+        processTreeSettlement = forceAndObserve();
         return false;
       }
       cleanup = "cooperative";
       try {
         process.kill(-childPid, params.killSignal ?? "SIGTERM");
       } catch (error) {
-        // SAFETY: Node's kill error carries errno; every non-ESRCH result stays uncertain.
+        // SAFETY: Node's kill error carries errno; retain failed sends until group exit is observed.
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
           cleanup = "uncertain";
         }
@@ -159,6 +159,7 @@ export function createCommandTerminationController(params: {
         const deadline = Date.now() + params.killGraceMs;
         const check = () => {
           if (!groupAlive()) {
+            cleanup = "cooperative";
             resolve();
             return;
           }

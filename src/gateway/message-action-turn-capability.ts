@@ -10,6 +10,7 @@ import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
 } from "../utils/message-channel-normalize.js";
+import type { CronAuthenticatedChannelRequester } from "./cron-creator-authority-grant.types.js";
 
 const DEFAULT_TTL_MS = 15 * 60_000;
 const MAX_TTL_MS = 24 * 60 * 60_000;
@@ -21,6 +22,8 @@ const CAPABILITY_COMPLETION_GRACE_MS = 60_000;
 type ScheduledMessageActionAuthority = {
   policy: ScheduledToolPolicyContext;
   assertCurrent: () => void;
+  assertSourceCurrent?: () => void;
+  channelRequester?: CronAuthenticatedChannelRequester;
 };
 
 /** Private handoff from authenticated dashboard admission to the exact reply run. */
@@ -222,14 +225,31 @@ export function mintMessageActionTurnCapability(params: {
   };
   const scheduled = params.scheduled;
   if (scheduled) {
+    const assertSourceCurrent = scheduled.assertSourceCurrent;
     capability.scheduled = {
       policy: structuredClone(scheduled.policy),
+      ...(scheduled.channelRequester
+        ? { channelRequester: structuredClone(scheduled.channelRequester) }
+        : {}),
       assertCurrent: () => {
         if (capabilitiesByToken.get(token) !== capability || Date.now() >= capability.expiresAtMs) {
           throw new Error("message action turn capability is no longer active");
         }
         scheduled.assertCurrent();
       },
+      ...(assertSourceCurrent
+        ? {
+            assertSourceCurrent: () => {
+              if (
+                capabilitiesByToken.get(token) !== capability ||
+                Date.now() >= capability.expiresAtMs
+              ) {
+                throw new Error("message action turn capability is no longer active");
+              }
+              assertSourceCurrent();
+            },
+          }
+        : {}),
     };
   }
   const assertDashboardReadCurrent = params.assertDashboardReadCurrent;

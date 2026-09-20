@@ -93,7 +93,7 @@ describe.each(["started", "rejected"] as const)("%s first-turn publication", (st
           expect(clearDraft).toHaveBeenCalledOnce();
           if (status === "started") {
             expect(
-              context.chatSubmissions.readInitial(key, client)?.message.content,
+              context.chatSubmissions.readInitial(key, client)?.message?.content,
             ).toContainEqual({
               type: "text",
               text: "private incognito first turn",
@@ -114,6 +114,52 @@ describe.each(["started", "rejected"] as const)("%s first-turn publication", (st
         }
       } finally {
         instant.dispose();
+      }
+    },
+  );
+});
+
+describe("retained launcher rejection", () => {
+  it.each([true, false])(
+    "publishes rejected-prompt recovery only to its current owner (%s)",
+    async (current) => {
+      const { context } = createDraftFixture();
+      const client = context.gateway.snapshot.client;
+      if (!client) {
+        throw new Error("Expected a connected fixture");
+      }
+      const retained = vi.spyOn(rejected, "retainRejectedInitialTurn").mockReturnValue(false);
+      const navigation = new StartedSessionNavigation();
+      const navigate = vi.spyOn(navigation, "navigate").mockResolvedValue();
+      const clearDraft = vi.fn(async () => {});
+      const onRejectedPrompt = vi.fn();
+      const onAccepted = vi.fn();
+      await completeInitialSessionTurn({
+        context,
+        client,
+        agentId: "main",
+        result: {
+          key: "agent:main:dashboard:rejected",
+          initialRun: { status: "rejected", error: "First turn denied" },
+        },
+        turn: { text: "Keep this prompt visible", attachments: [], createdAt: 1 },
+        instant: undefined,
+        navigation,
+        isCurrent: () => current,
+        clearDraft,
+        completeInBackground: () => true,
+        finishNavigation: vi.fn(),
+        onRejectedPrompt,
+        onAccepted,
+      });
+      expect(clearDraft).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+      expect(retained).toHaveBeenCalledTimes(current ? 1 : 0);
+      expect(onAccepted).toHaveBeenCalledTimes(current ? 1 : 0);
+      if (current) {
+        expect(onRejectedPrompt).toHaveBeenCalledWith("First turn denied");
+      } else {
+        expect(onRejectedPrompt).not.toHaveBeenCalled();
       }
     },
   );

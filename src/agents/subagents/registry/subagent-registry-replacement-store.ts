@@ -20,11 +20,10 @@ import {
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { publishSubagentRunsAfterAtomicStore } from "./subagent-registry-state.js";
 import {
-  bindSubagentRunRecord,
   deleteSubagentRunRowInDatabase,
-  readSubagentRun,
   upsertSubagentRunRowInDatabase,
-} from "./subagent-registry.store.sqlite.js";
+} from "./subagent-registry.store.kernel.js";
+import { bindSubagentRunRecord, readSubagentRun } from "./subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 function assertReplacementCorrelation(params: {
@@ -62,7 +61,6 @@ export function commitSubagentTaskReplacement(params: {
   source: SubagentRunRecord;
   successor: SubagentRunRecord;
   task: PreparedCanonicalTaskActivation;
-  canReconcileAcceptedReceipt?: () => boolean;
 }): void {
   assertReplacementCorrelation(params);
   const changedRows = params.changedRunIds.flatMap((runId) => {
@@ -81,15 +79,6 @@ export function commitSubagentTaskReplacement(params: {
     (database) => {
       const storedSource = readSubagentRun(database, params.source.runId);
       const storedTask = readTaskRecord(database.db, params.task.current.taskId);
-      const storedReceipt = storedSource?.execution.restartRecovery;
-      if (
-        (storedReceipt?.phase === "attempted" || storedReceipt?.phase === "consumed") &&
-        params.canReconcileAcceptedReceipt?.()
-      ) {
-        // Acceptance was witnessed by this live owner, but its write failed.
-        // Reconcile only that phase; every other field must still match below.
-        storedReceipt.phase = "accepted";
-      }
       if (!storedSource || !isDeepStrictEqual(bindSubagentRunRecord(storedSource), sourceRow)) {
         throw new Error("replacement subagent source changed before commit");
       }

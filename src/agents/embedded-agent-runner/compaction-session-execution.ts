@@ -46,7 +46,11 @@ import { createAgentSessionForEmbeddedRunner } from "../sessions/sdk.js";
 import { setSessionModelUsageSink } from "../sessions/session-model-usage.js";
 import { normalizeUsage, type UsageLike } from "../usage.js";
 import { resolveCompactionFailure } from "./compact-reasons.js";
-import { compactionCheckpointStore, persistCompactionCheckpoint } from "./compaction-checkpoint.js";
+import {
+  captureCompactionCheckpointSnapshotAsync,
+  cleanupCompactionCheckpointSnapshot,
+  persistCompactionCheckpoint,
+} from "./compaction-checkpoint.js";
 import {
   containsRealConversationMessages,
   normalizeObservedTokenCount,
@@ -164,7 +168,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
     );
     checkpointSnapshot = memoryTranscript
       ? null
-      : await compactionCheckpointStore.captureSnapshot({
+      : await captureCompactionCheckpointSnapshotAsync({
           sessionManager,
           sessionFile: params.sessionFile,
           sessionTarget,
@@ -710,6 +714,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           await flushPendingToolResultsAfterIdle({
             agent: session?.agent,
             sessionManager,
+            abortSignal: params.abortSignal,
           });
         } catch {
           /* best-effort */
@@ -731,7 +736,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
   } finally {
     setSessionModelUsageSink(compactionSessionManager, null);
     if (!checkpointSnapshotRetained) {
-      await compactionCheckpointStore.cleanupSnapshot(checkpointSnapshot);
+      await cleanupCompactionCheckpointSnapshot(checkpointSnapshot);
     }
   }
 }

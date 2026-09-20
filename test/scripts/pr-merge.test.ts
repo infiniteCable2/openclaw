@@ -26,6 +26,7 @@ type BodyScenario = {
   previewHead?: string;
   previewQueue?: boolean;
   previewError?: boolean;
+  restPreview?: boolean;
   authorReadError?: boolean;
   prAuthor?: string;
   sourceReadError?: boolean;
@@ -189,13 +190,13 @@ set -euo pipefail
 source "$BODY_MERGE_SCRIPT"
 PREP_HEAD_SHA="$BODY_HEAD"
 LOCAL_PREP_HEAD_SHA="$BODY_LOCAL_HEAD"
-git() {
+pr_git() {
   if [ "$BODY_READ_ERROR" = true ] && [[ " $* " = *" log "* ]]; then return 1; fi
   command git -C "$BODY_SOURCE_REPO" "$@"
 }
 PR_MAIN_SHA=$(git rev-parse --verify refs/remotes/origin/main)
-gh_plain() { [ "$BODY_PREVIEW_ERROR" = false ] || return 1; printf '%s\\n' "$BODY_PREVIEW"; }
-gh() {
+pr_gh_plain() { [ "$BODY_PREVIEW_ERROR" = false ] || return 1; printf '%s\\n' "$BODY_PREVIEW"; }
+pr_gh() {
   if [ "$1" = api ]; then
     [ "$BODY_AUTHOR_READ_ERROR" = false ] || return 1
     printf '%s\\n' "$BODY_COMMITS" | jq -ce --arg sha "\${2##*/}" '.[$sha]'
@@ -244,6 +245,7 @@ file=$(prepare_squash_merge_body 123 "$snapshot")
       BODY_AUTHOR_READ_ERROR: String(scenario.authorReadError ?? false),
       BODY_COMMITS: JSON.stringify(githubCommits),
       BODY_PREVIEW: JSON.stringify({
+        ...(scenario.restPreview ? { transport: "rest" } : {}),
         data: {
           repository: {
             pullRequest: {
@@ -268,6 +270,46 @@ file=$(prepare_squash_merge_body 123 "$snapshot")
 }
 
 describePosix("native squash attribution", () => {
+  it.each([
+    {
+      name: "linked human",
+      user: { login: "contributor", type: "User" },
+      empty: false,
+      keep: true,
+    },
+    { name: "unlinked author", user: null, empty: false, keep: false },
+    { name: "GitHub bot", user: { login: "bot[bot]", type: "Bot" }, empty: false, keep: false },
+    {
+      name: "empty refresh author",
+      user: { login: "contributor", type: "User" },
+      empty: true,
+      keep: false,
+    },
+  ])(
+    "preserves appropriate $name credit when REST has no server squash preview",
+    ({ user, empty, keep }) => {
+      const result = prepareBody({
+        restPreview: true,
+        previewBody: "Reviewed repair",
+        sourceCommits: [
+          {
+            message: "Repair",
+            author: { name: "Contributor", email: "contributor@example.com" },
+            githubAuthor: user,
+            empty,
+          },
+        ],
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.mergeBody).toBe(
+        keep
+          ? "Reviewed repair\n\nCo-authored-by: Contributor <contributor@example.com>\n"
+          : "Reviewed repair\n",
+      );
+    },
+  );
+
   it("drops the unlinked local author in the #145094 shape and keeps the PR author", () => {
     const humanCredit = "Co-authored-by: Contributor <123+contributor@users.noreply.github.com>";
     const machineCredit = "Co-authored-by: local-agent <local-agent@openclaw.local>";

@@ -6,7 +6,16 @@ import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { Worker, WorkerOptions } from "node:worker_threads";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import {
+  conversation,
+  queueConversationDeliveryForTest,
+} from "../../gateway/conversation-delivery.test-support.js";
+import { runGatewayConversationList } from "../../gateway/conversation-list.js";
+import { runGatewayConversationSend } from "../../gateway/conversation-send.js";
+import { completeDurableDelivery } from "../../infra/outbound/delivery-completion.js";
+import type { MessageActionResult } from "../../infra/outbound/message-action-contracts.js";
+import { SQLITE_IDLE_HANDLE_TTL_MS } from "../../infra/sqlite-handle-lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { OpenClawAgentDatabaseClaim } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "../../state/openclaw-agent-db-lease.js";
@@ -26,11 +35,22 @@ import {
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
+import { clearOpenClawAgentIntegrityVerification } from "../../state/openclaw-quarantine-store.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
+import { createChannelTestPluginBase } from "../../test-utils/channel-plugins.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import {
+  beginConversationDeliveryOperation,
+  getConversationDeliveryOperation,
+  markConversationDeliveryQueued,
+  markConversationDeliverySent,
+  markConversationDeliverySuppressed,
+} from "./conversation-delivery-store.js";
+import { listConversations, registerConversationAddresses } from "./conversation-registry.js";
 import { measureSessionPhysicalDiskUsage } from "./disk-budget.js";
 import { loadTranscriptEvents, replaceSessionEntry } from "./session-accessor.js";
 import * as archiveWorker from "./session-accessor.sqlite-archive.js";
@@ -75,13 +95,16 @@ function fullChecks() {
   return Atomics.load(new Int32Array(validation.checks), 0);
 }
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = createTempDirTracker();
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   await closeOpenClawAgentDatabasesAsync();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
+  tempDirs.cleanup();
+  vi.unstubAllEnvs();
 });
 
 function createFixture(sessionIds = ["first", "second"], agentId = "main") {
@@ -126,6 +149,177 @@ function leasesFor(fixture: ReturnType<typeof createFixture>) {
     .all(fixture.database.path);
 }
 
+test.each(["directory discovery", "Gateway send", "durable completion"] as const)(
+  "admits %s behind a native reclamation commit request",
+  async (operation) => {
+    const fixture = createFixture();
+    const { database, options, plans, scopes } = fixture;
+    vi.stubEnv("OPENCLAW_STATE_DIR", options.env.OPENCLAW_STATE_DIR);
+    const scope = { agentId: "main", storePath: database.path, env: options.env };
+    const config = { agents: { entries: { main: {} } }, session: { store: database.path } };
+    const operationId = "conversation-admission";
+    if (operation !== "directory discovery") {
+      registerConversationAddresses(scope, [
+        { ...conversation, deliveryTarget: conversation.target },
+      ]);
+    }
+    if (operation === "durable completion") {
+      beginConversationDeliveryOperation(scope, {
+        operationId,
+        operationKind: "send",
+        conversationRef: conversation.conversationRef,
+        message: "synthetic message",
+      });
+      markConversationDeliveryQueued(scope, operationId, "queue-admission");
+    }
+    const runForeground = (): Promise<unknown> => {
+      if (operation === "directory discovery") {
+        return runGatewayConversationList(
+          { config, agentId: "main", channel: "reef", limit: 10 },
+          {
+            listConversations,
+            registerConversationAddresses,
+            resolveOutboundChannelPlugin: () => ({
+              ...createChannelTestPluginBase({
+                id: "reef",
+                config: { isEnabled: () => true, isConfigured: () => true },
+              }),
+              directory: {
+                listPeers: async () => [{ kind: "user", id: "molty", name: "Synthetic peer" }],
+              },
+            }),
+            resolveOutboundSessionRoute: async () => ({
+              sessionKey: conversation.sessionKey,
+              baseSessionKey: conversation.sessionKey,
+              peer: { kind: "direct", id: "molty" },
+              chatType: "direct",
+              from: "reef:molty",
+              to: conversation.target,
+            }),
+          },
+        );
+      }
+      if (operation === "Gateway send") {
+        return runGatewayConversationSend(
+          {
+            config,
+            agentId: "main",
+            senderIsOwner: true,
+            operationId,
+            conversationRef: conversation.conversationRef,
+            message: "synthetic message",
+          },
+          {
+            beginOperation: beginConversationDeliveryOperation,
+            getOperation: getConversationDeliveryOperation,
+            markSent: markConversationDeliverySent,
+            markSuppressed: markConversationDeliverySuppressed,
+            resolveConversation: () => conversation,
+            runMessageAction: async (input): Promise<MessageActionResult> => {
+              await queueConversationDeliveryForTest(input, "queue-admission");
+              return {
+                kind: "send",
+                channel: "reef",
+                action: "send",
+                to: conversation.target,
+                handledBy: "core",
+                payload: {},
+                dryRun: false,
+                sendResult: {
+                  channel: "reef",
+                  to: conversation.target,
+                  via: "direct",
+                  mediaUrl: null,
+                  result: { messageId: "outbound-admission" },
+                  deliveryStatus: "sent",
+                },
+              };
+            },
+          },
+        );
+      }
+      return completeDurableDelivery(
+        { kind: "conversation", ...scope, operationId },
+        { channel: "reef", messageId: "outbound-admission" },
+        options.env.OPENCLAW_STATE_DIR,
+      );
+    };
+    const order: string[] = [];
+    let foreground: Promise<unknown> | undefined;
+    let authorization: Promise<void> | undefined;
+    let authorizerDelayMs: number | undefined;
+    const withWorker = reclamationWorker.withSqliteReclamationWorker;
+    vi.spyOn(reclamationWorker, "withSqliteReclamationWorker").mockImplementation(
+      (workerOptions, claim, run, assertCurrent) =>
+        withWorker(
+          workerOptions,
+          claim,
+          async (worker) => {
+            const execute = worker.run.bind(worker);
+            const spy = vi.spyOn(worker, "run").mockImplementation((params) =>
+              execute({
+                ...params,
+                onCommitRequest: () => {
+                  const startedAt = performance.now();
+                  order.push("commit-request");
+                  foreground = Promise.resolve()
+                    .then(runForeground)
+                    .finally(() => {
+                      order.push("foreground-settled");
+                    });
+                  // Exercise real foreground work before the pending native commit is authorized.
+                  authorization = yieldToEventLoop().then(() => {
+                    authorizerDelayMs = performance.now() - startedAt;
+                    order.push("authorize");
+                    params.onCommitRequest();
+                  });
+                  void foreground.catch(() => undefined);
+                  void authorization.catch(() => undefined);
+                  return [];
+                },
+              }),
+            );
+            try {
+              return await run(worker);
+            } finally {
+              spy.mockRestore();
+            }
+          },
+          assertCurrent,
+        ),
+    );
+    const workers = observeReclamationWorkers();
+    try {
+      const result = await runSqliteSessionReclamation({ forceInProcess: false, plan: plans[0]! });
+      await Promise.all([foreground, authorization]);
+      expect(order).toEqual(["commit-request", "authorize", "foreground-settled"]);
+      expect(authorizerDelayMs).toBeLessThan(500);
+      expect(result).toMatchObject({ kind: "lifecycle-artifacts", value: { removedEntries: 1 } });
+      expect(loadSessionEntryReadOnly(scopes[0]!)).toBeUndefined();
+      if (operation === "directory discovery") {
+        expect(listConversations(scope)).toEqual([
+          expect.objectContaining({
+            conversationRef: conversation.conversationRef,
+            target: conversation.target,
+          }),
+        ]);
+      } else {
+        expect(getConversationDeliveryOperation(scope, operationId)).toMatchObject({
+          status: "sent",
+          platformMessageId: "outbound-admission",
+        });
+      }
+      expect(workers).toHaveLength(1);
+    } finally {
+      await Promise.allSettled([foreground, authorization]);
+      await closeOpenClawAgentDatabaseByPathAsync(database.path);
+      vi.unstubAllEnvs();
+    }
+    expect(workers.every((worker) => worker.threadId === -1)).toBe(true);
+    expect(leasesFor(fixture)).toHaveLength(0);
+  },
+);
+
 test("retained reclamation operations share the first full scan until the Gateway owner invalidates it", async () => {
   const { options, database, scopes } = createFixture(["parent", "child"]);
   const databaseOptions = { ...options, path: database.path };
@@ -143,11 +337,13 @@ test("retained reclamation operations share the first full scan until the Gatewa
     });
   }
   closeOpenClawAgentDatabasesForTest(databaseOptions.env.OPENCLAW_STATE_DIR);
+  clearOpenClawAgentIntegrityVerification(database.path, databaseOptions.env);
   const workerIds = new Set<number>();
   for (let pass = 0; pass < 3; pass += 1) {
     if (pass === 2) {
       await closeOpenClawAgentDatabasesAsync(databaseOptions.env.OPENCLAW_STATE_DIR);
       closeOpenClawAgentDatabasesForTest(databaseOptions.env.OPENCLAW_STATE_DIR);
+      clearOpenClawAgentIntegrityVerification(database.path, databaseOptions.env);
     }
     const diagnostics: SqliteSessionReclamationDiagnostics = {};
     await expect(
@@ -491,7 +687,7 @@ test("retires the previous database before opening a different agent store", asy
   expect(loadSessionEntryReadOnly(second.scopes[1]!)).toMatchObject({ sessionId: "second" });
 });
 
-test("retires after sixty idle seconds and opens a new Worker for the next request", async () => {
+test("retires after thirty idle minutes and opens a new Worker for the next request", async () => {
   const fixture = createFixture(["first", "second", "third"]);
   invalidateOpenClawAgentDatabaseValidation(fixture.database.path);
   const spawned = observeReclamationWorkers();
@@ -502,7 +698,7 @@ test("retires after sixty idle seconds and opens a new Worker for the next reque
     expect(spawned).toHaveLength(1);
     expect(fullChecks()).toBe(1);
     const exited = once(spawned[0]!, "exit");
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(SQLITE_IDLE_HANDLE_TTL_MS - 1);
     expect(spawned[0]?.threadId).toBeGreaterThan(0);
     await vi.advanceTimersByTimeAsync(1);
     await exited;
@@ -614,6 +810,7 @@ test.each([false, true])(
             },
           );
         }
+        await closeOpenClawAgentDatabasesAsync(state.root);
         await reclaimSqliteFreePages(databaseOptions);
         const workers: Worker[] = [];
         const spawn = archiveWorker.createSqliteTranscriptArchiveWorker;
@@ -625,9 +822,12 @@ test.each([false, true])(
           },
         );
         const run = reclamation.runSqliteSessionReclamation;
-        let requests = 0;
         vi.spyOn(reclamation, "runSqliteSessionReclamation").mockImplementation(async (params) => {
-          if (++requests === 2 && failure) {
+          if (
+            failure &&
+            params.plan.kind === "history-eviction" &&
+            params.plan.sessionId === "second"
+          ) {
             throw new Error("next victim preparation failed");
           }
           return run(params);

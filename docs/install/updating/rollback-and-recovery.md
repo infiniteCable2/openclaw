@@ -31,6 +31,17 @@ backups, and retained migration originals are not a full pre-update backup.
 Preserve every recovery location named in the update report until you have
 verified the installation.
 
+Launcher backups compare the link type and target, plus ownership when it can
+be preserved. Symlink permission bits do not block an update; macOS link modes
+are copied when supported. Regular-file launchers still require matching modes
+and contents. If backup verification fails, the report names the differing
+fields and the retained failed copy for inspection before retrying.
+
+This behavior belongs to the installed updater. An older updater, including
+2026.9.4, can refuse a macOS launcher backup before the target version runs.
+Use the installation's [manual package-manager update procedure](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun)
+if that first update is blocked.
+
 For a target that can read the current state, preview and use the managed
 rollback path:
 
@@ -149,6 +160,17 @@ measured from service stop through verified recovery. The headline is
 `↩️ OpenClaw update rolled back to <previous>: <reason>`, retaining the original
 verification failure. The command still exits nonzero; recovery does not turn a
 rejected version into a successful update.
+
+Recovery reports distinguish restored package files from a healthy Gateway.
+A verified rollback names the version serving after recovery, including when
+an additional repair was needed. If the restored service fails its health check,
+the result records `recovery.service: "failed"`; the report says health failed
+and includes the recorded recovery reason. Health is reported as unverified only
+when verification could not run or complete, such as a readiness timeout. Both
+outcomes direct you to `openclaw gateway status --deep` to check the serving version
+and readiness. Rollback uses the same startup allowance as the update's activation check.
+Restart notifications retain the recovery fields understood by the restored runtime.
+Detailed recovery reasons remain in the update result, status diagnostics, and failure report.
 
 Use `openclaw update status` for the recorded reason and `openclaw triage` to
 diagnose a failed check. Recovery guidance reports whether the Gateway is running

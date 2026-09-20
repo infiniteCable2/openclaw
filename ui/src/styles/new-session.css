@@ -144,6 +144,11 @@ html:is(.openclaw-native-macos, .openclaw-native-desktop) .new-session-page__inc
   text-align: left;
 }
 
+.new-session-page__scroll > .new-session-page__draft {
+  max-width: var(--chat-thread-max-width, 48rem);
+  margin-inline: auto;
+}
+
 .new-session-page__incognito-notice {
   display: flex;
   align-items: center;
@@ -375,6 +380,19 @@ html:is(.openclaw-native-macos, .openclaw-native-desktop) .new-session-page__inc
 .new-session-page__trigger-label {
   max-width: min(40vw, 260px);
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-session-page__select--where,
+.new-session-page__select--where > .new-session-page__trigger {
+  max-width: 100%;
+}
+
+.new-session-page__trigger-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -659,6 +677,33 @@ wa-popover.new-session-page__picker-popover
 
 .new-session-page__menu-field input:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.new-session-page__branch-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.new-session-page__branch-field > input {
+  width: 100%;
+}
+
+.new-session-page__branch-popup::part(popup) {
+  padding: var(--menu-padding);
+  border: 1px solid var(--overlay-border);
+  border-radius: var(--menu-radius);
+  background: var(--bg-elevated);
+  box-shadow: var(--overlay-shadow);
+}
+
+.new-session-page__branch-suggestions {
+  display: grid;
+  gap: 2px;
+}
+
+.new-session-page__branch-suggestions [aria-selected="true"] {
+  background: var(--bg-hover);
+  color: var(--text-strong);
 }
 
 /* Context line inside a picker menu, e.g. which repo syncs to a cloud worker. */
@@ -1233,9 +1278,11 @@ wa-popover.new-session-page__where-popover::part(body) {
   }
 
   .new-session-page__triggers {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0;
+    display: grid;
+    /* Keep identity/project beside destination/checkout without growing extra rows. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+    align-items: center;
+    gap: 2px 4px;
     width: calc(100% - 8px);
     margin-inline: 4px;
     margin-block-end: 8px;
@@ -1250,7 +1297,8 @@ wa-popover.new-session-page__where-popover::part(body) {
     .new-session-page__select--agent
     .agent-select--compact
     .agent-select__trigger {
-    height: 32px;
+    height: 44px;
+    max-width: 100%;
     padding-inline: 6px;
     color: var(--text);
     font-size: 14px;
@@ -1259,7 +1307,12 @@ wa-popover.new-session-page__where-popover::part(body) {
   }
 
   .new-session-page__triggers > span.new-session-page__select {
+    min-width: 0;
     width: 100%;
+  }
+
+  .new-session-page__select--agent openclaw-agent-select {
+    max-width: 100%;
   }
 
   .new-session-page__triggers > span.new-session-page__select > .new-session-page__trigger {
@@ -1267,17 +1320,30 @@ wa-popover.new-session-page__where-popover::part(body) {
     max-width: 100%;
   }
 
-  .new-session-page__triggers > span.new-session-page__select ~ span.new-session-page__select {
-    margin-block-start: 6px;
+  .new-session-page__catalog-unavailable,
+  .new-session-page__runtime,
+  .new-session-page__triggers > .new-session-page__menu-field,
+  .new-session-page__triggers > span.new-session-page__select:last-of-type:nth-of-type(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .new-session-page__triggers > .new-session-page__menu-field {
+    min-width: 0;
+    flex-wrap: wrap;
   }
 
   .new-session-page__trigger-label {
     flex: 0 1 auto;
     min-width: 0;
+    max-width: 100%;
   }
 
   .new-session-page__trigger {
     gap: 0;
+  }
+
+  .new-session-page__trigger-summary {
+    margin-inline-start: 6px;
   }
 
   .new-session-page__trigger > .new-session-page__target-icon {
@@ -1286,12 +1352,13 @@ wa-popover.new-session-page__where-popover::part(body) {
 
   .new-session-page__triggers
     :is(.new-session-page__target-icon, .new-session-page__trigger-chevron) {
+    flex-shrink: 0;
     color: var(--muted);
   }
 
   .new-session-page__triggers
     :is(.new-session-page__target-icon, .new-session-page__trigger-chevron)
-    svg {
+    svg:not(.cloud-profile-icon > svg) {
     width: 16px;
     height: 16px;
   }

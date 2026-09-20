@@ -24,8 +24,9 @@ function createChatComposerState(): ChatComposerState {
     pendingClearedSubmittedDraft: null,
     goalExpandedId: null,
     goalComposer: null,
-    activeGatewayQuestionId: null,
-    gatewayQuestionCollapsed: false,
+    activeQuestionKey: null,
+    gatewayQuestionIds: new Set(),
+    questionCollapsed: false,
     questionTakeoverActive: false,
     restoreComposerFocus: false,
     composerInput: null,
@@ -66,7 +67,9 @@ export function isCurrentSessionSubmittedProgress(
   return (
     item.sessionKey === sessionKey &&
     !item.pendingRunId &&
-    (item.sendState === "sending" || item.sendState === "waiting-model") &&
+    (item.sendState === "submitting" ||
+      item.sendState === "sending" ||
+      item.sendState === "waiting-model") &&
     (status == null || item.sendRunId !== status.runId)
   );
 }

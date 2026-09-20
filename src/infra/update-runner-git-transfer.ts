@@ -4,6 +4,7 @@ import path from "node:path";
 import { hasErrnoCode } from "./errno.js";
 import { readLocalFileSafely } from "./fs-safe.js";
 import { runStep } from "./update-runner-command.js";
+import { classifyPartialCloneGitFailure } from "./update-runner-git-target.js";
 import type { RunStepOptions, UpdateStepResult } from "./update-runner-types.js";
 
 // Bound the retained import buffer independently of Git's pack-file size. An
@@ -35,23 +36,38 @@ export async function prepareGitCandidateTransfer(params: {
   candidateSha: string;
   beforeSha: string | null;
   installedRoot: string;
+  installedRunCommand: RunStepOptions["runCommand"];
   upstreamRef?: string;
   step: RunStepOptions;
+  probeTimeoutMs: number;
 }) {
-  const { candidateSha, beforeSha, installedRoot, upstreamRef, step } = params;
-  const runGit = async (name: string, args: string[], input?: string, root = step.cwd) => {
+  const { candidateSha, beforeSha, installedRoot, installedRunCommand, upstreamRef, step } = params;
+  const runGit = async (
+    name: string,
+    args: string[],
+    input?: string,
+    root = step.cwd,
+    budget: { timeoutMs?: number } = { timeoutMs: params.probeTimeoutMs },
+  ) => {
     let stdout = "";
     const result = await runStep({
       ...step,
+      timeoutMs: budget.timeoutMs,
       name,
       cwd: root,
       argv: ["git", "-C", root, ...args],
       runCommand: async (argv, options) => {
         // Transfer inputs must never be silently truncated by diagnostic capture.
-        const commandResult = await step.runCommand(argv, {
+        const rawCommandResult = await step.runCommand(argv, {
           ...options,
           input,
           terminateOnOutputLimit: true,
+        });
+        const commandResult = await classifyPartialCloneGitFailure({
+          result: rawCommandResult,
+          root: installedRoot,
+          runCommand: installedRunCommand,
+          timeoutMs: params.probeTimeoutMs,
         });
         stdout = commandResult.stdout;
         // Object inventories are transfer input, not operator diagnostics.
@@ -79,6 +95,7 @@ export async function prepareGitCandidateTransfer(params: {
     "rev-list",
     "--objects",
     "--no-object-names",
+    "--missing=allow-any",
     candidateSha,
     ...(upstreamSha ? [upstreamSha] : []),
     ...(beforeSha ? [`^${beforeSha}`] : []),
@@ -100,7 +117,7 @@ export async function prepareGitCandidateTransfer(params: {
   const probe = beforeSha
     ? await step.runCommand(["git", "--no-lazy-fetch", "version"], {
         cwd: installedRoot,
-        timeoutMs: step.timeoutMs,
+        timeoutMs: params.probeTimeoutMs,
       })
     : undefined;
   if (
@@ -172,6 +189,8 @@ export async function prepareGitCandidateTransfer(params: {
     "git pack update",
     ["-c", "pack.packSizeLimit=0", "pack-objects", "--max-pack-size=0", prefix],
     input,
+    step.cwd,
+    { timeoutMs: step.timeoutMs },
   );
   if (!hash) {
     return undefined;
@@ -229,7 +248,7 @@ export async function prepareGitCandidateTransfer(params: {
             "--git-path",
             `objects/pack/pack-${hash}.keep`,
           ],
-          { cwd: target.cwd, timeoutMs: target.timeoutMs },
+          { cwd: target.cwd, timeoutMs: params.probeTimeoutMs },
         );
         if (location.code !== 0) {
           throw new Error("Cannot locate the retained Git update pack");

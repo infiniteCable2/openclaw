@@ -5,11 +5,9 @@ import {
   FULL_ACCESS_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   PAIRING_SETUP_BOOTSTRAP_PROFILE,
 } from "../shared/device-bootstrap-profile.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { loadOriginDeviceToken } from "./device-auth-store.js";
 import {
   readDeviceAuthTokenForTest as readCachedToken,
@@ -254,7 +252,7 @@ describe("device pairing tokens", () => {
   });
 
   afterAll(async () => {
-    closeOpenClawStateDatabaseForTest();
+    await closeStateDatabaseForTest();
     await suiteRootTracker.cleanup();
   });
 
@@ -1324,7 +1322,7 @@ describe("device pairing tokens", () => {
     expect(readCachedToken({ deviceId: "device-1", role: "operator", env })).toEqual(operator);
     expect(readCachedToken({ deviceId: "device-2", role: "node", env })).toEqual(otherDevice);
     expect(
-      loadOriginDeviceToken({ gatewayScope, deviceId: "device-1", role: "node", env }),
+      await loadOriginDeviceToken({ gatewayScope, deviceId: "device-1", role: "node", env }),
     ).toEqual(origin);
     expect(readCachedToken({ deviceId: "device-1", role: "node", env: otherEnv })).toEqual(
       otherProfile,

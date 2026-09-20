@@ -36,10 +36,12 @@ import {
   isPluginRegistryActivated,
   withPluginRegistryPreparationScope,
 } from "./registry-lifecycle.js";
-import { getPluginRegistryRuntime } from "./registry-runtime-binding.js";
 import { createPluginRegistry, type PluginRegistry } from "./registry.js";
 import { degradedPluginMatchesRoot, findActiveDegradedPlugin } from "./runtime-degraded-state.js";
-import { getActivePluginRegistry } from "./runtime.js";
+import {
+  bindGatewayContextResolver,
+  getGatewayContextResolver,
+} from "./runtime/gateway-request-scope.js";
 import { setPluginRuntimeLoadContext } from "./runtime/load-context.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import { hasKind } from "./slots.js";
@@ -57,13 +59,15 @@ export type InternalPluginLoadOverrides = {
 };
 
 function createDeferredGatewaySubagentRuntime(runtime: PluginRuntime): PluginRuntime["subagent"] {
-  return {
+  const subagent: PluginRuntime["subagent"] = {
     complete: (...args) => runtime.subagent.complete(...args),
     run: (...args) => runtime.subagent.run(...args),
     waitForRun: (...args) => runtime.subagent.waitForRun(...args),
     getSessionMessages: (...args) => runtime.subagent.getSessionMessages(...args),
     deleteSession: (...args) => runtime.subagent.deleteSession(...args),
   };
+  bindGatewayContextResolver(subagent, getGatewayContextResolver(runtime));
+  return subagent;
 }
 
 function createDeferredGatewayNodesRuntime(runtime: PluginRuntime): PluginRuntime["nodes"] {
@@ -144,18 +148,11 @@ export function loadOpenClawPluginsCore(
       expectedSourceDigests: options.expectedSourceDigests,
       ...overrides?.moduleLoader,
     });
-    const activeRuntime =
-      options.runtimeOptions?.allowGatewaySubagentBinding === true
-        ? getActivePluginRegistry()
-        : undefined;
-    const activeGatewayRuntime = activeRuntime
-      ? getPluginRegistryRuntime(activeRuntime)
+    const borrowedSubagent = context.borrowedGatewayRuntime
+      ? createDeferredGatewaySubagentRuntime(context.borrowedGatewayRuntime)
       : undefined;
-    const borrowedSubagent = activeGatewayRuntime
-      ? createDeferredGatewaySubagentRuntime(activeGatewayRuntime)
-      : undefined;
-    const borrowedNodes = activeGatewayRuntime
-      ? createDeferredGatewayNodesRuntime(activeGatewayRuntime)
+    const borrowedNodes = context.borrowedGatewayRuntime
+      ? createDeferredGatewayNodesRuntime(context.borrowedGatewayRuntime)
       : undefined;
     const runtime =
       options.mode === "cli-metadata"

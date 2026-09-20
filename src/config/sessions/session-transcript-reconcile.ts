@@ -8,8 +8,11 @@ import { toStringifiedError } from "@openclaw/normalization-core/error-coercion"
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { computeBackoffSchedule } from "../../../packages/retry/src/index.js";
 import { isGatewayExternallySupervised } from "../../infra/gateway-supervision.js";
+import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import { isPathInside } from "../../infra/path-guards.js";
+import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   borrowOpenClawAgentDatabase,
@@ -25,6 +28,7 @@ import {
 import { resolveStateDir } from "../paths.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import {
+  getSessionKysely,
   resolveSqliteTranscriptReadScope,
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
@@ -32,6 +36,8 @@ import {
 import type { SqliteSessionWriteOperation } from "./session-accessor.sqlite-write-operation.js";
 import {
   deleteOrphanedTranscriptIndexRowsInTransaction,
+  hasOrphanedTranscriptIndexRows,
+  hasSessionsNeedingTranscriptIndexReconcile,
   listSessionsNeedingTranscriptIndexReconcile,
   sessionTranscriptIndexNeedsReconcile,
 } from "./session-transcript-index.js";
@@ -243,13 +249,31 @@ async function finalizePreparedProjection(
   return await runProjectionWrite(
     databaseOptions,
     "sessions.transcript-index.finalize",
-    (database) =>
-      (!memorySource || memorySource.isCurrentPlan(active.plan)) &&
-      finalizePreparedSessionTranscriptProjectionInTransaction(
-        database.db,
-        active.plan,
-        active.claimId,
-      ),
+    (database) => {
+      const finalized =
+        (!memorySource || memorySource.isCurrentPlan(active.plan)) &&
+        finalizePreparedSessionTranscriptProjectionInTransaction(
+          database.db,
+          active.plan,
+          active.claimId,
+        );
+      const session =
+        finalized &&
+        executeSqliteQueryTakeFirstSync(
+          database.db,
+          getSessionKysely(database.db)
+            .selectFrom("session_windows")
+            .select("session_key")
+            .where("session_id", "=", active.plan.sessionId),
+        );
+      if (session) {
+        sessionChanges.emit(
+          { storePath: database.path, sessionKey: session.session_key },
+          database.db,
+        );
+      }
+      return finalized;
+    },
     memorySource,
   );
 }
@@ -278,8 +302,35 @@ async function reconcilePreparedTranscriptIndexes(
   const memorySource = captureMemorySource(databaseOptions);
   let memorySessionIds: string[] = [];
   try {
-    // The SQLite owner can cheaply prove a clean projection before paying for a
-    // Worker. Keep the post-worker sweep too, because request-time writers may race.
+    if (!memorySource) {
+      const clean = await runExclusiveSqliteSessionWrite(
+        databaseOptions,
+        async () => {
+          try {
+            const pending = withOpenClawAgentDatabaseReadOnly(
+              ({ db }) =>
+                runSqliteDeferredTransactionSync(
+                  db,
+                  () =>
+                    hasSessionsNeedingTranscriptIndexReconcile(db) ||
+                    hasOrphanedTranscriptIndexRows(db),
+                ),
+              databaseOptions,
+            );
+            return pending.found && !pending.value;
+          } catch {
+            // Preserve the writable owner's repair and integrity refusal for uncertain reads.
+            return false;
+          }
+        },
+        "sessions.transcript-index.preflight",
+      );
+      if (clean) {
+        return { reconciledSessions: 0 };
+      }
+    }
+    // Recheck under write admission: a request may commit after the read-only probe.
+    // Keep the post-worker orphan sweep for writers racing projection publication.
     await runProjectionWrite(
       databaseOptions,
       "sessions.transcript-index.preflight",
@@ -636,7 +687,6 @@ export async function waitForSessionTranscriptProjection(
     const pending = withOpenClawAgentDatabaseReadOnly(
       ({ db }) => sessionTranscriptIndexNeedsReconcile(db, resolved.sessionId),
       databaseOptions,
-      { throwOnMissingTable: true },
     );
     if (!pending.found || !pending.value) {
       break;

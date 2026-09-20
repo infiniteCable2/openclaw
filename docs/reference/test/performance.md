@@ -205,11 +205,14 @@ the agent model's automatic tool loop. `turnEvidence.observerModelDigestTurns`
 counts turns with a published model-derived observer digest. A short run can
 legitimately report zero; observer correctness proof requires a positive count.
 
-`mockRequests` retains five mock-server counter checkpoints and their parent
+`mockRequests` retains six mock-server counter checkpoints and their parent
 monotonic request bounds. Ingress deltas cover `startupAndWarmup` (readiness,
-connect, visibility, and probe warmup), `setup`, `loadBracket`, and `postLoad`
-(through Gateway shutdown). They distinguish Responses, Chat Completions,
-embeddings, and other routes, including rejected request bodies; health and
+connect, visibility, and probe warmup), `setup`, `agentWarmup` (optional agent
+turns on the same Gateway), `loadBracket`, and `postLoad` (through Gateway
+shutdown). The `agentWarmup` bracket remains present when `--agent-warmup-turns`
+is zero (the default); warmup turns are excluded from measured load. These
+deltas distinguish Responses, Chat Completions, embeddings, and other routes,
+including rejected request bodies; health and
 model-catalog reads are excluded. These HTTP brackets are not exact CPU capture
 windows or causal attribution. `selections` through the final checkpoint separately
 count model/global controlled responses and automatic tool/text branches, not completed
@@ -417,7 +420,7 @@ listener. It does not attach to or modify an existing operator Gateway.
 
 <Accordion title="Gateway restart (scripts/bench-gateway-restart.ts)">
 
-macOS and Linux only (uses SIGUSR1 for in-process restarts; fails immediately on Windows). Same built-entry default and `--entry scripts/run-node.mjs` override as gateway startup above.
+macOS and Linux only (uses SIGUSR2 for in-process restarts; fails immediately on Windows). Same built-entry default and `--entry scripts/run-node.mjs` override as gateway startup above.
 
 ```bash
 pnpm test:restart:gateway -- --case skipChannels --runs 1 --restarts 5

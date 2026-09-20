@@ -32,11 +32,20 @@ import type {
   GatewayRequestHandlerOptions,
   RespondFn,
 } from "../../server-methods/types.js";
+import { bindSessionRowProjection } from "../../session-row-projection-access.js";
+import type { SessionRowProjection } from "../../session-row-projection.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { prepareTalkAgentConsultTranscript } from "../agent-consult-transcript.js";
 import { buildTalkRealtimeConfig } from "../session-config.js";
 import { forgetLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
+import { talkConfigAccentCases } from "./config-accent.test-support.js";
 import { talkHandlers } from "./index.js";
+import {
+  expectRecordFields,
+  expectRespondError,
+  expectRespondOk,
+  mockCallArg,
+} from "./responses.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   getRuntimeConfig: vi.fn<() => OpenClawConfig>(),
@@ -326,41 +335,6 @@ async function callTalkHandler(
         }
       : {}),
   });
-}
-
-function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
-  if (!record || typeof record !== "object") {
-    throw new Error("Expected record");
-  }
-  const actual = record as Record<string, unknown>;
-  for (const [key, value] of Object.entries(expected)) {
-    expect(actual[key]).toEqual(value);
-  }
-  return actual;
-}
-
-function mockCallArg(mock: ReturnType<typeof vi.fn>, callIndex = 0, argIndex = 0) {
-  const call = mock.mock.calls.at(callIndex);
-  if (!call) {
-    throw new Error(`Expected mock call ${callIndex}`);
-  }
-  return call.at(argIndex);
-}
-
-function expectRespondOk(mock: ReturnType<typeof vi.fn>, expected?: Record<string, unknown>) {
-  expect(mockCallArg(mock)).toBe(true);
-  const result = mockCallArg(mock, 0, 1);
-  if (expected) {
-    expectRecordFields(result, expected);
-  }
-  expect(mockCallArg(mock, 0, 2)).toBeUndefined();
-  return result;
-}
-
-function expectRespondError(mock: ReturnType<typeof vi.fn>, expected: Record<string, unknown>) {
-  expect(mockCallArg(mock)).toBe(false);
-  expect(mockCallArg(mock, 0, 1)).toBeUndefined();
-  return expectRecordFields(mockCallArg(mock, 0, 2), expected);
 }
 
 beforeEach(() => {
@@ -1279,24 +1253,7 @@ describe("talk.config handler", () => {
     },
   );
 
-  it.each([
-    {
-      name: "prefers the authenticated profile accent over gateway appearance defaults",
-      profileId: "profile-1",
-      profileAccent: "#A1B2C3",
-      expectedAccent: "#a1b2c3",
-    },
-    {
-      name: "ignores malformed authenticated profile accents",
-      profileId: "profile-1",
-      profileAccent: "not-a-color",
-      expectedAccent: "#52c99a",
-    },
-    {
-      name: "keeps profile-less callers on their existing gateway accent path",
-      expectedAccent: "#52c99a",
-    },
-  ])("$name", async ({ profileId, profileAccent, expectedAccent }) => {
+  it.each(talkConfigAccentCases)("$name", async ({ profileId, profileAccent, expectedAccent }) => {
     markTalkOwnerCold("tts");
     const runtimeConfig = createTalkConfig("healthy-talk-key");
     mocks.getSpeechProvider.mockReturnValue({ id: "acme" });
@@ -1319,7 +1276,9 @@ describe("talk.config handler", () => {
     });
 
     expect(respond.mock.calls[0]?.[0]).toBe(true);
-    expect(respond.mock.calls[0]?.[1]?.config?.ui).toEqual({ seamColor: expectedAccent });
+    expect(respond.mock.calls[0]?.[1]?.config?.ui).toEqual(
+      expectedAccent ? { seamColor: expectedAccent } : undefined,
+    );
     if (profileId) {
       expect(mocks.getCanonicalUserPreferences).toHaveBeenCalledWith(profileId, ["ui.accent"]);
     } else {
@@ -2096,7 +2055,7 @@ describe("talk.session unified handlers", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.resolveSessionKeyFromResolveParams.mockImplementation(async ({ p }) => {
+    mocks.resolveSessionKeyFromResolveParams.mockImplementation(({ p }) => {
       const key = (p as { key?: unknown }).key;
       return {
         ok: true,
@@ -2896,6 +2855,7 @@ describe("talk.session unified handlers", () => {
       respond: createRespond,
       context: {
         getRuntimeConfig: () => config,
+        ...bindSessionRowProjection({}, () => ({}) as SessionRowProjection),
       },
     });
 
@@ -2904,7 +2864,7 @@ describe("talk.session unified handlers", () => {
       brain: "agent-consult",
     });
     expect(mocks.resolveSessionKeyFromResolveParams).toHaveBeenCalledWith({
-      cfg: config,
+      projection: {},
       client: { connId: "conn-1", connect: { scopes: ["operator.write"] } },
       p: {
         key: "agent:worker:subagent:child",
@@ -2934,7 +2894,10 @@ describe("talk.session unified handlers", () => {
       },
       client: { connId: "conn-1", connect: { scopes: ["operator.admin"] } },
       respond: createRespond,
-      context: { getRuntimeConfig: () => config },
+      context: {
+        getRuntimeConfig: () => config,
+        ...bindSessionRowProjection({}, () => ({}) as SessionRowProjection),
+      },
     });
 
     expectRespondOk(createRespond, { transport: "managed-room" });
@@ -3001,6 +2964,7 @@ describe("talk.session unified handlers", () => {
       respond: createRespond,
       context: {
         getRuntimeConfig: () => ({}) as OpenClawConfig,
+        ...bindSessionRowProjection({}, () => ({}) as SessionRowProjection),
       },
     });
 

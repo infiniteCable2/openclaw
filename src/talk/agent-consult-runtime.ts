@@ -8,6 +8,7 @@ import {
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
+import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import {
   buildSessionCreationStamp,
@@ -52,6 +53,21 @@ export type RealtimeVoiceAgentConsultSpeechEvent =
 const REALTIME_VOICE_YIELD_ACK_MAX_CHARS = 500;
 const REALTIME_VOICE_YIELD_ACK_FALLBACK =
   "I started that work and will share the result when it is ready.";
+
+function hasQueuedSpeechSuffix(chunks: readonly string[], text: string): boolean {
+  let remaining = text.replaceAll(/\s+/g, " ").trim();
+  for (const queuedChunk of chunks.toReversed()) {
+    const chunk = queuedChunk.replaceAll(/\s+/g, " ").trim();
+    if (remaining === chunk) {
+      return true;
+    }
+    if (!remaining.endsWith(` ${chunk}`)) {
+      return false;
+    }
+    remaining = remaining.slice(0, -chunk.length - 1);
+  }
+  return false;
+}
 
 /**
  * Sender-auth contract revision for official realtime voice plugins.
@@ -494,7 +510,7 @@ export async function consultRealtimeVoiceAgent(params: {
       const sessionId = sessionEntry.sessionId;
       assertRealtimeVoiceAgentConsultModelSelectionUnlocked(modelLockParams);
 
-      const runId = `${params.runIdPrefix}:${Date.now()}:${randomUUID()}`;
+      const runId = `${params.runIdPrefix}-${randomUUID()}`;
       const timeoutMs =
         params.timeoutMs ?? params.agentRuntime.resolveAgentTimeoutMs({ cfg: params.cfg });
       const runRegistration = params.onRunStarted?.({ runId, sessionId, timeoutMs });
@@ -648,18 +664,31 @@ export async function consultRealtimeVoiceAgent(params: {
               streamedChunks.map((chunk) => ({ text: chunk })),
             ) ?? acknowledgment;
         }
+        // Earlier input answers remain in history; this completion speaks for the current input.
+        const payloads = result.payloads ?? [];
+        const currentInputPayloads = payloads.filter(
+          (payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer !== true,
+        );
         const text =
           yieldedSpeech ??
-          collectRealtimeVoiceAgentConsultVisibleText(result.payloads ?? []) ??
-          collectRealtimeVoiceAgentConsultVisibleText(
-            streamedChunks.map((streamedText) => ({ text: streamedText })),
-          );
+          collectRealtimeVoiceAgentConsultVisibleText(currentInputPayloads) ??
+          // Chunks have no input ownership. After a proven input boundary they
+          // cannot recover the current answer from already spoken earlier text.
+          (currentInputPayloads.length === payloads.length
+            ? collectRealtimeVoiceAgentConsultVisibleText(
+                streamedChunks.map((streamedText) => ({ text: streamedText })),
+              )
+            : null);
         if (!text) {
           params.logger.warn(
             "[talk] agent consult produced no answer: agent returned no speakable text",
           );
           const fallbackText =
             params.fallbackText ?? "I need a moment to verify that before answering.";
+          if (streamedChunks.length > 0) {
+            // As with yield acknowledgments, done does not append new audio.
+            emitSpeechEvent({ type: "chunk", text: fallbackText });
+          }
           emitSpeechEvent({ type: "done", text: fallbackText });
           await speechDelivery;
           assertRealtimeVoiceConsultNotInterrupted(abortSignal);
@@ -670,6 +699,16 @@ export async function consultRealtimeVoiceAgent(params: {
             text: fallbackText,
             ...(params.onSpeakableText ? { delivered: true } : {}),
           };
+        }
+        if (
+          !yielded &&
+          currentInputPayloads.length < payloads.length &&
+          streamedChunks.length > 0 &&
+          !hasQueuedSpeechSuffix(streamedChunks, text)
+        ) {
+          // Earlier-input speech may be all the sink has received. Done only
+          // consolidates queued audio; append the current answer unless already queued.
+          emitSpeechEvent({ type: "chunk", text });
         }
         emitSpeechEvent({ type: "done", text });
         await speechDelivery;

@@ -13,7 +13,7 @@ import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import type { PinnedDispatcherPolicy } from "openclaw/plugin-sdk/ssrf-dispatcher";
 import type { SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
-import { SqliteBackedMatrixSyncStore } from "../client/file-sync-store.js";
+import type { SqliteBackedMatrixSyncStore } from "../client/file-sync-store.js";
 import { createMatrixJsSdkClientLogger } from "../client/logging.js";
 import type { MatrixSnapshotStateRuntime } from "../crypto-state-store.js";
 import { awaitMatrixStartupWithAbort, throwIfMatrixStartupAborted } from "../startup-abort.js";
@@ -36,6 +36,8 @@ import { LogService, noop } from "./logger.js";
 import { createMatrixRtcClientFacade, type MatrixRtcClientFacade } from "./matrix-rtc.js";
 import { MatrixMessageWireDispatchGuards } from "./message-wire-dispatch.js";
 import { MatrixRecoveryKeyStore } from "./recovery-key-store.js";
+import { captureMatrixSendCurrentness, withoutMatrixSendCurrentness } from "./send-currentness.js";
+import { MatrixSendScheduler } from "./send-scheduler.js";
 import { createMatrixGuardedFetch } from "./transport.js";
 import type { MatrixClientEventMap, MatrixCryptoBootstrapApi, MatrixRawEvent } from "./types.js";
 import type { MatrixVerificationSummary } from "./verification-manager.js";
@@ -136,9 +138,11 @@ export abstract class MatrixClientBase {
 
   private withClientCryptoWork<T>(run: () => T, requestSignal?: AbortSignal): T {
     this.assertClientActive();
-    return this.cryptoRequestOwner.run(
-      { callerAuthority: captureChannelReadAuthority(), requestSignal },
-      run,
+    return withoutMatrixSendCurrentness(() =>
+      this.cryptoRequestOwner.run(
+        { callerAuthority: captureChannelReadAuthority(), requestSignal },
+        run,
+      ),
     );
   }
 
@@ -164,7 +168,7 @@ export abstract class MatrixClientBase {
       encryption?: boolean;
       initialSyncLimit?: number;
       syncFilter?: IFilterDefinition;
-      storageRootDir?: string;
+      syncStore?: SqliteBackedMatrixSyncStore;
       recoveryKeyPath?: string;
       idbSnapshotPath?: string;
       cryptoDatabasePrefix?: string;
@@ -183,6 +187,7 @@ export abstract class MatrixClientBase {
       ssrfPolicy: opts.ssrfPolicy,
       dispatcherPolicy: opts.dispatcherPolicy,
       captureRequestAuthority: this.captureRequestAuthority,
+      captureSendCurrentness: () => captureMatrixSendCurrentness(this),
       signal: this.requestAbortController.signal,
     });
     this.localTimeoutMs = resolveMatrixLocalTimeoutMs(opts.localTimeoutMs);
@@ -191,9 +196,7 @@ export abstract class MatrixClientBase {
     this.encryptionEnabled = opts.encryption === true;
     const { password: loginPassword } = opts;
     this.password = loginPassword;
-    this.syncStore = opts.storageRootDir
-      ? new SqliteBackedMatrixSyncStore(opts.storageRootDir)
-      : undefined;
+    this.syncStore = opts.syncStore;
     this.idbSnapshotPath = opts.idbSnapshotPath;
     this.cryptoDatabasePrefix = opts.cryptoDatabasePrefix;
     this.stateRuntime = opts.stateRuntime;
@@ -208,6 +211,12 @@ export abstract class MatrixClientBase {
       ssrfPolicy: opts.ssrfPolicy,
       dispatcherPolicy: opts.dispatcherPolicy,
       captureRequestAuthority: this.captureRequestAuthority,
+      captureSendCurrentness: (resource, init) =>
+        this.messageWireDispatchGuards.captureCurrentness(
+          resource,
+          init,
+          captureMatrixSendCurrentness(this),
+        ),
       signal: this.requestAbortController.signal,
       beforeRequest: async (resource, init) => {
         // Complete admitted key persistence before checking live wire authority.
@@ -223,6 +232,9 @@ export abstract class MatrixClientBase {
       logger: createMatrixJsSdkClientLogger("MatrixClient"),
       localTimeoutMs: this.localTimeoutMs,
       fetchFn: guardedFetch,
+      scheduler: new MatrixSendScheduler((event) =>
+        this.messageWireDispatchGuards.wasCurrentnessRejected(event.getTxnId()),
+      ),
       store: this.syncStore,
       cryptoCallbacks: cryptoCallbacks as never,
       verificationMethods: [
