@@ -1,6 +1,8 @@
 mod cli;
 #[cfg(target_os = "linux")]
 mod desktop_bridge;
+mod desktop_node;
+mod desktop_node_process;
 mod discovery;
 mod gateway;
 mod gateway_device_identity;
@@ -15,9 +17,12 @@ mod gateway_sleep_logind_listener;
 mod gateway_windows;
 mod gateway_ws;
 mod installer;
+mod keep_awake;
+mod keep_awake_platform;
 mod native_browser;
 mod native_browser_bridge;
 mod native_browser_platform;
+mod native_device_settings;
 mod notify;
 mod pending_approvals;
 mod quickchat;
@@ -101,8 +106,8 @@ pub(crate) fn native_auth_initialization_script(
 fn remote_ws_config(
     request: &RemoteGatewayRequest,
     gateway_url: &Url,
-) -> gateway_ws::GatewayWsConfig {
-    gateway_ws::GatewayWsConfig::new(
+) -> Result<gateway_ws::GatewayWsConfig, String> {
+    Ok(gateway_ws::GatewayWsConfig::new(
         gateway_url.to_string(),
         request.token.clone(),
         request.password.clone(),
@@ -113,6 +118,10 @@ fn remote_ws_config(
         },
         gateway_ws::GatewayOwnership::Remote,
     )
+    .with_node_identity_scope(remote_gateway::desktop_node_identity_scope(
+        request,
+        gateway_url,
+    )?))
 }
 
 fn open_external_browser(app: &AppHandle, url: &Url) {
@@ -1062,7 +1071,7 @@ impl DesktopState {
                                 state.inner.remote_tunnels.take();
                         }
                         app.state::<gateway_ws::GatewayClient>()
-                            .configure(&app, remote_ws_config(&request, &gateway_url));
+                            .configure(&app, remote_ws_config(&request, &gateway_url)?);
                         // The submitting view will be destroyed. Its IPC reply
                         // cannot own completion or prove Gateway health.
                         let snapshot = GatewaySnapshot::remote_opening();
@@ -1527,6 +1536,12 @@ impl DesktopState {
 
     // Only the successful claim owner calls this, after releasing any route guard.
     pub(crate) fn finish_quit(&self, app: &AppHandle, code: i32) {
+        if let Some(node) = app.try_state::<desktop_node::DesktopNode>() {
+            node.stop();
+        }
+        if let Some(power) = app.try_state::<keep_awake::KeepAwake>() {
+            power.stop();
+        }
         self.cancel_watchdog();
         app.state::<GatewayOperationQueue>().invalidate_recovery();
         self.inner.remote_tunnels.close();
@@ -1534,6 +1549,12 @@ impl DesktopState {
         let state = self.clone();
         let app = app.clone();
         thread::spawn(move || {
+            if let Some(node) = app.try_state::<desktop_node::DesktopNode>() {
+                node.wait_stopped();
+            }
+            if let Some(power) = app.try_state::<keep_awake::KeepAwake>() {
+                power.wait_stopped();
+            }
             state.inner.remote_tunnels.wait_closed();
             app.state::<gateway_windows::GatewayWindows>().wait_closed();
             state
@@ -3182,7 +3203,8 @@ fn main() {
         let namespace = remote_gateway::config_path()?
             .to_string_lossy()
             .into_owned();
-        app.manage(gateway_windows::GatewayWindows::new(&namespace));
+        let profiles = Arc::new(gateway_profiles::GatewayProfiles::new(&namespace));
+        app.manage(gateway_windows::GatewayWindows::new(Arc::clone(&profiles)));
         app.manage(native_browser::NativeBrowserState::default());
         app.manage(native_browser_bridge::NativeBrowserBridgeState::default());
         let window_config = app
@@ -3222,6 +3244,10 @@ fn main() {
         let state = DesktopState::new(window.url()?);
         app.manage(state.clone());
         app.manage(gateway_ws::GatewayClient::new());
+        app.manage(desktop_node::DesktopNode::start(
+            app.handle().clone(),
+            Arc::clone(&profiles),
+        )?);
         #[cfg(target_os = "linux")]
         app.manage(gateway_sleep_logind::SleepBridge::start(
             app.handle().clone(),
@@ -3277,6 +3303,14 @@ fn main() {
         app.manage(quickchat_state.clone());
         app.manage(updater::UpdaterState::default());
         state.set_tray(tray::build(app, state.clone(), global_shortcuts_supported)?);
+        let read_profiles = Arc::clone(&profiles);
+        let power_app = app.handle().clone();
+        app.manage(keep_awake::KeepAwake::start(
+            move || read_profiles.keep_computer_awake(),
+            move |enabled| profiles.set_keep_computer_awake(enabled),
+            keep_awake_platform::Inhibitor::acquire,
+            move |status| tray::publish_keep_awake(&power_app, status),
+        )?);
         if let Some(menu) = app.menu() {
             menu.append(&gateway_windows::menu(app.handle())?)?;
         }
@@ -3299,6 +3333,7 @@ fn main() {
         install_cli,
         gateway_action,
         native_browser_bridge::native_browser_request,
+        native_device_settings::native_device_settings_request,
         gateway_windows::gateway_request,
         gateway_windows::gateway_profile_request,
         quickchat::quickchat_activate,
@@ -3394,8 +3429,11 @@ fn main() {
                 }
             }
         }
-        #[cfg(target_os = "linux")]
         if matches!(event, tauri::RunEvent::Exit) {
+            if let Some(power) = app.try_state::<keep_awake::KeepAwake>() {
+                power.wait_stopped();
+            }
+            #[cfg(target_os = "linux")]
             if let Some(bridge) = app.try_state::<gateway_sleep_logind::SleepBridge>() {
                 bridge.shutdown();
             }

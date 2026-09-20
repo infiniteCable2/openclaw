@@ -5,16 +5,27 @@ import { isGatewayServiceEnv, resolveGatewayProfileSuffix } from "../../daemon/c
 import { resolveLaunchAgentLabel } from "../../daemon/launchd-label.js";
 import { resolveTaskName } from "../../daemon/schtasks-layout.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
-import { ServiceInspectionError } from "../../daemon/service-inspection-error.js";
+import {
+  ServiceInspectionError,
+  findServiceOwnershipRefusal,
+} from "../../daemon/service-inspection-error.js";
+import { resolveManagedServiceNodeRunner } from "../../daemon/service-layout.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import {
   resolveManagedGatewayServiceCommand,
   type GatewayServiceState,
 } from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
-import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
+import {
+  readSystemdServiceExecStart,
+  resolveSystemdServiceName,
+} from "../../daemon/systemd-service-files.js";
+import { captureSystemdServiceIdentity } from "../../daemon/systemd-service-identity.js";
+import { parseTcpPortFromArgs } from "../../infra/tcp-port.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
+import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { defaultRuntime } from "../../runtime.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import { gatewayMaintenanceBlockMessage } from "./update-command-handoff.js";
@@ -31,7 +42,6 @@ import {
   inspectManagedGatewayServiceBeforeUpdate,
   observedSystemdManagerUid,
   resolveGatewayServiceManagementBlockMessageForUpdate,
-  resolveManagedServiceNodeRunner,
 } from "./update-command-service-plan.js";
 import { isManagedGatewayServiceOffline } from "./update-command-service-publication.js";
 import {
@@ -50,23 +60,11 @@ const JSON_MODE_SERVICE_STDOUT = new Writable({
   },
 });
 
-export function resolvePreparedGatewayUpdatePolicy(
-  stopState: PreManagedServiceStop | undefined,
-  shouldRestart: boolean,
-) {
-  const verdict = stopState?.serviceUpdateVerdict;
-  // Root ownership permits activation; rewriting also requires definition authority.
-  return {
-    allowGatewayServiceRepair: verdict?.kind === "owned" && verdict.refreshDefinition,
-    allowGatewayActivation:
-      shouldRestart && stopState?.stopped === true && verdict?.kind === "owned",
-  };
-}
-
 function matchesStoppedService(
   before: Pick<PreManagedServiceStop, "serviceEnv" | "serviceUpdateVerdict" | "serviceManagerUid">,
   state: GatewayServiceState,
   inspection: ManagedGatewayUpdateVerdict,
+  allowIncompleteInspection = false,
 ): boolean {
   const verdict = before.serviceUpdateVerdict;
   const refreshDefinition = verdict?.kind === "owned" && verdict.refreshDefinition;
@@ -89,6 +87,7 @@ function matchesStoppedService(
     resolveName(before.serviceEnv) === resolveName(state.env) &&
     (process.platform !== "linux" ||
       before.serviceManagerUid === undefined ||
+      (allowIncompleteInspection && observedSystemdManagerUid(state) === undefined) ||
       before.serviceManagerUid === observedSystemdManagerUid(state)) &&
     (refreshDefinition ||
       ("fingerprint" in inspection && inspection.fingerprint === verdict.fingerprint)),
@@ -103,17 +102,33 @@ export async function revalidateManagedGatewayServiceAfterUpdate(params: {
     "serviceEnv" | "serviceUpdateVerdict" | "serviceManagerUid"
   >;
   allowInstallRootChange?: boolean;
+  /** Restoration still rejects observed identity drift when a native probe fails. */
+  allowIncompleteInspection?: boolean;
 }): Promise<ManagedGatewayUpdateVerdict> {
   const before = params.preManagedServiceStop;
   const verdict = before?.serviceUpdateVerdict;
   assertGatewayServiceManagementAllowedForUpdate(params.state.env);
+  const managerUid = observedSystemdManagerUid(params.state);
+  if (
+    params.allowIncompleteInspection &&
+    before?.serviceManagerUid !== undefined &&
+    managerUid !== undefined &&
+    managerUid !== before.serviceManagerUid
+  ) {
+    throw new GatewayServiceUpdateOwnershipError(
+      "Gateway service ownership or manager identity changed; inspect it before restarting manually.",
+      undefined,
+    );
+  }
   // Shipped handoffs and package root swaps retain the exact launcher fingerprint.
   const inspection = await inspectManagedGatewayServiceBeforeUpdate({
     ...params,
     retainedCommand: verdict?.kind === "owned" || verdict?.kind === "unresolved",
+    allowInstallRootChange: params.allowInstallRootChange && !verdict,
   });
   if (
-    params.allowInstallRootChange &&
+    (params.allowInstallRootChange ||
+      (verdict?.kind === "owned" && verdict.requiresInstallRootRefresh)) &&
     before &&
     verdict?.kind === "owned" &&
     verdict.refreshDefinition &&
@@ -124,6 +139,7 @@ export async function revalidateManagedGatewayServiceAfterUpdate(params: {
       state: params.state,
       root: verdict.root,
       retainedCommand: true,
+      allowIncompleteInspection: params.allowIncompleteInspection,
     });
     // A verified core install can replace its root before rewriting the launcher.
     // Pin the original command even when pnpm has removed its old package directory.
@@ -132,6 +148,7 @@ export async function revalidateManagedGatewayServiceAfterUpdate(params: {
         { ...before, serviceUpdateVerdict: { ...verdict, refreshDefinition: false } },
         params.state,
         retained,
+        params.allowIncompleteInspection,
       )
     ) {
       return { ...verdict, requiresInstallRootRefresh: true };
@@ -141,7 +158,9 @@ export async function revalidateManagedGatewayServiceAfterUpdate(params: {
     before &&
     verdict &&
     (verdict.kind === "owned" || verdict.kind === "unresolved") &&
-    (inspection.kind !== verdict.kind || !matchesStoppedService(before, params.state, inspection))
+    !(params.allowIncompleteInspection && inspection.kind === "unavailable") &&
+    (inspection.kind !== verdict.kind ||
+      !matchesStoppedService(before, params.state, inspection, params.allowIncompleteInspection))
   ) {
     throw new GatewayServiceUpdateOwnershipError(
       inspection.kind === "unavailable" &&
@@ -263,6 +282,8 @@ type ManagedServiceStopParams = {
   shouldRestart: boolean;
   jsonMode: boolean;
   phase?: "inspect" | "prepare";
+  /** Package/helper root can differ from the inspected service during a rebind. */
+  handoffRoot?: string;
   handoffFromGateway?: (state: GatewayServiceState) => Promise<boolean>;
   expectedService?: Pick<
     PreManagedServiceStop,
@@ -270,6 +291,8 @@ type ManagedServiceStopParams = {
   >;
   allowInstallRootChange?: boolean;
   onStopped?: (state: PreManagedServiceStop) => void;
+  /** Doctor restores this same native instance after its offline repair. */
+  retainNativeIdentity?: boolean;
   assertCurrent?: () => void;
   timeoutMs?: number;
 };
@@ -328,17 +351,16 @@ async function stopManagedServiceBeforeMutableUpdate(
     assertNative?.();
     assertExecutor();
   };
-  // A Linux systemd scope changes cgroup ownership, not Unix ancestry. Reprove
-  // the exact current handoff lease at each boundary that can stop its ancestor.
+  // Detached helpers can retain Gateway ancestry or inherited service metadata.
+  // Reprove their current handoff lease at every boundary that can stop the Gateway.
   const resolveAncestryBlock = async (state: GatewayServiceState) => {
     const blockMessage = gatewayMaintenanceBlockMessage(state, params.root);
     if (
       !blockMessage ||
-      ((params.phase === "inspect" || process.platform === "linux") &&
-        (await isCurrentManagedServiceUpdateHandoffProcess({
-          root: params.root,
-          runId: params.updateRun?.runId,
-        })))
+      (await isCurrentManagedServiceUpdateHandoffProcess({
+        root: params.handoffRoot ?? params.root,
+        runId: params.updateRun?.runId,
+      }))
     ) {
       return undefined;
     }
@@ -359,35 +381,49 @@ async function stopManagedServiceBeforeMutableUpdate(
   let service: ReturnType<typeof resolveGatewayService> | undefined;
   let serviceState: GatewayServiceState;
   try {
-    service = resolveGatewayService();
-    serviceState = await readGatewayServiceState(service, {
-      env: serviceEnv,
-      requireEffective: true,
-      requireLoadedCommand: true,
-      validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-      timeoutMs: params.timeoutMs,
-    });
+    const inspectedService = resolveGatewayService();
+    service = inspectedService;
+    serviceState = await withCommandProcessScope(() =>
+      readGatewayServiceState(inspectedService, {
+        env: serviceEnv,
+        requireEffective: true,
+        requireLoadedCommand: true,
+        validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
+        timeoutMs: params.timeoutMs,
+      }),
+    );
     if (
       process.platform === "win32" &&
       serviceState.runtime?.inspectionFailure?.timeoutMs !== undefined
     ) {
       // Re-read the definition too: a timed-out snapshot cannot grant service ownership.
-      serviceState = await readGatewayServiceState(service, {
-        env: serviceEnv,
-        requireEffective: true,
-        validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-        timeoutMs: params.timeoutMs,
-      });
+      serviceState = await withCommandProcessScope(() =>
+        readGatewayServiceState(inspectedService, {
+          env: serviceEnv,
+          requireEffective: true,
+          validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
+          timeoutMs: params.timeoutMs,
+        }),
+      );
     }
   } catch (err) {
+    if (hasCommandProcessCleanupError(err)) {
+      throw err;
+    }
     assertCurrent();
     if (err instanceof GatewayServiceUpdateOwnershipError && service) {
-      const available = await service
-        .isLoaded({ env: serviceEnv, timeoutMs: params.timeoutMs })
-        .then(
-          () => true,
-          () => false,
-        );
+      const inspectedService = service;
+      const available = await withCommandProcessScope(() =>
+        inspectedService.isLoaded({ env: serviceEnv, timeoutMs: params.timeoutMs }),
+      ).then(
+        () => true,
+        (error: unknown) => {
+          if (hasCommandProcessCleanupError(error)) {
+            throw error;
+          }
+          return false;
+        },
+      );
       assertCurrent();
       if (available) {
         return { ...uninspected, serviceMutationAllowed: false, blockMessage: err.message };
@@ -403,12 +439,15 @@ async function stopManagedServiceBeforeMutableUpdate(
     });
   }
   assertCurrent();
-  const serviceUpdateVerdict = await revalidateManagedGatewayServiceAfterUpdate({
-    root: params.root,
-    state: serviceState,
-    preManagedServiceStop: params.expectedService,
-    allowInstallRootChange: params.allowInstallRootChange,
-  });
+  const serviceUpdateVerdict = await withCommandProcessScope(() =>
+    revalidateManagedGatewayServiceAfterUpdate({
+      root: params.root,
+      state: serviceState,
+      preManagedServiceStop: params.expectedService,
+      allowInstallRootChange:
+        params.allowInstallRootChange ?? params.updateInstallKind === "package",
+    }),
+  );
   assertCurrent();
   if (params.phase) {
     // Admission pins the definition; post-update ownership permits authorized refresh.
@@ -417,16 +456,20 @@ async function stopManagedServiceBeforeMutableUpdate(
   if (serviceUpdateVerdict.kind === "unavailable") {
     return unavailableServiceState(serviceUpdateVerdict);
   }
-  const inspected = {
+  const inspected: PreManagedServiceStop = {
     stopped: false,
     inspected: true,
     runtimeInspected: ["running", "stopped"].includes(serviceState.runtime?.status ?? ""),
     running: serviceState.running,
-    offline: await isManagedGatewayServiceOffline(service, serviceState, params.timeoutMs),
+    ...(typeof serviceState.runtime?.pid === "number"
+      ? { servicePid: serviceState.runtime.pid }
+      : {}),
+    offline: await withCommandProcessScope(() => isManagedGatewayServiceOffline(serviceState)),
     serviceEnv: serviceState.env,
     serviceDefinitionEnv:
       resolveManagedGatewayServiceCommand(serviceState.command)?.environment ?? {},
     serviceNodeRunner: resolveManagedServiceNodeRunner(serviceState.command),
+    servicePort: parseTcpPortFromArgs(serviceState.command?.programArguments) ?? undefined,
     ...(process.platform === "linux"
       ? { serviceManagerUid: observedSystemdManagerUid(serviceState) }
       : {}),
@@ -542,6 +585,43 @@ async function stopManagedServiceBeforeMutableUpdate(
     if (currentBlockMessage) {
       throw new UpdatePreMutationError("managed-service-preflight", currentBlockMessage);
     }
+    if (
+      params.retainNativeIdentity &&
+      process.platform === "linux" &&
+      service.readCommand === readSystemdServiceExecStart
+    ) {
+      const installation = currentState.systemdInstallation;
+      const target =
+        installation?.kind === "system"
+          ? installation.system
+          : installation?.kind === "user" || installation?.kind === "dueling"
+            ? installation.user
+            : undefined;
+      if (!target) {
+        throw new Error("The systemd service identity could not be captured before stopping.");
+      }
+      try {
+        inspected.serviceSystemdIdentity = await captureSystemdServiceIdentity({
+          env: currentState.env,
+          target: { ...target, unitPath: currentState.command?.sourcePath ?? target.unitPath },
+          managerUid: observedSystemdManagerUid(currentState),
+          timeoutMs: params.timeoutMs,
+        });
+      } catch (error) {
+        assertCurrent();
+        if (hasCommandProcessCleanupError(error) || findServiceOwnershipRefusal(error)) {
+          throw error;
+        }
+        const message = `Gateway restoration identity could not be inspected; the managed service was not stopped. ${error instanceof ServiceInspectionError ? error.message : "Run openclaw gateway status --deep to inspect the native service manager."}`;
+        return {
+          ...inspected,
+          serviceMutationAllowed: false,
+          serviceMutationSkipMessage: message,
+          serviceUpdateVerdict: { kind: "unavailable", message },
+        };
+      }
+      assertCurrent();
+    }
     stoppedAtMs = Date.now();
     if (params.updateRun) {
       recordUpdateRunPhase(params.updateRun.runId, "activating", undefined, {
@@ -552,6 +632,9 @@ async function stopManagedServiceBeforeMutableUpdate(
       env: currentState.env,
       stdout: params.jsonMode ? JSON_MODE_SERVICE_STDOUT : process.stdout,
       assertCurrent,
+      ...(updateRun
+        ? { updateHandoff: { root: params.handoffRoot ?? params.root, runId: updateRun.runId } }
+        : {}),
       // Native stop may unload the service before a later port check fails.
       onMutation: () => params.onStopped?.({ ...inspected, stopped: true, stoppedAtMs }),
     });

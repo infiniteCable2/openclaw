@@ -13,13 +13,9 @@ import { resolveStableNodePath } from "./stable-node-path.js";
 import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
-import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
-import {
-  resolveUpdateDoctorExecutionPolicy,
-  resolveUpdateInstallSurface,
-  runGatewayUpdate,
-  runGatewayUpdatePreflight,
-} from "./update-runner.js";
+import { expectCancelledGitCandidateCleanup } from "./update-runner-git-candidate.test-support.js";
+import { resolveUpdateInstallSurface } from "./update-runner-install-surface.js";
+import { runGatewayUpdate } from "./update-runner.js";
 
 const { runCommandWithTimeout } = processExec;
 const execFileSyncMock = vi.hoisted(() => vi.fn(() => "/tmp/openclaw-test-global-npmrc\n"));
@@ -55,86 +51,6 @@ function createRunner(responses: Record<string, CommandResponse>) {
   };
   return { runner, calls };
 }
-
-describe("resolveUpdateDoctorExecutionPolicy", () => {
-  it("keeps fix mode when service repair is authorized", () => {
-    expect(
-      resolveUpdateDoctorExecutionPolicy({
-        targetVersion: "2026.4.1",
-        allowGatewayServiceRepair: true,
-      }),
-    ).toEqual({ fix: true });
-  });
-
-  it("uses the external policy for targets that support it", () => {
-    for (const targetVersion of ["2026.4.25-beta.1", "2026.4.25-beta.11", "2026.4.25"]) {
-      expect(
-        resolveUpdateDoctorExecutionPolicy({
-          targetVersion,
-          allowGatewayServiceRepair: false,
-        }),
-      ).toEqual({ fix: true, serviceRepairPolicy: "external" });
-    }
-  });
-
-  it("does not run fix mode on older targets that cannot honor ownership", () => {
-    expect(
-      resolveUpdateDoctorExecutionPolicy({
-        targetVersion: "2026.4.24",
-        allowGatewayServiceRepair: false,
-      }),
-    ).toEqual({ fix: false });
-  });
-
-  it.each([
-    {
-      name: "authorized service repair",
-      targetVersion: "2026.4.1",
-      allowGatewayServiceRepair: true,
-      expectedPolicy: null,
-    },
-    {
-      name: "an older target without service repair",
-      targetVersion: "2026.4.24",
-      allowGatewayServiceRepair: false,
-      expectedPolicy: null,
-    },
-    {
-      name: "a supported target without service repair",
-      targetVersion: "2026.4.25",
-      allowGatewayServiceRepair: false,
-      expectedPolicy: "external",
-    },
-  ])(
-    "passes the selected Doctor policy to a real child for $name",
-    async ({ targetVersion, allowGatewayServiceRepair, expectedPolicy }) => {
-      const policy = resolveUpdateDoctorExecutionPolicy({
-        targetVersion,
-        allowGatewayServiceRepair,
-      });
-      const result = await withEnvAsync({ OPENCLAW_SERVICE_REPAIR_POLICY: "external" }, () =>
-        runCommandWithTimeout(
-          [
-            process.execPath,
-            "-e",
-            "process.stdout.write(JSON.stringify(process.env.OPENCLAW_SERVICE_REPAIR_POLICY ?? null))",
-          ],
-          {
-            timeoutMs: 5000,
-            env: buildUpdateDoctorEnv({
-              allowGatewayServiceRepair,
-              allowGatewayActivation: false,
-              serviceRepairPolicy: policy.serviceRepairPolicy,
-            }),
-          },
-        ),
-      );
-
-      expect(result.code).toBe(0);
-      expect(result.stdout).toBe(JSON.stringify(expectedPolicy));
-    },
-  );
-});
 
 describe("runGatewayUpdate", () => {
   const preflightPrefixPattern = /(?:openclaw-update-preflight-|ocu-pf-)/;
@@ -585,78 +501,14 @@ describe("runGatewayUpdate", () => {
   }
 
   it.each(["build", "locked worktree creation"] as const)(
-    "cancels preflight %s and removes its Git worktree before returning",
+    "settles cancelled candidate %s and removes its Git worktree before returning",
     async (phase) => {
-      const { localRoot, baseSha, targetSha } = await createTrackedGitFixture(false);
-      const controller = new AbortController();
-      const stopped = new Error("preflight owner stopped");
-      let buildResult: Awaited<ReturnType<typeof runCommandWithTimeout>> | undefined;
-      let worktree: string | undefined;
-      const commandSpy = vi
-        .spyOn(processExec, "runCommandWithTimeout")
-        .mockImplementation(async (argv, optionsOrTimeout) => {
-          const options =
-            typeof optionsOrTimeout === "number"
-              ? { timeoutMs: optionsOrTimeout }
-              : optionsOrTimeout;
-          if (argv[0] !== "pnpm") {
-            const result = await runCommandWithTimeout(argv, options);
-            if (
-              phase === "locked worktree creation" &&
-              argv.includes("worktree") &&
-              argv.includes("add")
-            ) {
-              worktree = argv.at(-2);
-              assert.ok(worktree);
-              // Git can retain this lock when creation is forcibly terminated during checkout.
-              await runRealGit(worktree, "worktree", "lock", "--reason", "initializing", worktree);
-              controller.abort(stopped);
-            }
-            return result;
-          }
-          if (argv[1] === "build") {
-            worktree = options.cwd;
-            buildResult = await runCommandWithTimeout(
-              [
-                process.execPath,
-                "-e",
-                'process.stdout.write("ready\\n"); setInterval(() => {}, 1000)',
-              ],
-              { ...options, onOutputChunk: () => controller.abort(stopped) },
-            );
-            return buildResult;
-          }
-          return {
-            stdout: argv[1] === "--version" ? PNPM_VERSION : "",
-            stderr: "",
-            code: 0,
-            signal: null,
-            killed: false,
-            termination: "exit",
-            noOutputTimedOut: false,
-          };
-        });
-      try {
-        await expect(
-          runGatewayUpdatePreflight(
-            localRoot,
-            5000,
-            { mode: "tracked", upstreamRef: "origin/main", upstreamSha: targetSha },
-            controller.signal,
-          ),
-        ).rejects.toBe(stopped);
-      } finally {
-        commandSpy.mockRestore();
-      }
-      if (phase === "build") {
-        expect(buildResult?.termination).toBe("signal");
-      }
-      assert.ok(worktree);
-      expect(await pathExists(path.dirname(worktree))).toBe(false);
-      expect(await runRealGit(localRoot, "worktree", "list", "--porcelain")).not.toContain(
-        worktree,
-      );
-      expect(await runRealGit(localRoot, "rev-parse", "HEAD")).toBe(baseSha);
+      await expectCancelledGitCandidateCleanup({
+        phase,
+        fixture: await createTrackedGitFixture(false),
+        pnpmVersion: PNPM_VERSION,
+        runRealGit,
+      });
     },
   );
 
@@ -3095,7 +2947,7 @@ describe("runGatewayUpdate", () => {
 
     expect(result).toMatchObject({
       status: "skipped",
-      mode: "unknown",
+      mode: "npm",
       root: pkgRoot,
       reason: "package-update-requires-cli",
       before: { version: "1.0.0" },
@@ -3174,7 +3026,12 @@ describe("runGatewayUpdate", () => {
             doctorRan = true;
             await fs.writeFile(stateFile, "candidate-migrated-state");
             if (failure === "doctor-throw") {
-              throw new Error("doctor crashed after migration");
+              throw Object.assign(
+                new Error(
+                  "EACCES: permission denied, open '/home/update-user/private/config.json' token=synthetic-update-secret\nsecond-line-private-detail",
+                ),
+                { code: "EACCES" },
+              );
             }
             if (failure === "doctor-error") {
               return { code: 1, stderr: "doctor failed after migration" };
@@ -3194,6 +3051,22 @@ describe("runGatewayUpdate", () => {
               : "head-verification-failed",
         recovery: { serviceRestartSafe: false, reason: "state-migration-started" },
       });
+      if (failure === "doctor-throw") {
+        const doctor = result.steps.find((step) => step.name === "openclaw doctor");
+        expect(doctor).toMatchObject({
+          exitCode: 1,
+          failureFacts: [
+            {
+              check: "openclaw doctor",
+              code: "EACCES",
+              message: expect.stringContaining("permission denied, open [redacted-path]"),
+            },
+          ],
+        });
+        expect(JSON.stringify(doctor?.failureFacts)).not.toMatch(
+          /update-user|private\/config|synthetic-update-secret|second-line-private-detail/,
+        );
+      }
       expect(await fs.readFile(stateFile, "utf8")).toBe("candidate-migrated-state");
       expect(
         JSON.parse(await fs.readFile(path.join(tempDir, "dist", "build-info.json"), "utf8")),

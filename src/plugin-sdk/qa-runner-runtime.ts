@@ -1,10 +1,8 @@
 // QA runner runtime helpers expose plugin QA scenarios through the CLI command surface.
 import type { Command } from "commander";
-import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
-import {
-  loadBundledPluginManifestRegistry,
-  loadPluginManifestRegistryCore,
-} from "../plugins/manifest-registry.js";
+import { loadBundledPluginManifestRegistry } from "../plugins/manifest-registry-build.js";
+import { loadPluginManifestRegistryCore } from "../plugins/manifest-registry.js";
+import type { PluginManifestRecord } from "../plugins/manifest-registry.types.js";
 import type { OpenClawConfig } from "./config-contracts.js";
 import {
   loadBundledPluginPublicSurfaceModuleSync,
@@ -163,13 +161,15 @@ type QaRunnerTransportAdapterDefinition = {
     timeoutMs?: number;
     pollIntervalMs?: number;
   }) => Promise<void>;
-  buildAgentDelivery: (params: { target: string }) => {
+  buildAgentDelivery: (params: { target: string; threadId?: string }) => {
     channel: string;
     to?: string;
     replyChannel: string;
     replyTo: string;
+    threadId?: string;
   };
   createRuntimeEnvPatch?: () => NodeJS.ProcessEnv;
+  createRuntimePreloads?: () => readonly string[];
   prepareFlow?: (
     input: QaRunnerTransportFlowPreparationInput,
   ) => Promise<Record<string, unknown> | void>;

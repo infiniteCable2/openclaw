@@ -56,6 +56,7 @@ import { createExtensionVoiceCallVitestConfig } from "./vitest/vitest.extension-
 import { createExtensionWhatsAppVitestConfig } from "./vitest/vitest.extension-whatsapp.config.ts";
 import { createExtensionZaloVitestConfig } from "./vitest/vitest.extension-zalo.config.ts";
 import { createExtensionsVitestConfig } from "./vitest/vitest.extensions.config.ts";
+import { diagnosticForksPool } from "./vitest/vitest.forks-pool.ts";
 import { createGatewayClientVitestConfig } from "./vitest/vitest.gateway-client.config.ts";
 import { createGatewayCoreVitestConfig } from "./vitest/vitest.gateway-core.config.ts";
 import { createGatewayMethodsVitestConfig } from "./vitest/vitest.gateway-methods.config.ts";
@@ -85,6 +86,7 @@ import { createToolingIsolatedVitestConfig } from "./vitest/vitest.tooling-isola
 import { createToolingVitestConfig } from "./vitest/vitest.tooling.config.ts";
 import { createTuiVitestConfig } from "./vitest/vitest.tui.config.ts";
 import { createUiVitestConfig } from "./vitest/vitest.ui.config.ts";
+import { isUnitFastTestFile } from "./vitest/vitest.unit-fast-paths.mjs";
 import { bundledPluginDependentUnitTestFiles } from "./vitest/vitest.unit-paths.mjs";
 import { createUtilsVitestConfig } from "./vitest/vitest.utils.config.ts";
 import { createWizardVitestConfig } from "./vitest/vitest.wizard.config.ts";
@@ -148,20 +150,22 @@ function expectThreadedIsolatedRunner(config: {
   expect(testConfig.isolate).toBe(true);
   expect(testConfig.runner).toBeUndefined();
 }
-function expectForkedNonIsolatedRunner(config: {
-  test?: { pool?: unknown; isolate?: unknown; runner?: unknown };
-}) {
+function expectForkedNonIsolatedRunner(
+  config: { test?: { pool?: unknown; isolate?: unknown; runner?: unknown } },
+  pool: "forks" | typeof diagnosticForksPool = "forks",
+) {
   const testConfig = requireTestConfig(config);
-  expect(testConfig.pool).toBe("forks");
+  expect(testConfig.pool).toBe(pool);
   expect(testConfig.isolate).toBe(false);
   expect(normalizeConfigPath(testConfig.runner)).toBe("test/non-isolated-runner.ts");
 }
 
-function expectForkedIsolatedRunner(config: {
-  test?: { pool?: unknown; isolate?: unknown; runner?: unknown };
-}) {
+function expectForkedIsolatedRunner(
+  config: { test?: { pool?: unknown; isolate?: unknown; runner?: unknown } },
+  pool: "forks" | typeof diagnosticForksPool = "forks",
+) {
   const testConfig = requireTestConfig(config);
-  expect(testConfig.pool).toBe("forks");
+  expect(testConfig.pool).toBe(pool);
   expect(testConfig.isolate).toBe(true);
   expect(testConfig.runner).toBeUndefined();
 }
@@ -625,7 +629,7 @@ describe("scoped vitest configs", () => {
     expectThreadedNonIsolatedRunner(defaultUiConfig);
     expectThreadedIsolatedRunner(defaultExtensionMemoryConfig);
     expectThreadedIsolatedRunner(defaultExtensionProvidersConfig);
-    expectForkedIsolatedRunner(defaultInfraConfig);
+    expectForkedIsolatedRunner(defaultInfraConfig, diagnosticForksPool);
     expectForkedIsolatedRunner(defaultCliProcessConfig);
   });
 
@@ -690,6 +694,13 @@ describe("scoped vitest configs", () => {
     );
     expect(sharedConfig.exclude).toEqual(expect.arrayContaining(scopedIsolatedFiles));
     expect(isolatedConfig.include).toEqual(scopedIsolatedFiles);
+    for (const file of agentVitestProjectOwners.coreIsolated.include) {
+      expect(isUnitFastTestFile(file), file).toBe(false);
+      expect(
+        matchingExcludePatterns(isolatedConfig.exclude ?? [], file.replace("src/agents/", "")),
+        file,
+      ).toEqual([]);
+    }
     expect(isolatedConfig.isolate).toBe(true);
     expect(isolatedConfig.runner).toBeUndefined();
     expect(productionBoundaryConfig.include).toEqual(
@@ -763,7 +774,7 @@ describe("scoped vitest configs", () => {
   });
 
   it("serializes Slack extension files that share process globals", () => {
-    expectForkedNonIsolatedRunner(defaultExtensionSlackConfig);
+    expectForkedNonIsolatedRunner(defaultExtensionSlackConfig, diagnosticForksPool);
     expect(requireTestConfig(defaultExtensionSlackConfig).fileParallelism).toBe(false);
   });
 
@@ -1017,6 +1028,7 @@ describe("scoped vitest configs", () => {
     expect(testConfig.include).toEqual([
       "src/gateway/**/*.test.ts",
       "test/plugins/codex-model-catalog.gateway.test.ts",
+      "test/plugins/crabbox-allocation-authority.gateway.test.ts",
     ]);
     expect(testConfig.exclude).toContain("src/gateway/gateway.test.ts");
     expect(testConfig.exclude).toContain(
@@ -1084,7 +1096,10 @@ describe("scoped vitest configs", () => {
             .every((pattern) => /\.test\.[cm]?[jt]sx?$/u.test(pattern)),
         ).toBe(true);
         expect(projects.map((project) => project.name)).toEqual(names);
-        expect(projects.map((project) => project.pool)).toEqual(["threads", "forks"]);
+        expect(projects.map((project) => project.pool)).toEqual([
+          "threads",
+          diagnosticForksPool.name,
+        ]);
         expect(projects[0]?.setupFiles).toEqual(owner.test?.setupFiles);
         expect(projects[0]?.maxWorkers).toBe(owner.test?.maxWorkers);
         const workerConfig = await resolveConfig(

@@ -3,12 +3,50 @@ import type { SessionEntry } from "../config/sessions.js";
 import type { SessionBindingRecord } from "../infra/outbound/session-binding-service.js";
 import type { ParsedAgentSessionKey } from "../routing/session-key.js";
 import { collectCronHistoryOverflowTaskIds } from "./cron-history-retention.js";
+import type { TaskRegistryMaintenanceRead } from "./task-registry-maintenance-snapshot.js";
 import { setTaskRegistryMaintenanceRuntimeForTests } from "./task-registry.maintenance.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
 type TaskRegistryMaintenanceRuntime = Parameters<
   typeof setTaskRegistryMaintenanceRuntimeForTests
 >[0];
+
+export function createPreparedMaintenanceRead(): TaskRegistryMaintenanceRead {
+  return {
+    assertOwnerCurrent() {},
+    assertCurrent() {},
+    isTaskSettled: () => true,
+  };
+}
+
+export function createAcpSessionStoreEntry(params: {
+  sessionKey: string;
+  parentSessionKey: string;
+  mode: "persistent" | "oneshot";
+}): AcpSessionStoreEntry {
+  const acp = {
+    backend: "acpx",
+    agent: "claude",
+    runtimeSessionName: `${params.sessionKey}:runtime`,
+    mode: params.mode,
+    state: "idle",
+    lastActivityAt: Date.now(),
+  } as const;
+  return {
+    cfg: {},
+    storePath: "/tmp/openclaw-test-sessions.json",
+    sessionKey: params.sessionKey,
+    storeSessionKey: params.sessionKey,
+    entry: {
+      sessionId: `${params.sessionKey}:session`,
+      updatedAt: Date.now(),
+      spawnedBy: params.parentSessionKey,
+      acp,
+    },
+    acp,
+    storeReadFailed: false,
+  };
+}
 
 export function createTaskRegistryMaintenanceHarness(params: {
   tasks: TaskRecord[];
@@ -20,6 +58,7 @@ export function createTaskRegistryMaintenanceHarness(params: {
   activeCronJobIds?: string[];
   activeRunIds?: string[];
   activeAcpSessionKeys?: string[];
+  hasActiveAcpTurn?: TaskRegistryMaintenanceRuntime["hasActiveAcpTurn"];
   durableCronTaskRows?: Record<string, TaskRecord[]>;
   runtimeAuthoritative?: boolean;
   hasSubagentTaskOwner?: TaskRegistryMaintenanceRuntime["hasSubagentTaskOwner"];
@@ -66,7 +105,8 @@ export function createTaskRegistryMaintenanceHarness(params: {
     isCronJobActive: (jobId: string) => activeCronJobIds.has(jobId),
     getAgentRunContext: (runId: string) =>
       activeRunIds.has(runId) ? { sessionKey: "main" } : undefined,
-    hasActiveAcpTurn: (sessionKey: string) => activeAcpSessionKeys.has(sessionKey),
+    hasActiveAcpTurn:
+      params.hasActiveAcpTurn ?? ((sessionKey: string) => activeAcpSessionKeys.has(sessionKey)),
     hasSubagentTaskOwner: params.hasSubagentTaskOwner,
     parseAgentSessionKey: (sessionKey: string | null | undefined): ParsedAgentSessionKey | null => {
       if (!sessionKey) {
@@ -89,6 +129,8 @@ export function createTaskRegistryMaintenanceHarness(params: {
     deleteTaskRecordById: (taskId: string) => currentTasks.delete(taskId),
     ensureTaskRegistryReady: () => {},
     getTaskById: (taskId: string) => currentTasks.get(taskId),
+    getTaskRegistryMaintenanceTask: (_read, taskId: string) => currentTasks.get(taskId),
+    prepareTaskRegistryRead: async () => createPreparedMaintenanceRead(),
     listTaskRecords: () => Array.from(currentTasks.values()),
     getTaskRegistryMaintenanceSnapshot: () => {
       const snapshotTasks = Array.from(currentTasks.values());
@@ -221,6 +263,8 @@ export function configureTaskRegistryMaintenanceRuntimeForTest(params: {
     deleteTaskRecordById: (taskId: string) => params.currentTasks.delete(taskId),
     ensureTaskRegistryReady: () => {},
     getTaskById: (taskId: string) => params.currentTasks.get(taskId),
+    getTaskRegistryMaintenanceTask: (_read, taskId: string) => params.currentTasks.get(taskId),
+    prepareTaskRegistryRead: async () => createPreparedMaintenanceRead(),
     listTaskRecords: listSnapshotTasks,
     getTaskRegistryMaintenanceSnapshot: () => {
       const snapshotTasks = listSnapshotTasks();

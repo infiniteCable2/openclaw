@@ -2,7 +2,8 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { getReplyPayloadMetadata } from "../../../auto-reply/reply-payload.js";
-import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
+import { parseReplyDirectives } from "../../../auto-reply/reply/reply-directives.js";
+import { resolveRawAssistantAnswerText } from "../../../shared/assistant-answer-text.js";
 import { extractEmbeddedAssistantText } from "../../embedded-agent-utils.js";
 import {
   isStrictAgenticSupportedProviderModel,
@@ -27,6 +28,8 @@ export type IncompleteTurnAttempt = Pick<
   | "toolAudioAsVoice"
   | "toolTrustedLocalMedia"
   | "hasToolMediaBlockReply"
+  | "sourceReplyDelivered"
+  | "sourceReplyDeliveryState"
   | "didDeliverSourceReplyViaMessageTool"
   | "messagingToolSourceReplyPayloads"
   | "didSendViaMessagingTool"
@@ -45,48 +48,13 @@ export type IncompleteTurnAttempt = Pick<
   Partial<Pick<EmbeddedRunAttemptResult, "acceptedSessionSpawns">>;
 
 function readAssistantSnapshotText(message: AgentMessage): string {
-  return message.role === "assistant" ? extractEmbeddedAssistantText(message).trim() : "";
+  return message.role === "assistant"
+    ? parseReplyDirectives(extractEmbeddedAssistantText(message)).text.trim()
+    : "";
 }
 
 function normalizeVisibleTextForComparison(text: string): string {
   return text.trim().replace(/\s+/g, " ");
-}
-
-function collectPreToolCommentaryTexts(params: {
-  messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"];
-}): string[] {
-  const latestUserIndex = params.messagesSnapshot.findLastIndex(
-    (message) => message.role === "user",
-  );
-  const currentMessages = params.messagesSnapshot.slice(latestUserIndex + 1);
-  const lastToolResultIndex = currentMessages.findLastIndex(
-    (message) => message.role === "toolResult",
-  );
-  if (lastToolResultIndex < 0) {
-    return [];
-  }
-  return currentMessages
-    .slice(0, lastToolResultIndex)
-    .map(readAssistantSnapshotText)
-    .filter(Boolean);
-}
-
-/** True when text is exactly one or the ordered aggregate of current-turn pre-tool commentary. */
-export function isTextExplainedByPreToolCommentary(params: {
-  messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"];
-  text: string;
-}): boolean {
-  const candidate = normalizeVisibleTextForComparison(params.text);
-  if (!candidate) {
-    return false;
-  }
-  const commentary = collectPreToolCommentaryTexts(params);
-  if (commentary.length === 0) {
-    return false;
-  }
-  const explained = new Set(commentary.map(normalizeVisibleTextForComparison));
-  explained.add(normalizeVisibleTextForComparison(commentary.join("\n\n")));
-  return explained.has(candidate);
 }
 
 /** Keeps pre-tool commentary distinct from a composed answer at both recovery gates. */
@@ -103,7 +71,7 @@ export function hasComposedVisibleAnswerAfterSettledTools(params: {
     (message) => message.role === "toolResult",
   );
   if (lastToolResultIndex < 0) {
-    return params.assistantTexts.some((text) => text.trim().length > 0);
+    return params.assistantTexts.some((text) => parseReplyDirectives(text).text.trim().length > 0);
   }
   if (
     currentMessages
@@ -112,12 +80,17 @@ export function hasComposedVisibleAnswerAfterSettledTools(params: {
   ) {
     return true;
   }
+  const commentary = currentMessages
+    .slice(0, lastToolResultIndex)
+    .map(readAssistantSnapshotText)
+    .map(normalizeVisibleTextForComparison)
+    .filter(Boolean);
+  const preToolTexts = new Set(commentary);
+  // Subscription output can aggregate several progress messages into one payload.
+  preToolTexts.add(commentary.join(" "));
   return params.assistantTexts.some((text) => {
-    const trimmed = text.trim();
-    return (
-      trimmed.length > 0 &&
-      !isTextExplainedByPreToolCommentary({ messagesSnapshot: params.messagesSnapshot, text })
-    );
+    const trimmed = normalizeVisibleTextForComparison(parseReplyDirectives(text).text);
+    return trimmed.length > 0 && !preToolTexts.has(trimmed);
   });
 }
 
@@ -126,7 +99,9 @@ export function countSettledTurnDeliveryPayloads(params: {
   payloads: EmbeddedAgentRunResult["payloads"];
   attempt: IncompleteTurnAttempt;
 }): number {
-  const hasNoAssistantText = params.attempt.assistantTexts.every((text) => !text.trim());
+  const hasNoAssistantText = params.attempt.assistantTexts.every(
+    (text) => !parseReplyDirectives(text).text.trim(),
+  );
   const hasComposedVisibleAnswer = hasComposedVisibleAnswerAfterSettledTools(params.attempt);
   const canFinalizeProviderError =
     params.attempt.settledTurnFinalizationContext && !hasComposedVisibleAnswer;
@@ -225,14 +200,6 @@ export function joinAssistantTexts(assistantTexts?: readonly string[]): string {
   return (assistantTexts ?? []).join("\n\n").trim();
 }
 
-export function hasOnlySilentAssistantReply(assistantTexts?: readonly string[]): boolean {
-  const nonEmptyTexts = (assistantTexts ?? []).filter((text) => text.trim().length > 0);
-  return (
-    nonEmptyTexts.length > 0 &&
-    nonEmptyTexts.every((text) => isSilentReplyPayloadText(text, SILENT_REPLY_TOKEN))
-  );
-}
-
 export function isReasoningOnlyAssistantTurn(message: unknown): boolean {
   if (!message || typeof message !== "object") {
     return false;
@@ -304,12 +271,18 @@ export function classifyAssistantTurn(params: {
   >;
 }) {
   const assistant = resolveCurrentAttemptAssistant(params.attempt);
-  const visibleText = joinAssistantTexts(params.attempt.assistantTexts);
+  const output = parseReplyDirectives(
+    assistant
+      ? resolveRawAssistantAnswerText(assistant)
+      : joinAssistantTexts(params.attempt.assistantTexts),
+  );
+  const visibleText = output.text.trim();
   const reasoningOnly = isReasoningOnlyAssistantTurn(assistant);
   const nonVisibleEligibleForSilentReply =
     params.payloadCount === 0 &&
     visibleText.length === 0 &&
     assistant?.stopReason !== "error" &&
+    assistant?.stopReason !== "aborted" &&
     !isIncompleteTerminalAssistantTurn({
       hasAssistantVisibleText: false,
       lastAssistant: assistant,
@@ -317,6 +290,7 @@ export function classifyAssistantTurn(params: {
   return {
     assistant,
     visibleText,
+    silent: output.isSilent,
     reasoningOnly,
     emptyResponse: nonVisibleEligibleForSilentReply && !reasoningOnly,
     nonVisibleEligibleForSilentReply,

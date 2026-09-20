@@ -153,7 +153,9 @@ Agent display names, emoji, and avatars belong to each agent's `identity` block 
 - `seamColor`: operator accent color for native app UI chrome (Talk Mode bubble
   tint, etc.). The Control UI user accent (`ui.prefs.accent`) takes precedence in
   `talk.config` payloads and the macOS app's config snapshot. If neither is set,
-  the theme default applies.
+  the theme default applies. `prefs.accent` also accepts `"theme"` to explicitly
+  select the Control UI theme palette without inheriting `seamColor`; `talk.config`
+  omits its hex-only accent in that case.
 - `prefs`: cross-device operator preferences. This is the canonical home so agents can
   change them through the approval gate and every Control UI client stays in
   sync; browsers mirror the values into local storage for instant boot. An
@@ -199,7 +201,8 @@ a Gateway connection keep TTL-only tokens.
 ```
 
 - `desktop.host.enabled`: advertises **This machine** as a desktop source after
-  the Gateway restarts.
+  the Gateway restarts. Turning Host Desktop off in Labs writes `enabled: false`
+  and preserves its managed mode, port, and password-file settings.
 - `desktop.host.managed`: Linux only. Starts a gateway-supervised, loopback-only
   TigerVNC/XFCE desktop lazily on the first observation or computer discovery.
   Stops it after the desktop session's linger period when no observer or active
@@ -255,12 +258,36 @@ it on other network interfaces according to macOS Sharing settings.
 
 ### Paired node desktops
 
+Upgrades preserve desktop access that was disabled by removing `desktop.stream`
+from the Gateway allow list. Those existing desktop approvals require approval
+again when the node reconnects. Other node capabilities and device tokens stay
+intact, and new nodes use the enabled default. Existing explicit allow and deny
+entries remain respected. The one-time transition is recorded in the existing
+shared SQLite migration ledger; it does not rewrite your config. Doctor applies
+the same preservation when importing older pairing files.
+
 A paired macOS, Windows, or Linux node can expose its own desktop in the same
-Control UI Desktop panel. This path is intentionally off by default and always
+Control UI Desktop panel and **Systems**. Desktop sharing is enabled by default and always
 uses an existing node-local RFB server on `127.0.0.1`; the Gateway never asks a
 node to connect to a caller-selected host or port.
 
-On the node machine, enable the desktop source and configure attach mode:
+In the macOS app, use **Settings → This Mac → Capabilities → Desktop sharing**.
+This controls the Mac running the app, even when its dashboard connects to a
+remote Gateway. Changing it automatically reconnects the node. **Computer
+Control** controls agent screenshots and input separately; **Keep computer
+awake** controls idle sleep. Desktop sharing does not enable macOS Screen
+Sharing: turn that on under **System Settings → General → Sharing** first.
+
+The [Tauri companion](/platforms/linux#desktop-sharing) has the same sharing
+switch under **Settings → This computer → Capabilities** (**This Mac** on macOS).
+It uses the local CLI to connect a desktop-only node to its Primary Gateway.
+
+CLI nodes use `desktop.host.enabled` in their local config. An absent setting
+defaults to enabled; an explicit `false` disables sharing. Existing explicit
+disable settings remain disabled after an update. An explicit choice in the
+desktop app takes precedence over that computer's local config.
+
+To use a nondefault port or password file, configure attach mode on the node:
 
 ```json5
 {
@@ -274,26 +301,14 @@ On the node machine, enable the desktop source and configure attach mode:
 }
 ```
 
-Restart the node host after changing this config. `managed: true` is a Gateway
+Restart CLI node hosts after changing their config. `managed: true` is a Gateway
 host feature and does not start a managed desktop inside a node host; paired
 nodes must already have a loopback RFB server.
 
-On the Gateway, explicitly arm the dangerous command:
-
-```json5
-{
-  gateway: {
-    nodes: {
-      commands: {
-        allow: ["desktop.stream"],
-        // deny: ["desktop.stream"], // deny always wins
-      },
-    },
-  },
-}
-```
-
-The node reconnect advertises `desktop.stream` as a pairing-surface upgrade.
+The Gateway permits `desktop.stream` for an approved desktop node without an
+extra `gateway.nodes.commands.allow` entry. Explicit
+`gateway.nodes.commands.deny` entries still take precedence.
+After updating an existing node, its reconnect can advertise `desktop.stream` as a pairing-surface upgrade.
 Inspect `openclaw nodes pending`, then approve the new request with
 `openclaw nodes approve <requestId>`. The node appears in the Desktop picker
 only while it is connected and the effective approved command remains allowed.
@@ -315,14 +330,16 @@ in URLs, logs, or RPC results.
 Desktop bytes use a dedicated outbound binary WebSocket from the node. The
 normal node invoke remains only as the cancellable lifecycle handle and never
 carries framebuffer data. Reconnecting or changing the node's pairing
-generation closes active relays. To disarm the feature, remove
-`desktop.stream` from `commands.allow` or add it to `commands.deny`. With the
+generation closes active relays. To disarm the feature, turn off **Desktop
+sharing** in the Mac app, set `desktop.host.enabled: false` on a CLI node, or add
+`desktop.stream` to the Gateway's `commands.deny`. With the
 default hybrid reload mode, Gateway command-policy changes apply to connected
 nodes without a Gateway restart or node reconnect.
 
-If the node is missing from the picker, verify all four gates: the node-local
-desktop config, the loopback RFB listener, the approved pairing update, and the
-Gateway allow/deny policy. Restart the node host after changing its desktop
+If the node is missing from the picker, check that desktop sharing is enabled,
+the pairing update is approved, and Gateway policy does not deny the command.
+If the viewer cannot connect, verify the node's loopback RFB listener.
+Restart CLI node hosts after changing their desktop
 config, then check `openclaw nodes pending` for a widened declaration. Gateway
 policy changes apply within the existing pairing approval.
 

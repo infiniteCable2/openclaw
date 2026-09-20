@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { preparePublicUpdateFailureIdentifiers } from "./update-failure-public-identifiers.js";
 import { prepareUpdateFailureReport } from "./update-failure-report-prepare.js";
+
+// Prepare the real catalog/worker prerequisites before individual test deadlines.
+await preparePublicUpdateFailureIdentifiers();
 
 const context = { env: {}, stateDir: "/report-test-state" };
 
@@ -14,6 +18,43 @@ function prepareDiagnosticReport(reason: string) {
 }
 
 describe("update report diagnostic command boundary", () => {
+  it("includes every named lint finding using the existing public diagnostic redaction", async () => {
+    const findings = Array.from({ length: 40 }, (_, index) => ({
+      checkId: "core/doctor/security",
+      severity: index === 0 ? "error" : "warning",
+      message: "EACCES: permission denied",
+      requirement: `private-customer-requirement-${index}`,
+    }));
+    const report = await prepareUpdateFailureReport(
+      {
+        attemptId: "complete-lint-inventory",
+        result: {
+          status: "error",
+          mode: "npm",
+          reason: "doctor-failed",
+          durationMs: 1,
+          steps: [
+            {
+              name: "candidate doctor lint",
+              command: "doctor --lint --json",
+              cwd: "/candidate",
+              durationMs: 1,
+              exitCode: 1,
+              doctorLintFindings: findings,
+            },
+          ],
+        },
+      },
+      context,
+    );
+    expect(
+      report.body.match(/Doctor lint (?:error|warning) \[core\/doctor\/security\]/gu),
+    ).toHaveLength(40);
+    expect(report.body).toContain("EACCES");
+    expect(report.body).toContain("Permission denied");
+    expect(report.body).not.toContain("private-customer-requirement");
+  });
+
   it.each([
     { source: "stderr", diagnostic: true },
     { source: "stderr", diagnostic: false },
@@ -200,12 +241,13 @@ describe("update report diagnostic command boundary", () => {
   });
 
   it.each(
-    (["check", "code", "pluginId", "affectedKey"] as const).flatMap((field) =>
+    (["check", "code", "pluginId", "affectedKey", "errorName"] as const).flatMap((field) =>
       [
         "private-host.example",
         "private-host.example:8123",
         "10.20.30.40",
         "mcp.servers.private-host.example",
+        "PrivateTenantError",
       ].map((host) => ({
         field,
         host,
@@ -226,7 +268,13 @@ describe("update report diagnostic command boundary", () => {
               cwd: "",
               durationMs: 0,
               exitCode: 1,
-              failureFacts: [{ check: "readyz", code: "readyz-unhealthy", [field]: host }],
+              failureFacts: [
+                {
+                  check: "readyz",
+                  code: field === "errorName" ? "private-code" : "readyz-unhealthy",
+                  [field]: host,
+                },
+              ],
             },
           ],
         },
@@ -327,32 +375,58 @@ describe("update report diagnostic command boundary", () => {
 
   it.each([
     { service: undefined, outcome: "verified safe to restart" },
-    { service: "healthy", outcome: "verified safe to restart" },
+    { service: "healthy", outcome: "Gateway serving 2026.9.4; health verified" },
     {
       service: "failed",
+      reason: "restart-unhealthy",
       outcome:
-        "runtime files verified; Gateway restart failed. Run `openclaw gateway status --deep` before restarting manually.",
+        "runtime files verified; Gateway health failed (restart-unhealthy). Run `openclaw gateway status --deep` to check the serving version and readiness.",
     },
-  ] as const)(
-    "reports the observed recovery service outcome: $service",
-    async ({ service, outcome }) => {
-      const report = await prepareUpdateFailureReport(
-        {
-          attemptId: "recovery-service-outcome",
-          result: {
-            mode: "npm",
-            status: "error",
-            reason: "runtime-verification-failed",
-            recovery: { serviceRestartSafe: true, version: "2026.9.4", service },
-            steps: [],
-            durationMs: 1,
+    {
+      service: "healthy",
+      packageRollbackVerified: true,
+      outcome: "package rollback verified; Gateway serving 2026.9.4; health verified",
+    },
+    {
+      service: "failed",
+      packageRollbackVerified: true,
+      reason: "channel-errors",
+      outcome:
+        "package rollback verified (2026.9.4); Gateway health failed (channel-errors). Run `openclaw gateway status --deep` to check the serving version and readiness.",
+    },
+    {
+      service: undefined,
+      packageRollbackVerified: true,
+      reason: "gateway-readiness-pending",
+      outcome:
+        "package rollback verified (2026.9.4); Gateway health unverified (gateway-readiness-pending). Run `openclaw gateway status --deep` to check the serving version and readiness.",
+    },
+  ] as const)("reports the observed recovery service outcome: $service", async (testCase) => {
+    const { service, outcome } = testCase;
+    const report = await prepareUpdateFailureReport(
+      {
+        attemptId: "recovery-service-outcome",
+        result: {
+          mode: "npm",
+          status: "error",
+          reason: "runtime-verification-failed",
+          recovery: {
+            serviceRestartSafe: true,
+            version: "2026.9.4",
+            service,
+            ...("reason" in testCase ? { reason: testCase.reason } : {}),
+            ...("packageRollbackVerified" in testCase
+              ? { packageRollbackVerified: testCase.packageRollbackVerified }
+              : {}),
           },
+          steps: [],
+          durationMs: 1,
         },
-        context,
-      );
-      expect(report.body).toContain(`- Recovery outcome: ${outcome}\n`);
-    },
-  );
+      },
+      context,
+    );
+    expect(report.body).toContain(`- Recovery outcome: ${outcome}\n`);
+  });
 
   it.each([
     'Command failed: python -c "private-customer-text"',
@@ -468,7 +542,7 @@ describe("update report diagnostic command boundary", () => {
     expect(report.body).toContain("- Update target: [redacted-command]\n");
   });
 
-  it("uses the failure code when a phase label is executable text", async () => {
+  it("withholds an executable phase label without substituting the failure code", async () => {
     const report = await prepareUpdateFailureReport(
       {
         attemptId: "structured-phase",
@@ -490,7 +564,8 @@ describe("update report diagnostic command boundary", () => {
       },
       context,
     );
-    expect(report.body).toContain("- Failed phase: doctor-failed\n");
+    expect(report.body).toContain("- Failed phase: [redacted-command]\n");
+    expect(report.body).toContain("- Reason code: doctor-failed\n");
     expect(report.body).not.toContain("openclaw doctor");
   });
 

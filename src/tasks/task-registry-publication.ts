@@ -2,20 +2,23 @@ import { clearTaskActivity, flushTaskActivity } from "./task-registry-activity.j
 import {
   cloneTaskRecord,
   cloneTaskRecordForObserver,
-  normalizeTaskTimestamps,
+  normalizeTaskRecord,
 } from "./task-registry-records.js";
 import {
-  addOwnerKeyIndex,
-  addParentFlowIdIndex,
-  addRelatedSessionKeyIndex,
   bumpTaskRegistryRevision,
-  deleteOwnerKeyIndex,
-  deleteParentFlowIdIndex,
-  deleteRelatedSessionKeyIndex,
   emitTaskRegistryObserverEvent,
-  rebuildRunIdIndex,
   tasks,
 } from "./task-registry-state.js";
+import {
+  addOwnerKeyIndex,
+  deleteOwnerKeyIndex,
+  addParentFlowIdIndex,
+  deleteParentFlowIdIndex,
+  addRelatedSessionKeyIndex,
+  deleteRelatedSessionKeyIndex,
+  updateRunIdIndex,
+  recordTaskRegistryProjectionWrite,
+} from "./task-registry.process-state.js";
 import { isTerminalTaskStatus, type TaskRecord } from "./task-registry.types.js";
 
 /** Publishes a record already committed by a cross-owner shared-state transaction. */
@@ -23,7 +26,7 @@ export function publishTaskRecordAfterAtomicStore(
   record: TaskRecord,
   options?: { deferredObserverEvents?: Array<() => void> },
 ): TaskRecord {
-  const next = normalizeTaskTimestamps(cloneTaskRecord(record));
+  const next = normalizeTaskRecord(cloneTaskRecord(record));
   const current = tasks.get(next.taskId);
   const becomesTerminal =
     current !== undefined &&
@@ -37,7 +40,9 @@ export function publishTaskRecordAfterAtomicStore(
     deleteParentFlowIdIndex(next.taskId, current);
     deleteRelatedSessionKeyIndex(next.taskId, current);
   }
+  const indexedCurrent = tasks.get(next.taskId);
   tasks.set(next.taskId, next);
+  recordTaskRegistryProjectionWrite("task", next.taskId);
   bumpTaskRegistryRevision();
   if (becomesTerminal) {
     clearTaskActivity(next.taskId);
@@ -45,7 +50,7 @@ export function publishTaskRecordAfterAtomicStore(
   addOwnerKeyIndex(next.taskId, next);
   addParentFlowIdIndex(next.taskId, next);
   addRelatedSessionKeyIndex(next.taskId, next);
-  rebuildRunIdIndex();
+  updateRunIdIndex(indexedCurrent, next);
   const emit = () =>
     emitTaskRegistryObserverEvent(() => ({
       kind: "upserted",

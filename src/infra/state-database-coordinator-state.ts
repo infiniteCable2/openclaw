@@ -17,7 +17,7 @@ export type SourceReadScope = {
   mutation?: boolean;
   assertCurrent: () => void;
   pin: () => { release: () => void };
-  snapshot?: () => Promise<PreparedSqliteReadOnlyLocation>;
+  snapshot?: (signal?: AbortSignal) => Promise<PreparedSqliteReadOnlyLocation>;
   snapshots?: Promise<unknown>[];
 };
 

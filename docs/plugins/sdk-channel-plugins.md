@@ -300,6 +300,56 @@ raw callback string. Actor and source-message checks remain channel-owned.
       Send contexts also include `replyToIdSource` (`implicit` or `explicit`)
       when a native reply target was resolved, so payload helpers can preserve
       explicit reply tags without consuming an implicit single-use reply slot.
+
+      For payload planning, `openclaw/plugin-sdk/channel-outbound` exports
+      `createOutboundPayloadPlan(payloads, context)` for raw reply text, including
+      legacy reply/audio tags, `MEDIA:` directives, and optional Markdown-image
+      extraction. Use `createStructuredOutboundPayloadPlan(payloads)` only after
+      the producer has resolved those controls into explicit payload fields.
+      The structured planner does not reinterpret remaining text as delivery
+      directives or silence tokens. Downstream automatic-reply silence policy
+      still applies, and channels retain their opted-in presentation transforms,
+      including Markdown-image extraction. Both operations use
+      `projectOutboundPayloadPlanForDelivery(plan)` for their delivery projection.
+
+      A `final` delivery can carry a supplemental notice before the answer.
+      Use `isReplyPayloadTerminalContent(payload)` from
+      `openclaw/plugin-sdk/reply-payload` when deciding whether to complete a task.
+      It excludes reasoning, commentary, and supplemental status or TTS payloads,
+      while retaining terminal errors and host-marked command results.
+      It classifies the reply lane; it does not check content, sendability, or authority.
+
+      When cloning a host-supplied reply, use `copyReplyPayloadMetadata(source, clone)`
+      from `openclaw/plugin-sdk/reply-payload` to preserve its non-serialized runtime
+      metadata. Persisted transcript delivery facts cannot replace that metadata.
+      When recovering a payload from earlier source text, apply
+      `preserveReplyPayloadMediaSelection(current, recovered)` from
+      `openclaw/plugin-sdk/channel-outbound`.
+      This retains media and attachment choices changed by delivery modifiers, while
+      allowing text and reply intent to recover independently. Unchanged empty media
+      does not prevent transcript recovery. With unchanged media, the operation prefers
+      current prepared references over their recorded source aliases and retains distinct
+      recovered media. It preserves the candidate’s other runtime metadata.
+      After recovering or projecting fields on a normalized reply, finish with
+      `createStructuredOutboundPayloadPlan` from `openclaw/plugin-sdk/channel-outbound`.
+      This preserves literal text and the host's recorded single-use target policy.
+      Before filtering media, use `collectReplyMediaEntries(payload, projectedMediaUrls?)`
+      from `openclaw/plugin-sdk/channel-outbound` to retain each URL's attachment metadata. Filter those
+      entries together so positional names and referenced records stay with their media.
+      Entries can also carry `sourceUrls` for references staged by the host. When recording
+      delivered media, request entries for only the URLs confirmed accepted by the transport;
+      source aliases for removed or unsent media are not delivery evidence.
+
+      Streaming delivery can carry one `OutboundPayloadPlan` through the optional
+      `onPreparedBlockReply(plan, context)`, dispatcher `sendPreparedReply(kind, plan)`,
+      and adapter `deliverPrepared(plan, info)` operations. Modifiers rebuild that
+      plan from the changed payload fields without reinterpreting literal text.
+      Channel turn adapters can forward the same plan through
+      `deliverPreparedWithProviderMessageSending`, and durable inbound delivery uses
+      `deliverStructuredInboundReplyWithMessageSendContext({ ...context, plan })`.
+      Existing raw callbacks remain supported. An older adapter receives the
+      payload through its original callback; it must adopt the prepared operation
+      to avoid reparsing literal text in its own normalization code.
     </Accordion>
 
     ### Group tool-policy adapters
@@ -643,16 +693,34 @@ preserves the host's live request authority. Advertising an action through
 
 The host separately selects eligible actions and requires an active bundled or
 loader-verified official registration. A bundled artifact fallback or a plugin's
-own trust claim cannot supply registration authority. The currently enabled
-scheduled action is Discord `channel-edit`, including its existing channel and
-thread edit variants. Discord declares `writeAuthorityActions: ["channel-edit"]`;
-other action names do not gain scheduled access from this declaration.
+own trust claim cannot supply registration authority. Discord declares
+`writeAuthorityActions: ["channel-edit", "delete", "edit", "pin", "unpin"]`.
+Other action names do not gain scheduled access from this declaration.
 
-The scheduled path requires trusted operator job authority. The job's current
-execution policy and `toolsAllow`, account and target restrictions, enabled actions,
-and provider permissions still apply. The declaration cannot promote an account-mode
-job to operator authority or replace authenticated requester identity and current
-sender permission checks.
+Scheduled `channel-edit`, including its existing channel and thread edit variants,
+accepts trusted operator job authority or the account job's authenticated native
+requester. The declaration cannot promote an
+account-mode job to operator authority or replace authenticated requester identity
+and current sender permission checks.
+
+For native account edits, the host supplies its validated `requesterAccountId`
+and `requesterSenderId` with `senderIsOwner: false`. There is no current inbound
+conversation to put in `toolContext`. The adapter uses these host-provided facts
+for its normal current requester-permission checks; model arguments and the
+presence of a handoff callback cannot supply a requester identity. The host keeps
+the saved native requester separate from an earlier complete-tool-surface read
+origin. Discovery can use both facts to present configured actions, but the native
+requester does not establish read access. Jobs without usable native facts receive
+reauthorization guidance before the provider is called.
+
+Scheduled `edit`, `delete`, `pin`, and `unpin` support both trusted operator jobs and
+account jobs. An account job must use its recorded creator account and a known
+creator origin; external origins also bind it to the recorded provider. Its delivery
+destination does not supply authority. These actions also require
+the adapter's existing `providerOwnedReadGates` declaration and retain its target
+checks. Account jobs use delegated target policy; trusted jobs use operator target
+policy. The job's current execution policy and `toolsAllow`, account restrictions,
+enabled actions, and provider permissions still apply.
 
 The host evaluates current tool policy when each new scheduled message invocation
 is admitted, including global, agent, profile, and selected model-provider policy.
@@ -662,7 +730,7 @@ itself, canceling its run, or ending caller or plugin authority still blocks lat
 provider requests and retries within that operation.
 
 The host admits channel-name resolution before directory requests and retains
-the selected registration through the edit. Its preparation read scope closes
+the selected registration through the write. Its preparation read scope closes
 before the write starts, so a read completion check cannot discard an accepted
 mutation result.
 
@@ -680,7 +748,9 @@ An opted-in adapter must honor the existing
   blocks later requests; it must not cause an accepted mutation to be replayed.
 
 This optional field keeps older adapters source-compatible. An omitted or empty
-declaration leaves newly enabled scheduled administration denied. To support it,
+declaration leaves newly enabled scheduled actions denied. Existing bundled
+provider-owned interactive paths keep their admission rules. To support the new
+installed-plugin path,
 upgrade OpenClaw and the plugin, implement the request and retry checks above,
 declare only the covered actions, and load the updated registration. Existing
 direct-operator and interactive actions retain their admission rules. Upgrading

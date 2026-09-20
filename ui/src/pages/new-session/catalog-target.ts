@@ -249,7 +249,7 @@ export class CatalogTargetDiscovery {
     void owner.client
       .request<SessionsCatalogListResult>(
         "sessions.catalog.list",
-        { agentId: owner.agentId, limitPerHost: 1 },
+        { agentId: owner.agentId, metadataOnly: true },
         { signal: controller.signal },
       )
       .then(
@@ -351,7 +351,7 @@ function renderTarget(data?: NewSessionRouteData) {
     title=${ready ? t("newSession.nativeTerminalHint") : t("newSession.catalogUnavailable")}
   >
     <span class="new-session-page__target-icon" aria-hidden="true">${icons.terminal}</span>
-    <span>${label}</span>
+    <span class="new-session-page__trigger-label">${label}</span>
   </span>`;
 }
 

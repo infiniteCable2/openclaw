@@ -12,7 +12,7 @@ import {
 import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
 import {
   convertMeetingBridgeAudioForStt,
-  convertMeetingTtsAudioForBridge,
+  createMeetingTtsAudioStreamConverter,
 } from "./realtime-audio-format.js";
 import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
 import {
@@ -384,6 +384,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
         const isCurrentPlayback = () =>
           isCurrentSpeechUtterance(utterance) && !controller.signal.aborted;
         try {
+          const converter = createMeetingTtsAudioStreamConverter(
+            result.sampleRate,
+            params.config.chrome.audioFormat,
+            result.outputFormat,
+            params.platform.displayName,
+          );
           for (;;) {
             if (!isCurrentPlayback()) {
               break;
@@ -392,19 +398,17 @@ export async function startMeetingAgentRealtimeEngine(params: {
             if (!isCurrentPlayback()) {
               break;
             }
-            if (chunk.done) {
-              break;
-            }
-            if (chunk.value.byteLength === 0) {
+            // Flush the filter only at natural EOF. Cancellation must never play
+            // its retained tail, and buffered samples are not playback yet.
+            const output = chunk.done
+              ? converter.flush()
+              : converter.process(Buffer.from(chunk.value));
+            if (output.byteLength === 0) {
+              if (chunk.done) {
+                break;
+              }
               continue;
             }
-            const output = convertMeetingTtsAudioForBridge(
-              Buffer.from(chunk.value),
-              result.sampleRate,
-              params.config.chrome.audioFormat,
-              result.outputFormat,
-              params.platform.displayName,
-            );
             if (!(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback))) {
               break;
             }
@@ -417,6 +421,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
             firstSegmentChunk = false;
             firstUtteranceChunk = false;
             bytesWritten += output.byteLength;
+            if (chunk.done) {
+              break;
+            }
           }
           if (bytesWritten === 0 && isCurrentPlayback()) {
             throw new Error("TTS provider returned an empty audio stream");

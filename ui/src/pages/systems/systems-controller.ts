@@ -1,7 +1,6 @@
 import type { SystemInfoResult } from "@openclaw/gateway-protocol";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { NodeListNode } from "../../../../src/shared/node-list-types.js";
-import type { RouteId } from "../../app-route-paths.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import { hasOperatorReadAccess } from "../../app/operator-access.ts";
@@ -14,6 +13,17 @@ import {
   type SystemsInventory,
   type SystemsInventoryRow,
 } from "./systems-data.ts";
+import {
+  SYSTEMS_GATEWAY_STALE_MS,
+  SYSTEMS_NODE_STALE_MS,
+  systemMeasurements,
+  type SystemsTelemetrySample,
+} from "./systems-telemetry.ts";
+
+const TELEMETRY_SAMPLE_LIMIT = 120;
+
+export type SystemsSortMode = "name" | "online-first" | "offline-first";
+export type SystemsStatusFilter = "all" | "online" | "offline";
 
 /** The route cache owns selection; the mounted page owns active reads and subscriptions. */
 export class SystemsController {
@@ -22,11 +32,14 @@ export class SystemsController {
   rows: SystemsInventoryRow[] = [];
   selectedId: string | null = null;
   query = "";
+  sortMode: SystemsSortMode = "online-first";
+  statusFilter: SystemsStatusFilter = "all";
   showStats = true;
   showDetails = false;
   loading = false;
   error: string | null = null;
   sampledAtMs: number | null = null;
+  private readonly telemetry = new Map<string, readonly SystemsTelemetrySample[]>();
   private readonly listeners = new Set<() => void>();
   private readonly lifecycle;
   private subscriptions: Array<() => void> = [];
@@ -36,7 +49,7 @@ export class SystemsController {
   private presented = false;
   private refreshQueued = false;
 
-  constructor(readonly context: ApplicationContext<RouteId>) {
+  constructor(readonly context: ApplicationContext) {
     this.scope = gatewayPresentationScope(context.gateway);
     this.lifecycle = createGatewayConnectionLifecycle(context.gateway.snapshot);
   }
@@ -57,6 +70,10 @@ export class SystemsController {
     return this.current
       ? this.rows.find((row) => row.environment.id === this.selectedId)
       : undefined;
+  }
+
+  telemetryHistory(id: string): readonly SystemsTelemetrySample[] {
+    return this.current ? (this.telemetry.get(id) ?? []) : [];
   }
 
   subscribe(listener: () => void): () => void {
@@ -82,6 +99,40 @@ export class SystemsController {
         : [];
   }
 
+  private recordTelemetry(gatewaySampled: boolean): void {
+    const currentIds = new Set(this.rows.map((row) => row.environment.id));
+    for (const id of this.telemetry.keys()) {
+      if (!currentIds.has(id)) {
+        this.telemetry.delete(id);
+      }
+    }
+    for (const row of this.rows) {
+      const id = row.environment.id;
+      const stats = systemMeasurements(row);
+      if (!stats) {
+        this.telemetry.delete(id);
+        continue;
+      }
+      const gatewayHost = id === "gateway";
+      if (gatewayHost && !gatewaySampled) {
+        continue;
+      }
+      const at = row.node?.hostStats?.updatedAtMs ?? this.sampledAtMs;
+      if (at === null) {
+        continue;
+      }
+      const previous = this.telemetry.get(id) ?? [];
+      const last = previous.at(-1);
+      // node.list can return the same report across several UI polls.
+      if (last && at <= last.at) {
+        continue;
+      }
+      const staleAfter = gatewayHost ? SYSTEMS_GATEWAY_STALE_MS : SYSTEMS_NODE_STALE_MS;
+      const history = last && at - last.at <= staleAfter ? previous : [];
+      this.telemetry.set(id, [...history.slice(-(TELEMETRY_SAMPLE_LIMIT - 1)), { at, stats }]);
+    }
+  }
+
   select(id: string): void {
     if (!this.current || !id.trim()) {
       return;
@@ -94,6 +145,16 @@ export class SystemsController {
 
   search(query: string): void {
     this.query = query;
+    this.notify();
+  }
+
+  setSortMode(mode: SystemsSortMode): void {
+    this.sortMode = mode;
+    this.notify();
+  }
+
+  setStatusFilter(filter: SystemsStatusFilter): void {
+    this.statusFilter = filter;
     this.notify();
   }
 
@@ -128,6 +189,7 @@ export class SystemsController {
           this.clear();
         } else if (changed) {
           this.cancelRefresh();
+          this.telemetry.clear();
           if (snapshot.phase === "connected") {
             void this.refresh();
           }
@@ -155,7 +217,9 @@ export class SystemsController {
         this.notify();
       }),
     ];
-    this.lifecycle.transition(this.context.gateway.snapshot);
+    if (this.lifecycle.transition(this.context.gateway.snapshot)) {
+      this.telemetry.clear();
+    }
     if (!this.current) {
       this.clear();
     } else {
@@ -180,12 +244,15 @@ export class SystemsController {
     this.selectedId = null;
     this.error = null;
     this.sampledAtMs = null;
+    this.telemetry.clear();
     this.query = "";
   }
 
   async refresh(): Promise<void> {
     const snapshot = this.context.gateway.snapshot;
-    this.lifecycle.transition(snapshot);
+    if (this.lifecycle.transition(snapshot)) {
+      this.telemetry.clear();
+    }
     const scope = this.lifecycle.capture();
     if (
       !this.presented ||
@@ -224,6 +291,7 @@ export class SystemsController {
       this.inventory = inventory;
       this.projectRows();
       this.sampledAtMs = Date.now();
+      this.recordTelemetry(true);
       // Only initial entry picks a default. Later updates never replace an explicit or missing selection.
       if (initial && this.selectedId === null) {
         const currentSession = this.context.gateway.snapshot.sessionKey;
@@ -310,6 +378,7 @@ export class SystemsController {
         this.inventory = { ...this.inventory, nodes: result.nodes, errors };
       }
       this.projectRows();
+      this.recordTelemetry(gatewayHost);
     } catch (error) {
       if (isCurrent() && this.inventory) {
         this.inventory = {

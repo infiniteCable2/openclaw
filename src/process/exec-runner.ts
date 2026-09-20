@@ -39,6 +39,7 @@ import {
 import {
   COMMAND_PROCESS_TREE_KILL_GRACE_MS,
   resolveCommandProcessSignal,
+  retainCommandProcessCleanup,
   spawnCommandWithInvocation,
   waitForCommandSpawn,
 } from "./exec-spawn.js";
@@ -254,6 +255,17 @@ async function runCommandWithOutputEncoding(
     killGraceMs: resolvedKillGraceMs,
     killSignal,
   });
+  const processCleanup = (async () => {
+    await child.then(
+      () => undefined,
+      () => undefined,
+    );
+    commandSettled = true;
+    await startupReady?.catch(() => {});
+    return await terminationController.settle();
+  })();
+  retainCommandProcessCleanup(processCleanup);
+  void processCleanup.catch(() => {});
   nodeChild.once("exit", (code, signalValue) => {
     childExitState = { code, signal: signalValue };
     // Successful tree output belongs to its command deadline, not the diagnostic
@@ -268,12 +280,6 @@ async function runCommandWithOutputEncoding(
     }
   });
 
-  const clearNoOutputTimer = () => {
-    if (noOutputTimer) {
-      clearTimeout(noOutputTimer);
-      noOutputTimer = undefined;
-    }
-  };
   const cancel = (reason: Exclude<CommandTerminationReason, "exit">) => {
     // Failed roots already own a drain; later deadlines must preserve their exit result.
     // Successful POSIX roots retain deadline ownership of inherited descendants.
@@ -309,8 +315,9 @@ async function runCommandWithOutputEncoding(
     ) {
       return;
     }
-    clearNoOutputTimer();
-    noOutputTimer = setTimeout(() => cancel("no-output-timeout"), resolvedNoOutputTimeoutMs);
+    noOutputTimer =
+      noOutputTimer?.refresh() ??
+      setTimeout(() => cancel("no-output-timeout"), resolvedNoOutputTimeoutMs);
   };
 
   const timeoutTimer =
@@ -324,7 +331,8 @@ async function runCommandWithOutputEncoding(
     if (timeoutTimer) {
       clearTimeout(timeoutTimer);
     }
-    clearNoOutputTimer();
+    clearTimeout(noOutputTimer);
+    noOutputTimer = undefined;
     signal?.removeEventListener("abort", onAbort);
   };
   if (startupReady) {
@@ -342,19 +350,7 @@ async function runCommandWithOutputEncoding(
       clearTimers();
       // The result cannot claim extinction before PID delivery. Keep the same
       // termination owner through late readiness and final output drainage.
-      void (async () => {
-        try {
-          await child;
-        } finally {
-          commandSettled = true;
-          await startupReady.catch(() => {});
-          try {
-            await terminationController.settle();
-          } finally {
-            releaseOutput?.();
-          }
-        }
-      })().catch(() => {});
+      void processCleanup.finally(() => releaseOutput?.()).catch(() => {});
       const stopped = {
         pid: nodeChild.pid,
         code:
@@ -531,9 +527,9 @@ async function runCommandWithOutputEncoding(
     clearTimers();
     releaseOutput?.();
   });
-  let cleanup = await terminationController.settle();
+  let cleanup = await processCleanup;
   const resolvedSignal = result.signal ?? childExitState?.signal ?? nodeChild.signalCode ?? null;
-  if (cleanup !== "forced" && resolvedSignal) {
+  if (cleanup === "normal" && resolvedSignal) {
     cleanup = "uncertain";
   }
   if (inputAdmissionError) {

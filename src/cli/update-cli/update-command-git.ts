@@ -19,12 +19,12 @@ import {
   type DevUpdateTarget,
 } from "../../infra/update-dev-target.js";
 import { createFreeBsdPkgOwnershipInspection } from "../../infra/update-freebsd-pkg-ownership.js";
+import type { CommandRunner as GlobalCommandRunner } from "../../infra/update-global-command-runner.js";
 import {
   createGlobalInstallEnv,
   verifyPackageUpdateRecovery,
   resolveGlobalInstallTarget,
   resolveNpmLifecyclePolicyGate,
-  type CommandRunner as GlobalCommandRunner,
 } from "../../infra/update-global.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import { normalizeFallbackFailureReason } from "../../infra/update-runner-command.js";
@@ -134,20 +134,19 @@ export async function retireStandaloneGitWrapper(params: {
         await createFreeBsdPkgOwnershipInspection(UPDATE_RUNNER_TIMEOUT_MS).assertEntryUnowned(
           wrapperPath,
         );
-        // Ownership inspection can await pkg for seconds. Retire only the exact
-        // matched wrapper while this finalizer still owns the update.
-        const currentFile = await readRegularFile({ filePath: wrapperPath, maxBytes: 4096 });
-        const current = await fs.lstat(wrapperPath);
-        if (
-          !current.isFile() ||
-          !sameFileIdentity(stat, currentFile.stat) ||
-          !sameFileIdentity(currentFile.stat, current) ||
-          currentFile.buffer.toString("utf8") !== contents
-        ) {
-          throw new Error("The installer wrapper changed during ownership inspection.");
-        }
-        params.assertCurrent?.();
       }
+      // Filesystem and pkg reads can outlive this wrapper or the update's authority.
+      const currentFile = await readRegularFile({ filePath: wrapperPath, maxBytes: 4096 });
+      const current = await fs.lstat(wrapperPath);
+      if (
+        !current.isFile() ||
+        !sameFileIdentity(stat, currentFile.stat) ||
+        !sameFileIdentity(currentFile.stat, current) ||
+        currentFile.buffer.toString("utf8") !== contents
+      ) {
+        throw new Error("The installer wrapper changed before retirement.");
+      }
+      params.assertCurrent?.();
       await fs.unlink(wrapperPath);
     } catch (error) {
       return { error: `Could not retire ${wrapperPath}: ${String(error)}` };
@@ -652,6 +651,7 @@ export async function updateGitInstall(params: {
               ? normalizeFallbackFailureReason(packageUpdate.failedStep.name)
               : undefined),
         recovery: packageUpdate.recovery,
+        failedStep: packageUpdate.failedStep ?? undefined,
         steps: [...steps, ...packageUpdate.steps],
         durationMs: Date.now() - params.startedAt,
       };

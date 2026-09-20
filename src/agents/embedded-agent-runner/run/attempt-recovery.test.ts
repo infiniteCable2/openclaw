@@ -1,3 +1,4 @@
+import { WEBSOCKET_NON_RETRYABLE_CLOSE_ERROR_CODE } from "@openclaw/ai/diagnostics";
 import { APIError } from "openai/core/error";
 import { describe, expect, it, vi } from "vitest";
 import { projectProviderError } from "../../../../packages/ai/src/utils/provider-error.js";
@@ -135,7 +136,7 @@ describe("recoverEmbeddedRunAttempt", () => {
     const { recovery, recover, failoverRetryController, continueFromCurrentTranscript } =
       await recoverAfterTransportDrop(outputLimitScenario);
     expect(recovery.action).toBe("retry");
-    failoverRetryController.setTransientRetryBudget(1);
+    failoverRetryController.observeAttempt({ providerRetryMaxRetries: 1 });
 
     expect(await recover()).toEqual({ action: "proceed" });
     expect(failoverRetryController.transientRetryCount).toBe(1);
@@ -375,6 +376,67 @@ describe("recoverEmbeddedRunAttempt", () => {
     }
   });
 
+  it.each([
+    {
+      label: "fails over past the saved maxRetryDelayMs when a fallback exists",
+      errorMessage:
+        '429 rate limit: {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}',
+      errorBody: JSON.stringify({ headers: { "retry-after": "9897" } }),
+      fallbackConfigured: true,
+      replaySafe: true,
+      providerRetryMaxDelayMs: 30_000,
+      expectedAction: "proceed",
+      expectedSleepMs: undefined,
+    },
+    {
+      // Live shape: exec/write already ran, so rotation and fallback are both
+      // refused downstream. Declining the wait would end the turn; keep waiting.
+      label: "keeps waiting past the cap when tool activity made the attempt replay-unsafe",
+      errorMessage: "429 rate_limit_exceeded; Retry-After: 9897",
+      fallbackConfigured: true,
+      replaySafe: false,
+      providerRetryMaxDelayMs: 30_000,
+      expectedAction: "retry",
+      expectedSleepMs: 9_897_000,
+    },
+    {
+      label: "still sleeps the same floor with no fallback",
+      errorMessage: "429 rate_limit_exceeded; Retry-After: 9897",
+      fallbackConfigured: false,
+      replaySafe: true,
+      providerRetryMaxDelayMs: 30_000,
+      expectedAction: "retry",
+      expectedSleepMs: 9_897_000,
+    },
+    {
+      label: "keeps a floor inside the cap on the same model",
+      errorMessage: "429 rate_limit_exceeded; Retry-After: 20",
+      fallbackConfigured: true,
+      replaySafe: true,
+      providerRetryMaxDelayMs: 30_000,
+      expectedAction: "retry",
+      expectedSleepMs: 20_000,
+    },
+  ])("$label", async (scenario) => {
+    vi.mocked(sleepWithAbort).mockClear();
+    const { recovery, continueFromCurrentTranscript } = await recoverAfterTransportDrop({
+      errorMessage: scenario.errorMessage,
+      errorBody: scenario.errorBody,
+      fallbackConfigured: scenario.fallbackConfigured,
+      replaySafe: scenario.replaySafe,
+      providerRetryMaxDelayMs: scenario.providerRetryMaxDelayMs,
+      diagnostics: [],
+    });
+    expect(recovery.action).toBe(scenario.expectedAction);
+    if (scenario.expectedSleepMs === undefined) {
+      expect(sleepWithAbort).not.toHaveBeenCalled();
+      expect(continueFromCurrentTranscript).not.toHaveBeenCalled();
+    } else {
+      expect(sleepWithAbort).toHaveBeenCalledExactlyOnceWith(scenario.expectedSleepMs, undefined);
+      expect(continueFromCurrentTranscript).toHaveBeenCalledOnce();
+    }
+  });
+
   it("preserves the larger header floor after an SDK failure becomes an assistant message", async () => {
     vi.mocked(sleepWithAbort).mockClear();
     const projection = projectProviderError(
@@ -418,6 +480,11 @@ describe("recoverEmbeddedRunAttempt", () => {
 
   it.each([
     { errorMessage: "WebSocket error" },
+    {
+      errorMessage: "WebSocket closed: reason included ECONNRESET",
+      errorCode: "ERR_WEBSOCKET_TRANSPORT",
+      diagnostics: [],
+    },
     { errorMessage: "Responses stream ended with unresolved tool calls", diagnostics: [] },
   ])("continues a settled exec batch after $errorMessage", async (scenario) => {
     const {
@@ -577,6 +644,14 @@ describe("recoverEmbeddedRunAttempt", () => {
     ["the run timed out", { terminal: { kind: "timeout", phase: "prompt", source: "runtime" } }],
     ["the attempt yielded", { yieldDetected: true }],
     ["the assistant error is not transient", { errorMessage: "invalid request: bad schema" }],
+    [
+      "a permanent WebSocket close has transient-looking reason text",
+      {
+        errorMessage: "WebSocket closed: policy reason included ECONNRESET",
+        errorCode: WEBSOCKET_NON_RETRYABLE_CLOSE_ERROR_CODE,
+        diagnostics: [],
+      },
+    ],
     ["Gateway storage is locked", { errorMessage: "database is locked", diagnostics: [] }],
     ["the provider requires authentication", { errorMessage: "401 unauthorized" }],
     [

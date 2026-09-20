@@ -1,6 +1,7 @@
 // TTS directive tests cover parsing and applying speech directives.
 import { describe, expect, it } from "vitest";
 import type { SpeechProviderPlugin } from "../plugins/types.js";
+import { extractTtsDirectiveParts } from "./directive-facts.js";
 import { createTtsDirectiveTextStreamCleaner, parseTtsDirectives } from "./directives.js";
 import type {
   SpeechDirectiveTokenParseContext,
@@ -103,6 +104,17 @@ describe("parseTtsDirectives provider-aware routing", () => {
     expect(result.cleanedText).toBe(" Hallo");
     expect(result.hasDirective).toBe(true);
     expect(result.overrides).toEqual({});
+  });
+
+  it("cleans empty directives across native parts without consuming fenced examples", () => {
+    expect(extractTtsDirectiveParts(["```text\n[[tts:]]", "```\n[[tts:]] Hallo"])).toEqual([
+      { cleanedText: "```text\n[[tts:]]" },
+      { cleanedText: "```\n Hallo", facts: { tagged: true } },
+    ]);
+    expect(extractTtsDirectiveParts(["[[tts:", "]] Hallo"])).toEqual([
+      { cleanedText: " Hallo", facts: { tagged: true } },
+      { cleanedText: "" },
+    ]);
   });
 
   it("routes correctly when provider appears after the generic token", () => {

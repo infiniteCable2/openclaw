@@ -37,6 +37,7 @@ import { applyGatewayLaneConcurrency, resolveGatewayLaneConcurrency } from "./se
 import { createGatewayServerLiveState } from "./server-live-state.js";
 import { createGatewayPluginRuntimeGeneration } from "./server-plugin-runtime-generation.js";
 import type { GatewayCloseOptions } from "./server-public.js";
+import { resolveQaDiagnosticHeartbeatTimings } from "./server-qa-diagnostic-timings.js";
 import { GatewayRequestEntryLifetime } from "./server-request-entry.js";
 import type { prepareGatewayKernelState } from "./server-runtime-state-prepare.js";
 import { resolveGatewayShutdownNotice, runGatewayCloseSteps } from "./server-shutdown.js";
@@ -462,6 +463,7 @@ export async function prepareGatewayLifecycle(params: {
         getRuntimeSnapshot,
         getEventLoopHealth: readinessEventLoopHealth.snapshot,
         getConfigReloaderHotReloadStatus: kernel.getConfigReloaderHotReloadStatus,
+        getSessionRowProjection: runtime.getSessionRowProjection,
       }),
     );
   };
@@ -584,8 +586,7 @@ export async function prepareGatewayLifecycle(params: {
         );
       }
       await requestEntryLifetime.sealAndJoin();
-      const { waitForPluginCacheRetirement } = await import("../plugins/plugin-cache.js");
-      await waitForPluginCacheRetirement();
+      await shutdownRuntime.waitForPluginCacheRetirement();
     };
   };
   const closeStepOwner = {
@@ -621,6 +622,7 @@ export async function prepareGatewayLifecycle(params: {
     startDiagnosticHeartbeat(undefined, {
       getConfig: getRuntimeConfig,
       startupGraceMs: 60_000,
+      testTimings: resolveQaDiagnosticHeartbeatTimings(process.env),
       sampleLiveness: () => {
         const sample = readinessEventLoopHealth.persistentDegradationSnapshot();
         if (!sample || sample.degradedSinceMs == null) {

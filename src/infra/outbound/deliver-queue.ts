@@ -1,16 +1,20 @@
+import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 // Owns durable queue admission and hands stable custody to the execution loop.
 import { readAskUserQuestionId } from "../../auto-reply/reply-payload.js";
 import { deriveDurableFinalDeliveryRequirementsForBatch } from "../../channels/message/capabilities.js";
 import { createRenderedMessageBatchPlan } from "../../channels/message/rendered-batch.js";
+import type { ChannelMessageDeferredDeliveryAdmissionResult } from "../../channels/message/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
   captureDeliveryQueueStateContext,
   type DeliveryQueueStateContext,
 } from "../delivery-queue-sqlite.js";
+import { isDeliveryRecoveryOwnedRetry } from "../delivery-recovery.shared.js";
 import { formatErrorMessage } from "../errors.js";
 import { runWithQuestionChannelDeliveries } from "../question-channel-runtime.js";
-import { resolveDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
+import { throwIfAborted } from "./abort.js";
+import { prepareDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
 import { resolveOutboundDurableFinalDeliverySupport } from "./deliver-channel.js";
 import type {
   DeliverOutboundPayloadsParams,
@@ -18,7 +22,10 @@ import type {
 } from "./deliver-contracts.js";
 import { OUTBOUND_DELIVERY_LOG_SCOPE } from "./deliver-log.js";
 import { buildPayloadSummary } from "./deliver-payload.js";
-import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
+import {
+  prepareOutboundPayloadBatch,
+  prepareStructuredOutboundPayloadBatch,
+} from "./deliver-prepare.js";
 import {
   restoreQueuedDeliveryCustody,
   stageAndEnqueueOutboundDelivery,
@@ -46,6 +53,7 @@ import {
   uniformOutboundAuditTerminals,
 } from "./outbound-audit.js";
 import { acceptedPreparedOutboundEntries } from "./prepared-batch.js";
+import type { OutboundPayloadPlan } from "./reply-payload-parts.js";
 import { normalizeOutboundReplyFacts } from "./reply-policy.js";
 
 const log = createSubsystemLogger("outbound/deliver");
@@ -74,6 +82,29 @@ export async function runOutboundDeliveryInternal(
   initialInput: InternalDeliverOutboundPayloadsParams,
   stateContext?: DeliveryQueueStateContext,
 ): Promise<OutboundDeliveryResult[]> {
+  return await runDelivery(initialInput, prepareOutboundPayloadBatch, stateContext);
+}
+
+export async function runStructuredOutboundDeliveryInternal(
+  input: Omit<InternalDeliverOutboundPayloadsParams, "payloads"> & {
+    plan: readonly OutboundPayloadPlan[];
+  },
+): Promise<OutboundDeliveryResult[]> {
+  const { plan, ...params } = input;
+  // This batch owns the supplied entries; queue outcome indexes refer to this
+  // batch rather than the earlier producer array from which entries were selected.
+  const batchPlan = plan.map((entry, sourceIndex) => Object.assign({}, entry, { sourceIndex }));
+  return await runDelivery(
+    { ...params, payloads: batchPlan.map((entry) => entry.payload) },
+    (delivery, options) => prepareStructuredOutboundPayloadBatch(delivery, batchPlan, options),
+  );
+}
+
+async function runDelivery(
+  initialInput: InternalDeliverOutboundPayloadsParams,
+  prepare: typeof prepareOutboundPayloadBatch,
+  stateContext?: DeliveryQueueStateContext,
+): Promise<OutboundDeliveryResult[]> {
   const context =
     initialInput.conversationDeliveryTarget ??
     stateContext ??
@@ -99,7 +130,7 @@ export async function runOutboundDeliveryInternal(
       : undefined);
   try {
     return await runWithQuestionChannelDeliveries(input.payloads.map(readAskUserQuestionId), () =>
-      runOutboundDeliveryWithIntent({ ...input, deliveryQueueOwner: owner }),
+      runOutboundDeliveryWithIntent({ ...input, deliveryQueueOwner: owner }, prepare),
     );
   } catch (error) {
     throw owner ? owner.project(error) : error;
@@ -108,6 +139,7 @@ export async function runOutboundDeliveryInternal(
 
 async function runOutboundDeliveryWithIntent(
   input: InternalDeliverOutboundPayloadsParams,
+  prepare: typeof prepareOutboundPayloadBatch,
 ): Promise<OutboundDeliveryResult[]> {
   const { replyToId, replyToMode, ...currentParams } = input;
   const reply = normalizeOutboundReplyFacts({ reply: input.reply, replyToId, replyToMode });
@@ -125,13 +157,14 @@ async function runOutboundDeliveryWithIntent(
         {
           id: stableIntentId,
           stateDir: params.deliveryQueueStateDir,
-          run: async (owner) => await runOutboundDeliveryWithQueue(stableParams, true, owner),
+          run: async (owner) =>
+            await runOutboundDeliveryWithQueue(stableParams, prepare, true, owner),
         },
         params.deliveryQueueStateContext,
       );
       return preparation.status === "claimed"
         ? preparation.value
-        : await runOutboundDeliveryWithQueue(stableParams, true, undefined, false);
+        : await runOutboundDeliveryWithQueue(stableParams, prepare, true, undefined, false);
     });
     if (claim.status === "claimed") {
       return claim.value;
@@ -148,7 +181,7 @@ async function runOutboundDeliveryWithIntent(
     }
     throw new Error(`Stable delivery intent is already queued: ${stableIntentId}`);
   }
-  return await runOutboundDeliveryWithQueue(params, false);
+  return await runOutboundDeliveryWithQueue(params, prepare, false);
 }
 
 async function deliverWithProducerLease(
@@ -208,6 +241,7 @@ async function deliverWithProducerLease(
 
 async function runOutboundDeliveryWithQueue(
   params: InternalDeliverOutboundPayloadsParams,
+  prepare: typeof prepareOutboundPayloadBatch,
   stableIntentClaimHeld: boolean,
   stablePreparationOwner?: StableDeliveryPreparationOwner,
   allowFreshPreparation = true,
@@ -229,6 +263,33 @@ async function runOutboundDeliveryWithQueue(
       startedAt: auditStartedAt,
     });
   };
+  const emitPreparationFailure = (error: unknown): void => {
+    emitPreQueueFailure();
+    // Preparation aborts the whole batch, so hooks get one failure per
+    // logical payload — matching the per-payload audit terminals above and
+    // the recovery sibling's queuedTerminalFailureEvents.
+    if (params.payloads.length > 0) {
+      const { emitMessageSent } = createMessageSentEmitter({
+        hookRunner: getGlobalHookRunner(),
+        channel,
+        to,
+        accountId: params.accountId,
+        sessionKeyForInternalHooks: params.mirror?.sessionKey ?? params.session?.key,
+        isGroup: params.mirror?.isGroup,
+        groupId: params.mirror?.groupId,
+        runId: params.replyPayloadSendingHook?.runId,
+        logPrefix: OUTBOUND_DELIVERY_LOG_SCOPE,
+      });
+      for (const payload of params.payloads) {
+        const summary = buildPayloadSummary(payload);
+        emitMessageSent({
+          success: false,
+          content: summary.hookContent ?? summary.text,
+          error: formatErrorMessage(error),
+        });
+      }
+    }
+  };
   if (params.requireUnknownSendReconciliation === true && payloads.length !== 1) {
     emitPreQueueFailure();
     throw new Error(
@@ -236,16 +297,30 @@ async function runOutboundDeliveryWithQueue(
     );
   }
   if (params.deferredDeliveryAdmissionPassed !== true) {
-    const admission = resolveDeferredDeliveryAdmission(
-      {
-        cfg: params.cfg,
-        channel,
-        to,
-        accountId: params.accountId,
-        phase: "live",
-      },
-      { agentId: params.session?.agentId },
-    );
+    let admission: ChannelMessageDeferredDeliveryAdmissionResult;
+    try {
+      const resolveAdmission = await prepareDeferredDeliveryAdmission(
+        {
+          cfg: params.cfg,
+          channel,
+          to,
+          accountId: params.accountId,
+          phase: "live",
+        },
+        {
+          agentId: params.session?.agentId,
+          assertCurrent: () => {
+            throwIfAborted(params.abortSignal);
+            params.deliveryQueueOwner?.signal?.throwIfAborted();
+            params.deliveryQueueStateContext?.workerContext.admission.assertCurrent();
+          },
+        },
+      );
+      admission = resolveAdmission();
+    } catch (error) {
+      emitPreparationFailure(error);
+      throw error;
+    }
     if (admission.status === "permanent_rejection") {
       emitPreQueueFailure();
       throw new Error(admission.reason);
@@ -290,36 +365,12 @@ async function runOutboundDeliveryWithQueue(
     preparedBatch =
       existingStableDelivery?.preparedBatch ??
       params.preparedBatch ??
-      (await prepareOutboundPayloadBatch(params, {
+      (await prepare(params, {
         onBeforeFirstModifier: stablePreparationOwner?.beforeFirstModifier,
       }));
     await stablePreparationOwner?.markPrepared();
   } catch (error) {
-    emitPreQueueFailure();
-    // Preparation aborts the whole batch, so hooks get one failure per
-    // logical payload — matching the per-payload audit terminals above and
-    // the recovery sibling's queuedTerminalFailureEvents.
-    if (params.payloads.length > 0) {
-      const { emitMessageSent } = createMessageSentEmitter({
-        hookRunner: getGlobalHookRunner(),
-        channel,
-        to,
-        accountId: params.accountId,
-        sessionKeyForInternalHooks: params.mirror?.sessionKey ?? params.session?.key,
-        isGroup: params.mirror?.isGroup,
-        groupId: params.mirror?.groupId,
-        runId: params.replyPayloadSendingHook?.runId,
-        logPrefix: OUTBOUND_DELIVERY_LOG_SCOPE,
-      });
-      for (const payload of params.payloads) {
-        const summary = buildPayloadSummary(payload);
-        emitMessageSent({
-          success: false,
-          content: summary.hookContent ?? summary.text,
-          error: formatErrorMessage(error),
-        });
-      }
-    }
+    emitPreparationFailure(error);
     throw error;
   }
   const preparedPayloads = acceptedPreparedOutboundEntries(preparedBatch).map(
@@ -380,7 +431,15 @@ async function runOutboundDeliveryWithQueue(
             ? { getStablePreparation: stablePreparationOwner.current }
             : {}),
         }).catch((err: unknown) => {
-          if (queuePolicy === "required" || err instanceof StableDeliveryPreparationLostError) {
+          if (isDeliveryRecoveryOwnedRetry(err)) {
+            throw err;
+          }
+          if (
+            queuePolicy === "required" ||
+            collectNestedErrorCandidates(err).some(
+              (candidate) => candidate instanceof StableDeliveryPreparationLostError,
+            )
+          ) {
             emitPreQueueFailure();
             throw err;
           }

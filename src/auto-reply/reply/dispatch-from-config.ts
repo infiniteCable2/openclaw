@@ -9,7 +9,6 @@ import { chooseDispatchRoute } from "./dispatch-from-config.choose-route.js";
 import { executeDispatch } from "./dispatch-from-config.execute.js";
 import { finalizeDispatchAndAudit } from "./dispatch-from-config.finalize.js";
 import { gatherDispatchRequest } from "./dispatch-from-config.gather.js";
-import { DispatchSessionRefreshRequiredError } from "./dispatch-from-config.lifecycle.js";
 import { prepareDispatchOperationContext } from "./dispatch-from-config.prepare-context.js";
 import { prepareDispatchDelivery } from "./dispatch-from-config.prepare-delivery.js";
 import { prepareDispatchExecution } from "./dispatch-from-config.prepare-execution.js";
@@ -18,6 +17,7 @@ import type {
   DispatchFromConfigParams,
   DispatchFromConfigResult,
 } from "./dispatch-from-config.types.js";
+import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
 import { REPLY_ADMISSION_TICKET, reserveReplyAdmissionTicket } from "./reply-admission-ticket.js";
 import { sendReplyRestartRecoveryNotice } from "./reply-turn-recovery-notice.js";
 import "./dispatch-from-config.events.js";
@@ -43,7 +43,6 @@ async function dispatchReplyFromConfigWithQueuePolicy(
   params: DispatchFromConfigParams,
   allowActiveQueueResolution: boolean,
 ): Promise<DispatchFromConfigResult> {
-  const messageAuditTerminal = createInboundMessageAuditTerminal(params);
   const ticket = reserveReplyAdmissionTicket([
     params.ctx.SessionKey,
     params.ctx.CommandTargetSessionKey,
@@ -54,6 +53,7 @@ async function dispatchReplyFromConfigWithQueuePolicy(
         replyOptions: { ...params.replyOptions, [REPLY_ADMISSION_TICKET]: ticket },
       }
     : params;
+  const messageAuditTerminal = createInboundMessageAuditTerminal(params);
   let refreshedSessionSnapshot = false;
   try {
     while (true) {

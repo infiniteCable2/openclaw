@@ -56,7 +56,7 @@ import { resolveMatrixRoomConfig } from "./rooms.js";
 import { runMatrixStartupMaintenance } from "./startup.js";
 import { createMatrixMonitorStatusController } from "./status.js";
 import { createMatrixMonitorSyncLifecycle } from "./sync-lifecycle.js";
-import { createMatrixMonitorTaskRunner } from "./task-runner.js";
+import { createMatrixMonitorTaskRunner, getMatrixMonitorTaskSignal } from "./task-runner.js";
 
 type MonitorMatrixOpts = {
   runtime?: RuntimeEnv;
@@ -513,12 +513,16 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     rtcController?.startExisting();
 
     logger.info(`matrix: logged in as ${auth.userId}`);
-    void backfillMatrixAuthDeviceIdAfterStartup({
-      auth,
-      env: process.env,
-      abortSignal: monitorLifecycleSignal,
-    }).catch((err: unknown) => {
-      logVerboseMessage(`matrix: failed to backfill deviceId after startup (${String(err)})`);
+    void monitorTaskRunner.runDetachedTask("deviceId backfill", async () => {
+      const taskSignal = getMatrixMonitorTaskSignal();
+      await backfillMatrixAuthDeviceIdAfterStartup({
+        auth,
+        env: process.env,
+        abortSignal:
+          taskSignal && monitorLifecycleSignal
+            ? AbortSignal.any([taskSignal, monitorLifecycleSignal])
+            : (taskSignal ?? monitorLifecycleSignal),
+      });
     });
 
     registerChannelRuntimeContext({

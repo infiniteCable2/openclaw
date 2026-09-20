@@ -1,4 +1,10 @@
-import { convertPcmToMulaw8k, mulawToPcm, resamplePcm } from "../talk/audio-codec.js";
+import {
+  convertPcmToMulaw8k,
+  createStreamingPcmResampler,
+  mulawToPcm,
+  pcmToMulaw,
+  resamplePcm,
+} from "../talk/audio-codec.js";
 import {
   REALTIME_VOICE_AUDIO_FORMAT_G711_ULAW_8KHZ,
   REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
@@ -37,6 +43,40 @@ export function convertMeetingTtsAudioForBridge(
   return audioFormat === "g711-ulaw-8khz"
     ? convertPcmToMulaw8k(pcm, sampleRate)
     : resamplePcm(pcm, sampleRate, 24_000);
+}
+
+/** Keep sample alignment and resampling state for one provider byte stream. */
+export function createMeetingTtsAudioStreamConverter(
+  sampleRate: number,
+  audioFormat: MeetingRealtimeAudioFormat,
+  outputFormat?: string,
+  platformName = "meeting platform",
+): { process(audio: Buffer): Buffer; flush(): Buffer } {
+  const sourceFormat = sourceTelephonyTtsFormat(outputFormat, platformName);
+  if (audioFormat === "g711-ulaw-8khz" && sourceFormat === "mulaw" && sampleRate === 8_000) {
+    return { process: (audio) => audio, flush: () => Buffer.alloc(0) };
+  }
+  const resampler = createStreamingPcmResampler(
+    sampleRate,
+    audioFormat === "g711-ulaw-8khz" ? 8_000 : 24_000,
+  );
+  let trailingByte = Buffer.alloc(0);
+  const encode = (pcm: Buffer) => (audioFormat === "g711-ulaw-8khz" ? pcmToMulaw(pcm) : pcm);
+  return {
+    process(audio) {
+      const pcm = decodeMeetingTelephonyTtsAudio(audio, sourceFormat);
+      const combined = trailingByte.length > 0 ? Buffer.concat([trailingByte, pcm]) : pcm;
+      const completeBytes = combined.length - (combined.length % 2);
+      // The native equal-rate resampler passes bytes through, so the adapter
+      // also retains incomplete samples when no rate conversion is necessary.
+      trailingByte = Buffer.from(combined.subarray(completeBytes));
+      return encode(resampler.process(combined.subarray(0, completeBytes)));
+    },
+    flush() {
+      trailingByte = Buffer.alloc(0);
+      return encode(resampler.flush());
+    },
+  };
 }
 
 type MeetingTelephonyTtsFormat = "pcm" | "mulaw" | "alaw";

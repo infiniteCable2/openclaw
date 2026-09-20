@@ -64,7 +64,20 @@ async function createFixture(
       },
       runEmbeddedAgent,
     },
-    tts: { textToSpeechTelephony },
+    tts: {
+      streamTextToSpeechTelephony: async () => {
+        const result = await textToSpeechTelephony();
+        return {
+          ...result,
+          audioStream: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(result.audioBuffer);
+              controller.close();
+            },
+          }),
+        };
+      },
+    },
   } as unknown as PluginRuntime;
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const config = {
@@ -337,7 +350,23 @@ describe("meeting shutdown", () => {
     const fixture = await createFixture();
     const synthesis = createDeferredCore<typeof spokenResult>();
     const sink = createDeferredCore();
-    const conversion = vi.spyOn(audioFormat, "convertMeetingTtsAudioForBridge");
+    const createConverter = audioFormat.createMeetingTtsAudioStreamConverter;
+    const conversion = vi.fn();
+    vi.spyOn(audioFormat, "createMeetingTtsAudioStreamConverter").mockImplementation(
+      (...params) => {
+        const converter = createConverter(...params);
+        return {
+          process(audio) {
+            conversion("process");
+            return converter.process(audio);
+          },
+          flush() {
+            conversion("flush");
+            return converter.flush();
+          },
+        };
+      },
+    );
     fixture.textToSpeechTelephony.mockReturnValueOnce(synthesis.promise);
     fixture.writeOutput.mockReturnValueOnce(sink.promise);
     try {
@@ -347,8 +376,12 @@ describe("meeting shutdown", () => {
         synthesis.resolve(spokenResult);
         await setImmediate();
         expect(fixture.writeOutput).toHaveBeenCalledOnce();
+        expect(conversion).toHaveBeenCalledExactlyOnceWith("process");
       }
-      await fixture.stop(shutdown);
+      // stop seals the turn immediately, then drains admitted stream work.
+      // Inspect that boundary before allowing the deliberately pending work to settle.
+      const stopping = fixture.stop(shutdown);
+      await setImmediate();
       const ended = fixture.eventTypes();
       expect
         .soft(ended.slice(stage === "sink" ? -3 : -2))
@@ -370,6 +403,7 @@ describe("meeting shutdown", () => {
       } else {
         sink.resolve();
       }
+      await stopping;
       await setImmediate();
       expect.soft(fixture.eventTypes()).toEqual(ended);
       expect.soft(conversion).toHaveBeenCalledTimes(conversions);

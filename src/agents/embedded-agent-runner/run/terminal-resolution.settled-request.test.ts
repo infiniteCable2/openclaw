@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeTextToolResult } from "../../../../test/helpers/text-tool-result.js";
 import { setReplyPayloadMetadata } from "../../../auto-reply/reply-payload.js";
-import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
@@ -63,122 +62,71 @@ describe("resolveSettledTurnFinalizationRequest", () => {
     ).toBeNull();
   });
 
-  it("does not mistake aggregated pre-tool commentary for the final answer", () => {
-    const first = buildEmbeddedRunnerAssistant({
-      stopReason: "toolUse",
-      content: [
-        { type: "text", text: "I am checking the source." },
-        { type: "toolCall", id: "tool-read", name: "read", arguments: {} },
-      ],
-    });
-    const second = buildEmbeddedRunnerAssistant({
-      stopReason: "toolUse",
-      content: [
-        { type: "text", text: "I am applying the result." },
-        { type: "toolCall", id: "tool-write", name: "write", arguments: {} },
-      ],
-    });
-    const terminal = buildEmbeddedRunnerAssistant({ stopReason: "stop", content: [] });
-    const commentary = "I am checking the source.\n\nI am applying the result.";
-    const messagesSnapshot = [
-      { role: "user", content: "Update it" },
-      first,
-      { role: "toolResult", toolCallId: "tool-read", toolName: "read", isError: false },
-      second,
-      { role: "toolResult", toolCallId: "tool-write", toolName: "write", isError: false },
-      terminal,
-    ] as never;
-    const attempt = makeEmbeddedRunnerAttempt({
-      assistantTexts: [commentary],
-      messagesSnapshot,
-      lastAssistant: terminal,
-      currentAttemptAssistant: terminal,
-      currentAttemptCompletedAssistant: terminal,
-      toolMetas: [
-        { toolName: "read", toolCallId: "tool-read", replaySafe: true },
-        { toolName: "write", toolCallId: "tool-write", replaySafe: false },
-      ],
-      itemLifecycle: { startedCount: 2, completedCount: 2, activeCount: 0 },
-      replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
-      currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
-      settledTurnFinalizationContext: {
-        source: "openclaw-transcript",
-        messages: messagesSnapshot,
-      },
-    });
-
-    expect(
-      resolveSettledTurnFinalizationRequest({
-        runParams: {
-          sessionId: "session:settled-commentary",
-          runId: "run:settled-commentary",
-          terminalReplyExpectation: "required",
-        } as never,
-        attempt,
-        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
-        modelApi: "openai-responses",
-        executionContract: undefined,
-        payloadsWithToolMedia: [{ text: commentary }],
-        hasTerminalToolPresentation: false,
-        terminalState: resolveEmbeddedRunAttemptTerminalState({ attempt, assistant: terminal }),
-        settledTurnFinalizationAvailable: true,
-      }),
-    ).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
-  });
-
-  it("keeps explicit silence terminal across required and optional settled turns", () => {
-    const toolUseAssistant = buildEmbeddedRunnerAssistant({
-      stopReason: "toolUse",
-      content: [{ type: "toolCall", id: "tool-1", name: "write", arguments: {} }],
-    });
-    const silentAssistant = buildEmbeddedRunnerAssistant({
-      stopReason: "stop",
-      content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
-    });
-    const attempt = makeEmbeddedRunnerAttempt({
-      assistantTexts: [SILENT_REPLY_TOKEN],
-      toolMetas: [{ toolName: "write", toolCallId: "tool-1", replaySafe: false }],
-      itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
-      messagesSnapshot: [
-        { role: "user", content: [{ type: "text", text: "[OpenClaw heartbeat poll]" }] },
-        toolUseAssistant,
-        { role: "toolResult", toolCallId: "tool-1", toolName: "write", isError: false },
-        silentAssistant,
-      ] as never,
-      lastAssistant: silentAssistant,
-      currentAttemptAssistant: silentAssistant,
-      replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
-      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
-    });
-
-    const request = (runParams: {
-      trigger: "heartbeat" | "user";
-      terminalReplyExpectation?: "required";
-    }) =>
-      resolveSettledTurnFinalizationRequest({
-        runParams: {
-          sessionId: "session:settled-silent",
-          runId: "run:settled-silent",
-          allowEmptyAssistantReplyAsSilent: true,
-          ...runParams,
-        } as never,
-        attempt,
-        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
-        modelApi: "openai-responses",
-        executionContract: undefined,
-        payloadsWithToolMedia: [],
-        hasTerminalToolPresentation: false,
-        terminalState: resolveEmbeddedRunAttemptTerminalState({
-          attempt,
-          assistant: silentAssistant,
-        }),
-        settledTurnFinalizationAvailable: true,
+  it.each(["", "[[reply_to_current]] "])(
+    "does not mistake aggregated pre-tool commentary for the final answer (directive %j)",
+    (directive) => {
+      const first = buildEmbeddedRunnerAssistant({
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: `${directive}I am checking the source.` },
+          { type: "toolCall", id: "tool-read", name: "read", arguments: {} },
+        ],
+      });
+      const second = buildEmbeddedRunnerAssistant({
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "I am applying the result." },
+          { type: "toolCall", id: "tool-write", name: "write", arguments: {} },
+        ],
+      });
+      const terminal = buildEmbeddedRunnerAssistant({ stopReason: "stop", content: [] });
+      const commentary = `${directive}I am checking the source.\n\nI am applying the result.`;
+      const messagesSnapshot = [
+        { role: "user", content: "Update it" },
+        first,
+        { role: "toolResult", toolCallId: "tool-read", toolName: "read", isError: false },
+        second,
+        { role: "toolResult", toolCallId: "tool-write", toolName: "write", isError: false },
+        terminal,
+      ] as never;
+      const attempt = makeEmbeddedRunnerAttempt({
+        assistantTexts: [commentary],
+        messagesSnapshot,
+        lastAssistant: terminal,
+        currentAttemptAssistant: terminal,
+        currentAttemptCompletedAssistant: terminal,
+        toolMetas: [
+          { toolName: "read", toolCallId: "tool-read", replaySafe: true },
+          { toolName: "write", toolCallId: "tool-write", replaySafe: false },
+        ],
+        itemLifecycle: { startedCount: 2, completedCount: 2, activeCount: 0 },
+        replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        settledTurnFinalizationContext: {
+          source: "openclaw-transcript",
+          messages: messagesSnapshot,
+        },
       });
 
-    expect(request({ trigger: "heartbeat" })).toBeNull();
-    expect(request({ trigger: "user", terminalReplyExpectation: "required" })).toBeNull();
-  });
-
+      expect(
+        resolveSettledTurnFinalizationRequest({
+          runParams: {
+            sessionId: "session:settled-commentary",
+            runId: "run:settled-commentary",
+            terminalReplyExpectation: "required",
+          } as never,
+          attempt,
+          activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+          modelApi: "openai-responses",
+          executionContract: undefined,
+          payloadsWithToolMedia: [{ text: commentary }],
+          hasTerminalToolPresentation: false,
+          terminalState: resolveEmbeddedRunAttemptTerminalState({ attempt, assistant: terminal }),
+          settledTurnFinalizationAvailable: true,
+        }),
+      ).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+    },
+  );
   it("requires an available finalizer and no visible structured error", () => {
     const assistant = buildEmbeddedRunnerAssistant({
       stopReason: "toolUse",

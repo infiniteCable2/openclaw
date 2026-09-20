@@ -10,7 +10,10 @@ import {
 } from "../agents/worktrees/service.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sweepStaleRunContexts } from "../infra/agent-run-registry.js";
-import { pruneExpiredDeliveryQueueTombstones } from "../infra/delivery-queue-sqlite.js";
+import {
+  captureDeliveryQueueStateContext,
+  pruneExpiredDeliveryQueueTombstones,
+} from "../infra/delivery-queue-sqlite.js";
 import { pruneExpiredDevicePairSetupCompletions } from "../infra/device-bootstrap.js";
 import {
   createGatewayActiveWorkSnapshot,
@@ -62,6 +65,7 @@ import { formatError } from "./server-utils.js";
 import { setBroadcastHealthUpdate } from "./server/health-state.js";
 import { startSessionColdStorageMaintenance } from "./session-cold-storage-maintenance.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
+import { checkGatewayInstallationReplacement } from "./stale-install.js";
 
 // Hourly sweep plus a one-day grace bounds orphan storage without racing the
 // stage-before-row-commit window.
@@ -116,6 +120,7 @@ export function startGatewayMaintenanceTimers(params: {
   startMediaCleanup: () => void;
   stopMediaCleanup: () => Promise<MediaCleanupStopResult>;
   stopSessionColdStorageMaintenance: () => Promise<void>;
+  stopTelemetryChecks: () => Promise<void>;
   worktreeCleanup: ReturnType<typeof setInterval>;
   skillUsageCleanup: () => void;
 } {
@@ -173,16 +178,35 @@ export function startGatewayMaintenanceTimers(params: {
   });
 
   let nextTelemetryCheckAtMs = Date.now() + generateSecureInt(TELEMETRY_MAINTENANCE_INTERVAL_MS);
+  let telemetryStopped = false;
+  let telemetryCheckInFlight: Promise<void> | undefined;
+  const performTelemetryCheck = () => {
+    telemetryCheckInFlight ??= checkTelemetryUpdate(params.getRuntimeConfig, {
+      surface: "gateway",
+    })
+      .then(() => undefined)
+      .catch(() => {})
+      .finally(() => {
+        telemetryCheckInFlight = undefined;
+      });
+  };
+  const stopTelemetryChecks = async () => {
+    telemetryStopped = true;
+    await telemetryCheckInFlight;
+  };
   // periodic keepalive
   const tickInterval = setInterval(() => {
+    void checkGatewayInstallationReplacement().catch((error: unknown) =>
+      params.logHealth.error(`installation check failed: ${formatError(error)}`),
+    );
     void hostThawRecovery.tick();
     const now = Date.now();
-    if (!params.isNixMode && now >= nextTelemetryCheckAtMs) {
+    if (!telemetryStopped && !params.isNixMode && now >= nextTelemetryCheckAtMs) {
       nextTelemetryCheckAtMs =
         now +
         TELEMETRY_MAINTENANCE_INTERVAL_MS +
         generateSecureInt(TELEMETRY_MAINTENANCE_INTERVAL_MS);
-      void checkTelemetryUpdate(params.getRuntimeConfig(), { surface: "gateway" }).catch(() => {});
+      performTelemetryCheck();
     }
     const payload = { ts: now };
     params.broadcast("tick", payload);
@@ -222,13 +246,15 @@ export function startGatewayMaintenanceTimers(params: {
 
   // Queue tombstone expiry and reference-aware media GC share one maintenance
   // cycle even when the general media TTL sweep is disabled.
+  let mediaCleanupStopped = false;
   const runDeliveryQueueMediaGc =
     params.runDeliveryQueueMediaGc ??
     (async () => {
+      const context = captureDeliveryQueueStateContext();
       try {
-        pruneExpiredDeliveryQueueTombstones();
+        await pruneExpiredDeliveryQueueTombstones(undefined, context);
       } finally {
-        await pruneOrphanedDeliveryQueueMedia();
+        await pruneOrphanedDeliveryQueueMedia(undefined, context);
       }
     });
   let deliveryQueueMediaGcStartedAtMs = 0;
@@ -241,11 +267,24 @@ export function startGatewayMaintenanceTimers(params: {
       deliveryQueueMediaGcLoader.clear();
     }
   });
+  let deliveryQueueMediaGcStartPromise: Promise<void> | undefined;
   const performDeliveryQueueMediaGc = () => {
-    if (!deliveryQueueMediaGcLoader.peek()) {
-      deliveryQueueMediaGcStartedAtMs = Date.now();
+    if (mediaCleanupStopped) {
+      return undefined;
     }
-    return deliveryQueueMediaGcLoader.load();
+    const running = deliveryQueueMediaGcLoader.peek();
+    if (running) {
+      return running;
+    }
+    deliveryQueueMediaGcStartPromise ??= waitForMediaCleanupDrainsToSettle().then(() => {
+      deliveryQueueMediaGcStartPromise = undefined;
+      if (mediaCleanupStopped) {
+        return undefined;
+      }
+      deliveryQueueMediaGcStartedAtMs = Date.now();
+      return deliveryQueueMediaGcLoader.load();
+    });
+    return deliveryQueueMediaGcStartPromise;
   };
   void performDeliveryQueueMediaGc();
 
@@ -485,7 +524,6 @@ export function startGatewayMaintenanceTimers(params: {
   };
 
   let mediaCleanupInterval: ReturnType<typeof setInterval> | undefined;
-  let mediaCleanupStopped = false;
   const runMediaMaintenance = () => {
     if (mediaCleanupStopped) {
       return;
@@ -521,6 +559,7 @@ export function startGatewayMaintenanceTimers(params: {
         mediaCleanupInterval = undefined;
       }
       const pending = [
+        deliveryQueueMediaGcLoader.peek(),
         playbackTranscodeCacheCleanupLoader.peek(),
         managedOutgoingCleanupLoader.peek(),
         mediaCleanupInFlight,
@@ -549,6 +588,7 @@ export function startGatewayMaintenanceTimers(params: {
     tickInterval,
     healthInterval,
     dedupeCleanup,
+    stopTelemetryChecks,
     startMediaCleanup,
     stopMediaCleanup,
     stopSessionColdStorageMaintenance: sessionColdStorageMaintenance.stop,

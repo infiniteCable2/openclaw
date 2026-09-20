@@ -33,6 +33,7 @@ import {
   getPluginRegistryResourceOwner,
   markPluginRegistryActive,
   markPluginRegistryRetired,
+  preparePluginRegistryCacheShutdown,
   quiescePluginRegistry,
 } from "./registry-lifecycle.js";
 import type { PluginRegistry } from "./registry-types.js";
@@ -192,7 +193,9 @@ function preparePluginRegistryRetirement(
           });
         } else {
           await waitForPluginCommandExecutions(registry);
-          markPluginRegistryRetired(registry);
+          if (!isRegistryLive(registry)) {
+            markPluginRegistryRetired(registry);
+          }
         }
       });
     } finally {
@@ -696,7 +699,11 @@ export async function clearActivePluginRegistry(
 }
 
 export async function prepareActivePluginRegistryShutdown(): Promise<void> {
-  await Promise.all([loadPluginHostCleanupRuntime(), loadMemoryRuntime()]);
+  await Promise.all([
+    loadPluginHostCleanupRuntime(),
+    loadMemoryRuntime(),
+    preparePluginRegistryCacheShutdown(),
+  ]);
 }
 
 export function resetPluginRuntimeStateForTest(): void {

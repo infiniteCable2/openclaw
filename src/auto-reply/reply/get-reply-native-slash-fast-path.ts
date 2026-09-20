@@ -11,7 +11,7 @@ import { readPreparedModelCatalog } from "../../agents/prepared-model-catalog.js
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { isModelSelectionLocked } from "../../sessions/model-overrides.js";
-import { recordSessionCreated } from "../../sessions/session-state-events.js";
+import { recordSessionCreated } from "../../sessions/session-created.js";
 import { resolveStoredModelOverride } from "../../sessions/stored-model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SkillCommandSpec } from "../../skills/types.js";
@@ -152,7 +152,7 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     }
     const persistedInitialEntry = persistence.entry;
     if (creatingSession) {
-      recordSessionCreated({
+      recordSessionCreated(params.cfg, {
         sessionKey: sessionState.sessionKey,
         agentId: params.agentId,
         entry: persistedInitialEntry,
@@ -300,16 +300,16 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
 
   let loadedSkillCommands: SkillCommandSpec[] | undefined;
   const loadNativeSkillCommands = async () => {
-    loadedSkillCommands ??= (await skillCommandsRuntimeLoader.load()).listSkillCommandsForWorkspace(
-      {
-        workspaceDir: params.workspaceDir,
-        cfg: params.cfg,
-        agentId: params.agentId,
-        skillFilter: params.skillFilter,
-        sessionEntry: sessionState.sessionEntry,
-        sessionKey: sessionState.sessionKey,
-      },
-    );
+    loadedSkillCommands ??= await (
+      await skillCommandsRuntimeLoader.load()
+    ).prepareSkillCommandsForWorkspace({
+      workspaceDir: params.workspaceDir,
+      cfg: params.cfg,
+      agentId: params.agentId,
+      skillFilter: params.skillFilter,
+      sessionEntry: sessionState.sessionEntry,
+      sessionKey: sessionState.sessionKey,
+    });
     return loadedSkillCommands;
   };
 

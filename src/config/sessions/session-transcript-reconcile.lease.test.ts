@@ -1,12 +1,13 @@
-import { pathToFileURL } from "node:url";
 import { MessageChannel, type Worker, type MessagePort } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { releaseOpenClawAgentDatabaseLease } from "../../state/openclaw-agent-db-lease.js";
 import {
+  closeOpenClawAgentDatabaseByPath,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { readOpenClawAgentIntegrityVerification } from "../../state/openclaw-quarantine-store.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -31,6 +32,26 @@ const observer = useReconcileWorkerObserver();
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const options = { agentId: "main" };
 const scope = { ...options, sessionId: "lease-failure", sessionKey: "agent:main:lease-failure" };
+
+it("preserves verification until the writer closes after read-only reconciliation", async () => {
+  const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-reconcile-verification-") };
+  await withEnvAsync(env, async () => {
+    try {
+      await persistSessionTranscriptTurn(scope, {
+        messages: [{ eventId: "seed", message: { role: "user", content: "lease fixture" } }],
+        touchSessionEntry: false,
+      });
+      await waitForSessionTranscriptIndexReconcile(options);
+      const database = openOpenClawAgentDatabase(options);
+      expect(readOpenClawAgentIntegrityVerification(database.path, env)?.clean_close).toBe(0);
+      closeOpenClawAgentDatabaseByPath(database.path);
+      expect(readOpenClawAgentIntegrityVerification(database.path, env)?.clean_close).toBe(1);
+    } finally {
+      closeOpenClawAgentDatabasesForTest();
+      closeOpenClawStateDatabaseForTest();
+    }
+  });
+});
 
 it.each([
   "startup",
@@ -68,9 +89,11 @@ it.each([
         observer.beforeCreate = (filename, workerOptions) => {
           const planner = creations++ === 0;
           if (fault === "startup" && planner) {
+            // Bun follow-up (oven-sh/bun#43222): Restore a missing entry once Bun closes ports
+            // transferred before worker entry resolution fails.
             return {
-              filename: new URL("./missing-worker.js", pathToFileURL(`${stateDir}/`)),
-              options: workerOptions,
+              filename: "throw new Error('planner startup fixture')",
+              options: { ...workerOptions, eval: true },
             };
           }
           if (!planner && (fault === "release-exit" || fault === "release-error")) {

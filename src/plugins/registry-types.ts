@@ -109,6 +109,8 @@ type PluginRegistrationOwner = {
 /** Agent tool factory registered by one plugin runtime. */
 export type PluginToolRegistration = PluginRegistrationOwner & {
   factory: OpenClawPluginToolFactory;
+  /** Explicitly registered required-authority context, never inferred from plugin identity. */
+  contextVersion?: 2;
   names: string[];
   declaredNames?: string[];
   optional: boolean;
@@ -147,6 +149,8 @@ type PluginHostedMediaResolverRegistration = PluginRegistrationOwner & {
 
 export type PluginChannelRegistration = PluginRegistrationOwner & {
   plugin: ChannelPlugin;
+  /** Prepared views retain the exact transport donor in addition to their local admission. */
+  borrowedRuntimeRecord?: PluginRecord;
   /** Exact record-bound runtime resolver captured when the active plugin registered the channel. */
   resolveChannelRuntime?: () => PluginRuntime["channel"];
   /** Loader-owned provenance. Missing values are conservative legacy registrations. */
@@ -418,6 +422,10 @@ export type PluginRegistry = {
   agentHarnesses: PluginAgentHarnessRegistration[];
   pluginRuntimeArtifacts: Map<string, ResolvedPluginRuntimeArtifact>;
   compactionProviders: RegisteredCompactionProvider[];
+  decisionProviders: Array<{
+    pluginId: string;
+    host: import("../decisions/provider-host.js").DecisionProviderHost;
+  }>;
   detachedTaskRuntimes: DetachedTaskLifecycleRuntimeRegistration[];
   legacyInternalHooks: PluginLegacyInternalHookRegistration[];
   memoryCapabilities: MemoryPluginCapabilityRegistration[];

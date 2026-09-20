@@ -10,6 +10,7 @@ import {
   renderSettingsValue,
 } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
+import { registerGitHubEnglish } from "../../i18n/locales/en-github.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../../lib/external-link.ts";
 import { formatUiExternalText } from "../../lib/format-error.ts";
 import { formatDateTimeMs } from "../../lib/format.ts";
@@ -398,10 +399,15 @@ export function renderGitHubIdentity(
     html`
       ${renderSettingsRow({
         title: identity?.account ? `@${identity.account.login}` : t("agentTools.githubNoAccount"),
-        description:
+        description: html`${
           identity?.source === "agent-override"
             ? t("githubConnections.agentOverride")
-            : t("githubConnections.system"),
+            : t("githubConnections.system")
+        }${
+          identity?.credentialKind === "native"
+            ? html`<br />${t("agentTools.githubNativeAccountHint")}`
+            : nothing
+        }`,
         control: html`${renderGitHubHealth(identity, controller)}<button
             class="btn btn--sm"
             @click=${onOpenConnections}
@@ -447,3 +453,5 @@ export function renderGitHubIdentity(
     `,
   );
 }
+
+registerGitHubEnglish();

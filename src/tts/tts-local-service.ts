@@ -1,3 +1,5 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ensureProviderLocalService } from "../agents/provider-local-service.js";
 import type { ProviderLocalServiceConfig } from "../config/types.provider-local-service.js";
 import type { SpeechProviderConfig } from "./provider-types.js";
@@ -11,7 +13,7 @@ export async function acquireSpeechProviderLocalService(params: {
   if (!service) {
     return undefined;
   }
-  const baseUrl = readNonEmptyString(params.providerConfig.baseUrl);
+  const baseUrl = normalizeOptionalString(params.providerConfig.baseUrl);
   if (!baseUrl) {
     throw new Error(`tts.providers.${params.providerId}.baseUrl is required with localService`);
   }
@@ -34,16 +36,8 @@ function readLocalServiceConfig(
   if (value === undefined) {
     return undefined;
   }
-  if (!isRecord(value) || !readNonEmptyString(value.command)) {
+  if (!isRecord(value) || !normalizeOptionalString(value.command)) {
     throw new Error(`tts.providers.${providerId}.localService.command must be a non-empty string`);
   }
   return value as ProviderLocalServiceConfig;
-}
-
-function readNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

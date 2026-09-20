@@ -2,7 +2,7 @@
 import { statSync, type Dirent, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isVolatileBackupPath } from "../infra/backup-volatile-filter.js";
+import { isTransientBackupPath, isVolatileBackupPath } from "../infra/backup-volatile-filter.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { sameFileIdentity } from "../infra/fs-safe-advanced.js";
 import { isUpdateCapturePath } from "../infra/update-capture-paths.js";
@@ -32,7 +32,15 @@ export type BackupCoreDatabase = Readonly<
   {
     sourcePath: string;
     identity?: Stats;
-  } & ({ role: "global" } | { role: "agent"; agentId: string })
+  } & ({ role: "global" | "quarantine" } | { role: "agent"; agentId: string })
+>;
+
+/** Ephemeral coverage of a captured canonical image; never part of the archive manifest. */
+export type BackupSqliteSnapshotFact = Readonly<
+  { sourcePath: string; dev: number; ino: number } & (
+    | { role: "global" }
+    | { role: "agent"; agentId: string }
+  )
 >;
 
 type BackupResourcePolicy = Readonly<{
@@ -303,12 +311,17 @@ function createBackupPathPolicy({
   const volatilePlan = { stateDirs: [stateDir] };
   const isVolatile = (sourcePath: string): boolean => {
     const candidate = path.resolve(sourcePath);
-    // Explicit owners survive volatile filters; excluded ancestors stay pruned
-    // and the planner archives a selected link through its own asset instead.
+    // State-specific rules do not apply inside explicit owners. Transient names
+    // apply everywhere, while selected paths and their ancestors stay reachable.
     const ownedPath = protectedPaths.some((protectedPath) =>
       isPathWithin(candidate, protectedPath),
     );
-    return !ownedPath && isVolatileBackupPath(candidate, volatilePlan);
+    return (
+      (candidate !== stateDir &&
+        !protectedPaths.some((protectedPath) => isPathWithin(protectedPath, candidate)) &&
+        isTransientBackupPath(candidate)) ||
+      (!ownedPath && isVolatileBackupPath(candidate, volatilePlan))
+    );
   };
 
   return {
@@ -376,4 +389,28 @@ export function sealBackupResourceInventory(
     coreDatabases: owners,
     resolveSqliteSource,
   });
+}
+
+/** Report only canonical sources present in the completed snapshot generation. */
+export function describeCapturedBackupSqliteSnapshots(
+  inventory: BackupResourceInventory,
+  capturedSourcePaths: readonly string[],
+): readonly BackupSqliteSnapshotFact[] {
+  const capturedPaths = new Set(capturedSourcePaths);
+  return Object.freeze(
+    inventory.coreDatabases.flatMap((owner) =>
+      owner.role !== "quarantine" && owner.identity && capturedPaths.has(owner.sourcePath)
+        ? [
+            Object.freeze({
+              sourcePath: owner.sourcePath,
+              dev: owner.identity.dev,
+              ino: owner.identity.ino,
+              ...(owner.role === "agent"
+                ? { role: "agent" as const, agentId: owner.agentId }
+                : { role: "global" as const }),
+            }),
+          ]
+        : [],
+    ),
+  );
 }

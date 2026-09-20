@@ -18,6 +18,7 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { listRegistryWorktrees } from "../../agents/worktrees/registry.js";
 import { managedWorktrees, type ManagedWorktreeService } from "../../agents/worktrees/service.js";
+import { loadCombinedSessionStoreForGatewayCoreAsync } from "../../config/sessions/combined-store-gateway.js";
 import { sessionCreatorProfileId } from "../../config/sessions/session-entry-provenance.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { isPathInside } from "../../infra/path-guards.js";
@@ -37,11 +38,13 @@ import {
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { isTrustedSecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
-import { listProfiles, resolveUserProfileId } from "../../state/user-profiles.js";
+import { readCurrentUserProfileAliases } from "../../state/user-profile-list.js";
+import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import {
   CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE,
+  gitHubPublicApi,
   githubApiToken,
-} from "../control-ui-github-api.js";
+} from "../github-public-api.js";
 import { WRITE_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { searchRemoteProjects } from "../project-github-search.js";
 import { createSessionListEntryFilter } from "../session-sharing.js";
@@ -156,31 +159,31 @@ function sanitizeProjectRecord(project: ProjectRecord): ProjectRecord {
   };
 }
 
-function resolvePathProject(
-  projects: readonly ProjectRegistryEntry[],
-  folder: string,
-  sessionKey: string,
-): ProjectRegistryEntry | undefined {
-  const sessionAgentId = parseAgentSessionKey(sessionKey)?.agentId;
-  return projects
-    .filter((project) => project.repoRoot === folder)
-    .toSorted((left, right) => {
-      const rank = (project: ProjectRegistryEntry) =>
-        project.source === "workspace" && project.agentId === sessionAgentId
-          ? 0
-          : project.source !== "workspace"
-            ? 1
-            : 2;
-      return rank(left) - rank(right) || left.id.localeCompare(right.id);
-    })[0];
+function indexPathProjects(projects: readonly ProjectRegistryEntry[]) {
+  const byPath = new Map<string, ProjectRegistryEntry>();
+  const byAgent = new Map<string | undefined, ProjectRegistryEntry>();
+  for (const project of projects) {
+    // The registry emits one workspace per unique configured agent.
+    if (project.source === "workspace") {
+      byAgent.set(project.agentId, project);
+    }
+    const previous = byPath.get(project.repoRoot);
+    if (
+      !previous ||
+      (Number(project.source === "workspace") - Number(previous.source === "workspace") ||
+        project.id.localeCompare(previous.id)) < 0
+    ) {
+      byPath.set(project.repoRoot, project);
+    }
+  }
+  return { byPath, byAgent };
 }
 
 function listProjectRecents(
-  cfg: Parameters<typeof listProjectRegistry>[0],
+  store: ReturnType<typeof loadCombinedSessionStoreForGatewayCore>["store"],
   profileIds: ReadonlySet<string>,
   projects: readonly ProjectRegistryEntry[],
 ): ProjectRecent[] {
-  const store = loadCombinedSessionStoreForGatewayCore(cfg, { projection: "list" }).store;
   const candidates = Object.entries(store)
     .filter(
       ([, entry]) =>
@@ -194,6 +197,7 @@ function listProjectRecents(
   const projectsById = new Map(projects.map((project) => [project.id, project]));
   const seen = new Set<string>();
   const recents: ProjectRecent[] = [];
+  let pathProjects: ReturnType<typeof indexPathProjects> | undefined;
   for (const [sessionKey, entry] of candidates) {
     if (entry.repositoryWorkspaceId) {
       const repository = getSessionRepositoryWorkspaceStore().get(entry.repositoryWorkspaceId);
@@ -223,8 +227,13 @@ function listProjectRecents(
     const spawnedCwd = normalizeOptionalString(entry.spawnedCwd);
     const execCwd = normalizeOptionalString(entry.execCwd);
     const folder = worktreeRoot ?? spawnedCwd ?? execCwd;
-    const project =
-      explicitProject ?? (folder ? resolvePathProject(projects, folder, sessionKey) : undefined);
+    let project = explicitProject;
+    if (!project && folder) {
+      const agentId = parseAgentSessionKey(sessionKey)?.agentId;
+      const indexed = (pathProjects ??= indexPathProjects(projects));
+      const workspace = indexed.byAgent.get(agentId);
+      project = workspace?.repoRoot === folder ? workspace : indexed.byPath.get(folder);
+    }
     const key = project
       ? `project:${project.id}`
       : folder
@@ -310,11 +319,10 @@ async function listObservedProjects(
   service: ProjectWorktreeService,
   context: Parameters<GatewayRequestHandlers["projects.list"]>[0]["context"],
   client: Parameters<GatewayRequestHandlers["projects.list"]>[0]["client"],
+  store: ReturnType<typeof loadCombinedSessionStoreForGatewayCore>["store"],
 ): Promise<ProjectSummary[]> {
+  const worktrees = await service.listRegistryRecords();
   const cfg = context.getRuntimeConfig();
-  const { store } = loadCombinedSessionStoreForGatewayCore(cfg, {
-    projection: "list",
-  });
   const rawCandidates: RawProjectCandidate[] = [];
   const visibilityFilter = createSessionListEntryFilter({ client, cfg });
   const canSeeAll = !visibilityFilter;
@@ -331,7 +339,7 @@ async function listObservedProjects(
       });
     }
   }
-  for (const worktree of service.listRegistryRecords()) {
+  for (const worktree of worktrees) {
     if (worktree.removedAt !== undefined) {
       continue;
     }
@@ -458,34 +466,56 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
       }
       const registryProjects = await listProjectRegistry(context.getRuntimeConfig());
       const projects = registryProjects.map(sanitizeProjectRecord);
-      const profileId = client?.authenticatedUserProfile?.profileId;
-      const canonicalProfileId = profileId
-        ? (resolveUserProfileId(profileId) ?? profileId)
-        : undefined;
-      const recentProfileIds = canonicalProfileId
-        ? new Set([
-            canonicalProfileId,
-            ...listProfiles()
-              .filter((profile) => profile.mergedInto === canonicalProfileId)
-              .map((profile) => profile.id),
-          ])
-        : undefined;
-      const recents = recentProfileIds
-        ? listProjectRecents(context.getRuntimeConfig(), recentProfileIds, registryProjects)
-        : undefined;
-      const scopes = Array.isArray(client?.connect.scopes) ? client.connect.scopes : [];
-      const canWrite = authorizeOperatorScopesForRequiredScope(WRITE_SCOPE, scopes).allowed;
-      if (params.includeObserved && canWrite) {
-        try {
-          const observedProjects = await listObservedProjects(service, context, client);
-          respond(true, { projects, ...(recents ? { recents } : {}), observedProjects }, undefined);
-        } catch (error) {
-          respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
+      const cfg = context.getRuntimeConfig();
+      const requesterProfileId = client?.authenticatedUserProfile?.profileId;
+      const requesterUserId = client?.authenticatedUserId;
+      const accessRevision = readGatewayAccessRevision();
+      const assertCurrent = () => {
+        if (
+          client?.authenticatedUserProfile?.profileId !== requesterProfileId ||
+          client?.authenticatedUserId !== requesterUserId ||
+          readGatewayAccessRevision() !== accessRevision ||
+          context.getRuntimeConfig() !== cfg
+        ) {
+          throw new Error("Project access changed while preparing the listing. Retry the request.");
         }
+      };
+      const canWrite = () =>
+        authorizeOperatorScopesForRequiredScope(
+          WRITE_SCOPE,
+          Array.isArray(client?.connect.scopes) ? client.connect.scopes : [],
+        ).allowed;
+      let store: ReturnType<typeof loadCombinedSessionStoreForGatewayCore>["store"] = {};
+      let observedProjects: ProjectSummary[] | undefined;
+      try {
+        if (client?.authenticatedUserProfile?.profileId || (params.includeObserved && canWrite())) {
+          store = (await loadCombinedSessionStoreForGatewayCoreAsync(cfg, { projection: "list" }))
+            .store;
+          assertCurrent();
+        }
+        if (params.includeObserved && canWrite()) {
+          observedProjects = await listObservedProjects(service, context, client, store);
+          assertCurrent();
+        }
+      } catch (error) {
+        respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
         return;
       }
-      if (canWrite) {
-        respond(true, { projects, ...(recents ? { recents } : {}) }, undefined);
+      const profileId = client?.authenticatedUserProfile?.profileId;
+      const recentProfileIds = profileId ? readCurrentUserProfileAliases(profileId) : undefined;
+      const recents = recentProfileIds
+        ? listProjectRecents(store, recentProfileIds, registryProjects)
+        : undefined;
+      if (canWrite()) {
+        respond(
+          true,
+          {
+            projects,
+            ...(recents ? { recents } : {}),
+            ...(observedProjects ? { observedProjects } : {}),
+          },
+          undefined,
+        );
         return;
       }
       // Project identity is read-safe; host paths, origins, folders, and observed checkouts are
@@ -602,15 +632,12 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
       try {
         respond(true, await searchRemoteProjects(params.query), undefined);
       } catch (error) {
-        const credentialUnavailable = isTrustedSecretSurfaceUnavailableError(error);
-        const message = credentialUnavailable
-          ? CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE
-          : "GitHub project search is unavailable. Retry shortly.";
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.UNAVAILABLE, message, { retryable: !credentialUnavailable }),
-        );
+        const { message, ...details } =
+          error instanceof gitHubPublicApi.ControlUiGitHubError ||
+          isTrustedSecretSurfaceUnavailableError(error)
+            ? gitHubPublicApi.formatControlUiGitHubPreviewError(error)
+            : { message: "GitHub project search is unavailable. Retry shortly.", retryable: true };
+        respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, message, details));
       }
     },
     "projects.remove": async ({ params, respond, context }) => {
@@ -624,7 +651,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
           errorShape(ErrorCodes.INVALID_REQUEST, `unknown project id: ${params.id}`),
         );
       };
-      const project = resolveProjectRegistry(context.getRuntimeConfig(), params.id);
+      const project = await resolveProjectRegistry(context.getRuntimeConfig(), params.id);
       if (!project || project.source === "workspace") {
         respondUnknownProject();
         return;

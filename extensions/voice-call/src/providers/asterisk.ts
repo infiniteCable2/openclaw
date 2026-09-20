@@ -6,10 +6,12 @@ import type {
   RealtimeTranscriptionSession,
 } from "openclaw/plugin-sdk/realtime-transcription";
 import {
+  createRealtimeVoiceAudioQueue,
   createStreamingPcmResampler,
   mulawToPcm,
   pcmToMulaw,
   resamplePcm,
+  type RealtimeVoiceAudioQueue,
 } from "openclaw/plugin-sdk/realtime-voice";
 import type { AsteriskConfig } from "../config.js";
 import type { TelephonyTtsProvider } from "../telephony-tts.js";
@@ -54,6 +56,8 @@ type ActiveSession = {
   registration: AsteriskAudioSocketSession;
   listening: boolean;
   admitted: boolean;
+  terminal: boolean;
+  pendingAudio: RealtimeVoiceAudioQueue;
   playbackGeneration: number;
   resampler: ReturnType<typeof createStreamingPcmResampler>;
   transcription?: RealtimeTranscriptionSession;
@@ -108,6 +112,10 @@ export class AsteriskProvider implements VoiceCallProvider {
       onConnect: (session) => {
         void this.handleConnect(session).catch((error: unknown) => {
           this.logger.error(`[voice-call] Asterisk call setup failed: ${String(error)}`);
+          const state = this.active.get(session.uuid);
+          if (state?.registration === session) {
+            this.retireSession(state);
+          }
           this.audioSocket.hangup(session.uuid);
         });
       },
@@ -132,7 +140,7 @@ export class AsteriskProvider implements VoiceCallProvider {
 
   async stop(): Promise<void> {
     for (const session of this.active.values()) {
-      session.transcription?.close();
+      this.retireSession(session);
     }
     this.active.clear();
     this.pending.clear();
@@ -237,6 +245,7 @@ export class AsteriskProvider implements VoiceCallProvider {
     const session = this.active.get(input.providerCallId);
     if (session) {
       session.listening = false;
+      session.pendingAudio.clear();
     }
   }
 
@@ -270,6 +279,8 @@ export class AsteriskProvider implements VoiceCallProvider {
       registration,
       listening: true,
       admitted: false,
+      terminal: false,
+      pendingAudio: createRealtimeVoiceAudioQueue("reject-newest"),
       playbackGeneration: 0,
       resampler: createStreamingPcmResampler(this.options.config.audioSocket.sampleRate, 8_000),
     };
@@ -293,7 +304,12 @@ export class AsteriskProvider implements VoiceCallProvider {
       },
       onTranscript: (transcript) => {
         const text = transcript.trim();
-        if (!text || !state.admitted || this.active.get(registration.uuid) !== state) {
+        if (
+          !text ||
+          state.terminal ||
+          !state.admitted ||
+          this.active.get(registration.uuid) !== state
+        ) {
           return;
         }
         void this.emitEvent({
@@ -307,6 +323,7 @@ export class AsteriskProvider implements VoiceCallProvider {
       },
       onError: (error) => {
         this.logger.warn(`[voice-call] Asterisk transcription error: ${error.message}`);
+        this.retireSession(state);
         this.audioSocket.hangup(registration.uuid);
       },
     });
@@ -315,10 +332,11 @@ export class AsteriskProvider implements VoiceCallProvider {
       await transcription.connect();
     } catch (error: unknown) {
       this.logger.error(`[voice-call] Asterisk transcription connect failed: ${String(error)}`);
+      this.retireSession(state);
       this.audioSocket.hangup(registration.uuid);
       return;
     }
-    if (this.active.get(registration.uuid) !== state) {
+    if (state.terminal || this.active.get(registration.uuid) !== state) {
       transcription.close();
       return;
     }
@@ -327,7 +345,7 @@ export class AsteriskProvider implements VoiceCallProvider {
       id: createEventId(registration.uuid, "initiated"),
       type: "call.initiated",
     });
-    if (this.active.get(registration.uuid) !== state) {
+    if (state.terminal || this.active.get(registration.uuid) !== state) {
       return;
     }
     await this.emitEvent({
@@ -335,7 +353,13 @@ export class AsteriskProvider implements VoiceCallProvider {
       id: createEventId(registration.uuid, "answered"),
       type: "call.answered",
     });
-    state.admitted = this.active.get(registration.uuid) === state;
+    if (state.terminal || this.active.get(registration.uuid) !== state) {
+      return;
+    }
+    state.admitted = true;
+    for (const pcm of state.pendingAudio.drain()) {
+      this.handleAudio(registration, pcm, this.options.config.audioSocket.sampleRate);
+    }
   }
 
   private handleAudio(
@@ -344,14 +368,26 @@ export class AsteriskProvider implements VoiceCallProvider {
     sampleRate: number,
   ): void {
     const state = this.active.get(registration.uuid);
-    if (!state || !state.admitted || !state.listening || !state.transcription?.isConnected()) {
+    if (!state || state.terminal || !state.listening) {
       return;
     }
     if (sampleRate !== this.options.config.audioSocket.sampleRate) {
       this.logger.warn(
         `[voice-call] Rejecting Asterisk sample-rate change expected=${this.options.config.audioSocket.sampleRate} actual=${sampleRate}`,
       );
+      this.retireSession(state);
       this.audioSocket.hangup(registration.uuid);
+      return;
+    }
+    if (!state.admitted) {
+      if (!state.pendingAudio.enqueue(pcm)) {
+        this.logger.warn("[voice-call] Asterisk admission audio queue exceeded its limit");
+        this.retireSession(state);
+        this.audioSocket.hangup(registration.uuid);
+      }
+      return;
+    }
+    if (!state.transcription?.isConnected()) {
       return;
     }
     const pcm8k = state.resampler.process(pcm);
@@ -376,8 +412,7 @@ export class AsteriskProvider implements VoiceCallProvider {
     if (!state) {
       return;
     }
-    state.playbackGeneration += 1;
-    state.transcription?.close();
+    this.retireSession(state);
     this.active.delete(registration.uuid);
     void this.emitEvent({
       id: createEventId(registration.uuid, "ended"),
@@ -387,6 +422,17 @@ export class AsteriskProvider implements VoiceCallProvider {
       timestamp: Date.now(),
       reason: "hangup-user",
     });
+  }
+
+  private retireSession(state: ActiveSession): void {
+    if (state.terminal) {
+      return;
+    }
+    state.terminal = true;
+    state.admitted = false;
+    state.pendingAudio.clear();
+    state.playbackGeneration += 1;
+    state.transcription?.close();
   }
 
   private emitEvent(event: NormalizedEvent & { providerCallId: string }): Promise<void> {
@@ -401,6 +447,10 @@ export class AsteriskProvider implements VoiceCallProvider {
     // a failed admission. Different calls must not block one another's admission.
     const settled = delivery.catch((error: unknown) => {
       this.logger.error(`[voice-call] Asterisk event ${event.type} failed: ${String(error)}`);
+      const state = this.active.get(key);
+      if (state) {
+        this.retireSession(state);
+      }
       this.audioSocket.hangup(key);
     });
     this.eventDeliveries.set(key, settled);

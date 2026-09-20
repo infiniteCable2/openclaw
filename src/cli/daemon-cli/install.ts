@@ -28,6 +28,11 @@ import { readDaemonRuntimePinForInstall } from "../../daemon/runtime-pin-state.j
 import { readEmbeddedGatewayToken } from "../../daemon/service-audit.js";
 import { mergeGatewayServiceEnv } from "../../daemon/service-env-merge.js";
 import { sanitizeServiceInspectionError } from "../../daemon/service-inspection-error.js";
+import { reconcileGatewayServiceDefinition } from "../../daemon/service-reconciliation.js";
+import type {
+  GatewayServiceDefinitionBackupReceipt,
+  GatewayServiceDefinitionTransactionHooks,
+} from "../../daemon/service-stage.js";
 import {
   assertServiceDefinitionWritable,
   resolveManagedGatewayServiceCommand,
@@ -44,23 +49,22 @@ import {
   isLoopbackHost,
   resolveGatewayBindHost,
 } from "../../gateway/net.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
 import { hasErrnoCode, isMissingPathError } from "../../infra/errno.js";
 import {
   isDangerousHostEnvOverrideVarName,
   isDangerousHostEnvVarName,
   normalizeEnvVarKey,
 } from "../../infra/host-env-security.js";
+import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
 import { defaultRuntime } from "../../runtime.js";
 import { createLazyPromise } from "../../shared/lazy-promise.js";
 import { formatCliCommand } from "../command-format.js";
 import { formatInvalidConfigPort, formatInvalidPortOption } from "../error-format.js";
+import { parsePort } from "../shared/parse-port.js";
 import { waitForGatewayServiceLoad } from "./install-load.js";
 import { buildDaemonServiceSnapshot, installDaemonServiceAndEmit } from "./response.js";
-import {
-  createDaemonInstallActionContext,
-  resolveDaemonInstallBlockMessage,
-  parsePort,
-} from "./shared.js";
+import { createDaemonInstallActionContext, resolveDaemonInstallBlockMessage } from "./shared.js";
 import type { DaemonInstallOptions } from "./types.js";
 
 function resolveGatewayInstallBindMode(cfg: OpenClawConfig): GatewayBindMode {
@@ -167,7 +171,11 @@ export function mergeInstallInvocationEnv(params: {
 
 /** Install or refresh the managed Gateway service. */
 export async function runDaemonInstall(opts: DaemonInstallOptions) {
-  const { json, stdout, warnings, emit, fail } = createDaemonInstallActionContext(opts.json);
+  let definitionBackup: GatewayServiceDefinitionBackupReceipt | undefined;
+  const { json, stdout, warnings, emit, fail } = createDaemonInstallActionContext(
+    opts.json,
+    () => definitionBackup,
+  );
   const warn = (message: string) => {
     if (json) {
       warnings.push(message);
@@ -475,6 +483,23 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
       warn,
       config: cfg,
     });
+  const install = async (definitionTransaction?: GatewayServiceDefinitionTransactionHooks) => {
+    await service.install({
+      runtimePinUpdate: {
+        expected: pinSnapshot,
+        pin: pinnedRuntimePath ? { runtime: runtimeRaw, path: pinnedRuntimePath } : undefined,
+      },
+      env: installEnv,
+      stdout,
+      warn,
+      programArguments,
+      workingDirectory,
+      environment,
+      environmentValueSources,
+      definitionTransaction,
+      ...(opts.deferActivation ? { beforeLoad: waitForGatewayServiceLoad } : {}),
+    });
+  };
   await installDaemonServiceAndEmit({
     serviceNoun: "Gateway",
     service,
@@ -482,20 +507,26 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
     emit,
     fail,
     install: async () => {
-      await service.install({
-        runtimePinUpdate: {
-          expected: pinSnapshot,
-          pin: pinnedRuntimePath ? { runtime: runtimeRaw, path: pinnedRuntimePath } : undefined,
-        },
-        env: installEnv,
-        stdout,
-        warn,
-        programArguments,
-        workingDirectory,
-        environment,
-        environmentValueSources,
-        ...(opts.deferActivation ? { beforeLoad: waitForGatewayServiceLoad } : {}),
-      });
+      if (
+        isUpdateOwnedGatewayServiceCommand() ||
+        isTruthyEnvValue(process.env.OPENCLAW_UPDATE_IN_PROGRESS)
+      ) {
+        definitionBackup = await reconcileGatewayServiceDefinition({
+          env: installEnv,
+          root: (await resolveOpenClawPackageRoot({ moduleUrl: import.meta.url })) ?? undefined,
+          command: existingServiceCommand,
+          expectedCommand: {
+            programArguments,
+            workingDirectory,
+            environment,
+            environmentValueSources,
+          },
+          install,
+          warn,
+        });
+      } else {
+        await install();
+      }
     },
   });
 }

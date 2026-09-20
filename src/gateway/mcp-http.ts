@@ -21,6 +21,7 @@ import {
   sendHttpRequestRejection,
 } from "../infra/http-request-lifecycle.js";
 import { logDebug, logWarn } from "../logger.js";
+import { runOutsidePluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { runOutsideGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
 import {
   AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE,
@@ -34,6 +35,7 @@ import {
 } from "./mcp-grant-store.js";
 import {
   clearActiveMcpLoopbackRuntimeByOwnerToken,
+  getActiveMcpLoopbackRuntime,
   markMcpLoopbackRequestClassified,
   markMcpLoopbackRequestFinished,
   markMcpLoopbackRequestStarted,
@@ -232,7 +234,10 @@ async function startMcpLoopbackServer(
         }
         const cfg = getRuntimeConfig();
         const requestContext = resolveMcpRequestContext(req, cfg, auth);
-        const authorizeToolCall = boundClientGrant?.isCurrent;
+        const authorizeToolCall = () =>
+          !work.isClosing &&
+          getActiveMcpLoopbackRuntime()?.ownerToken === ownerToken &&
+          (boundClientGrant?.isCurrent() ?? true);
         const harnessEntry = isAgentHarnessSessionKey(requestContext.sessionKey)
           ? resolveSessionEntryAccessTarget({ cfg, sessionKey: requestContext.sessionKey }).entry
           : undefined;
@@ -381,6 +386,8 @@ async function startMcpLoopbackServer(
               ? createAdmittedGatewayToolCallerIdentity({
                   admittedRunContext: boundClientGrant.admittedRunContext,
                   receiptAuthority: boundClientGrant.isCurrent,
+                  cronAuthorityCheck: boundClientGrant.cronAuthorityCheck,
+                  mintCronRequesterGrant: boundClientGrant.mintCronRequesterGrant,
                   agentId: scopedTools.agentId,
                   sessionKey: requestContext.sessionKey,
                   turnSourceChannel: requestContext.messageProvider,
@@ -531,10 +538,10 @@ export async function ensureMcpLoopbackServer(port = 0): Promise<void> {
   }
   if (!activeMcpLoopbackServerPromise) {
     // The listener owns its context until Gateway close; callers own only requests.
-    // Inheriting the first turn's scope poisons later tool calls when that turn closes.
+    // The first turn's work and plugin generation can retire before later requests.
     const work = new AsyncWorkScope();
-    activeMcpLoopbackServerPromise = runOutsideGatewayRootWorkAdmission(() =>
-      work.run(() => startMcpLoopbackServer(port, work)),
+    activeMcpLoopbackServerPromise = runOutsidePluginRuntimeGenerationScope(() =>
+      runOutsideGatewayRootWorkAdmission(() => work.run(() => startMcpLoopbackServer(port, work))),
     )
       .then((close) => {
         closeActiveMcpLoopbackServer = close;
