@@ -21,8 +21,8 @@ import { toErrorObject } from "../infra/errors.js";
 import type { RuntimeLogger, PluginRuntimeCore } from "../plugins/runtime/types-core.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { isModelSelectionLocked, ModelSelectionLockedError } from "../sessions/model-overrides.js";
+import { deliveryContextFromSession } from "../utils/delivery-context.read.js";
 import {
-  deliveryContextFromSession,
   hasDeliveryTargetFields,
   normalizeDeliveryContext,
   normalizeSessionDeliveryState,
