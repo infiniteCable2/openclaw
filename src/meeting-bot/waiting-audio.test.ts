@@ -64,7 +64,7 @@ describe("meeting waiting audio", () => {
 
   it("paces looping frames and stops at the caller-owned abort boundary", async () => {
     const controller = new AbortController();
-    const writeOutput = vi.fn(async () => {
+    const writeOutput = vi.fn(async (_frame: Buffer) => {
       if (writeOutput.mock.calls.length === 2) {
         controller.abort();
       }
