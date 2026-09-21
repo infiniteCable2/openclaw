@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
 import { pcmToMulaw } from "../talk/audio-codec.js";
@@ -24,9 +25,9 @@ async function createAudioStreamFixture(params: {
   outputFormat: string;
   audioFormat?: MeetingRealtimeAudioFormat;
 }) {
-  const controllerReady = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
-  const firstRead = Promise.withResolvers<void>();
-  const secondRead = Promise.withResolvers<void>();
+  const controllerReady = createDeferred<ReadableStreamDefaultController<Uint8Array>>();
+  const firstRead = createDeferred();
+  const secondRead = createDeferred();
   const reads = [firstRead, secondRead];
   const cancelled = vi.fn();
   const release = vi.fn(async () => undefined);

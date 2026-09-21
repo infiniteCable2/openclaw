@@ -301,7 +301,7 @@ describe("TTS runtime native voice-note routing", () => {
       createMockSpeechProvider("mock", {
         isConfigured: ({ providerConfig }) => providerConfig.apiKey === "test-key",
         resolveConfig: ({ rawConfig }) => {
-          const providers = rawConfig.providers as Record<string, { apiKey?: unknown }> | undefined;
+          const providers = rawConfig.providers as TtsConfig["providers"];
           return providers?.mock ?? {};
         },
       }),

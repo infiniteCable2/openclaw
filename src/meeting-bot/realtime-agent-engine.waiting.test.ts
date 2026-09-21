@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
 import type { RealtimeTranscriptionSessionCreateRequest } from "../realtime-transcription/provider-types.js";
@@ -18,8 +19,8 @@ async function setup() {
   let callbacks!: RealtimeTranscriptionSessionCreateRequest;
   let consult!: MeetingAgentConsultParams;
   let audio!: ReadableStreamDefaultController<Uint8Array>;
-  const completion = Promise.withResolvers<{ text: string; delivered: true }>();
-  const readerStarted = Promise.withResolvers<void>();
+  const completion = createDeferred<{ text: string; delivered: true }>();
+  const readerStarted = createDeferred();
   const synthesis = vi.fn(async () => ({
     success: true,
     sampleRate: 24_000,
@@ -115,8 +116,8 @@ afterEach(() => vi.useRealTimers());
 describe("speech-confirmed waiting audio", () => {
   it("drains waiting music before a later TTS segment resumes PCM", async () => {
     const f = await setup();
-    const preparation = Promise.withResolvers<Awaited<ReturnType<typeof f.synthesis>>>();
-    const drain = Promise.withResolvers<void>();
+    const preparation = createDeferred<Awaited<ReturnType<typeof f.synthesis>>>();
+    const drain = createDeferred();
     let audio!: ReadableStreamDefaultController<Uint8Array>;
     const second = {
       success: true,
@@ -218,7 +219,7 @@ describe("speech-confirmed waiting audio", () => {
 
   it("cannot start another loop during the first speech frame's waiting-audio drain", async () => {
     const f = await setup();
-    const drain = Promise.withResolvers<void>();
+    const drain = createDeferred();
     try {
       f.process("1", "started");
       f.process("1", "speech-confirmed");

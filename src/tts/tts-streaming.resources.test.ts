@@ -18,6 +18,7 @@ import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-reque
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import type { TtsStreamResult } from "./tts-runtime-types.js";
 import { textToSpeechStream } from "./tts-streaming.js";
 import { prepareTextToSpeechTelephony, streamTextToSpeechTelephony } from "./tts-telephony.js";
 
@@ -214,7 +215,7 @@ describe("streaming speech registration ownership", () => {
       try {
         await fixture.withEnvironment(async () => {
           const params = { text: "Hello", cfg: fixture.cfg, prefsPath: fixture.prefsPath };
-          const result =
+          const result: TtsStreamResult =
             mode === "speech"
               ? await fixture.run()
               : mode === "telephony"
@@ -223,7 +224,7 @@ describe("streaming speech registration ownership", () => {
           expect(result.success).toBe(true);
           expect(release).not.toHaveBeenCalled();
           expect(fixture.state.connections.every((entry) => entry.database.isOpen)).toBe(true);
-          if ("audioStream" in result && result.audioStream) {
+          if (result.audioStream) {
             await result.audioStream.cancel();
           }
           await result.release?.();

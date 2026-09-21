@@ -1,7 +1,9 @@
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { toErrorObject } from "../infra/errors.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
@@ -157,7 +159,7 @@ describe("meeting transcript granularity", () => {
     async (transcriptGranularity) => {
       vi.useFakeTimers();
       let handle: Awaited<ReturnType<typeof startMeetingAgentRealtimeEngine>> | undefined;
-      const completion = Promise.withResolvers<{ text: string; delivered: true }>();
+      const completion = createDeferred<{ text: string; delivered: true }>();
       try {
         const provider = { ...createProvider(undefined), transcriptGranularity };
         let transcribe: ((text: string) => void) | undefined;
@@ -256,7 +258,7 @@ async function createControlledStreamingEngine() {
   }> = [];
   const synthesize = vi.fn(async (params: { signal?: AbortSignal }) => {
     const release = vi.fn(async () => undefined);
-    const readRequests = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const readRequests = [createDeferred(), createDeferred()];
     const state = {
       signal: params.signal,
       release,
@@ -276,7 +278,7 @@ async function createControlledStreamingEngine() {
     );
     return { success: true, audioStream, release, sampleRate: 24_000, outputFormat: "pcm" };
   });
-  const completion = Promise.withResolvers<{ text: string; delivered: true }>();
+  const completion = createDeferred<{ text: string; delivered: true }>();
   let consult: MeetingAgentConsultParams | undefined;
   const consultAgent = vi.fn((params: MeetingAgentConsultParams) => {
     consult = params;
@@ -307,7 +309,10 @@ async function createControlledStreamingEngine() {
     providers: [provider],
     consultAgent,
   });
-  callbacks?.onTranscript("Please answer my question.");
+  expectDefined(
+    callbacks?.onTranscript,
+    "Expected the prepared transcript callback",
+  )("Please answer my question.");
   await vi.waitFor(() => expect(consultAgent).toHaveBeenCalledOnce(), { timeout: 2_000 });
   return {
     handle,
@@ -390,7 +395,10 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       const stream = fixture.streamAt(0);
       stream.controller.enqueue(Uint8Array.from([1, 0]));
       await vi.waitFor(() => expect(fixture.writeOutput).toHaveBeenCalledOnce());
-      fixture.callbacks?.onTranscript(text);
+      expectDefined(
+        fixture.callbacks?.onTranscript,
+        "Expected the prepared transcript callback",
+      )(text);
       expect(stream.signal?.aborted).toBe(false);
       expect(fixture.clearOutput).not.toHaveBeenCalled();
       stream.controller.enqueue(Uint8Array.from([2, 0]));
