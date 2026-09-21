@@ -10,6 +10,7 @@ import {
   type RealtimeVoiceSessionHarness,
 } from "../talk/realtime-session-harness.js";
 import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
+import { createMeetingAgentWaitingAudio } from "./realtime-agent-waiting-audio.js";
 import {
   convertMeetingBridgeAudioForStt,
   createMeetingTtsAudioStreamConverter,
@@ -121,6 +122,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
 }): Promise<MeetingRealtimeAudioEngineHandle> {
   type SpeechUtterance = {
     generation: number;
+    waitingGeneration: number;
     chunks: string[];
     transcriptEntries: RealtimeVoiceTranscriptEntry[];
     playbackStarted: boolean;
@@ -154,6 +156,17 @@ export async function startMeetingAgentRealtimeEngine(params: {
     onError: (error) => {
       params.logger.warn(
         `${params.platform.logScope} ${agentLogScope} waiting audio failed: ${formatErrorMessage(error)}`,
+      );
+    },
+  });
+  const waiting = createMeetingAgentWaitingAudio({
+    playback: waitingAudioPlayback,
+    isStopped: () => stopped,
+    // Readers include the first-PCM drain; isolated input has no echo window.
+    canStart: () => activeTtsReaders.size === 0 && !harness.isOutputPlaybackWindowActive(),
+    onError: (error) => {
+      params.logger.warn(
+        `${params.platform.logScope} ${agentLogScope} waiting audio stop failed: ${formatErrorMessage(error)}`,
       );
     },
   });
@@ -191,7 +204,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
         final: true,
         payload: { meetingSessionId: params.meetingSessionId },
       });
-      await stopWaitingAudio();
+      await waiting.stop();
       const transportStopPromise = params.transport.stop();
       await Promise.allSettled(
         [...activeTtsReaders].map(async (reader) => await reader.cancel().catch(() => undefined)),
@@ -233,9 +246,6 @@ export async function startMeetingAgentRealtimeEngine(params: {
     return isCurrent();
   };
 
-  const stopWaitingAudio = () => waitingAudioPlayback.stop();
-  const scheduleWaitingAudio = () => waitingAudioPlayback.schedule();
-
   const cancelActiveSpeech = () => {
     for (const controller of activeTtsAborts) {
       controller.abort(new Error("Meeting caller started speaking"));
@@ -271,6 +281,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
 
   const createSpeechUtterance = (): SpeechUtterance => ({
     generation: outputGeneration,
+    waitingGeneration: waiting.generation,
     chunks: [],
     transcriptEntries: [],
     playbackStarted: false,
@@ -368,13 +379,6 @@ export async function startMeetingAgentRealtimeEngine(params: {
         params.logger.info(
           formatMeetingAgentTtsResultLog(params.platform.logScope, agentLogScope, result),
         );
-        await stopWaitingAudio();
-        if (!isCurrentSpeechUtterance(utterance) || controller.signal.aborted) {
-          await result.release?.();
-          activeTtsAborts.delete(controller);
-          allowNextPreparation();
-          return;
-        }
         harness.ensureTurn();
         const reader = result.audioStream.getReader();
         activeTtsReaders.add(reader);
@@ -409,6 +413,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
               }
               continue;
             }
+            if (firstSegmentChunk) {
+              // A stream handle is not audible output. Keep the waiting loop
+              // through synthesis and buffering, then drain before each segment resumes PCM.
+              await waiting.stop();
+            }
             if (!(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback))) {
               break;
             }
@@ -432,6 +441,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
           allowNextPreparation();
           activeTtsReaders.delete(reader);
           reader.releaseLock();
+          waiting.onOutputIdle();
           await result.release?.();
           activeTtsAborts.delete(controller);
         }
@@ -442,6 +452,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
         utterance.failed = true;
         utterance.finalized = true;
+        waiting.stopInBackground(utterance.waitingGeneration);
         // TTS and sink failures happen after a turn, and sometimes output, has started.
         // Close both spans so later input cannot inherit stale playback suppression.
         harness.finishOutputAudio("failed");
@@ -494,6 +505,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
     }
     outputGeneration += 1;
     utterance.finalized = true;
+    waiting.stopInBackground(utterance.waitingGeneration);
     cancelActiveSpeech();
     harness.finishOutputAudio("cancelled");
     harness.endTurn("cancelled");
@@ -539,15 +551,18 @@ export async function startMeetingAgentRealtimeEngine(params: {
           suppressInputDuringOutput: params.transport.supportsFullDuplexInput !== true,
         },
     talkback: {
-      debounceMs: MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS,
+      debounceMs:
+        resolved.provider.transcriptGranularity === "utterance"
+          ? 0
+          : MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS,
       logger: params.logger,
       logPrefix: `${params.platform.logScope} ${agentLogScope}`,
       responseStyle: "Brief, natural spoken answer for a live meeting.",
       fallbackText: "I hit an error while checking that. Please try again.",
-      consult: ({ question, responseStyle, signal }) => {
+      consult: async ({ question, responseStyle, signal }) => {
+        waiting.schedule();
         const utterance = createSpeechUtterance();
-        scheduleWaitingAudio();
-        return params.consultAgent({
+        const result = await params.consultAgent({
           meetingSessionId: params.meetingSessionId,
           requesterSessionKey: params.requesterSessionKey,
           args: { question, responseStyle },
@@ -567,6 +582,14 @@ export async function startMeetingAgentRealtimeEngine(params: {
               }
             : {}),
         });
+        if (
+          !result.text.trim() &&
+          utterance.chunks.length === 0 &&
+          isCurrentSpeechUtterance(utterance)
+        ) {
+          await waiting.stop(utterance.waitingGeneration);
+        }
+        return result;
       },
       deliver: enqueueSpeakText,
     },
@@ -588,27 +611,23 @@ export async function startMeetingAgentRealtimeEngine(params: {
       cfg: params.fullConfig,
       providerConfig: resolved.providerConfig,
       onSpeechStart: () => {
-        void stopWaitingAudio().catch((error: unknown) => {
-          params.logger.warn(
-            `${params.platform.logScope} ${agentLogScope} waiting audio stop failed: ${formatErrorMessage(error)}`,
-          );
-        });
+        if (stopped) {
+          return;
+        }
+        waiting.onSpeechStart();
         cancelActivePlayback();
       },
-      onTranscript: (text) => {
+      onProcessing: waiting.onProcessing,
+      onTranscript: (text, context) => {
         const trimmed = text.trim();
         if (!trimmed || stopped) {
           return;
         }
         const assistantEcho = harness.isLikelyAssistantEchoTranscript(trimmed);
+        waiting.onTranscript(context, assistantEcho);
         if (!assistantEcho) {
           // Before the first output byte, only an accepted final transcript can
           // discard prepared speech. Delayed assistant echoes are not caller turns.
-          void stopWaitingAudio().catch((error: unknown) => {
-            params.logger.warn(
-              `${params.platform.logScope} ${agentLogScope} waiting audio stop failed: ${formatErrorMessage(error)}`,
-            );
-          });
           outputGeneration += 1;
           cancelActiveSpeechForConfirmedTurn();
         }

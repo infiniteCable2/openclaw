@@ -32,8 +32,18 @@ export type RealtimeTranscriptionProviderPreparation = {
 /** Callback hooks emitted by realtime transcription sessions. */
 export type RealtimeTranscriptionSessionCallbacks = {
   onPartial?: (partial: string) => void;
-  onTranscript?: (transcript: string) => void;
+  onTranscript?: (transcript: string, context?: { utteranceId: string }) => void;
   onSpeechStart?: () => void;
+  /**
+   * Optional utterance processing lifecycle. IDs are unique within a session.
+   * Emit started at admission, before queued work; speech-confirmed requires
+   * positive speech detection, not an energy threshold or request submission.
+   * Emit one terminal state after onTranscript (if any), also on cancellation.
+   */
+  onProcessing?: (event: {
+    utteranceId: string;
+    state: "started" | "speech-confirmed" | "transcribed" | "empty" | "failed" | "cancelled";
+  }) => void;
   onError?: (error: Error) => void;
 };
 

@@ -75,6 +75,33 @@ Register each capability inside `register(api)` alongside your existing
 
   </Tab>
   <Tab title="Realtime transcription">
+    Declare `transcriptGranularity: "utterance"` only when each `onTranscript`
+    callback contains a complete, endpointed user utterance. The shared meeting
+    agent engine then starts an idle consult without an additional transcript
+    debounce. Consults remain serialized. Omit this capability or use `"segment"`
+    when final transcript callbacks can be fragments of one utterance; the
+    engine keeps its existing 900 ms coalescing window. Partial transcripts
+    still belong in `onPartial`, not `onTranscript`.
+
+    Providers that can confirm speech before text decoding may emit optional
+    `onProcessing({ utteranceId, state })` events. Use a session-unique ID and
+    emit `started` at utterance admission, before queue or worker waits. Emit
+    `speech-confirmed` only after positive speech detection, never from input
+    energy or request submission alone. Supply the same ID as the optional
+    second `onTranscript(text, { utteranceId })` argument, followed by exactly
+    one terminal state: `transcribed`, `empty`, `failed`, or `cancelled`.
+    Closing a session settles pending utterances as cancelled. Suppress stale
+    confirmations after newer speech, and do not confirm a still-spoken
+    utterance just because its buffer reached a size limit.
+
+    The shared meeting agent engine can start configured waiting audio at this
+    confirmation, while transcription is still running. It honors the configured
+    waiting delay (`0` for immediate feedback), retains the loop through agent
+    work and TTS preparation, and clears it before the first playable speech
+    frame. New speech, empty results, failures, and session closure stop the
+    corresponding loop. Providers without processing events retain their
+    existing transcript-driven behavior.
+
     Providers with cold local workers can implement optional `prepareSession(req)`.
     Resolve only once the worker is ready, honor `req.signal`, and return a lease
     whose `release()` ends preparation ownership. Consumers retain that lease

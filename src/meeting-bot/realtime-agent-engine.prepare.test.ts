@@ -151,6 +151,90 @@ describe("prepareMeetingAgentRealtimeEngine", () => {
   });
 });
 
+describe("meeting transcript granularity", () => {
+  it.each([undefined, "segment", "utterance"] as const)(
+    "preserves serial consults with %s transcript granularity",
+    async (transcriptGranularity) => {
+      vi.useFakeTimers();
+      let handle: Awaited<ReturnType<typeof startMeetingAgentRealtimeEngine>> | undefined;
+      const completion = Promise.withResolvers<{ text: string; delivered: true }>();
+      try {
+        const provider = { ...createProvider(undefined), transcriptGranularity };
+        let transcribe: ((text: string) => void) | undefined;
+        provider.createSession.mockImplementation((request) => {
+          transcribe = request.onTranscript;
+          return {
+            connect: async () => undefined,
+            sendAudio() {},
+            close() {},
+            isConnected: () => true,
+          };
+        });
+        const consultAgent = vi
+          .fn(async (_params: MeetingAgentConsultParams) => ({
+            text: "",
+            delivered: true as const,
+          }))
+          .mockImplementationOnce(() => completion.promise);
+        handle = await startMeetingAgentRealtimeEngine({
+          config,
+          fullConfig: {},
+          runtime: {} as PluginRuntime,
+          platform: { displayName: "Test meeting", logScope: "test", sessionIdPrefix: "test" },
+          meetingSessionId: "transcript-granularity",
+          transport: {
+            onFatal() {},
+            startInput() {},
+            writeOutput: async () => undefined,
+            clearOutput: async () => undefined,
+            stop: async () => undefined,
+            dispose: async () => undefined,
+          },
+          providers: [provider],
+          logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+          consultAgent,
+        });
+        if (!transcribe) {
+          throw new Error("Expected transcription callback");
+        }
+        transcribe("First contribution.");
+        await vi.advanceTimersByTimeAsync(0);
+        if (transcriptGranularity === "utterance") {
+          expect(consultAgent).toHaveBeenCalledOnce();
+        } else {
+          expect(consultAgent).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(450);
+          transcribe("Continued contribution.");
+          await vi.advanceTimersByTimeAsync(899);
+          expect(consultAgent).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          expect(consultAgent).toHaveBeenCalledOnce();
+        }
+        const firstQuestion =
+          transcriptGranularity === "utterance"
+            ? "First contribution."
+            : "First contribution.\nContinued contribution.";
+        expect(consultAgent.mock.calls[0]?.[0].args).toEqual(
+          expect.objectContaining({ question: firstQuestion }),
+        );
+        transcribe("Next contribution.");
+        await vi.advanceTimersByTimeAsync(900);
+        expect(consultAgent).toHaveBeenCalledOnce();
+        completion.resolve({ text: "", delivered: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(consultAgent).toHaveBeenCalledTimes(2);
+        expect(consultAgent.mock.calls[1]?.[0].args).toEqual(
+          expect.objectContaining({ question: "Next contribution." }),
+        );
+      } finally {
+        completion.resolve({ text: "", delivered: true });
+        await handle?.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+});
+
 async function createControlledStreamingEngine() {
   const provider = createProvider(undefined);
   let callbacks: Parameters<RealtimeTranscriptionProviderPlugin["createSession"]>[0] | undefined;

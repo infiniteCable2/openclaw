@@ -466,6 +466,8 @@ export type RealtimeTranscriptionProviderPlugin = {
   id: RealtimeTranscriptionProviderId;
   label: string;
   aliases?: string[];
+  /** Whether each onTranscript callback completes an utterance or only one segment. */
+  transcriptGranularity?: "segment" | "utterance";
   defaultModel?: string;
   models?: readonly string[];
   autoSelectOrder?: number;
