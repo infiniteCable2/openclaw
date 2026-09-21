@@ -3449,7 +3449,6 @@ src/tts/tts-payload.ts	2
 src/tts/tts-provider-resolution.ts	2
 src/tts/tts-request.ts	2
 src/tts/tts-settings.ts	4
-src/tts/tts-telephony.ts	1
 src/tts/voice-models.ts	4
 src/tui/components/chat-log.ts	2
 src/tui/embedded-backend.ts	3
