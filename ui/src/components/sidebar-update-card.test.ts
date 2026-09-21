@@ -18,6 +18,7 @@ type SidebarUpdateCardElement = HTMLElement & {
   canUpdate: boolean;
   canHoldUpdate: boolean;
   onUpdate: () => void;
+  onDismiss?: () => void;
   refreshRequired: boolean;
   onRefresh: () => Promise<boolean>;
   onHoldUpdate: () => Promise<boolean>;
@@ -322,6 +323,8 @@ describe("SidebarUpdateCard", () => {
       channel: "stable",
     });
     element.compact = true;
+    element.onDismiss = vi.fn();
+    element.onUpdate = vi.fn();
     await element.updateComplete;
 
     expect(element.querySelector(".sidebar-issues-panel__entity")?.textContent).toBe(
@@ -330,6 +333,13 @@ describe("SidebarUpdateCard", () => {
     expect(element.querySelector(".sidebar-update-card__action")?.textContent).toContain(
       "Update Gateway",
     );
+    const dismiss = element.querySelector<HTMLButtonElement>(".sidebar-issues-panel__dismiss")!;
+    expect(dismiss.getAttribute("aria-label")).toBe("Dismiss Update available");
+    expect(dismiss.querySelector("svg")).not.toBeNull();
+    dismiss.click();
+    expect(element.onDismiss).toHaveBeenCalledOnce();
+    expect(element.onUpdate).not.toHaveBeenCalled();
+    expect(element.querySelector("details")?.open).toBe(false);
   });
 
   it("keeps an unauthorized update discoverable without allowing activation", async () => {
