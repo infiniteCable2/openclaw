@@ -23,6 +23,7 @@ import {
   withPluginCache,
 } from "../plugins/plugin-cache.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { inspectPluginRegistry } from "../plugins/plugin-registry-snapshot.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -264,14 +265,16 @@ describe("Doctor plugin persistence", () => {
   });
 
   it.each(["alpha", "beta"])(
-    "reuses and persists the original %s scope while retaining the config-wide inventory",
+    "persists the system-owner scope with %s first while retaining the config-wide inventory",
     async (first) => {
       const names = [first, first === "alpha" ? "beta" : "alpha"];
+      const owner = names[1]!;
       await withPreflightPluginFixture(async (writeVersion, config, workspaces) => {
         await withPluginCache(createPluginCache(), async () => {
           const initial = await readPluginPreflight();
           const aggregate = initial.pluginMetadataSnapshot!;
-          expect(aggregate.index.workspaceDir).toBe(workspaces[first]);
+          expect.soft(aggregate.index.workspaceDir).toBe(workspaces[owner]);
+          expect.soft(aggregate.registryIndex.workspaceDir).toBe(workspaces[owner]);
           expect(
             aggregate.index.plugins
               .filter((p) => p.pluginId.startsWith("preflight-"))
@@ -306,16 +309,16 @@ describe("Doctor plugin persistence", () => {
           const metadataScope = createDoctorPluginMetadataSnapshotScope({
             baseSnapshot: aggregate,
           });
-          // Unqualified Doctor work inherits its prepared view, not the system-agent workspace.
+          // Unqualified Doctor work retains its prepared, complete fleet view.
           metadataScope.run({ config: sourceConfig }, () => {
             expect(getCurrentPluginMetadataSnapshot({ config: sourceConfig }) === aggregate).toBe(
               true,
             );
           });
-          const otherWorkspace = workspaces[names[1]!];
+          const otherWorkspace = workspaces[first];
           metadataScope.run({ config: sourceConfig, workspaceDir: otherWorkspace }, () => {
             const selected = getCurrentPluginMetadataSnapshot({ config: sourceConfig });
-            expect(selected === aggregate).toBe(false);
+            expect.soft(selected === aggregate).toBe(false);
             expect(selected?.workspaceDir).toBe(otherWorkspace);
           });
           const changedPolicy = {
@@ -367,40 +370,40 @@ describe("Doctor plugin persistence", () => {
           const durable = withPluginCache(createPluginCache(), () =>
             readPersistedInstalledPluginIndexSync({ env: process.env }),
           );
-          expect.soft(durable?.workspaceDir).toBe(workspaces[first]);
+          expect.soft(durable?.workspaceDir).toBe(workspaces[owner]);
           expect
             .soft(
               durable?.plugins
                 .filter((p) => p.pluginId.startsWith("preflight-"))
                 .map((p) => p.pluginId),
             )
-            .toEqual([`preflight-${first}`]);
+            .toEqual([`preflight-${owner}`]);
           expect(migrationCheckpoint.hasActiveStartupMigrationLease({ env: process.env })).toBe(
             false,
           );
 
-          // Discriminating control: the exact original leaf is accepted by the same selector/preflight.
-          const leaf = withPluginCache(createPluginCache(), () =>
-            resolvePluginMetadataSnapshot({
-              config,
-              env: process.env,
-              workspaceDir: workspaces[first],
-              allowCurrent: false,
-            }),
-          );
-          const lease = migrationCheckpoint.acquireStartupMigrationLease();
-          try {
-            runOutsidePluginCache(() =>
-              withPluginCache(createPluginCache(), () =>
-                writePersistedInstalledPluginIndexWithLeaseSync(leaf.index, {
-                  env: process.env,
-                  lease,
-                }),
-              ),
+          const readDurableRevision = () => {
+            const { db } = openOpenClawStateDatabase({ env: process.env });
+            const kysely =
+              getNodeSqliteKysely<Pick<OpenClawStateKyselyDatabase, "config_machine_state">>(db);
+            return executeSqliteQueryTakeFirstSync(
+              db,
+              kysely
+                .selectFrom("config_machine_state")
+                .select(["value_json", "updated_at_ms"])
+                .where("state_key", "=", "plugins.installedIndex"),
             );
-          } finally {
-            lease.release();
-          }
+          };
+          const revision = readDurableRevision();
+          expect(revision).toBeDefined();
+          const inspect = () => inspectPluginRegistry({ config, env: process.env });
+          expect(await inspect()).toMatchObject({
+            state: "fresh",
+            refreshReasons: [],
+            differences: [],
+            persisted: { workspaceDir: workspaces[owner] },
+          });
+          expect(readDurableRevision()).toEqual(revision);
           const control = await preflight();
           expect(control.pluginMetadataSnapshot?.registrySource).toBe("persisted");
           expect(
@@ -409,6 +412,12 @@ describe("Doctor plugin persistence", () => {
               .map((p) => p.id)
               .toSorted(),
           ).toEqual(["preflight-alpha", "preflight-beta"]);
+          expect(await inspect()).toMatchObject({
+            state: "fresh",
+            refreshReasons: [],
+            differences: [],
+          });
+          expect(readDurableRevision()).toEqual(revision);
           expect(
             (await readPluginPreflight()).pluginMetadataSnapshot?.plugins.find(
               (p) => p.id === `preflight-${first}`,
@@ -419,13 +428,13 @@ describe("Doctor plugin persistence", () => {
     },
   );
 
-  it.each(["secondary-schema", "duplicate-owner"])(
+  it.each(["non-owner-schema", "duplicate-owner"])(
     "keeps full config-wide validation before persistence (%s)",
     async (failure) => {
       await withPreflightPluginFixture(
         async (_writeVersion, config, workspaces) => {
-          if (failure === "secondary-schema") {
-            config.plugins!.entries!["preflight-beta"]!.config = { label: 17 };
+          if (failure === "non-owner-schema") {
+            config.plugins!.entries!["preflight-alpha"]!.config = { label: 17 };
             const current = await readPluginPreflight();
             await fs.writeFile(current.snapshot.path, JSON.stringify(config));
           } else {
@@ -467,9 +476,9 @@ describe("Doctor plugin persistence", () => {
           expect(result.snapshot.issues).toEqual(
             expect.arrayContaining([
               expect.objectContaining(
-                failure === "secondary-schema"
+                failure === "non-owner-schema"
                   ? {
-                      path: "plugins.entries.preflight-beta.config.label",
+                      path: "plugins.entries.preflight-alpha.config.label",
                       message: expect.stringContaining("must be string"),
                     }
                   : { message: expect.stringContaining("present in multiple agent workspaces") },
