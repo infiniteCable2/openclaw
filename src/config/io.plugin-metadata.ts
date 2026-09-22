@@ -1,5 +1,9 @@
 import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
 import { prepareBundledDiscoveryMode } from "../plugins/bundled-discovery-state.js";
+import {
+  appendPluginControlPlaneWorkspaceDiagnostic,
+  resolvePluginControlPlaneWorkspace,
+} from "../plugins/control-plane-workspace.js";
 import { getCompatibleProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { getGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { loadInstalledPluginIndexInstallRecordsSync } from "../plugins/installed-plugin-index-record-reader.js";
@@ -108,16 +112,22 @@ function resolveReusableGatewayPluginMetadataSnapshot(
   ) {
     return undefined;
   }
-  return (
-    getGatewayPluginMetadataSnapshot() ??
-    getCompatibleProcessGatewayPluginMetadataSnapshot({
-      config: params.config,
-      env: params.env,
-      allowWorkspaceScopedSnapshot: true,
-      requireAgentWorkspaceCompatibility: true,
-      allowSynchronousPolicyRead,
-    })
-  );
+  // The running Gateway owns its boot generation; management/reload operations
+  // may reuse it only when their control-plane owner still selects that scope.
+  const gateway = getGatewayPluginMetadataSnapshot();
+  if (gateway) {
+    return gateway;
+  }
+  const current = getCompatibleProcessGatewayPluginMetadataSnapshot({
+    config: params.config,
+    env: params.env,
+    allowWorkspaceScopedSnapshot: true,
+    requireAgentWorkspaceCompatibility: true,
+    allowSynchronousPolicyRead,
+  });
+  return current?.workspaceDir === resolvePluginControlPlaneWorkspace(params).workspaceDir
+    ? current
+    : undefined;
 }
 
 /** Prepare database facts asynchronously before the existing metadata derivation. */
@@ -171,12 +181,15 @@ function resolveConfigWideMetadataSelection(params: ResolveConfigWidePluginMetad
   const env = params.env ?? process.env;
   const dirs = listAgentWorkspaceDirs(params.config, env);
   const workspaceDirs: Array<string | undefined> = dirs.length ? dirs : [undefined];
+  const controlWorkspace = resolvePluginControlPlaneWorkspace({ config: params.config, env });
   return {
     workspaceDirs,
+    controlWorkspace,
     key: JSON.stringify([
       "config-wide",
       resolvePluginMetadataSnapshotCacheKey(params),
       workspaceDirs,
+      controlWorkspace.workspaceDir,
     ]),
   };
 }
@@ -205,13 +218,17 @@ function resolveConfigWidePluginMetadataSnapshotInScope(
   if (params.installRecords === undefined) {
     preparePluginMetadataMachineState({ env, stateDir: params.stateDir });
   }
-  const { key, workspaceDirs } = resolveConfigWideMetadataSelection(params);
+  const { key, workspaceDirs, controlWorkspace } = resolveConfigWideMetadataSelection(params);
   const cache = getPluginCache();
   const cached = cache.metadata.snapshots.get(key);
   if (cached) {
     return cached;
   }
-  const snapshot = resolveConfigWidePluginMetadataSnapshotImpl(params, workspaceDirs);
+  const snapshot = resolveConfigWidePluginMetadataSnapshotImpl(
+    params,
+    workspaceDirs,
+    controlWorkspace,
+  );
   cache.metadata.snapshots.set(key, snapshot);
   return snapshot;
 }
@@ -219,6 +236,7 @@ function resolveConfigWidePluginMetadataSnapshotInScope(
 function resolveConfigWidePluginMetadataSnapshotImpl(
   params: ResolveConfigWidePluginMetadataParams,
   workspaceDirs: Array<string | undefined>,
+  controlWorkspace: ReturnType<typeof resolvePluginControlPlaneWorkspace>,
 ): PluginMetadataSnapshot {
   const env = params.env ?? process.env;
   const workspaceParams = (workspaceDir: string | undefined) => ({
@@ -230,7 +248,7 @@ function resolveConfigWidePluginMetadataSnapshotImpl(
     ...(params.installRecords ? { installRecords: params.installRecords } : {}),
     allowWorkspaceScopedCurrent: true,
   });
-  if (workspaceDirs.length === 1) {
+  if (workspaceDirs.length === 1 && workspaceDirs[0] === controlWorkspace.workspaceDir) {
     return resolvePluginMetadataSnapshot(workspaceParams(workspaceDirs[0]));
   }
   const registryReader = preparePluginRegistrySnapshotReader({
@@ -249,12 +267,31 @@ function resolveConfigWidePluginMetadataSnapshotImpl(
         resolvePluginMetadataSnapshotInput(workspaceParams(workspaceDir), registryReader),
       ),
   ];
+  const controlIndex = workspaceDirs.indexOf(controlWorkspace.workspaceDir);
+  const controlSnapshot =
+    controlIndex >= 0
+      ? snapshots[controlIndex]!
+      : resolvePluginMetadataSnapshotInput(
+          // An omitted owner must not inherit a surrounding persona's metadata frame.
+          { ...workspaceParams(controlWorkspace.workspaceDir), allowCurrent: false },
+          preparePluginRegistrySnapshotReader({
+            ...params,
+            allowCurrent: false,
+            diagnostics: appendPluginControlPlaneWorkspaceDiagnostic([], controlWorkspace),
+            ...(params.installRecords !== undefined ? { preferPersisted: false } : {}),
+          }),
+        );
+  const acquired = controlIndex >= 0 ? snapshots : [...snapshots, controlSnapshot];
   const manifestRegistry = mergeRegistries(snapshots.map((snapshot) => snapshot.manifestRegistry));
+  manifestRegistry.diagnostics = appendPluginControlPlaneWorkspaceDiagnostic(
+    manifestRegistry.diagnostics,
+    controlWorkspace,
+  );
   const selectedPlugins = new Map(
     manifestRegistry.plugins.map((plugin) => [normalizePluginPolicyId(plugin.id), plugin]),
   );
-  // Merge only the runtime inventory; registryIndex retains the original persistence scope.
-  // Later scopes must not lose secondary plugins or resurrect ambiguous owners.
+  // Preserve fleet discovery order and validation, but persist only the native
+  // control-plane leaf. A first-persona leaf disagrees with management inspection.
   const indexPlugins = new Map(
     snapshots.flatMap((snapshot) =>
       snapshot.index.plugins.flatMap((record) => {
@@ -267,7 +304,7 @@ function resolveConfigWidePluginMetadataSnapshotImpl(
     ),
   );
   const index = {
-    ...firstSnapshot.index,
+    ...controlSnapshot.index,
     plugins: [...indexPlugins.values()],
     installRecords: Object.fromEntries(
       snapshots.flatMap((snapshot) => Object.entries(snapshot.index.installRecords)),
@@ -296,15 +333,15 @@ function resolveConfigWidePluginMetadataSnapshotImpl(
       }
     : undefined;
   const sumMetric = (key: keyof PluginMetadataSnapshot["metrics"]) =>
-    snapshots.reduce((total, snapshot) => total + snapshot.metrics[key], 0);
+    acquired.reduce((total, snapshot) => total + snapshot.metrics[key], 0);
   return restorePluginMetadataSnapshot(
     buildPluginMetadataSnapshot(
       {
-        ...firstSnapshot,
+        ...controlSnapshot,
         index,
         discovery,
         manifestRegistry,
-        registryDiagnostics: snapshots.flatMap((snapshot) => snapshot.registryDiagnostics),
+        registryDiagnostics: acquired.flatMap((snapshot) => snapshot.registryDiagnostics),
         metrics: {
           registrySnapshotMs: sumMetric("registrySnapshotMs"),
           manifestRegistryMs: sumMetric("manifestRegistryMs"),
