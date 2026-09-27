@@ -94,6 +94,17 @@ Register each capability inside `register(api)` alongside your existing
     confirmations after newer speech, and do not confirm a still-spoken
     utterance just because its buffer reached a size limit.
 
+    For reversible interruption on a full-duplex call, a provider may also emit
+    `onSpeechActivity({ utteranceId, state })` before transcription. `candidate`
+    means acoustic onset, `sustained` means the configured minimum speech
+    duration was reached, and `rejected` closes a short/noisy candidate without
+    admitting a transcription job. Reuse the same session-unique ID for the
+    later processing and transcript events. These acoustic hints may duck or
+    pause playout, but must never be treated as `speech-confirmed` or cancel an
+    agent turn by themselves. Transports that support reversible barge-in can
+    implement `setOutputGate("duck" | "paused" | "normal")` in the meeting
+    audio transport; the gate must apply to already-buffered output too.
+
     The shared meeting agent engine can start configured waiting audio at this
     confirmation, while transcription is still running. It honors the configured
     waiting delay (`0` for immediate feedback), retains the loop through agent

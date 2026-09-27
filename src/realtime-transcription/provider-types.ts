@@ -35,6 +35,15 @@ export type RealtimeTranscriptionSessionCallbacks = {
   onTranscript?: (transcript: string, context?: { utteranceId: string }) => void;
   onSpeechStart?: () => void;
   /**
+   * Reversible acoustic activity before endpoint/STT admission. Candidate and
+   * sustained are energy evidence, never a confirmed user turn. A rejected
+   * candidate has no later onProcessing terminal event.
+   */
+  onSpeechActivity?: (event: {
+    utteranceId: string;
+    state: "candidate" | "sustained" | "rejected";
+  }) => void;
+  /**
    * Optional utterance processing lifecycle. IDs are unique within a session.
    * Emit started at admission, before queued work; speech-confirmed requires
    * positive speech detection, not an energy threshold or request submission.

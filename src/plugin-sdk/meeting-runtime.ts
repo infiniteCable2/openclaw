@@ -17,6 +17,7 @@ export {
   type MeetingAgentRealtimePreparation,
 } from "../meeting-bot/realtime-agent-engine.js";
 export {
+  type MeetingOutputGate,
   type MeetingRealtimeAudioTransport,
   type MeetingRealtimeAudioTransportHealth,
 } from "../meeting-bot/realtime-audio-transport.js";

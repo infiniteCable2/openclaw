@@ -10,6 +10,9 @@ export type MeetingRealtimeAudioTransportHealth = {
   verifiedOutputGeneration?: number;
 };
 
+/** Reversible playout states for acoustic barge-in, before a caller turn is confirmed. */
+export type MeetingOutputGate = "normal" | "duck" | "paused";
+
 export interface MeetingRealtimeAudioTransport {
   /**
    * True only when input remains usable while output is playing, because capture is
@@ -26,6 +29,8 @@ export interface MeetingRealtimeAudioTransport {
   stop(): Promise<void>;
   writeOutput(audio: Buffer): Promise<void>;
   clearOutput(): Promise<void>;
+  /** Applies to audio already queued by the transport as well as future writes. */
+  setOutputGate?(gate: MeetingOutputGate): Promise<void>;
   dispose(): Promise<void>;
   getHealth?(): MeetingRealtimeAudioTransportHealth;
   startBargeInMonitor?(onBargeIn: (audio: Buffer) => boolean): void;

@@ -14,6 +14,7 @@ const OUTPUT_FRAME_MAGIC = Buffer.from("OCAP", "ascii");
 const OUTPUT_FRAME_VERSION = 1;
 const OUTPUT_FRAME_HEADER_BYTES = 20;
 const OUTPUT_PCM_FRAME_BYTES = 480;
+type MatrixOutputGate = "normal" | "duck" | "paused";
 
 export type MatrixRtcMediaKey = {
   participantIdentity: string;
@@ -22,9 +23,10 @@ export type MatrixRtcMediaKey = {
 };
 
 type ControlEvent =
-  | { type: "ready" }
+  | { type: "ready"; output_gate: boolean }
   | { type: "connected" }
   | { type: "output_cleared"; generation: number }
+  | { type: "output_gate_set"; gate: MatrixOutputGate }
   | { type: "stopped" }
   | { type: "fatal"; code?: string };
 
@@ -136,6 +138,7 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
   #inputStarted = false;
   #outputGeneration = 0;
   #clearTail = Promise.resolve();
+  #gateTail = Promise.resolve();
 
   constructor(params: {
     child: ChildProcessWithoutNullStreams;
@@ -327,6 +330,29 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     }
   }
 
+  async setOutputGate(gate: MatrixOutputGate): Promise<void> {
+    if (this.#fatal || this.#stopped) {
+      return;
+    }
+    const change = this.#gateTail.then(async () => {
+      if (this.#fatal || this.#stopped) {
+        return;
+      }
+      this.sendControl({ type: "set_output_gate", gate });
+      const event = await this.waitForControlEvent("output_gate_set");
+      if (event.type !== "output_gate_set" || event.gate !== gate) {
+        throw new Error("MatrixRTC media bridge acknowledged the wrong output gate");
+      }
+    });
+    this.#gateTail = change;
+    try {
+      await change;
+    } catch (error) {
+      this.#markFatal();
+      throw error;
+    }
+  }
+
   async stop(): Promise<void> {
     if (this.#stopped) {
       return;
@@ -386,7 +412,10 @@ export async function createMatrixRtcMediaTransport(params: {
     startup.signal.throwIfAborted();
     transport = new NativeMatrixRtcAudioTransport({ child, control, tempDir });
     child.off("error", onChildError);
-    await transport.waitForControlEvent("ready");
+    const ready = await transport.waitForControlEvent("ready");
+    if (ready.type !== "ready" || ready.output_gate !== true) {
+      throw new Error("MatrixRTC media bridge does not support reversible output gating");
+    }
     transport.sendControl({
       type: "start",
       url: params.url,
