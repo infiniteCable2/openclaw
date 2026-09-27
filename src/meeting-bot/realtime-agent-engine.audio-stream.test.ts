@@ -34,12 +34,16 @@ async function createAudioStreamFixture(params: {
   const beginOutput = vi.fn();
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
   let speechStart: (() => void) | undefined;
+  let speechProcessing: Parameters<
+    RealtimeTranscriptionProviderPlugin["createSession"]
+  >[0]["onProcessing"];
   const provider: RealtimeTranscriptionProviderPlugin = {
     id: "stream-test-stt",
     label: "Stream test STT",
     isConfigured: () => true,
     createSession(callbacks) {
       speechStart = callbacks.onSpeechStart;
+      speechProcessing = callbacks.onProcessing;
       return {
         connect: async () => undefined,
         close() {},
@@ -107,6 +111,7 @@ async function createAudioStreamFixture(params: {
     beginOutput,
     writeOutput,
     speechStart,
+    speechProcessing,
   };
 }
 
@@ -186,6 +191,7 @@ describe("meeting TTS stream conversion", () => {
           await fixture.handle.stop();
         } else {
           fixture.speechStart?.();
+          fixture.speechProcessing?.({ utteranceId: "barge-in", state: "speech-confirmed" });
         }
         await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledOnce());
         expect(fixture.cancelled).toHaveBeenCalledOnce();
