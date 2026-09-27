@@ -51,6 +51,8 @@ export type RealtimeTranscriptionSessionCallbacks = {
 export type RealtimeTranscriptionSessionCreateRequest = RealtimeTranscriptionSessionCallbacks & {
   cfg?: OpenClawConfig;
   providerConfig: RealtimeTranscriptionProviderConfig;
+  /** Host-selected wire format; absent means the legacy 8 kHz mu-law stream. */
+  inputAudioFormat?: "g711-ulaw-8khz" | "pcm16-16khz";
 };
 
 /** Runtime control surface for a realtime transcription session. */

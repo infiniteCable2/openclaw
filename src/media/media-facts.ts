@@ -29,6 +29,8 @@ export type MediaFact = {
   transcribed?: boolean;
   /** Channel-authored proof that this audio attachment is a conversational voice message. */
   voiceMessage?: boolean;
+  /** Channel-authored intent to recognize speech addressed to the agent, not relay media. */
+  speechInput?: boolean;
   messageId?: string;
   workspaceDir?: string;
   /** Internal proof that this exact fact was covered by a legacy staged projection. */
@@ -244,6 +246,7 @@ export function canonicalizePersistedUserMessageMedia<T extends object>(
       ...(fact.height ? { height: fact.height } : {}),
       ...(fact.transcribed ? { transcribed: true } : {}),
       ...(typeof fact.voiceMessage === "boolean" ? { voiceMessage: fact.voiceMessage } : {}),
+      ...(typeof fact.speechInput === "boolean" ? { speechInput: fact.speechInput } : {}),
       ...(fact.messageId ? { messageId: fact.messageId } : {}),
       ...(fact.workspaceDir ? { workspaceDir: fact.workspaceDir } : {}),
       ...(fact.staged || stagedMedia?.[index]?.staged ? { staged: true } : {}),
@@ -400,6 +403,7 @@ function normalizeMediaFact<TInput extends MediaFactInput>(
     ...(height ? { height } : {}),
     transcribed: input.transcribed === true || defaults.transcribed?.(input, index) === true,
     ...(typeof input.voiceMessage === "boolean" ? { voiceMessage: input.voiceMessage } : {}),
+    ...(typeof input.speechInput === "boolean" ? { speechInput: input.speechInput } : {}),
     messageId: normalizeOptionalString(input.messageId) ?? defaults.messageId,
     ...(workspaceDir ? { workspaceDir } : {}),
     ...(input.staged === true ? { staged: true } : {}),
@@ -491,6 +495,7 @@ function resolveMediaFactsWithPrecedence(
             : transcribed.has(index)
           : fact?.transcribed === true || transcribed.has(index),
         voiceMessage: fact?.voiceMessage,
+        speechInput: fact?.speechInput,
         messageId: fact?.messageId,
         workspaceDir:
           normalizeOptionalString(fact?.workspaceDir) ??

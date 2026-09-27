@@ -12,7 +12,7 @@ import {
 import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
 import { createMeetingAgentWaitingAudio } from "./realtime-agent-waiting-audio.js";
 import {
-  convertMeetingBridgeAudioForStt,
+  createMeetingSttAudioConverter,
   createMeetingTtsAudioStreamConverter,
 } from "./realtime-audio-format.js";
 import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
@@ -145,6 +145,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
     fullConfig: params.fullConfig,
     providers: params.providers,
   });
+  const sttInputFormat =
+    resolved.provider.resolveInputAudioFormat?.(resolved.providerConfig) ?? "g711-ulaw-8khz";
+  const sttAudioConverter = createMeetingSttAudioConverter(
+    params.config.chrome.audioFormat,
+    sttInputFormat,
+  );
   const waitingAudio = await prepareMeetingWaitingAudio(
     params.config.realtime.waitingAudio,
     params.config.chrome.audioFormat,
@@ -610,14 +616,21 @@ export async function startMeetingAgentRealtimeEngine(params: {
     sttSession = resolved.provider.createSession({
       cfg: params.fullConfig,
       providerConfig: resolved.providerConfig,
+      inputAudioFormat: sttInputFormat,
       onSpeechStart: () => {
         if (stopped) {
           return;
         }
         waiting.onSpeechStart();
-        cancelActivePlayback();
       },
-      onProcessing: waiting.onProcessing,
+      onProcessing: (event) => {
+        waiting.onProcessing(event);
+        // An energy-only onset can be echo or noise. Keep already-started speech
+        // intact until the transcription provider has confirmed actual speech.
+        if (!stopped && event.state === "speech-confirmed") {
+          cancelActivePlayback();
+        }
+      },
       onTranscript: (text, context) => {
         const trimmed = text.trim();
         if (!trimmed || stopped) {
@@ -692,9 +705,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       if (!harness.recordInputAudio(audio)) {
         return;
       }
-      sttSession?.sendAudio(
-        convertMeetingBridgeAudioForStt(audio, params.config.chrome.audioFormat),
-      );
+      sttSession?.sendAudio(sttAudioConverter.process(audio));
     });
 
     await sttSession.connect();

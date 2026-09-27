@@ -106,6 +106,8 @@ export type AudioTranscriptionRequest = {
   buffer: Buffer;
   fileName: string;
   mime?: string;
+  /** Only explicit agent-directed speech is eligible for speech enhancement. */
+  speechInput?: boolean;
   /** Compatibility field for existing providers; prefer auth.kind/apiKey. */
   apiKey: string;
   auth?: MediaUnderstandingProviderRequestAuth;
