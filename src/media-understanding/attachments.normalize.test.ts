@@ -41,6 +41,23 @@ describe("normalizeAttachmentPath", () => {
 });
 
 describe("normalizeAttachments", () => {
+  it("marks only conversational input, never ordinary audio or relay media", () => {
+    const attachments = normalizeAttachments({
+      media: [
+        { path: "/tmp/voice.ogg", contentType: "audio/ogg", voiceMessage: true },
+        { path: "/tmp/file.wav", contentType: "audio/wav", voiceMessage: false },
+        { path: "/tmp/device.wav", contentType: "audio/wav", speechInput: true },
+        { path: "/tmp/relay.wav", contentType: "audio/wav" },
+      ],
+    });
+    expect(attachments.map((entry) => entry.speechInput === true)).toEqual([
+      true,
+      false,
+      true,
+      false,
+    ]);
+  });
+
   it("preserves original fact indexes when empty slots are not materializable", () => {
     expect(
       normalizeAttachments({

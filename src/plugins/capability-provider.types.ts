@@ -471,6 +471,10 @@ export type RealtimeTranscriptionProviderPlugin = {
   defaultModel?: string;
   models?: readonly string[];
   autoSelectOrder?: number;
+  /** Selects higher-fidelity host audio for a configured live speech front end. */
+  resolveInputAudioFormat?: (
+    providerConfig: RealtimeTranscriptionProviderConfig,
+  ) => "g711-ulaw-8khz" | "pcm16-16khz";
   resolveConfig?: (
     ctx: RealtimeTranscriptionProviderResolveConfigContext,
   ) => RealtimeTranscriptionProviderConfig;

@@ -42,6 +42,7 @@ import { writeExternalFileWithinRoot } from "../infra/fs-safe.js";
 import { resolveProxyFetchFromEnv } from "../infra/net/proxy-fetch.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { ImageOptimizationLimitError } from "../media/image-optimization-error.js";
+import { normalizeMediaFacts } from "../media/media-facts.js";
 import { runFfmpeg } from "../media/media-services.js";
 import {
   getOfficialExternalPluginCatalogManifest,
@@ -817,10 +818,12 @@ export async function runProviderEntry(params: {
         workspaceDir: params.workspaceDir,
       }) ||
       entry.model;
+    const speechFact = normalizeMediaFacts(params.ctx.media)[params.attachmentIndex];
     const input = {
       buffer: media.buffer,
       fileName: media.fileName,
       mime: media.mime,
+      speechInput: speechFact?.speechInput === true || speechFact?.voiceMessage === true,
       ...transport,
       model,
       language: audioLanguage,

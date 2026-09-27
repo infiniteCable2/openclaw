@@ -84,6 +84,28 @@ async function runAutoAudioCase(params: {
 }
 
 describe("runCapability auto audio entries", () => {
+  it("passes explicit speech intent without inferring it from an audio file", async () => {
+    await withAudioFixture("openclaw-speech-intent", async ({ ctx, media, cache }) => {
+      const seen: boolean[] = [];
+      const providerRegistry = createOpenAiAudioProvider(async (request) => {
+        seen.push(request.speechInput === true);
+        return { text: "understood", model: "test-model" };
+      });
+      const params = {
+        capability: "audio" as const,
+        cfg: createOpenAiAudioCfg(),
+        ctx,
+        attachments: cache,
+        media,
+        providerRegistry,
+      };
+      await runCapability(params);
+      ctx.media[0]!.speechInput = true;
+      await runCapability(params);
+      expect(seen).toEqual([false, true]);
+    });
+  });
+
   it.each([
     { text: "context:", speech: false },
     { text: "###", speech: false },

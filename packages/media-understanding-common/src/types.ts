@@ -33,6 +33,8 @@ export type MediaAttachment = {
   workspaceDir?: string;
   index: number;
   alreadyTranscribed?: boolean;
+  /** Explicit channel intent: this audio is speech addressed to the agent. */
+  speechInput?: boolean;
 };
 
 /** Normalized text output produced by media understanding. */

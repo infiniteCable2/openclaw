@@ -9,7 +9,7 @@ import { createMediaAttachmentCache, normalizeMediaAttachments } from "./runner.
 
 // Temp-file fixtures for media runner tests; keep cache roots scoped to generated files.
 type MediaFixtureParams = {
-  ctx: { media: Array<{ path: string; contentType: string }> };
+  ctx: { media: Array<{ path: string; contentType: string; speechInput?: boolean }> };
   mediaPath: string;
   media: ReturnType<typeof normalizeMediaAttachments>;
   cache: ReturnType<typeof createMediaAttachmentCache>;

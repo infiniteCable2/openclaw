@@ -107,6 +107,14 @@ Register each capability inside `register(api)` alongside your existing
     whose `release()` ends preparation ownership. Consumers retain that lease
     through the call and release it on cancellation or session close.
 
+    A provider with a configured live speech front end can expose
+    `resolveInputAudioFormat(providerConfig)` and return `"pcm16-16khz"`.
+    The meeting host then supplies linear 16 kHz PCM to `sendAudio` and records
+    that choice in the `createSession` request's `inputAudioFormat`. Omitting the resolver
+    keeps the legacy 8 kHz G.711 mu-law stream. The returned format is a
+    provider-level contract: a caller must not apply speech enhancement to a
+    recording, media relay, or sensor feed merely because it carries audio.
+
     Consumers can pass candidate provider IDs as the optional second argument
     to `listRealtimeTranscriptionProviders(cfg, providerIds)`. This discovers
     providers named in plugin-local config without broadening the active
@@ -446,6 +454,13 @@ Register each capability inside `register(api)` alongside your existing
     Return the model when known; otherwise the host retains the requested
     model in its result. `transcribeAudio` remains available for providers
     using host-owned API-key resolution and rotation.
+
+    `request.speechInput` is true only when the channel has identified the
+    attachment as speech addressed to the agent, such as a voice message, or
+    has explicitly supplied that intent. Ordinary audio files, recordings,
+    sensor media, and relayed streams leave it false. Providers may use this
+    signal for speech-oriented preprocessing before recognition; they must not
+    infer it from MIME type alone.
 
     Bundled media providers can use `openProviderWebSocket(...)` from the
     private-local `openclaw/plugin-sdk/provider-http` entrypoint. Resolve

@@ -339,7 +339,7 @@ async function createControlledStreamingEngine() {
 }
 
 describe("startMeetingAgentRealtimeEngine streaming output", () => {
-  it("does not resume prepared or later sentences after speech onset", async () => {
+  it("does not resume prepared or later sentences after confirmed speech", async () => {
     const fixture = await createControlledStreamingEngine();
     try {
       await fixture.speech({ type: "chunk", text: "This is the first sentence." });
@@ -350,6 +350,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       await vi.waitFor(() => expect(fixture.streams).toHaveLength(2));
       fixture.streamAt(1).controller.enqueue(Uint8Array.from([2, 0]));
       fixture.callbacks?.onSpeechStart?.();
+      fixture.callbacks?.onProcessing?.({ utteranceId: "barge-in", state: "speech-confirmed" });
       await vi.waitFor(() => {
         expect(fixture.streamAt(0).release).toHaveBeenCalledOnce();
         expect(fixture.streamAt(1).release).toHaveBeenCalledOnce();
@@ -364,7 +365,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     }
   });
 
-  it("fences an already fulfilled read when speech onset races its continuation", async () => {
+  it("fences an already fulfilled read when confirmed speech races its continuation", async () => {
     const fixture = await createControlledStreamingEngine();
     try {
       await fixture.speech({ type: "chunk", text: "This sentence is still playing." });
@@ -379,6 +380,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       // Enqueue fulfills read(), then cancellation precedes its await continuation.
       stream.controller.enqueue(Uint8Array.from([2, 0]));
       fixture.callbacks?.onSpeechStart?.();
+      fixture.callbacks?.onProcessing?.({ utteranceId: "barge-in", state: "speech-confirmed" });
       await vi.waitFor(() => expect(stream.release).toHaveBeenCalledOnce());
       expect(fixture.writeOutput).toHaveBeenCalledOnce();
     } finally {
@@ -858,13 +860,17 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     await handle.stop();
   });
 
-  it("cancels synthesis and clears queued playback when the caller starts speaking", async () => {
+  it("keeps playback after an unconfirmed onset and cancels on confirmed speech", async () => {
     const streamCancelled = vi.fn();
     const clearOutput = vi.fn(async () => undefined);
     let onSpeechStart: (() => void) | undefined;
+    let onProcessing: Parameters<
+      RealtimeTranscriptionProviderPlugin["createSession"]
+    >[0]["onProcessing"];
     const provider = createProvider(undefined);
     provider.createSession.mockImplementation((params) => {
       onSpeechStart = params.onSpeechStart;
+      onProcessing = params.onProcessing;
       return {
         connect: vi.fn(async () => undefined),
         sendAudio: vi.fn(),
@@ -913,6 +919,14 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     handle.speak("Diese Ausgabe wird unterbrochen.");
     await vi.waitFor(() => expect(writeOutput).toHaveBeenCalledOnce());
     onSpeechStart?.();
+    onProcessing?.({ utteranceId: "noise", state: "started" });
+    onProcessing?.({ utteranceId: "noise", state: "empty" });
+    expect(streamCancelled).not.toHaveBeenCalled();
+    expect(clearOutput).not.toHaveBeenCalled();
+
+    onSpeechStart?.();
+    onProcessing?.({ utteranceId: "speech", state: "started" });
+    onProcessing?.({ utteranceId: "speech", state: "speech-confirmed" });
 
     await vi.waitFor(() => {
       expect(streamCancelled).toHaveBeenCalledOnce();

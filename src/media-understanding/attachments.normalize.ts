@@ -38,6 +38,7 @@ export function normalizeAttachments(ctx: MsgContext): MediaAttachment[] {
         mime: normalizeOptionalString(fact.contentType),
         index,
         alreadyTranscribed: fact.transcribed === true,
+        ...(fact.speechInput === true || fact.voiceMessage === true ? { speechInput: true } : {}),
       };
       const kind = fact.fileName ? (resolveMediaFactKind(fact) ?? fact.kind) : fact.kind;
       if (kind) {

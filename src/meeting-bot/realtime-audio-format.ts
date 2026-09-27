@@ -28,6 +28,28 @@ export function convertMeetingBridgeAudioForStt(
   return convertPcmToMulaw8k(audio, 24_000);
 }
 
+/** Keep sample-phase continuity when a realtime provider accepts linear 16 kHz input. */
+export function createMeetingSttAudioConverter(
+  audioFormat: MeetingRealtimeAudioFormat,
+  inputFormat: "g711-ulaw-8khz" | "pcm16-16khz",
+): { process(audio: Buffer): Buffer; flush(): Buffer } {
+  if (inputFormat === "g711-ulaw-8khz") {
+    return {
+      process: (audio) => convertMeetingBridgeAudioForStt(audio, audioFormat),
+      flush: () => Buffer.alloc(0),
+    };
+  }
+  if (audioFormat === "g711-ulaw-8khz") {
+    const resampler = createStreamingPcmResampler(8_000, 16_000);
+    return {
+      process: (audio) => resampler.process(mulawToPcm(audio)),
+      flush: () => resampler.flush(),
+    };
+  }
+  const resampler = createStreamingPcmResampler(24_000, 16_000);
+  return { process: (audio) => resampler.process(audio), flush: () => resampler.flush() };
+}
+
 export function convertMeetingTtsAudioForBridge(
   audio: Buffer,
   sampleRate: number,
