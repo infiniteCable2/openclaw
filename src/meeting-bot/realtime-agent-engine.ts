@@ -31,6 +31,8 @@ import {
   type MeetingRealtimeEngineConfig,
   type MeetingRuntimePlatform,
 } from "./realtime-engine.js";
+import { createMeetingBargeInGate } from "./realtime-output-gate.js";
+import { createMeetingSpeechCancellation } from "./realtime-speech-cancellation.js";
 import { createMeetingWaitingAudioPlayback, prepareMeetingWaitingAudio } from "./waiting-audio.js";
 
 const MEETING_AGENT_READINESS_TIMEOUT_MS = 120_000;
@@ -233,6 +235,19 @@ export async function startMeetingAgentRealtimeEngine(params: {
     });
   };
 
+  const bargeInGate = createMeetingBargeInGate({
+    transport: params.transport,
+    isStopped: () => stopped,
+    hasActiveOutput: () =>
+      activeTtsAborts.size + activeTtsReaders.size > 0 || harness.isOutputPlaybackWindowActive(),
+    onFailure: (error) => {
+      params.logger.warn(
+        `${params.platform.logScope} ${agentLogScope} output gate failed: ${formatErrorMessage(error)}`,
+      );
+      stopAfterFailure("output gate");
+    },
+  });
+
   const writeOutputAudio = async (audio: Buffer, firstChunk: boolean, isCurrent: () => boolean) => {
     if (!isCurrent()) {
       return false;
@@ -252,38 +267,15 @@ export async function startMeetingAgentRealtimeEngine(params: {
     return isCurrent();
   };
 
-  const cancelActiveSpeech = () => {
-    for (const controller of activeTtsAborts) {
-      controller.abort(new Error("Meeting caller started speaking"));
-    }
-    for (const reader of activeTtsReaders) {
-      void reader.cancel().catch(() => undefined);
-    }
-    void params.transport.clearOutput().catch(() => undefined);
-  };
-
-  const cancelActivePlayback = () => {
-    if (!harness.isOutputPlaybackWindowActive()) {
-      return;
-    }
-    outputGeneration += 1;
-    harness.flushOutput(cancelActiveSpeech);
-    harness.finishOutputAudio("cancelled");
-    harness.endTurn("cancelled");
-  };
-
-  const cancelActiveSpeechForConfirmedTurn = () => {
-    if (
-      activeTtsAborts.size === 0 &&
-      activeTtsReaders.size === 0 &&
-      !harness.isOutputPlaybackWindowActive()
-    ) {
-      return;
-    }
-    harness.flushOutput(cancelActiveSpeech);
-    harness.finishOutputAudio("cancelled");
-    harness.endTurn("cancelled");
-  };
+  const speechCancellation = createMeetingSpeechCancellation({
+    harness: () => harness,
+    activeTtsAborts,
+    activeTtsReaders,
+    bargeInGate,
+    onPlaybackWindowCancelled: () => {
+      outputGeneration += 1;
+    },
+  });
 
   const createSpeechUtterance = (): SpeechUtterance => ({
     generation: outputGeneration,
@@ -512,7 +504,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
     outputGeneration += 1;
     utterance.finalized = true;
     waiting.stopInBackground(utterance.waitingGeneration);
-    cancelActiveSpeech();
+    speechCancellation.cancelActiveSpeech();
     harness.finishOutputAudio("cancelled");
     harness.endTurn("cancelled");
   };
@@ -623,13 +615,15 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
         waiting.onSpeechStart();
       },
+      onSpeechActivity: bargeInGate.onSpeechActivity,
       onProcessing: (event) => {
         waiting.onProcessing(event);
         // An energy-only onset can be echo or noise. Keep already-started speech
         // intact until the transcription provider has confirmed actual speech.
         if (!stopped && event.state === "speech-confirmed") {
-          cancelActivePlayback();
+          speechCancellation.cancelActivePlayback();
         }
+        bargeInGate.onProcessing(event);
       },
       onTranscript: (text, context) => {
         const trimmed = text.trim();
@@ -642,7 +636,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
           // Before the first output byte, only an accepted final transcript can
           // discard prepared speech. Delayed assistant echoes are not caller turns.
           outputGeneration += 1;
-          cancelActiveSpeechForConfirmedTurn();
+          if (!speechCancellation.cancelForConfirmedTurn()) {
+            bargeInGate.release(context?.utteranceId);
+          }
+        } else {
+          bargeInGate.release(context?.utteranceId);
         }
         // Shipped Meet semantics keep assistant echoes in transcript history and events.
         // Echo suppression only prevents the recorded line from entering talkback.

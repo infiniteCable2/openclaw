@@ -47,6 +47,13 @@ function acknowledgeClear(control: net.Socket, generation: number) {
   );
 }
 
+function acknowledgeGate(control: net.Socket, gate: "normal" | "duck" | "paused") {
+  control.emit(
+    "data",
+    Buffer.from(`${JSON.stringify({ type: "output_gate_set", gate })}\n`, "utf8"),
+  );
+}
+
 describe("MatrixRTC media output framing", () => {
   it("declares its remote participant track as full-duplex input", () => {
     const { transport } = createTransportFixture();
@@ -102,5 +109,27 @@ describe("MatrixRTC media output framing", () => {
     await Promise.all([writing, clearing]);
 
     expect(stdin.write).toHaveBeenCalledOnce();
+  });
+
+  it("serializes reversible output-gate changes and checks bridge acknowledgements", async () => {
+    const { control, controlWrite, transport } = createTransportFixture();
+    const duck = transport.setOutputGate("duck");
+    const pause = transport.setOutputGate("paused");
+    await Promise.resolve();
+    expect(controlWrite).toHaveBeenCalledWith(
+      `${JSON.stringify({ type: "set_output_gate", gate: "duck" })}\n`,
+    );
+    expect(controlWrite).toHaveBeenCalledTimes(1);
+    acknowledgeGate(control, "duck");
+    await duck;
+    await Promise.resolve();
+    expect(controlWrite).toHaveBeenCalledTimes(2);
+    acknowledgeGate(control, "paused");
+    await pause;
+    const resume = transport.setOutputGate("normal");
+    await Promise.resolve();
+    expect(controlWrite).toHaveBeenCalledTimes(3);
+    acknowledgeGate(control, "normal");
+    await resume;
   });
 });
