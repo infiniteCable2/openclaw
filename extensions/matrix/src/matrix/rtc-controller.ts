@@ -474,6 +474,7 @@ export function registerMatrixRtcController(params: {
             realtime: {
               agentId: admission.agentId,
               toolPolicy: params.config.toolPolicy,
+              agentThinkingLevel: params.config.agentThinkingLevel,
             },
           },
           fullConfig: params.cfg,

@@ -65,6 +65,11 @@ export const matrixChannelConfigUiHints = {
     help: "Tool access for the configured agent during calls. Owner mode still requires an exact admitted identity and route.",
     advanced: true,
   },
+  "rtc.agentThinkingLevel": {
+    label: "MatrixRTC Agent Thinking",
+    help: "Optional thinking level for agent consultations during MatrixRTC calls only. When unset, inherit the agent default; off can reduce latency but may affect complex tool work.",
+    advanced: true,
+  },
   "rtc.responseStreaming": {
     label: "MatrixRTC Speech Streaming",
     help: 'Use "sentence" to begin TTS from native visible answer blocks while the agent is still generating. Default: off.',

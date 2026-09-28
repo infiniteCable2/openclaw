@@ -7,6 +7,7 @@ export type ResolvedMatrixRtcConfig = {
   transcriptionProvider: string;
   providers: Record<string, Record<string, unknown>>;
   toolPolicy: "safe-read-only" | "owner" | "none";
+  agentThinkingLevel?: NonNullable<MatrixRtcConfig["agentThinkingLevel"]>;
   responseStreaming: "off" | "sentence";
   waitingAudio?: { filePath: string; startDelayMs: number; volume: number };
   admissions: MatrixRtcAdmission[];
@@ -92,6 +93,7 @@ export function resolveMatrixRtcConfig(
     transcriptionProvider,
     providers: config.providers ?? {},
     toolPolicy: config.toolPolicy ?? "safe-read-only",
+    ...(config.agentThinkingLevel ? { agentThinkingLevel: config.agentThinkingLevel } : {}),
     responseStreaming: config.responseStreaming ?? "off",
     ...(waitingAudio ? { waitingAudio } : {}),
     admissions,

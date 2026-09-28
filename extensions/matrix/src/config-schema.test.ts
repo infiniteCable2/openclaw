@@ -19,6 +19,7 @@ describe("MatrixConfigSchema SecretInput", () => {
           "local-media": { baseUrl: "http://127.0.0.1:8010/v1" },
         },
         toolPolicy: "owner",
+        agentThinkingLevel: "off",
         responseStreaming: "sentence",
         waitingAudio: {
           path: "/opt/openclaw/share/waiting.wav",
@@ -35,6 +36,9 @@ describe("MatrixConfigSchema SecretInput", () => {
       },
     });
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.rtc?.agentThinkingLevel).toBe("off");
+    }
   });
 
   it("rejects incomplete or open-ended MatrixRTC admissions", () => {
