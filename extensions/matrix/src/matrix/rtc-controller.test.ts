@@ -166,6 +166,7 @@ function createHarness(
       providers: {},
       toolPolicy: "owner",
       agentThinkingLevel: "off",
+      speakCommentary: false,
       responseStreaming: "sentence",
       waitingAudio: {
         filePath: "/var/lib/openclaw/audio/waiting.wav",

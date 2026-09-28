@@ -73,6 +73,8 @@ export type SubscribeEmbeddedAgentSessionParams = {
   onBlockReplyFlush?: (context: BlockReplyFlushContext) => void | Promise<void>;
   blockReplyBreak?: "text_end" | "message_end";
   blockReplyChunking?: BlockReplyChunking;
+  /** Explicit delivery opt-in for completed commentary messages. */
+  deliverCommentaryBlocks?: boolean;
   onPartialReply?: (payload: PartialReplyPayload) => boolean | void | Promise<boolean | void>;
   onAssistantMessageStart?: () => void | Promise<void>;
   /** Assistant fragment usage before queued delivery; fragments may be intermediate. */

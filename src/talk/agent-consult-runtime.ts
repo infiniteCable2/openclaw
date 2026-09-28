@@ -414,9 +414,12 @@ export async function consultRealtimeVoiceAgent(params: {
   abortSignal?: AbortSignal;
   /**
    * Optional low-latency speech sink. Native visible answer blocks are forwarded as
-   * they complete; structured reasoning, commentary, and error blocks stay excluded.
+   * they complete. Reasoning and error blocks stay excluded; commentary requires
+   * an explicit caller opt-in and does not become final-answer text.
    */
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
+  /** Speak completed commentary blocks on this consult only, without adding them to final text. */
+  speakCommentary?: boolean;
   onRunStarted?: (params: {
     runId: string;
     sessionId: string;
@@ -519,6 +522,7 @@ export async function consultRealtimeVoiceAgent(params: {
         : lifecycleAbortController.signal;
 
       const streamedChunks: string[] = [];
+      let commentarySpeechQueued = false;
       let speechDelivery = Promise.resolve();
       let speechDeliveryError: Error | undefined;
       let speechDeliveryAborted = false;
@@ -601,6 +605,7 @@ export async function consultRealtimeVoiceAgent(params: {
           toolResultFormat: "plain",
           ...(params.onSpeakableText
             ? {
+                deliverCommentaryBlocks: params.speakCommentary === true,
                 blockReplyBreak: "text_end" as const,
                 blockReplyChunking: {
                   minChars: 48,
@@ -613,6 +618,19 @@ export async function consultRealtimeVoiceAgent(params: {
                   isReasoning?: boolean;
                   isCommentary?: boolean;
                 }) => {
+                  if (payload.isCommentary) {
+                    if (
+                      params.speakCommentary === true &&
+                      !payload.isError &&
+                      !payload.isReasoning &&
+                      typeof payload.text === "string" &&
+                      payload.text.trim()
+                    ) {
+                      commentarySpeechQueued = true;
+                      emitSpeechEvent({ type: "chunk", text: payload.text.trim() });
+                    }
+                    return;
+                  }
                   const text = collectRealtimeVoiceAgentConsultVisibleText([payload]);
                   if (!text) {
                     return;
@@ -685,7 +703,7 @@ export async function consultRealtimeVoiceAgent(params: {
           );
           const fallbackText =
             params.fallbackText ?? "I need a moment to verify that before answering.";
-          if (streamedChunks.length > 0) {
+          if (streamedChunks.length > 0 || commentarySpeechQueued) {
             // As with yield acknowledgments, done does not append new audio.
             emitSpeechEvent({ type: "chunk", text: fallbackText });
           }
@@ -702,8 +720,8 @@ export async function consultRealtimeVoiceAgent(params: {
         }
         if (
           !yielded &&
-          currentInputPayloads.length < payloads.length &&
-          streamedChunks.length > 0 &&
+          ((currentInputPayloads.length < payloads.length && streamedChunks.length > 0) ||
+            (commentarySpeechQueued && streamedChunks.length === 0)) &&
           !hasQueuedSpeechSuffix(streamedChunks, text)
         ) {
           // Earlier-input speech may be all the sink has received. Done only

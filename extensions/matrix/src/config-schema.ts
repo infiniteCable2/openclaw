@@ -85,6 +85,7 @@ const matrixRtcSchema = z
     agentThinkingLevel: z
       .enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"])
       .optional(),
+    speakCommentary: z.boolean().optional(),
     responseStreaming: z.enum(["off", "sentence"]).optional(),
     waitingAudio: z
       .object({

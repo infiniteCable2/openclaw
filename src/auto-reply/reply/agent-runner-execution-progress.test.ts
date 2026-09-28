@@ -71,6 +71,19 @@ async function executeTestTurn(
 }
 
 describe("executeAgentTurn: lifecycle progress", () => {
+  it("requests completed embedded commentary blocks only for an opted-in reply", async () => {
+    state.runEmbeddedAgentMock.mockImplementationOnce(async (params: EmbeddedAgentParams) => {
+      expect(params.deliverCommentaryBlocks).toBe(true);
+      return { payloads: [{ text: "Done." }], meta: {} };
+    });
+
+    const result = await executeTestTurn({
+      opts: { onBlockReply: vi.fn(), commentaryPayloadsEnabled: true },
+    });
+
+    expect(result.kind).toBe("success");
+  });
+
   it("keeps operational agent events from resetting repeated request evidence", async () => {
     state.runEmbeddedAgentMock.mockImplementationOnce(async (params: EmbeddedAgentParams) => {
       const sessionId = params.sessionId ?? "session";

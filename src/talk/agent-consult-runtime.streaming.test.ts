@@ -204,6 +204,7 @@ describe("realtime voice agent consult speech delivery", () => {
     ]);
     runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
       await runParams?.onBlockReply?.({ text: "interne Planung", isReasoning: true });
+      await runParams?.onBlockReply?.({ text: "Checking the tools.", isCommentary: true });
       await runParams?.onBlockReply?.({ text: "Erster Satz." });
       await runParams?.onBlockReply?.({ text: "Zweiter Satz." });
       return {
@@ -245,6 +246,43 @@ describe("realtime voice agent consult speech delivery", () => {
       breakPreference: "sentence",
     });
     expect(call.prompt).not.toContain("<final>...</final>");
+    expect(call.deliverCommentaryBlocks).toBe(false);
+  });
+
+  it("speaks opted-in commentary before tool work without adding it to the final answer", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
+      await runParams?.onBlockReply?.({ text: "I am checking now.", isCommentary: true });
+      await runParams?.onBlockReply?.({ text: "The answer is ready." });
+      return { payloads: [{ text: "The answer is ready." }], meta: {} };
+    });
+    const onSpeakableText = vi.fn(
+      async (_event: RealtimeVoiceAgentConsultSpeechEvent) => undefined,
+    );
+
+    const result = await consultRealtimeVoiceAgent({
+      cfg: {} as never,
+      agentRuntime: runtime as never,
+      logger: { warn: vi.fn() },
+      sessionKey: "voice:commentary",
+      messageProvider: "matrix",
+      lane: "matrix",
+      runIdPrefix: "voice-realtime-consult:commentary",
+      args: { question: "Check." },
+      transcript: [],
+      surface: "a live voice session",
+      userLabel: "User",
+      speakCommentary: true,
+      onSpeakableText,
+    });
+
+    expect(requireEmbeddedAgentCall(runEmbeddedAgent).deliverCommentaryBlocks).toBe(true);
+    expect(result).toEqual({ text: "The answer is ready.", delivered: true });
+    expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
+      { type: "chunk", text: "I am checking now." },
+      { type: "chunk", text: "The answer is ready." },
+      { type: "done", text: "The answer is ready." },
+    ]);
   });
 
   it.each([

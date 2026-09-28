@@ -29,6 +29,7 @@ describe("MatrixConfigSchema SecretInput", () => {
         },
         toolPolicy: "owner",
         agentThinkingLevel: "off",
+        speakCommentary: true,
         responseStreaming: "sentence",
         waitingAudio: {
           path: "/opt/openclaw/share/waiting.wav",
@@ -46,7 +47,9 @@ describe("MatrixConfigSchema SecretInput", () => {
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.rtc?.agentThinkingLevel).toBe("off");
+      expect(result.data).toMatchObject({
+        rtc: { agentThinkingLevel: "off", speakCommentary: true },
+      });
     }
   });
 

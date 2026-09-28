@@ -607,6 +607,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     onBlockReplyFlush: params.onBlockReplyFlush,
     blockReplyBreak: params.blockReplyBreak,
     blockReplyChunking: params.blockReplyChunking,
+    deliverCommentaryBlocks: params.deliverCommentaryBlocks,
     onReasoningStream: params.onReasoningStream,
     streamReasoningInNonStreamModes: params.streamReasoningInNonStreamModes,
     onReasoningEnd: params.onReasoningEnd,

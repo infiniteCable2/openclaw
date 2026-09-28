@@ -223,6 +223,7 @@ export async function runEmbeddedFallbackCandidate(
         },
         blockReplyBreak: turn.resolvedBlockStreamingBreak,
         blockReplyChunking: turn.blockReplyChunking,
+        deliverCommentaryBlocks: turn.opts?.commentaryPayloadsEnabled === true,
         // Subscriber callbacks are detached. Stage channel presentation before typing I/O.
         onPartialReply: async (payload) => {
           const classified = params.presentation.classifyStreamingPartial(payload);

@@ -75,6 +75,11 @@ export const matrixChannelConfigUiHints = {
     help: "Optional thinking level for agent consultations during MatrixRTC calls only. When unset, inherit the agent default; off can reduce latency but may affect complex tool work.",
     advanced: true,
   },
+  "rtc.speakCommentary": {
+    label: "MatrixRTC Spoken Commentary",
+    help: "Speak completed model commentary during MatrixRTC calls before tool work. Default: off. Reasoning remains hidden; this does not affect Matrix text or other voice surfaces.",
+    advanced: true,
+  },
   "rtc.responseStreaming": {
     label: "MatrixRTC Speech Streaming",
     help: 'Use "sentence" to begin TTS from native visible answer blocks while the agent is still generating. Default: off.',

@@ -255,6 +255,8 @@ export type RunEmbeddedAgentParams = {
   resolveReplyDelivery?: ReplyDeliveryObserver;
   blockReplyBreak?: "text_end" | "message_end";
   blockReplyChunking?: BlockReplyChunking;
+  /** Deliver completed commentary as its own block; the default keeps it archive-only. */
+  deliverCommentaryBlocks?: boolean;
   onReasoningStream?: (payload: ReasoningStreamPayload) => void | Promise<void>;
   streamReasoningInNonStreamModes?: boolean;
   onReasoningEnd?: () => void | Promise<void>;

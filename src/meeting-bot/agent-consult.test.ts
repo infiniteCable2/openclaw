@@ -109,7 +109,14 @@ describe("createMeetingRealtimeEngineBindings", () => {
   it("uses a call-scoped thinking override without changing the agent default", async () => {
     const bindings = createMeetingRealtimeEngineBindings({
       platform,
-      config: { realtime: { agentId: "operator", toolPolicy: "owner", agentThinkingLevel: "off" } },
+      config: {
+        realtime: {
+          agentId: "operator",
+          toolPolicy: "owner",
+          agentThinkingLevel: "off",
+          speakCommentary: true,
+        },
+      },
       fullConfig: {
         agents: {
           defaults: { thinkingDefault: "low" },
@@ -125,7 +132,12 @@ describe("createMeetingRealtimeEngineBindings", () => {
       transcript: [],
     });
     expect(consultRealtimeVoiceAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "operator", thinkLevel: "off", toolsAllow: undefined }),
+      expect.objectContaining({
+        agentId: "operator",
+        thinkLevel: "off",
+        speakCommentary: true,
+        toolsAllow: undefined,
+      }),
     );
   });
 

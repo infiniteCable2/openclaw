@@ -302,7 +302,7 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
       return;
     }
     const recordDeliveredReply = () => {
-      if (!payload.isReasoning && hasAssistantVisibleReply(payload)) {
+      if (!payload.isReasoning && !payload.isCommentary && hasAssistantVisibleReply(payload)) {
         state.visibleBlockReplyCount += 1;
         if (options?.pendingToolMedia) {
           state.pendingToolMediaDeliveryFailed = false;
@@ -340,13 +340,15 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     },
   ) => {
     flushAssistantStream();
-    const withAssistantDirectives = consumePendingAssistantReplyDirectivesIntoReply(state, payload);
+    const withAssistantDirectives = payload.isCommentary
+      ? payload
+      : consumePendingAssistantReplyDirectivesIntoReply(state, payload);
     const pendingToolMedia =
-      payload.isReasoning || options?.consumePendingToolMedia === false
+      payload.isReasoning || payload.isCommentary || options?.consumePendingToolMedia === false
         ? null
         : readPendingToolMediaReply(state);
     const withToolMedia =
-      options?.consumePendingToolMedia === false
+      payload.isCommentary || options?.consumePendingToolMedia === false
         ? withAssistantDirectives
         : consumePendingToolMediaIntoReply(state, withAssistantDirectives);
     const sentMediaUrls = new Set(state.messagingToolSentMediaUrls.map((url) => url.trim()));
@@ -387,7 +389,7 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     if (blockPayload.text && options?.blockSourceText !== undefined) {
       setReplyPayloadMetadata(taggedPayload, { blockSourceText: options.blockSourceText });
     }
-    if (state.deferBlockReplyDelivery) {
+    if (state.deferBlockReplyDelivery && payload.isCommentary !== true) {
       if (pendingToolMedia) {
         deferredToolMediaReplies.set(taggedPayload, {
           pendingToolMedia,

@@ -105,6 +105,7 @@ export function createMessageEndContext(
     builtinToolNames?: ReadonlySet<string>;
     sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
     enforceFinalTag?: boolean;
+    deliverCommentaryBlocks?: boolean;
     bufferedText?: string;
     state?: Record<string, unknown>;
   } = {},
@@ -118,6 +119,7 @@ export function createMessageEndContext(
         ? { sourceReplyDeliveryMode: params.sourceReplyDeliveryMode }
         : {}),
       ...(params.enforceFinalTag !== undefined ? { enforceFinalTag: params.enforceFinalTag } : {}),
+      ...(params.deliverCommentaryBlocks ? { deliverCommentaryBlocks: true } : {}),
       ...(params.onAgentEvent ? { onAgentEvent: params.onAgentEvent } : {}),
       ...(params.onBlockReply ? { onBlockReply: params.onBlockReply } : { onBlockReply: vi.fn() }),
     },

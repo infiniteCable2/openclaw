@@ -144,6 +144,7 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 - `threadBindings`: per-channel overrides for thread-bound session routing and lifecycle.
 - `streaming`: nested object `{ mode, chunkMode, block: { enabled, coalesce }, preview: { toolProgress }, progress: { label, labels, maxLines, maxLineChars, toolProgress } }`. `mode` is `"off"` (default), `"partial"`, `"quiet"`, or `"progress"`. Legacy scalar/boolean spellings migrate via `openclaw doctor --fix`.
 - `streaming.block.enabled`: when `true`, completed assistant blocks are kept as separate progress messages. Default: `false`.
+- `commentaryAgentIds`: optional agent IDs whose completed model commentary is sent as separate, durable messages for incoming DM text turns. This works with `streaming.mode: "off"` and does not enable partial-text streaming. It does not apply to voice notes, files, group rooms, or calls. If the agent also sends progress through the `message` tool, both messages can appear.
 - `markdown`: optional Markdown rendering config for outbound text.
 - `responsePrefix`: optional string prepended to outbound replies.
 - `textChunkLimit`: outbound chunk size in characters when `streaming.chunkMode: "length"`. Default: `4000`.
@@ -201,6 +202,7 @@ MatrixRTC call handling is an explicit opt-in. It uses the shared OpenClaw meeti
         toolPolicy: "safe-read-only",
         agentThinkingLevel: "off", // Optional; otherwise inherits the agent default.
         responseStreaming: "sentence",
+        speakCommentary: false, // Optional; speak completed commentary before tool work.
         waitingAudio: {
           path: "/var/lib/openclaw/audio/waiting.wav",
           startDelayMs: 1200,
@@ -239,6 +241,12 @@ Set `responseStreaming: "sentence"` to synthesize complete speakable sentences a
 agent produces them. Playback remains ordered and preparation is bounded to one sentence
 ahead, so a caller interruption can cancel both audible and prepared output without a large
 stale queue.
+
+`speakCommentary: true` lets MatrixRTC speak completed model-authored commentary
+before tool work. It requires `responseStreaming: "sentence"` and is off by default.
+Commentary remains separate from the final answer; hidden reasoning and errors are
+never spoken. This is a call-wide setting, not an agent-specific preference, and
+does not change Matrix text messages or other voice channels.
 
 `waitingAudio` is optional. When configured, OpenClaw starts looping the trusted local WAV
 after `startDelayMs` while an agent turn is still waiting for speech output. It stops and clears

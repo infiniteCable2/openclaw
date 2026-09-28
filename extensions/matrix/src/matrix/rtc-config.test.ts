@@ -31,11 +31,12 @@ describe("MatrixRTC config", () => {
   });
 
   it("normalizes a strict admission and pinned authorization URL", () => {
-    const resolved = resolveMatrixRtcConfig(validConfig());
+    const resolved = resolveMatrixRtcConfig({ ...validConfig(), speakCommentary: true });
     expect(resolved?.authServiceUrl).toBe("https://rtc.example.org/livekit/jwt");
     expect(findMatrixRtcAdmission(resolved!, "!private:example.org")?.agentId).toBe("example_owner");
     expect(resolved?.responseStreaming).toBe("sentence");
     expect(resolved?.agentThinkingLevel).toBe("off");
+    expect(resolved?.speakCommentary).toBe(true);
     expect(resolved?.waitingAudio).toEqual({
       filePath: waitingAudioPath,
       startDelayMs: 1_200,
@@ -52,6 +53,15 @@ describe("MatrixRTC config", () => {
   it("inherits agent thinking when the call override is absent", () => {
     const resolved = resolveMatrixRtcConfig({ ...validConfig(), agentThinkingLevel: undefined });
     expect(resolved?.agentThinkingLevel).toBeUndefined();
+  });
+
+  it("keeps spoken commentary off by default and requires sentence streaming when enabled", () => {
+    expect(
+      resolveMatrixRtcConfig({ ...validConfig(), speakCommentary: undefined })?.speakCommentary,
+    ).toBe(false);
+    expect(() =>
+      resolveMatrixRtcConfig({ ...validConfig(), speakCommentary: true, responseStreaming: "off" }),
+    ).toThrow("speakCommentary requires responseStreaming: sentence");
   });
 
   it.each([

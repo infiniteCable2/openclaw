@@ -3060,6 +3060,7 @@ describe("matrix monitor handler draft streaming", () => {
       ttsSupplement?: { spokenText: string; visibleTextAlreadyDelivered?: boolean };
       isCompactionNotice?: boolean;
       isError?: boolean;
+      isCommentary?: boolean;
       replyToId?: string;
     },
     info: { kind: string },
@@ -3230,6 +3231,28 @@ describe("matrix monitor handler draft streaming", () => {
       await finish();
     },
   );
+
+  it("sends an enabled commentary block as its own Matrix message with streaming off", async () => {
+    const { dispatch } = createStreamingHarness({
+      accountConfig: { commentaryAgentIds: ["assistant"] },
+      agentId: "assistant",
+      streaming: "off",
+    });
+    const { deliver, opts, finish } = await dispatch();
+    expect(opts.commentaryPayloadsEnabled).toBe(true);
+
+    await deliver({ text: "Checking now.", isCommentary: true }, { kind: "block" });
+    await deliver({ text: "Done." }, { kind: "final" });
+
+    expect(deliverMatrixRepliesMock).toHaveBeenCalledTimes(2);
+    expect(deliverMatrixRepliesMock.mock.calls[0]?.[0]).toMatchObject({
+      replies: [{ text: "Checking now.", isCommentary: true }],
+    });
+    expect(deliverMatrixRepliesMock.mock.calls[1]?.[0]).toMatchObject({
+      replies: [{ text: "Done." }],
+    });
+    await finish();
+  });
 
   it("records a failed block typing restart without replaying the accepted delivery", async () => {
     const acceptedDelivery = createMockMatrixDeliveryResult("$accepted", "Already delivered block");

@@ -8,6 +8,7 @@ export type ResolvedMatrixRtcConfig = {
   providers: Record<string, Record<string, unknown>>;
   toolPolicy: "safe-read-only" | "owner" | "none";
   agentThinkingLevel?: NonNullable<MatrixRtcConfig["agentThinkingLevel"]>;
+  speakCommentary: boolean;
   responseStreaming: "off" | "sentence";
   waitingAudio?: { filePath: string; startDelayMs: number; volume: number };
   admissions: MatrixRtcAdmission[];
@@ -66,6 +67,9 @@ export function resolveMatrixRtcConfig(
     config.transcriptionProvider,
     "transcriptionProvider",
   );
+  if (config.speakCommentary === true && config.responseStreaming !== "sentence") {
+    throw new Error("MatrixRTC speakCommentary requires responseStreaming: sentence");
+  }
   const waitingAudio = config.waitingAudio
     ? {
         filePath: requiredString(config.waitingAudio.path, "waitingAudio.path"),
@@ -94,6 +98,7 @@ export function resolveMatrixRtcConfig(
     providers: config.providers ?? {},
     toolPolicy: config.toolPolicy ?? "safe-read-only",
     ...(config.agentThinkingLevel ? { agentThinkingLevel: config.agentThinkingLevel } : {}),
+    speakCommentary: config.speakCommentary === true,
     responseStreaming: config.responseStreaming ?? "off",
     ...(waitingAudio ? { waitingAudio } : {}),
     admissions,

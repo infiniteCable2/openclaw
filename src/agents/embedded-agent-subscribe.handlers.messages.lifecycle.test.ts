@@ -328,6 +328,80 @@ describe("handleMessageEnd", () => {
     expect(finalizeAssistantTexts).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      phase: "message",
+      message: { phase: "commentary", content: [{ type: "text", text: "Checking." }] },
+    },
+    {
+      phase: "signature",
+      message: {
+        content: [
+          createOpenAiResponsesTextBlock({
+            text: "Checking.",
+            id: "progress",
+            phase: "commentary",
+          }),
+        ],
+      },
+    },
+  ])("delivers completed $phase commentary only when opted in", async ({ message }) => {
+    const onBlockReply = vi.fn();
+    const finalizeAssistantTexts = vi.fn();
+    const ctx = createMessageEndContext({
+      onBlockReply,
+      finalizeAssistantTexts,
+      deliverCommentaryBlocks: true,
+    });
+
+    await endMessage(ctx, { message: { role: "assistant", ...message } });
+
+    expect(onBlockReply).toHaveBeenCalledExactlyOnceWith({
+      text: "Checking.",
+      isCommentary: true,
+    });
+    expect(finalizeAssistantTexts).not.toHaveBeenCalled();
+    expect(ctx.state.visibleBlockReplyCount).toBe(0);
+  });
+
+  it("delivers signed commentary before a final answer in the same Responses message", async () => {
+    const onBlockReply = vi.fn();
+    const ctx = createMessageEndContext({
+      onBlockReply,
+      deliverCommentaryBlocks: true,
+    });
+
+    await endMessage(ctx, {
+      message: {
+        role: "assistant",
+        content: [
+          createOpenAiResponsesTextBlock({
+            text: "Checking now.",
+            id: "item_commentary",
+            phase: "commentary",
+          }),
+          createOpenAiResponsesTextBlock({
+            text: "Done.",
+            id: "item_final",
+            phase: "final_answer",
+          }),
+        ],
+        stopReason: "stop",
+        api: "openai-responses",
+        provider: "openai",
+        model: "gpt-5.2",
+        usage: {},
+        timestamp: 0,
+      },
+    });
+
+    expect(onBlockReply).toHaveBeenCalledWith({ text: "Checking now.", isCommentary: true });
+    expect(ctx.finalizeAssistantTexts).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Done." }),
+    );
+    expect(ctx.state.assistantTexts).not.toContain("Checking now.");
+  });
+
   it.each(["Hello world", "Hello world."])(
     "does not duplicate text_end block replies after %j was delivered",
     async (lastBlockReplyText) => {

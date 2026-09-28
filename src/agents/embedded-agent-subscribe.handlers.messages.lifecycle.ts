@@ -34,6 +34,7 @@ import { warnIfAssistantEmittedSuspiciousText } from "./embedded-agent-subscribe
 import {
   createThinkingTagStreamState,
   extractAssistantThinking,
+  extractAssistantCommentaryText,
   extractAssistantVisibleText,
   extractEmbeddedAssistantText,
   extractThinkingFromTaggedText,
@@ -93,6 +94,20 @@ export function handleMessageEnd(
     emitReasoningEnd(ctx);
   }
   ctx.noteLastAssistant(assistantMessage);
+  const emitOptedInCommentaryBlock = () => {
+    if (
+      ctx.params.deliverCommentaryBlocks !== true ||
+      ctx.params.silentExpected ||
+      suppressDeterministicApprovalOutput ||
+      suppressMessageToolOnlySourceReplyOutput
+    ) {
+      return;
+    }
+    const commentary = extractAssistantCommentaryText(assistantMessage);
+    if (commentary) {
+      ctx.emitBlockReply({ text: commentary, isCommentary: true });
+    }
+  };
   if (suppressVisibleAssistantOutput) {
     appendRawStream(() => ({
       ts: Date.now(),
@@ -103,6 +118,7 @@ export function handleMessageEnd(
       rawThinking: extractAssistantThinking(assistantMessage),
     }));
     emitAssistantCommentaryStreamData(ctx, assistantMessage, true);
+    emitOptedInCommentaryBlock();
     // Commentary-tagged tool turns can still carry durable reasoning under /reasoning on.
     const suppressedTrimmedReasoning = ctx.state.includeReasoning
       ? extractAssistantThinking(assistantMessage).trim()
@@ -121,6 +137,10 @@ export function handleMessageEnd(
     }
     return;
   }
+  // A Responses message may contain signed commentary and final-answer blocks
+  // together, regardless of its top-level phase. Deliver the completed
+  // commentary first without adding it to the final-answer snapshot.
+  emitOptedInCommentaryBlock();
   const sourceContent = assistantMessage.content;
   promoteThinkingTagsToBlocks(assistantMessage);
 

@@ -301,6 +301,7 @@ export function prepareEmbeddedAttemptStream(input: {
     onBeforeTerminalDelivery,
     blockReplyBreak: attempt.blockReplyBreak,
     blockReplyChunking: attempt.blockReplyChunking,
+    deliverCommentaryBlocks: attempt.deliverCommentaryBlocks,
     onPartialReply: attempt.onPartialReply,
     onAssistantMessageStart: attempt.onAssistantMessageStart,
     onExecutionPhase: attempt.onExecutionPhase,
