@@ -199,6 +199,7 @@ MatrixRTC call handling is an explicit opt-in. It uses the shared OpenClaw meeti
           },
         },
         toolPolicy: "safe-read-only",
+        agentThinkingLevel: "off", // Optional; otherwise inherits the agent default.
         responseStreaming: "sentence",
         waitingAudio: {
           path: "/var/lib/openclaw/audio/waiting.wav",
@@ -227,6 +228,12 @@ Each admission is fail-closed and requires all of the following:
 - both homeserver discovery and the caller membership pointing at the pinned authorization-service URL.
 
 The bridge executable must be an absolute, regular, non-symlink path and must not be group- or world-writable. Credentials and media keys are passed through a private mode-`0600` local control socket, not command-line arguments or environment variables. `toolPolicy` defaults to `"safe-read-only"`; choose `"owner"` only for an admission bound to an owner-controlled identity and room. Router, firewall, TURN, DNS, TLS, and LiveKit reachability remain deployment concerns and are not changed by this option.
+
+`agentThinkingLevel` optionally overrides the selected agent's thinking level for
+MatrixRTC consultations only, including turns that use tools. It does not change
+Matrix text, voice notes, or the agent's default. If omitted, calls inherit the
+agent default. `"off"` may reduce model latency, but tool reliability and the
+actual latency benefit depend on the selected model and should be tested.
 
 Set `responseStreaming: "sentence"` to synthesize complete speakable sentences as the
 agent produces them. Playback remains ordered and preparation is bounded to one sentence

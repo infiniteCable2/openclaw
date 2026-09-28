@@ -106,6 +106,29 @@ describe("createMeetingRealtimeEngineBindings", () => {
     );
   });
 
+  it("uses a call-scoped thinking override without changing the agent default", async () => {
+    const bindings = createMeetingRealtimeEngineBindings({
+      platform,
+      config: { realtime: { agentId: "operator", toolPolicy: "owner", agentThinkingLevel: "off" } },
+      fullConfig: {
+        agents: {
+          defaults: { thinkingDefault: "low" },
+          list: [{ id: "operator", default: true }],
+        },
+      },
+      runtime: { agent: {} } as never,
+      logger: {} as never,
+    });
+    await bindings.consultAgent({
+      meetingSessionId: "meeting-override",
+      args: { question: "Read the fixture" },
+      transcript: [],
+    });
+    expect(consultRealtimeVoiceAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "operator", thinkLevel: "off", toolsAllow: undefined }),
+    );
+  });
+
   it("derives realtime engine bindings from platform metadata", async () => {
     const bindings = createBindings("Support");
 

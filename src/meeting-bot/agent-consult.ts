@@ -52,6 +52,7 @@ export function createMeetingRealtimeEngineBindings(params: {
     realtime: {
       agentId?: string;
       toolPolicy: RealtimeVoiceAgentConsultToolPolicy;
+      agentThinkingLevel?: Parameters<typeof consultRealtimeVoiceAgent>[0]["thinkLevel"];
     };
   };
   fullConfig: OpenClawConfig;
@@ -78,6 +79,7 @@ export function createMeetingRealtimeEngineBindings(params: {
         logger: params.logger,
         agentId: params.config.realtime.agentId,
         toolPolicy: params.config.realtime.toolPolicy,
+        agentThinkingLevel: params.config.realtime.agentThinkingLevel,
         ...consult,
       }),
     tools: resolveMeetingRealtimeTools(params.config.realtime.toolPolicy),
@@ -90,6 +92,7 @@ export function createMeetingRealtimeEngineBindings(params: {
         logger: params.logger,
         agentId: params.config.realtime.agentId,
         toolPolicy: params.config.realtime.toolPolicy,
+        agentThinkingLevel: params.config.realtime.agentThinkingLevel,
         abortSignal,
         ...call,
       });
@@ -120,6 +123,7 @@ async function consultMeetingAgent(params: {
   logger: RuntimeLogger;
   agentId?: string;
   toolPolicy: RealtimeVoiceAgentConsultToolPolicy;
+  agentThinkingLevel?: Parameters<typeof consultRealtimeVoiceAgent>[0]["thinkLevel"];
   meetingSessionId: string;
   requesterSessionKey?: string;
   args: unknown;
@@ -134,6 +138,7 @@ async function consultMeetingAgent(params: {
     normalizeOptionalString(params.requesterSessionKey) ?? `agent:${agentId}:main`;
   const sessionKey = `agent:${agentId}:subagent:${params.surface.id}:${params.meetingSessionId}`;
   const thinkLevel =
+    params.agentThinkingLevel ??
     resolveAgentConfig(params.config, agentId)?.thinkingDefault ??
     params.config.agents?.defaults?.thinkingDefault;
   return await consultRealtimeVoiceAgent({
@@ -171,6 +176,7 @@ async function handleMeetingRealtimeConsultToolCall(params: {
   logger: RuntimeLogger;
   agentId?: string;
   toolPolicy: RealtimeVoiceAgentConsultToolPolicy;
+  agentThinkingLevel?: Parameters<typeof consultRealtimeVoiceAgent>[0]["thinkLevel"];
   meetingSessionId: string;
   requesterSessionKey?: string;
   transcript: Array<{ role: "user" | "assistant"; text: string }>;
@@ -232,6 +238,7 @@ async function handleMeetingRealtimeConsultToolCall(params: {
       logger: params.logger,
       agentId: params.agentId,
       toolPolicy: params.toolPolicy,
+      agentThinkingLevel: params.agentThinkingLevel,
       meetingSessionId: params.meetingSessionId,
       requesterSessionKey: params.requesterSessionKey,
       args: params.event.args,
