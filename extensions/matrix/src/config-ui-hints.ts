@@ -44,6 +44,11 @@ export const matrixChannelConfigUiHints = {
     label: "Matrix Display Name Matching",
     help: "Compatibility opt-in for resolving Matrix display names and joined room names in allowlists. Prefer full @user:server IDs and room IDs or aliases because names are mutable.",
   },
+  commentaryAgentIds: {
+    label: "Matrix DM Commentary Agents",
+    help: "Agent IDs allowed to send durable commentary updates for incoming Matrix DM text messages. Default: none. Does not enable reply streaming or affect voice notes and calls.",
+    advanced: true,
+  },
   rtc: {
     label: "MatrixRTC Audio Calls",
     help: "Opt-in, fail-closed MatrixRTC audio calls. Each accepted call must match an exact room, user, and normal OpenClaw agent route.",

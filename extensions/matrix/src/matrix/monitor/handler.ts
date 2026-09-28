@@ -531,6 +531,13 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 ? draftController.resetDraftDeliveryState
                 : undefined,
               ...draftController.buildPreviewToolProgressReplyOptions(),
+              commentaryPayloadsEnabled:
+                isDirectMessage &&
+                eventType === EventType.RoomMessage &&
+                event.content.msgtype === "m.text" &&
+                (params.accountConfig ?? cfg.channels?.matrix)?.commentaryAgentIds?.includes(
+                  _route.agentId,
+                ) === true,
               onModelSelected,
             },
           }),

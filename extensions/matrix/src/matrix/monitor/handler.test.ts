@@ -3115,6 +3115,7 @@ describe("matrix monitor handler draft streaming", () => {
       deleted?: string[];
     }) => Promise<void>;
     disableBlockStreaming?: boolean;
+    commentaryPayloadsEnabled?: boolean;
   };
 
   function createStreamingHarness(opts?: {
@@ -3124,6 +3125,7 @@ describe("matrix monitor handler draft streaming", () => {
     streaming?: "partial" | "quiet" | "progress" | "off";
     previewToolProgressEnabled?: boolean;
     accountConfig?: import("../../types.js").MatrixConfig;
+    agentId?: string;
   }) {
     let capturedDeliver: DeliverFn | undefined;
     let capturedOnError: ((error: unknown, info: { kind: string }) => void) | undefined;
@@ -3150,6 +3152,14 @@ describe("matrix monitor handler draft streaming", () => {
     const { handler } = createMatrixHandlerTestHarness({
       streaming: opts?.streaming ?? "quiet",
       accountConfig: opts?.accountConfig,
+      resolveAgentRoute: () => ({
+        agentId: opts?.agentId ?? "ops",
+        channel: "matrix",
+        accountId: "ops",
+        sessionKey: `agent:${opts?.agentId ?? "ops"}:main`,
+        mainSessionKey: `agent:${opts?.agentId ?? "ops"}:main`,
+        matchedBy: "binding.account" as const,
+      }),
       previewToolProgressEnabled: opts?.previewToolProgressEnabled ?? false,
       blockStreamingEnabled: opts?.blockStreamingEnabled ?? false,
       replyToMode: opts?.replyToMode ?? "off",
@@ -3201,6 +3211,25 @@ describe("matrix monitor handler draft streaming", () => {
 
     return { dispatch, redactEventMock, logVerboseMessage };
   }
+
+  it.each([
+    { agentId: "assistant", enabled: true },
+    { agentId: "other", enabled: false },
+  ])(
+    "enables durable commentary only for an opted-in agent's DM text ($agentId)",
+    async ({ agentId, enabled }) => {
+      const { dispatch } = createStreamingHarness({
+        accountConfig: { commentaryAgentIds: ["assistant"] },
+        agentId,
+        streaming: "off",
+      });
+      const { opts, finish } = await dispatch();
+
+      expect(opts.commentaryPayloadsEnabled).toBe(enabled);
+      expect(opts.onPartialReply).toBeUndefined();
+      await finish();
+    },
+  );
 
   it("records a failed block typing restart without replaying the accepted delivery", async () => {
     const acceptedDelivery = createMockMatrixDeliveryResult("$accepted", "Already delivered block");

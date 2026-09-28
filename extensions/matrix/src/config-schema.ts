@@ -206,6 +206,7 @@ export const MatrixConfigSchema = z.object({
   mentionPatterns: MentionPatternsPolicySchema.optional(),
   contextVisibility: ContextVisibilityModeSchema.optional(),
   streaming: matrixStreamingSchema.optional(),
+  commentaryAgentIds: z.array(z.string().min(1)).optional(),
   replyToMode: z.enum(["off", "first", "all", "batched"]).optional(),
   threadReplies: z.enum(["off", "inbound", "always"]).optional(),
   textChunkLimit: z.number().optional(),

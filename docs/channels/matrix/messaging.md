@@ -89,6 +89,23 @@ Notes:
 - Preview edits cost extra Matrix API calls. Leave `streaming.mode: "off"` for the most conservative rate-limit profile.
 - Legacy scalar/boolean `streaming` values and the flat `blockStreaming` / `chunkMode` keys are rewritten to this nested shape by `openclaw doctor --fix`.
 
+## Durable commentary updates
+
+To deliver an agent's short, model-authored commentary updates as separate Matrix messages before its final answer, opt in by agent ID:
+
+```json5
+{
+  channels: {
+    matrix: {
+      commentaryAgentIds: ["assistant"],
+      streaming: { mode: "off" },
+    },
+  },
+}
+```
+
+This applies only to incoming DM text messages routed to a listed agent. It does not stream answer tokens, enable progress drafts, or send commentary for voice notes, attachments, group messages, or MatrixRTC calls. The model must actually produce commentary; this setting does not guarantee an update on every turn. Commentary is separate from the final answer and is not included in TTS. If an agent also uses `message` to send progress updates, both kinds of updates may appear.
+
 ## Voice messages
 
 Inbound Matrix voice notes are transcribed before the room mention gate, so a voice note saying the bot name can trigger the agent in a `requireMention: true` room, and the agent gets the transcript instead of only an audio attachment placeholder.

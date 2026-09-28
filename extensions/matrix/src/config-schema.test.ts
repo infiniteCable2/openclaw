@@ -8,6 +8,15 @@ if (!MatrixConfigSchema) {
 }
 
 describe("MatrixConfigSchema SecretInput", () => {
+  it("accepts an opt-in list for durable DM commentary without enabling streaming", () => {
+    const result = MatrixConfigSchema.safeParse({ commentaryAgentIds: ["assistant"] });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toMatchObject({ commentaryAgentIds: ["assistant"] });
+      expect(result.data).not.toHaveProperty("streaming");
+    }
+  });
+
   it("accepts strict MatrixRTC room, user, and agent admissions", () => {
     const result = MatrixConfigSchema.safeParse({
       rtc: {
