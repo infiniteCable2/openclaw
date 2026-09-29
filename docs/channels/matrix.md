@@ -300,8 +300,9 @@ admission. Each caller still needs a separate exact entry under `admissions`.
 `waitingAudio` is optional. When configured, OpenClaw starts looping the trusted local WAV
 after `startDelayMs` while an agent turn is still waiting for speech output. It stops and clears
 the loop on caller speech, cancellation, or immediately before each TTS segment's first frame.
-While the agent is still working, it resumes after `resumeDelayMs` of actual playback silence
-(default `800` ms), rather than flickering in tiny gaps. The file
+While the agent is still working, it resumes after `resumeDelayMs` of estimated TTS playout
+silence (default `800` ms), rather than flickering in tiny gaps. A paused output gate keeps
+the loop off until queued speech has had time to drain. The file
 must be an absolute, regular, non-symlink, non-group/world-writable mono PCM16 WAV (8-48 kHz,
 at most 8 MiB). `volume` ranges from `0` to `1` and defaults to `0.14`; `startDelayMs` defaults
 to `1200`. Keep the file in an OpenClaw-owned data path rather than referencing another

@@ -11,10 +11,21 @@ export function createMeetingBargeInGate(params: {
   onFailure: (error: unknown) => void;
 }) {
   let owner: string | undefined;
+  let outputPaused = false;
+  let waitingAudioHeldUntil = 0;
+  // Matrix's native playout can retain PCM while paused. Give its bounded
+  // queue time to drain after an unconfirmed candidate releases the gate.
+  const POST_PAUSE_DRAIN_MS = 3_000;
 
   const setGate = (mode: MeetingOutputGate) => {
     if (!params.transport.setOutputGate || params.isStopped()) {
       return;
+    }
+    if (mode === "paused") {
+      outputPaused = true;
+    } else if (mode === "normal" && outputPaused) {
+      outputPaused = false;
+      waitingAudioHeldUntil = Date.now() + POST_PAUSE_DRAIN_MS;
     }
     void params.transport.setOutputGate(mode).catch(params.onFailure);
   };
@@ -53,6 +64,9 @@ export function createMeetingBargeInGate(params: {
       await params.transport.clearOutput();
     } finally {
       release(currentOwner);
+      // Confirmed interruption clears the queued PCM, so no post-pause drain remains.
+      outputPaused = false;
+      waitingAudioHeldUntil = 0;
     }
   };
 
@@ -64,5 +78,11 @@ export function createMeetingBargeInGate(params: {
     }
   };
 
-  return { onSpeechActivity, onProcessing, release, clearOutput };
+  return {
+    onSpeechActivity,
+    onProcessing,
+    release,
+    clearOutput,
+    canResumeWaitingAudio: () => !outputPaused && Date.now() >= waitingAudioHeldUntil,
+  };
 }

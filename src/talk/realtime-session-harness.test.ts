@@ -404,7 +404,11 @@ describe("realtime voice session harness", () => {
 
     harness.recordOutputAudio(Buffer.alloc(48_000));
     vi.setSystemTime(1_100);
+    expect(harness.isOutputPlaybackActive()).toBe(true);
     expect(harness.recordInputAudio(Buffer.from([1, 2, 3, 4]))).toBe(true);
+    vi.setSystemTime(2_000);
+    expect(harness.isOutputPlaybackActive()).toBe(false);
+    expect(harness.isOutputPlaybackWindowActive()).toBe(true);
     expect(harness.getHealth({ providerConnected: true, realtimeReady: true })).toMatchObject({
       lastInputBytes: 4,
       suppressedInputBytes: 0,

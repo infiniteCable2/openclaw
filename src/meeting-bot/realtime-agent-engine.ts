@@ -175,8 +175,14 @@ export async function startMeetingAgentRealtimeEngine(params: {
   const waiting = createMeetingAgentWaitingAudio({
     playback: waitingAudioPlayback,
     isStopped: () => stopped,
-    // Readers include the first-PCM drain; isolated input has no echo window.
-    canStart: () => activeTtsReaders.size === 0 && !harness.isOutputPlaybackWindowActive(),
+    // Full-duplex sinks can resume music after estimated TTS playout; the longer
+    // echo-suppression tail stays independent, and a paused gate adds a drain hold.
+    canStart: () =>
+      activeTtsReaders.size === 0 &&
+      bargeInGate.canResumeWaitingAudio() &&
+      !(params.transport.supportsFullDuplexInput === true
+        ? harness.isOutputPlaybackActive()
+        : harness.isOutputPlaybackWindowActive()),
     resumeDelayMs: waitingAudio?.resumeDelayMs ?? 800,
     onError: (error) => {
       params.logger.warn(

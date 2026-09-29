@@ -126,6 +126,8 @@ export type RealtimeVoiceSessionHarness<TForcedConsultContext = unknown> = {
   }): RealtimeVoiceSessionHarnessHealth;
   handleBargeIn(options: RealtimeVoiceBargeInOptions, flushOutput: () => void): void;
   isLikelyAssistantEchoTranscript(text: string): boolean;
+  /** Estimated PCM playout only; excludes the separate echo-suppression tail. */
+  isOutputPlaybackActive(): boolean;
   isOutputPlaybackWindowActive(): boolean;
   recordInputAudio(audio: Buffer): boolean;
   recordOutputAudio(audio: Buffer, activity?: RealtimeVoiceOutputActivityDelta): void;
@@ -416,6 +418,9 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
     },
     isOutputPlaybackWindowActive() {
       return Date.now() <= Math.max(lastOutputPlayableUntilMs, suppressInputUntilMs);
+    },
+    isOutputPlaybackActive() {
+      return Date.now() < lastOutputPlayableUntilMs;
     },
     recordInputAudio(audio) {
       if (

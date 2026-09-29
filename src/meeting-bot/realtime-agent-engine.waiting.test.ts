@@ -18,6 +18,7 @@ vi.mock("./waiting-audio.js", () => ({
 async function setup(options?: {
   initialGreeting?: { text: string; audio: Buffer };
   remoteReady?: Promise<void>;
+  fullDuplexEchoWindow?: boolean;
 }) {
   let callbacks!: RealtimeTranscriptionSessionCreateRequest;
   let consult!: MeetingAgentConsultParams;
@@ -51,6 +52,7 @@ async function setup(options?: {
     },
   };
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
+  const setOutputGate = vi.fn(async () => undefined);
   const transportStop = vi.fn(async () => undefined);
   const consultAgent = vi.fn((request: MeetingAgentConsultParams) => {
     consult = request;
@@ -72,7 +74,9 @@ async function setup(options?: {
     meetingSessionId: "test-call",
     ...(options?.initialGreeting ? { initialGreeting: options.initialGreeting } : {}),
     transport: {
-      inputAudioIsolated: true,
+      inputAudioIsolated: options?.fullDuplexEchoWindow !== true,
+      ...(options?.fullDuplexEchoWindow ? { supportsFullDuplexInput: true } : {}),
+      ...(options?.fullDuplexEchoWindow ? { setOutputGate } : {}),
       onFatal() {},
       startInput() {},
       ...(options?.remoteReady ? { waitForRemoteAudioReady: () => options.remoteReady! } : {}),
@@ -91,6 +95,7 @@ async function setup(options?: {
     handle,
     playback,
     writeOutput,
+    setOutputGate,
     transportStop,
     consultAgent,
     synthesis,
@@ -121,6 +126,54 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("speech-confirmed waiting audio", () => {
+  it("resumes after the quiet gap without waiting for the full-duplex echo tail", async () => {
+    const f = await setup({ fullDuplexEchoWindow: true });
+    try {
+      f.callbacks.onTranscript?.("Please check that.");
+      await vi.advanceTimersByTimeAsync(0);
+      await f.chunk("I am checking.");
+      await f.readerStarted.promise;
+      f.audio().enqueue(Uint8Array.from([7, 0]));
+      f.audio().close();
+      await vi.advanceTimersByTimeAsync(0);
+      f.playback.schedule.mockClear();
+      await vi.advanceTimersByTimeAsync(799);
+      expect(f.playback.schedule).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(101);
+      expect(f.playback.schedule).toHaveBeenCalledOnce();
+      expect(f.playback.schedule).toHaveBeenCalledWith(0);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("holds waiting music while native output is paused and briefly after release", async () => {
+    const f = await setup({ fullDuplexEchoWindow: true });
+    try {
+      f.callbacks.onTranscript?.("Please check that.");
+      await vi.advanceTimersByTimeAsync(0);
+      await f.chunk("I am checking.");
+      await f.readerStarted.promise;
+      f.audio().enqueue(Uint8Array.from([7, 0]));
+      f.audio().close();
+      await vi.advanceTimersByTimeAsync(0);
+      f.playback.schedule.mockClear();
+      f.callbacks.onSpeechActivity?.({ utteranceId: "candidate", state: "candidate" });
+      f.callbacks.onSpeechActivity?.({ utteranceId: "candidate", state: "sustained" });
+      await vi.advanceTimersByTimeAsync(3_500);
+      expect(f.playback.schedule).not.toHaveBeenCalled();
+      expect(f.setOutputGate).toHaveBeenCalledWith("paused");
+      f.callbacks.onSpeechActivity?.({ utteranceId: "candidate", state: "rejected" });
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(f.playback.schedule).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(f.playback.schedule).toHaveBeenCalledOnce();
+      expect(f.playback.schedule).toHaveBeenCalledWith(0);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("does not play a prepared greeting until remote audio is ready and a short delay passes", async () => {
     const remoteReady = createDeferred<void>();
     const f = await setup({
