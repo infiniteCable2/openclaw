@@ -165,8 +165,7 @@ function createHarness(
       transcriptionProvider: "local-stt",
       providers: {},
       toolPolicy: "owner",
-      agentThinkingLevel: "off",
-      speakCommentary: false,
+      agentProfiles: { example_owner: { agentThinkingLevel: "off", speakCommentary: true } },
       responseStreaming: "sentence",
       waitingAudio: {
         filePath: "/var/lib/openclaw/audio/waiting.wav",
@@ -409,7 +408,11 @@ describe("registerMatrixRtcController", () => {
     expect(mocks.createMeetingRealtimeEngineBindings).toHaveBeenCalledWith(
       expect.objectContaining({
         config: expect.objectContaining({
-          realtime: expect.objectContaining({ agentId: "example_owner", agentThinkingLevel: "off" }),
+          realtime: expect.objectContaining({
+            agentId: "example_owner",
+            agentThinkingLevel: "off",
+            speakCommentary: true,
+          }),
         }),
       }),
     );

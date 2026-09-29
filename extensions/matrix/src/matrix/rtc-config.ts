@@ -7,8 +7,7 @@ export type ResolvedMatrixRtcConfig = {
   transcriptionProvider: string;
   providers: Record<string, Record<string, unknown>>;
   toolPolicy: "safe-read-only" | "owner" | "none";
-  agentThinkingLevel?: NonNullable<MatrixRtcConfig["agentThinkingLevel"]>;
-  speakCommentary: boolean;
+  agentProfiles: NonNullable<MatrixRtcConfig["agentProfiles"]>;
   responseStreaming: "off" | "sentence";
   waitingAudio?: { filePath: string; startDelayMs: number; volume: number };
   admissions: MatrixRtcAdmission[];
@@ -67,7 +66,10 @@ export function resolveMatrixRtcConfig(
     config.transcriptionProvider,
     "transcriptionProvider",
   );
-  if (config.speakCommentary === true && config.responseStreaming !== "sentence") {
+  if (
+    Object.values(config.agentProfiles ?? {}).some((profile) => profile.speakCommentary === true) &&
+    config.responseStreaming !== "sentence"
+  ) {
     throw new Error("MatrixRTC speakCommentary requires responseStreaming: sentence");
   }
   const waitingAudio = config.waitingAudio
@@ -97,8 +99,7 @@ export function resolveMatrixRtcConfig(
     transcriptionProvider,
     providers: config.providers ?? {},
     toolPolicy: config.toolPolicy ?? "safe-read-only",
-    ...(config.agentThinkingLevel ? { agentThinkingLevel: config.agentThinkingLevel } : {}),
-    speakCommentary: config.speakCommentary === true,
+    agentProfiles: config.agentProfiles ?? {},
     responseStreaming: config.responseStreaming ?? "off",
     ...(waitingAudio ? { waitingAudio } : {}),
     admissions,
@@ -110,4 +111,14 @@ export function findMatrixRtcAdmission(
   roomId: string,
 ): MatrixRtcAdmission | undefined {
   return config.admissions.find((entry) => entry.roomId === roomId);
+}
+
+export function resolveMatrixRtcAgentProfile(config: ResolvedMatrixRtcConfig, agentId: string) {
+  const profile = Object.hasOwn(config.agentProfiles, agentId)
+    ? config.agentProfiles[agentId]
+    : undefined;
+  return {
+    agentThinkingLevel: profile?.agentThinkingLevel,
+    speakCommentary: profile?.speakCommentary === true,
+  };
 }

@@ -40,6 +40,78 @@ describe("matrix doctor", () => {
     expect(changes.join("\n")).toContain(fragment);
   }
 
+  it("migrates retired call-wide MatrixRTC options to admitted agent profiles once", () => {
+    const cfg = {
+      channels: {
+        matrix: {
+          rtc: {
+            agentThinkingLevel: "off",
+            speakCommentary: true,
+            admissions: [
+              { roomId: "!one:example.org", userId: "@one:example.org", agentId: "example_owner" },
+            ],
+            agentProfiles: { example_owner: { speakCommentary: false } },
+          },
+          accounts: {
+            work: {
+              rtc: {
+                admissions: [
+                  { roomId: "!two:example.org", userId: "@two:example.org", agentId: "example_other" },
+                ],
+              },
+            },
+          },
+        },
+      },
+    } as never;
+    const first = runMatrixCompatibilityNormalize({ cfg });
+    const rtc = first.config.channels?.matrix?.rtc;
+    expect(rtc).not.toHaveProperty("agentThinkingLevel");
+    expect(rtc).not.toHaveProperty("speakCommentary");
+    expect(rtc?.agentProfiles).toEqual({
+      example_owner: { agentThinkingLevel: "off", speakCommentary: false },
+      example_other: { agentThinkingLevel: "off", speakCommentary: true },
+    });
+    expectChangeContaining(first.changes, "admitted agent profiles");
+    const second = runMatrixCompatibilityNormalize({ cfg: first.config });
+    expect(second.config).toEqual(first.config);
+    expect(second.changes).toEqual([]);
+  });
+
+  it("migrates account-local MatrixRTC options without overriding explicit agent choices", () => {
+    const result = runMatrixCompatibilityNormalize({
+      cfg: {
+        channels: {
+          matrix: {
+            accounts: {
+              work: {
+                rtc: {
+                  agentThinkingLevel: "low",
+                  speakCommentary: false,
+                  admissions: [
+                    {
+                      roomId: "!private:example.org",
+                      userId: "@owner:example.org",
+                      agentId: "example_member",
+                    },
+                  ],
+                  agentProfiles: { example_member: { agentThinkingLevel: "off", speakCommentary: true } },
+                },
+              },
+            },
+          },
+        },
+      } as never,
+    });
+    const rtc = result.config.channels?.matrix?.accounts?.work?.rtc;
+    expect(rtc).not.toHaveProperty("agentThinkingLevel");
+    expect(rtc).not.toHaveProperty("speakCommentary");
+    expect(rtc?.agentProfiles?.example_member).toEqual({
+      agentThinkingLevel: "off",
+      speakCommentary: true,
+    });
+  });
+
   it("warns on stale custom Matrix plugin paths and cleans them", async () => {
     const missingPath = path.join(tmpdir(), `openclaw-matrix-missing-${Date.now()}`);
     await fs.rm(missingPath, { recursive: true, force: true });

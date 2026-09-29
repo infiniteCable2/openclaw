@@ -200,6 +200,7 @@ model value into a different embedding model. See [llama.cpp](/plugins/llama-cpp
     | legacy `talk.voiceId`/`talk.voiceAliases`/`talk.modelId`/`talk.outputFormat`/`talk.apiKey`        | `talk.provider` + `talk.providers.<provider>`                               |
     | legacy top-level realtime Talk selectors (`talk.mode`/`talk.transport`/`talk.brain`/`talk.model`/`talk.voice`) | `talk.realtime`                                                              |
     | `messages.tts`                                                                                  | top-level `tts`                                                              |
+    | `channels.matrix.rtc.agentThinkingLevel` / `speakCommentary` (and per-account)                   | `channels.matrix.rtc.agentProfiles.<admittedAgentId>.*`                      |
     | `messages.tts.<provider>` (`openai`/`elevenlabs`/`microsoft`/`edge`)                             | `tts.providers.<provider>`                                                   |
     | `messages.tts.provider: "edge"` / `messages.tts.providers.edge`                                  | `tts.provider: "microsoft"` / `tts.providers.microsoft`                    |
     | `tools.exec.security` + `tools.exec.ask`                                                         | `tools.exec.mode`                                                            |

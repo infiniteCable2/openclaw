@@ -82,10 +82,29 @@ const matrixRtcSchema = z
     transcriptionProvider: z.string().min(1).optional(),
     providers: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
     toolPolicy: z.enum(["safe-read-only", "owner", "none"]).optional(),
-    agentThinkingLevel: z
-      .enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"])
+    agentProfiles: z
+      .record(
+        z.string().min(1),
+        z
+          .object({
+            agentThinkingLevel: z
+              .enum([
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "adaptive",
+                "max",
+                "ultra",
+              ])
+              .optional(),
+            speakCommentary: z.boolean().optional(),
+          })
+          .strict(),
+      )
       .optional(),
-    speakCommentary: z.boolean().optional(),
     responseStreaming: z.enum(["off", "sentence"]).optional(),
     waitingAudio: z
       .object({
@@ -179,6 +198,7 @@ export const MatrixConfigSchema = z.object({
           joinIntro: z.boolean().optional(),
           accessToken: buildSecretInputSchema().optional(),
           password: buildSecretInputSchema().optional(),
+          rtc: matrixRtcSchema,
         })
         .passthrough()
         .refine(hasCanonicalMatrixAccountStreaming, {

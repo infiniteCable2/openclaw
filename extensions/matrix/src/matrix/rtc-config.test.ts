@@ -1,6 +1,10 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { findMatrixRtcAdmission, resolveMatrixRtcConfig } from "./rtc-config.js";
+import {
+  findMatrixRtcAdmission,
+  resolveMatrixRtcAgentProfile,
+  resolveMatrixRtcConfig,
+} from "./rtc-config.js";
 
 const command = path.resolve("matrix-rtc-media");
 const waitingAudioPath = path.resolve("waiting.wav");
@@ -12,7 +16,7 @@ function validConfig() {
     mediaBridgeCommand: command,
     transcriptionProvider: "local-media",
     responseStreaming: "sentence" as const,
-    agentThinkingLevel: "off" as const,
+    agentProfiles: { example_owner: { agentThinkingLevel: "off" as const } },
     waitingAudio: { path: waitingAudioPath },
     admissions: [
       {
@@ -31,12 +35,17 @@ describe("MatrixRTC config", () => {
   });
 
   it("normalizes a strict admission and pinned authorization URL", () => {
-    const resolved = resolveMatrixRtcConfig({ ...validConfig(), speakCommentary: true });
+    const resolved = resolveMatrixRtcConfig({
+      ...validConfig(),
+      agentProfiles: { example_owner: { agentThinkingLevel: "off", speakCommentary: true } },
+    });
     expect(resolved?.authServiceUrl).toBe("https://rtc.example.org/livekit/jwt");
     expect(findMatrixRtcAdmission(resolved!, "!private:example.org")?.agentId).toBe("example_owner");
     expect(resolved?.responseStreaming).toBe("sentence");
-    expect(resolved?.agentThinkingLevel).toBe("off");
-    expect(resolved?.speakCommentary).toBe(true);
+    expect(resolveMatrixRtcAgentProfile(resolved!, "example_owner")).toEqual({
+      agentThinkingLevel: "off",
+      speakCommentary: true,
+    });
     expect(resolved?.waitingAudio).toEqual({
       filePath: waitingAudioPath,
       startDelayMs: 1_200,
@@ -51,16 +60,43 @@ describe("MatrixRTC config", () => {
   });
 
   it("inherits agent thinking when the call override is absent", () => {
-    const resolved = resolveMatrixRtcConfig({ ...validConfig(), agentThinkingLevel: undefined });
-    expect(resolved?.agentThinkingLevel).toBeUndefined();
+    const resolved = resolveMatrixRtcConfig({ ...validConfig(), agentProfiles: undefined });
+    expect(resolveMatrixRtcAgentProfile(resolved!, "example_owner").agentThinkingLevel).toBeUndefined();
+  });
+
+  it("uses the admitted agent's call profile without applying it to other agents", () => {
+    const resolved = resolveMatrixRtcConfig({
+      ...validConfig(),
+      agentProfiles: {
+        example_owner: { agentThinkingLevel: "off", speakCommentary: true },
+        example_other: { agentThinkingLevel: "low", speakCommentary: false },
+      },
+    })!;
+    expect(resolveMatrixRtcAgentProfile(resolved, "example_owner")).toEqual({
+      agentThinkingLevel: "off",
+      speakCommentary: true,
+    });
+    expect(resolveMatrixRtcAgentProfile(resolved, "example_other")).toEqual({
+      agentThinkingLevel: "low",
+      speakCommentary: false,
+    });
+    expect(resolveMatrixRtcAgentProfile(resolved, "other")).toEqual({
+      agentThinkingLevel: undefined,
+      speakCommentary: false,
+    });
   });
 
   it("keeps spoken commentary off by default and requires sentence streaming when enabled", () => {
     expect(
-      resolveMatrixRtcConfig({ ...validConfig(), speakCommentary: undefined })?.speakCommentary,
+      resolveMatrixRtcAgentProfile(resolveMatrixRtcConfig(validConfig())!, "example_owner")
+        .speakCommentary,
     ).toBe(false);
     expect(() =>
-      resolveMatrixRtcConfig({ ...validConfig(), speakCommentary: true, responseStreaming: "off" }),
+      resolveMatrixRtcConfig({
+        ...validConfig(),
+        agentProfiles: { example_owner: { speakCommentary: true } },
+        responseStreaming: "off",
+      }),
     ).toThrow("speakCommentary requires responseStreaming: sentence");
   });
 

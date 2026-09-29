@@ -28,8 +28,10 @@ describe("MatrixConfigSchema SecretInput", () => {
           "local-media": { baseUrl: "http://127.0.0.1:8010/v1" },
         },
         toolPolicy: "owner",
-        agentThinkingLevel: "off",
-        speakCommentary: true,
+        agentProfiles: {
+          example_owner: { agentThinkingLevel: "off", speakCommentary: true },
+          example_other: { agentThinkingLevel: "off", speakCommentary: true },
+        },
         responseStreaming: "sentence",
         waitingAudio: {
           path: "/opt/openclaw/share/waiting.wav",
@@ -48,9 +50,20 @@ describe("MatrixConfigSchema SecretInput", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data).toMatchObject({
-        rtc: { agentThinkingLevel: "off", speakCommentary: true },
+        rtc: { agentProfiles: { example_owner: { agentThinkingLevel: "off", speakCommentary: true } } },
       });
     }
+  });
+
+  it("rejects retired call-wide thinking and commentary settings", () => {
+    expect(MatrixConfigSchema.safeParse({ rtc: { agentThinkingLevel: "off" } }).success).toBe(
+      false,
+    );
+    expect(MatrixConfigSchema.safeParse({ rtc: { speakCommentary: true } }).success).toBe(false);
+    expect(
+      MatrixConfigSchema.safeParse({ accounts: { work: { rtc: { speakCommentary: true } } } })
+        .success,
+    ).toBe(false);
   });
 
   it("rejects incomplete or open-ended MatrixRTC admissions", () => {

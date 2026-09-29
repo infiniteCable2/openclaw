@@ -200,9 +200,13 @@ MatrixRTC call handling is an explicit opt-in. It uses the shared OpenClaw meeti
           },
         },
         toolPolicy: "safe-read-only",
-        agentThinkingLevel: "off", // Optional; otherwise inherits the agent default.
         responseStreaming: "sentence",
-        speakCommentary: false, // Optional; speak completed commentary before tool work.
+        agentProfiles: {
+          "personal-agent": {
+            agentThinkingLevel: "off",
+            speakCommentary: true,
+          },
+        },
         waitingAudio: {
           path: "/var/lib/openclaw/audio/waiting.wav",
           startDelayMs: 1200,
@@ -231,22 +235,23 @@ Each admission is fail-closed and requires all of the following:
 
 The bridge executable must be an absolute, regular, non-symlink path and must not be group- or world-writable. Credentials and media keys are passed through a private mode-`0600` local control socket, not command-line arguments or environment variables. `toolPolicy` defaults to `"safe-read-only"`; choose `"owner"` only for an admission bound to an owner-controlled identity and room. Router, firewall, TURN, DNS, TLS, and LiveKit reachability remain deployment concerns and are not changed by this option.
 
-`agentThinkingLevel` optionally overrides the selected agent's thinking level for
+`agentProfiles.<agentId>.agentThinkingLevel` optionally overrides the selected agent's thinking level for
 MatrixRTC consultations only, including turns that use tools. It does not change
 Matrix text, voice notes, or the agent's default. If omitted, calls inherit the
 agent default. `"off"` may reduce model latency, but tool reliability and the
 actual latency benefit depend on the selected model and should be tested.
+The profile does not authorize a call; an exact admission is still required.
 
 Set `responseStreaming: "sentence"` to synthesize complete speakable sentences as the
 agent produces them. Playback remains ordered and preparation is bounded to one sentence
 ahead, so a caller interruption can cancel both audible and prepared output without a large
 stale queue.
 
-`speakCommentary: true` lets MatrixRTC speak completed model-authored commentary
+`agentProfiles.<agentId>.speakCommentary: true` lets MatrixRTC speak completed model-authored commentary
 before tool work. It requires `responseStreaming: "sentence"` and is off by default.
 Commentary remains separate from the final answer; hidden reasoning and errors are
-never spoken. This is a call-wide setting, not an agent-specific preference, and
-does not change Matrix text messages or other voice channels.
+never spoken. Neither setting
+changes Matrix text messages or other voice channels.
 
 `waitingAudio` is optional. When configured, OpenClaw starts looping the trusted local WAV
 after `startDelayMs` while an agent turn is still waiting for speech output. It stops and clears

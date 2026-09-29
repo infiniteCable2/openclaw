@@ -70,14 +70,9 @@ export const matrixChannelConfigUiHints = {
     help: "Tool access for the configured agent during calls. Owner mode still requires an exact admitted identity and route.",
     advanced: true,
   },
-  "rtc.agentThinkingLevel": {
-    label: "MatrixRTC Agent Thinking",
-    help: "Optional thinking level for agent consultations during MatrixRTC calls only. When unset, inherit the agent default; off can reduce latency but may affect complex tool work.",
-    advanced: true,
-  },
-  "rtc.speakCommentary": {
-    label: "MatrixRTC Spoken Commentary",
-    help: "Speak completed model commentary during MatrixRTC calls before tool work. Default: off. Reasoning remains hidden; this does not affect Matrix text or other voice surfaces.",
+  "rtc.agentProfiles": {
+    label: "MatrixRTC Agent Profiles",
+    help: "Optional per-agent call thinking and spoken commentary settings. A profile applies only after an exact MatrixRTC admission selects that agent; it does not grant call access. Unset thinking inherits the agent default; spoken commentary defaults off.",
     advanced: true,
   },
   "rtc.responseStreaming": {

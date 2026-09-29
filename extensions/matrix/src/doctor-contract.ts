@@ -75,6 +75,68 @@ function hasLegacyTrustedDmPolicy(value: unknown): boolean {
   return dm?.policy === "trusted";
 }
 
+function hasLegacyRtcCallDefaults(value: unknown): boolean {
+  const entry = isRecord(value) ? value : null;
+  const rtc = entry && isRecord(entry.rtc) ? entry.rtc : null;
+  return Boolean(
+    rtc && (Object.hasOwn(rtc, "agentThinkingLevel") || Object.hasOwn(rtc, "speakCommentary")),
+  );
+}
+
+function rtcAdmissionAgentIds(value: unknown): Set<string> {
+  const entry = isRecord(value) ? value : null;
+  const rtc = entry && isRecord(entry.rtc) ? entry.rtc : null;
+  const ids = new Set<string>();
+  if (Array.isArray(rtc?.admissions)) {
+    for (const admission of rtc.admissions) {
+      if (
+        isRecord(admission) &&
+        typeof admission.agentId === "string" &&
+        admission.agentId.trim()
+      ) {
+        ids.add(admission.agentId);
+      }
+    }
+  }
+  return ids;
+}
+
+function migrateLegacyRtcCallDefaults(params: {
+  entry: Record<string, unknown>;
+  pathPrefix: string;
+  changes: string[];
+  inheritedAgentIds: ReadonlySet<string>;
+}): { entry: Record<string, unknown>; changed: boolean } {
+  if (!hasLegacyRtcCallDefaults(params.entry)) {
+    return { entry: params.entry, changed: false };
+  }
+  const rtc = params.entry.rtc as Record<string, unknown>;
+  const previousProfiles = isRecord(rtc.agentProfiles) ? rtc.agentProfiles : {};
+  const profiles = new Map(Object.entries(previousProfiles));
+  const agentIds = new Set([...params.inheritedAgentIds, ...rtcAdmissionAgentIds(params.entry)]);
+  for (const agentId of agentIds) {
+    const currentProfile = profiles.get(agentId);
+    const previous = isRecord(currentProfile) ? currentProfile : {};
+    const profile: Record<string, unknown> = { ...previous };
+    if (Object.hasOwn(rtc, "agentThinkingLevel") && !Object.hasOwn(profile, "agentThinkingLevel")) {
+      profile.agentThinkingLevel = rtc.agentThinkingLevel;
+    }
+    if (Object.hasOwn(rtc, "speakCommentary") && !Object.hasOwn(profile, "speakCommentary")) {
+      profile.speakCommentary = rtc.speakCommentary;
+    }
+    profiles.set(agentId, profile);
+  }
+  const { agentThinkingLevel: _thinking, speakCommentary: _commentary, ...retainedRtc } = rtc;
+  const nextRtc = {
+    ...retainedRtc,
+    ...(profiles.size > 0 ? { agentProfiles: Object.fromEntries(profiles) } : {}),
+  };
+  params.changes.push(
+    `Migrated ${params.pathPrefix}.rtc call-wide thinking/commentary settings to ${agentIds.size} admitted agent profiles; removed retired call-wide fields.`,
+  );
+  return { entry: { ...params.entry, rtc: nextRtc }, changed: true };
+}
+
 function migrateLegacyTrustedDmPolicy(params: {
   entry: Record<string, unknown>;
   pathPrefix: string;
@@ -107,6 +169,18 @@ function migrateLegacyTrustedDmPolicy(params: {
 
 export const legacyConfigRules: ChannelDoctorLegacyConfigRule[] = [
   ...streamingAliasMigration.legacyConfigRules,
+  {
+    path: ["channels", "matrix"],
+    message:
+      'channels.matrix.rtc call-wide thinking/commentary settings are retired; use rtc.agentProfiles.<agentId> and run "openclaw doctor --fix".',
+    match: hasLegacyRtcCallDefaults,
+  },
+  {
+    path: ["channels", "matrix", "accounts"],
+    message:
+      'channels.matrix.accounts.<id>.rtc call-wide thinking/commentary settings are retired; use rtc.agentProfiles.<agentId> and run "openclaw doctor --fix".',
+    match: (value) => hasLegacyAccountStreamingAliases(value, hasLegacyRtcCallDefaults),
+  },
   {
     path: ["channels", "matrix"],
     message:
@@ -167,11 +241,13 @@ function normalizeMatrixEntry(params: {
   entry: Record<string, unknown>;
   pathPrefix: string;
   changes: string[];
+  inheritedAgentIds: ReadonlySet<string>;
 }): { entry: Record<string, unknown>; changed: boolean } {
   const network = migrateLegacyFlatAllowPrivateNetworkAlias(params);
   const dmPolicy = migrateLegacyTrustedDmPolicy({ ...params, entry: network.entry });
-  let entry = dmPolicy.entry;
-  let changed = network.changed || dmPolicy.changed;
+  const callProfile = migrateLegacyRtcCallDefaults({ ...params, entry: dmPolicy.entry });
+  let entry = callProfile.entry;
+  let changed = network.changed || dmPolicy.changed || callProfile.changed;
   for (const section of ["groups", "rooms"] as const) {
     const roomMap = isRecord(entry[section]) ? entry[section] : null;
     if (!roomMap) {
@@ -213,10 +289,23 @@ export function normalizeCompatibilityConfig({
     cfg: withoutJunkStreamMode,
     changes,
   });
+  const matrix = isRecord(aliases.config.channels?.matrix) ? aliases.config.channels.matrix : {};
+  const inheritedAgentIds = rtcAdmissionAgentIds(matrix);
+  const accounts = isRecord(matrix.accounts) ? matrix.accounts : {};
+  for (const account of Object.values(accounts)) {
+    for (const agentId of rtcAdmissionAgentIds(account)) {
+      inheritedAgentIds.add(agentId);
+    }
+  }
   return normalizeChannelConfigEntries({
     cfg: aliases.config,
     channelId: "matrix",
     changes,
-    normalizeEntry: normalizeMatrixEntry,
+    normalizeEntry: (params) =>
+      normalizeMatrixEntry({
+        ...params,
+        inheritedAgentIds:
+          params.pathPrefix === "channels.matrix" ? inheritedAgentIds : new Set<string>(),
+      }),
   });
 }

@@ -23,7 +23,11 @@ import {
   assertMatrixRtcPinnedTransports,
 } from "./rtc-admission.js";
 import { requestMatrixRtcCredentials, type MatrixRtcMembershipIdentity } from "./rtc-auth.js";
-import { findMatrixRtcAdmission, type ResolvedMatrixRtcConfig } from "./rtc-config.js";
+import {
+  findMatrixRtcAdmission,
+  resolveMatrixRtcAgentProfile,
+  type ResolvedMatrixRtcConfig,
+} from "./rtc-config.js";
 import { createMatrixRtcMediaTransport, type MatrixRtcMediaKey } from "./rtc-media-transport.js";
 import { resolveMatrixRtcMode } from "./rtc-mode.js";
 import type { MatrixClient } from "./sdk.js";
@@ -468,14 +472,15 @@ export function registerMatrixRtcController(params: {
             mediaTransport.sendKey(key);
           }
         }
+        const agentProfile = resolveMatrixRtcAgentProfile(params.config, admission.agentId);
         const bindings = createMeetingRealtimeEngineBindings({
           platform: MATRIX_RTC_PLATFORM,
           config: {
             realtime: {
               agentId: admission.agentId,
               toolPolicy: params.config.toolPolicy,
-              agentThinkingLevel: params.config.agentThinkingLevel,
-              speakCommentary: params.config.speakCommentary,
+              agentThinkingLevel: agentProfile.agentThinkingLevel,
+              speakCommentary: agentProfile.speakCommentary,
             },
           },
           fullConfig: params.cfg,
