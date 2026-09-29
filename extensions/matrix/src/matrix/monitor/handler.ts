@@ -531,8 +531,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 ? draftController.resetDraftDeliveryState
                 : undefined,
               ...draftController.buildPreviewToolProgressReplyOptions(),
+              // Explicitly configured rooms classify as channels even when used as private chats.
+              // The opt-in follows the routed agent, not Matrix's DM classification.
               commentaryPayloadsEnabled:
-                isDirectMessage &&
                 eventType === EventType.RoomMessage &&
                 event.content.msgtype === "m.text" &&
                 (params.accountConfig ?? cfg.channels?.matrix)?.commentaryAgentIds?.includes(

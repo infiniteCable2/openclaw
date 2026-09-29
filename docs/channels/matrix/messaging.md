@@ -104,7 +104,7 @@ To deliver an agent's short, model-authored commentary updates as separate Matri
 }
 ```
 
-This applies only to incoming DM text messages routed to a listed agent. It does not stream answer tokens, enable progress drafts, or send commentary for voice notes, attachments, group messages, or MatrixRTC calls. The model must actually produce commentary; this setting does not guarantee an update on every turn. Commentary is separate from the final answer and is not included in TTS. If an agent also uses `message` to send progress updates, both kinds of updates may appear.
+This applies to incoming Matrix text messages routed to a listed agent, including explicitly configured rooms. It does not stream answer tokens, enable progress drafts, or send commentary for voice notes, attachments, or MatrixRTC calls. The model must actually produce commentary; this setting does not guarantee an update on every turn. Commentary is separate from the final answer and is not included in TTS. If an agent also uses `message` to send progress updates, both kinds of updates may appear.
 
 ## Voice messages
 

@@ -144,7 +144,7 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 - `threadBindings`: per-channel overrides for thread-bound session routing and lifecycle.
 - `streaming`: nested object `{ mode, chunkMode, block: { enabled, coalesce }, preview: { toolProgress }, progress: { label, labels, maxLines, maxLineChars, toolProgress } }`. `mode` is `"off"` (default), `"partial"`, `"quiet"`, or `"progress"`. Legacy scalar/boolean spellings migrate via `openclaw doctor --fix`.
 - `streaming.block.enabled`: when `true`, completed assistant blocks are kept as separate progress messages. Default: `false`.
-- `commentaryAgentIds`: optional agent IDs whose completed model commentary is sent as separate, durable messages for incoming DM text turns. This works with `streaming.mode: "off"` and does not enable partial-text streaming. It does not apply to voice notes, files, group rooms, or calls. If the agent also sends progress through the `message` tool, both messages can appear.
+- `commentaryAgentIds`: optional agent IDs whose completed model commentary is sent as separate, durable messages for incoming Matrix text turns routed to them, including explicitly configured rooms. This works with `streaming.mode: "off"` and does not enable partial-text streaming. It does not apply to voice notes, files, or calls. If the agent also sends progress through the `message` tool, both messages can appear.
 - `markdown`: optional Markdown rendering config for outbound text.
 - `responsePrefix`: optional string prepended to outbound replies.
 - `textChunkLimit`: outbound chunk size in characters when `streaming.chunkMode: "length"`. Default: `4000`.

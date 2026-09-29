@@ -3127,6 +3127,7 @@ describe("matrix monitor handler draft streaming", () => {
     previewToolProgressEnabled?: boolean;
     accountConfig?: import("../../types.js").MatrixConfig;
     agentId?: string;
+    isDirectMessage?: boolean;
   }) {
     let capturedDeliver: DeliverFn | undefined;
     let capturedOnError: ((error: unknown, info: { kind: string }) => void) | undefined;
@@ -3153,6 +3154,11 @@ describe("matrix monitor handler draft streaming", () => {
     const { handler } = createMatrixHandlerTestHarness({
       streaming: opts?.streaming ?? "quiet",
       accountConfig: opts?.accountConfig,
+      isDirectMessage: opts?.isDirectMessage,
+      roomsConfig:
+        opts?.isDirectMessage === false
+          ? { "!room:example.org": { requireMention: false } }
+          : undefined,
       resolveAgentRoute: () => ({
         agentId: opts?.agentId ?? "ops",
         channel: "matrix",
@@ -3196,7 +3202,12 @@ describe("matrix monitor handler draft streaming", () => {
         "!room:example.org",
         createMatrixTextMessageEvent({ eventId: "$msg1", body: "hello" }),
       );
-      await captured;
+      await Promise.race([
+        captured,
+        handlerDone.then(() => {
+          throw new Error("Matrix handler completed before reply dispatch was captured");
+        }),
+      ]);
       return {
         deliver: capturedDeliver!,
         onError: capturedOnError!,
@@ -3214,14 +3225,17 @@ describe("matrix monitor handler draft streaming", () => {
   }
 
   it.each([
-    { agentId: "assistant", enabled: true },
-    { agentId: "other", enabled: false },
+    { agentId: "assistant", isDirectMessage: true, enabled: true },
+    { agentId: "assistant", isDirectMessage: false, enabled: true },
+    { agentId: "other", isDirectMessage: true, enabled: false },
+    { agentId: "other", isDirectMessage: false, enabled: false },
   ])(
-    "enables durable commentary only for an opted-in agent's DM text ($agentId)",
-    async ({ agentId, enabled }) => {
+    "enables durable commentary for an opted-in agent's text (agent=$agentId direct=$isDirectMessage)",
+    async ({ agentId, isDirectMessage, enabled }) => {
       const { dispatch } = createStreamingHarness({
         accountConfig: { commentaryAgentIds: ["assistant"] },
         agentId,
+        isDirectMessage,
         streaming: "off",
       });
       const { opts, finish } = await dispatch();
