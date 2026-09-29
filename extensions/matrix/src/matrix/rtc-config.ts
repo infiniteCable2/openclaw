@@ -9,7 +9,7 @@ export type ResolvedMatrixRtcConfig = {
   toolPolicy: "safe-read-only" | "owner" | "none";
   agentProfiles: NonNullable<MatrixRtcConfig["agentProfiles"]>;
   responseStreaming: "off" | "sentence";
-  waitingAudio?: { filePath: string; startDelayMs: number; volume: number };
+  waitingAudio?: { filePath: string; startDelayMs: number; resumeDelayMs: number; volume: number };
   admissions: MatrixRtcAdmission[];
 };
 
@@ -76,6 +76,7 @@ export function resolveMatrixRtcConfig(
     ? {
         filePath: requiredString(config.waitingAudio.path, "waitingAudio.path"),
         startDelayMs: config.waitingAudio.startDelayMs ?? 1_200,
+        resumeDelayMs: config.waitingAudio.resumeDelayMs ?? 800,
         volume: config.waitingAudio.volume ?? 0.14,
       }
     : undefined;
@@ -120,5 +121,6 @@ export function resolveMatrixRtcAgentProfile(config: ResolvedMatrixRtcConfig, ag
   return {
     agentThinkingLevel: profile?.agentThinkingLevel,
     speakCommentary: profile?.speakCommentary === true,
+    ...(profile?.greeting?.enabled === true ? { greeting: profile.greeting } : {}),
   };
 }

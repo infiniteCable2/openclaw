@@ -15,7 +15,10 @@ vi.mock("./waiting-audio.js", () => ({
   })),
 }));
 
-async function setup() {
+async function setup(options?: {
+  initialGreeting?: { text: string; audio: Buffer };
+  remoteReady?: Promise<void>;
+}) {
   let callbacks!: RealtimeTranscriptionSessionCreateRequest;
   let consult!: MeetingAgentConsultParams;
   let audio!: ReadableStreamDefaultController<Uint8Array>;
@@ -48,6 +51,7 @@ async function setup() {
     },
   };
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
+  const transportStop = vi.fn(async () => undefined);
   const consultAgent = vi.fn((request: MeetingAgentConsultParams) => {
     consult = request;
     return completion.promise;
@@ -66,13 +70,15 @@ async function setup() {
     runtime: { tts: { streamTextToSpeechTelephony: synthesis } } as unknown as PluginRuntime,
     platform: { displayName: "Test", logScope: "test", sessionIdPrefix: "test" },
     meetingSessionId: "test-call",
+    ...(options?.initialGreeting ? { initialGreeting: options.initialGreeting } : {}),
     transport: {
       inputAudioIsolated: true,
       onFatal() {},
       startInput() {},
+      ...(options?.remoteReady ? { waitForRemoteAudioReady: () => options.remoteReady! } : {}),
       writeOutput,
       clearOutput: async () => {},
-      stop: async () => {},
+      stop: transportStop,
       dispose: async () => {},
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -85,6 +91,7 @@ async function setup() {
     handle,
     playback,
     writeOutput,
+    transportStop,
     consultAgent,
     synthesis,
     readerStarted,
@@ -114,6 +121,86 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("speech-confirmed waiting audio", () => {
+  it("does not play a prepared greeting until remote audio is ready and a short delay passes", async () => {
+    const remoteReady = createDeferred<void>();
+    const f = await setup({
+      initialGreeting: { text: "Hello, caller.", audio: Buffer.from([1, 0]) },
+      remoteReady: remoteReady.promise,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(500);
+      expect(f.writeOutput).not.toHaveBeenCalled();
+      remoteReady.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(149);
+      expect(f.writeOutput).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(150);
+      expect(f.writeOutput).toHaveBeenCalledOnce();
+      expect(f.writeOutput).toHaveBeenCalledWith(Buffer.from([1, 0]));
+    } finally {
+      remoteReady.resolve();
+      await f.close();
+    }
+  });
+
+  it("cancels a prepared greeting when caller speech starts before remote audio is ready", async () => {
+    const remoteReady = createDeferred<void>();
+    const f = await setup({
+      initialGreeting: { text: "Hello, caller.", audio: Buffer.from([1, 0]) },
+      remoteReady: remoteReady.promise,
+    });
+    try {
+      f.callbacks.onSpeechStart?.();
+      remoteReady.resolve();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(f.writeOutput).not.toHaveBeenCalled();
+    } finally {
+      remoteReady.resolve();
+      await f.close();
+    }
+  });
+
+  it("ends the call if the caller's audio track never becomes ready", async () => {
+    const remoteReady = createDeferred<void>();
+    const f = await setup({
+      initialGreeting: { text: "Hello, caller.", audio: Buffer.from([1, 0]) },
+      remoteReady: remoteReady.promise,
+    });
+    remoteReady.reject(new Error("remote audio timed out"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.writeOutput).not.toHaveBeenCalled();
+    expect(f.transportStop).toHaveBeenCalledOnce();
+    await f.close();
+  });
+
+  it("resumes only after a quiet gap between TTS segments while the agent is working", async () => {
+    const f = await setup();
+    try {
+      f.callbacks.onTranscript?.("Please answer.");
+      await vi.advanceTimersByTimeAsync(0);
+      await f.chunk("First segment.");
+      await f.readerStarted.promise;
+      f.audio().enqueue(Uint8Array.from([7, 0]));
+      f.audio().close();
+      await vi.advanceTimersByTimeAsync(0);
+      f.playback.schedule.mockClear();
+      await vi.advanceTimersByTimeAsync(799);
+      expect(f.playback.schedule).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(101);
+      expect(f.playback.schedule).toHaveBeenCalledOnce();
+      expect(f.playback.schedule).toHaveBeenCalledWith(0);
+      await f.chunk("Second segment.");
+      await vi.advanceTimersByTimeAsync(0);
+      f.audio().enqueue(Uint8Array.from([8, 0]));
+      f.audio().close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.playback.stop).toHaveBeenCalled();
+      expect(f.writeOutput).toHaveBeenCalledTimes(2);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("drains waiting music before a later TTS segment resumes PCM", async () => {
     const f = await setup();
     const preparation = createDeferred<Awaited<ReturnType<typeof f.synthesis>>>();

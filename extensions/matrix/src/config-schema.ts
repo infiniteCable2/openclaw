@@ -101,6 +101,16 @@ const matrixRtcSchema = z
               ])
               .optional(),
             speakCommentary: z.boolean().optional(),
+            greeting: z
+              .object({
+                enabled: z.boolean(),
+                prompt: z.string().max(2_000).optional(),
+                timeZone: z.string().min(1).optional(),
+                timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
+                onFailure: z.enum(["continue", "reject"]).optional(),
+              })
+              .strict()
+              .optional(),
           })
           .strict(),
       )
@@ -110,6 +120,7 @@ const matrixRtcSchema = z
       .object({
         path: z.string().min(1),
         startDelayMs: z.number().int().min(0).max(30_000).optional(),
+        resumeDelayMs: z.number().int().min(0).max(30_000).optional(),
         volume: z.number().min(0).max(1).optional(),
       })
       .strict()

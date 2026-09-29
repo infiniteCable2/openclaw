@@ -49,6 +49,7 @@ describe("MatrixRTC config", () => {
     expect(resolved?.waitingAudio).toEqual({
       filePath: waitingAudioPath,
       startDelayMs: 1_200,
+      resumeDelayMs: 800,
       volume: 0.14,
     });
   });
@@ -84,6 +85,27 @@ describe("MatrixRTC config", () => {
       agentThinkingLevel: undefined,
       speakCommentary: false,
     });
+  });
+
+  it("allows future agents to have greetings without granting them call admission", () => {
+    const greeting = {
+      enabled: true as const,
+      prompt: "Kurze Begrüßung persönlich und tageszeitgemäß.",
+      timeZone: "Europe/Berlin",
+    };
+    const resolved = resolveMatrixRtcConfig({
+      ...validConfig(),
+      agentProfiles: {
+        primary: { greeting },
+        futureA: { greeting },
+        futureB: { greeting },
+      },
+    })!;
+    expect(resolveMatrixRtcAgentProfile(resolved, "primary").greeting).toEqual(greeting);
+    expect(resolveMatrixRtcAgentProfile(resolved, "futureA").greeting).toEqual(greeting);
+    expect(resolveMatrixRtcAgentProfile(resolved, "futureB").greeting).toEqual(greeting);
+    expect(resolved.admissions).toHaveLength(1);
+    expect(findMatrixRtcAdmission(resolved, "!unadmitted:example.org")).toBeUndefined();
   });
 
   it("keeps spoken commentary off by default and requires sentence streaming when enabled", () => {

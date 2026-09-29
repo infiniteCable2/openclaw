@@ -75,6 +75,11 @@ export const matrixChannelConfigUiHints = {
     help: "Optional per-agent call thinking and spoken commentary settings. A profile applies only after an exact MatrixRTC admission selects that agent; it does not grant call access. Unset thinking inherits the agent default; spoken commentary defaults off.",
     advanced: true,
   },
+  "rtc.agentProfiles.*.greeting": {
+    label: "MatrixRTC Agent Greeting",
+    help: "Optional agent-authored opening greeting. Model text and TTS audio are prepared before joining; playback waits for the caller audio track. Preparation failure rejects the call unless onFailure is continue.",
+    advanced: true,
+  },
   "rtc.responseStreaming": {
     label: "MatrixRTC Speech Streaming",
     help: 'Use "sentence" to begin TTS from native visible answer blocks while the agent is still generating. Default: off.',
@@ -93,6 +98,11 @@ export const matrixChannelConfigUiHints = {
   "rtc.waitingAudio.startDelayMs": {
     label: "MatrixRTC Waiting Audio Delay",
     help: "Delay in milliseconds after agent processing begins before waiting audio starts. Default: 1200.",
+    advanced: true,
+  },
+  "rtc.waitingAudio.resumeDelayMs": {
+    label: "MatrixRTC Waiting Audio Resume Delay",
+    help: "Quiet time after a TTS segment before waiting audio resumes while the agent turn continues. Default: 800 ms.",
     advanced: true,
   },
   "rtc.waitingAudio.volume": {

@@ -202,21 +202,41 @@ MatrixRTC call handling is an explicit opt-in. It uses the shared OpenClaw meeti
         toolPolicy: "safe-read-only",
         responseStreaming: "sentence",
         agentProfiles: {
-          "personal-agent": {
+          "primary-agent": {
             agentThinkingLevel: "off",
             speakCommentary: true,
+            greeting: {
+              enabled: true,
+              prompt: "Kurze Begrüßung persönlich und tageszeitgemäß.",
+              timeZone: "Europe/Berlin",
+            },
+          },
+          "future-agent-a": {
+            greeting: {
+              enabled: true,
+              prompt: "Kurze Begrüßung persönlich und tageszeitgemäß.",
+              timeZone: "Europe/Berlin",
+            },
+          },
+          "future-agent-b": {
+            greeting: {
+              enabled: true,
+              prompt: "Kurze Begrüßung persönlich und tageszeitgemäß.",
+              timeZone: "Europe/Berlin",
+            },
           },
         },
         waitingAudio: {
           path: "/var/lib/openclaw/audio/waiting.wav",
           startDelayMs: 1200,
+          resumeDelayMs: 800,
           volume: 0.14,
         },
         admissions: [
           {
             roomId: "!exact-direct-room:example.org",
             userId: "@exact-caller:example.org",
-            agentId: "personal-agent",
+            agentId: "primary-agent",
           },
         ],
       },
@@ -253,9 +273,35 @@ Commentary remains separate from the final answer; hidden reasoning and errors a
 never spoken. Neither setting
 changes Matrix text messages or other voice channels.
 
+An optional `agentProfiles.<agentId>.greeting` can enable an agent-authored opening line:
+
+```json5
+greeting: {
+  enabled: true,
+  prompt: "Kurze Begrüßung persönlich und tageszeitgemäß.",
+  timeZone: "Europe/Berlin",
+  timeoutMs: 30000,
+  onFailure: "reject",
+}
+```
+
+The admitted caller identity and current local time are supplied as facts; the agent can
+use its existing persona and memory, but greeting generation has no tools. The same call
+session is used for later conversation. The model response and TTS audio are both prepared
+before joining the call. Playback starts only after the bridge reports that the caller's
+audio track is subscribed, then waits 150 ms; caller speech can cancel the pending or
+playing greeting. If preparation fails, `"reject"` (default) refuses the call;
+`"continue"` explicitly joins without a greeting. This opt-in requires a media bridge that emits
+`remote_audio_ready`; if the caller's audio track never becomes ready, the call ends rather
+than silently skipping the greeting. Older bridges continue to work when greetings are disabled.
+Profiles for other agents may be configured ahead of time; they do not grant call
+admission. Each caller still needs a separate exact entry under `admissions`.
+
 `waitingAudio` is optional. When configured, OpenClaw starts looping the trusted local WAV
 after `startDelayMs` while an agent turn is still waiting for speech output. It stops and clears
-the loop on caller speech, cancellation, or immediately before the first TTS frame. The file
+the loop on caller speech, cancellation, or immediately before each TTS segment's first frame.
+While the agent is still working, it resumes after `resumeDelayMs` of actual playback silence
+(default `800` ms), rather than flickering in tiny gaps. The file
 must be an absolute, regular, non-symlink, non-group/world-writable mono PCM16 WAV (8-48 kHz,
 at most 8 MiB). `volume` ranges from `0` to `1` and defaults to `0.14`; `startDelayMs` defaults
 to `1200`. Keep the file in an OpenClaw-owned data path rather than referencing another

@@ -23,8 +23,9 @@ export type MatrixRtcMediaKey = {
 };
 
 type ControlEvent =
-  | { type: "ready"; output_gate: boolean }
+  | { type: "ready"; output_gate: boolean; remote_audio_ready?: boolean }
   | { type: "connected" }
+  | { type: "remote_audio_ready" }
   | { type: "output_cleared"; generation: number }
   | { type: "output_gate_set"; gate: MatrixOutputGate }
   | { type: "stopped" }
@@ -217,7 +218,7 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     if (index >= 0) {
       return this.#events.splice(index, 1)[0]!;
     }
-    if (this.#fatal) {
+    if (this.#fatal || this.#stopped) {
       throw new Error("MatrixRTC native media bridge failed");
     }
     return await new Promise<ControlEvent>((resolve, reject) => {
@@ -241,6 +242,10 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
         originalReject(error);
       };
     });
+  }
+
+  async waitForRemoteAudioReady(): Promise<void> {
+    await this.waitForControlEvent("remote_audio_ready");
   }
 
   sendControl(message: Record<string, unknown>): void {
@@ -389,6 +394,7 @@ export async function createMatrixRtcMediaTransport(params: {
   token: string;
   allowedRemoteIdentity: string;
   initialKeys: MatrixRtcMediaKey[];
+  requireRemoteAudioReady?: boolean;
 }): Promise<NativeMatrixRtcAudioTransport> {
   await validateMediaBridgeCommand(params.command);
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-matrix-rtc-"));
@@ -415,6 +421,9 @@ export async function createMatrixRtcMediaTransport(params: {
     const ready = await transport.waitForControlEvent("ready");
     if (ready.type !== "ready" || ready.output_gate !== true) {
       throw new Error("MatrixRTC media bridge does not support reversible output gating");
+    }
+    if (params.requireRemoteAudioReady && ready.remote_audio_ready !== true) {
+      throw new Error("MatrixRTC media bridge does not report remote audio readiness");
     }
     transport.sendControl({
       type: "start",

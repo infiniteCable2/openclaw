@@ -11,6 +11,10 @@ const mocks = vi.hoisted(() => ({
     consultAgent: vi.fn(),
   })),
   prepareMeetingAgentRealtimeEngine: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
+  prepareMeetingAgentGreeting: vi.fn(async (_params: { meetingSessionId: string }) => ({
+    text: "Hello, caller.",
+    audio: Buffer.from([1, 0]),
+  })),
   startMeetingAgentRealtimeEngine: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
   requestMatrixRtcCredentials: vi.fn(async () => ({
     url: "wss://rtc.example.test",
@@ -26,6 +30,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("openclaw/plugin-sdk/meeting-runtime", () => ({
   createMeetingRealtimeEngineBindings: mocks.createMeetingRealtimeEngineBindings,
   prepareMeetingAgentRealtimeEngine: mocks.prepareMeetingAgentRealtimeEngine,
+  prepareMeetingAgentGreeting: mocks.prepareMeetingAgentGreeting,
   startMeetingAgentRealtimeEngine: mocks.startMeetingAgentRealtimeEngine,
 }));
 
@@ -58,6 +63,8 @@ function createHarness(
     emitInitialKeys?: boolean;
     emitInitialRemoteKey?: boolean;
     remoteKeyMemberId?: string;
+    greeting?: boolean;
+    greetingOnFailure?: "continue" | "reject";
   } = {},
 ) {
   const emitter = new EventEmitter();
@@ -165,11 +172,26 @@ function createHarness(
       transcriptionProvider: "local-stt",
       providers: {},
       toolPolicy: "owner",
-      agentProfiles: { example_owner: { agentThinkingLevel: "off", speakCommentary: true } },
+      agentProfiles: {
+        example_owner: {
+          agentThinkingLevel: "off",
+          speakCommentary: true,
+          ...(options.greeting
+            ? {
+                greeting: {
+                  enabled: true,
+                  timeZone: "Europe/Berlin",
+                  ...(options.greetingOnFailure ? { onFailure: options.greetingOnFailure } : {}),
+                },
+              }
+            : {}),
+        },
+      },
       responseStreaming: "sentence",
       waitingAudio: {
         filePath: "/var/lib/openclaw/audio/waiting.wav",
         startDelayMs: 1_200,
+        resumeDelayMs: 800,
         volume: 0.14,
       },
       admissions: [{ roomId, userId: ownerId, agentId: "example_owner" }],
@@ -242,6 +264,68 @@ function createHarness(
 describe("registerMatrixRtcController", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("prepares an agent-authored greeting before joining and plays it in the same call session", async () => {
+    const harness = createHarness("matrix_2_0", { greeting: true });
+    harness.setRoomKnown(true);
+    harness.session.memberships = [harness.remoteMembership];
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+    expect(mocks.prepareMeetingAgentGreeting).toHaveBeenCalledOnce();
+    expect(mocks.prepareMeetingAgentGreeting.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.session.joinRTCSession.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.createMatrixRtcMediaTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ requireRemoteAudioReady: true }),
+    );
+    const greeting = mocks.prepareMeetingAgentGreeting.mock.results[0]!.value;
+    expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledWith(
+      expect.objectContaining({ initialGreeting: await greeting }),
+    );
+    const preparedSessionId = mocks.prepareMeetingAgentGreeting.mock.calls[0]![0].meetingSessionId;
+    expect(mocks.startMeetingAgentRealtimeEngine.mock.calls[0]![0].meetingSessionId).toBe(
+      preparedSessionId,
+    );
+    await harness.controller.stop();
+  });
+
+  it("does not join when the admitted caller leaves during greeting preparation", async () => {
+    const pending =
+      Promise.withResolvers<Awaited<ReturnType<typeof mocks.prepareMeetingAgentGreeting>>>();
+    mocks.prepareMeetingAgentGreeting.mockReturnValueOnce(pending.promise);
+    const harness = createHarness("matrix_2_0", { greeting: true });
+    harness.setRoomKnown(true);
+    harness.session.memberships = [harness.remoteMembership];
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+    expect(mocks.prepareMeetingAgentGreeting).toHaveBeenCalledOnce();
+    harness.session.memberships = [];
+    pending.resolve({ text: "Hello, caller.", audio: Buffer.from([1, 0]) });
+    await flushPromises();
+    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    await harness.controller.stop();
+  });
+
+  it.each([
+    [undefined, false],
+    ["continue", true],
+    ["reject", false],
+  ] as const)("handles greeting preparation failure with %s policy", async (onFailure, joins) => {
+    mocks.prepareMeetingAgentGreeting.mockRejectedValueOnce(
+      new Error("synthetic preparation error"),
+    );
+    const harness = createHarness("matrix_2_0", {
+      greeting: true,
+      greetingOnFailure: onFailure,
+    });
+    harness.setRoomKnown(true);
+    harness.session.memberships = [harness.remoteMembership];
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+    expect(mocks.prepareMeetingAgentGreeting).toHaveBeenCalledOnce();
+    expect(harness.session.joinRTCSession.mock.calls.length > 0).toBe(joins);
+    await harness.controller.stop();
   });
 
   it("retains and releases readiness acquired after cancellation without joining", async () => {
@@ -386,6 +470,7 @@ describe("registerMatrixRtcController", () => {
             waitingAudio: {
               filePath: "/var/lib/openclaw/audio/waiting.wav",
               startDelayMs: 1_200,
+              resumeDelayMs: 800,
               volume: 0.14,
             },
           }),
@@ -425,6 +510,7 @@ describe("registerMatrixRtcController", () => {
             waitingAudio: {
               filePath: "/var/lib/openclaw/audio/waiting.wav",
               startDelayMs: 1_200,
+              resumeDelayMs: 800,
               volume: 0.14,
             },
           }),

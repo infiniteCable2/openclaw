@@ -6,12 +6,23 @@ export function createMeetingAgentWaitingAudio(params: {
   playback: MeetingWaitingAudioPlayback;
   isStopped: () => boolean;
   canStart: () => boolean;
+  resumeDelayMs: number;
   onError: (error: unknown) => void;
 }) {
   const pending = new Set<string>();
   let utteranceId: string | undefined;
   let scheduled = false;
   let generation = 0;
+  let turnSerial = 0;
+  let activeTurn: number | undefined;
+  let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const cancelResume = () => {
+    if (resumeTimer) {
+      clearTimeout(resumeTimer);
+      resumeTimer = undefined;
+    }
+  };
 
   const stop = (owner?: number): Promise<void> => {
     if (owner !== undefined && owner !== generation) {
@@ -20,6 +31,7 @@ export function createMeetingAgentWaitingAudio(params: {
     generation += 1;
     utteranceId = undefined;
     scheduled = false;
+    cancelResume();
     if (params.isStopped()) {
       pending.clear();
     }
@@ -28,18 +40,29 @@ export function createMeetingAgentWaitingAudio(params: {
   const stopInBackground = (owner?: number) => {
     void stop(owner).catch(params.onError);
   };
-  const schedule = () => {
+  const schedule = (delayMs?: number) => {
     if (scheduled || params.isStopped()) {
       return;
     }
     scheduled = true;
     generation += 1;
-    params.playback.schedule();
+    params.playback.schedule(delayMs);
   };
   const retryConfirmed = () => {
     if (utteranceId !== undefined && pending.has(utteranceId) && params.canStart()) {
       schedule();
     }
+  };
+  const retryTurn = (turn: number) => {
+    if (activeTurn !== turn || params.isStopped() || scheduled) {
+      return;
+    }
+    if (params.canStart()) {
+      schedule(0);
+      return;
+    }
+    // The sink may still be playing the last TTS frame after its reader closes.
+    resumeTimer = setTimeout(() => retryTurn(turn), 100);
   };
   const onProcessing: NonNullable<RealtimeTranscriptionSessionCallbacks["onProcessing"]> = (
     event,
@@ -75,10 +98,32 @@ export function createMeetingAgentWaitingAudio(params: {
     schedule,
     stop,
     stopInBackground,
+    onTurnStarted() {
+      activeTurn = ++turnSerial;
+      cancelResume();
+      schedule();
+      return activeTurn;
+    },
+    onTurnFinished(turn: number) {
+      if (activeTurn !== turn) {
+        return;
+      }
+      activeTurn = undefined;
+      cancelResume();
+      stopInBackground();
+    },
     onProcessing,
-    onOutputIdle: retryConfirmed,
+    onOutputIdle(turn: number) {
+      retryConfirmed();
+      if (activeTurn !== turn || scheduled) {
+        return;
+      }
+      cancelResume();
+      resumeTimer = setTimeout(() => retryTurn(turn), params.resumeDelayMs);
+    },
     onSpeechStart() {
       // New speech invalidates confirmations still queued by older audio.
+      activeTurn = undefined;
       pending.clear();
       stopInBackground();
     },

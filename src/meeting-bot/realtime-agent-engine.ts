@@ -10,6 +10,7 @@ import {
   type RealtimeVoiceSessionHarness,
 } from "../talk/realtime-session-harness.js";
 import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
+import type { PreparedMeetingAgentGreeting } from "./agent-greeting.js";
 import { createMeetingAgentWaitingAudio } from "./realtime-agent-waiting-audio.js";
 import {
   createMeetingSttAudioConverter,
@@ -121,10 +122,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
   logger: RuntimeLogger;
   providers?: RealtimeTranscriptionProviderPlugin[];
   consultAgent: (params: MeetingAgentConsultParams) => Promise<RealtimeVoiceAgentConsultResult>;
+  initialGreeting?: PreparedMeetingAgentGreeting;
 }): Promise<MeetingRealtimeAudioEngineHandle> {
   type SpeechUtterance = {
     generation: number;
     waitingGeneration: number;
+    waitingTurn?: number;
     chunks: string[];
     transcriptEntries: RealtimeVoiceTranscriptEntry[];
     playbackStarted: boolean;
@@ -140,6 +143,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
   const activeTtsAborts = new Set<AbortController>();
   const activeTtsReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
   let outputGeneration = 0;
+  let greetingPending = params.initialGreeting !== undefined;
+  let currentWaitingTurn: number | undefined;
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
   const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
   const resolved = resolveMeetingRealtimeTranscriptionProvider({
@@ -172,6 +177,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
     isStopped: () => stopped,
     // Readers include the first-PCM drain; isolated input has no echo window.
     canStart: () => activeTtsReaders.size === 0 && !harness.isOutputPlaybackWindowActive(),
+    resumeDelayMs: waitingAudio?.resumeDelayMs ?? 800,
     onError: (error) => {
       params.logger.warn(
         `${params.platform.logScope} ${agentLogScope} waiting audio stop failed: ${formatErrorMessage(error)}`,
@@ -277,9 +283,10 @@ export async function startMeetingAgentRealtimeEngine(params: {
     },
   });
 
-  const createSpeechUtterance = (): SpeechUtterance => ({
+  const createSpeechUtterance = (waitingTurn?: number): SpeechUtterance => ({
     generation: outputGeneration,
     waitingGeneration: waiting.generation,
+    waitingTurn,
     chunks: [],
     transcriptEntries: [],
     playbackStarted: false,
@@ -439,7 +446,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
           allowNextPreparation();
           activeTtsReaders.delete(reader);
           reader.releaseLock();
-          waiting.onOutputIdle();
+          if (utterance.waitingTurn !== undefined) {
+            waiting.onOutputIdle(utterance.waitingTurn);
+          }
           await result.release?.();
           activeTtsAborts.delete(controller);
         }
@@ -450,6 +459,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
         utterance.failed = true;
         utterance.finalized = true;
+        if (utterance.waitingTurn !== undefined) {
+          waiting.onTurnFinished(utterance.waitingTurn);
+          if (currentWaitingTurn === utterance.waitingTurn) {
+            currentWaitingTurn = undefined;
+          }
+        }
         waiting.stopInBackground(utterance.waitingGeneration);
         // TTS and sink failures happen after a turn, and sometimes output, has started.
         // Close both spans so later input cannot inherit stale playback suppression.
@@ -494,6 +509,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
       harness.finishOutputAudio("completed");
       harness.endTurn();
       utterance.finalized = true;
+      if (utterance.waitingTurn !== undefined) {
+        waiting.onTurnFinished(utterance.waitingTurn);
+        if (currentWaitingTurn === utterance.waitingTurn) {
+          currentWaitingTurn = undefined;
+        }
+      }
     });
   };
 
@@ -503,6 +524,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
     }
     outputGeneration += 1;
     utterance.finalized = true;
+    if (utterance.waitingTurn !== undefined) {
+      waiting.onTurnFinished(utterance.waitingTurn);
+      if (currentWaitingTurn === utterance.waitingTurn) {
+        currentWaitingTurn = undefined;
+      }
+    }
     waiting.stopInBackground(utterance.waitingGeneration);
     speechCancellation.cancelActiveSpeech();
     harness.finishOutputAudio("cancelled");
@@ -510,7 +537,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
   };
 
   const enqueueSpeakText = (text: string | undefined) => {
-    const utterance = createSpeechUtterance();
+    const utterance = createSpeechUtterance(currentWaitingTurn);
     enqueueSpeechChunk(text, utterance);
     finalizeSpeechUtterance(utterance, text);
   };
@@ -558,34 +585,47 @@ export async function startMeetingAgentRealtimeEngine(params: {
       responseStyle: "Brief, natural spoken answer for a live meeting.",
       fallbackText: "I hit an error while checking that. Please try again.",
       consult: async ({ question, responseStyle, signal }) => {
-        waiting.schedule();
-        const utterance = createSpeechUtterance();
-        const result = await params.consultAgent({
-          meetingSessionId: params.meetingSessionId,
-          requesterSessionKey: params.requesterSessionKey,
-          args: { question, responseStyle },
-          transcript: harness.transcript,
-          abortSignal: signal,
-          ...(params.config.realtime.responseStreaming === "sentence"
-            ? {
-                onSpeakableText: (event) => {
-                  if (event.type === "chunk") {
-                    enqueueSpeechChunk(event.text, utterance);
-                  } else if (event.type === "done") {
-                    finalizeSpeechUtterance(utterance, event.text);
-                  } else {
-                    abortSpeechUtterance(utterance);
-                  }
-                },
-              }
-            : {}),
-        });
+        const waitingTurn = waiting.onTurnStarted();
+        currentWaitingTurn = waitingTurn;
+        const utterance = createSpeechUtterance(waitingTurn);
+        const result = await params
+          .consultAgent({
+            meetingSessionId: params.meetingSessionId,
+            requesterSessionKey: params.requesterSessionKey,
+            args: { question, responseStyle },
+            transcript: harness.transcript,
+            abortSignal: signal,
+            ...(params.config.realtime.responseStreaming === "sentence"
+              ? {
+                  onSpeakableText: (event) => {
+                    if (event.type === "chunk") {
+                      enqueueSpeechChunk(event.text, utterance);
+                    } else if (event.type === "done") {
+                      finalizeSpeechUtterance(utterance, event.text);
+                    } else {
+                      abortSpeechUtterance(utterance);
+                    }
+                  },
+                }
+              : {}),
+          })
+          .catch((error: unknown) => {
+            waiting.onTurnFinished(waitingTurn);
+            if (currentWaitingTurn === waitingTurn) {
+              currentWaitingTurn = undefined;
+            }
+            throw error;
+          });
         if (
           !result.text.trim() &&
           utterance.chunks.length === 0 &&
           isCurrentSpeechUtterance(utterance)
         ) {
           await waiting.stop(utterance.waitingGeneration);
+          waiting.onTurnFinished(waitingTurn);
+          if (currentWaitingTurn === waitingTurn) {
+            currentWaitingTurn = undefined;
+          }
         }
         return result;
       },
@@ -614,6 +654,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
           return;
         }
         waiting.onSpeechStart();
+        greetingPending = false;
+        currentWaitingTurn = undefined;
       },
       onSpeechActivity: bargeInGate.onSpeechActivity,
       onProcessing: (event) => {
@@ -727,6 +769,48 @@ export async function startMeetingAgentRealtimeEngine(params: {
     type: "session.ready",
     payload: { meetingSessionId: params.meetingSessionId },
   });
+
+  if (params.initialGreeting) {
+    const greeting = params.initialGreeting;
+    const generation = outputGeneration;
+    void (async () => {
+      // The bridge's connection event proves local publication, but not that
+      // the caller's audio track has arrived. Never send the greeting before it.
+      await params.transport.waitForRemoteAudioReady?.();
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      if (stopped || !greetingPending || outputGeneration !== generation) {
+        return;
+      }
+      greetingPending = false;
+      const controller = new AbortController();
+      activeTtsAborts.add(controller);
+      const isCurrent = () =>
+        !stopped && !controller.signal.aborted && outputGeneration === generation;
+      try {
+        const turnId = harness.ensureTurn();
+        harness.emit({
+          type: "output.text.done",
+          turnId,
+          final: true,
+          payload: { meetingSessionId: params.meetingSessionId, text: greeting.text },
+        });
+        if (await writeOutputAudio(greeting.audio, true, isCurrent)) {
+          harness.recordTranscript("assistant", greeting.text);
+          harness.finishOutputAudio("completed");
+          harness.endTurn();
+        }
+      } finally {
+        activeTtsAborts.delete(controller);
+      }
+    })().catch((error: unknown) => {
+      if (!stopped) {
+        params.logger.warn(
+          `${params.platform.logScope} ${agentLogScope} greeting playback failed: ${formatErrorMessage(error)}`,
+        );
+        stopAfterFailure("greeting playback");
+      }
+    });
+  }
 
   return {
     providerId: resolved.provider.id,

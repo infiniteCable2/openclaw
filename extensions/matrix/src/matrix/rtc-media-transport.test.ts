@@ -61,6 +61,19 @@ describe("MatrixRTC media output framing", () => {
     expect(transport.supportsFullDuplexInput).toBe(true);
   });
 
+  it("waits for the allowed caller's audio-track readiness event", async () => {
+    const { control, transport } = createTransportFixture();
+    let ready = false;
+    const pending = transport.waitForRemoteAudioReady().then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    control.emit("data", Buffer.from('{"type":"remote_audio_ready"}\n'));
+    await pending;
+    expect(ready).toBe(true);
+  });
+
   it("encodes one bounded generation-tagged PCM frame", () => {
     const pcm = Buffer.from([1, 0, 2, 0]);
     const frame = encodeMatrixRtcOutputFrame(42, pcm);

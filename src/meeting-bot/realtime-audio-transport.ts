@@ -24,6 +24,8 @@ export interface MeetingRealtimeAudioTransport {
   /** Delivers a prior failure immediately so provider setup cannot outrun transport teardown. */
   onFatal(handler: () => void): void;
   startInput(onAudio: (audio: Buffer) => void): void;
+  /** Resolves when an admitted remote audio track is actually subscribed, if observable. */
+  waitForRemoteAudioReady?(): Promise<void>;
   /** Starts one assistant-output generation so loopback proof cannot reuse older audio. */
   beginOutput?(): void;
   stop(): Promise<void>;

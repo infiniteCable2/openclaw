@@ -12,6 +12,7 @@ const WAITING_AUDIO_FRAME_MS = 20;
 export type MeetingWaitingAudioConfig = {
   filePath: string;
   startDelayMs: number;
+  resumeDelayMs?: number;
   volume: number;
 };
 
@@ -19,10 +20,11 @@ export type PreparedMeetingWaitingAudio = {
   pcm: Buffer;
   frameBytes: number;
   startDelayMs: number;
+  resumeDelayMs: number;
 };
 
 export type MeetingWaitingAudioPlayback = {
-  schedule(): void;
+  schedule(delayMs?: number): void;
   stop(): Promise<void>;
 };
 
@@ -95,6 +97,7 @@ export async function prepareMeetingWaitingAudio(
   const cacheKey = JSON.stringify([
     config.filePath,
     config.startDelayMs,
+    config.resumeDelayMs,
     config.volume,
     audioFormat,
   ]);
@@ -136,6 +139,7 @@ export async function prepareMeetingWaitingAudio(
         pcm,
         frameBytes: audioFormat === "g711-ulaw-8khz" ? 160 : 960,
         startDelayMs: config.startDelayMs,
+        resumeDelayMs: config.resumeDelayMs ?? 800,
       };
     })();
     preparedAudioCache.set(cacheKey, prepared);
@@ -223,7 +227,7 @@ export function createMeetingWaitingAudioPlayback(params: {
     return stopTask;
   };
 
-  const schedule = () => {
+  const schedule = (delayMs = params.audio?.startDelayMs) => {
     const audio = params.audio;
     if (!audio || params.isStopped()) {
       return;
@@ -242,7 +246,7 @@ export function createMeetingWaitingAudioPlayback(params: {
         return;
       }
       try {
-        await delay(audio.startDelayMs, undefined, { signal: controller.signal });
+        await delay(delayMs ?? audio.startDelayMs, undefined, { signal: controller.signal });
       } catch {
         return;
       }

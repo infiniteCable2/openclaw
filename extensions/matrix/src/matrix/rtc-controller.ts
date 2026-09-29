@@ -8,6 +8,7 @@ import {
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   createMeetingRealtimeEngineBindings,
+  prepareMeetingAgentGreeting,
   prepareMeetingAgentRealtimeEngine,
   startMeetingAgentRealtimeEngine,
   type MeetingAgentRealtimePreparation,
@@ -290,6 +291,23 @@ export function registerMatrixRtcController(params: {
         }
         params.logger.info("matrix rtc: transport verified");
 
+        const meetingSessionId = randomUUID();
+        const agentProfile = resolveMatrixRtcAgentProfile(params.config, admission.agentId);
+        const bindings = createMeetingRealtimeEngineBindings({
+          platform: MATRIX_RTC_PLATFORM,
+          config: {
+            realtime: {
+              agentId: admission.agentId,
+              toolPolicy: params.config.toolPolicy,
+              agentThinkingLevel: agentProfile.agentThinkingLevel,
+              speakCommentary: agentProfile.speakCommentary,
+            },
+          },
+          fullConfig: params.cfg,
+          runtime: params.runtime,
+          logger: params.logger,
+        });
+
         call.preparation = await prepareMeetingAgentRealtimeEngine({
           config: {
             chrome: { audioFormat: "pcm16-24khz" },
@@ -313,6 +331,58 @@ export function registerMatrixRtcController(params: {
         });
         abort.signal.throwIfAborted();
         params.logger.info("matrix rtc: speech providers ready");
+
+        let initialGreeting: Awaited<ReturnType<typeof prepareMeetingAgentGreeting>> | undefined;
+        if (agentProfile.greeting) {
+          const greeting = agentProfile.greeting;
+          const greetingBindings = createMeetingRealtimeEngineBindings({
+            platform: MATRIX_RTC_PLATFORM,
+            config: {
+              realtime: {
+                agentId: admission.agentId,
+                toolPolicy: "none",
+                agentThinkingLevel: agentProfile.agentThinkingLevel,
+                speakCommentary: false,
+              },
+            },
+            fullConfig: params.cfg,
+            runtime: params.runtime,
+            logger: params.logger,
+          });
+          const greetingSignal = AbortSignal.any([
+            abort.signal,
+            AbortSignal.timeout(greeting.timeoutMs ?? 30_000),
+          ]);
+          try {
+            initialGreeting = await prepareMeetingAgentGreeting({
+              cfg: params.cfg,
+              runtime: params.runtime,
+              consultAgent: greetingBindings.consultAgent,
+              meetingSessionId,
+              requesterSessionKey: route.sessionKey,
+              callerId: admission.userId,
+              prompt:
+                greeting.prompt ??
+                "Greet the caller warmly and briefly, suitable for the time of day.",
+              timeZone: greeting.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+              audioFormat: "pcm16-24khz",
+              ttsContext: {
+                agentId: admission.agentId,
+                channelId: "matrix",
+                accountId: params.accountId,
+              },
+              signal: greetingSignal,
+            });
+          } catch {
+            abort.signal.throwIfAborted();
+            if (greeting.onFailure !== "continue") {
+              throw new Error("MatrixRTC greeting preparation failed before call admission");
+            }
+            params.logger.warn(
+              "matrix rtc: greeting preparation failed; continuing without greeting",
+            );
+          }
+        }
 
         const ownMembership: MatrixRtcMembershipIdentity = {
           ...self,
@@ -429,6 +499,24 @@ export function registerMatrixRtcController(params: {
         );
 
         const ownTransport = rtcMode === "compatibility" ? remoteTransport! : preferredTransport;
+        // Greeting synthesis can take many seconds. Recheck the live membership
+        // immediately before joining; a once-valid caller may have left meanwhile.
+        const currentRemote = assertMatrixRtcCallAdmission({
+          isDirectRoom: params.client.dms.isDm(roomId),
+          joinedUserIds: params.client.matrixRtc.getJoinedUserIds(roomId),
+          memberships: session.memberships,
+          selfUserId: self.userId,
+          allowedUserId: admission.userId,
+          routedAgentId: route.agentId,
+          allowedAgentId: admission.agentId,
+        });
+        if (
+          membershipIncarnation(currentRemote) !== remoteIncarnation ||
+          resolveMatrixRtcMode(currentRemote) !== rtcMode
+        ) {
+          throw new Error("MatrixRTC caller membership changed during call preparation");
+        }
+        abort.signal.throwIfAborted();
         session.joinRTCSession(
           ownMembership,
           [ownTransport],
@@ -458,6 +546,7 @@ export function registerMatrixRtcController(params: {
           token: credentials.token,
           allowedRemoteIdentity: remote.rtcBackendIdentity,
           initialKeys,
+          requireRemoteAudioReady: initialGreeting !== undefined,
         });
         mediaTransportRef.current = mediaTransport;
         call.transport = mediaTransport;
@@ -472,21 +561,6 @@ export function registerMatrixRtcController(params: {
             mediaTransport.sendKey(key);
           }
         }
-        const agentProfile = resolveMatrixRtcAgentProfile(params.config, admission.agentId);
-        const bindings = createMeetingRealtimeEngineBindings({
-          platform: MATRIX_RTC_PLATFORM,
-          config: {
-            realtime: {
-              agentId: admission.agentId,
-              toolPolicy: params.config.toolPolicy,
-              agentThinkingLevel: agentProfile.agentThinkingLevel,
-              speakCommentary: agentProfile.speakCommentary,
-            },
-          },
-          fullConfig: params.cfg,
-          runtime: params.runtime,
-          logger: params.logger,
-        });
         call.engine = await startMeetingAgentRealtimeEngine({
           config: {
             chrome: { audioFormat: "pcm16-24khz" },
@@ -502,7 +576,7 @@ export function registerMatrixRtcController(params: {
           fullConfig: params.cfg,
           runtime: params.runtime,
           platform: bindings.platform,
-          meetingSessionId: randomUUID(),
+          meetingSessionId,
           requesterSessionKey: route.sessionKey,
           ttsContext: {
             agentId: admission.agentId,
@@ -512,6 +586,7 @@ export function registerMatrixRtcController(params: {
           transport: mediaTransport,
           logger: params.logger,
           consultAgent: bindings.consultAgent,
+          ...(initialGreeting ? { initialGreeting } : {}),
         });
         call.transport = undefined;
         abort.signal.throwIfAborted();
