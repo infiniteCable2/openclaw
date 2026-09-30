@@ -85,6 +85,19 @@ describe("realtime voice agent consult tool", () => {
     );
   });
 
+  it("keeps the final result separate when spoken commentary is enabled", () => {
+    const prompt = buildRealtimeVoiceAgentConsultPrompt({
+      args: { question: "Check the device." },
+      transcript: [],
+      surface: "a live voice session",
+      userLabel: "Caller",
+      commentaryEnabled: true,
+    });
+
+    expect(prompt).toContain("When finished, return a separate concise result");
+    expect(prompt).not.toContain("return only the concise result");
+  });
+
   it("filters reasoning and error payloads from visible consult output", () => {
     expect(
       collectRealtimeVoiceAgentConsultVisibleText([

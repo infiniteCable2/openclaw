@@ -6,6 +6,7 @@ import {
   classifyAgentRunTerminalOutcome,
 } from "../agents/agent-run-terminal-outcome.js";
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
+import { withCommentaryGuidance } from "../agents/commentary-guidance.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
@@ -523,6 +524,8 @@ export async function consultRealtimeVoiceAgent(params: {
 
       const streamedChunks: string[] = [];
       let commentarySpeechQueued = false;
+      const spokenCommentaryEnabled =
+        params.speakCommentary === true && Boolean(params.onSpeakableText);
       let speechDelivery = Promise.resolve();
       let speechDeliveryError: Error | undefined;
       let speechDeliveryAborted = false;
@@ -595,6 +598,7 @@ export async function consultRealtimeVoiceAgent(params: {
             userLabel: params.userLabel,
             assistantLabel: params.assistantLabel,
             questionSourceLabel: params.questionSourceLabel,
+            commentaryEnabled: spokenCommentaryEnabled,
           }),
           provider: params.provider,
           model: params.model,
@@ -605,7 +609,7 @@ export async function consultRealtimeVoiceAgent(params: {
           toolResultFormat: "plain",
           ...(params.onSpeakableText
             ? {
-                deliverCommentaryBlocks: params.speakCommentary === true,
+                deliverCommentaryBlocks: spokenCommentaryEnabled,
                 blockReplyBreak: "text_end" as const,
                 blockReplyChunking: {
                   minChars: 48,
@@ -620,7 +624,7 @@ export async function consultRealtimeVoiceAgent(params: {
                 }) => {
                   if (payload.isCommentary) {
                     if (
-                      params.speakCommentary === true &&
+                      spokenCommentaryEnabled &&
                       !payload.isError &&
                       !payload.isReasoning &&
                       typeof payload.text === "string" &&
@@ -645,9 +649,11 @@ export async function consultRealtimeVoiceAgent(params: {
           timeoutMs,
           runId,
           lane: params.lane,
-          extraSystemPrompt:
+          extraSystemPrompt: withCommentaryGuidance(
             params.extraSystemPrompt ??
-            "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+              "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+            spokenCommentaryEnabled,
+          ),
           agentDir,
           abortSignal,
         });

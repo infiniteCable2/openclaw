@@ -13,6 +13,7 @@ import {
   getCliSessionBinding,
   shouldClearFailedCliSessionBinding,
 } from "../../agents/cli-session.js";
+import { withCommentaryGuidance } from "../../agents/commentary-guidance.js";
 import { resolveDelegationCapability } from "../../agents/delegation-capability.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
 import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
@@ -423,7 +424,10 @@ export async function runCliFallbackCandidate(
             runTimeoutOverrideMs: turn.followupRun.run.runTimeoutOverrideMs,
             runId: params.runId,
             lane: params.runLane,
-            extraSystemPrompt: turn.followupRun.run.extraSystemPrompt,
+            extraSystemPrompt: withCommentaryGuidance(
+              turn.followupRun.run.extraSystemPrompt,
+              turn.opts?.commentaryPayloadsEnabled === true,
+            ),
             sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
             taskSuggestionDeliveryMode: turn.followupRun.run.taskSuggestionDeliveryMode,
             // Heartbeat ambient routes are never implicit message recipients.

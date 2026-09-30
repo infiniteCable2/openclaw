@@ -144,7 +144,7 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 - `threadBindings`: per-channel overrides for thread-bound session routing and lifecycle.
 - `streaming`: nested object `{ mode, chunkMode, block: { enabled, coalesce }, preview: { toolProgress }, progress: { label, labels, maxLines, maxLineChars, toolProgress } }`. `mode` is `"off"` (default), `"partial"`, `"quiet"`, or `"progress"`. Legacy scalar/boolean spellings migrate via `openclaw doctor --fix`.
 - `streaming.block.enabled`: when `true`, completed assistant blocks are kept as separate progress messages. Default: `false`.
-- `commentaryAgentIds`: optional agent IDs whose completed model commentary is sent as separate, durable messages for incoming Matrix text turns routed to them, including explicitly configured rooms. This works with `streaming.mode: "off"` and does not enable partial-text streaming. It does not apply to voice notes, files, or calls. If the agent also sends progress through the `message` tool, both messages can appear.
+- `commentaryAgentIds`: optional agent IDs prompted to give brief, user-facing progress updates whose completed model commentary is sent as separate, durable messages for incoming Matrix text turns routed to them, including explicitly configured rooms. This works with `streaming.mode: "off"` and does not enable partial-text streaming. It does not apply to voice notes, files, or calls. If the agent also sends progress through the `message` tool, both messages can appear. The model may still omit an update; this is not a guaranteed tool-status message.
 - `markdown`: optional Markdown rendering config for outbound text.
 - `responsePrefix`: optional string prepended to outbound replies.
 - `textChunkLimit`: outbound chunk size in characters when `streaming.chunkMode: "length"`. Default: `4000`.
@@ -268,9 +268,10 @@ ahead, so a caller interruption can cancel both audible and prepared output with
 stale queue.
 
 `agentProfiles.<agentId>.speakCommentary: true` lets MatrixRTC speak completed model-authored commentary
-before tool work. It requires `responseStreaming: "sentence"` and is off by default.
+before tool work. It also prompts the agent to give brief, user-facing updates before and between
+meaningful stages of longer work. It requires `responseStreaming: "sentence"` and is off by default.
 Commentary remains separate from the final answer; hidden reasoning and errors are
-never spoken. Neither setting
+never spoken. The model may still omit an update. Neither setting
 changes Matrix text messages or other voice channels.
 
 An optional `agentProfiles.<agentId>.greeting` can enable an agent-authored opening line:

@@ -395,8 +395,15 @@ describe("executeAgentTurn: CLI durable commentary", () => {
         params.onBlockReply,
     );
     state.runCliAgentMock.mockImplementationOnce(
-      async (params: { runId: string; emitCommentaryText?: boolean }) => {
+      async (params: {
+        runId: string;
+        emitCommentaryText?: boolean;
+        extraSystemPrompt?: string;
+      }) => {
         expect(params.emitCommentaryText).toBe(true);
+        expect(params.extraSystemPrompt).toContain(
+          "briefly tell the user what you are about to do before the first tool call",
+        );
         const agentEvents = await import("../../infra/agent-events.js");
         agentEvents.emitAgentEvent({
           runId: params.runId,

@@ -253,6 +253,7 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
   userLabel: string;
   assistantLabel?: string;
   questionSourceLabel?: string;
+  commentaryEnabled?: boolean;
 }): string {
   const parsed = parseRealtimeVoiceAgentConsultArgs(params.args);
   const assistantLabel = params.assistantLabel ?? "Agent";
@@ -268,7 +269,9 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
   return [
     `Live voice request from the ${questionSourceLabel} during ${params.surface}.`,
     "Act as the configured OpenClaw agent on behalf of this user. Use available tools when the request asks you to do work.",
-    "When finished, return only the concise result the realtime voice agent should speak back.",
+    params.commentaryEnabled
+      ? "When finished, return a separate concise result the realtime voice agent should speak back."
+      : "When finished, return only the concise result the realtime voice agent should speak back.",
     "Do not include markdown, tool logs, or private reasoning. Include citations only when the spoken answer needs them.",
     parsed.responseStyle ? `Spoken style: ${parsed.responseStyle}` : undefined,
     transcript ? `Recent voice transcript for context:\n${transcript}` : undefined,

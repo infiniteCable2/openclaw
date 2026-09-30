@@ -74,6 +74,9 @@ describe("executeAgentTurn: lifecycle progress", () => {
   it("requests completed embedded commentary blocks only for an opted-in reply", async () => {
     state.runEmbeddedAgentMock.mockImplementationOnce(async (params: EmbeddedAgentParams) => {
       expect(params.deliverCommentaryBlocks).toBe(true);
+      expect(params.extraSystemPrompt).toContain(
+        "briefly tell the user what you are about to do before the first tool call",
+      );
       return { payloads: [{ text: "Done." }], meta: {} };
     });
 
@@ -82,6 +85,18 @@ describe("executeAgentTurn: lifecycle progress", () => {
     });
 
     expect(result.kind).toBe("success");
+  });
+
+  it("does not add commentary guidance when the reply has not opted in", async () => {
+    state.runEmbeddedAgentMock.mockImplementationOnce(async (params: EmbeddedAgentParams) => {
+      expect(params.deliverCommentaryBlocks).toBe(false);
+      expect(params.extraSystemPrompt).not.toContain("User-facing progress updates are enabled");
+      return { payloads: [{ text: "Done." }], meta: {} };
+    });
+
+    const result = await executeTestTurn({ opts: { onBlockReply: vi.fn() } });
+
+    expect(result.kind).toBe("final");
   });
 
   it("keeps operational agent events from resetting repeated request evidence", async () => {

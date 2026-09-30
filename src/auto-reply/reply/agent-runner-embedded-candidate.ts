@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
+import { withCommentaryGuidance } from "../../agents/commentary-guidance.js";
 import type {
   CompactionAccountingFact,
   RunEmbeddedAgentInternalParams,
@@ -158,7 +159,10 @@ export async function runEmbeddedFallbackCandidate(
         currentInboundEventKind: turn.followupRun.currentInboundEventKind,
         currentInboundContext: turn.followupRun.currentInboundContext,
         explicitSkillSelections: turn.followupRun.explicitSkillSelections,
-        extraSystemPrompt: turn.followupRun.run.extraSystemPrompt,
+        extraSystemPrompt: withCommentaryGuidance(
+          turn.followupRun.run.extraSystemPrompt,
+          turn.opts?.commentaryPayloadsEnabled === true,
+        ),
         sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
         forceMessageTool: turn.followupRun.run.sourceReplyDeliveryMode === "message_tool_only",
         // Heartbeat ambient routes are delivery context, never implicit message recipients.

@@ -247,6 +247,8 @@ describe("realtime voice agent consult speech delivery", () => {
     });
     expect(call.prompt).not.toContain("<final>...</final>");
     expect(call.deliverCommentaryBlocks).toBe(false);
+    expect(call.extraSystemPrompt).not.toContain("User-facing progress updates are enabled");
+    expect(call.prompt).toContain("return only the concise result");
   });
 
   it("speaks opted-in commentary before tool work without adding it to the final answer", async () => {
@@ -276,7 +278,12 @@ describe("realtime voice agent consult speech delivery", () => {
       onSpeakableText,
     });
 
-    expect(requireEmbeddedAgentCall(runEmbeddedAgent).deliverCommentaryBlocks).toBe(true);
+    const call = requireEmbeddedAgentCall(runEmbeddedAgent);
+    expect(call.deliverCommentaryBlocks).toBe(true);
+    expect(call.extraSystemPrompt).toContain(
+      "briefly tell the user what you are about to do before the first tool call",
+    );
+    expect(call.prompt).toContain("return a separate concise result");
     expect(result).toEqual({ text: "The answer is ready.", delivered: true });
     expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
       { type: "chunk", text: "I am checking now." },
