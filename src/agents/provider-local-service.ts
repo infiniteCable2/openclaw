@@ -27,6 +27,7 @@ import {
   type LocalServiceDiagnostics,
   type LocalServiceExit,
 } from "./provider-local-service-diagnostics.js";
+import { checkLocalServiceIdleStop } from "./provider-local-service-idle-check.js";
 import { getModelProviderLocalServiceReconciler } from "./provider-local-service-reconcile.js";
 import type {
   AcquireConfiguredProviderLocalService,
@@ -267,6 +268,16 @@ function validateLocalServiceConfig(service: ModelProviderLocalServiceConfig, pr
   if (!path.isAbsolute(service.command)) {
     throw new Error(`models.providers.${provider}.localService.command must be an absolute path`);
   }
+  if (service.idleStopCheck && !path.isAbsolute(service.idleStopCheck.command)) {
+    throw new Error(
+      `models.providers.${provider}.localService.idleStopCheck.command must be an absolute path`,
+    );
+  }
+  if (service.idleStopCheck && clampPositiveTimerTimeoutMs(service.idleStopMs) === undefined) {
+    throw new Error(
+      `models.providers.${provider}.localService.idleStopMs must be positive with idleStopCheck`,
+    );
+  }
 }
 
 function resolveHealthUrl(service: ModelProviderLocalServiceConfig, baseUrl: string): string {
@@ -285,6 +296,7 @@ function localServiceKey(
     cwd: service.cwd ?? "",
     envHash: hashStringRecord(service.env),
     healthUrl,
+    idleStopCheck: service.idleStopCheck,
   });
 }
 
@@ -487,6 +499,7 @@ function scheduleIdleStop(
   key: string,
   managed: ManagedLocalService,
   service: ModelProviderLocalServiceConfig,
+  delayMs?: number,
 ) {
   if (managed.stopping || services.get(key) !== managed) {
     return;
@@ -506,16 +519,39 @@ function scheduleIdleStop(
     return;
   }
   // Services without idleStopMs remain running until process exit or test cleanup.
-  managed.idleTimer = setTimeout(() => {
-    if (managed.active === 0) {
-      void stopManagedService(key, managed, "idle").catch((error: unknown) => {
-        log.warn("idle local model service shutdown failed", {
-          error: toErrorObject(error, "Local model service shutdown failed").message,
+  const timer = setTimeout(() => {
+    void (async () => {
+      if (managed.idleTimer !== timer || managed.active !== 0) {
+        return;
+      }
+      if (service.idleStopCheck) {
+        let decision: { stop: boolean; recheckMs: number };
+        try {
+          decision = await checkLocalServiceIdleStop(service.idleStopCheck);
+        } catch {
+          // An unavailable external owner cannot authorize an idle shutdown.
+          decision = { stop: false, recheckMs: 20_000 };
+          log.warn("local service idle-stop check unavailable; retaining worker");
+        }
+        if (managed.idleTimer !== timer || managed.active !== 0) {
+          return;
+        }
+        if (!decision.stop) {
+          scheduleIdleStop(key, managed, service, decision.recheckMs);
+          return;
+        }
+      }
+      if (managed.idleTimer === timer && managed.active === 0) {
+        await stopManagedService(key, managed, "idle").catch((error: unknown) => {
+          log.warn("idle local model service shutdown failed", {
+            error: toErrorObject(error, "Local model service shutdown failed").message,
+          });
         });
-      });
-    }
-  }, idleStopMs);
-  managed.idleTimer.unref?.();
+      }
+    })();
+  }, delayMs ?? idleStopMs);
+  managed.idleTimer = timer;
+  timer.unref?.();
 }
 
 function clearIdleTimer(managed: ManagedLocalService) {

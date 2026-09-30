@@ -551,8 +551,25 @@ const ProviderLocalServiceSchema = z
     readyTimeoutMs: z.number().int().positive().optional(),
     /** Idle timeout in milliseconds before stopping the local service. */
     idleStopMs: z.number().int().nonnegative().optional(),
+    /** Optional executable consulted after the idle timeout before shutdown. */
+    idleStopCheck: z
+      .object({
+        command: z.string().min(1),
+        args: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
+  .superRefine((service, ctx) => {
+    if (service.idleStopCheck && !(service.idleStopMs && service.idleStopMs > 0)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["idleStopMs"],
+        message: "idleStopMs must be positive when idleStopCheck is configured",
+      });
+    }
+  })
   .optional();
 
 const ModelProviderSchema = z

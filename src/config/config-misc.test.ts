@@ -248,7 +248,8 @@ describe("model provider localService config", () => {
               env: { METAL_DEVICE_WRAPPER_TYPE: "1" },
               healthUrl: "http://127.0.0.1:18000/v1/models",
               readyTimeoutMs: 180_000,
-              idleStopMs: 0,
+              idleStopMs: 120_000,
+              idleStopCheck: { command: "/usr/bin/idle-policy", args: ["--service", "ds4"] },
             },
             models: [],
           },
@@ -318,6 +319,7 @@ describe("TTS provider localService config", () => {
               healthUrl: "http://127.0.0.1:8080/health",
               readyTimeoutMs: 180_000,
               idleStopMs: 30_000,
+              idleStopCheck: { command: "C:\\speech\\idle-policy.exe" },
             },
           },
         },
@@ -342,6 +344,23 @@ describe("TTS provider localService config", () => {
       },
     });
 
+    expect(result.success).toBe(false);
+  });
+
+  it("requires a positive idle period when an external stop check is configured", () => {
+    const result = OpenClawSchema.safeParse({
+      tts: {
+        providers: {
+          "local-speech": {
+            localService: {
+              command: "/usr/bin/local-speech",
+              idleStopMs: 0,
+              idleStopCheck: { command: "/usr/bin/idle-check" },
+            },
+          },
+        },
+      },
+    });
     expect(result.success).toBe(false);
   });
 });

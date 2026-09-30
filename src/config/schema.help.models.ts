@@ -53,6 +53,12 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
     "Maximum milliseconds to wait for the local model server readiness probe after starting the process.",
   "models.providers.*.localService.idleStopMs":
     "Milliseconds to keep an OpenClaw-started local model server alive after the last request finishes. Set 0 to keep it alive until OpenClaw exits.",
+  "models.providers.*.localService.idleStopCheck":
+    "Optional executable consulted after idleStopMs before stopping the service. It returns a bounded JSON stop decision; a failed check retains the worker and is retried.",
+  "models.providers.*.localService.idleStopCheck.command":
+    "Absolute executable path for the local-service idle-stop decision. No shell is used.",
+  "models.providers.*.localService.idleStopCheck.args":
+    "Arguments passed to the idle-stop decision executable without shell expansion.",
   "models.providers.*.request":
     "Optional request overrides for model-provider requests, including extra headers, auth overrides, proxy routing, TLS client settings, and optional allowPrivateNetwork for trusted self-hosted endpoints. Use these only when your upstream or enterprise network path requires transport customization.",
   "models.providers.*.request.headers":

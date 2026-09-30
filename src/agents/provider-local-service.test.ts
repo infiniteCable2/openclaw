@@ -257,6 +257,55 @@ describe("provider local service", () => {
     expect(hasManagedProviderLocalServices()).toBe(false);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "retains an idle worker until the external owner requests unloading",
+    async () => {
+      const port = await fixture.claimPort();
+      const healthUrl = `http://127.0.0.1:${port}/v1/models`;
+      const tempDir = tempDirs.make("openclaw-idle-check-");
+      const requestPath = path.join(tempDir, "request-stop");
+      const checksPath = path.join(tempDir, "checks");
+      const model = attachModelProviderLocalService(
+        {
+          id: "demo",
+          provider: "local-idle-check",
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+        } as unknown as Model<"openai-completions">,
+        {
+          command: process.execPath,
+          args: [
+            "-e",
+            `require("node:http").createServer((_,res)=>res.end("ok")).listen(${port},"127.0.0.1")`,
+          ],
+          healthUrl,
+          readyTimeoutMs: 5_000,
+          idleStopMs: 1,
+          idleStopCheck: {
+            command: process.execPath,
+            args: [
+              "-e",
+              `const fs=require("node:fs");const stop=fs.existsSync(${JSON.stringify(requestPath)});fs.appendFileSync(${JSON.stringify(checksPath)},stop?"1":"0");process.stdout.write(JSON.stringify({stop,validUntilEpoch:Date.now()/1000+1}))`,
+            ],
+          },
+        },
+      );
+
+      const lease = await withSpawnReadyHealthProbe(() => ensureModelProviderLocalService(model));
+      lease?.release();
+      await expect
+        .poll(async () => (await fs.readFile(checksPath, "utf8").catch(() => "")).length)
+        .toBeGreaterThan(0);
+      expect((await fetch(healthUrl)).ok).toBe(true);
+      await fs.writeFile(requestPath, "requested", "utf8");
+      await expect
+        .poll(async () => (await fs.readFile(checksPath, "utf8")).includes("1"), {
+          timeout: 5_000,
+        })
+        .toBe(true);
+      await waitForProbeFailure(healthUrl);
+    },
+  );
+
   it("resolves process configuration for root and exact legacy baseURL endpoints", async () => {
     const port = await fixture.claimPort();
     const providerId = "gpu-spark";

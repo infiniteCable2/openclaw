@@ -484,6 +484,11 @@ export const FIELD_LABELS: Record<string, string> = {
   "models.providers.*.localService.healthUrl": "Model Provider Local Service Health URL",
   "models.providers.*.localService.readyTimeoutMs": "Model Provider Local Service Ready Timeout",
   "models.providers.*.localService.idleStopMs": "Model Provider Local Service Idle Stop",
+  "models.providers.*.localService.idleStopCheck": "Model Provider Local Service Idle Stop Check",
+  "models.providers.*.localService.idleStopCheck.command":
+    "Model Provider Local Service Idle Stop Check Command",
+  "models.providers.*.localService.idleStopCheck.args":
+    "Model Provider Local Service Idle Stop Check Arguments",
   "models.providers.*.request": "Model Provider Request Overrides",
   "models.providers.*.request.headers": "Model Provider Request Headers",
   "models.providers.*.request.auth": "Model Provider Request Auth Override",
@@ -784,6 +789,11 @@ export const FIELD_LABELS: Record<string, string> = {
   "tts.providers.*.localService.healthUrl": "TTS Provider Local Service Health URL",
   "tts.providers.*.localService.readyTimeoutMs": "TTS Provider Local Service Ready Timeout",
   "tts.providers.*.localService.idleStopMs": "TTS Provider Local Service Idle Stop",
+  "tts.providers.*.localService.idleStopCheck": "TTS Provider Local Service Idle Stop Check",
+  "tts.providers.*.localService.idleStopCheck.command":
+    "TTS Provider Local Service Idle Stop Check Command",
+  "tts.providers.*.localService.idleStopCheck.args":
+    "TTS Provider Local Service Idle Stop Check Arguments",
   "talk.provider": "Talk Active Provider",
   "talk.providers": "Talk Provider Settings",
   "talk.providers.*": "Talk Provider Config",

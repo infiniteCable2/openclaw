@@ -82,15 +82,24 @@ During `memory_search`, managed embedding startup uses `readyTimeoutMs` instead 
 
 ## Fields
 
-| Field            | Required | Description                                                                                                                          |
-| ---------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `command`        | yes      | Absolute executable path. No shell PATH lookup.                                                                                      |
-| `args`           | no       | Process arguments. No shell expansion, pipes, globbing, or quoting.                                                                  |
-| `cwd`            | no       | Working directory for the process.                                                                                                   |
-| `env`            | no       | Environment variables merged over the OpenClaw process environment.                                                                  |
-| `healthUrl`      | no       | Readiness URL. Defaults to `baseUrl` with `/models` appended (`http://127.0.0.1:8000/v1` becomes `http://127.0.0.1:8000/v1/models`). |
-| `readyTimeoutMs` | no       | Startup readiness deadline. Default: `120000`.                                                                                       |
-| `idleStopMs`     | no       | Idle shutdown delay for an OpenClaw-started process. `0` or omitted keeps it alive until OpenClaw exits.                             |
+| Field            | Required | Description                                                                                                                                                                                                                                    |
+| ---------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `command`        | yes      | Absolute executable path. No shell PATH lookup.                                                                                                                                                                                                |
+| `args`           | no       | Process arguments. No shell expansion, pipes, globbing, or quoting.                                                                                                                                                                            |
+| `cwd`            | no       | Working directory for the process.                                                                                                                                                                                                             |
+| `env`            | no       | Environment variables merged over the OpenClaw process environment.                                                                                                                                                                            |
+| `healthUrl`      | no       | Readiness URL. Defaults to `baseUrl` with `/models` appended (`http://127.0.0.1:8000/v1` becomes `http://127.0.0.1:8000/v1/models`).                                                                                                           |
+| `readyTimeoutMs` | no       | Startup readiness deadline. Default: `120000`.                                                                                                                                                                                                 |
+| `idleStopMs`     | no       | Idle shutdown delay for an OpenClaw-started process. `0` or omitted keeps it alive until OpenClaw exits.                                                                                                                                       |
+| `idleStopCheck`  | no       | Optional `{ command, args }` executable consulted after `idleStopMs`. It must return one JSON line with `stop` (boolean) and `validUntilEpoch` (Unix seconds). OpenClaw retains the worker and retries if the check fails or says not to stop. |
+
+`idleStopCheck.command` must be an absolute path and runs without a shell. The
+check requires a positive `idleStopMs`. The
+decision is bounded to a two-second execution and a 4 KiB response. When it
+returns `stop: false`, OpenClaw checks again no later than 60 seconds later;
+an in-flight request always cancels the pending idle stop. This lets an
+external resource owner advise shutdown without taking ownership of requests
+or the service process.
 
 ## llmman example
 
