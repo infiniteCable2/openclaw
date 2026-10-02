@@ -284,9 +284,6 @@ export async function startMeetingAgentRealtimeEngine(params: {
     activeTtsAborts,
     activeTtsReaders,
     bargeInGate,
-    onPlaybackWindowCancelled: () => {
-      outputGeneration += 1;
-    },
   });
 
   const createSpeechUtterance = (waitingTurn?: number): SpeechUtterance => ({
@@ -666,11 +663,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
       onSpeechActivity: bargeInGate.onSpeechActivity,
       onProcessing: (event) => {
         waiting.onProcessing(event);
-        // An energy-only onset can be echo or noise. Keep already-started speech
-        // intact until the transcription provider has confirmed actual speech.
-        if (!stopped && event.state === "speech-confirmed") {
-          speechCancellation.cancelActivePlayback();
-        }
+        // A VAD confirmation can precede an empty decoder result. Keep the
+        // output reversibly paused until a nonempty caller transcript arrives.
         bargeInGate.onProcessing(event);
       },
       onTranscript: (text, context) => {

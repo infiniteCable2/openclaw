@@ -37,6 +37,9 @@ async function createAudioStreamFixture(params: {
   let speechProcessing: Parameters<
     RealtimeTranscriptionProviderPlugin["createSession"]
   >[0]["onProcessing"];
+  let speechTranscript: Parameters<
+    RealtimeTranscriptionProviderPlugin["createSession"]
+  >[0]["onTranscript"];
   const provider: RealtimeTranscriptionProviderPlugin = {
     id: "stream-test-stt",
     label: "Stream test STT",
@@ -44,6 +47,7 @@ async function createAudioStreamFixture(params: {
     createSession(callbacks) {
       speechStart = callbacks.onSpeechStart;
       speechProcessing = callbacks.onProcessing;
+      speechTranscript = callbacks.onTranscript;
       return {
         connect: async () => undefined,
         close() {},
@@ -112,6 +116,7 @@ async function createAudioStreamFixture(params: {
     writeOutput,
     speechStart,
     speechProcessing,
+    speechTranscript,
   };
 }
 
@@ -192,6 +197,7 @@ describe("meeting TTS stream conversion", () => {
         } else {
           fixture.speechStart?.();
           fixture.speechProcessing?.({ utteranceId: "barge-in", state: "speech-confirmed" });
+          fixture.speechTranscript?.("A new caller request.", { utteranceId: "barge-in" });
         }
         await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledOnce());
         expect(fixture.cancelled).toHaveBeenCalledOnce();

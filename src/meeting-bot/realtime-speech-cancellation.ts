@@ -7,7 +7,6 @@ export function createMeetingSpeechCancellation(params: {
   activeTtsAborts: Set<AbortController>;
   activeTtsReaders: Set<ReadableStreamDefaultReader<Uint8Array>>;
   bargeInGate: ReturnType<typeof createMeetingBargeInGate>;
-  onPlaybackWindowCancelled: () => void;
 }) {
   const cancelActiveSpeech = () => {
     for (const controller of params.activeTtsAborts) {
@@ -26,14 +25,6 @@ export function createMeetingSpeechCancellation(params: {
     harness.endTurn("cancelled");
   };
 
-  const cancelActivePlayback = () => {
-    if (!params.harness().isOutputPlaybackWindowActive()) {
-      return;
-    }
-    params.onPlaybackWindowCancelled();
-    finishCancelledOutput();
-  };
-
   const cancelForConfirmedTurn = () => {
     if (
       params.activeTtsAborts.size === 0 &&
@@ -46,5 +37,5 @@ export function createMeetingSpeechCancellation(params: {
     return true;
   };
 
-  return { cancelActiveSpeech, cancelActivePlayback, cancelForConfirmedTurn };
+  return { cancelActiveSpeech, cancelForConfirmedTurn };
 }

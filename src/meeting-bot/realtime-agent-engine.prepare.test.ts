@@ -339,7 +339,7 @@ async function createControlledStreamingEngine() {
 }
 
 describe("startMeetingAgentRealtimeEngine streaming output", () => {
-  it("does not resume prepared or later sentences after confirmed speech", async () => {
+  it("does not resume prepared or later sentences after a transcribed caller turn", async () => {
     const fixture = await createControlledStreamingEngine();
     try {
       await fixture.speech({ type: "chunk", text: "This is the first sentence." });
@@ -351,6 +351,8 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       fixture.streamAt(1).controller.enqueue(Uint8Array.from([2, 0]));
       fixture.callbacks?.onSpeechStart?.();
       fixture.callbacks?.onProcessing?.({ utteranceId: "barge-in", state: "speech-confirmed" });
+      expect(fixture.clearOutput).not.toHaveBeenCalled();
+      fixture.callbacks?.onTranscript?.("A new caller request.", { utteranceId: "barge-in" });
       await vi.waitFor(() => {
         expect(fixture.streamAt(0).release).toHaveBeenCalledOnce();
         expect(fixture.streamAt(1).release).toHaveBeenCalledOnce();
@@ -365,7 +367,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     }
   });
 
-  it("fences an already fulfilled read when confirmed speech races its continuation", async () => {
+  it("fences an already fulfilled read when a transcribed caller turn races its continuation", async () => {
     const fixture = await createControlledStreamingEngine();
     try {
       await fixture.speech({ type: "chunk", text: "This sentence is still playing." });
@@ -381,6 +383,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       stream.controller.enqueue(Uint8Array.from([2, 0]));
       fixture.callbacks?.onSpeechStart?.();
       fixture.callbacks?.onProcessing?.({ utteranceId: "barge-in", state: "speech-confirmed" });
+      fixture.callbacks?.onTranscript?.("A new caller request.", { utteranceId: "barge-in" });
       await vi.waitFor(() => expect(stream.release).toHaveBeenCalledOnce());
       expect(fixture.writeOutput).toHaveBeenCalledOnce();
     } finally {
@@ -860,15 +863,19 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     await handle.stop();
   });
 
-  it("waits for confirmed speech before canceling pre-playback synthesis", async () => {
+  it("waits for a caller transcript before canceling pre-playback synthesis", async () => {
     const clearOutput = vi.fn(async () => undefined);
     let onSpeechStart: (() => void) | undefined;
     let onTranscript: ((text: string) => void) | undefined;
+    let onProcessing: Parameters<
+      RealtimeTranscriptionProviderPlugin["createSession"]
+    >[0]["onProcessing"];
     let synthesisSignal: AbortSignal | undefined;
     const provider = createProvider(undefined);
     provider.createSession.mockImplementation((params) => {
       onSpeechStart = params.onSpeechStart;
       onTranscript = params.onTranscript;
+      onProcessing = params.onProcessing;
       return {
         connect: vi.fn(async () => undefined),
         sendAudio: vi.fn(),
@@ -916,6 +923,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     handle.speak("Die Synthese läuft noch.");
     await vi.waitFor(() => expect(synthesize).toHaveBeenCalledOnce());
     onSpeechStart?.();
+    onProcessing?.({ utteranceId: "barge-in", state: "speech-confirmed" });
     expect(synthesisSignal?.aborted).toBe(false);
 
     onTranscript?.("Bestätigter neuer Beitrag.");

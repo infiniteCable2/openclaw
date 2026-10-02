@@ -4,7 +4,7 @@ import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
 import { startMeetingAgentRealtimeEngine } from "./realtime-agent-engine.js";
 
 describe("startMeetingAgentRealtimeEngine barge-in gate", () => {
-  it("keeps playback after an unconfirmed onset and cancels on confirmed speech", async () => {
+  it("keeps playback when VAD confirms but decoding is empty, then cancels on a caller transcript", async () => {
     const streamCancelled = vi.fn();
     const clearOutput = vi.fn(async () => undefined);
     const setOutputGate = vi.fn(async (_gate: "normal" | "duck" | "paused") => undefined);
@@ -15,6 +15,9 @@ describe("startMeetingAgentRealtimeEngine barge-in gate", () => {
     let onProcessing: Parameters<
       RealtimeTranscriptionProviderPlugin["createSession"]
     >[0]["onProcessing"];
+    let onTranscript: Parameters<
+      RealtimeTranscriptionProviderPlugin["createSession"]
+    >[0]["onTranscript"];
     const provider = {
       id: "prepared-stt",
       label: "Prepared STT",
@@ -23,6 +26,7 @@ describe("startMeetingAgentRealtimeEngine barge-in gate", () => {
         onSpeechStart = params.onSpeechStart;
         onSpeechActivity = params.onSpeechActivity;
         onProcessing = params.onProcessing;
+        onTranscript = params.onTranscript;
         return {
           connect: vi.fn(async () => undefined),
           sendAudio: vi.fn(),
@@ -84,7 +88,9 @@ describe("startMeetingAgentRealtimeEngine barge-in gate", () => {
     onSpeechActivity?.({ utteranceId: "noise", state: "candidate" });
     onSpeechActivity?.({ utteranceId: "noise", state: "sustained" });
     onProcessing?.({ utteranceId: "noise", state: "started" });
-    onSpeechActivity?.({ utteranceId: "noise", state: "rejected" });
+    onProcessing?.({ utteranceId: "noise", state: "speech-confirmed" });
+    expect(streamCancelled).not.toHaveBeenCalled();
+    expect(clearOutput).not.toHaveBeenCalled();
     onProcessing?.({ utteranceId: "noise", state: "empty" });
     expect(setOutputGate.mock.calls.map(([gate]) => gate)).toEqual(["duck", "paused", "normal"]);
     expect(streamCancelled).not.toHaveBeenCalled();
@@ -95,6 +101,9 @@ describe("startMeetingAgentRealtimeEngine barge-in gate", () => {
     onSpeechActivity?.({ utteranceId: "speech", state: "sustained" });
     onProcessing?.({ utteranceId: "speech", state: "started" });
     onProcessing?.({ utteranceId: "speech", state: "speech-confirmed" });
+    expect(streamCancelled).not.toHaveBeenCalled();
+    expect(clearOutput).not.toHaveBeenCalled();
+    onTranscript?.("A new caller request.", { utteranceId: "speech" });
 
     await vi.waitFor(() => {
       expect(streamCancelled).toHaveBeenCalledOnce();
