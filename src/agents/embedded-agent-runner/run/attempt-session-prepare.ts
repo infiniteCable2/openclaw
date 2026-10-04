@@ -163,6 +163,7 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     modelRegistry: attempt.modelRegistry,
     model: attempt.model,
     thinkingLevel: input.agentCoreThinkingLevel,
+    waitForPendingInput: attempt.waitForPendingInput,
     tools: sessionToolAllowlist,
     customTools: allCustomTools,
     sessionManager: input.sessionManager,

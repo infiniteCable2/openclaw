@@ -52,18 +52,22 @@ Uncertain adoption is reported rather than automatically replayed.
 
 When a transcription provider supplies keyed speech-activity events, the engine
 associates an addition with the request active at acoustic onset, not at final
-transcript arrival. While that candidate is unresolved, newly starting speech
-and the completed consult's delivery handoff wait; native model and tool work
-may finish normally. A confirmed transcript uses the original live run when it
-can still accept input, otherwise the existing consult queue receives it with
-the preceding result and onset context. A replacement run is never steered by
-an older onset. Rejected candidates, empty results, and echoes release the hold
-without discarding the answer. Session close releases all holds. Providers
-without keyed activity events retain transcript-time association.
+transcript arrival. Native model and tool work continue, but normal native run
+completion waits for already-started input. Queue acceptance releases that
+hold before transcript commitment, allowing the same loop to continue. Newly
+starting audio also waits for unresolved candidates. A transcript arriving
+after its original run retired uses the existing consult queue with the prior
+result and onset context; it never steers a replacement run. Rejected candidates,
+empty results, and echoes release the hold without discarding the answer.
+Each candidate expires after two minutes without renewal; close releases all
+holds and native cancellation bypasses completion waiting. Providers without
+keyed activity events retain transcript-time association.
 
 Only an interrupted run buffers its remaining speech until completion, then
-speaks the native completed answers, including answers to earlier inputs in
-that run. Uninterrupted sentence streaming is unchanged. No second planner or
+speaks the latest native answer. The agent is instructed to consolidate wanted,
+unheard prior results while respecting corrections and cancellations; earlier
+answer segments are not automatically replayed. Uninterrupted sentence streaming
+is unchanged. No second planner or
 task queue re-executes prior tool work. Speech candidates that decode to no
 text do not discard the current answer.
 

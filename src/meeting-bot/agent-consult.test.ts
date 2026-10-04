@@ -93,7 +93,8 @@ describe("createMeetingRealtimeEngineBindings", () => {
 
   it("binds follow-up steering to the exact run and refreshes its unchanged caller authority", async () => {
     const published = vi.fn<NonNullable<MeetingAgentConsultParams["onRunControl"]>>();
-    const includePrecedingInputAnswers = () => true;
+    const waitForPendingInput = vi.fn();
+    const onQueueAccepted = vi.fn();
     let retainedControl: Parameters<NonNullable<MeetingAgentConsultParams["onRunControl"]>>[0];
     const overlay = { toolsAllow: ["read"], messageProvider: "matrix", senderIsOwner: false };
     prepareRealtimeVoiceAgentExecutionContext.mockReturnValue({
@@ -118,11 +119,13 @@ describe("createMeetingRealtimeEngineBindings", () => {
       expect(control.runTarget?.isCurrent("other-session")).toBe(false);
       expect(control.mode).toBe("followup");
       expect(control.waitForTranscriptCommit).toBe(true);
+      control.onQueueAccepted?.(true);
+      expect(control.getSteeringContext?.()).toContain("Respect corrections or cancellations");
       expect(control.getToolAuthorityOverlay?.()).toBe(overlay);
       return outcome;
     });
     consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
-      expect(consult.includePrecedingInputAnswers).toBe(includePrecedingInputAnswers);
+      expect(consult.waitForPendingInput).toBe(waitForPendingInput);
       const registration = consult.onRunStarted?.({
         runId: "run-1",
         sessionId: "session-1",
@@ -130,7 +133,8 @@ describe("createMeetingRealtimeEngineBindings", () => {
       });
       retainedControl = published.mock.calls[0]?.[0];
       expect(retainedControl).toBeTypeOf("function");
-      expect(await retainedControl!("Bitte zusätzlich B beachten")).toBe(outcome);
+      expect(await retainedControl!("Bitte zusätzlich B beachten", onQueueAccepted)).toBe(outcome);
+      expect(onQueueAccepted).toHaveBeenCalledExactlyOnceWith(true);
       expect(await retainedControl!("Und C")).toBe(outcome);
       expect(prepareRealtimeVoiceAgentExecutionContext).toHaveBeenCalledTimes(2);
       expect(prepareRealtimeVoiceAgentExecutionContext).toHaveBeenLastCalledWith(
@@ -155,7 +159,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
       args: { question: "A" },
       transcript: [],
       onRunControl: published,
-      includePrecedingInputAnswers,
+      waitForPendingInput,
     });
     expect(published.mock.calls.map(([control]) => typeof control)).toEqual([
       "function",

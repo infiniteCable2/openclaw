@@ -127,6 +127,9 @@ export async function createTestSession(
     resourceLoader?: ResourceLoader;
     customTools?: ToolDefinition[];
     contextOverflowRecoveryOwner?: "session" | "caller";
+    waitForPendingInput?: NonNullable<
+      Parameters<typeof createAgentSession>[0]
+    >["waitForPendingInput"];
     withSessionWriteSettlement?: NonNullable<
       Parameters<typeof createAgentSession>[0]
     >["withSessionWriteSettlement"];
@@ -156,6 +159,7 @@ export async function createTestSession(
     sessionManager,
     settingsManager,
     modelRegistry,
+    waitForPendingInput: options.waitForPendingInput,
     withSessionWriteSettlement: options.withSessionWriteSettlement,
   };
   const result = options.contextOverflowRecoveryOwner

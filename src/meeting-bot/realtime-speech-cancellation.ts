@@ -1,5 +1,6 @@
 import type { RealtimeVoiceSessionHarness } from "../talk/realtime-session-harness.js";
 import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
+import { normalizeMeetingTtsPromptText } from "./realtime-engine-support.js";
 import type { createMeetingBargeInGate } from "./realtime-output-gate.js";
 
 /** A confirmed caller turn ends both queued output and any in-flight synthesis. */
@@ -28,6 +29,37 @@ export function createMeetingSpeechCancellation(params: {
         entry.audioDelivery = "interrupted";
       }
     }
+  };
+  const recordUnplayedAnswer = (entries: readonly RealtimeVoiceTranscriptEntry[], text: string) => {
+    const harness = params.harness();
+    let remaining = normalizeMeetingTtsPromptText(text) ?? "";
+    // Streaming already recorded this utterance's chunks with their individual
+    // delivery facts. Keep those facts, including commentary absent from the
+    // final answer, and append only the final text they do not already cover.
+    // Never deduplicate against another turn or an entry evicted from history.
+    for (const entry of entries) {
+      if (!harness.transcript.includes(entry) || !remaining.startsWith(entry.text)) {
+        continue;
+      }
+      const suffix = remaining.slice(entry.text.length);
+      if (suffix && !/^\s/u.test(suffix)) {
+        continue;
+      }
+      remaining = suffix.trimStart();
+    }
+    if (remaining) {
+      harness.recordTranscript("assistant", remaining).audioDelivery = "unplayed";
+    }
+  };
+  const removeProvisionalTranscriptEntries = (entries: RealtimeVoiceTranscriptEntry[]) => {
+    const harness = params.harness();
+    for (const entry of entries) {
+      const index = harness.transcript.indexOf(entry);
+      if (index >= 0) {
+        harness.transcript.splice(index, 1);
+      }
+    }
+    entries.length = 0;
   };
   const cancelActiveSpeech = () => {
     for (const controller of params.activeTtsAborts) {
@@ -63,5 +95,7 @@ export function createMeetingSpeechCancellation(params: {
     cancelForConfirmedTurn,
     captureInterruptedTranscript,
     markInterruptedTranscript,
+    recordUnplayedAnswer,
+    removeProvisionalTranscriptEntries,
   };
 }

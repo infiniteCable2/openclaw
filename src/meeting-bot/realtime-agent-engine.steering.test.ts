@@ -21,7 +21,9 @@ async function createFixture(streaming: "off" | "sentence" = "sentence", echoDet
   };
   const done = createDeferred<{ text: string; delivered?: boolean }>();
   const admitted = createDeferred<RealtimeVoiceAgentControlResult>();
-  const control = vi.fn((_text: string) => admitted.promise);
+  const control = vi.fn(
+    (_text: string, _onQueueAccepted?: (accepted: boolean) => void) => admitted.promise,
+  );
   let consult!: MeetingAgentConsultParams;
   const consultAgent = vi.fn(async (params: MeetingAgentConsultParams) => {
     consult = params;
@@ -149,6 +151,11 @@ describe("meeting native input steering", () => {
             audioDelivery: "unplayed",
           }),
         );
+        expect(
+          next?.transcript.filter(
+            (entry) => entry.role === "assistant" && entry.text === "The light is on.",
+          ),
+        ).toHaveLength(1);
         expect(f.writeOutput).toHaveBeenCalledOnce();
       } finally {
         f.done.resolve({ text: "" });
@@ -156,6 +163,83 @@ describe("meeting native input steering", () => {
       }
     },
   );
+
+  it.each(["unplayed", "interrupted", "submitted"] as const)(
+    "preserves %s stream evidence without duplicating the final unplayed answer",
+    async (delivery) => {
+      // Track estimated playout to distinguish submitted from still audible
+      // tiny PCM output; isolated fixtures intentionally omit that tracker.
+      const f = await createFixture("sentence", true);
+      try {
+        f.say("Check the light.");
+        await f.drain();
+        if (delivery === "unplayed") {
+          f.callbacks.onSpeechActivity?.({ utteranceId: "b", state: "candidate" });
+        }
+        await f.consult.onSpeakableText?.({ type: "chunk", text: "The light is on." });
+        await f.drain();
+        if (delivery === "submitted") {
+          await vi.advanceTimersByTimeAsync(20);
+        }
+        if (delivery !== "unplayed") {
+          f.callbacks.onSpeechActivity?.({ utteranceId: "b", state: "candidate" });
+        }
+        await f.consult.onSpeakableText?.({ type: "chunk", text: "Its level is fifty percent." });
+        f.done.resolve({
+          text: "The light is on.\nIts level is fifty percent. The timer is inactive.",
+          delivered: true,
+        });
+        await f.drain();
+        f.consultAgent.mockResolvedValueOnce({ text: "" });
+        f.say("Also check the printer.", "b");
+        await f.drain();
+        expect(f.consult.transcript.filter((entry) => entry.role === "assistant")).toEqual([
+          expect.objectContaining({ text: "The light is on.", audioDelivery: delivery }),
+          expect.objectContaining({
+            text: "Its level is fifty percent.",
+            audioDelivery: "unplayed",
+          }),
+          expect.objectContaining({ text: "The timer is inactive.", audioDelivery: "unplayed" }),
+        ]);
+        expect(f.control).not.toHaveBeenCalled();
+        expect(f.writeOutput).toHaveBeenCalledTimes(delivery === "unplayed" ? 0 : 1);
+      } finally {
+        f.done.resolve({ text: "" });
+        await f.handle.stop();
+      }
+    },
+  );
+
+  it("keeps distinct commentary and prior turns when an adoption is unconfirmed", async () => {
+    const f = await createFixture();
+    try {
+      f.handle.speak("The light is on.");
+      await f.drain();
+      await vi.advanceTimersByTimeAsync(20);
+      f.say("Check the light again.");
+      await f.drain();
+      f.callbacks.onSpeechActivity?.({ utteranceId: "b", state: "candidate" });
+      await f.consult.onSpeakableText?.({ type: "chunk", text: "Checking its current state." });
+      await f.consult.onSpeakableText?.({ type: "chunk", text: "The light is on." });
+      f.say("Also check the printer.", "b");
+      f.admitted.resolve({ ...accepted, ok: false, reason: "delivery_unconfirmed" });
+      f.done.resolve({ text: "The light is on.", delivered: true });
+      await f.drain();
+      const entries = f.consult.transcript.filter((entry) => entry.role === "assistant");
+      expect(entries.slice(0, 3)).toEqual([
+        expect.objectContaining({ text: "The light is on.", audioDelivery: "submitted" }),
+        expect.objectContaining({ text: "Checking its current state.", audioDelivery: "unplayed" }),
+        expect.objectContaining({ text: "The light is on.", audioDelivery: "unplayed" }),
+      ]);
+      expect(entries).toHaveLength(4);
+      expect(entries[3]?.text).toContain("couldn't confirm");
+      expect(f.consultAgent).toHaveBeenCalledOnce();
+    } finally {
+      f.admitted.resolve(accepted);
+      f.done.resolve({ text: "" });
+      await f.handle.stop();
+    }
+  });
 
   it.each(["rejected", "empty", "failed", "cancelled", "empty-transcript"] as const)(
     "releases an onset without steering or losing the pending answer on %s",
@@ -285,7 +369,10 @@ describe("meeting native input steering", () => {
       f.callbacks.onSpeechActivity?.({ utteranceId: "b", state: "candidate" });
       f.say("Also check the printer.", "b");
       await f.drain();
-      expect(f.control).toHaveBeenCalledExactlyOnceWith("Also check the printer.");
+      expect(f.control).toHaveBeenCalledExactlyOnceWith(
+        "Also check the printer.",
+        expect.any(Function),
+      );
       expect(f.consult.abortSignal?.aborted).toBe(false);
       f.admitted.resolve(accepted);
       f.done.resolve({ text: "Both are ready." });
@@ -347,12 +434,11 @@ describe("meeting native input steering", () => {
         f.say("Check the light.");
         await f.drain();
         expect(f.consultAgent).toHaveBeenCalledOnce();
-        expect(f.consult.includePrecedingInputAnswers?.()).toBe(false);
+        expect(f.consult.waitForPendingInput?.()).toBeUndefined();
         f.say("Also check the printer.");
         await f.drain();
         expect(f.control).toHaveBeenCalledExactlyOnceWith("Also check the printer.");
         expect(f.consult.abortSignal?.aborted).toBe(false);
-        expect(f.consult.includePrecedingInputAnswers?.()).toBe(true);
         await f.consult.onSpeakableText?.({ type: "chunk", text: "Old buffered speech." });
         const text = "The light is on. The printer is ready.";
         await f.consult.onSpeakableText?.({ type: "done", text });
@@ -461,6 +547,75 @@ describe("meeting native input steering", () => {
       await f.drain();
       expect(f.tts).toHaveBeenCalledOnce();
     } finally {
+      f.done.resolve({ text: "" });
+      await f.handle.stop();
+    }
+  });
+
+  it("releases native completion on admission before waiting for transcript commitment", async () => {
+    const f = await createFixture("off");
+    try {
+      f.say("Check A.");
+      await f.drain();
+      f.callbacks.onSpeechActivity?.({ utteranceId: "b", state: "candidate" });
+      const completion = f.consult.waitForPendingInput?.(f.consult.abortSignal);
+      expect(completion).toBeInstanceOf(Promise);
+      let released = false;
+      void completion?.then(() => {
+        released = true;
+      });
+      f.say("Also check B.", "b");
+      // The decoder's terminal notification is earlier than queue admission.
+      f.callbacks.onProcessing?.({ utteranceId: "b", state: "transcribed" });
+      await f.drain();
+      expect(released).toBe(false);
+      expect(f.control).toHaveBeenCalledOnce();
+      f.control.mock.calls[0]?.[1]?.(true);
+      await completion;
+      expect(released).toBe(true);
+      expect(f.consult.waitForPendingInput?.()).toBeUndefined();
+      expect(f.tts).not.toHaveBeenCalled();
+      // Native commitment can now run. The same consult returns the new answer.
+      f.admitted.resolve(accepted);
+      f.done.resolve({ text: "A and B are ready." });
+      await f.drain();
+      expect(f.consultAgent).toHaveBeenCalledOnce();
+      expect(f.tts).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ text: "A and B are ready." }),
+      );
+    } finally {
+      f.admitted.resolve(accepted);
+      f.done.resolve({ text: "" });
+      await f.handle.stop();
+    }
+  });
+
+  it("lets accepted B advance the native loop while C still awaits FIFO admission", async () => {
+    const f = await createFixture("off");
+    try {
+      f.say("A");
+      await f.drain();
+      f.callbacks.onSpeechActivity?.({ utteranceId: "b", state: "candidate" });
+      f.callbacks.onSpeechActivity?.({ utteranceId: "c", state: "candidate" });
+      const firstWait = f.consult.waitForPendingInput?.();
+      f.say("B", "b");
+      f.say("C", "c");
+      await f.drain();
+      expect(f.control).toHaveBeenCalledTimes(1);
+      f.control.mock.calls[0]?.[1]?.(true);
+      await firstWait;
+      // Wake on B alone; a wait-for-all would deadlock B's commitment behind C.
+      const secondWait = f.consult.waitForPendingInput?.();
+      expect(secondWait).toBeInstanceOf(Promise);
+      f.admitted.resolve(accepted);
+      await f.drain();
+      expect(f.control.mock.calls.map(([text]) => text)).toEqual(["B", "C"]);
+      await secondWait;
+      f.done.resolve({ text: "A, B and C." });
+      await f.drain();
+      expect(f.consultAgent).toHaveBeenCalledOnce();
+    } finally {
+      f.admitted.resolve(accepted);
       f.done.resolve({ text: "" });
       await f.handle.stop();
     }

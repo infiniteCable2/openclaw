@@ -75,6 +75,12 @@ export type CurrentInboundPromptContext = {
 };
 
 export type RunEmbeddedAgentParams = {
+  /**
+   * Completion-only input acquisition barrier. Return synchronously when no
+   * input is pending, or a bounded promise released on queue admission (not
+   * transcript commitment). The native run abort signal cancels the wait.
+   */
+  waitForPendingInput?: (signal?: AbortSignal) => void | Promise<void>;
   /** Detached runs may read session identity but never write its durable transcript or metadata. */
   sessionPersistence?: "durable" | "detached";
   /** Storage-neutral transcript/session target. Defaults to sessionId/sessionKey/agentId. */

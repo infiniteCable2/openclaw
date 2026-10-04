@@ -253,6 +253,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
 
   it("opts exact-owner steering into transcript commit confirmation without resolving on admission", async () => {
     const deps = createDeps({ activeSessionId: "unrelated-session" });
+    const onQueueAccepted = vi.fn();
     let confirmCommit!: () => void;
     const committed = new Promise<void>((resolve) => {
       confirmCommit = resolve;
@@ -262,6 +263,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
     >(async (_sessionId, _text, options, canInject) => {
       expect(options?.waitForTranscriptCommit).toBe(true);
       expect(canInject()).toBe(true);
+      options?.onQueueAccepted?.(true);
       await committed;
       return {
         queued: true,
@@ -284,6 +286,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
         text: "Also include B",
         mode: "followup",
         waitForTranscriptCommit: true,
+        onQueueAccepted,
       },
       {
         ...deps,
@@ -302,6 +305,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
     await Promise.resolve();
     expect(queueGuardedEmbeddedAgentMessageWithOutcomeAsync).toHaveBeenCalledOnce();
     expect(settled).toBe(false);
+    expect(onQueueAccepted).toHaveBeenCalledExactlyOnceWith(true);
     confirmCommit();
     await expect(result).resolves.toMatchObject({ ok: true, queued: true, deliveredAtMs: 456 });
     expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();

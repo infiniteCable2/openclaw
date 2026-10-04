@@ -12,11 +12,11 @@ import {
   appendToolLoopWarning,
   copyInternalToolResultState,
   getInternalToolExecutionPreparer,
-  getInternalSyncSteeringGetter,
   type InternalToolExecutionPreparation,
   takeInternalToolBatchLifecycle,
   type InternalToolBatchLifecycle,
 } from "./internal-hooks.js";
+import { getSteeringAtCheckpoint, resolveAgentLoopCompletion } from "./pending-input.js";
 import { resolveAgentReasoningOption } from "./reasoning.js";
 import type { AgentCoreStreamRuntimeDeps } from "./runtime-deps.js";
 import {
@@ -53,16 +53,6 @@ const TOOL_ADMISSION_FAILURE_DETAILS = {
   status: "blocked",
   deniedReason: "tool-admission",
 } as const;
-
-function getSteeringAtCheckpoint(
-  config: AgentLoopConfig,
-): AgentMessage[] | Promise<AgentMessage[]> {
-  const callback = config.getSteeringMessages;
-  if (!callback) {
-    return [];
-  }
-  return getInternalSyncSteeringGetter(callback)?.() ?? callback.call(config);
-}
 
 /** Run a prompt-started loop and emit events through a caller-owned sink. */
 export async function runAgentLoop(
@@ -430,19 +420,18 @@ async function runLoop(
       }
     }
 
-    pendingMessages = (await config.getFollowUpMessages?.()) || [];
-    if (pendingMessages.length === 0) {
-      // Recheck after the awaited follow-up drain so agent_end cannot strand an accepted steer.
-      const finalSteering = getSteeringAtCheckpoint(config);
-      pendingMessages = Array.isArray(finalSteering) ? finalSteering : await finalSteering;
+    const nextInput = await resolveAgentLoopCompletion({
+      config,
+      getSteeringMessages: () => getSteeringAtCheckpoint(config),
+      signal,
+      onAborted: stopIfAborted,
+      onComplete: () => emit({ type: "agent_end", messages: newMessages }),
+    });
+    if (!nextInput) {
+      return newMessages;
     }
-    if (pendingMessages.length === 0) {
-      break;
-    }
+    pendingMessages = nextInput;
   }
-
-  await emit({ type: "agent_end", messages: newMessages });
-  return newMessages;
 }
 
 /**

@@ -149,6 +149,8 @@ export interface AgentOptions {
   steeringMode?: QueueMode;
   /** Queue drain mode for follow-up messages injected after the agent would otherwise stop. */
   followUpMode?: QueueMode;
+  /** Completion-only input acquisition barrier; see AgentLoopConfig. */
+  waitForPendingInput?: AgentLoopConfig["waitForPendingInput"];
   /** Session identifier forwarded to cache-aware providers. */
   sessionId?: string;
   /** Optional per-thinking-level token budgets forwarded to providers. */
@@ -335,6 +337,7 @@ export class Agent {
   public maxRetryDelayMs?: number;
   /** Tool execution strategy for assistant messages that contain multiple tool calls. */
   public toolExecution: ToolExecutionMode;
+  public waitForPendingInput?: AgentLoopConfig["waitForPendingInput"];
 
   constructor(options: AgentOptions = {}) {
     this.mutableState = createMutableAgentState(options.initialState);
@@ -353,6 +356,7 @@ export class Agent {
     this.prepareNextTurnWithContext = options.prepareNextTurnWithContext;
     this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
     this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
+    this.waitForPendingInput = options.waitForPendingInput;
     this.sessionId = options.sessionId;
     this.thinkingBudgets = options.thinkingBudgets;
     this.transport = options.transport ?? "auto";
@@ -629,6 +633,7 @@ export class Agent {
       getApiKey: this.getApiKey,
       getSteeringMessages,
       getFollowUpMessages: async () => this.followUpQueue.drain(),
+      waitForPendingInput: this.waitForPendingInput,
       consumeQueuedMessageCancellation: (message) =>
         this.steeringQueue.consumeCancellation(message) ||
         this.followUpQueue.consumeCancellation(message),

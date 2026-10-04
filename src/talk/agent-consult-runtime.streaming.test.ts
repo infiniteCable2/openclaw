@@ -15,17 +15,17 @@ import {
 describe("realtime voice agent consult speech delivery", () => {
   useConsultRuntimeTestHooks();
 
-  it("retains native earlier-input answers when the sink reports interrupted delivery", async () => {
+  it("does not automatically replay a preceding answer superseded by the caller's correction", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
-    let interrupted = false;
+    const waitForPendingInput = vi.fn();
     const events: RealtimeVoiceAgentConsultSpeechEvent[] = [];
     runEmbeddedAgent.mockImplementationOnce(async (params?: RunEmbeddedAgentParams) => {
       await params?.onBlockReply?.({ text: "First result." });
-      interrupted = true;
+      expect(params?.waitForPendingInput).toBe(waitForPendingInput);
       return {
         payloads: [
           setReplyPayloadMetadata({ text: "First result." }, { precedingInputAnswer: true }),
-          { text: "Second result." },
+          { text: "Understood, only the second request is still wanted." },
           { text: "Hidden reasoning", isReasoning: true },
         ],
         meta: {},
@@ -43,13 +43,16 @@ describe("realtime voice agent consult speech delivery", () => {
       transcript: [],
       surface: "a live voice session",
       userLabel: "Caller",
-      includePrecedingInputAnswers: () => interrupted,
+      waitForPendingInput,
       onSpeakableText: (event) => {
         events.push(event);
       },
     });
     expect(runEmbeddedAgent).toHaveBeenCalledOnce();
-    expect(result).toEqual({ text: "First result.\n\nSecond result.", delivered: true });
+    expect(result).toEqual({
+      text: "Understood, only the second request is still wanted.",
+      delivered: true,
+    });
     expect(events.at(-1)).toEqual({ type: "done", text: result.text });
   });
 

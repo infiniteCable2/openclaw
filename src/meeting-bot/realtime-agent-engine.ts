@@ -260,16 +260,6 @@ export async function startMeetingAgentRealtimeEngine(params: {
   const isCurrentSpeechUtterance = (utterance: SpeechUtterance) =>
     !stopped && utterance.generation === outputGeneration && !utterance.finalized;
 
-  const removeProvisionalTranscriptEntries = (utterance: SpeechUtterance) => {
-    for (const entry of utterance.transcriptEntries) {
-      const index = harness.transcript.indexOf(entry);
-      if (index >= 0) {
-        harness.transcript.splice(index, 1);
-      }
-    }
-    utterance.transcriptEntries.length = 0;
-  };
-
   const enqueueSpeechChunk = (text: string | undefined, utterance: SpeechUtterance) => {
     const normalized = normalizeMeetingTtsPromptText(text);
     if (!normalized || !isCurrentSpeechUtterance(utterance)) {
@@ -483,7 +473,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       // Only consolidate chunks that reached the sink, not a potentially
       // different final model answer which was never synthesized.
       const submittedText = utterance.transcriptEntries.map((entry) => entry.text).join(" ");
-      removeProvisionalTranscriptEntries(utterance);
+      speechCancellation.removeProvisionalTranscriptEntries(utterance.transcriptEntries);
       if (submittedText) {
         harness.recordTranscript("assistant", submittedText).audioDelivery = "submitted";
       }
@@ -597,7 +587,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
             onRunControl: (control) => {
               consult.control = control;
             },
-            includePrecedingInputAnswers: () => utterance.generation !== outputGeneration,
+            waitForPendingInput: (runSignal) =>
+              inputOnset.waitForChange((onset) => onset.consult === consult, runSignal),
             ...(params.config.realtime.responseStreaming === "sentence"
               ? {
                   onSpeakableText: (event) => {
@@ -620,8 +611,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
             failure = { error };
             return { text: "" };
           });
-        // The native run may finish while the caller is still speaking. Hold
-        // only its delivery/queue handoff, never the native run or tool effects.
+        // Native completion waits for onset resolution. The delivery hold also
+        // covers input starting after native retirement, without reviving that run.
         // Native steering confirmation may finish just after the run. Do not
         // release talkback or speak a result before every admitted input settles.
         while (true) {
@@ -639,9 +630,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
           return { text: "" };
         }
         if (consult.unconfirmed) {
-          if (result.text.trim()) {
-            harness.recordTranscript("assistant", result.text).audioDelivery = "unplayed";
-          }
+          speechCancellation.recordUnplayedAnswer(utterance.transcriptEntries, result.text);
           waiting.onTurnFinished(waitingTurn);
           return {
             text: "I couldn't confirm your additional request. Please check before asking me to repeat an action.",
@@ -652,14 +641,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
         if (utterance.generation !== outputGeneration) {
           if (consult.adoptedGeneration === outputGeneration) {
-            // Only the interrupted run is buffered. Use its native completed
-            // answers, never old PCM or a second execution of preceding tools.
+            // The latest native answer consolidates wanted results and respects
+            // corrections. Never replay old PCM or preceding answer payloads.
             currentWaitingTurn = waitingTurn;
             return { ...result, delivered: false };
           }
-          if (result.text.trim()) {
-            harness.recordTranscript("assistant", result.text).audioDelivery = "unplayed";
-          }
+          speechCancellation.recordUnplayedAnswer(utterance.transcriptEntries, result.text);
           // A later input was not adopted by this run. Preserve its answer as a
           // delivery fact for the next consult without resurrecting stale speech.
           waiting.onTurnFinished(waitingTurn);
@@ -747,9 +734,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
         }
       },
       onTranscript: (text, context) => {
-        const onset = inputOnset.settle(context?.utteranceId);
+        const reservation = inputOnset.claim(context?.utteranceId);
+        const onset = reservation?.value;
         const trimmed = text.trim();
         if (!trimmed || stopped) {
+          reservation?.release();
           return;
         }
         const assistantEcho = harness.isLikelyAssistantEchoTranscript(trimmed);
@@ -795,6 +784,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
           ),
         );
         if (assistantEcho) {
+          reservation?.release();
           params.logger.info(
             formatMeetingTranscriptSummaryLog(
               params.platform.logScope,
@@ -809,6 +799,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
         const consult = onset ? onset.consult : activeConsult;
         if (!consult || consult !== activeConsult) {
           harness.talkback?.enqueue(trimmed);
+          reservation?.release();
           return;
         }
         const control = consult.control;
@@ -822,7 +813,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
               harness.talkback?.enqueue(trimmed);
               return;
             }
-            const outcome = await control?.(trimmed);
+            // Release on queue acceptance, not transcript commit: commitment
+            // needs the held native loop to resume. Decoder terminal callbacks
+            // cannot release this claimed reservation before admission.
+            const outcome = reservation
+              ? await control?.(trimmed, reservation.release)
+              : await control?.(trimmed);
             if (stopped) {
               return;
             }
@@ -845,7 +841,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
             params.logger.warn(
               `${params.platform.logScope} ${agentLogScope} input steering confirmation failed`,
             );
-          });
+          })
+          .finally(() => reservation?.release());
       },
       onError: (error) => {
         params.logger.warn(

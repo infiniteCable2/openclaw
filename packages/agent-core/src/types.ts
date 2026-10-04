@@ -329,6 +329,15 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
    */
   getFollowUpMessages?: () => Promise<AgentMessage[]>;
 
+  /**
+   * Resolve input already being acquired before normal completion. Return
+   * synchronously when none is pending; otherwise return a bounded promise.
+   * Queues are rechecked after each wait. Release on queue admission, not on
+   * transcript commitment, which needs the loop to resume. Abort bypasses the
+   * wait; errors, handoff and explicit stop do not enter this boundary.
+   */
+  waitForPendingInput?: (signal?: AbortSignal) => void | Promise<void>;
+
   /** Consumes the cancellation fact for a previously drained queue message. */
   consumeQueuedMessageCancellation?: (message: AgentMessage) => boolean;
 

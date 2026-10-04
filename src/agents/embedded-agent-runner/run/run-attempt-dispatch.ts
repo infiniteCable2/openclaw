@@ -604,6 +604,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     onPartialReply: params.onPartialReply,
     onAssistantMessageStart: params.onAssistantMessageStart,
     onBlockReply: params.onBlockReply,
+    waitForPendingInput: params.waitForPendingInput,
     onBlockReplyFlush: params.onBlockReplyFlush,
     blockReplyBreak: params.blockReplyBreak,
     blockReplyChunking: params.blockReplyChunking,

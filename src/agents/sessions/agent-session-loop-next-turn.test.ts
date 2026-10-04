@@ -78,6 +78,53 @@ function mockAbortableQueuedRun() {
 }
 
 describe("AgentSession queue and next-turn lifecycle correctness", () => {
+  it("releases an input completion barrier on queue acceptance before transcript confirmation", async () => {
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    let acquiring = true;
+    const requests: Context[] = [];
+    const events: string[] = [];
+    streamMocks.streamSimple.mockImplementation((activeModel: Model, context: Context) => {
+      requests.push(context);
+      return createAssistantResultStream(
+        createAssistant(activeModel, [
+          { type: "text", text: requests.length === 1 ? "A" : "A and B" },
+        ]),
+      );
+    });
+    const { session } = await createTestSession({
+      waitForPendingInput: () => {
+        if (acquiring) {
+          entered.resolve();
+          return release.promise;
+        }
+        return undefined;
+      },
+    });
+    session.subscribe((event) => {
+      events.push(event.type);
+    });
+    const run = session.prompt("A");
+    await entered.promise;
+    expect(events).not.toContain("agent_settled");
+    const accepted = vi.fn((value: boolean) => {
+      expect(value).toBe(true);
+      acquiring = false;
+      release.resolve();
+    });
+    await steerActiveSessionWithOptionalDeliveryWait(session, "B", {
+      waitForTranscriptCommit: true,
+      onQueueAccepted: accepted,
+    });
+    await run;
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(requests).toHaveLength(2);
+    expect(JSON.stringify(requests[1]?.messages)).toContain("A");
+    expect(JSON.stringify(requests[1]?.messages)).toContain("B");
+    expect(events.filter((event) => event === "agent_start")).toHaveLength(1);
+    expect(events.filter((event) => event === "agent_settled")).toHaveLength(1);
+  });
+
   it.each(["apply", "dispose", "replace"] as const)(
     "guards first-model preparation after a delayed SDK prompt override: %s",
     async (closure) => {

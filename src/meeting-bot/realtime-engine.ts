@@ -85,11 +85,16 @@ export type MeetingAgentConsultParams = {
   abortSignal?: AbortSignal;
   /** Final-answer-only stream for sentence-level TTS overlap with model generation. */
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
-  /** Recover native prior-input answers when the original speech sink was interrupted. */
-  includePrecedingInputAnswers?: () => boolean;
+  /** Completion-only hold for already-started input; no pending input returns synchronously. */
+  waitForPendingInput?: (signal?: AbortSignal) => void | Promise<void>;
   /** Exact active consult control; undefined revokes it. Queued input must never be replayed. */
   onRunControl?: (
-    control: ((text: string) => Promise<RealtimeVoiceAgentControlResult>) | undefined,
+    control:
+      | ((
+          text: string,
+          onQueueAccepted?: (accepted: boolean) => void,
+        ) => Promise<RealtimeVoiceAgentControlResult>)
+      | undefined,
   ) => void;
 };
 

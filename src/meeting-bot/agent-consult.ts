@@ -137,7 +137,7 @@ async function consultMeetingAgent(params: {
   abortSignal?: AbortSignal;
   onSpeakableText?: MeetingAgentConsultParams["onSpeakableText"];
   onRunControl?: MeetingAgentConsultParams["onRunControl"];
-  includePrecedingInputAnswers?: MeetingAgentConsultParams["includePrecedingInputAnswers"];
+  waitForPendingInput?: MeetingAgentConsultParams["waitForPendingInput"];
 }): Promise<RealtimeVoiceAgentConsultResult> {
   const agentId = params.agentId
     ? normalizeAgentId(params.agentId)
@@ -175,7 +175,7 @@ async function consultMeetingAgent(params: {
       extraSystemPrompt: params.surface.extraSystemPrompt,
       abortSignal: params.abortSignal,
       onSpeakableText: params.onSpeakableText,
-      includePrecedingInputAnswers: params.includePrecedingInputAnswers,
+      waitForPendingInput: params.waitForPendingInput,
       onRunStarted: params.onRunControl
         ? ({ runId, sessionId }) => {
             const controller = new AbortController();
@@ -201,13 +201,18 @@ async function consultMeetingAgent(params: {
               cleanup();
               signal.throwIfAborted();
             }
-            params.onRunControl?.((text) =>
+            params.onRunControl?.((text, onQueueAccepted) =>
               controlRealtimeVoiceAgentRun({
                 sessionKey,
                 runTarget: { runId, signal, isCurrent },
                 // A spoken addition is not an instruction to abandon the preceding request.
                 mode: "followup",
                 waitForTranscriptCommit: true,
+                onQueueAccepted,
+                getSteeringContext: () =>
+                  "The caller interrupted audio delivery. Earlier assistant output may not have been heard. " +
+                  "In your next answer, consolidate still-relevant results from the preceding request with this new input. " +
+                  "Respect corrections or cancellations; do not repeat completed tool actions just to repeat their results.",
                 text,
                 getToolAuthorityOverlay: () => {
                   if (!isCurrent(sessionId)) {

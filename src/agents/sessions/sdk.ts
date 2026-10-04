@@ -92,6 +92,8 @@ export interface CreateAgentSessionOptions {
   customTools?: ToolDefinition[];
   /** Hydrate an authorized tool deferred out of the current provider-visible tool set. */
   resolveDeferredTool?: AgentOptions["resolveDeferredTool"];
+  /** Hold normal completion while already-started input acquisition resolves. */
+  waitForPendingInput?: AgentOptions["waitForPendingInput"];
 
   /** Resource loader. When omitted, DefaultResourceLoader is used. */
   resourceLoader?: ResourceLoader;
@@ -523,6 +525,7 @@ async function createAgentSessionImpl(
       return runner.emitContext(messages);
     },
     resolveDeferredTool: options.resolveDeferredTool,
+    waitForPendingInput: options.waitForPendingInput,
     prepareNextTurnWithContext: createSessionPrepareNextTurnWithContext(() => agent),
     steeringMode: settingsManager.getSteeringMode(),
     followUpMode: settingsManager.getFollowUpMode(),
