@@ -8,6 +8,7 @@ import type {
   RealtimeVoiceAgentConsultSpeechEvent,
 } from "../talk/agent-consult-runtime.js";
 import type { RealtimeVoiceAgentConsultToolPolicy } from "../talk/agent-consult-tool.js";
+import type { RealtimeVoiceAgentControlResult } from "../talk/agent-run-control.js";
 import { isRealtimeVoiceAudioAudible } from "../talk/audio-energy.js";
 import type { RealtimeVoiceTool, RealtimeVoiceToolCallEvent } from "../talk/provider-types.js";
 import {
@@ -84,6 +85,12 @@ export type MeetingAgentConsultParams = {
   abortSignal?: AbortSignal;
   /** Final-answer-only stream for sentence-level TTS overlap with model generation. */
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
+  /** Recover native prior-input answers when the original speech sink was interrupted. */
+  includePrecedingInputAnswers?: () => boolean;
+  /** Exact active consult control; undefined revokes it. Queued input must never be replayed. */
+  onRunControl?: (
+    control: ((text: string) => Promise<RealtimeVoiceAgentControlResult>) | undefined,
+  ) => void;
 };
 
 export type MeetingRealtimeToolCallParams = {

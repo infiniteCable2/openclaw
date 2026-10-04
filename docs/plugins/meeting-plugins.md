@@ -44,18 +44,25 @@ In `bidi` mode, recoverable provider diagnostics are logged without stopping the
 Stopping a meeting requests cancellation of any active agent consult. In `agent` mode, OpenClaw finishes active output and turn events before closing the session, then ignores late speech synthesis and audio delivery results.
 
 In `agent` mode, a confirmed new caller transcript cancels superseded speech,
-not a potentially write-capable tool operation in progress. That operation
-settles in the serial consult queue, but its obsolete buffered reply is not
-spoken before the new request. Speech candidates that decode to no text do not
-discard the current answer. Live consult context records assistant text only
-after audio reaches the output sink, with separate delivery status for started,
-submitted, or interrupted speech. Submission is not proof that the remote
-participant heard every word; interrupted audio is explicitly marked as such.
-Successive caller transcripts are retained in order, including an additional
-utterance received while an earlier consult is running. Cancelling superseded
-audio does not delete either user message or settled tool results. The next
-consult receives the retained voice context; it must not treat an additional
-utterance as an implicit retraction of the earlier request.
+not a potentially write-capable tool operation in progress. New caller input
+uses owner-bound native agent steering with transcript-commit confirmation.
+If the active run cannot accept it, the input waits in the existing serial
+consult queue. Later inputs then use that queue too, preserving order.
+Uncertain adoption is reported rather than automatically replayed.
+
+Only an interrupted run buffers its remaining speech until completion, then
+speaks the native completed answers, including answers to earlier inputs in
+that run. Uninterrupted sentence streaming is unchanged. No second planner or
+task queue re-executes prior tool work. Speech candidates that decode to no
+text do not discard the current answer.
+
+Live consult context distinguishes generated but unplayed text from started,
+submitted, and interrupted audio. Unplayed text is not used to detect acoustic
+echo. Submission is not proof that the remote participant heard every word;
+without a remote playout acknowledgment, recovery can repeat part of a sentence.
+If the previous run has already finished, its result remains in native history
+and the next consult receives the voice delivery context. An additional
+utterance is not an implicit retraction; explicit corrections take precedence.
 
 Custom realtime audio transports may set `supportsFullDuplexInput: true` only
 when their input is isolated from local playback or protected by active acoustic

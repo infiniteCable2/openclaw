@@ -31,6 +31,7 @@ function createDeps(options: {
         _text: string,
         _options?: {
           steeringMode?: "all";
+          waitForTranscriptCommit?: boolean;
           isInboundUserMessage?: boolean;
           taskSuggestionDeliveryMode?: undefined;
         },
@@ -248,6 +249,62 @@ describe("controlRealtimeVoiceAgentRun", () => {
         taskSuggestionDeliveryMode: undefined,
       },
     );
+  });
+
+  it("opts exact-owner steering into transcript commit confirmation without resolving on admission", async () => {
+    const deps = createDeps({ activeSessionId: "unrelated-session" });
+    let confirmCommit!: () => void;
+    const committed = new Promise<void>((resolve) => {
+      confirmCommit = resolve;
+    });
+    const queueGuardedEmbeddedAgentMessageWithOutcomeAsync = vi.fn<
+      typeof import("../agents/embedded-agent-runner/runs.js").queueGuardedEmbeddedAgentMessageWithOutcomeAsync
+    >(async (_sessionId, _text, options, canInject) => {
+      expect(options?.waitForTranscriptCommit).toBe(true);
+      expect(canInject()).toBe(true);
+      await committed;
+      return {
+        queued: true,
+        sessionId: "owned-session",
+        target: "embedded_run",
+        gatewayHealth: "live",
+        enqueuedAtMs: 123,
+        deliveredAtMs: 456,
+      };
+    });
+    let settled = false;
+    const result = controlRealtimeVoiceAgentRun(
+      {
+        sessionKey: "agent:main:voice:call",
+        runTarget: {
+          runId: "owned-run",
+          signal: new AbortController().signal,
+          isCurrent: (sessionId) => sessionId === undefined || sessionId === "owned-session",
+        },
+        text: "Also include B",
+        mode: "followup",
+        waitForTranscriptCommit: true,
+      },
+      {
+        ...deps,
+        queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
+        resolveActiveEmbeddedRunOwnerByRunId: () => ({
+          runId: "owned-run",
+          sessionId: "owned-session",
+          sessionKey: "agent:main:voice:call",
+          abort: () => true,
+        }),
+      },
+    ).then((value) => {
+      settled = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(queueGuardedEmbeddedAgentMessageWithOutcomeAsync).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    confirmCommit();
+    await expect(result).resolves.toMatchObject({ ok: true, queued: true, deliveredAtMs: 456 });
+    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
   });
 
   it.each(["steer", "followup"] as const)(

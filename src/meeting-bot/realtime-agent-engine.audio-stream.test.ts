@@ -189,25 +189,40 @@ describe("meeting TTS stream conversion", () => {
         await vi.advanceTimersByTimeAsync(900);
         expect(consultAgent).toHaveBeenCalledOnce();
         fixture.speechTranscript?.("Replacement request.");
-        if (outcome === "result") firstResult.resolve({ text: "Stale spoken result." });
-        else firstResult.reject(new Error("Stale failure"));
+        if (outcome === "result") {
+          firstResult.resolve({ text: "Stale spoken result." });
+        } else {
+          firstResult.reject(new Error("Stale failure"));
+        }
         await secondStarted.promise;
         expect(fixture.synthesisStarted).toHaveBeenCalledOnce();
+        const transcript = [
+          expect.objectContaining({
+            role: "assistant",
+            text: "A synthetic audio stream.",
+            audioDelivery: "unplayed",
+          }),
+          expect.objectContaining({ role: "user", text: "First request." }),
+          expect.objectContaining({ role: "user", text: "Replacement request." }),
+          ...(outcome === "result"
+            ? [
+                expect.objectContaining({
+                  role: "assistant",
+                  text: "Stale spoken result.",
+                  audioDelivery: "unplayed",
+                }),
+              ]
+            : []),
+        ];
         expect(consultAgent).toHaveBeenNthCalledWith(
           2,
           expect.objectContaining({
             args: expect.objectContaining({ question: "Replacement request." }),
-            transcript: [
-              expect.objectContaining({ role: "user", text: "First request." }),
-              expect.objectContaining({ role: "user", text: "Replacement request." }),
-            ],
+            transcript,
           }),
         );
         expect(fixture.writeOutput).not.toHaveBeenCalled();
-        expect(fixture.handle.getHealth().recentRealtimeTranscript).toEqual([
-          expect.objectContaining({ role: "user", text: "First request." }),
-          expect.objectContaining({ role: "user", text: "Replacement request." }),
-        ]);
+        expect(fixture.handle.getHealth().recentRealtimeTranscript).toEqual(transcript);
         secondResult.resolve({ text: "" });
       } finally {
         secondResult.resolve({ text: "" });
@@ -263,7 +278,13 @@ describe("meeting TTS stream conversion", () => {
       await fixture.secondRead;
       expect(fixture.writeOutput).not.toHaveBeenCalled();
       expect(fixture.beginOutput).not.toHaveBeenCalled();
-      expect(fixture.handle.getHealth().recentRealtimeTranscript).toEqual([]);
+      expect(fixture.handle.getHealth().recentRealtimeTranscript).toEqual([
+        expect.objectContaining({
+          role: "assistant",
+          text: "A synthetic audio stream.",
+          audioDelivery: "unplayed",
+        }),
+      ]);
       fixture.controller.close();
       await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledOnce());
       expect(fixture.writeOutput).toHaveBeenCalledExactlyOnceWith(

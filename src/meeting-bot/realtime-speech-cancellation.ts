@@ -8,6 +8,20 @@ export function createMeetingSpeechCancellation(params: {
   activeTtsReaders: Set<ReadableStreamDefaultReader<Uint8Array>>;
   bargeInGate: ReturnType<typeof createMeetingBargeInGate>;
 }) {
+  const markInterruptedTranscript = () => {
+    const harness = params.harness();
+    // Never rewrite generated text. Record delivery uncertainty separately so
+    // the next consult does not assume the caller heard a cancelled sentence.
+    for (const entry of harness.transcript) {
+      if (entry.audioDelivery === "started") {
+        entry.audioDelivery = "interrupted";
+      }
+    }
+    const lastAssistant = harness.transcript.findLast((entry) => entry.role === "assistant");
+    if (lastAssistant?.audioDelivery === "submitted" && harness.isOutputPlaybackActive()) {
+      lastAssistant.audioDelivery = "interrupted";
+    }
+  };
   const cancelActiveSpeech = () => {
     for (const controller of params.activeTtsAborts) {
       controller.abort(new Error("Meeting caller started speaking"));
@@ -37,5 +51,5 @@ export function createMeetingSpeechCancellation(params: {
     return true;
   };
 
-  return { cancelActiveSpeech, cancelForConfirmedTurn };
+  return { cancelActiveSpeech, cancelForConfirmedTurn, markInterruptedTranscript };
 }

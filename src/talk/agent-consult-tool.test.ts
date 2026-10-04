@@ -79,6 +79,7 @@ describe("realtime voice agent consult tool", () => {
         "Act as the configured OpenClaw agent on behalf of this user. Use available tools when the request asks you to do work.",
         "A later caller utterance does not by itself cancel an earlier request. Keep relevant earlier context and avoid repeating completed actions.",
         "Generated assistant text and completed tool work are not proof that their spoken answer reached the caller; use voice transcript delivery markers.",
+        "When an earlier result was not spoken or its audio was interrupted, address its still-relevant unanswered parts along with the latest request. Reuse completed results; do not repeat completed actions. An explicit caller cancellation or correction takes precedence.",
         "When finished, return only the concise result the realtime voice agent should speak back.",
         "Do not include markdown, tool logs, or private reasoning. Include citations only when the spoken answer needs them.",
         "Recent voice transcript for context:\nParticipant: Can you check the repo?\nAgent: I'll verify.",
@@ -107,6 +108,7 @@ describe("realtime voice agent consult tool", () => {
         { role: "assistant", text: "First sentence.", audioDelivery: "submitted" },
         { role: "assistant", text: "Second sentence.", audioDelivery: "interrupted" },
         { role: "assistant", text: "Third sentence.", audioDelivery: "started" },
+        { role: "assistant", text: "Fourth sentence.", audioDelivery: "unplayed" },
       ],
       surface: "a live call",
       userLabel: "Caller",
@@ -118,6 +120,9 @@ describe("realtime voice agent consult tool", () => {
       "Agent [audio interrupted; the user may not have heard this completely]: Second sentence.",
     );
     expect(prompt).toContain("Agent [audio started; not yet fully submitted]: Third sentence.");
+    expect(prompt).toContain(
+      "Agent [audio not played; this result has not been spoken to the user]: Fourth sentence.",
+    );
   });
 
   it("filters reasoning and error payloads from visible consult output", () => {

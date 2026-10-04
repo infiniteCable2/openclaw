@@ -266,13 +266,15 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
     .map((entry) => {
       const delivery = entry.role === "assistant" ? entry.audioDelivery : undefined;
       const note =
-        delivery === "interrupted"
-          ? " [audio interrupted; the user may not have heard this completely]"
-          : delivery === "started"
-            ? " [audio started; not yet fully submitted]"
-            : delivery === "submitted"
-              ? " [audio submitted; remote playout unconfirmed]"
-              : "";
+        delivery === "unplayed"
+          ? " [audio not played; this result has not been spoken to the user]"
+          : delivery === "interrupted"
+            ? " [audio interrupted; the user may not have heard this completely]"
+            : delivery === "started"
+              ? " [audio started; not yet fully submitted]"
+              : delivery === "submitted"
+                ? " [audio submitted; remote playout unconfirmed]"
+                : "";
       return `${entry.role === "assistant" ? assistantLabel : params.userLabel}${note}: ${entry.text}`;
     })
     .join("\n");
@@ -282,6 +284,7 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
     "Act as the configured OpenClaw agent on behalf of this user. Use available tools when the request asks you to do work.",
     "A later caller utterance does not by itself cancel an earlier request. Keep relevant earlier context and avoid repeating completed actions.",
     "Generated assistant text and completed tool work are not proof that their spoken answer reached the caller; use voice transcript delivery markers.",
+    "When an earlier result was not spoken or its audio was interrupted, address its still-relevant unanswered parts along with the latest request. Reuse completed results; do not repeat completed actions. An explicit caller cancellation or correction takes precedence.",
     params.commentaryEnabled
       ? "When finished, return a separate concise result the realtime voice agent should speak back."
       : "When finished, return only the concise result the realtime voice agent should speak back.",

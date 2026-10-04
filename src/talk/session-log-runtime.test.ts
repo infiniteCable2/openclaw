@@ -12,6 +12,24 @@ import {
 } from "./session-log-runtime.js";
 
 describe("realtime voice session log runtime", () => {
+  it("does not mistake a caller repeating unplayed text for assistant echo", () => {
+    const nowMs = Date.now();
+    expect(
+      isLikelyRealtimeVoiceAssistantEchoTranscript({
+        transcript: [
+          {
+            at: new Date(nowMs).toISOString(),
+            role: "assistant",
+            text: "The printer is ready and the light is on",
+            audioDelivery: "unplayed",
+          },
+        ],
+        text: "The printer is ready and the light is on",
+        lookbackMs: 45_000,
+        nowMs,
+      }),
+    ).toBe(false);
+  });
   it("records bounded transcript health", () => {
     const transcript: RealtimeVoiceTranscriptEntry[] = [];
     recordRealtimeVoiceTranscript(transcript, "user", "hello", 1);

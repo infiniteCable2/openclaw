@@ -15,6 +15,44 @@ import {
 describe("realtime voice agent consult speech delivery", () => {
   useConsultRuntimeTestHooks();
 
+  it("retains native earlier-input answers when the sink reports interrupted delivery", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    let interrupted = false;
+    const events: RealtimeVoiceAgentConsultSpeechEvent[] = [];
+    runEmbeddedAgent.mockImplementationOnce(async (params?: RunEmbeddedAgentParams) => {
+      await params?.onBlockReply?.({ text: "First result." });
+      interrupted = true;
+      return {
+        payloads: [
+          setReplyPayloadMetadata({ text: "First result." }, { precedingInputAnswer: true }),
+          { text: "Second result." },
+          { text: "Hidden reasoning", isReasoning: true },
+        ],
+        meta: {},
+      };
+    });
+    const result = await consultRealtimeVoiceAgent({
+      cfg: {},
+      agentRuntime: runtime as never,
+      logger: { warn: vi.fn() },
+      sessionKey: "voice:interrupted-results",
+      messageProvider: "voice",
+      lane: "voice",
+      runIdPrefix: "voice:interrupted-results",
+      args: { question: "First task." },
+      transcript: [],
+      surface: "a live voice session",
+      userLabel: "Caller",
+      includePrecedingInputAnswers: () => interrupted,
+      onSpeakableText: (event) => {
+        events.push(event);
+      },
+    });
+    expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+    expect(result).toEqual({ text: "First result.\n\nSecond result.", delivered: true });
+    expect(events.at(-1)).toEqual({ type: "done", text: result.text });
+  });
+
   it("interrupts a pending final speech delivery after the agent has returned", async () => {
     const { runtime } = createAgentRuntime();
     const controller = new AbortController();

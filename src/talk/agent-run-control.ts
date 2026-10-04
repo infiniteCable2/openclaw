@@ -62,6 +62,7 @@ type RealtimeVoiceAgentControlDeps = {
     text: string,
     options?: {
       steeringMode?: "all";
+      waitForTranscriptCommit?: boolean;
       debounceMs?: number;
       isInboundUserMessage?: boolean;
       taskSuggestionDeliveryMode?: undefined;
@@ -91,6 +92,8 @@ export async function controlRealtimeVoiceAgentRun(
       isCurrent: (sessionId?: string) => boolean;
     } | null;
     text: string;
+    /** Confirm owner-bound transcript adoption, not merely queue admission. Opt-in for RTC. */
+    waitForTranscriptCommit?: boolean;
     getToolAuthorityOverlay?: () => ReplyToolAuthorityOverlay;
     /** Host context prepared by the validated authority callback, never provider text. */
     getSteeringContext?: () => string | undefined;
@@ -231,6 +234,9 @@ export async function controlRealtimeVoiceAgentRun(
     mode === "followup" ? buildRealtimeVoiceAgentFollowupSteeringText(steeringText) : steeringText;
   const options = {
     steeringMode: "all" as const,
+    ...(params.waitForTranscriptCommit !== undefined
+      ? { waitForTranscriptCommit: params.waitForTranscriptCommit }
+      : {}),
     debounceMs: 0,
     isInboundUserMessage: true,
     toolAuthorityOverlay,

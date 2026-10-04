@@ -2,14 +2,66 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { RealtimeVoiceAgentConsultResult } from "../talk/agent-consult-runtime.js";
+import type { RealtimeVoiceSessionHarness } from "../talk/realtime-session-harness.js";
 import { createMeetingTtsAudioStreamConverter } from "./realtime-audio-format.js";
 import type { MeetingRealtimeAudioFormat } from "./realtime-audio-format.js";
+import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
 import { normalizeMeetingTtsPromptText } from "./realtime-engine-support.js";
 
 const MAX_GREETING_CHARS = 300;
 const MAX_GREETING_AUDIO_BYTES = 24_000 * 2 * 15;
 
 export type PreparedMeetingAgentGreeting = { text: string; audio: Buffer };
+
+/** Play prepared speech only after remote media is ready and this output is still current. */
+export async function playMeetingAgentGreeting(params: {
+  greeting: PreparedMeetingAgentGreeting;
+  transport: MeetingRealtimeAudioTransport;
+  harness: RealtimeVoiceSessionHarness;
+  meetingSessionId: string;
+  activeTtsAborts: Set<AbortController>;
+  isCurrent: () => boolean;
+  canStart: () => boolean;
+  onStarted: () => void;
+  writeOutputAudio: (
+    audio: Buffer,
+    firstChunk: boolean,
+    isCurrent: () => boolean,
+  ) => Promise<boolean>;
+}): Promise<void> {
+  // Local publication alone does not prove the caller's audio track has arrived.
+  await params.transport.waitForRemoteAudioReady?.();
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 150);
+  });
+  if (!params.isCurrent() || !params.canStart()) {
+    return;
+  }
+  params.onStarted();
+  const controller = new AbortController();
+  params.activeTtsAborts.add(controller);
+  const isCurrent = () => params.isCurrent() && !controller.signal.aborted;
+  try {
+    const turnId = params.harness.ensureTurn();
+    params.harness.emit({
+      type: "output.text.done",
+      turnId,
+      final: true,
+      payload: { meetingSessionId: params.meetingSessionId, text: params.greeting.text },
+    });
+    if (await params.writeOutputAudio(params.greeting.audio, true, isCurrent)) {
+      params.harness.recordTranscript("assistant", params.greeting.text).audioDelivery = isCurrent()
+        ? "submitted"
+        : "interrupted";
+      if (isCurrent()) {
+        params.harness.finishOutputAudio("completed");
+        params.harness.endTurn();
+      }
+    }
+  } finally {
+    params.activeTtsAborts.delete(controller);
+  }
+}
 
 /** Prepare speech before answering, but leave playback to the live audio engine. */
 export async function prepareMeetingAgentGreeting(params: {

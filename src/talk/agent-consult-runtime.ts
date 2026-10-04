@@ -421,6 +421,8 @@ export async function consultRealtimeVoiceAgent(params: {
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
   /** Speak completed commentary blocks on this consult only, without adding them to final text. */
   speakCommentary?: boolean;
+  /** The audio sink was interrupted; retain native answers to earlier steered inputs. */
+  includePrecedingInputAnswers?: () => boolean;
   onRunStarted?: (params: {
     runId: string;
     sessionId: string;
@@ -688,11 +690,14 @@ export async function consultRealtimeVoiceAgent(params: {
               streamedChunks.map((chunk) => ({ text: chunk })),
             ) ?? acknowledgment;
         }
-        // Earlier input answers remain in history; this completion speaks for the current input.
+        // Normally preceding answers were already streamed. An interrupted sink
+        // needs the native answer segments as well, without rerunning their work.
         const payloads = result.payloads ?? [];
-        const currentInputPayloads = payloads.filter(
-          (payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer !== true,
-        );
+        const currentInputPayloads = params.includePrecedingInputAnswers?.()
+          ? payloads
+          : payloads.filter(
+              (payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer !== true,
+            );
         const text =
           yieldedSpeech ??
           collectRealtimeVoiceAgentConsultVisibleText(currentInputPayloads) ??

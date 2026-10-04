@@ -6,6 +6,7 @@ import type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import {
   consultRealtimeVoiceAgent,
+  prepareRealtimeVoiceAgentExecutionContext,
   type RealtimeVoiceAgentConsultResult,
 } from "../talk/agent-consult-runtime.js";
 import {
@@ -15,6 +16,7 @@ import {
   resolveRealtimeVoiceAgentConsultToolsAllow,
   type RealtimeVoiceAgentConsultToolPolicy,
 } from "../talk/agent-consult-tool.js";
+import { controlRealtimeVoiceAgentRun } from "../talk/agent-run-control.js";
 import type { RealtimeVoiceTool, RealtimeVoiceToolCallEvent } from "../talk/provider-types.js";
 import type { RealtimeVoiceBridgeSession } from "../talk/session-runtime.js";
 import type { TalkEventInput } from "../talk/talk-events.js";
@@ -134,6 +136,8 @@ async function consultMeetingAgent(params: {
   transcript: Array<{ role: "user" | "assistant"; text: string }>;
   abortSignal?: AbortSignal;
   onSpeakableText?: MeetingAgentConsultParams["onSpeakableText"];
+  onRunControl?: MeetingAgentConsultParams["onRunControl"];
+  includePrecedingInputAnswers?: MeetingAgentConsultParams["includePrecedingInputAnswers"];
 }): Promise<RealtimeVoiceAgentConsultResult> {
   const agentId = params.agentId
     ? normalizeAgentId(params.agentId)
@@ -145,30 +149,93 @@ async function consultMeetingAgent(params: {
     params.agentThinkingLevel ??
     resolveAgentConfig(params.config, agentId)?.thinkingDefault ??
     params.config.agents?.defaults?.thinkingDefault;
-  return await consultRealtimeVoiceAgent({
-    cfg: params.config,
-    agentRuntime: params.runtime.agent,
-    logger: params.logger,
-    agentId,
-    sessionKey,
-    messageProvider: params.surface.provider,
-    lane: params.surface.lane,
-    runIdPrefix: `${params.surface.id}:${params.meetingSessionId}`,
-    spawnedBy: requesterSessionKey,
-    contextMode: "fork",
-    args: params.args,
-    transcript: params.transcript,
-    surface: params.surface.surface,
-    userLabel: params.surface.userLabel,
-    assistantLabel: params.surface.assistantLabel,
-    questionSourceLabel: params.surface.questionSourceLabel,
-    thinkLevel,
-    speakCommentary: params.speakCommentary,
-    toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow(params.toolPolicy),
-    extraSystemPrompt: params.surface.extraSystemPrompt,
-    abortSignal: params.abortSignal,
-    onSpeakableText: params.onSpeakableText,
-  });
+  const toolsAllow = resolveRealtimeVoiceAgentConsultToolsAllow(params.toolPolicy);
+  let releaseRunControl: (() => void) | undefined;
+  try {
+    return await consultRealtimeVoiceAgent({
+      cfg: params.config,
+      agentRuntime: params.runtime.agent,
+      logger: params.logger,
+      agentId,
+      sessionKey,
+      messageProvider: params.surface.provider,
+      lane: params.surface.lane,
+      runIdPrefix: `${params.surface.id}:${params.meetingSessionId}`,
+      spawnedBy: requesterSessionKey,
+      contextMode: "fork",
+      args: params.args,
+      transcript: params.transcript,
+      surface: params.surface.surface,
+      userLabel: params.surface.userLabel,
+      assistantLabel: params.surface.assistantLabel,
+      questionSourceLabel: params.surface.questionSourceLabel,
+      thinkLevel,
+      speakCommentary: params.speakCommentary,
+      toolsAllow,
+      extraSystemPrompt: params.surface.extraSystemPrompt,
+      abortSignal: params.abortSignal,
+      onSpeakableText: params.onSpeakableText,
+      includePrecedingInputAnswers: params.includePrecedingInputAnswers,
+      onRunStarted: params.onRunControl
+        ? ({ runId, sessionId }) => {
+            const controller = new AbortController();
+            const signal = params.abortSignal
+              ? AbortSignal.any([params.abortSignal, controller.signal])
+              : controller.signal;
+            let current = true;
+            const isCurrent = (candidateSessionId?: string) =>
+              current &&
+              !signal.aborted &&
+              (candidateSessionId === undefined || candidateSessionId === sessionId);
+            const cleanup = () => {
+              if (!current) {
+                return;
+              }
+              current = false;
+              signal.removeEventListener("abort", cleanup);
+              params.onRunControl?.(undefined);
+            };
+            releaseRunControl = cleanup;
+            signal.addEventListener("abort", cleanup, { once: true });
+            if (signal.aborted) {
+              cleanup();
+              signal.throwIfAborted();
+            }
+            params.onRunControl?.((text) =>
+              controlRealtimeVoiceAgentRun({
+                sessionKey,
+                runTarget: { runId, signal, isCurrent },
+                // A spoken addition is not an instruction to abandon the preceding request.
+                mode: "followup",
+                waitForTranscriptCommit: true,
+                text,
+                getToolAuthorityOverlay: () => {
+                  if (!isCurrent(sessionId)) {
+                    throw new Error("The active meeting consult is no longer current");
+                  }
+                  const prepared = prepareRealtimeVoiceAgentExecutionContext({
+                    cfg: params.config,
+                    agentRuntime: params.runtime.agent,
+                    agentId,
+                    sessionKey,
+                    spawnedBy: requesterSessionKey,
+                    messageProvider: params.surface.provider,
+                    toolsAllow,
+                  });
+                  if (!isCurrent(sessionId) || prepared.sessionEntry?.sessionId !== sessionId) {
+                    throw new Error("The active meeting consult session has changed");
+                  }
+                  return prepared.toolAuthorityOverlay;
+                },
+              }),
+            );
+            return { abortSignal: signal, cleanup };
+          }
+        : undefined,
+    });
+  } finally {
+    releaseRunControl?.();
+  }
 }
 
 async function handleMeetingRealtimeConsultToolCall(params: {

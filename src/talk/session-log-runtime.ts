@@ -8,7 +8,7 @@ export type RealtimeVoiceTranscriptEntry = {
   role: RealtimeVoiceRole;
   text: string;
   /** Sink submission is not proof of remote playout; preserve that distinction. */
-  audioDelivery?: "started" | "submitted" | "interrupted";
+  audioDelivery?: "unplayed" | "started" | "submitted" | "interrupted";
 };
 
 /** Compact health snapshot exposed to diagnostics without dumping full transcript history. */
@@ -127,7 +127,7 @@ export function isLikelyRealtimeVoiceAssistantEchoTranscript(params: {
   const nowMs = params.nowMs ?? Date.now();
   const recentAssistantText = params.transcript
     .filter((entry) => {
-      if (entry.role !== "assistant") {
+      if (entry.role !== "assistant" || entry.audioDelivery === "unplayed") {
         return false;
       }
       const at = Date.parse(entry.at);

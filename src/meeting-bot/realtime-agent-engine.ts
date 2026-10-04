@@ -10,7 +10,7 @@ import {
   type RealtimeVoiceSessionHarness,
 } from "../talk/realtime-session-harness.js";
 import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
-import type { PreparedMeetingAgentGreeting } from "./agent-greeting.js";
+import { playMeetingAgentGreeting, type PreparedMeetingAgentGreeting } from "./agent-greeting.js";
 import { createMeetingAgentWaitingAudio } from "./realtime-agent-waiting-audio.js";
 import {
   createMeetingSttAudioConverter,
@@ -36,78 +36,10 @@ import { createMeetingBargeInGate } from "./realtime-output-gate.js";
 import { createMeetingSpeechCancellation } from "./realtime-speech-cancellation.js";
 import { createMeetingWaitingAudioPlayback, prepareMeetingWaitingAudio } from "./waiting-audio.js";
 
-const MEETING_AGENT_READINESS_TIMEOUT_MS = 120_000;
-
-export type MeetingAgentRealtimePreparation = {
-  release(): Promise<void>;
-};
-
-export async function prepareMeetingAgentRealtimeEngine(params: {
-  config: MeetingRealtimeEngineConfig;
-  fullConfig: OpenClawConfig;
-  runtime: PluginRuntime;
-  ttsContext?: { agentId?: string; channelId?: string; accountId?: string };
-  providers?: RealtimeTranscriptionProviderPlugin[];
-  signal?: AbortSignal;
-}): Promise<MeetingAgentRealtimePreparation> {
-  const resolved = resolveMeetingRealtimeTranscriptionProvider({
-    config: params.config,
-    fullConfig: params.fullConfig,
-    providers: params.providers,
-  });
-  const timeoutSignal = AbortSignal.timeout(MEETING_AGENT_READINESS_TIMEOUT_MS);
-  const signal = params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal;
-  const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
-  const sttPromise = resolved.provider.prepareSession?.({
-    cfg: params.fullConfig,
-    providerConfig: resolved.providerConfig,
-    signal,
-  });
-  const ttsPromise = params.runtime.tts.prepareTextToSpeechTelephony({
-    cfg: params.fullConfig,
-    signal,
-    ...(ttsAgentId ? { agentId: ttsAgentId } : {}),
-    ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
-    ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
-  });
-  const waitingAudioPromise = prepareMeetingWaitingAudio(
-    params.config.realtime.waitingAudio,
-    params.config.chrome.audioFormat,
-  );
-  const [sttResult, ttsResult, waitingAudioResult] = await Promise.allSettled([
-    sttPromise,
-    ttsPromise,
-    waitingAudioPromise,
-  ]);
-  const releases: Array<() => void | Promise<void>> = [];
-  if (sttResult.status === "fulfilled" && sttResult.value) {
-    const sttPreparation = sttResult.value;
-    releases.push(() => sttPreparation.release());
-  }
-  if (ttsResult.status === "fulfilled" && ttsResult.value.release) {
-    releases.push(ttsResult.value.release);
-  }
-  const release = async () => {
-    await Promise.allSettled(releases.splice(0).map(async (releaseResource) => releaseResource()));
-  };
-  if (sttResult.status === "rejected") {
-    await release();
-    throw sttResult.reason;
-  }
-  if (ttsResult.status === "rejected") {
-    await release();
-    throw ttsResult.reason;
-  }
-  if (waitingAudioResult.status === "rejected") {
-    await release();
-    throw waitingAudioResult.reason;
-  }
-  if (!ttsResult.value.success) {
-    await release();
-    throw new Error(ttsResult.value.error ?? "TTS telephony preparation failed");
-  }
-  return { release };
-}
+export {
+  prepareMeetingAgentRealtimeEngine,
+  type MeetingAgentRealtimePreparation,
+} from "./realtime-agent-preparation.js";
 
 export async function startMeetingAgentRealtimeEngine(params: {
   config: MeetingRealtimeEngineConfig;
@@ -145,6 +77,17 @@ export async function startMeetingAgentRealtimeEngine(params: {
   let outputGeneration = 0;
   let greetingPending = params.initialGreeting !== undefined;
   let currentWaitingTurn: number | undefined;
+  // Admission belongs to the native run. This only serializes its acknowledgments
+  // before choosing an audio generation or handing an unadopted input to talkback.
+  let activeConsult:
+    | {
+        control?: Parameters<NonNullable<MeetingAgentConsultParams["onRunControl"]>>[0];
+        admissions: Promise<void>;
+        adoptedGeneration: number;
+        unconfirmed: boolean;
+        followupOnly: boolean;
+      }
+    | undefined;
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
   const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
   const resolved = resolveMeetingRealtimeTranscriptionProvider({
@@ -205,7 +148,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return;
     }
     stopped = true;
-    markInterruptedTranscript();
+    speechCancellation.markInterruptedTranscript();
     stopPromise = (async () => {
       for (const controller of activeTtsAborts) {
         controller.abort(new Error("Meeting audio output stopped"));
@@ -289,20 +232,6 @@ export async function startMeetingAgentRealtimeEngine(params: {
     bargeInGate,
   });
 
-  const markInterruptedTranscript = () => {
-    // Never rewrite generated text. Record delivery uncertainty separately so
-    // the next consult does not assume the caller heard a cancelled sentence.
-    for (const entry of harness.transcript) {
-      if (entry.audioDelivery === "started") {
-        entry.audioDelivery = "interrupted";
-      }
-    }
-    const lastAssistant = harness.transcript.findLast((entry) => entry.role === "assistant");
-    if (lastAssistant?.audioDelivery === "submitted" && harness.isOutputPlaybackActive()) {
-      lastAssistant.audioDelivery = "interrupted";
-    }
-  };
-
   const createSpeechUtterance = (waitingTurn?: number): SpeechUtterance => ({
     generation: outputGeneration,
     waitingGeneration: waiting.generation,
@@ -333,6 +262,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return;
     }
     utterance.chunks.push(normalized);
+    const transcriptEntry = harness.recordTranscript("assistant", normalized);
+    transcriptEntry.audioDelivery = "unplayed";
+    utterance.transcriptEntries.push(transcriptEntry);
     params.logger.info(
       formatMeetingTranscriptSummaryLog(
         params.platform.logScope,
@@ -408,7 +340,6 @@ export async function startMeetingAgentRealtimeEngine(params: {
         let firstSegmentChunk = true;
         let firstUtteranceChunk = !utterance.playbackStarted;
         let bytesWritten = 0;
-        let transcriptEntry: RealtimeVoiceTranscriptEntry | undefined;
         const isCurrentPlayback = () =>
           isCurrentSpeechUtterance(utterance) && !controller.signal.aborted;
         try {
@@ -445,10 +376,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
             if (!(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback))) {
               break;
             }
-            if (!transcriptEntry) {
-              transcriptEntry = harness.recordTranscript("assistant", normalized);
+            if (transcriptEntry.audioDelivery === "unplayed") {
               transcriptEntry.audioDelivery = "started";
-              utterance.transcriptEntries.push(transcriptEntry);
             }
             if (!isCurrentPlayback()) {
               break;
@@ -469,11 +398,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
           if (bytesWritten === 0 && isCurrentPlayback()) {
             throw new Error("TTS provider returned an empty audio stream");
           }
-          if (transcriptEntry) {
+          if (transcriptEntry.audioDelivery === "started") {
             transcriptEntry.audioDelivery = isCurrentPlayback() ? "submitted" : "interrupted";
           }
         } finally {
-          if (transcriptEntry?.audioDelivery === "started") {
+          if (transcriptEntry.audioDelivery === "started") {
             transcriptEntry.audioDelivery = "interrupted";
           }
           allowNextPreparation();
@@ -561,7 +490,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return;
     }
     outputGeneration += 1;
-    markInterruptedTranscript();
+    speechCancellation.markInterruptedTranscript();
     utterance.finalized = true;
     if (utterance.waitingTurn !== undefined) {
       waiting.onTurnFinished(utterance.waitingTurn);
@@ -627,6 +556,14 @@ export async function startMeetingAgentRealtimeEngine(params: {
         const waitingTurn = waiting.onTurnStarted();
         currentWaitingTurn = waitingTurn;
         const utterance = createSpeechUtterance(waitingTurn);
+        const consult: NonNullable<typeof activeConsult> = {
+          admissions: Promise.resolve(),
+          adoptedGeneration: outputGeneration,
+          unconfirmed: false,
+          followupOnly: false,
+        };
+        activeConsult = consult;
+        let failure: { error: unknown } | undefined;
         const result = await params
           .consultAgent({
             meetingSessionId: params.meetingSessionId,
@@ -634,6 +571,10 @@ export async function startMeetingAgentRealtimeEngine(params: {
             args: { question, responseStyle },
             transcript: harness.transcript,
             abortSignal: signal,
+            onRunControl: (control) => {
+              consult.control = control;
+            },
+            includePrecedingInputAnswers: () => utterance.generation !== outputGeneration,
             ...(params.config.realtime.responseStreaming === "sentence"
               ? {
                   onSpeakableText: (event) => {
@@ -653,14 +594,48 @@ export async function startMeetingAgentRealtimeEngine(params: {
             if (currentWaitingTurn === waitingTurn) {
               currentWaitingTurn = undefined;
             }
-            if (utterance.generation !== outputGeneration) {
-              return { text: "" };
-            }
-            throw error;
+            failure = { error };
+            return { text: "" };
           });
+        // Native steering confirmation may finish just after the run. Do not
+        // release talkback or speak a result before every admitted input settles.
+        while (true) {
+          const admissions = consult.admissions;
+          await admissions;
+          if (admissions === consult.admissions) {
+            break;
+          }
+        }
+        if (activeConsult === consult) {
+          activeConsult = undefined;
+        }
+        if (stopped) {
+          return { text: "" };
+        }
+        if (consult.unconfirmed) {
+          if (result.text.trim()) {
+            harness.recordTranscript("assistant", result.text).audioDelivery = "unplayed";
+          }
+          waiting.onTurnFinished(waitingTurn);
+          return {
+            text: "I couldn't confirm your additional request. Please check before asking me to repeat an action.",
+          };
+        }
+        if (failure && !consult.followupOnly) {
+          throw failure.error;
+        }
         if (utterance.generation !== outputGeneration) {
-          // Let write-capable work settle in the native serial consult queue,
-          // but never resurrect its old buffered speech after a confirmed turn.
+          if (consult.adoptedGeneration === outputGeneration) {
+            // Only the interrupted run is buffered. Use its native completed
+            // answers, never old PCM or a second execution of preceding tools.
+            currentWaitingTurn = waitingTurn;
+            return { ...result, delivered: false };
+          }
+          if (result.text.trim()) {
+            harness.recordTranscript("assistant", result.text).audioDelivery = "unplayed";
+          }
+          // A later input was not adopted by this run. Preserve its answer as a
+          // delivery fact for the next consult without resurrecting stale speech.
           waiting.onTurnFinished(waitingTurn);
           if (currentWaitingTurn === waitingTurn) {
             currentWaitingTurn = undefined;
@@ -726,7 +701,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
           // Before the first output byte, only an accepted final transcript can
           // discard prepared speech. Delayed assistant echoes are not caller turns.
           outputGeneration += 1;
-          markInterruptedTranscript();
+          speechCancellation.markInterruptedTranscript();
           if (!speechCancellation.cancelForConfirmedTurn()) {
             bargeInGate.release(context?.utteranceId);
           }
@@ -766,7 +741,46 @@ export async function startMeetingAgentRealtimeEngine(params: {
           );
           return;
         }
-        harness.talkback?.enqueue(trimmed);
+        const consult = activeConsult;
+        if (!consult) {
+          harness.talkback?.enqueue(trimmed);
+          return;
+        }
+        const control = consult.control;
+        const generation = outputGeneration;
+        consult.admissions = consult.admissions
+          .then(async () => {
+            if (stopped) {
+              return;
+            }
+            if (consult.followupOnly) {
+              harness.talkback?.enqueue(trimmed);
+              return;
+            }
+            const outcome = await control?.(trimmed);
+            if (stopped) {
+              return;
+            }
+            if (outcome?.queued) {
+              // queued=true also covers uncertain commit: never resubmit it.
+              consult.adoptedGeneration = generation;
+              consult.unconfirmed ||= !outcome.ok;
+              consult.followupOnly ||= !outcome.ok;
+            } else {
+              // Once B waits behind A, C must not overtake B by steering into A.
+              consult.followupOnly = true;
+              harness.talkback?.enqueue(trimmed);
+            }
+          })
+          .catch(() => {
+            // An exception cannot prove non-adoption. Do not replay a possible
+            // write-capable input; report the uncertainty after the run settles.
+            consult.unconfirmed = true;
+            consult.followupOnly = true;
+            params.logger.warn(
+              `${params.platform.logScope} ${agentLogScope} input steering confirmation failed`,
+            );
+          });
       },
       onError: (error) => {
         params.logger.warn(
@@ -822,40 +836,19 @@ export async function startMeetingAgentRealtimeEngine(params: {
   if (params.initialGreeting) {
     const greeting = params.initialGreeting;
     const generation = outputGeneration;
-    void (async () => {
-      // The bridge's connection event proves local publication, but not that
-      // the caller's audio track has arrived. Never send the greeting before it.
-      await params.transport.waitForRemoteAudioReady?.();
-      await new Promise<void>((resolve) => setTimeout(resolve, 150));
-      if (stopped || !greetingPending || outputGeneration !== generation) {
-        return;
-      }
-      greetingPending = false;
-      const controller = new AbortController();
-      activeTtsAborts.add(controller);
-      const isCurrent = () =>
-        !stopped && !controller.signal.aborted && outputGeneration === generation;
-      try {
-        const turnId = harness.ensureTurn();
-        harness.emit({
-          type: "output.text.done",
-          turnId,
-          final: true,
-          payload: { meetingSessionId: params.meetingSessionId, text: greeting.text },
-        });
-        if (await writeOutputAudio(greeting.audio, true, isCurrent)) {
-          harness.recordTranscript("assistant", greeting.text).audioDelivery = isCurrent()
-            ? "submitted"
-            : "interrupted";
-          if (isCurrent()) {
-            harness.finishOutputAudio("completed");
-            harness.endTurn();
-          }
-        }
-      } finally {
-        activeTtsAborts.delete(controller);
-      }
-    })().catch((error: unknown) => {
+    void playMeetingAgentGreeting({
+      greeting,
+      transport: params.transport,
+      harness,
+      meetingSessionId: params.meetingSessionId,
+      activeTtsAborts,
+      isCurrent: () => !stopped && outputGeneration === generation,
+      canStart: () => greetingPending,
+      onStarted: () => {
+        greetingPending = false;
+      },
+      writeOutputAudio,
+    }).catch((error: unknown) => {
       if (!stopped) {
         params.logger.warn(
           `${params.platform.logScope} ${agentLogScope} greeting playback failed: ${formatErrorMessage(error)}`,
