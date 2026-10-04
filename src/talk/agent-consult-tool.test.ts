@@ -77,6 +77,8 @@ describe("realtime voice agent consult tool", () => {
       [
         "Live voice request from the participant during a private Google Meet.",
         "Act as the configured OpenClaw agent on behalf of this user. Use available tools when the request asks you to do work.",
+        "A later caller utterance does not by itself cancel an earlier request. Keep relevant earlier context and avoid repeating completed actions.",
+        "Generated assistant text and completed tool work are not proof that their spoken answer reached the caller; use voice transcript delivery markers.",
         "When finished, return only the concise result the realtime voice agent should speak back.",
         "Do not include markdown, tool logs, or private reasoning. Include citations only when the spoken answer needs them.",
         "Recent voice transcript for context:\nParticipant: Can you check the repo?\nAgent: I'll verify.",
@@ -96,6 +98,26 @@ describe("realtime voice agent consult tool", () => {
 
     expect(prompt).toContain("When finished, return a separate concise result");
     expect(prompt).not.toContain("return only the concise result");
+  });
+
+  it("preserves transcript text but distinguishes partial audio from remote playout", () => {
+    const prompt = buildRealtimeVoiceAgentConsultPrompt({
+      args: { question: "Please continue." },
+      transcript: [
+        { role: "assistant", text: "First sentence.", audioDelivery: "submitted" },
+        { role: "assistant", text: "Second sentence.", audioDelivery: "interrupted" },
+        { role: "assistant", text: "Third sentence.", audioDelivery: "started" },
+      ],
+      surface: "a live call",
+      userLabel: "Caller",
+    });
+    expect(prompt).toContain(
+      "Agent [audio submitted; remote playout unconfirmed]: First sentence.",
+    );
+    expect(prompt).toContain(
+      "Agent [audio interrupted; the user may not have heard this completely]: Second sentence.",
+    );
+    expect(prompt).toContain("Agent [audio started; not yet fully submitted]: Third sentence.");
   });
 
   it("filters reasoning and error payloads from visible consult output", () => {

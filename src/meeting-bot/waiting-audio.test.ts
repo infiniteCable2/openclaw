@@ -71,7 +71,7 @@ describe("meeting waiting audio", () => {
     });
 
     await playMeetingWaitingAudio({
-      audio: { pcm: Buffer.alloc(1_200, 1), frameBytes: 960, startDelayMs: 0 },
+      audio: { pcm: Buffer.alloc(1_200, 1), frameBytes: 960, startDelayMs: 0, resumeDelayMs: 800 },
       transport: { writeOutput },
       signal: controller.signal,
     });

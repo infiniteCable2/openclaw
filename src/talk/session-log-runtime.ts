@@ -7,6 +7,8 @@ export type RealtimeVoiceTranscriptEntry = {
   at: string;
   role: RealtimeVoiceRole;
   text: string;
+  /** Sink submission is not proof of remote playout; preserve that distinction. */
+  audioDelivery?: "started" | "submitted" | "interrupted";
 };
 
 /** Compact health snapshot exposed to diagnostics without dumping full transcript history. */

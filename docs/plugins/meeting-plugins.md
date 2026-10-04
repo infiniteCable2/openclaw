@@ -43,6 +43,20 @@ In `bidi` mode, recoverable provider diagnostics are logged without stopping the
 
 Stopping a meeting requests cancellation of any active agent consult. In `agent` mode, OpenClaw finishes active output and turn events before closing the session, then ignores late speech synthesis and audio delivery results.
 
+In `agent` mode, a confirmed new caller transcript cancels superseded speech,
+not a potentially write-capable tool operation in progress. That operation
+settles in the serial consult queue, but its obsolete buffered reply is not
+spoken before the new request. Speech candidates that decode to no text do not
+discard the current answer. Live consult context records assistant text only
+after audio reaches the output sink, with separate delivery status for started,
+submitted, or interrupted speech. Submission is not proof that the remote
+participant heard every word; interrupted audio is explicitly marked as such.
+Successive caller transcripts are retained in order, including an additional
+utterance received while an earlier consult is running. Cancelling superseded
+audio does not delete either user message or settled tool results. The next
+consult receives the retained voice context; it must not treat an additional
+utterance as an implicit retraction of the earlier request.
+
 Custom realtime audio transports may set `supportsFullDuplexInput: true` only
 when their input is isolated from local playback or protected by active acoustic
 echo cancellation. In `agent` mode, OpenClaw then keeps feeding input to the

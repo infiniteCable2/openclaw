@@ -24,6 +24,7 @@ async function createAudioStreamFixture(params: {
   sampleRate: number;
   outputFormat: string;
   audioFormat?: MeetingRealtimeAudioFormat;
+  consultAgent?: Parameters<typeof startMeetingAgentRealtimeEngine>[0]["consultAgent"];
 }) {
   const controllerReady = createDeferred<ReadableStreamDefaultController<Uint8Array>>();
   const firstRead = createDeferred();
@@ -33,6 +34,7 @@ async function createAudioStreamFixture(params: {
   const release = vi.fn(async () => undefined);
   const beginOutput = vi.fn();
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
+  const synthesisStarted = vi.fn();
   let speechStart: (() => void) | undefined;
   let speechProcessing: Parameters<
     RealtimeTranscriptionProviderPlugin["createSession"]
@@ -68,24 +70,27 @@ async function createAudioStreamFixture(params: {
     fullConfig: {},
     runtime: {
       tts: {
-        streamTextToSpeechTelephony: async () => ({
-          success: true,
-          sampleRate: params.sampleRate,
-          outputFormat: params.outputFormat,
-          release,
-          audioStream: new ReadableStream<Uint8Array>(
-            {
-              start(controller) {
-                controllerReady.resolve(controller);
+        streamTextToSpeechTelephony: async () => {
+          synthesisStarted();
+          return {
+            success: true,
+            sampleRate: params.sampleRate,
+            outputFormat: params.outputFormat,
+            release,
+            audioStream: new ReadableStream<Uint8Array>(
+              {
+                start(controller) {
+                  controllerReady.resolve(controller);
+                },
+                pull() {
+                  reads.shift()?.resolve();
+                },
+                cancel: cancelled,
               },
-              pull() {
-                reads.shift()?.resolve();
-              },
-              cancel: cancelled,
-            },
-            { highWaterMark: 0 },
-          ),
-        }),
+              { highWaterMark: 0 },
+            ),
+          };
+        },
       },
     } as unknown as PluginRuntime,
     platform: { displayName: "Test meeting", logScope: "test", sessionIdPrefix: "test" },
@@ -101,7 +106,7 @@ async function createAudioStreamFixture(params: {
     },
     providers: [provider],
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    consultAgent: async () => ({ text: "unused" }),
+    consultAgent: params.consultAgent ?? (async () => ({ text: "unused" })),
   });
   handle.speak("A synthetic audio stream.");
   const controller = await controllerReady.promise;
@@ -114,6 +119,7 @@ async function createAudioStreamFixture(params: {
     cancelled,
     beginOutput,
     writeOutput,
+    synthesisStarted,
     speechStart,
     speechProcessing,
     speechTranscript,
@@ -121,6 +127,96 @@ async function createAudioStreamFixture(params: {
 }
 
 describe("meeting TTS stream conversion", () => {
+  it("retains interrupted speech when cancellation races the first sink handoff", async () => {
+    vi.useFakeTimers();
+    const handedOff = createDeferred();
+    const writeStarted = createDeferred();
+    const released = createDeferred();
+    const fixture = await createAudioStreamFixture({ sampleRate: 24_000, outputFormat: "pcm" });
+    fixture.writeOutput.mockImplementationOnce(async () => {
+      writeStarted.resolve();
+      await handedOff.promise;
+    });
+    fixture.release.mockImplementationOnce(async () => {
+      released.resolve();
+      return undefined;
+    });
+    try {
+      fixture.controller.enqueue(createPcm(24_000));
+      await writeStarted.promise;
+      fixture.speechTranscript?.("Additional caller context.");
+      handedOff.resolve();
+      await released.promise;
+      expect(fixture.writeOutput).toHaveBeenCalledOnce();
+      expect(fixture.handle.getHealth().recentRealtimeTranscript).toContainEqual(
+        expect.objectContaining({
+          role: "assistant",
+          text: "A synthetic audio stream.",
+          audioDelivery: "interrupted",
+        }),
+      );
+      expect(fixture.handle.getHealth().recentRealtimeTranscript).toContainEqual(
+        expect.objectContaining({ role: "user", text: "Additional caller context." }),
+      );
+    } finally {
+      handedOff.resolve();
+      await fixture.handle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["result", "failure"] as const)(
+    "settles interrupted tool work without resurrecting its buffered %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const firstResult = createDeferred<{ text: string }>();
+      const secondStarted = createDeferred();
+      const secondResult = createDeferred<{ text: string }>();
+      const consultAgent = vi
+        .fn()
+        .mockImplementationOnce(() => firstResult.promise)
+        .mockImplementationOnce(() => {
+          secondStarted.resolve();
+          return secondResult.promise;
+        });
+      const fixture = await createAudioStreamFixture({
+        sampleRate: 24_000,
+        outputFormat: "pcm",
+        consultAgent,
+      });
+      try {
+        fixture.speechTranscript?.("First request.");
+        await vi.advanceTimersByTimeAsync(900);
+        expect(consultAgent).toHaveBeenCalledOnce();
+        fixture.speechTranscript?.("Replacement request.");
+        if (outcome === "result") firstResult.resolve({ text: "Stale spoken result." });
+        else firstResult.reject(new Error("Stale failure"));
+        await secondStarted.promise;
+        expect(fixture.synthesisStarted).toHaveBeenCalledOnce();
+        expect(consultAgent).toHaveBeenNthCalledWith(
+          2,
+          expect.objectContaining({
+            args: expect.objectContaining({ question: "Replacement request." }),
+            transcript: [
+              expect.objectContaining({ role: "user", text: "First request." }),
+              expect.objectContaining({ role: "user", text: "Replacement request." }),
+            ],
+          }),
+        );
+        expect(fixture.writeOutput).not.toHaveBeenCalled();
+        expect(fixture.handle.getHealth().recentRealtimeTranscript).toEqual([
+          expect.objectContaining({ role: "user", text: "First request." }),
+          expect.objectContaining({ role: "user", text: "Replacement request." }),
+        ]);
+        secondResult.resolve({ text: "" });
+      } finally {
+        secondResult.resolve({ text: "" });
+        await fixture.handle.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each([
     { sampleRate: 16_000, outputFormat: "pcm", audioFormat: "pcm16-24khz", chunkBytes: 17 },
     { sampleRate: 16_000, outputFormat: "pcm", audioFormat: "pcm16-24khz", chunkBytes: 34 },
@@ -167,6 +263,7 @@ describe("meeting TTS stream conversion", () => {
       await fixture.secondRead;
       expect(fixture.writeOutput).not.toHaveBeenCalled();
       expect(fixture.beginOutput).not.toHaveBeenCalled();
+      expect(fixture.handle.getHealth().recentRealtimeTranscript).toEqual([]);
       fixture.controller.close();
       await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledOnce());
       expect(fixture.writeOutput).toHaveBeenCalledExactlyOnceWith(
@@ -189,6 +286,9 @@ describe("meeting TTS stream conversion", () => {
         const output = Buffer.concat(fixture.writeOutput.mock.calls.map(([audio]) => audio));
         const complete = convertMeetingTtsAudioForBridge(source, 16_000, "pcm16-24khz", "pcm");
         expect(output.length).toBeGreaterThan(0);
+        expect(fixture.handle.getHealth().recentRealtimeTranscript).toEqual([
+          expect.objectContaining({ role: "assistant", audioDelivery: "started" }),
+        ]);
         expect(output.length).toBeLessThan(complete.length);
         expect(output).toEqual(complete.subarray(0, output.length));
         const writesBeforeCancellation = fixture.writeOutput.mock.calls.length;
@@ -202,6 +302,13 @@ describe("meeting TTS stream conversion", () => {
         await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledOnce());
         expect(fixture.cancelled).toHaveBeenCalledOnce();
         expect(fixture.writeOutput).toHaveBeenCalledTimes(writesBeforeCancellation);
+        expect(fixture.handle.getHealth().recentRealtimeTranscript).toContainEqual(
+          expect.objectContaining({
+            role: "assistant",
+            text: "A synthetic audio stream.",
+            audioDelivery: "interrupted",
+          }),
+        );
       } finally {
         await fixture.handle.stop();
       }

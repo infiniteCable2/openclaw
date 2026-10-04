@@ -205,6 +205,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return;
     }
     stopped = true;
+    markInterruptedTranscript();
     stopPromise = (async () => {
       for (const controller of activeTtsAborts) {
         controller.abort(new Error("Meeting audio output stopped"));
@@ -276,7 +277,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return false;
     }
     await params.transport.writeOutput(audio);
-    return isCurrent();
+    // A successful handoff remains a fact even when cancellation raced the
+    // asynchronous write. Callers record it before checking the generation.
+    return true;
   };
 
   const speechCancellation = createMeetingSpeechCancellation({
@@ -285,6 +288,20 @@ export async function startMeetingAgentRealtimeEngine(params: {
     activeTtsReaders,
     bargeInGate,
   });
+
+  const markInterruptedTranscript = () => {
+    // Never rewrite generated text. Record delivery uncertainty separately so
+    // the next consult does not assume the caller heard a cancelled sentence.
+    for (const entry of harness.transcript) {
+      if (entry.audioDelivery === "started") {
+        entry.audioDelivery = "interrupted";
+      }
+    }
+    const lastAssistant = harness.transcript.findLast((entry) => entry.role === "assistant");
+    if (lastAssistant?.audioDelivery === "submitted" && harness.isOutputPlaybackActive()) {
+      lastAssistant.audioDelivery = "interrupted";
+    }
+  };
 
   const createSpeechUtterance = (waitingTurn?: number): SpeechUtterance => ({
     generation: outputGeneration,
@@ -316,8 +333,6 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return;
     }
     utterance.chunks.push(normalized);
-    const transcriptEntry = harness.recordTranscript("assistant", normalized);
-    utterance.transcriptEntries.push(transcriptEntry);
     params.logger.info(
       formatMeetingTranscriptSummaryLog(
         params.platform.logScope,
@@ -393,6 +408,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
         let firstSegmentChunk = true;
         let firstUtteranceChunk = !utterance.playbackStarted;
         let bytesWritten = 0;
+        let transcriptEntry: RealtimeVoiceTranscriptEntry | undefined;
         const isCurrentPlayback = () =>
           isCurrentSpeechUtterance(utterance) && !controller.signal.aborted;
         try {
@@ -429,6 +445,14 @@ export async function startMeetingAgentRealtimeEngine(params: {
             if (!(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback))) {
               break;
             }
+            if (!transcriptEntry) {
+              transcriptEntry = harness.recordTranscript("assistant", normalized);
+              transcriptEntry.audioDelivery = "started";
+              utterance.transcriptEntries.push(transcriptEntry);
+            }
+            if (!isCurrentPlayback()) {
+              break;
+            }
             if (firstUtteranceChunk) {
               utterance.playbackStarted = true;
             }
@@ -445,7 +469,13 @@ export async function startMeetingAgentRealtimeEngine(params: {
           if (bytesWritten === 0 && isCurrentPlayback()) {
             throw new Error("TTS provider returned an empty audio stream");
           }
+          if (transcriptEntry) {
+            transcriptEntry.audioDelivery = isCurrentPlayback() ? "submitted" : "interrupted";
+          }
         } finally {
+          if (transcriptEntry?.audioDelivery === "started") {
+            transcriptEntry.audioDelivery = "interrupted";
+          }
           allowNextPreparation();
           activeTtsReaders.delete(reader);
           reader.releaseLock();
@@ -500,8 +530,13 @@ export async function startMeetingAgentRealtimeEngine(params: {
       if (!isCurrentSpeechUtterance(utterance) || utterance.failed) {
         return;
       }
+      // Only consolidate chunks that reached the sink, not a potentially
+      // different final model answer which was never synthesized.
+      const submittedText = utterance.transcriptEntries.map((entry) => entry.text).join(" ");
       removeProvisionalTranscriptEntries(utterance);
-      harness.recordTranscript("assistant", normalized);
+      if (submittedText) {
+        harness.recordTranscript("assistant", submittedText).audioDelivery = "submitted";
+      }
       params.logger.info(
         formatMeetingTranscriptSummaryLog(
           params.platform.logScope,
@@ -526,6 +561,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return;
     }
     outputGeneration += 1;
+    markInterruptedTranscript();
     utterance.finalized = true;
     if (utterance.waitingTurn !== undefined) {
       waiting.onTurnFinished(utterance.waitingTurn);
@@ -617,8 +653,20 @@ export async function startMeetingAgentRealtimeEngine(params: {
             if (currentWaitingTurn === waitingTurn) {
               currentWaitingTurn = undefined;
             }
+            if (utterance.generation !== outputGeneration) {
+              return { text: "" };
+            }
             throw error;
           });
+        if (utterance.generation !== outputGeneration) {
+          // Let write-capable work settle in the native serial consult queue,
+          // but never resurrect its old buffered speech after a confirmed turn.
+          waiting.onTurnFinished(waitingTurn);
+          if (currentWaitingTurn === waitingTurn) {
+            currentWaitingTurn = undefined;
+          }
+          return { ...result, text: "" };
+        }
         if (
           !result.text.trim() &&
           utterance.chunks.length === 0 &&
@@ -678,6 +726,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
           // Before the first output byte, only an accepted final transcript can
           // discard prepared speech. Delayed assistant echoes are not caller turns.
           outputGeneration += 1;
+          markInterruptedTranscript();
           if (!speechCancellation.cancelForConfirmedTurn()) {
             bargeInGate.release(context?.utteranceId);
           }
@@ -795,9 +844,13 @@ export async function startMeetingAgentRealtimeEngine(params: {
           payload: { meetingSessionId: params.meetingSessionId, text: greeting.text },
         });
         if (await writeOutputAudio(greeting.audio, true, isCurrent)) {
-          harness.recordTranscript("assistant", greeting.text);
-          harness.finishOutputAudio("completed");
-          harness.endTurn();
+          harness.recordTranscript("assistant", greeting.text).audioDelivery = isCurrent()
+            ? "submitted"
+            : "interrupted";
+          if (isCurrent()) {
+            harness.finishOutputAudio("completed");
+            harness.endTurn();
+          }
         }
       } finally {
         activeTtsAborts.delete(controller);

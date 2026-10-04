@@ -9,6 +9,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import type { RealtimeVoiceTool } from "./provider-types.js";
+import type { RealtimeVoiceTranscriptEntry } from "./session-log-runtime.js";
 
 /** Stable provider-facing tool name for realtime voice agent delegation. */
 export const REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME = "openclaw_agent_consult";
@@ -32,6 +33,7 @@ export type RealtimeVoiceAgentConsultArgs = {
 export type RealtimeVoiceAgentConsultTranscriptEntry = {
   role: "user" | "assistant";
   text: string;
+  audioDelivery?: RealtimeVoiceTranscriptEntry["audioDelivery"];
 };
 
 /** Shared realtime voice function-tool descriptor projected to providers. */
@@ -261,14 +263,25 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
   // Bound transcript context so long meetings do not crowd out the live request.
   const transcript = params.transcript
     .slice(-12)
-    .map(
-      (entry) => `${entry.role === "assistant" ? assistantLabel : params.userLabel}: ${entry.text}`,
-    )
+    .map((entry) => {
+      const delivery = entry.role === "assistant" ? entry.audioDelivery : undefined;
+      const note =
+        delivery === "interrupted"
+          ? " [audio interrupted; the user may not have heard this completely]"
+          : delivery === "started"
+            ? " [audio started; not yet fully submitted]"
+            : delivery === "submitted"
+              ? " [audio submitted; remote playout unconfirmed]"
+              : "";
+      return `${entry.role === "assistant" ? assistantLabel : params.userLabel}${note}: ${entry.text}`;
+    })
     .join("\n");
 
   return [
     `Live voice request from the ${questionSourceLabel} during ${params.surface}.`,
     "Act as the configured OpenClaw agent on behalf of this user. Use available tools when the request asks you to do work.",
+    "A later caller utterance does not by itself cancel an earlier request. Keep relevant earlier context and avoid repeating completed actions.",
+    "Generated assistant text and completed tool work are not proof that their spoken answer reached the caller; use voice transcript delivery markers.",
     params.commentaryEnabled
       ? "When finished, return a separate concise result the realtime voice agent should speak back."
       : "When finished, return only the concise result the realtime voice agent should speak back.",
