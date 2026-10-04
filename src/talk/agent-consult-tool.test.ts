@@ -80,6 +80,7 @@ describe("realtime voice agent consult tool", () => {
         "A later caller utterance does not by itself cancel an earlier request. Keep relevant earlier context and avoid repeating completed actions.",
         "Generated assistant text and completed tool work are not proof that their spoken answer reached the caller; use voice transcript delivery markers.",
         "When an earlier result was not spoken or its audio was interrupted, address its still-relevant unanswered parts along with the latest request. Reuse completed results; do not repeat completed actions. An explicit caller cancellation or correction takes precedence.",
+        "Speech-onset annotations associate a caller's addition with the request active when they began speaking, not when transcription finished. Unless explicitly corrected or cancelled, address both requests in their requested order using completed results; do not treat the addition as replacing the preceding request.",
         "When finished, return only the concise result the realtime voice agent should speak back.",
         "Do not include markdown, tool logs, or private reasoning. Include citations only when the spoken answer needs them.",
         "Recent voice transcript for context:\nParticipant: Can you check the repo?\nAgent: I'll verify.",
@@ -99,6 +100,35 @@ describe("realtime voice agent consult tool", () => {
 
     expect(prompt).toContain("When finished, return a separate concise result");
     expect(prompt).not.toContain("return only the concise result");
+  });
+
+  it("carries the onset association into the native prompt without replacing either request", () => {
+    const prompt = buildRealtimeVoiceAgentConsultPrompt({
+      args: { question: "And Dresden afterwards." },
+      transcript: [
+        { role: "assistant", text: "Berlin is sunny.", audioDelivery: "unplayed" },
+        {
+          role: "user",
+          text: "And Dresden afterwards.",
+          speechStart: {
+            at: "2026-01-01T12:00:00.000Z",
+            precedingRequest: "Weather in Berlin?",
+          },
+        },
+      ],
+      surface: "a live call",
+      userLabel: "Caller",
+    });
+    expect(prompt).toContain("speech began at 2026-01-01T12:00:00.000Z");
+    expect(prompt).toContain(
+      'preceding request was still being handled or spoken: "Weather in Berlin?"',
+    );
+    expect(prompt).toContain("transcript arrived later");
+    expect(prompt).toContain("this result has not been spoken to the user]: Berlin is sunny.");
+    expect(prompt).toContain(
+      "address both requests in their requested order using completed results",
+    );
+    expect(prompt).toContain("User request:\nAnd Dresden afterwards.");
   });
 
   it("preserves transcript text but distinguishes partial audio from remote playout", () => {

@@ -34,6 +34,7 @@ export type RealtimeVoiceAgentConsultTranscriptEntry = {
   role: "user" | "assistant";
   text: string;
   audioDelivery?: RealtimeVoiceTranscriptEntry["audioDelivery"];
+  speechStart?: RealtimeVoiceTranscriptEntry["speechStart"];
 };
 
 /** Shared realtime voice function-tool descriptor projected to providers. */
@@ -275,7 +276,11 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
               : delivery === "submitted"
                 ? " [audio submitted; remote playout unconfirmed]"
                 : "";
-      return `${entry.role === "assistant" ? assistantLabel : params.userLabel}${note}: ${entry.text}`;
+      const onset = entry.role === "user" ? entry.speechStart : undefined;
+      const onsetNote = onset?.precedingRequest
+        ? ` [speech began at ${onset.at} while the preceding request was still being handled or spoken: ${JSON.stringify(onset.precedingRequest)}; transcript arrived later]`
+        : "";
+      return `${entry.role === "assistant" ? assistantLabel : params.userLabel}${note}${onsetNote}: ${entry.text}`;
     })
     .join("\n");
 
@@ -285,6 +290,7 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
     "A later caller utterance does not by itself cancel an earlier request. Keep relevant earlier context and avoid repeating completed actions.",
     "Generated assistant text and completed tool work are not proof that their spoken answer reached the caller; use voice transcript delivery markers.",
     "When an earlier result was not spoken or its audio was interrupted, address its still-relevant unanswered parts along with the latest request. Reuse completed results; do not repeat completed actions. An explicit caller cancellation or correction takes precedence.",
+    "Speech-onset annotations associate a caller's addition with the request active when they began speaking, not when transcription finished. Unless explicitly corrected or cancelled, address both requests in their requested order using completed results; do not treat the addition as replacing the preceding request.",
     params.commentaryEnabled
       ? "When finished, return a separate concise result the realtime voice agent should speak back."
       : "When finished, return only the concise result the realtime voice agent should speak back.",

@@ -32,6 +32,7 @@ import {
   type MeetingRealtimeEngineConfig,
   type MeetingRuntimePlatform,
 } from "./realtime-engine.js";
+import { createMeetingInputOnset } from "./realtime-input-onset.js";
 import { createMeetingBargeInGate } from "./realtime-output-gate.js";
 import { createMeetingSpeechCancellation } from "./realtime-speech-cancellation.js";
 import { createMeetingWaitingAudioPlayback, prepareMeetingWaitingAudio } from "./waiting-audio.js";
@@ -86,8 +87,15 @@ export async function startMeetingAgentRealtimeEngine(params: {
         adoptedGeneration: number;
         unconfirmed: boolean;
         followupOnly: boolean;
+        question: string;
       }
     | undefined;
+  let responseQuestion: string | undefined;
+  const inputOnset = createMeetingInputOnset<{
+    consult: typeof activeConsult;
+    speechStart: NonNullable<RealtimeVoiceTranscriptEntry["speechStart"]>;
+    interruptedEntries: RealtimeVoiceTranscriptEntry[];
+  }>();
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
   const ttsAgentId = params.ttsContext?.agentId ?? params.config.realtime.agentId;
   const resolved = resolveMeetingRealtimeTranscriptionProvider({
@@ -148,6 +156,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       return;
     }
     stopped = true;
+    inputOnset.close();
     speechCancellation.markInterruptedTranscript();
     stopPromise = (async () => {
       for (const controller of activeTtsAborts) {
@@ -205,6 +214,11 @@ export async function startMeetingAgentRealtimeEngine(params: {
   });
 
   const writeOutputAudio = async (audio: Buffer, firstChunk: boolean, isCurrent: () => boolean) => {
+    // Do not start a new answer while an acoustic candidate is unresolved.
+    // Already playing speech still uses the existing reversible duck/pause gate.
+    if (firstChunk) {
+      await inputOnset.wait();
+    }
     if (!isCurrent()) {
       return false;
     }
@@ -369,6 +383,12 @@ export async function startMeetingAgentRealtimeEngine(params: {
               continue;
             }
             if (firstSegmentChunk) {
+              // A candidate can start in a gap with no active playback gate.
+              // Hold every newly starting segment, including later commentary.
+              await inputOnset.wait();
+              if (!isCurrentPlayback()) {
+                break;
+              }
               // A stream handle is not audible output. Keep the waiting loop
               // through synthesis and buffering, then drain before each segment resumes PCM.
               await waiting.stop();
@@ -455,7 +475,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
       final: true,
       payload: { meetingSessionId: params.meetingSessionId, text: normalized },
     });
-    ttsQueue = ttsQueue.then(() => {
+    ttsQueue = ttsQueue.then(async () => {
+      await inputOnset.wait();
       if (!isCurrentSpeechUtterance(utterance) || utterance.failed) {
         return;
       }
@@ -561,8 +582,10 @@ export async function startMeetingAgentRealtimeEngine(params: {
           adoptedGeneration: outputGeneration,
           unconfirmed: false,
           followupOnly: false,
+          question,
         };
         activeConsult = consult;
+        responseQuestion = question;
         let failure: { error: unknown } | undefined;
         const result = await params
           .consultAgent({
@@ -597,12 +620,15 @@ export async function startMeetingAgentRealtimeEngine(params: {
             failure = { error };
             return { text: "" };
           });
+        // The native run may finish while the caller is still speaking. Hold
+        // only its delivery/queue handoff, never the native run or tool effects.
         // Native steering confirmation may finish just after the run. Do not
         // release talkback or speak a result before every admitted input settles.
         while (true) {
+          await inputOnset.wait();
           const admissions = consult.admissions;
           await admissions;
-          if (admissions === consult.admissions) {
+          if (admissions === consult.admissions && !inputOnset.hasPending()) {
             break;
           }
         }
@@ -683,14 +709,45 @@ export async function startMeetingAgentRealtimeEngine(params: {
         greetingPending = false;
         currentWaitingTurn = undefined;
       },
-      onSpeechActivity: bargeInGate.onSpeechActivity,
+      onSpeechActivity: (event) => {
+        if (stopped) {
+          return;
+        }
+        if (event.state === "candidate") {
+          try {
+            inputOnset.begin(event.utteranceId, {
+              consult: activeConsult,
+              interruptedEntries: speechCancellation.captureInterruptedTranscript(),
+              speechStart: {
+                at: new Date().toISOString(),
+                precedingRequest:
+                  activeConsult?.question ??
+                  (activeTtsAborts.size + activeTtsReaders.size > 0 ||
+                  harness.isOutputPlaybackWindowActive()
+                    ? responseQuestion
+                    : undefined),
+              },
+            });
+          } catch {
+            stopAfterFailure("speech onset lifecycle");
+            return;
+          }
+        } else if (event.state === "rejected") {
+          inputOnset.settle(event.utteranceId);
+        }
+        bargeInGate.onSpeechActivity(event);
+      },
       onProcessing: (event) => {
         waiting.onProcessing(event);
         // A VAD confirmation can precede an empty decoder result. Keep the
         // output reversibly paused until a nonempty caller transcript arrives.
         bargeInGate.onProcessing(event);
+        if (["transcribed", "empty", "failed", "cancelled"].includes(event.state)) {
+          inputOnset.settle(event.utteranceId);
+        }
       },
       onTranscript: (text, context) => {
+        const onset = inputOnset.settle(context?.utteranceId);
         const trimmed = text.trim();
         if (!trimmed || stopped) {
           return;
@@ -701,6 +758,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
           // Before the first output byte, only an accepted final transcript can
           // discard prepared speech. Delayed assistant echoes are not caller turns.
           outputGeneration += 1;
+          if (onset) {
+            speechCancellation.markInterruptedTranscript(onset.interruptedEntries);
+          }
           speechCancellation.markInterruptedTranscript();
           if (!speechCancellation.cancelForConfirmedTurn()) {
             bargeInGate.release(context?.utteranceId);
@@ -723,7 +783,10 @@ export async function startMeetingAgentRealtimeEngine(params: {
           final: true,
           payload: { meetingSessionId: params.meetingSessionId, text: trimmed, role: "user" },
         });
-        harness.recordTranscript("user", trimmed);
+        const userEntry = harness.recordTranscript("user", trimmed);
+        if (onset && !assistantEcho) {
+          userEntry.speechStart = onset.speechStart;
+        }
         params.logger.info(
           formatMeetingTranscriptSummaryLog(
             params.platform.logScope,
@@ -741,8 +804,10 @@ export async function startMeetingAgentRealtimeEngine(params: {
           );
           return;
         }
-        const consult = activeConsult;
-        if (!consult) {
+        // A late transcript must not steer a different run that happened to
+        // start during STT. Only the exact onset owner may accept the addition.
+        const consult = onset ? onset.consult : activeConsult;
+        if (!consult || consult !== activeConsult) {
           harness.talkback?.enqueue(trimmed);
           return;
         }

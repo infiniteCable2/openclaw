@@ -50,6 +50,17 @@ If the active run cannot accept it, the input waits in the existing serial
 consult queue. Later inputs then use that queue too, preserving order.
 Uncertain adoption is reported rather than automatically replayed.
 
+When a transcription provider supplies keyed speech-activity events, the engine
+associates an addition with the request active at acoustic onset, not at final
+transcript arrival. While that candidate is unresolved, newly starting speech
+and the completed consult's delivery handoff wait; native model and tool work
+may finish normally. A confirmed transcript uses the original live run when it
+can still accept input, otherwise the existing consult queue receives it with
+the preceding result and onset context. A replacement run is never steered by
+an older onset. Rejected candidates, empty results, and echoes release the hold
+without discarding the answer. Session close releases all holds. Providers
+without keyed activity events retain transcript-time association.
+
 Only an interrupted run buffers its remaining speech until completion, then
 speaks the native completed answers, including answers to earlier inputs in
 that run. Uninterrupted sentence streaming is unchanged. No second planner or

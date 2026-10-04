@@ -1,4 +1,5 @@
 import type { RealtimeVoiceSessionHarness } from "../talk/realtime-session-harness.js";
+import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
 import type { createMeetingBargeInGate } from "./realtime-output-gate.js";
 
 /** A confirmed caller turn ends both queued output and any in-flight synthesis. */
@@ -8,18 +9,24 @@ export function createMeetingSpeechCancellation(params: {
   activeTtsReaders: Set<ReadableStreamDefaultReader<Uint8Array>>;
   bargeInGate: ReturnType<typeof createMeetingBargeInGate>;
 }) {
-  const markInterruptedTranscript = () => {
+  const captureInterruptedTranscript = () => {
     const harness = params.harness();
-    // Never rewrite generated text. Record delivery uncertainty separately so
-    // the next consult does not assume the caller heard a cancelled sentence.
-    for (const entry of harness.transcript) {
-      if (entry.audioDelivery === "started") {
-        entry.audioDelivery = "interrupted";
-      }
-    }
+    const entries = harness.transcript.filter((entry) => entry.audioDelivery === "started");
     const lastAssistant = harness.transcript.findLast((entry) => entry.role === "assistant");
     if (lastAssistant?.audioDelivery === "submitted" && harness.isOutputPlaybackActive()) {
-      lastAssistant.audioDelivery = "interrupted";
+      entries.push(lastAssistant);
+    }
+    return entries;
+  };
+  const markInterruptedTranscript = (
+    entries: RealtimeVoiceTranscriptEntry[] = captureInterruptedTranscript(),
+  ) => {
+    // Never rewrite generated text. Record delivery uncertainty separately so
+    // the next consult does not assume the caller heard a cancelled sentence.
+    for (const entry of entries) {
+      if (entry.audioDelivery === "started" || entry.audioDelivery === "submitted") {
+        entry.audioDelivery = "interrupted";
+      }
     }
   };
   const cancelActiveSpeech = () => {
@@ -51,5 +58,10 @@ export function createMeetingSpeechCancellation(params: {
     return true;
   };
 
-  return { cancelActiveSpeech, cancelForConfirmedTurn, markInterruptedTranscript };
+  return {
+    cancelActiveSpeech,
+    cancelForConfirmedTurn,
+    captureInterruptedTranscript,
+    markInterruptedTranscript,
+  };
 }

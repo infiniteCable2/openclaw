@@ -9,6 +9,8 @@ export type RealtimeVoiceTranscriptEntry = {
   text: string;
   /** Sink submission is not proof of remote playout; preserve that distinction. */
   audioDelivery?: "unplayed" | "started" | "submitted" | "interrupted";
+  /** Observed acoustic onset, separate from the later transcript arrival. */
+  speechStart?: { at: string; precedingRequest?: string };
 };
 
 /** Compact health snapshot exposed to diagnostics without dumping full transcript history. */
