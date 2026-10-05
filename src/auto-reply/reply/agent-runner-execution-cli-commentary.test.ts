@@ -402,7 +402,7 @@ describe("executeAgentTurn: CLI durable commentary", () => {
       }) => {
         expect(params.emitCommentaryText).toBe(true);
         expect(params.extraSystemPrompt).toContain(
-          "briefly tell the user what you are about to do before the first tool call",
+          "Do not start tool work silently: output one short, complete, user-facing sentence first",
         );
         const agentEvents = await import("../../infra/agent-events.js");
         agentEvents.emitAgentEvent({

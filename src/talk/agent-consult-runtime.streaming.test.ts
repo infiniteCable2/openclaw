@@ -322,7 +322,10 @@ describe("realtime voice agent consult speech delivery", () => {
     const call = requireEmbeddedAgentCall(runEmbeddedAgent);
     expect(call.deliverCommentaryBlocks).toBe(true);
     expect(call.extraSystemPrompt).toContain(
-      "briefly tell the user what you are about to do before the first tool call",
+      "Do not start tool work silently: output one short, complete, user-facing sentence first",
+    );
+    expect(call.extraSystemPrompt).toContain(
+      "After a tool fails, your approach changes, or a meaningful stage finishes",
     );
     expect(call.prompt).toContain("return a separate concise result");
     expect(result).toEqual({ text: "The answer is ready.", delivered: true });
@@ -330,6 +333,41 @@ describe("realtime voice agent consult speech delivery", () => {
       { type: "chunk", text: "I am checking now." },
       { type: "chunk", text: "The answer is ready." },
       { type: "done", text: "The answer is ready." },
+    ]);
+  });
+
+  it("speaks ordinary pre-tool text before the separate final answer", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
+      await runParams?.onBlockReply?.({ text: "Ich prüfe das kurz." });
+      await runParams?.onBlockReply?.({ text: "Die Prüfung ist abgeschlossen." });
+      return { payloads: [{ text: "Die Prüfung ist abgeschlossen." }], meta: {} };
+    });
+    const onSpeakableText = vi.fn(
+      async (_event: RealtimeVoiceAgentConsultSpeechEvent) => undefined,
+    );
+
+    const result = await consultRealtimeVoiceAgent({
+      cfg: {} as never,
+      agentRuntime: runtime as never,
+      logger: { warn: vi.fn() },
+      sessionKey: "voice:ordinary-commentary",
+      messageProvider: "matrix",
+      lane: "matrix",
+      runIdPrefix: "voice-realtime-consult:ordinary-commentary",
+      args: { question: "Prüfe das." },
+      transcript: [],
+      surface: "a live voice session",
+      userLabel: "User",
+      speakCommentary: true,
+      onSpeakableText,
+    });
+
+    expect(result).toEqual({ text: "Die Prüfung ist abgeschlossen.", delivered: true });
+    expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
+      { type: "chunk", text: "Ich prüfe das kurz." },
+      { type: "chunk", text: "Die Prüfung ist abgeschlossen." },
+      { type: "done", text: "Die Prüfung ist abgeschlossen." },
     ]);
   });
 
