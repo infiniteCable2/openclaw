@@ -3,7 +3,7 @@ import type { Result } from "@openclaw/normalization-core/result";
 import { formatErrorMessage } from "../infra/errors.js";
 import { finishCapabilityOperation } from "../plugins/capability-provider-acquisition.js";
 import type { SpeechSynthesisStreamResult } from "./provider-types.js";
-import { throwTtsProjectionError } from "./tts-error-helpers.js";
+import { throwTtsProjectionError } from "./tts-synthesis-support.js";
 
 type SpeechWorkOwner = {
   run: <T>(operation: () => T | Promise<T>) => Promise<T>;

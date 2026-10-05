@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
 import type { Result } from "@openclaw/normalization-core/result";
 import { normalizeOptionalString as readTtsResultString } from "@openclaw/normalization-core/string-coerce";
 import { createRuntimeConfigReader } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig, ResolvedTtsPersona, TtsProvider } from "../config/types.js";
 import { logVerbose } from "../globals.js";
+import { formatErrorMessage } from "../infra/errors.js";
+import { redactSensitiveText } from "../logging/redact.js";
 import {
   acquirePluginCapabilityProviders,
   finishCapabilityOperation,
@@ -14,13 +15,6 @@ import {
   normalizeSpeechProviderId,
 } from "./provider-registry-core.js";
 import type { SpeechProviderConfig, SpeechProviderOverrides } from "./provider-types.js";
-import { reportVoiceNoteTtsPhase } from "./tts-diagnostics.js";
-import {
-  formatTtsProviderError,
-  isTtsTimeoutError,
-  sanitizeTtsErrorForLog,
-  throwTtsProjectionError,
-} from "./tts-error-helpers.js";
 import { acquireSpeechProviderLocalService } from "./tts-local-service.js";
 import {
   getResolvedSpeechProviderConfigForVoiceModel,
@@ -43,6 +37,42 @@ import {
   type ResolvedTtsConfig,
 } from "./tts-settings.js";
 import type { VoiceModelRef, VoiceProviderCandidate } from "./voice-models.js";
+
+// The transport names its abort "TimeoutError" (fetch-timeout.ts) and provider
+// deadlines throw plain Errors ending in "timed out"; AbortError alone misses both.
+function isTtsTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  return (
+    err.name === "AbortError" || err.name === "TimeoutError" || /\btimed out\b/iu.test(err.message)
+  );
+}
+
+export function formatTtsProviderError(provider: TtsProvider, err: unknown): string {
+  const error = err instanceof Error ? err : new Error(String(err));
+  if (isTtsTimeoutError(error)) {
+    return `${provider}: request timed out`;
+  }
+  return `${provider}: ${redactSensitiveText(error.message)}`;
+}
+
+export function sanitizeTtsErrorForLog(err: unknown): string {
+  const raw = formatErrorMessage(err);
+  return redactSensitiveText(raw).replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+}
+
+/** Projection diagnostics remain primary when releasing an already-created synthesis also fails. */
+export async function throwTtsProjectionError(
+  error: unknown,
+  cleanup: () => void | Promise<void>,
+): Promise<never> {
+  const [result] = await Promise.allSettled([Promise.resolve().then(cleanup)]);
+  if (result.status === "rejected") {
+    throw new AggregateError([error, result.reason], formatErrorMessage(error), { cause: error });
+  }
+  throw error;
+}
 
 function buildTtsFailureResult(
   errors: string[],
@@ -389,7 +419,6 @@ type TtsProviderOperation<TSynthesis> =
         cfg: OpenClawConfig;
         target: "audio-file" | "voice-note" | "telephony";
         timeoutMs: number;
-        requestId?: string;
         retainLocalService: <T>(synthesis: T) => T;
       }) => Promise<TSynthesis>;
       cleanupFailedProjection?: (synthesis: TSynthesis) => Promise<void>;
@@ -421,7 +450,6 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   timeoutMs?: number;
   signal?: AbortSignal;
   target: "audio-file" | "voice-note" | "telephony";
-  diagnosticOperationId?: string;
   logLabel: string;
   requireTelephony?: boolean;
   requireStreamingTelephony?: boolean;
@@ -438,8 +466,6 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   const attemptedProviders: string[] = [];
   const attempts: TtsProviderAttempt[] = [];
   const primaryProvider = providers[0]?.provider;
-  const operationId =
-    params.target === "voice-note" ? (params.diagnosticOperationId ?? randomUUID()) : undefined;
   logVerbose(
     `${params.logLabel}: starting with provider ${primaryProvider}, fallbacks: ${
       providers
@@ -451,19 +477,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
 
   for (const { provider, voiceModel } of providers) {
     attemptedProviders.push(provider);
-    const requestId = operationId ? randomUUID() : undefined;
     const providerStart = Date.now();
-    const diagnosticStart = performance.now();
-    const reportVoiceNotePhase = (phase: string) =>
-      reportVoiceNoteTtsPhase(
-        operationId,
-        phase,
-        diagnosticStart,
-        requestId,
-        attemptedProviders.length,
-      );
-    let diagnosticPhase = "resolve_provider";
-    reportVoiceNotePhase("attempt_start");
     try {
       const providerRegistry = await params.prepareProviderRegistry();
       const resolvedProvider = resolveReadySpeechProvider({
@@ -477,7 +491,6 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         providerRegistry,
       });
       if (resolvedProvider.kind === "skip") {
-        reportVoiceNotePhase(`skipped_${resolvedProvider.reasonCode}`);
         errors.push(resolvedProvider.message);
         attempts.push({
           provider,
@@ -497,7 +510,6 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
 
       const operation = params.selectOperation({ provider, resolvedProvider });
       if (operation.kind === "skip") {
-        reportVoiceNotePhase(`skipped_${operation.reasonCode}`);
         errors.push(operation.message);
         attempts.push({
           provider,
@@ -516,14 +528,11 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         config,
         provider: resolvedProvider.provider,
       });
-      diagnosticPhase = "acquire_service";
-      reportVoiceNotePhase("acquire_service_start");
       const localServiceLease = await acquireSpeechProviderLocalService({
         providerId: resolvedProvider.provider.id,
         providerConfig: resolvedProvider.localServiceProviderConfig,
         signal: params.signal,
       });
-      reportVoiceNotePhase("acquire_service_done");
       let localServiceLeaseTransferred = false;
       let localServiceLeaseRetained = false;
       let localServiceLeaseReleased = false;
@@ -535,8 +544,6 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
       };
       try {
         const providerOverrides = params.providerOverrides?.[resolvedProvider.provider.id];
-        diagnosticPhase = "prepare_synthesis";
-        reportVoiceNotePhase("prepare_synthesis_start");
         const prepared =
           params.prepareSynthesis === false
             ? {
@@ -555,15 +562,11 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
                 target: params.target,
                 timeoutMs,
               });
-        reportVoiceNotePhase("prepare_synthesis_done");
-        diagnosticPhase = "synthesize";
-        reportVoiceNotePhase("synthesize_start");
         const synthesis = await operation.synthesize({
           prepared,
           cfg,
           target: params.target,
           timeoutMs,
-          requestId,
           retainLocalService: (value) => {
             if (!localServiceLease) {
               return value;
@@ -575,7 +578,6 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
             return retained;
           },
         });
-        reportVoiceNotePhase("synthesize_done");
         try {
           const latencyMs = Date.now() - providerStart;
           attempts.push({
@@ -616,7 +618,6 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         }
       }
     } catch (err) {
-      reportVoiceNotePhase(`${diagnosticPhase}_${isTtsTimeoutError(err) ? "timeout" : "failed"}`);
       const errorMsg = formatTtsProviderError(provider, err);
       const latencyMs = Date.now() - providerStart;
       errors.push(errorMsg);

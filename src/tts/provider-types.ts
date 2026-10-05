@@ -56,8 +56,6 @@ export type SpeechSynthesisRequest = {
   cfg: OpenClawConfig;
   providerConfig: SpeechProviderConfig;
   target: SpeechSynthesisTarget;
-  /** Optional host-generated UUIDv4 for correlating a buffered request without media contents. */
-  requestId?: string;
   providerOverrides?: SpeechProviderOverrides;
   timeoutMs: number;
 };
