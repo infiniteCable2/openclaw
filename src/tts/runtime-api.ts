@@ -3,9 +3,9 @@
 import type { TtsProvider } from "../config/types.js";
 import { parseTtsDirectives } from "./directives.js";
 import { summarizeText } from "./tts-core.js";
+import { formatTtsProviderError, sanitizeTtsErrorForLog } from "./tts-error-helpers.js";
 import { getResolvedSpeechProviderConfig, resolveTtsProvider } from "./tts-provider-resolution.js";
 import { resolveModelOverridePolicy, type ResolvedTtsConfig } from "./tts-settings.js";
-import { formatTtsProviderError, sanitizeTtsErrorForLog } from "./tts-synthesis-support.js";
 import {
   resolveTtsSynthesisTarget,
   shouldDeliverTtsAsVoice,

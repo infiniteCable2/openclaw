@@ -469,4 +469,60 @@ describe("TTS runtime voice model and streaming behavior", () => {
     );
     await result.release?.();
   });
+
+  it.each(["Local media request deadline exceeded", "Local media TTS failed with HTTP 408"])(
+    "classifies local voice-note deadline failures as timeouts: %s",
+    async (message) => {
+      installSpeechProviders([
+        createMockSpeechProvider("local-media", {
+          synthesize: vi.fn(async () => {
+            throw new Error(message);
+          }),
+        }),
+      ]);
+
+      const result = await synthesizeSpeech({
+        text: "Short synthetic reply",
+        cfg: {
+          tts: {
+            enabled: true,
+            provider: "local-media",
+            prefsPath: "/tmp/openclaw-local-voice-note-deadline-test.json",
+          },
+        } as OpenClawConfig,
+        channel: "matrix",
+        disableFallback: true,
+      });
+
+      expect(result.success).toBe(false);
+      expect(requireAttempt(result.attempts, 0)).toMatchObject({
+        provider: "local-media",
+        outcome: "failed",
+        reasonCode: "timeout",
+        error: "local-media: request timed out",
+      });
+    },
+  );
+
+  it("passes a content-free request ID to a voice-note provider", async () => {
+    installSpeechProviders([createMockSpeechProvider("local-media")]);
+
+    const result = await synthesizeSpeech({
+      text: "Short synthetic reply",
+      cfg: {
+        tts: {
+          enabled: true,
+          provider: "local-media",
+          prefsPath: "/tmp/openclaw-local-voice-note-request-id-test.json",
+        },
+      } as OpenClawConfig,
+      channel: "matrix",
+      disableFallback: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(requireFirstSynthesisRequest("voice-note request ID").requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
+    );
+  });
 });

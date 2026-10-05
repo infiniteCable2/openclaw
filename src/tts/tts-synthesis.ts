@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { resolveChannelTtsVoiceDelivery } from "../channels/plugins/tts-capabilities.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { logVerbose } from "../globals.js";
@@ -6,12 +7,10 @@ import { assertSecretOwnerAvailable } from "../secrets/runtime-degraded-state.js
 import type { TtsDirectiveOverrides } from "./provider-types.js";
 import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
 import { normalizeSpeechText } from "./speech-text.js";
+import { reportVoiceNoteTtsPhase } from "./tts-diagnostics.js";
+import { sanitizeTtsErrorForLog } from "./tts-error-helpers.js";
 import type { TtsResult, TtsSynthesisResult } from "./tts-runtime-types.js";
-import {
-  executeTtsProviderAttempts,
-  sanitizeTtsErrorForLog,
-  withOwnedTtsRequest,
-} from "./tts-synthesis-support.js";
+import { executeTtsProviderAttempts, withOwnedTtsRequest } from "./tts-synthesis-support.js";
 
 export type TtsAudioPersistence = (params: {
   audioBuffer: Buffer;
@@ -83,8 +82,20 @@ export async function textToSpeechCore(
   params: SpeechSynthesisParams,
   persistTtsAudio: TtsAudioPersistence,
 ): Promise<TtsResult> {
-  const synthesis = await synthesizeSpeech(params);
+  const operationId =
+    resolveTtsSynthesisTarget(params.channel) === "voice-note" ? randomUUID() : undefined;
+  const startedAt = performance.now();
+  reportVoiceNoteTtsPhase(operationId, "core_start", startedAt);
+  let synthesis: TtsSynthesisResult;
+  try {
+    synthesis = await synthesizeSpeech({ ...params, diagnosticOperationId: operationId });
+  } catch (error) {
+    reportVoiceNoteTtsPhase(operationId, "synthesis_threw", startedAt);
+    throw error;
+  }
+  reportVoiceNoteTtsPhase(operationId, "synthesis_returned", startedAt);
   if (!synthesis.success || !synthesis.audioBuffer || !synthesis.fileExtension) {
+    reportVoiceNoteTtsPhase(operationId, "synthesis_failed", startedAt);
     return {
       success: false,
       error: synthesis.error ?? "TTS conversion failed",
@@ -97,6 +108,7 @@ export async function textToSpeechCore(
   let audioBuffer = synthesis.audioBuffer;
   let fileExtension = synthesis.fileExtension;
   let outputFormat = synthesis.outputFormat;
+  reportVoiceNoteTtsPhase(operationId, "transcode_start", startedAt);
   const transcoded = await maybePreTranscodeForVoiceDelivery({
     channel: params.channel,
     target: synthesis.target,
@@ -104,6 +116,7 @@ export async function textToSpeechCore(
     fileExtension,
     outputFormat,
   });
+  reportVoiceNoteTtsPhase(operationId, "transcode_done", startedAt);
   if (transcoded) {
     audioBuffer = transcoded.audioBuffer;
     fileExtension = transcoded.fileExtension;
@@ -112,13 +125,16 @@ export async function textToSpeechCore(
 
   let audioPath: string;
   try {
+    reportVoiceNoteTtsPhase(operationId, "persist_start", startedAt);
     audioPath = await persistTtsAudio({
       audioBuffer,
       cfg: params.cfg,
       fileExtension,
       outputFormat,
     });
+    reportVoiceNoteTtsPhase(operationId, "persist_done", startedAt);
   } catch (err) {
+    reportVoiceNoteTtsPhase(operationId, "persist_failed", startedAt);
     logVerbose(`TTS: audio persistence failed: ${sanitizeTtsErrorForLog(err)}`);
     return {
       success: false,
@@ -132,6 +148,7 @@ export async function textToSpeechCore(
     };
   }
 
+  reportVoiceNoteTtsPhase(operationId, "core_complete", startedAt);
   return {
     success: true,
     audioPath,
@@ -205,6 +222,7 @@ type SpeechSynthesisParams = {
   timeoutMs?: number;
   agentId?: string;
   accountId?: string;
+  diagnosticOperationId?: string;
 };
 
 export async function synthesizeSpeech(params: SpeechSynthesisParams): Promise<TtsSynthesisResult> {
@@ -223,57 +241,76 @@ export async function synthesizeTalkSpeech(
 async function synthesizeSpeechInternal(
   params: SpeechSynthesisParams,
 ): Promise<TtsSynthesisResult> {
-  return await withOwnedTtsRequest(
-    {
-      text: params.text,
-      cfg: params.cfg,
-      prefsPath: params.prefsPath,
-      providerOverride: params.overrides?.provider,
-      disableFallback: params.disableFallback,
-      agentId: params.agentId,
-      channelId: params.channel,
-      accountId: params.accountId,
-    },
-    async (setup) => {
-      if ("error" in setup) {
-        return { success: false, error: setup.error };
-      }
+  const target = resolveTtsSynthesisTarget(params.channel);
+  const operationId =
+    target === "voice-note" ? (params.diagnosticOperationId ?? randomUUID()) : undefined;
+  const startedAt = performance.now();
+  reportVoiceNoteTtsPhase(operationId, "request_acquire_start", startedAt);
+  try {
+    return await withOwnedTtsRequest(
+      {
+        text: params.text,
+        cfg: params.cfg,
+        prefsPath: params.prefsPath,
+        providerOverride: params.overrides?.provider,
+        disableFallback: params.disableFallback,
+        agentId: params.agentId,
+        channelId: params.channel,
+        accountId: params.accountId,
+      },
+      async (setup) => {
+        reportVoiceNoteTtsPhase(operationId, "request_acquire_done", startedAt);
+        if ("error" in setup) {
+          reportVoiceNoteTtsPhase(operationId, "request_unavailable", startedAt);
+          return { success: false, error: setup.error };
+        }
 
-      const { cfg, config, persona, providers } = setup;
-      const target = resolveTtsSynthesisTarget(params.channel);
-      return await executeTtsProviderAttempts({
-        cfg,
-        config,
-        persona,
-        providers,
-        synthesisText: normalizeSpeechText(params.text),
-        providerOverrides: params.overrides?.providerOverrides,
-        timeoutMs: params.timeoutMs,
-        target,
-        logLabel: "TTS",
-        prepareProviderRegistry: setup.prepareProviderRegistry,
-        selectOperation: ({ resolvedProvider }) => ({
-          kind: "ready",
-          synthesize: ({ prepared, cfg: runtimeCfg, target: synthesisTarget, timeoutMs }) =>
-            resolvedProvider.provider.synthesize({
-              text: prepared.text,
-              cfg: runtimeCfg,
-              providerConfig: prepared.providerConfig,
-              target: synthesisTarget,
-              providerOverrides: prepared.providerOverrides,
-              timeoutMs,
-            }),
-        }),
-        buildSuccess: ({ synthesis, ...metadata }) => ({
-          success: true,
-          ...metadata,
-          audioBuffer: synthesis.audioBuffer,
-          outputFormat: synthesis.outputFormat,
-          voiceCompatible: synthesis.voiceCompatible,
-          fileExtension: synthesis.fileExtension,
+        const { cfg, config, persona, providers } = setup;
+        return await executeTtsProviderAttempts({
+          cfg,
+          config,
+          persona,
+          providers,
+          synthesisText: normalizeSpeechText(params.text),
+          providerOverrides: params.overrides?.providerOverrides,
+          timeoutMs: params.timeoutMs,
           target,
-        }),
-      });
-    },
-  );
+          diagnosticOperationId: operationId,
+          logLabel: "TTS",
+          prepareProviderRegistry: setup.prepareProviderRegistry,
+          selectOperation: ({ resolvedProvider }) => ({
+            kind: "ready",
+            synthesize: ({
+              prepared,
+              cfg: runtimeCfg,
+              target: synthesisTarget,
+              timeoutMs,
+              requestId,
+            }) =>
+              resolvedProvider.provider.synthesize({
+                text: prepared.text,
+                cfg: runtimeCfg,
+                providerConfig: prepared.providerConfig,
+                target: synthesisTarget,
+                requestId,
+                providerOverrides: prepared.providerOverrides,
+                timeoutMs,
+              }),
+          }),
+          buildSuccess: ({ synthesis, ...metadata }) => ({
+            success: true,
+            ...metadata,
+            audioBuffer: synthesis.audioBuffer,
+            outputFormat: synthesis.outputFormat,
+            voiceCompatible: synthesis.voiceCompatible,
+            fileExtension: synthesis.fileExtension,
+            target,
+          }),
+        });
+      },
+    );
+  } catch (error) {
+    reportVoiceNoteTtsPhase(operationId, "request_failed", startedAt);
+    throw error;
+  }
 }
