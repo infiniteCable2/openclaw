@@ -227,9 +227,11 @@ ambiguous tool selectors instead of calling the wrong tool. Nest target
 arguments under `args` when a target field matches another cataloged tool.
 
 The structured control's model-facing text includes only the tool's `id`,
-`name`, and `source` alongside the unchanged target `result`; it does not repeat
-the description and input signature. Its structured `details` retain the full
-call envelope for runtime consumers. Use `tool_describe` for full tool metadata.
+`name`, and `source` alongside the target `result`; it does not repeat the
+description and input signature. Image content is represented there by a small
+placeholder and forwarded as a native image block, not serialized as base64
+text. Its structured `details` retain the full, unchanged call envelope for
+runtime consumers. Use `tool_describe` for full tool metadata.
 
 ```js
 await openclaw.tools.call(calendarCreate.id, {

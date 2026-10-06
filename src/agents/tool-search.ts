@@ -417,14 +417,29 @@ export function createToolSearchTools(ctx: ToolSearchToolContext): AnyAgentTool[
             onUpdate,
           });
           const { id, name, source } = callResult.tool;
+          const images = callResult.result.content.filter((block) => block.type === "image");
+          const modelResult =
+            images.length === 0
+              ? callResult.result
+              : {
+                  ...callResult.result,
+                  content: callResult.result.content.map((block) =>
+                    block.type === "image"
+                      ? { type: "image", mimeType: block.mimeType, forwardedAsImageBlock: true }
+                      : block,
+                  ),
+                };
           // Invocation results need identity, not another copy of the discovery metadata.
-          // Keep full metadata in details for callers and the unchanged target result on both surfaces.
+          // Preserve the full result in details, but forward image data as native blocks instead
+          // of serializing base64 into the model-facing JSON envelope.
+          const rendered = formatToolSearchControlResult(
+            { tool: { id, name, source }, result: modelResult },
+            runtime,
+            { parentToolCallId: toolCallId },
+          );
           const wrappedResult = {
-            ...formatToolSearchControlResult(
-              { tool: { id, name, source }, result: callResult.result },
-              runtime,
-              { parentToolCallId: toolCallId },
-            ),
+            ...rendered,
+            ...(images.length > 0 ? { content: [...rendered.content, ...images] } : {}),
             details: callResult,
           };
           const failureKind = resolveToolResultFailureKind(callResult.result);
