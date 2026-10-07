@@ -10,6 +10,10 @@ import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.j
 const NODE_OUTPUT_GENERATION_CAPABILITY = Symbol.for(
   "openclaw.internal.meeting-node-output-generation.v1",
 );
+// Bound one node RPC to at most 500 ms of 24-kHz mono PCM. Small writes keep
+// device-side playout backpressure below the invoke timeout and let a fenced
+// clear preempt a long TTS segment without queueing its remaining audio.
+const MAX_NODE_OUTPUT_CHUNK_BYTES = 24_000;
 
 export function createNodeMeetingRealtimeAudioTransport(params: {
   runtime: PluginRuntime;
@@ -151,23 +155,33 @@ export function createNodeMeetingRealtimeAudioTransport(params: {
         return;
       }
       const generation = outputGeneration;
-      outputLoopbackVerifier.recordOutput(audio);
       try {
         await runOutputCommand(async () => {
-          if (stopped) {
-            return;
+          for (let offset = 0; offset < audio.byteLength; offset += MAX_NODE_OUTPUT_CHUNK_BYTES) {
+            if (stopped || (outputGenerationSupported && generation !== outputGeneration)) {
+              return;
+            }
+            const chunk = audio.subarray(offset, offset + MAX_NODE_OUTPUT_CHUNK_BYTES);
+            const response = await params.runtime.nodes.invoke({
+              nodeId: params.nodeId,
+              command: params.commandName,
+              params: {
+                action: "pushAudio",
+                bridgeId: params.bridgeId,
+                base64: chunk.toString("base64"),
+                ...(outputGenerationSupported ? { outputGeneration: generation } : {}),
+              },
+              timeoutMs: 5_000,
+            });
+            if (stopped || (outputGenerationSupported && generation !== outputGeneration)) {
+              return;
+            }
+            const responseRecord = asOptionalRecord(response);
+            if (responseRecord?.dropped === true || responseRecord?.stale === true) {
+              throw new Error("node rejected current audio output generation");
+            }
+            outputLoopbackVerifier.recordOutput(chunk);
           }
-          await params.runtime.nodes.invoke({
-            nodeId: params.nodeId,
-            command: params.commandName,
-            params: {
-              action: "pushAudio",
-              bridgeId: params.bridgeId,
-              base64: audio.toString("base64"),
-              ...(outputGenerationSupported ? { outputGeneration: generation } : {}),
-            },
-            timeoutMs: 5_000,
-          });
         });
       } catch (error) {
         if (!stopped && generation === outputGeneration) {

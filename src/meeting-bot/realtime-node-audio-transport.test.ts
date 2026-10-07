@@ -188,6 +188,61 @@ describe("node meeting realtime audio transport", () => {
     await transport.stop();
   });
 
+  it("sends long PCM output in bounded node RPCs", async () => {
+    const invoke = vi.fn(async () => ({ ok: true }));
+    const transport = createTransport(invoke, { initialOutputGeneration: 1 });
+
+    await transport.writeOutput(Buffer.alloc(60_000));
+
+    const pushes = invoke.mock.calls.filter(([call]) => call.params.action === "pushAudio");
+    expect(pushes).toHaveLength(3);
+    expect(pushes.map(([call]) => Buffer.from(call.params.base64, "base64").byteLength)).toEqual([
+      24_000, 24_000, 12_000,
+    ]);
+    await transport.stop();
+  });
+
+  it("does not submit later chunks after a fenced clear", async () => {
+    let releasePush: (() => void) | undefined;
+    const invoke = vi.fn(async ({ params }: { params: { action: string } }) => {
+      if (params.action === "pushAudio") {
+        await new Promise<void>((resolve) => {
+          releasePush = resolve;
+        });
+      }
+      return { ok: true };
+    });
+    const transport = createTransport(invoke, { initialOutputGeneration: 1 });
+
+    const pushing = transport.writeOutput(Buffer.alloc(60_000));
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledTimes(1);
+    });
+    await transport.clearOutput();
+    releasePush?.();
+    await pushing;
+
+    expect(invoke.mock.calls.filter(([call]) => call.params.action === "pushAudio")).toHaveLength(
+      1,
+    );
+    await transport.stop();
+  });
+
+  it("fails a current-generation output that the node explicitly dropped", async () => {
+    const invoke = vi.fn(async ({ params }: { params: { action: string } }) =>
+      params.action === "pushAudio" ? { dropped: true } : { ok: true },
+    );
+    const transport = createTransport(invoke, { initialOutputGeneration: 1 });
+
+    await expect(transport.writeOutput(Buffer.alloc(48_000))).rejects.toThrow(
+      "node rejected current audio output generation",
+    );
+    expect(invoke.mock.calls.filter(([call]) => call.params.action === "pushAudio")).toHaveLength(
+      1,
+    );
+    await transport.stop();
+  });
+
   it("serializes output commands for legacy node hosts", async () => {
     let releasePush: (() => void) | undefined;
     const invoke = vi.fn(async ({ params }: { params: { action: string } }) => {
