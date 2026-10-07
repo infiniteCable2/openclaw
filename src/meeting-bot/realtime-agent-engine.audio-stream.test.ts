@@ -25,6 +25,7 @@ async function createAudioStreamFixture(params: {
   outputFormat: string;
   audioFormat?: MeetingRealtimeAudioFormat;
   consultAgent?: Parameters<typeof startMeetingAgentRealtimeEngine>[0]["consultAgent"];
+  onActivity?: Parameters<typeof startMeetingAgentRealtimeEngine>[0]["onActivity"];
 }) {
   const controllerReady = createDeferred<ReadableStreamDefaultController<Uint8Array>>();
   const firstRead = createDeferred();
@@ -107,6 +108,7 @@ async function createAudioStreamFixture(params: {
     providers: [provider],
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     consultAgent: params.consultAgent ?? (async () => ({ text: "unused" })),
+    onActivity: params.onActivity,
   });
   handle.speak("A synthetic audio stream.");
   const controller = await controllerReady.promise;
@@ -242,7 +244,8 @@ describe("meeting TTS stream conversion", () => {
   ] as const)(
     "preserves complete audio across $chunkBytes-byte $outputFormat chunks at $sampleRate Hz to $audioFormat",
     async (params) => {
-      const fixture = await createAudioStreamFixture(params);
+      const onActivity = vi.fn();
+      const fixture = await createAudioStreamFixture({ ...params, onActivity });
       const pcm = createPcm(params.sampleRate);
       const source = params.outputFormat === "mulaw" ? pcmToMulaw(pcm) : pcm;
       const expected = convertMeetingTtsAudioForBridge(
@@ -264,6 +267,10 @@ describe("meeting TTS stream conversion", () => {
           expect(writes.every((audio) => audio.length % 2 === 0)).toBe(true);
         }
         expect(fixture.beginOutput).toHaveBeenCalledOnce();
+        expect(onActivity).toHaveBeenCalledWith("speaking");
+        expect(onActivity.mock.calls.filter(([activity]) => activity === "speaking")).toHaveLength(
+          1,
+        );
       } finally {
         await fixture.handle.stop();
       }

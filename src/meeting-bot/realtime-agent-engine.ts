@@ -56,6 +56,8 @@ export async function startMeetingAgentRealtimeEngine(params: {
   providers?: RealtimeTranscriptionProviderPlugin[];
   consultAgent: (params: MeetingAgentConsultParams) => Promise<RealtimeVoiceAgentConsultResult>;
   initialGreeting?: PreparedMeetingAgentGreeting;
+  /** Optional device presentation hint; never changes turn or media ownership. */
+  onActivity?: (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => void;
 }): Promise<MeetingRealtimeAudioEngineHandle> {
   type SpeechUtterance = {
     generation: number;
@@ -396,6 +398,9 @@ export async function startMeetingAgentRealtimeEngine(params: {
               utterance.playbackStarted = true;
             }
             if (firstSegmentChunk) {
+              params.onActivity?.("speaking");
+            }
+            if (firstSegmentChunk) {
               allowNextPreparation();
             }
             firstSegmentChunk = false;
@@ -417,6 +422,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
           }
           allowNextPreparation();
           activeTtsReaders.delete(reader);
+          params.onActivity?.(currentWaitingTurn === undefined ? "listening" : "processing");
           reader.releaseLock();
           if (utterance.waitingTurn !== undefined) {
             waiting.onOutputIdle(utterance.waitingTurn);
@@ -486,6 +492,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       );
       harness.finishOutputAudio("completed");
       harness.endTurn();
+      params.onActivity?.("listening");
       utterance.finalized = true;
       if (utterance.waitingTurn !== undefined) {
         waiting.onTurnFinished(utterance.waitingTurn);
@@ -513,6 +520,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
     speechCancellation.cancelActiveSpeech();
     harness.finishOutputAudio("cancelled");
     harness.endTurn("cancelled");
+    params.onActivity?.("listening");
   };
 
   const enqueueSpeakText = (text: string | undefined) => {
@@ -564,6 +572,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       responseStyle: "Brief, natural spoken answer for a live meeting.",
       fallbackText: "I hit an error while checking that. Please try again.",
       consult: async ({ question, responseStyle, signal }) => {
+        params.onActivity?.("processing");
         const waitingTurn = waiting.onTurnStarted();
         currentWaitingTurn = waitingTurn;
         const utterance = createSpeechUtterance(waitingTurn);
@@ -701,6 +710,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
           return;
         }
         if (event.state === "candidate") {
+          params.onActivity?.("sensing");
           try {
             inputOnset.begin(event.utteranceId, {
               consult: activeConsult,
@@ -720,11 +730,21 @@ export async function startMeetingAgentRealtimeEngine(params: {
             return;
           }
         } else if (event.state === "rejected") {
+          params.onActivity?.("listening");
           inputOnset.settle(event.utteranceId);
         }
         bargeInGate.onSpeechActivity(event);
       },
       onProcessing: (event) => {
+        if (event.state === "started") {
+          params.onActivity?.("processing");
+        } else if (event.state === "speech-confirmed") {
+          params.onActivity?.("hearing");
+        } else if (event.state === "transcribed") {
+          params.onActivity?.("processing");
+        } else if (["empty", "failed", "cancelled"].includes(event.state)) {
+          params.onActivity?.("listening");
+        }
         waiting.onProcessing(event);
         // A VAD confirmation can precede an empty decoder result. Keep the
         // output reversibly paused until a nonempty caller transcript arrives.

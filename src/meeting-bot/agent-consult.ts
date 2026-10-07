@@ -54,6 +54,8 @@ export function createMeetingRealtimeEngineBindings(params: {
     realtime: {
       agentId?: string;
       toolPolicy: RealtimeVoiceAgentConsultToolPolicy;
+      /** Explicit tools added to safe-read-only for this trusted adapter only. */
+      additionalToolsAllow?: string[];
       agentThinkingLevel?: Parameters<typeof consultRealtimeVoiceAgent>[0]["thinkLevel"];
       speakCommentary?: boolean;
     };
@@ -82,6 +84,7 @@ export function createMeetingRealtimeEngineBindings(params: {
         logger: params.logger,
         agentId: params.config.realtime.agentId,
         toolPolicy: params.config.realtime.toolPolicy,
+        additionalToolsAllow: params.config.realtime.additionalToolsAllow,
         agentThinkingLevel: params.config.realtime.agentThinkingLevel,
         speakCommentary: params.config.realtime.speakCommentary,
         ...consult,
@@ -96,6 +99,7 @@ export function createMeetingRealtimeEngineBindings(params: {
         logger: params.logger,
         agentId: params.config.realtime.agentId,
         toolPolicy: params.config.realtime.toolPolicy,
+        additionalToolsAllow: params.config.realtime.additionalToolsAllow,
         agentThinkingLevel: params.config.realtime.agentThinkingLevel,
         speakCommentary: params.config.realtime.speakCommentary,
         abortSignal,
@@ -128,6 +132,7 @@ async function consultMeetingAgent(params: {
   logger: RuntimeLogger;
   agentId?: string;
   toolPolicy: RealtimeVoiceAgentConsultToolPolicy;
+  additionalToolsAllow?: string[];
   agentThinkingLevel?: Parameters<typeof consultRealtimeVoiceAgent>[0]["thinkLevel"];
   speakCommentary?: boolean;
   meetingSessionId: string;
@@ -149,7 +154,11 @@ async function consultMeetingAgent(params: {
     params.agentThinkingLevel ??
     resolveAgentConfig(params.config, agentId)?.thinkingDefault ??
     params.config.agents?.defaults?.thinkingDefault;
-  const toolsAllow = resolveRealtimeVoiceAgentConsultToolsAllow(params.toolPolicy);
+  const baseToolsAllow = resolveRealtimeVoiceAgentConsultToolsAllow(params.toolPolicy);
+  const toolsAllow =
+    params.toolPolicy === "safe-read-only"
+      ? [...new Set([...(baseToolsAllow ?? []), ...(params.additionalToolsAllow ?? [])])]
+      : baseToolsAllow;
   let releaseRunControl: (() => void) | undefined;
   try {
     return await consultRealtimeVoiceAgent({
@@ -253,6 +262,7 @@ async function handleMeetingRealtimeConsultToolCall(params: {
   logger: RuntimeLogger;
   agentId?: string;
   toolPolicy: RealtimeVoiceAgentConsultToolPolicy;
+  additionalToolsAllow?: string[];
   agentThinkingLevel?: Parameters<typeof consultRealtimeVoiceAgent>[0]["thinkLevel"];
   speakCommentary?: boolean;
   meetingSessionId: string;
@@ -316,6 +326,7 @@ async function handleMeetingRealtimeConsultToolCall(params: {
       logger: params.logger,
       agentId: params.agentId,
       toolPolicy: params.toolPolicy,
+      additionalToolsAllow: params.additionalToolsAllow,
       agentThinkingLevel: params.agentThinkingLevel,
       speakCommentary: params.speakCommentary,
       meetingSessionId: params.meetingSessionId,

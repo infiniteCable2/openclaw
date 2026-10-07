@@ -323,6 +323,40 @@ describe("createMeetingRealtimeEngineBindings", () => {
     );
   });
 
+  it("adds only the adapter's explicit device tool to safe-read-only consults", async () => {
+    const bindings = createMeetingRealtimeEngineBindings({
+      platform,
+      config: {
+        realtime: {
+          agentId: "operator",
+          toolPolicy: "safe-read-only",
+          additionalToolsAllow: ["voiceassistant_device"],
+        },
+      },
+      fullConfig: { agents: { list: [{ id: "operator", default: true }] } },
+      runtime: { agent: {} } as never,
+      logger: {} as never,
+    });
+    await bindings.consultAgent({
+      meetingSessionId: "meeting-device",
+      args: { question: "Check the Pi" },
+      transcript: [],
+    });
+    expect(consultRealtimeVoiceAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolsAllow: [
+          "read",
+          "web_search",
+          "web_fetch",
+          "x_search",
+          "memory_search",
+          "memory_get",
+          "voiceassistant_device",
+        ],
+      }),
+    );
+  });
+
   it("derives realtime engine bindings from platform metadata", async () => {
     const bindings = createBindings("Support");
 
