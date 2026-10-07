@@ -21,15 +21,23 @@ export function createNodeMeetingRealtimeAudioTransport(params: {
   logScope: string;
   logPrefix: string;
   audioFormat?: MeetingRealtimeAudioFormat;
+  /** Generation returned by a node's start command; enables stale-output fencing. */
+  initialOutputGeneration?: number;
 }): MeetingRealtimeAudioTransport {
+  if (
+    params.initialOutputGeneration !== undefined &&
+    (!Number.isSafeInteger(params.initialOutputGeneration) || params.initialOutputGeneration < 0)
+  ) {
+    throw new Error("invalid initial node output generation");
+  }
   let stopped = false;
   let inputStarted = false;
   let consecutiveInputErrors = 0;
   let lastInputError: string | undefined;
   let fatalSignaled = false;
   let fatalHandler: (() => void) | undefined;
-  let outputGeneration = 0;
-  let outputGenerationSupported = false;
+  let outputGeneration = params.initialOutputGeneration ?? 0;
+  let outputGenerationSupported = params.initialOutputGeneration !== undefined;
   let legacyOutputTail = Promise.resolve();
   const outputLoopbackVerifier = createMeetingOutputLoopbackVerifier({
     audioFormat: params.audioFormat ?? "pcm16-24khz",

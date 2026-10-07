@@ -5,7 +5,7 @@ import { createNodeMeetingRealtimeAudioTransport } from "./realtime-node-audio-t
 
 function createTransport(
   invoke: ReturnType<typeof vi.fn>,
-  options: { outputGenerationSupported?: boolean } = {},
+  options: { outputGenerationSupported?: boolean; initialOutputGeneration?: number } = {},
 ) {
   const transport = createNodeMeetingRealtimeAudioTransport({
     runtime: { nodes: { invoke } } as never,
@@ -15,12 +15,17 @@ function createTransport(
     commandName: "meeting.chrome",
     logScope: "[meeting]",
     logPrefix: "node",
+    ...(options.initialOutputGeneration !== undefined
+      ? { initialOutputGeneration: options.initialOutputGeneration }
+      : {}),
   });
-  Reflect.set(
-    transport,
-    Symbol.for("openclaw.internal.meeting-node-output-generation.v1"),
-    options.outputGenerationSupported === true,
-  );
+  if (options.outputGenerationSupported !== undefined) {
+    Reflect.set(
+      transport,
+      Symbol.for("openclaw.internal.meeting-node-output-generation.v1"),
+      options.outputGenerationSupported,
+    );
+  }
   return transport;
 }
 
@@ -169,6 +174,18 @@ describe("node meeting realtime audio transport", () => {
     await transport.writeOutput(Buffer.from([7, 8, 9]));
     await transport.clearOutput();
     expect(invoke).toHaveBeenCalledTimes(invokeCountAfterStop);
+  });
+
+  it("starts fenced output at the generation returned by the node", async () => {
+    const invoke = vi.fn(async () => ({ ok: true }));
+    const transport = createTransport(invoke, { initialOutputGeneration: 7 });
+
+    await transport.writeOutput(Buffer.from([1, 2]));
+    await transport.clearOutput();
+    await transport.writeOutput(Buffer.from([3, 4]));
+
+    expect(invoke.mock.calls.map(([call]) => call.params.outputGeneration)).toEqual([7, 8, 8]);
+    await transport.stop();
   });
 
   it("serializes output commands for legacy node hosts", async () => {
