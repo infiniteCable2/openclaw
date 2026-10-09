@@ -40,7 +40,9 @@ describe("MatrixRTC config", () => {
       agentProfiles: { example_owner: { agentThinkingLevel: "off", speakCommentary: true } },
     });
     expect(resolved?.authServiceUrl).toBe("https://rtc.example.org/livekit/jwt");
-    expect(findMatrixRtcAdmission(resolved!, "!private:example.org")?.agentId).toBe("example_owner");
+    expect(findMatrixRtcAdmission(resolved!, "!private:example.org")?.agentId).toBe(
+      "example_owner",
+    );
     expect(resolved?.responseStreaming).toBe("sentence");
     expect(resolveMatrixRtcAgentProfile(resolved!, "example_owner")).toEqual({
       agentThinkingLevel: "off",
@@ -62,7 +64,9 @@ describe("MatrixRTC config", () => {
 
   it("inherits agent thinking when the call override is absent", () => {
     const resolved = resolveMatrixRtcConfig({ ...validConfig(), agentProfiles: undefined });
-    expect(resolveMatrixRtcAgentProfile(resolved!, "example_owner").agentThinkingLevel).toBeUndefined();
+    expect(
+      resolveMatrixRtcAgentProfile(resolved!, "example_owner").agentThinkingLevel,
+    ).toBeUndefined();
   });
 
   it("uses the admitted agent's call profile without applying it to other agents", () => {

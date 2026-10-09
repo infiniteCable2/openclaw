@@ -50,7 +50,9 @@ describe("MatrixConfigSchema SecretInput", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data).toMatchObject({
-        rtc: { agentProfiles: { example_owner: { agentThinkingLevel: "off", speakCommentary: true } } },
+        rtc: {
+          agentProfiles: { example_owner: { agentThinkingLevel: "off", speakCommentary: true } },
+        },
       });
     }
   });

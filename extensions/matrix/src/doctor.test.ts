@@ -56,7 +56,11 @@ describe("matrix doctor", () => {
             work: {
               rtc: {
                 admissions: [
-                  { roomId: "!two:example.org", userId: "@two:example.org", agentId: "example_other" },
+                  {
+                    roomId: "!two:example.org",
+                    userId: "@two:example.org",
+                    agentId: "example_other",
+                  },
                 ],
               },
             },
@@ -95,7 +99,9 @@ describe("matrix doctor", () => {
                       agentId: "example_member",
                     },
                   ],
-                  agentProfiles: { example_member: { agentThinkingLevel: "off", speakCommentary: true } },
+                  agentProfiles: {
+                    example_member: { agentThinkingLevel: "off", speakCommentary: true },
+                  },
                 },
               },
             },
