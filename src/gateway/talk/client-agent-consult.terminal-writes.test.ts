@@ -49,12 +49,14 @@ async function withPublishedSpeechRun(
   params: Parameters<typeof runEmbeddedAgent>[0],
   work: () => ReturnType<typeof runEmbeddedAgent>,
 ) {
+  const sessionKey = params.sessionKey;
+  assert(sessionKey, "Speech fixture must publish its admitted session key");
   const admitted = await resolvePreparedRunAdmission({ ...params, runtimeKind: "embedded" });
   const handle = createEmbeddedRunHandle({ runId: params.runId });
   await withGatewayToolCallerIdentity(
     {
       agentId: "main",
-      sessionKey: params.sessionKey,
+      sessionKey,
       operationalRunInstance: admitted.operationalRunInstance,
       embeddedRunToolAuthorityBinding: () => ({
         source: "attempt",
@@ -63,12 +65,12 @@ async function withPublishedSpeechRun(
         assertActive: () => {},
       }),
     },
-    () => setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey),
+    () => setActiveEmbeddedRun(params.sessionId, handle, sessionKey),
   );
   try {
     return await work();
   } finally {
-    clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
+    clearActiveEmbeddedRun(params.sessionId, handle, sessionKey);
   }
 }
 
