@@ -94,7 +94,6 @@ export async function createTalkSpeechRelaySession(params: {
   let closing: Promise<void> | undefined;
   let construction: Promise<void> = Promise.resolve();
   let activeTurnId: string | undefined;
-  let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   let closeReason: "completed" | "error" = "completed";
 
   const assertActive = () => {
@@ -329,7 +328,7 @@ export async function createTalkSpeechRelaySession(params: {
     },
   };
   rememberTalkSpeechRelaySession(record);
-  expiryTimer = setTimeout(() => {
+  const expiryTimer = setTimeout(() => {
     void record
       .close()
       .catch((error: unknown) =>

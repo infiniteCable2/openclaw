@@ -1,4 +1,3 @@
-import "./handlers.test-support.js";
 import { expectDefined } from "@openclaw/normalization-core";
 /** Tests for talk gateway methods that coordinate speech and audio providers. */
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -3046,3 +3045,4 @@ describe("role-required Talk session creation", () => {
     });
   });
 });
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

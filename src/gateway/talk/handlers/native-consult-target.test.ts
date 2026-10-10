@@ -1,4 +1,3 @@
-import "./native-consult-target.test-support.js";
 import { describe, expect, it, vi } from "vitest";
 import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
 import {

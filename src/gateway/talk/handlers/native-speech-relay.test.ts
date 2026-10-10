@@ -1,4 +1,3 @@
-import "./native-consult-target.test-support.js";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { withinTest } from "../../../../test/helpers/promise.js";
@@ -18,7 +17,6 @@ import {
   createSpeechRelayCall,
   publishNativeSpeechModelRun,
 } from "./native-consult-target.test-support.js";
-
 it("public STT/TTS relay gates media readiness and uses native consultation, voice custody and lease cleanup", async ({
   signal,
 }) => {

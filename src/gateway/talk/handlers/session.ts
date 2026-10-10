@@ -541,7 +541,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
       const session = getUnifiedTalkSession(params.sessionId);
       if (session.kind === "speech-relay") {
         requireUnifiedTalkSessionConn(session, client?.connId);
-        const result = await session.cancelOutput({
+        const result = session.cancelOutput({
           turnId: normalizeOptionalString(params.turnId),
           reason: normalizeOptionalString(params.reason) ?? "output-cancelled",
         });

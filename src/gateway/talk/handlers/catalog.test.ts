@@ -1,4 +1,3 @@
-import "./handlers.test-support.js";
 /** Tests for talk gateway methods that coordinate speech and audio providers. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
