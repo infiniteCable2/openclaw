@@ -9,17 +9,19 @@ import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { triageTestRuntimeEntrypoints } from "./triage-runtime.test-support.js";
 import type { ManagedServiceBoundaryOptions } from "./update-managed-service-handoff-boundary-contract.test-support.js";
 import { managedServiceStateUpdateScript } from "./update-managed-service-handoff-state.test-support.js";
+import type { UpdateRequester } from "./update-requester-authority.js";
 
 export async function prepareManagedServiceRuntimeFixture(params: {
   recoveryModulePath: string;
   statePath: string;
   configPath: string;
+  validationReleasePath: string;
   activationGatePath: string;
   activationReleasePath: string;
   ledger: boolean;
   options?: {
     replaceLedgerWriter?: boolean;
-    requester?: { channel?: string; accountId?: string; senderId?: string };
+    requester?: UpdateRequester;
     cancelAtActivation?: "requester" | "inspection";
   };
 }) {
@@ -27,6 +29,7 @@ export async function prepareManagedServiceRuntimeFixture(params: {
     recoveryModulePath,
     statePath,
     configPath,
+    validationReleasePath,
     activationGatePath,
     activationReleasePath,
     ledger,
@@ -52,6 +55,16 @@ export async function prepareManagedServiceRuntimeFixture(params: {
   }
   if (options?.requester) {
     await fs.writeFile(statePath, "{}");
+    if (options.requester.authorizationSource?.startsWith("profile:")) {
+      await fs.appendFile(
+        recoveryModulePath,
+        `
+        const requesterRuntime = await import(${JSON.stringify(resolveRuntimeWorkerUrl(triageTestRuntimeEntrypoints.requester).href)});
+        export const { prepareManagedUpdateRequesterIdentity } = requesterRuntime;
+      `,
+      );
+      return { sourceRuntimeImport, ledgerRuntimeImport };
+    }
     await fs.writeFile(
       configPath,
       JSON.stringify({
@@ -63,14 +76,10 @@ export async function prepareManagedServiceRuntimeFixture(params: {
       recoveryModulePath,
       `
       export async function isManagedUpdateRequesterOwner(requester) {
-        const state = ${managedServiceStateUpdateScript(
-          statePath,
-          `state.ownerChecked = true;
-          ${options.cancelAtActivation === "requester" ? "state.ownerChecks = (state.ownerChecks || 0) + 1;" : ""}`,
-        )};
+        const state = ${managedServiceStateUpdateScript(statePath, "state.ownerChecked = true;")};
         ${
           options.cancelAtActivation === "requester"
-            ? `if (state.ownerChecks === 2) {
+            ? `if (fs.existsSync(${JSON.stringify(validationReleasePath)})) {
           fs.writeFileSync(${JSON.stringify(activationGatePath)}, "requester");
           while (!fs.existsSync(${JSON.stringify(activationReleasePath)})) {
             await new Promise((resolve) => setTimeout(resolve, 5));
@@ -110,9 +119,9 @@ export async function prepareManagedServiceSpawn(
       children.spawn = (command, args, options) => {
         const child = spawn(command, args, options);
         try {
-          let payload = JSON.parse(args.at(-1));
-          if (Array.isArray(payload) && payload[0] !== ${JSON.stringify(modulePath)})
-            payload = JSON.parse(payload.at(-1));
+          let input = args.at(-1);
+          if (input.startsWith("[")) input = JSON.parse(input).at(-1);
+          const payload = JSON.parse(fs.readFileSync(input, "utf8"));
           if (Array.isArray(payload) && payload[0] === ${JSON.stringify(modulePath)}) {
             finalizer = child;
             child.once("close", () => { if (finalizer === child) finalizer = undefined; });

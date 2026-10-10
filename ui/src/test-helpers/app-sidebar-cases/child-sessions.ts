@@ -84,11 +84,14 @@ describe("AppSidebar agent chip", () => {
     );
 
     expect(harness.list).toHaveBeenCalledWith({
+      rowMode: "compact",
+      source: "sidebar",
       spawnedBy: "agent:main:parent",
       limit: 100,
       includeGlobal: false,
       includeUnknown: false,
       configuredAgentsOnly: true,
+      excludeDock: true,
     });
     const childRows = [...sidebar.querySelectorAll<HTMLElement>(".sidebar-recent-session--child")];
     const parentTree = sidebar.querySelector('[data-session-tree="agent:main:parent"]');
@@ -177,12 +180,14 @@ describe("AppSidebar agent chip", () => {
     });
     await sidebar.updateComplete;
     expect(harness.list).toHaveBeenCalledOnce();
+    vi.useFakeTimers();
     gatewayHarness.publishEvent("sessions.changed", {
       sessionKey: "agent:main:child-one",
       agentId: "main",
       reason: "patch",
       spawnedBy: "agent:main:parent",
     });
+    await vi.advanceTimersByTimeAsync(5_000);
     await waitForFast(() => expect(harness.list).toHaveBeenCalledTimes(2));
     await waitForFast(() =>
       expect(

@@ -27,22 +27,17 @@ export async function streamSpeech(
     return { success: false, error: acquired.error };
   }
 
-  const { cfg, config, persona, providers } = acquired.setup;
   let outcome: Result<TtsSynthesisStreamResult, unknown>;
   try {
     const result = await acquired.run(() => {
       const target = resolveTtsSynthesisTarget(params.channel);
       return executeTtsProviderAttempts({
-        cfg,
-        config,
-        persona,
-        providers,
+        ...acquired.setup,
         synthesisText: normalizeSpeechText(params.text),
         providerOverrides: params.overrides?.providerOverrides,
         timeoutMs: params.timeoutMs,
         target,
         logLabel: "TTS stream",
-        prepareProviderRegistry: acquired.setup.prepareProviderRegistry,
         selectOperation: ({ provider, resolvedProvider }) => {
           if (!resolvedProvider.provider.streamSynthesize) {
             return {
@@ -53,26 +48,14 @@ export async function streamSpeech(
           }
           return {
             kind: "ready",
-            synthesize: async ({
-              prepared,
-              cfg: runtimeCfg,
-              target: synthesisTarget,
-              timeoutMs,
-              retainLocalService,
-            }) => {
-              const synthesis = await resolvedProvider.provider.streamSynthesize!({
-                text: prepared.text,
-                cfg: runtimeCfg,
-                providerConfig: prepared.providerConfig,
-                target: synthesisTarget,
-                providerOverrides: prepared.providerOverrides,
-                timeoutMs,
-              });
+            synthesize: async (request, { retainLocalService }) => {
+              const synthesis = await resolvedProvider.provider.streamSynthesize!(request);
               return {
                 providerResult: synthesis,
                 transport: await captureSpeechProviderStream(
-                  retainLocalService(synthesis),
+                  synthesis,
                   acquired,
+                  retainLocalService(),
                 ),
               };
             },

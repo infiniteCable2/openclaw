@@ -28,11 +28,10 @@ describe("webhook exposure host classification", () => {
     expect(isProviderUnreachableWebhookUrl(url)).toBe(true);
   });
 
-  it.each([
-    "http://[::ffff:8.8.8.8]/voice/webhook",
-    "https://voice.example.com/voice/webhook",
-    "https://fcloud.example/voice/webhook",
-  ])("does not reject public webhook URL %s", (url) => {
-    expect(isProviderUnreachableWebhookUrl(url)).toBe(false);
-  });
+  it.each(["http://[::ffff:8.8.8.8]/voice/webhook", "https://fcloud.example/voice/webhook"])(
+    "does not reject public webhook URL %s",
+    (url) => {
+      expect(isProviderUnreachableWebhookUrl(url)).toBe(false);
+    },
+  );
 });

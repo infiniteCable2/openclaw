@@ -224,7 +224,7 @@ export class AsteriskAudioSocketServer {
         try {
           uuid = uuidFromAudioSocketPayload(frame.payload).toLowerCase();
         } catch (error) {
-          connection.socket.destroy(error as Error);
+          connection.socket.destroy(error instanceof Error ? error : new Error(String(error)));
           return;
         }
         const registration = this.options.consumeRegistration(uuid);

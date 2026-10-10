@@ -11,6 +11,7 @@ import type {
   SqliteIntegrityWorkerResult,
 } from "./sqlite-integrity-worker.js";
 import { assertSqliteIntegrity } from "./sqlite-integrity.js";
+import { configureSqliteMaintenanceCache } from "./sqlite-maintenance-cache.js";
 
 function nativeErrorDetails(error: Error) {
   // SAFETY: Node's filesystem and SQLite errors attach these optional diagnostic fields.
@@ -24,10 +25,10 @@ if (!process.send || !process.disconnect) {
 const sendMessage = process.send.bind(process);
 const disconnect = process.disconnect.bind(process);
 
-function sendPhase(phase: SqliteIntegrityWorkerPhase): Promise<void> {
+function send(message: SqliteIntegrityWorkerMessage): Promise<void> {
   return new Promise((resolve, reject) => {
     // Flush each phase before native work can block this child's event loop.
-    sendMessage({ type: "phase", phase } satisfies SqliteIntegrityWorkerMessage, (error) => {
+    sendMessage(message, (error) => {
       if (error) {
         reject(error);
       } else {
@@ -35,6 +36,10 @@ function sendPhase(phase: SqliteIntegrityWorkerPhase): Promise<void> {
       }
     });
   });
+}
+
+function sendPhase(phase: SqliteIntegrityWorkerPhase): Promise<void> {
+  return send({ type: "phase", phase });
 }
 
 async function check(input: SqliteIntegrityWorkerInput): Promise<SqliteIntegrityWorkerResult> {
@@ -46,9 +51,7 @@ async function check(input: SqliteIntegrityWorkerInput): Promise<SqliteIntegrity
     readSqliteIntegrityFileIdentity(input.pathname, input.identity);
     database = openNodeSqliteDatabase(input.pathname, { readOnly: true });
     setSqliteBusyTimeout(database, input.busyTimeoutMs);
-    // Full index checks revisit pages. Keep their cache in this disposable child,
-    // without raising the memory budget of the Gateway's retained connections.
-    database.exec("PRAGMA cache_size = -65536;"); // sqlite-allow-raw -- Connection-local page-cache policy for this disposable integrity child.
+    configureSqliteMaintenanceCache(database);
     readSqliteIntegrityFileIdentity(input.pathname, input.identity);
     await sendPhase("checking");
     const startedAt = performance.now();
@@ -101,9 +104,7 @@ for await (const [input] of on(process, "message") as AsyncIterable<
     break;
   }
   const result = await check(input);
-  await new Promise<void>((resolve, reject) => {
-    sendMessage(result, (error) => (error ? reject(error) : resolve()));
-  });
+  await send(result);
   if (!input.reuse || !result.ok) {
     disconnect();
     break;

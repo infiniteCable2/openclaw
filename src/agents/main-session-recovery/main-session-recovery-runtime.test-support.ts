@@ -5,48 +5,92 @@ import type { callGateway } from "../../gateway/call.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 
+type RecoveryScope = { storePath: string; sessionKey: string };
+
 export function createRecoveryRuntimeFixture(params: {
   callGateway: typeof callGateway;
   getDispatchSettlement: () => Promise<void>;
   sendRecoveryNotice: GatewayRecoveryRuntime["sendRecoveryNotice"];
 }) {
-  return {
-    async expectAdmission(
-      expectedGatewayCalls: number,
-      ...scopes: Array<{ storePath: string; sessionKey: string }>
-    ) {
-      const targets = scopes.map((scope) => {
-        const entry = loadSessionEntry(scope);
-        expect(entry, "recovery fixture session must exist").toBeDefined();
-        return { scope, sessionId: entry?.sessionId };
-      });
-      const admitted = createDeferred();
-      const observe = () => {
+  const expectState = async (
+    expectedGatewayCalls: number,
+    scopes: RecoveryScope[],
+    matches: (entry: NonNullable<ReturnType<typeof loadSessionEntry>>) => boolean,
+    signal?: AbortSignal,
+  ) => {
+    signal?.throwIfAborted();
+    const targets = scopes.map((scope) => {
+      const entry = loadSessionEntry(scope);
+      expect(entry, "recovery fixture session must exist").toBeDefined();
+      return { scope, sessionId: entry?.sessionId };
+    });
+    const settled = createDeferred();
+    const observe = () => {
+      try {
         if (
           targets.every(({ scope, sessionId }) => {
             const entry = loadSessionEntry(scope);
-            return entry?.sessionId === sessionId && entry?.abortedLastRun === false;
+            return entry !== undefined && entry.sessionId === sessionId && matches(entry);
           })
         ) {
-          admitted.resolve();
+          settled.resolve();
         }
-      };
-      const unsubscribe = sessionChanges.subscribe((change) => {
-        if (
-          "sessionKey" in change &&
-          targets.some(({ scope }) => scope.sessionKey === change.sessionKey)
-        ) {
-          observe();
-        }
-      });
-      onTestFinished(unsubscribe);
-      try {
-        // Subscribe before reading so an already committed admission also completes.
+      } catch (error) {
+        // Session-change listeners isolate throws, so this wait must retain its read failure.
+        settled.reject(error);
+      }
+    };
+    const unsubscribe = sessionChanges.subscribe((change) => {
+      if (
+        "sessionKey" in change &&
+        targets.some(({ scope }) => scope.sessionKey === change.sessionKey)
+      ) {
         observe();
-        await admitted.promise;
-        expect(params.callGateway).toHaveBeenCalledTimes(expectedGatewayCalls);
+      }
+    });
+    const abort = () => settled.reject(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
+    onTestFinished(unsubscribe);
+    try {
+      signal?.throwIfAborted();
+      // Subscribe before reading so an already committed state also completes.
+      observe();
+      await settled.promise;
+      signal?.throwIfAborted();
+      expect(params.callGateway).toHaveBeenCalledTimes(expectedGatewayCalls);
+    } finally {
+      unsubscribe();
+      signal?.removeEventListener("abort", abort);
+    }
+  };
+  return {
+    prepareRestartRecovery: () => undefined,
+    async expectAdmission(
+      expectedGatewayCalls: number,
+      recovery: { stop: () => Promise<void> },
+      ...scopes: RecoveryScope[]
+    ) {
+      try {
+        await expectState(expectedGatewayCalls, scopes, (entry) => entry.abortedLastRun === false);
       } finally {
-        unsubscribe();
+        await recovery.stop();
+      }
+    },
+    async expectFailedRecovery(
+      expectedGatewayCalls: number,
+      recovery: { stop: () => Promise<void> },
+      signal: AbortSignal,
+      ...scopes: RecoveryScope[]
+    ) {
+      try {
+        await expectState(
+          expectedGatewayCalls,
+          scopes,
+          (entry) => entry.status === "failed" && entry.abortedLastRun === false,
+          signal,
+        );
+      } finally {
+        await recovery.stop();
       }
     },
     dispatchSessionMethod: vi.fn(),
@@ -73,12 +117,6 @@ export function createRecoveryRuntimeFixture(params: {
       return result;
     },
     waitForAgent: async <T>(request: Record<string, unknown>, timeoutMs?: number) => {
-      if (request.timeoutMs === 30_000) {
-        // Capacity observation follows this fixture's actual dispatch lifetime;
-        // zero-time recovery probes below retain their independent RPC plan.
-        await params.getDispatchSettlement();
-        return { status: "ok", endedAt: Date.now() } as T;
-      }
       return (await params.callGateway({ method: "agent.wait", params: request, timeoutMs })) as T;
     },
     sendRecoveryNotice: params.sendRecoveryNotice,

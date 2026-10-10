@@ -1,31 +1,9 @@
-// Matrix tests cover doctor plugin behavior.
-import fs from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  cleanStaleMatrixPluginConfig,
-  collectMatrixInstallPathWarnings,
-  matrixDoctor,
-} from "./doctor.js";
+import { describe, expect, it } from "vitest";
+import { normalizeCompatibilityConfig } from "./doctor-contract.js";
 
 describe("matrix doctor", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  function runMatrixCompatibilityNormalize(
-    params: Parameters<NonNullable<typeof matrixDoctor.normalizeCompatibilityConfig>>[0],
-  ) {
-    const normalize = matrixDoctor.normalizeCompatibilityConfig;
-    if (!normalize) {
-      throw new Error("expected Matrix doctor compatibility normalizer");
-    }
-    return normalize(params);
-  }
-
   function normalizeMatrixDmConfig(dm: Record<string, unknown>) {
-    return runMatrixCompatibilityNormalize({
+    return normalizeCompatibilityConfig({
       cfg: {
         channels: {
           matrix: {
@@ -68,7 +46,7 @@ describe("matrix doctor", () => {
         },
       },
     } as never;
-    const first = runMatrixCompatibilityNormalize({ cfg });
+    const first = normalizeCompatibilityConfig({ cfg });
     const rtc = first.config.channels?.matrix?.rtc;
     expect(rtc).not.toHaveProperty("agentThinkingLevel");
     expect(rtc).not.toHaveProperty("speakCommentary");
@@ -77,13 +55,13 @@ describe("matrix doctor", () => {
       example_other: { agentThinkingLevel: "off", speakCommentary: true },
     });
     expectChangeContaining(first.changes, "admitted agent profiles");
-    const second = runMatrixCompatibilityNormalize({ cfg: first.config });
+    const second = normalizeCompatibilityConfig({ cfg: first.config });
     expect(second.config).toEqual(first.config);
     expect(second.changes).toEqual([]);
   });
 
   it("migrates account-local MatrixRTC options without overriding explicit agent choices", () => {
-    const result = runMatrixCompatibilityNormalize({
+    const result = normalizeCompatibilityConfig({
       cfg: {
         channels: {
           matrix: {
@@ -118,35 +96,85 @@ describe("matrix doctor", () => {
     });
   });
 
-  it("warns on stale custom Matrix plugin paths and cleans them", async () => {
-    const missingPath = path.join(tmpdir(), `openclaw-matrix-missing-${Date.now()}`);
-    await fs.rm(missingPath, { recursive: true, force: true });
-
-    const warnings = await collectMatrixInstallPathWarnings({
-      plugins: {
-        installs: {
-          matrix: { source: "path", sourcePath: missingPath, installPath: missingPath },
-        },
-      },
-    });
-    expect(warnings[0]).toContain("custom path that no longer exists");
-
-    const cleaned = await cleanStaleMatrixPluginConfig({
-      plugins: {
-        installs: {
-          matrix: { source: "path", sourcePath: missingPath, installPath: missingPath },
-        },
-        load: { paths: [missingPath, "/other/path"] },
-        allow: ["matrix", "other-plugin"],
-      },
-    });
-    expect(cleaned.changes[0]).toContain("Removed stale Matrix plugin references");
-    expect(cleaned.config.plugins?.load?.paths).toEqual(["/other/path"]);
-    expect(cleaned.config.plugins?.allow).toEqual(["other-plugin"]);
-  });
+  it.each(["inherited", "replaced", "empty"] as const)(
+    "migrates account RTC defaults over its effective %s admissions",
+    (admissionMode) => {
+      const accountAdmissions =
+        admissionMode === "inherited"
+          ? {}
+          : {
+              admissions:
+                admissionMode === "empty"
+                  ? []
+                  : [
+                      {
+                        roomId: "!account:example.org",
+                        userId: "@account:example.org",
+                        agentId: "example_account",
+                      },
+                    ],
+            };
+      const result = normalizeCompatibilityConfig({
+        cfg: {
+          channels: {
+            matrix: {
+              rtc: {
+                admissions: [
+                  {
+                    roomId: "!root:example.org",
+                    userId: "@root:example.org",
+                    agentId: "example_root",
+                  },
+                ],
+                agentProfiles: {
+                  example_root: {
+                    agentThinkingLevel: "off",
+                    speakCommentary: true,
+                    greeting: { enabled: true, prompt: "Briefly greet the participant." },
+                  },
+                },
+              },
+              accounts: {
+                work: {
+                  rtc: {
+                    ...accountAdmissions,
+                    agentThinkingLevel: "low",
+                    speakCommentary: false,
+                  },
+                },
+              },
+            },
+          },
+        } as never,
+      });
+      const rtc = result.config.channels?.matrix?.accounts?.work?.rtc;
+      expect(rtc).not.toHaveProperty("agentThinkingLevel");
+      expect(rtc).not.toHaveProperty("speakCommentary");
+      const rootProfile = result.config.channels?.matrix?.rtc?.agentProfiles?.example_root;
+      expect(rtc?.agentProfiles).toEqual(
+        admissionMode === "empty"
+          ? undefined
+          : admissionMode === "inherited"
+            ? {
+                example_root: {
+                  ...rootProfile,
+                  agentThinkingLevel: "low",
+                  speakCommentary: false,
+                },
+              }
+            : {
+                example_root: rootProfile,
+                example_account: { agentThinkingLevel: "low", speakCommentary: false },
+              },
+      );
+      const second = normalizeCompatibilityConfig({ cfg: result.config });
+      expect(second.config).toEqual(result.config);
+      expect(second.changes).toEqual([]);
+    },
+  );
 
   it("normalizes legacy Matrix room allow aliases to enabled", () => {
-    const result = runMatrixCompatibilityNormalize({
+    const result = normalizeCompatibilityConfig({
       cfg: {
         channels: {
           matrix: {
@@ -198,7 +226,7 @@ describe("matrix doctor", () => {
   });
 
   it("normalizes legacy Matrix private-network aliases", () => {
-    const result = runMatrixCompatibilityNormalize({
+    const result = normalizeCompatibilityConfig({
       cfg: {
         channels: {
           matrix: {
@@ -240,7 +268,7 @@ describe("matrix doctor", () => {
   });
 
   it("migrates legacy channels.matrix.dm.policy 'trusted' with allowFrom to 'allowlist'", () => {
-    const result = runMatrixCompatibilityNormalize({
+    const result = normalizeCompatibilityConfig({
       cfg: {
         channels: {
           matrix: {
@@ -301,7 +329,7 @@ describe("matrix doctor", () => {
   });
 
   it("migrates legacy per-account channels.matrix.accounts.<id>.dm.policy 'trusted'", () => {
-    const result = runMatrixCompatibilityNormalize({
+    const result = normalizeCompatibilityConfig({
       cfg: {
         channels: {
           matrix: {
@@ -343,9 +371,8 @@ describe("matrix doctor", () => {
       'Migrated channels.matrix.accounts.personal.dm.policy "trusted" → "pairing"',
     );
   });
-
   it("leaves modern dm.policy values untouched", () => {
-    const result = runMatrixCompatibilityNormalize({
+    const result = normalizeCompatibilityConfig({
       cfg: {
         channels: {
           matrix: {
@@ -386,11 +413,7 @@ describe("matrix doctor", () => {
 
 describe("matrix doctor streaming alias migration", () => {
   function normalizeMatrixEntry(entry: Record<string, unknown>) {
-    const normalize = matrixDoctor.normalizeCompatibilityConfig;
-    if (!normalize) {
-      throw new Error("expected Matrix doctor compatibility normalizer");
-    }
-    return normalize({ cfg: { channels: { matrix: entry } } as never });
+    return normalizeCompatibilityConfig({ cfg: { channels: { matrix: entry } } as never });
   }
 
   function matrixEntryOf(result: { config: unknown }): Record<string, unknown> {
@@ -490,13 +513,9 @@ describe("matrix doctor streaming alias migration", () => {
   });
 
   it("is idempotent: a second run reports no changes", () => {
-    const normalize = matrixDoctor.normalizeCompatibilityConfig;
-    if (!normalize) {
-      throw new Error("expected Matrix doctor compatibility normalizer");
-    }
     const first = normalizeMatrixEntry({ streaming: "quiet", blockStreaming: true });
     expect(first.changes.length).toBeGreaterThan(0);
-    const second = normalize({ cfg: first.config });
+    const second = normalizeCompatibilityConfig({ cfg: first.config });
     expect(second.changes).toEqual([]);
     expect(second.config).toBe(first.config);
   });

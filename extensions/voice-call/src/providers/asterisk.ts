@@ -12,7 +12,7 @@ import {
   pcmToMulaw,
   resamplePcm,
   type RealtimeVoiceAudioQueue,
-} from "openclaw/plugin-sdk/realtime-voice";
+} from "openclaw/plugin-sdk/realtime-voice-provider";
 import type { AsteriskConfig } from "../config.js";
 import type { TelephonyTtsProvider } from "../telephony-tts.js";
 import type {

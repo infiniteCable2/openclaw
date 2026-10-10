@@ -1,16 +1,4 @@
-import { getInternalSyncSteeringGetter } from "./internal-hooks.js";
 import type { AgentLoopConfig, AgentMessage } from "./types.js";
-
-/** Preserve the Agent-owned synchronous queue drain at every native checkpoint. */
-export function getSteeringAtCheckpoint(
-  config: AgentLoopConfig,
-): AgentMessage[] | Promise<AgentMessage[]> {
-  const callback = config.getSteeringMessages;
-  if (!callback) {
-    return [];
-  }
-  return getInternalSyncSteeringGetter(callback)?.() ?? callback.call(config);
-}
 
 /**
  * Own the final native queue checkpoint and publish normal completion without

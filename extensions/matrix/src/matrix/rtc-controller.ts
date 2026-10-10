@@ -295,6 +295,7 @@ export function registerMatrixRtcController(params: {
         const agentProfile = resolveMatrixRtcAgentProfile(params.config, admission.agentId);
         const bindings = createMeetingRealtimeEngineBindings({
           platform: MATRIX_RTC_PLATFORM,
+          senderId: remote.userId,
           config: {
             realtime: {
               agentId: admission.agentId,
@@ -337,6 +338,7 @@ export function registerMatrixRtcController(params: {
           const greeting = agentProfile.greeting;
           const greetingBindings = createMeetingRealtimeEngineBindings({
             platform: MATRIX_RTC_PLATFORM,
+            senderId: remote.userId,
             config: {
               realtime: {
                 agentId: admission.agentId,

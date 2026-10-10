@@ -12,21 +12,18 @@ import {
 import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
 import { playMeetingAgentGreeting, type PreparedMeetingAgentGreeting } from "./agent-greeting.js";
 import { createMeetingAgentWaitingAudio } from "./realtime-agent-waiting-audio.js";
-import {
-  createMeetingSttAudioConverter,
-  createMeetingTtsAudioStreamConverter,
-} from "./realtime-audio-format.js";
+import { createMeetingSttAudioConverter } from "./realtime-audio-format.js";
 import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
 import {
   formatMeetingAgentAudioModelLog,
-  formatMeetingAgentTtsResultLog,
   formatMeetingTranscriptSummaryLog,
   meetingOutputBytesPerMs,
+  resolveMeetingRealtimeTranscriptionProvider,
+} from "./realtime-engine-support.js";
+import {
   MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS,
   MEETING_OUTPUT_ECHO_SUPPRESSION_TAIL_MS,
   MEETING_TRANSCRIPT_ECHO_LOOKBACK_MS,
-  normalizeMeetingTtsPromptText,
-  resolveMeetingRealtimeTranscriptionProvider,
   type MeetingAgentConsultParams,
   type MeetingRealtimeAudioEngineHandle,
   type MeetingRealtimeEngineConfig,
@@ -35,6 +32,10 @@ import {
 import { createMeetingInputOnset } from "./realtime-input-onset.js";
 import { createMeetingBargeInGate } from "./realtime-output-gate.js";
 import { createMeetingSpeechCancellation } from "./realtime-speech-cancellation.js";
+import {
+  createMeetingSpeechOutput,
+  type MeetingSpeechUtterance,
+} from "./realtime-speech-output.js";
 import { createMeetingWaitingAudioPlayback, prepareMeetingWaitingAudio } from "./waiting-audio.js";
 
 export {
@@ -59,22 +60,10 @@ export async function startMeetingAgentRealtimeEngine(params: {
   /** Optional device presentation hint; never changes turn or media ownership. */
   onActivity?: (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => void;
 }): Promise<MeetingRealtimeAudioEngineHandle> {
-  type SpeechUtterance = {
-    generation: number;
-    waitingGeneration: number;
-    waitingTurn?: number;
-    chunks: string[];
-    transcriptEntries: RealtimeVoiceTranscriptEntry[];
-    playbackStarted: boolean;
-    finalized: boolean;
-    failed: boolean;
-  };
   let stopped = false;
   let stopPromise: Promise<void> | undefined;
   let sttSession: RealtimeTranscriptionSession | null = null;
   let realtimeReady = false;
-  let ttsQueue = Promise.resolve();
-  let nextTtsPreparationGate = Promise.resolve();
   const activeTtsAborts = new Set<AbortController>();
   const activeTtsReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
   let outputGeneration = 0;
@@ -184,7 +173,7 @@ export async function startMeetingAgentRealtimeEngine(params: {
       await Promise.allSettled(
         [...activeTtsReaders].map(async (reader) => await reader.cancel().catch(() => undefined)),
       );
-      await ttsQueue;
+      await speechOutput.drain();
       try {
         await transportStopPromise;
       } finally {
@@ -248,262 +237,42 @@ export async function startMeetingAgentRealtimeEngine(params: {
     bargeInGate,
   });
 
-  const createSpeechUtterance = (waitingTurn?: number): SpeechUtterance => ({
-    generation: outputGeneration,
-    waitingGeneration: waiting.generation,
-    waitingTurn,
-    chunks: [],
-    transcriptEntries: [],
-    playbackStarted: false,
-    finalized: false,
-    failed: false,
+  const speechOutput = createMeetingSpeechOutput({
+    config: params.config,
+    fullConfig: params.fullConfig,
+    runtime: params.runtime,
+    platform: params.platform,
+    meetingSessionId: params.meetingSessionId,
+    ttsContext: params.ttsContext,
+    ttsAgentId,
+    agentLogScope,
+    logger: params.logger,
+    onActivity: params.onActivity,
+    getHarness: () => harness,
+    isStopped: () => stopped,
+    getOutputGeneration: () => outputGeneration,
+    getWaitingTurn: () => currentWaitingTurn,
+    finishWaitingTurn: (turn) => {
+      waiting.onTurnFinished(turn);
+      if (currentWaitingTurn === turn) {
+        currentWaitingTurn = undefined;
+      }
+    },
+    waitForInput: () => inputOnset.wait(),
+    waiting,
+    speechCancellation,
+    activeTtsAborts,
+    activeTtsReaders,
+    writeOutputAudio,
   });
+  const {
+    createSpeechUtterance,
+    isCurrentSpeechUtterance,
+    enqueueSpeechChunk,
+    finalizeSpeechUtterance,
+  } = speechOutput;
 
-  const isCurrentSpeechUtterance = (utterance: SpeechUtterance) =>
-    !stopped && utterance.generation === outputGeneration && !utterance.finalized;
-
-  const enqueueSpeechChunk = (text: string | undefined, utterance: SpeechUtterance) => {
-    const normalized = normalizeMeetingTtsPromptText(text);
-    if (!normalized || !isCurrentSpeechUtterance(utterance)) {
-      return;
-    }
-    utterance.chunks.push(normalized);
-    const transcriptEntry = harness.recordTranscript("assistant", normalized);
-    transcriptEntry.audioDelivery = "unplayed";
-    utterance.transcriptEntries.push(transcriptEntry);
-    params.logger.info(
-      formatMeetingTranscriptSummaryLog(
-        params.platform.logScope,
-        `${agentLogScope} assistant stream`,
-        normalized,
-      ),
-    );
-    let allowNextPreparationResolve: (() => void) | undefined;
-    const allowNextPreparationPromise = new Promise<void>((resolve) => {
-      allowNextPreparationResolve = resolve;
-    });
-    let nextPreparationAllowed = false;
-    const allowNextPreparation = () => {
-      if (nextPreparationAllowed) {
-        return;
-      }
-      nextPreparationAllowed = true;
-      allowNextPreparationResolve?.();
-    };
-    const preparationGate = nextTtsPreparationGate;
-    nextTtsPreparationGate = allowNextPreparationPromise;
-    const prepared = preparationGate.then(async () => {
-      if (!isCurrentSpeechUtterance(utterance)) {
-        return { skipped: true } as const;
-      }
-      const controller = new AbortController();
-      activeTtsAborts.add(controller);
-      try {
-        const result = await params.runtime.tts.streamTextToSpeechTelephony({
-          text: normalized,
-          cfg: params.fullConfig,
-          signal: controller.signal,
-          ...(ttsAgentId ? { agentId: ttsAgentId } : {}),
-          ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
-          ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
-        });
-        return { result, controller } as const;
-      } catch (error) {
-        return { error, controller } as const;
-      }
-    });
-    ttsQueue = ttsQueue
-      .then(async () => {
-        const preparation = await prepared;
-        if ("skipped" in preparation) {
-          allowNextPreparation();
-          return;
-        }
-        const controller = preparation.controller;
-        if ("error" in preparation) {
-          activeTtsAborts.delete(controller);
-          allowNextPreparation();
-          throw preparation.error;
-        }
-        const result = preparation.result;
-        if (!isCurrentSpeechUtterance(utterance) || controller.signal.aborted) {
-          await result.release?.();
-          activeTtsAborts.delete(controller);
-          allowNextPreparation();
-          return;
-        }
-        if (!result.success || !result.audioStream || !result.sampleRate) {
-          activeTtsAborts.delete(controller);
-          allowNextPreparation();
-          throw new Error(result.error ?? "TTS conversion failed");
-        }
-        params.logger.info(
-          formatMeetingAgentTtsResultLog(params.platform.logScope, agentLogScope, result),
-        );
-        harness.ensureTurn();
-        const reader = result.audioStream.getReader();
-        activeTtsReaders.add(reader);
-        let firstSegmentChunk = true;
-        let firstUtteranceChunk = !utterance.playbackStarted;
-        let bytesWritten = 0;
-        const isCurrentPlayback = () =>
-          isCurrentSpeechUtterance(utterance) && !controller.signal.aborted;
-        try {
-          const converter = createMeetingTtsAudioStreamConverter(
-            result.sampleRate,
-            params.config.chrome.audioFormat,
-            result.outputFormat,
-            params.platform.displayName,
-          );
-          for (;;) {
-            if (!isCurrentPlayback()) {
-              break;
-            }
-            const chunk = await reader.read();
-            if (!isCurrentPlayback()) {
-              break;
-            }
-            // Flush the filter only at natural EOF. Cancellation must never play
-            // its retained tail, and buffered samples are not playback yet.
-            const output = chunk.done
-              ? converter.flush()
-              : converter.process(Buffer.from(chunk.value));
-            if (output.byteLength === 0) {
-              if (chunk.done) {
-                break;
-              }
-              continue;
-            }
-            if (firstSegmentChunk) {
-              // A candidate can start in a gap with no active playback gate.
-              // Hold every newly starting segment, including later commentary.
-              await inputOnset.wait();
-              if (!isCurrentPlayback()) {
-                break;
-              }
-              // A stream handle is not audible output. Keep the waiting loop
-              // through synthesis and buffering, then drain before each segment resumes PCM.
-              await waiting.stop();
-            }
-            if (!(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback))) {
-              break;
-            }
-            if (transcriptEntry.audioDelivery === "unplayed") {
-              transcriptEntry.audioDelivery = "started";
-            }
-            if (!isCurrentPlayback()) {
-              break;
-            }
-            if (firstUtteranceChunk) {
-              utterance.playbackStarted = true;
-            }
-            if (firstSegmentChunk) {
-              params.onActivity?.("speaking");
-            }
-            if (firstSegmentChunk) {
-              allowNextPreparation();
-            }
-            firstSegmentChunk = false;
-            firstUtteranceChunk = false;
-            bytesWritten += output.byteLength;
-            if (chunk.done) {
-              break;
-            }
-          }
-          if (bytesWritten === 0 && isCurrentPlayback()) {
-            throw new Error("TTS provider returned an empty audio stream");
-          }
-          if (transcriptEntry.audioDelivery === "started") {
-            transcriptEntry.audioDelivery = isCurrentPlayback() ? "submitted" : "interrupted";
-          }
-        } finally {
-          if (transcriptEntry.audioDelivery === "started") {
-            transcriptEntry.audioDelivery = "interrupted";
-          }
-          allowNextPreparation();
-          activeTtsReaders.delete(reader);
-          params.onActivity?.(currentWaitingTurn === undefined ? "listening" : "processing");
-          reader.releaseLock();
-          if (utterance.waitingTurn !== undefined) {
-            waiting.onOutputIdle(utterance.waitingTurn);
-          }
-          await result.release?.();
-          activeTtsAborts.delete(controller);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!isCurrentSpeechUtterance(utterance)) {
-          return;
-        }
-        utterance.failed = true;
-        utterance.finalized = true;
-        if (utterance.waitingTurn !== undefined) {
-          waiting.onTurnFinished(utterance.waitingTurn);
-          if (currentWaitingTurn === utterance.waitingTurn) {
-            currentWaitingTurn = undefined;
-          }
-        }
-        waiting.stopInBackground(utterance.waitingGeneration);
-        // TTS and sink failures happen after a turn, and sometimes output, has started.
-        // Close both spans so later input cannot inherit stale playback suppression.
-        harness.finishOutputAudio("failed");
-        harness.endTurn("failed");
-        params.logger.warn(
-          `${params.platform.logScope} ${agentLogScope} TTS failed: ${formatErrorMessage(error)}`,
-        );
-      });
-  };
-
-  const finalizeSpeechUtterance = (utterance: SpeechUtterance, text: string | undefined) => {
-    const normalized = normalizeMeetingTtsPromptText(text);
-    if (!normalized || !isCurrentSpeechUtterance(utterance)) {
-      return;
-    }
-    if (utterance.chunks.length === 0) {
-      enqueueSpeechChunk(normalized, utterance);
-    }
-    // Text is final independently of whether its audio can be played. Streaming
-    // chunks may already be audible, but a buffered reply publishes this first.
-    const turnId = harness.ensureTurn();
-    harness.emit({
-      type: "output.text.done",
-      turnId,
-      final: true,
-      payload: { meetingSessionId: params.meetingSessionId, text: normalized },
-    });
-    ttsQueue = ttsQueue.then(async () => {
-      await inputOnset.wait();
-      if (!isCurrentSpeechUtterance(utterance) || utterance.failed) {
-        return;
-      }
-      // Only consolidate chunks that reached the sink, not a potentially
-      // different final model answer which was never synthesized.
-      const submittedText = utterance.transcriptEntries.map((entry) => entry.text).join(" ");
-      speechCancellation.removeProvisionalTranscriptEntries(utterance.transcriptEntries);
-      if (submittedText) {
-        harness.recordTranscript("assistant", submittedText).audioDelivery = "submitted";
-      }
-      params.logger.info(
-        formatMeetingTranscriptSummaryLog(
-          params.platform.logScope,
-          `${agentLogScope} assistant`,
-          normalized,
-        ),
-      );
-      harness.finishOutputAudio("completed");
-      harness.endTurn();
-      params.onActivity?.("listening");
-      utterance.finalized = true;
-      if (utterance.waitingTurn !== undefined) {
-        waiting.onTurnFinished(utterance.waitingTurn);
-        if (currentWaitingTurn === utterance.waitingTurn) {
-          currentWaitingTurn = undefined;
-        }
-      }
-    });
-  };
-
-  const abortSpeechUtterance = (utterance: SpeechUtterance) => {
+  const abortSpeechUtterance = (utterance: MeetingSpeechUtterance) => {
     if (!isCurrentSpeechUtterance(utterance)) {
       return;
     }

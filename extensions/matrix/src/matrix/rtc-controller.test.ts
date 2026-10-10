@@ -492,6 +492,7 @@ describe("registerMatrixRtcController", () => {
     expect(mocks.createMatrixRtcMediaTransport).toHaveBeenCalledOnce();
     expect(mocks.createMeetingRealtimeEngineBindings).toHaveBeenCalledWith(
       expect.objectContaining({
+        senderId: ownerId,
         config: expect.objectContaining({
           realtime: expect.objectContaining({
             agentId: "example_owner",

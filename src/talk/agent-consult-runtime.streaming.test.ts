@@ -519,6 +519,38 @@ describe("realtime voice agent consult speech delivery", () => {
     },
   );
 
+  it("speaks the yield acknowledgment after commentary-only output", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const acknowledgment = "I will report back when the work is finished.";
+    const commentary = "I am checking the documents.";
+    runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
+      await runParams?.onBlockReply?.({ text: commentary, isCommentary: true });
+      return { payloads: [], meta: { yielded: true, yieldAcknowledgment: acknowledgment } };
+    });
+    const onSpeakableText = vi.fn();
+    const result = await consultRealtimeVoiceAgent({
+      cfg: {},
+      agentRuntime: runtime as never,
+      logger: { warn: vi.fn() },
+      sessionKey: "voice:commentary-yield",
+      messageProvider: "voice",
+      lane: "voice",
+      runIdPrefix: "voice:commentary-yield",
+      args: { question: "Check the documents." },
+      transcript: [],
+      surface: "a live voice session",
+      userLabel: "Caller",
+      speakCommentary: true,
+      onSpeakableText,
+    });
+    expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
+      { type: "chunk", text: commentary },
+      { type: "chunk", text: acknowledgment },
+      { type: "done", text: acknowledgment },
+    ]);
+    expect(result).toEqual({ text: acknowledgment, delivered: true, yielded: true });
+  });
+
   it.each([false, true])(
     "returns a yielded acknowledgement without waiting for a visible final (streaming=%s)",
     async (streaming) => {

@@ -13,6 +13,7 @@ type SpeechWorkOwner = {
 export async function captureSpeechProviderStream(
   synthesis: Pick<SpeechSynthesisStreamResult, "audioStream" | "release">,
   owner: SpeechWorkOwner,
+  retainedResource?: { release: () => void },
 ) {
   const captured = AsyncLocalStorage.snapshot();
   const invoke = <T>(operation: () => T | Promise<T>) => captured(() => owner.run(operation));
@@ -28,20 +29,24 @@ export async function captureSpeechProviderStream(
   };
   let completion: Promise<PromiseSettledResult<void>> | undefined;
   const close = (reason?: unknown) =>
-    (completion ??= Promise.resolve().then(async () => {
-      const active = reader;
-      // Request release can abort a retained tee; start it before waiting for cancellation.
-      const cancellation = invoke(() => (active ? active.cancel(reason) : source?.cancel(reason)));
-      const cleanup = invoke(() => providerRelease?.());
-      if (active) {
-        releaseReader(active);
-      }
-      const [canceled, cleaned] = await Promise.allSettled([cancellation, cleanup]);
-      if (cleaned.status === "rejected") {
-        throw cleaned.reason;
-      }
-      return canceled;
-    }));
+    (completion ??= Promise.resolve()
+      .then(async () => {
+        const active = reader;
+        // Request release can abort a retained tee; start it before waiting for cancellation.
+        const cancellation = invoke(() =>
+          active ? active.cancel(reason) : source?.cancel(reason),
+        );
+        const cleanup = invoke(() => providerRelease?.());
+        if (active) {
+          releaseReader(active);
+        }
+        const [canceled, cleaned] = await Promise.allSettled([cancellation, cleanup]);
+        if (cleaned.status === "rejected") {
+          throw cleaned.reason;
+        }
+        return canceled;
+      })
+      .finally(() => retainedResource?.release()));
   try {
     // A failing stream getter must not hide its release callback, or vice versa.
     const [releaseField, streamField] = await Promise.allSettled([
@@ -72,7 +77,7 @@ export async function captureSpeechProviderStream(
   }
   return {
     available: Boolean(source),
-    requiresRelease: Boolean(providerRelease),
+    requiresRelease: Boolean(providerRelease || retainedResource),
     closed,
     close,
     async read(): Promise<ReadableStreamReadResult<Uint8Array>> {

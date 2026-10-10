@@ -3,7 +3,7 @@ import type {
   RealtimeTranscriptionSessionCallbacks,
   RealtimeTranscriptionSessionCreateRequest,
 } from "openclaw/plugin-sdk/realtime-transcription";
-import { pcmToMulaw } from "openclaw/plugin-sdk/realtime-voice";
+import { pcmToMulaw } from "openclaw/plugin-sdk/realtime-voice-provider";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AsteriskConfig } from "../config.js";
 import type { NormalizedEvent } from "../types.js";

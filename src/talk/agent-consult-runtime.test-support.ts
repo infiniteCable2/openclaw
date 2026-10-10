@@ -3,12 +3,8 @@ import { afterEach, beforeEach, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { SessionEntry } from "../config/sessions/types.js";
-import {
-  closeOpenClawAgentDatabaseByPath,
-  closeOpenClawAgentDatabasesForTest,
-} from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
 
 type ForkSessionEntryFromParent =
@@ -145,15 +141,13 @@ export function requireEmbeddedAgentCall(runEmbeddedAgent: {
 export function useConsultRuntimeTestHooks() {
   const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
-    afterEach(() => {
+    afterEach(async () => {
       sessionForkMocks.forkSessionEntryFromParent.mockReset();
       const tempDir = testTempDir;
       testTempDir = undefined;
       if (tempDir) {
-        closeOpenClawAgentDatabaseByPath(path.join(tempDir, "openclaw-agent.sqlite"));
         clientVoiceSessionTesting.reset();
-        closeOpenClawAgentDatabasesForTest();
-        closeOpenClawStateDatabaseForTest();
+        await cleanupSessionStateForTest({ stateDir: tempDir });
       }
       envSnapshot.restore();
       cleanup();

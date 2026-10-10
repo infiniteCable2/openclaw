@@ -52,8 +52,15 @@ export async function prepareTextToSpeechTelephony(
         prepareSynthesis: false,
         selectOperation: () => ({
           kind: "ready",
-          synthesize: async ({ retainLocalService }): Promise<{ release?: () => Promise<void> }> =>
-            retainLocalService({}),
+          synthesize: async (
+            _request,
+            { retainLocalService },
+          ): Promise<{ release?: () => Promise<void> }> => {
+            const retainedResource = retainLocalService();
+            return {
+              release: retainedResource ? async () => retainedResource.release() : undefined,
+            };
+          },
           cleanupFailedProjection: async (synthesis) => {
             await synthesis.release?.();
           },
@@ -134,13 +141,9 @@ export async function streamTextToSpeechTelephony(
         requireStreamingTelephony: true,
         selectOperation: ({ resolvedProvider }) => ({
           kind: "ready",
-          synthesize: async ({ prepared, cfg: runtimeCfg, timeoutMs, retainLocalService }) => {
+          synthesize: async ({ target: _target, ...preparedRequest }, { retainLocalService }) => {
             const request = {
-              text: prepared.text,
-              cfg: runtimeCfg,
-              providerConfig: prepared.providerConfig,
-              providerOverrides: prepared.providerOverrides,
-              timeoutMs,
+              ...preparedRequest,
               signal: params.signal,
             };
             const synthesis = resolvedProvider.provider.streamSynthesizeTelephony
@@ -150,7 +153,11 @@ export async function streamTextToSpeechTelephony(
                 );
             return {
               providerResult: synthesis,
-              transport: await captureSpeechProviderStream(retainLocalService(synthesis), acquired),
+              transport: await captureSpeechProviderStream(
+                synthesis,
+                acquired,
+                retainLocalService(),
+              ),
             };
           },
           cleanupFailedProjection: async ({ transport }) => {
@@ -194,18 +201,15 @@ export async function textToSpeechTelephony(
         timeoutMs: params.timeoutMs,
         target: "telephony",
         logLabel: "TTS telephony",
-        requireTelephony: true,
-        selectOperation: ({ resolvedProvider }) => ({
-          kind: "ready",
-          synthesize: ({ prepared, cfg: runtimeCfg, timeoutMs }) =>
-            resolvedProvider.provider.synthesizeTelephony!({
-              text: prepared.text,
-              cfg: runtimeCfg,
-              providerConfig: prepared.providerConfig,
-              providerOverrides: prepared.providerOverrides,
-              timeoutMs,
-            }),
-        }),
+        selectOperation: ({ resolvedProvider }) => {
+          const synthesizeTelephony = resolvedProvider.provider.synthesizeTelephony as NonNullable<
+            typeof resolvedProvider.provider.synthesizeTelephony
+          >;
+          return {
+            kind: "ready",
+            synthesize: ({ target: _target, ...request }) => synthesizeTelephony(request),
+          };
+        },
         buildSuccess: ({ synthesis, ...metadata }) => ({
           success: true as const,
           ...metadata,

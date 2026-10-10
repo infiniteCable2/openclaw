@@ -8,13 +8,14 @@ import {
 import { setGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { clearCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
-import type { InstalledPluginIndex } from "../plugins/installed-plugin-index-types.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
-import { buildPluginMetadataProviderFacts } from "../plugins/plugin-metadata-provider-facts.js";
 import { restorePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
-import { buildDeclaredProviderOwnerIndex } from "../plugins/provider-owner-index.js";
+import {
+  createPluginManifestRecordFixture,
+  createPluginMetadataSnapshotFixture,
+} from "../plugins/plugin-metadata.test-support.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 const mocks = vi.hoisted(() => ({
@@ -35,7 +36,7 @@ const {
   resolveConfigWidePluginManifestRegistry,
 } = await import("./io.plugin-metadata.js");
 
-const { migratePersistedImplicitMainRoster } = await import("./legacy.roster.js");
+const { createCanonicalAgentConfigFixture } = await import("../test-utils/config-roster.js");
 const { validateConfigObjectWithPlugins, validateConfigObjectWithPluginsAsync } =
   await import("./validation.js");
 
@@ -48,26 +49,17 @@ const agents = {
   },
 };
 
-function manifestRecord(params: {
-  id: string;
-  source: string;
-  channels?: string[];
-}): PluginManifestRecord {
-  return {
-    id: params.id,
-    name: params.id,
+function manifestRecord(id: string, source: string, channels: string[] = []): PluginManifestRecord {
+  return createPluginManifestRecordFixture({
+    id,
+    source,
+    rootDir: source,
+    origin: "workspace",
+    channels,
+    name: id,
     description: "test plugin",
     version: "1.0.0",
-    source: params.source,
-    rootDir: params.source,
-    manifestPath: `${params.source}/openclaw.plugin.json`,
-    origin: "workspace",
-    channels: params.channels ?? [],
-    providers: [],
-    cliBackends: [],
-    skills: [],
-    hooks: [],
-  };
+  });
 }
 
 function workspaceSnapshot(
@@ -76,60 +68,25 @@ function workspaceSnapshot(
   disabledIds: readonly string[] = [],
   policyHash = "test",
 ) {
-  const index: InstalledPluginIndex = {
-    version: 1,
-    hostContractVersion: "test",
-    compatRegistryVersion: "test",
-    migrationVersion: 1,
-    policyHash,
-    generatedAtMs: 1,
+  const snapshot = createPluginMetadataSnapshotFixture({ plugins });
+  const index = {
+    ...snapshot.index,
     workspaceDir,
-    installRecords: {},
-    diagnostics: [],
-    plugins: plugins.map((plugin) => ({
-      pluginId: plugin.id,
-      source: plugin.source,
-      manifestPath: plugin.manifestPath,
-      manifestHash: "test",
-      rootDir: plugin.rootDir,
-      origin: plugin.origin,
-      enabled: !disabledIds.includes(plugin.id),
-      startup: { sidecar: false, memory: false, agentHarnesses: [] },
-      compat: [],
+    policyHash,
+    plugins: snapshot.index.plugins.map((plugin) => ({
+      ...plugin,
+      enabled: !disabledIds.includes(plugin.pluginId),
     })),
   };
   return restorePluginMetadataSnapshot({
+    ...snapshot,
     workspaceDir,
     policyHash,
     index,
     registryIndex: index,
-    registryDiagnostics: [],
-    manifestRegistry: { plugins, diagnostics: [] },
     plugins,
-    diagnostics: [],
+    manifestRegistry: { plugins, diagnostics: [] },
     byPluginId: new Map(plugins.map((plugin) => [plugin.id, plugin])),
-    declaredProviderOwners: buildDeclaredProviderOwnerIndex(plugins),
-    owners: {
-      channels: new Map(),
-      channelConfigs: new Map(),
-      providers: new Map(),
-      modelCatalogProviders: new Map(),
-      cliBackends: new Map(),
-      setupProviders: new Map(),
-      commandAliases: new Map(),
-      contracts: new Map(),
-      providerAuthContributions:
-        buildPluginMetadataProviderFacts(plugins).providerAuthContributions,
-      modelIdNormalizationPolicies: new Map(),
-    },
-    metrics: {
-      registrySnapshotMs: 0,
-      manifestRegistryMs: 0,
-      ownerMapsMs: 0,
-      totalMs: 0,
-      indexPluginCount: plugins.length,
-      manifestPluginCount: plugins.length,
-    },
     discovery: {
       candidates: plugins.map((plugin) =>
         recordPluginCandidateInstallOwner(
@@ -156,8 +113,8 @@ describe("config IO plugin metadata snapshots", () => {
   });
 
   it("shares first-access inventory across config reads and alternating plugin selections", () => {
-    const primary = manifestRecord({ id: "primary", source: "/srv/ops/primary" });
-    const secondary = manifestRecord({ id: "secondary", source: "/srv/research/secondary" });
+    const primary = manifestRecord("primary", "/srv/ops/primary");
+    const secondary = manifestRecord("secondary", "/srv/research/secondary");
     const snapshots = new Map([
       [path.resolve("/srv/ops"), workspaceSnapshot(path.resolve("/srv/ops"), [primary])],
       [
@@ -194,7 +151,7 @@ describe("config IO plugin metadata snapshots", () => {
   });
 
   it("reuses compatible Gateway metadata inside an isolated reload operation", async () => {
-    const prepared = manifestRecord({ id: "prepared", source: "/srv/ops/prepared" });
+    const prepared = manifestRecord("prepared", "/srv/ops/prepared");
     const config = {
       agents: { entries: { ops: { workspace: path.resolve("/srv/ops") } } },
       logging: { level: "info" as const },
@@ -239,7 +196,6 @@ describe("config IO plugin metadata snapshots", () => {
     );
     expect(mocks.resolvePluginMetadataSnapshotInput).toHaveBeenCalledTimes(1);
   });
-
   it.each(["sync", "async"] as const)(
     "reuses Gateway metadata through %s config validation",
     async (mode) => {
@@ -247,7 +203,7 @@ describe("config IO plugin metadata snapshots", () => {
         agents: { entries: { ops: { workspace: path.resolve("/srv/ops") } } },
         logging: { level: "info" },
       };
-      const prepared = manifestRecord({ id: "prepared", source: "/srv/ops/prepared" });
+      const prepared = manifestRecord("prepared", "/srv/ops/prepared");
       const snapshot = workspaceSnapshot(
         path.resolve("/srv/ops"),
         [prepared],
@@ -260,7 +216,7 @@ describe("config IO plugin metadata snapshots", () => {
       const loader = createConfigIoContext({
         env: {},
         observe: false,
-      }).createValidationPluginMetadataSnapshotLoader({ effectiveConfigRaw: nextConfig, env: {} });
+      }).createValidationPluginMetadataSnapshotLoader({ env: {} });
 
       const result = await withPluginCache(createPluginCache(), () =>
         mode === "sync"
@@ -290,11 +246,11 @@ describe("config IO plugin metadata snapshots", () => {
         },
       },
     });
-    const config = migratePersistedImplicitMainRoster(legacyConfig("ops")).config as OpenClawConfig;
+    const config = createCanonicalAgentConfigFixture(legacyConfig("ops")).config;
     const policyHash = resolveInstalledPluginIndexPolicyHash(config, {});
     const initial = workspaceSnapshot(path.resolve("/srv/base"), [], [], policyHash);
     setGatewayPluginMetadataSnapshot(initial, { config, env: {} });
-    const added = manifestRecord({ id: "new-workspace-plugin", source: "/srv/base/ops/plugin" });
+    const added = manifestRecord("new-workspace-plugin", "/srv/base/ops/plugin");
     const snapshots = new Map([
       [path.resolve("/srv/base"), workspaceSnapshot(path.resolve("/srv/base"), [], [], policyHash)],
       [
@@ -305,11 +261,11 @@ describe("config IO plugin metadata snapshots", () => {
     mocks.resolvePluginMetadataSnapshotInput.mockImplementation(
       ({ workspaceDir }: { workspaceDir: string }) => snapshots.get(workspaceDir),
     );
-    const nextConfig = legacyConfig("research");
+    const nextConfig = createCanonicalAgentConfigFixture(legacyConfig("research")).config;
     const loader = createConfigIoContext({
       env: {},
       observe: false,
-    }).createValidationPluginMetadataSnapshotLoader({ effectiveConfigRaw: nextConfig, env: {} });
+    }).createValidationPluginMetadataSnapshotLoader({ env: {} });
 
     const result = await withPluginCache(createPluginCache(), () =>
       validateConfigObjectWithPluginsAsync(nextConfig, {
@@ -326,7 +282,7 @@ describe("config IO plugin metadata snapshots", () => {
   });
 
   it("rejects Gateway metadata when the configured workspace set changes", async () => {
-    const prepared = manifestRecord({ id: "prepared", source: "/srv/ops/prepared" });
+    const prepared = manifestRecord("prepared", "/srv/ops/prepared");
     const config = {
       agents: {
         defaults: { systemAgent: { agentId: "ops" } },
@@ -423,14 +379,11 @@ describe("config IO plugin metadata snapshots", () => {
       expect(mocks.resolvePluginMetadataSnapshotInput).toHaveBeenCalledTimes(agentId ? 2 : 3);
     },
   );
-
   it("feeds merged workspace plugins to snapshot-backed read-only discovery", () => {
-    const primary = manifestRecord({ id: "primary", source: "/srv/ops/primary" });
-    const secondary = manifestRecord({
-      id: "research-chat-plugin",
-      source: "/srv/research/research-chat-plugin",
-      channels: ["research-chat"],
-    });
+    const primary = manifestRecord("primary", "/srv/ops/primary");
+    const secondary = manifestRecord("research-chat-plugin", "/srv/research/research-chat-plugin", [
+      "research-chat",
+    ]);
     const mergedRegistry = { plugins: [primary, secondary], diagnostics: [] };
     const secondaryDiagnostic = {
       level: "warn" as const,
@@ -463,7 +416,6 @@ describe("config IO plugin metadata snapshots", () => {
     };
     const context = createConfigIoContext({ env: {}, observe: false });
     const loader = context.createValidationPluginMetadataSnapshotLoader({
-      effectiveConfigRaw: cfg,
       env: {},
     });
     loader.load(cfg);
@@ -502,16 +454,16 @@ describe("config IO plugin metadata snapshots", () => {
   });
 
   it("preserves shared source order and rejects conflicting IDs throughout the inventory", () => {
-    const primary = manifestRecord({ id: "primary", source: "/srv/ops/primary" });
-    const shared = manifestRecord({ id: "shared", source: "/plugins/shared" });
-    const secondary = manifestRecord({ id: "secondary", source: "/srv/research/secondary" });
+    const primary = manifestRecord("primary", "/srv/ops/primary");
+    const shared = manifestRecord("shared", "/plugins/shared");
+    const secondary = manifestRecord("secondary", "/srv/research/secondary");
     const snapshots = new Map([
       [
         path.resolve("/srv/ops"),
         workspaceSnapshot(path.resolve("/srv/ops"), [
           primary,
           shared,
-          manifestRecord({ id: "conflict", source: "/srv/ops/conflict" }),
+          manifestRecord("conflict", "/srv/ops/conflict"),
         ]),
       ],
       [
@@ -519,7 +471,7 @@ describe("config IO plugin metadata snapshots", () => {
         workspaceSnapshot(path.resolve("/srv/research"), [
           secondary,
           shared,
-          manifestRecord({ id: "conflict", source: "/srv/research/conflict" }),
+          manifestRecord("conflict", "/srv/research/conflict"),
         ]),
       ],
     ]);

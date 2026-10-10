@@ -2,6 +2,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
+import { sleep } from "../utils/sleep.js";
 import { decodeMeetingAudioBase64 } from "./audio-base64.js";
 import { createMeetingOutputLoopbackVerifier } from "./output-loopback-verifier.js";
 import type { MeetingRealtimeAudioFormat } from "./realtime-audio-format.js";
@@ -14,6 +15,15 @@ const NODE_OUTPUT_GENERATION_CAPABILITY = Symbol.for(
 // device-side playout backpressure below the invoke timeout and let a fenced
 // clear preempt a long TTS segment without queueing its remaining audio.
 const MAX_NODE_OUTPUT_CHUNK_BYTES = 24_000;
+
+function readNodeAudioResult(raw: unknown): Record<string, unknown> {
+  const envelope = asOptionalRecord(raw);
+  const payloadJSON = readNonBlankString(envelope?.payloadJSON);
+  if (payloadJSON) {
+    return asOptionalRecord(JSON.parse(payloadJSON)) ?? {};
+  }
+  return asOptionalRecord(envelope?.payload ?? raw) ?? {};
+}
 
 export function createNodeMeetingRealtimeAudioTransport(params: {
   runtime: PluginRuntime;
@@ -46,6 +56,13 @@ export function createNodeMeetingRealtimeAudioTransport(params: {
   const outputLoopbackVerifier = createMeetingOutputLoopbackVerifier({
     audioFormat: params.audioFormat ?? "pcm16-24khz",
   });
+  const invoke = (action: string, payload: Record<string, unknown> = {}, timeoutMs = 5_000) =>
+    params.runtime.nodes.invoke({
+      nodeId: params.nodeId,
+      command: params.commandName,
+      params: { action, bridgeId: params.bridgeId, ...payload },
+      timeoutMs,
+    });
   const runOutputCommand = <T>(task: () => Promise<T>): Promise<T> => {
     if (outputGenerationSupported) {
       return task();
@@ -83,17 +100,11 @@ export function createNodeMeetingRealtimeAudioTransport(params: {
           }
           try {
             // Long-poll cadence bounds both normal input latency and transient-error retries.
-            const raw = await params.runtime.nodes.invoke({
-              nodeId: params.nodeId,
-              command: params.commandName,
-              params: { action: "pullAudio", bridgeId: params.bridgeId, timeoutMs: 250 },
-              timeoutMs: 2_000,
-            });
+            const raw = await invoke("pullAudio", { timeoutMs: 250 }, 2_000);
             if (stopped) {
               break;
             }
-            const rawRecord = asOptionalRecord(raw);
-            const result = asOptionalRecord(rawRecord?.payload ?? raw) ?? {};
+            const result = readNodeAudioResult(raw);
             const base64 = readNonBlankString(result.base64);
             if (base64) {
               const audio = decodeMeetingAudioBase64(base64, "pullAudio");
@@ -123,9 +134,7 @@ export function createNodeMeetingRealtimeAudioTransport(params: {
               signalFatal();
               break;
             }
-            await new Promise<void>((resolve) => {
-              setTimeout(resolve, 250);
-            });
+            await sleep(250);
           }
         }
       })();
@@ -138,12 +147,7 @@ export function createNodeMeetingRealtimeAudioTransport(params: {
       stopped = true;
       outputLoopbackVerifier.cancelOutput();
       try {
-        await params.runtime.nodes.invoke({
-          nodeId: params.nodeId,
-          command: params.commandName,
-          params: { action: "stop", bridgeId: params.bridgeId },
-          timeoutMs: 5_000,
-        });
+        await invoke("stop");
       } catch (error) {
         params.logger.debug?.(
           `${params.logScope} node audio bridge stop ignored: ${formatErrorMessage(error)}`,
@@ -176,7 +180,7 @@ export function createNodeMeetingRealtimeAudioTransport(params: {
             if (stopped || (outputGenerationSupported && generation !== outputGeneration)) {
               return;
             }
-            const responseRecord = asOptionalRecord(response);
+            const responseRecord = readNodeAudioResult(response);
             if (responseRecord?.dropped === true || responseRecord?.stale === true) {
               throw new Error("node rejected current audio output generation");
             }
@@ -200,16 +204,7 @@ export function createNodeMeetingRealtimeAudioTransport(params: {
         if (stopped) {
           return;
         }
-        await params.runtime.nodes.invoke({
-          nodeId: params.nodeId,
-          command: params.commandName,
-          params: {
-            action: "clearAudio",
-            bridgeId: params.bridgeId,
-            ...(outputGenerationSupported ? { outputGeneration } : {}),
-          },
-          timeoutMs: 5_000,
-        });
+        await invoke("clearAudio", outputGenerationSupported ? { outputGeneration } : {});
       });
     },
     dispose: async () => {

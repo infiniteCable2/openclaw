@@ -14,7 +14,13 @@ import {
   createSpeechProviderRegistry,
   normalizeSpeechProviderId,
 } from "./provider-registry-core.js";
-import type { SpeechProviderConfig, SpeechProviderOverrides } from "./provider-types.js";
+import type {
+  SpeechProviderConfig,
+  SpeechProviderOverrides,
+  SpeechProviderPrepareSynthesisContext,
+  SpeechSynthesisRequest,
+  SpeechSynthesisTarget,
+} from "./provider-types.js";
 import { acquireSpeechProviderLocalService } from "./tts-local-service.js";
 import {
   getResolvedSpeechProviderConfigForVoiceModel,
@@ -74,27 +80,6 @@ export async function throwTtsProjectionError(
   throw error;
 }
 
-function buildTtsFailureResult(
-  errors: string[],
-  attemptedProviders?: string[],
-  attempts?: TtsProviderAttempt[],
-  persona?: string,
-): {
-  success: false;
-  error: string;
-  attemptedProviders?: string[];
-  attempts?: TtsProviderAttempt[];
-  persona?: string;
-} {
-  return {
-    success: false,
-    error: `TTS conversion failed: ${errors.join("; ") || "no providers available"}`,
-    attemptedProviders,
-    attempts,
-    persona,
-  };
-}
-
 type TtsProviderReadyResolution =
   | {
       kind: "ready";
@@ -118,7 +103,7 @@ function resolveReadySpeechProvider(params: {
   config: ResolvedTtsConfig;
   persona?: ResolvedTtsPersona;
   voiceModel?: VoiceModelRef;
-  requireTelephony?: boolean;
+  target: SpeechSynthesisTarget;
   requireStreamingTelephony?: boolean;
   providerRegistry: TtsProviderRegistry;
 }): TtsProviderReadyResolution {
@@ -166,7 +151,11 @@ function resolveReadySpeechProvider(params: {
       message: `${params.provider}: not configured`,
     };
   }
-  if (params.requireTelephony && !resolvedProvider.synthesizeTelephony) {
+  if (
+    params.target === "telephony" &&
+    !resolvedProvider.synthesizeTelephony &&
+    !(params.requireStreamingTelephony && resolvedProvider.streamSynthesizeTelephony)
+  ) {
     return {
       kind: "skip",
       reasonCode: "unsupported_for_telephony",
@@ -198,49 +187,6 @@ function resolveReadySpeechProvider(params: {
   };
 }
 
-async function prepareSpeechSynthesis(params: {
-  provider: SpeechProviderPlugin;
-  text: string;
-  cfg: OpenClawConfig;
-  providerConfig: SpeechProviderConfig;
-  providerOverrides?: SpeechProviderOverrides;
-  persona?: ResolvedTtsPersona;
-  personaProviderConfig?: SpeechProviderConfig;
-  target: "audio-file" | "voice-note" | "telephony";
-  timeoutMs: number;
-}): Promise<{
-  text: string;
-  providerConfig: SpeechProviderConfig;
-  providerOverrides?: SpeechProviderOverrides;
-}> {
-  if (!params.provider.prepareSynthesis) {
-    return {
-      text: params.text,
-      providerConfig: params.providerConfig,
-      providerOverrides: params.providerOverrides,
-    };
-  }
-  const prepared = await params.provider.prepareSynthesis({
-    text: params.text,
-    cfg: params.cfg,
-    providerConfig: params.providerConfig,
-    providerOverrides: params.providerOverrides,
-    persona: params.persona,
-    personaProviderConfig: params.personaProviderConfig,
-    target: params.target,
-    timeoutMs: params.timeoutMs,
-  });
-  return {
-    text: prepared?.text ?? params.text,
-    providerConfig: prepared?.providerConfig
-      ? { ...params.providerConfig, ...prepared.providerConfig }
-      : params.providerConfig,
-    providerOverrides: prepared?.providerOverrides
-      ? { ...params.providerOverrides, ...prepared.providerOverrides }
-      : params.providerOverrides,
-  };
-}
-
 type TtsRequestSetupParams = {
   text: string;
   cfg: OpenClawConfig;
@@ -252,9 +198,25 @@ type TtsRequestSetupParams = {
   accountId?: string;
 };
 
-function resolveTtsRequestConfig(
+type TtsRequestSetup = {
+  cfg: OpenClawConfig;
+  config: ResolvedTtsConfig;
+  persona?: ResolvedTtsPersona;
+  providers: VoiceProviderCandidate[];
+  prepareProviderRegistry: () => Promise<TtsProviderRegistry>;
+};
+
+type AcquiredTtsRequest =
+  | { error: string }
+  | ({ setup: TtsRequestSetup } & Pick<
+      Awaited<ReturnType<typeof acquirePluginCapabilityProviders<"speechProviders">>>,
+      "run" | "release"
+    >);
+
+/** Keeps catalog and direct lookup selections in one explicit speech request owner. */
+export async function acquireTtsRequest(
   params: TtsRequestSetupParams,
-): { cfg: OpenClawConfig; config: ResolvedTtsConfig; prefsPath: string } | { error: string } {
+): Promise<AcquiredTtsRequest> {
   const cfg = resolveTtsRuntimeConfig(params.cfg);
   const config = resolveTtsConfig(cfg, {
     agentId: params.agentId,
@@ -267,27 +229,6 @@ function resolveTtsRequestConfig(
       error: `Text too long (${params.text.length} chars, max ${config.maxTextLength})`,
     };
   }
-
-  return { cfg, config, prefsPath };
-}
-
-type OwnedTtsRequestSetup =
-  | { error: string }
-  | {
-      cfg: OpenClawConfig;
-      config: ResolvedTtsConfig;
-      persona?: ResolvedTtsPersona;
-      providers: VoiceProviderCandidate[];
-      prepareProviderRegistry: () => Promise<TtsProviderRegistry>;
-    };
-
-/** Keeps catalog and direct lookup selections in one explicit speech request owner. */
-export async function acquireTtsRequest(params: TtsRequestSetupParams) {
-  const facts = resolveTtsRequestConfig(params);
-  if ("error" in facts) {
-    return facts;
-  }
-  const { cfg, config, prefsPath } = facts;
   // Bind before provider work can reload the snapshot; fallback follows a known runtime
   // owner without letting an unrelated global snapshot replace explicit scoped config.
   const readRuntimeConfig = createRuntimeConfigReader(cfg);
@@ -394,7 +335,7 @@ export async function acquireTtsRequest(params: TtsRequestSetupParams) {
 /** Finite speech calls finish their work before returning a materialized result. */
 export async function withOwnedTtsRequest<T>(
   params: TtsRequestSetupParams,
-  run: (setup: OwnedTtsRequestSetup) => T | Promise<T>,
+  run: (setup: TtsRequestSetup | { error: string }) => T | Promise<T>,
 ): Promise<T> {
   const acquired = await acquireTtsRequest(params);
   if ("error" in acquired) {
@@ -410,17 +351,13 @@ export async function withOwnedTtsRequest<T>(
 }
 
 type ReadySpeechProvider = Extract<TtsProviderReadyResolution, { kind: "ready" }>;
-type PreparedSpeechSynthesis = Awaited<ReturnType<typeof prepareSpeechSynthesis>>;
 type TtsProviderOperation<TSynthesis> =
   | {
       kind: "ready";
-      synthesize: (params: {
-        prepared: PreparedSpeechSynthesis;
-        cfg: OpenClawConfig;
-        target: "audio-file" | "voice-note" | "telephony";
-        timeoutMs: number;
-        retainLocalService: <T>(synthesis: T) => T;
-      }) => Promise<TSynthesis>;
+      synthesize: (
+        request: SpeechSynthesisRequest,
+        lifecycle: { retainLocalService: () => { release: () => void } | undefined },
+      ) => Promise<TSynthesis>;
       cleanupFailedProjection?: (synthesis: TSynthesis) => Promise<void>;
     }
   | {
@@ -449,9 +386,8 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   providerOverrides?: Record<string, SpeechProviderOverrides>;
   timeoutMs?: number;
   signal?: AbortSignal;
-  target: "audio-file" | "voice-note" | "telephony";
+  target: SpeechSynthesisTarget;
   logLabel: string;
-  requireTelephony?: boolean;
   requireStreamingTelephony?: boolean;
   prepareSynthesis?: boolean;
   prepareProviderRegistry: () => Promise<TtsProviderRegistry>;
@@ -460,12 +396,28 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
     resolvedProvider: ReadySpeechProvider;
   }) => TtsProviderOperation<TSynthesis>;
   buildSuccess: (params: TtsProviderSuccess<TSynthesis>) => TResult;
-}): Promise<TResult | ReturnType<typeof buildTtsFailureResult>> {
+}) {
   const { cfg, config, persona, providers } = params;
   const errors: string[] = [];
   const attemptedProviders: string[] = [];
   const attempts: TtsProviderAttempt[] = [];
   const primaryProvider = providers[0]?.provider;
+  const recordSkipped = (
+    provider: TtsProvider,
+    skipped: Extract<TtsProviderOperation<TSynthesis>, { kind: "skip" }>,
+    binding: Pick<TtsProviderAttempt, "personaBinding">,
+  ) => {
+    errors.push(skipped.message);
+    attempts.push({
+      provider,
+      outcome: "skipped",
+      reasonCode: skipped.reasonCode,
+      persona: persona?.id,
+      ...binding,
+      error: skipped.message,
+    });
+    logVerbose(`${params.logLabel}: provider ${provider} skipped (${skipped.message})`);
+  };
   logVerbose(
     `${params.logLabel}: starting with provider ${primaryProvider}, fallbacks: ${
       providers
@@ -486,40 +438,24 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         config,
         persona,
         voiceModel,
-        requireTelephony: params.requireTelephony,
+        target: params.target,
         requireStreamingTelephony: params.requireStreamingTelephony,
         providerRegistry,
       });
       if (resolvedProvider.kind === "skip") {
-        errors.push(resolvedProvider.message);
-        attempts.push({
+        recordSkipped(
           provider,
-          outcome: "skipped",
-          reasonCode: resolvedProvider.reasonCode,
-          persona: persona?.id,
-          ...(resolvedProvider.personaBinding
+          resolvedProvider,
+          resolvedProvider.personaBinding
             ? { personaBinding: resolvedProvider.personaBinding }
-            : {}),
-          error: resolvedProvider.message,
-        });
-        logVerbose(
-          `${params.logLabel}: provider ${provider} skipped (${resolvedProvider.message})`,
+            : {},
         );
         continue;
       }
 
       const operation = params.selectOperation({ provider, resolvedProvider });
       if (operation.kind === "skip") {
-        errors.push(operation.message);
-        attempts.push({
-          provider,
-          outcome: "skipped",
-          reasonCode: operation.reasonCode,
-          persona: persona?.id,
-          personaBinding: resolvedProvider.personaBinding,
-          error: operation.message,
-        });
-        logVerbose(`${params.logLabel}: provider ${provider} skipped (${operation.message})`);
+        recordSkipped(provider, operation, { personaBinding: resolvedProvider.personaBinding });
         continue;
       }
 
@@ -551,8 +487,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
                 providerConfig: resolvedProvider.providerConfig,
                 providerOverrides,
               }
-            : await prepareSpeechSynthesis({
-                provider: resolvedProvider.provider,
+            : await prepareSpeechSynthesis(resolvedProvider.provider, {
                 text: params.synthesisText,
                 cfg,
                 providerConfig: resolvedProvider.providerConfig,
@@ -562,22 +497,23 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
                 target: params.target,
                 timeoutMs,
               });
-        const synthesis = await operation.synthesize({
-          prepared,
-          cfg,
-          target: params.target,
-          timeoutMs,
-          retainLocalService: (value) => {
-            if (!localServiceLease) {
-              return value;
-            }
-            const retained = attachLocalServiceLeaseToSynthesis(value, {
-              release: releaseLocalService,
-            });
-            localServiceLeaseRetained = true;
-            return retained;
+        const synthesis = await operation.synthesize(
+          {
+            ...prepared,
+            cfg,
+            target: params.target,
+            timeoutMs,
           },
-        });
+          {
+            retainLocalService: () => {
+              if (!localServiceLease) {
+                return undefined;
+              }
+              localServiceLeaseRetained = true;
+              return { release: releaseLocalService };
+            },
+          },
+        );
         try {
           const latencyMs = Date.now() - providerStart;
           attempts.push({
@@ -592,14 +528,14 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
             synthesis,
             latencyMs,
             provider,
-            providerModel: resolveTtsResultModel(
-              prepared.providerConfig,
-              prepared.providerOverrides,
-            ),
-            providerVoice: resolveTtsResultVoice(
-              prepared.providerConfig,
-              prepared.providerOverrides,
-            ),
+            providerModel: resolveTtsResultDetail(prepared, ["modelId", "model"]),
+            providerVoice: resolveTtsResultDetail(prepared, [
+              "speakerVoiceId",
+              "speakerVoice",
+              "voiceId",
+              "voiceName",
+              "voice",
+            ]),
             persona: persona?.id,
             fallbackFrom: provider !== primaryProvider ? primaryProvider : undefined,
             attemptedProviders,
@@ -642,74 +578,44 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
     }
   }
 
-  return buildTtsFailureResult(errors, attemptedProviders, attempts, persona?.id);
+  return {
+    success: false as const,
+    error: `TTS conversion failed: ${errors.join("; ") || "no providers available"}`,
+    attemptedProviders,
+    attempts,
+    persona: persona?.id,
+  };
 }
 
-function attachLocalServiceLeaseToSynthesis<TSynthesis>(
-  synthesis: TSynthesis,
-  localServiceLease: { release: () => void },
-): TSynthesis {
-  if (synthesis === null || typeof synthesis !== "object") {
-    throw new Error(
-      "streaming TTS synthesis must return an object to retain a local service lease",
-    );
+async function prepareSpeechSynthesis(
+  provider: SpeechProviderPlugin,
+  request: SpeechProviderPrepareSynthesisContext,
+) {
+  const overrides = await provider.prepareSynthesis?.({ ...request });
+  return {
+    text: overrides?.text ?? request.text,
+    providerConfig: overrides?.providerConfig
+      ? { ...request.providerConfig, ...overrides.providerConfig }
+      : request.providerConfig,
+    providerOverrides: overrides?.providerOverrides
+      ? { ...request.providerOverrides, ...overrides.providerOverrides }
+      : request.providerOverrides,
+  };
+}
+
+function resolveTtsResultDetail(
+  prepared: Pick<SpeechSynthesisRequest, "providerConfig" | "providerOverrides">,
+  keys: readonly string[],
+): string | undefined {
+  for (const config of [prepared.providerOverrides, prepared.providerConfig]) {
+    for (const key of keys) {
+      const value = readTtsResultString(config?.[key]);
+      if (value !== undefined) {
+        return value;
+      }
+    }
   }
-  let releasePromise: Promise<void> | undefined;
-  // Do not eagerly evaluate provider getters before the native stream owner can
-  // capture both its stream and cleanup callback, even when one getter fails.
-  return Object.create(Object.getPrototypeOf(synthesis), {
-    ...Object.getOwnPropertyDescriptors(synthesis),
-    release: {
-      enumerable: true,
-      configurable: true,
-      get() {
-        const originalRelease = (synthesis as { release?: unknown }).release;
-        if (originalRelease !== undefined && typeof originalRelease !== "function") {
-          throw new Error("streaming TTS synthesis release must be a function");
-        }
-        return () => {
-          releasePromise ??= Promise.resolve()
-            .then(async () => {
-              if (typeof originalRelease === "function") {
-                await originalRelease.call(synthesis);
-              }
-            })
-            .finally(() => localServiceLease.release());
-          return releasePromise;
-        };
-      },
-    },
-  }) as TSynthesis;
-}
-
-function resolveTtsResultModel(
-  providerConfig: SpeechProviderConfig,
-  providerOverrides?: SpeechProviderOverrides,
-): string | undefined {
-  return (
-    readTtsResultString(providerOverrides?.modelId) ??
-    readTtsResultString(providerOverrides?.model) ??
-    readTtsResultString(providerConfig.modelId) ??
-    readTtsResultString(providerConfig.model)
-  );
-}
-
-function resolveTtsResultVoice(
-  providerConfig: SpeechProviderConfig,
-  providerOverrides?: SpeechProviderOverrides,
-): string | undefined {
-  return (
-    readTtsResultString(providerOverrides?.speakerVoiceId) ??
-    readTtsResultString(providerOverrides?.speakerVoice) ??
-    readTtsResultString(providerOverrides?.voiceId) ??
-    readTtsResultString(providerOverrides?.voiceName) ??
-    readTtsResultString(providerOverrides?.voice) ??
-    readTtsResultString(providerConfig.speakerVoiceId) ??
-    readTtsResultString(providerConfig.speakerVoice) ??
-    readTtsResultString(providerConfig.voiceId) ??
-    readTtsResultString(providerConfig.voiceName) ??
-    readTtsResultString(providerConfig.voice)
-  );
+  return undefined;
 }
 
 function resolvePersonaBinding(

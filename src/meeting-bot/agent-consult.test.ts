@@ -57,16 +57,17 @@ const platform: MeetingPlatformRuntimeMetadata = {
   },
 };
 
-function createBindings(agentId: string | undefined) {
+function createBindings(agentId: string | undefined, senderId?: string) {
   return createMeetingRealtimeEngineBindings({
     platform,
+    senderId,
     config: {
       realtime: { ...(agentId ? { agentId } : {}), toolPolicy: "safe-read-only" },
     },
     fullConfig: {
       agents: {
         defaults: { thinkingDefault: "low" },
-        list: [{ id: "operator", default: true }],
+        entries: { operator: {} },
       },
     },
     runtime: { agent: {} } as never,
@@ -125,6 +126,8 @@ describe("createMeetingRealtimeEngineBindings", () => {
       return outcome;
     });
     consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
+      expect(consult.senderId).toBe("@caller:example.test");
+      expect(consult).not.toHaveProperty("senderIsOwner");
       expect(consult.waitForPendingInput).toBe(waitForPendingInput);
       const registration = consult.onRunStarted?.({
         runId: "run-1",
@@ -140,6 +143,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
       expect(prepareRealtimeVoiceAgentExecutionContext).toHaveBeenLastCalledWith(
         expect.objectContaining({
           agentId: "support",
+          senderId: "@caller:example.test",
           sessionKey: outcome.sessionKey,
           spawnedBy: "agent:support:matrix:dm:caller",
           messageProvider: "test-meeting",
@@ -153,7 +157,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
       expect(controlRealtimeVoiceAgentRun.mock.calls[0]?.[0].runTarget?.isCurrent()).toBe(false);
       return { text: "A and B done" };
     });
-    await createBindings("Support").consultAgent({
+    await createBindings("Support", "@caller:example.test").consultAgent({
       meetingSessionId: "meeting-control",
       requesterSessionKey: "agent:support:matrix:dm:caller",
       args: { question: "A" },
@@ -302,7 +306,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
       fullConfig: {
         agents: {
           defaults: { thinkingDefault: "low" },
-          list: [{ id: "operator", default: true }],
+          entries: { operator: {} },
         },
       },
       runtime: { agent: {} } as never,
@@ -333,7 +337,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
           additionalToolsAllow: ["voiceassistant_device"],
         },
       },
-      fullConfig: { agents: { list: [{ id: "operator", default: true }] } },
+      fullConfig: { agents: { entries: { operator: {} } } },
       runtime: { agent: {} } as never,
       logger: {} as never,
     });
@@ -378,6 +382,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
         lane: "test-meeting",
         surface: "a test meeting",
         sessionKey: "agent:support:subagent:test-meeting:meeting-3",
+        spawnedBy: "agent:support:main",
       }),
     );
   });

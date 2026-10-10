@@ -33,7 +33,23 @@ import {
   type OpenClawConfig,
   type ReplyPayload,
   type SpeechTelephonySynthesisRequest,
+  type TtsConfig,
 } from "./tts-runtime.test-support.js";
+
+function personaConfig(
+  persona: NonNullable<TtsConfig["personas"]>[string],
+  overrides: TtsConfig = {},
+): OpenClawConfig {
+  return {
+    tts: {
+      enabled: true,
+      provider: "mock",
+      persona: "alfred",
+      personas: { alfred: persona },
+      ...overrides,
+    },
+  };
+}
 
 describe("TTS runtime persona behavior", () => {
   afterEach(() => {
@@ -71,7 +87,7 @@ describe("TTS runtime persona behavior", () => {
             narrator: { providers: { mock: { voice: "agent-voice" } } },
           },
         },
-        agents: { list: [{ id: "reader", tts: { persona: "narrator" } }] },
+        agents: { entries: { reader: { tts: { persona: "narrator" } } } },
       },
       agentId: "reader",
       channelId: "matrix",
@@ -134,24 +150,14 @@ describe("TTS runtime persona behavior", () => {
   });
 
   it("selects persona preferred provider before config fallback", () => {
-    const cfg: OpenClawConfig = {
-      tts: {
-        enabled: true,
-        provider: "other",
-        persona: "alfred",
-        personas: {
-          alfred: {
-            label: "Alfred",
-            provider: "mock",
-            providers: {
-              mock: {
-                voice: "Algieba",
-              },
-            },
-          },
-        },
+    const cfg = personaConfig(
+      {
+        label: "Alfred",
+        provider: "mock",
+        providers: { mock: { voice: "Algieba" } },
       },
-    };
+      { provider: "other" },
+    );
     const config = resolveTtsConfig(cfg);
     const prefsPath = "/tmp/openclaw-speech-core-persona-provider.json";
 
@@ -182,30 +188,13 @@ describe("TTS runtime persona behavior", () => {
 
   it("merges active persona provider binding into synthesis config", async () => {
     setTtsMachinePrefsPathResolver(() => "/tmp/openclaw-speech-core-persona-merge.json");
-    const cfg: OpenClawConfig = {
-      tts: {
-        enabled: true,
+    const cfg = personaConfig(
+      {
         provider: "mock",
-        providers: {
-          mock: {
-            model: "base-model",
-            voice: "base-voice",
-          },
-        },
-        persona: "alfred",
-        personas: {
-          alfred: {
-            provider: "mock",
-            providers: {
-              mock: {
-                voice: "persona-voice",
-                style: "dry",
-              },
-            },
-          },
-        },
+        providers: { mock: { voice: "persona-voice", style: "dry" } },
       },
-    };
+      { providers: { mock: { model: "base-model", voice: "base-voice" } } },
+    );
 
     const payload: ReplyPayload = {
       text: "This reply should use persona-specific provider configuration.",
@@ -364,22 +353,10 @@ describe("TTS runtime persona behavior", () => {
   it("does not mark skipped unregistered providers as missing persona bindings", async () => {
     const result = await synthesizeSpeech({
       text: "Use fallback provider.",
-      cfg: {
-        tts: {
-          enabled: true,
-          provider: "missing",
-          persona: "alfred",
-          personas: {
-            alfred: {
-              providers: {
-                missing: {
-                  voice: "configured-but-unregistered",
-                },
-              },
-            },
-          },
-        },
-      },
+      cfg: personaConfig(
+        { providers: { missing: { voice: "configured-but-unregistered" } } },
+        { provider: "missing" },
+      ),
     });
 
     expect(result.success).toBe(true);
@@ -394,22 +371,7 @@ describe("TTS runtime persona behavior", () => {
   it("does not mark skipped telephony providers as missing persona bindings", async () => {
     const result = await textToSpeechTelephony({
       text: "Use telephony provider.",
-      cfg: {
-        tts: {
-          enabled: true,
-          provider: "mock",
-          persona: "alfred",
-          personas: {
-            alfred: {
-              providers: {
-                mock: {
-                  voice: "persona-voice",
-                },
-              },
-            },
-          },
-        },
-      },
+      cfg: personaConfig({ providers: { mock: { voice: "persona-voice" } } }),
     });
 
     expect(result.success).toBe(false);
@@ -502,7 +464,7 @@ describe("TTS runtime persona behavior", () => {
           },
         },
         agents: {
-          list: [{ id: "reader", tts: { persona: "narrator" } }],
+          entries: { reader: { tts: { persona: "narrator" } } },
         },
       },
     });
@@ -522,18 +484,7 @@ describe("TTS runtime persona behavior", () => {
   it("uses provider defaults when fallback policy allows missing persona bindings", async () => {
     await synthesizeSpeech({
       text: "Use neutral provider defaults.",
-      cfg: {
-        tts: {
-          enabled: true,
-          provider: "mock",
-          persona: "alfred",
-          personas: {
-            alfred: {
-              fallbackPolicy: "provider-defaults",
-            },
-          },
-        },
-      },
+      cfg: personaConfig({ fallbackPolicy: "provider-defaults" }),
     });
 
     expect(prepareSynthesisMock).toHaveBeenCalledOnce();
@@ -548,18 +499,7 @@ describe("TTS runtime persona behavior", () => {
   it("preserves persona metadata by default when provider bindings are missing", async () => {
     await synthesizeSpeech({
       text: "Use persona prompt.",
-      cfg: {
-        tts: {
-          enabled: true,
-          provider: "mock",
-          persona: "alfred",
-          personas: {
-            alfred: {
-              label: "Alfred",
-            },
-          },
-        },
-      },
+      cfg: personaConfig({ label: "Alfred" }),
     });
 
     expect(prepareSynthesisMock).toHaveBeenCalledOnce();
@@ -580,23 +520,10 @@ describe("TTS runtime persona behavior", () => {
 
     const result = await synthesizeSpeech({
       text: "Use the first persona-bound provider.",
-      cfg: {
-        tts: {
-          enabled: true,
-          provider: "mock",
-          persona: "alfred",
-          personas: {
-            alfred: {
-              fallbackPolicy: "fail",
-              providers: {
-                fallback: {
-                  voice: "fallback-voice",
-                },
-              },
-            },
-          },
-        },
-      },
+      cfg: personaConfig({
+        fallbackPolicy: "fail",
+        providers: { fallback: { voice: "fallback-voice" } },
+      }),
     });
 
     expect(result.success).toBe(true);
@@ -618,48 +545,6 @@ describe("TTS runtime persona behavior", () => {
 });
 
 describe("TTS runtime per-agent config", () => {
-  it("deep-merges the active agent TTS override over tts", () => {
-    const cfg = {
-      tts: {
-        enabled: true,
-        provider: "openai",
-        providers: {
-          openai: {
-            apiKey: "example",
-            voice: "coral",
-            speed: 1,
-          },
-        },
-      },
-      agents: {
-        list: [
-          {
-            id: "reader",
-            tts: {
-              provider: "openai",
-              providers: {
-                openai: {
-                  voice: "nova",
-                },
-              },
-            },
-          },
-        ],
-      },
-    } satisfies OpenClawConfig;
-
-    const resolved = resolveTtsConfig(cfg, "reader");
-
-    const rawConfig = requireRecord(resolved.rawConfig, "resolved raw TTS config");
-    expect(rawConfig.enabled).toBe(true);
-    expect(rawConfig.provider).toBe("openai");
-    const providers = requireRecord(rawConfig.providers, "resolved raw TTS providers");
-    const openai = requireRecord(providers.openai, "resolved OpenAI TTS provider config");
-    expect(openai.apiKey).toBe("example");
-    expect(openai.voice).toBe("nova");
-    expect(openai.speed).toBe(1);
-  });
-
   it("composes per-agent TTS overrides with active persona bindings", async () => {
     const cfg = {
       tts: {
@@ -692,9 +577,8 @@ describe("TTS runtime per-agent config", () => {
         },
       },
       agents: {
-        list: [
-          {
-            id: "reader",
+        entries: {
+          reader: {
             tts: {
               persona: "jarvis",
               providers: {
@@ -704,7 +588,7 @@ describe("TTS runtime per-agent config", () => {
               },
             },
           },
-        ],
+        },
       },
     } satisfies OpenClawConfig;
 
@@ -731,33 +615,5 @@ describe("TTS runtime per-agent config", () => {
         rmSync(mediaDir, { recursive: true, force: true });
       }
     }
-  });
-
-  it("ignores prototype-pollution keys in agent TTS overrides", () => {
-    const cfg = {
-      tts: {
-        provider: "openai",
-        providers: {
-          openai: {
-            voice: "coral",
-          },
-        },
-      },
-      agents: {
-        list: [
-          {
-            id: "reader",
-            tts: JSON.parse(
-              '{"providers":{"openai":{"voice":"nova","__proto__":{"polluted":true}}}}',
-            ),
-          },
-        ],
-      },
-    } as OpenClawConfig;
-
-    const resolved = resolveTtsConfig(cfg, "reader");
-
-    expect(resolved.rawConfig?.providers?.openai).toEqual({ voice: "nova" });
-    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 });

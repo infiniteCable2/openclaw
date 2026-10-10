@@ -106,22 +106,33 @@ function migrateLegacyRtcCallDefaults(params: {
   pathPrefix: string;
   changes: string[];
   inheritedAgentIds: ReadonlySet<string>;
+  inheritedAgentProfiles?: Record<string, unknown>;
 }): { entry: Record<string, unknown>; changed: boolean } {
   if (!hasLegacyRtcCallDefaults(params.entry)) {
     return { entry: params.entry, changed: false };
   }
+  // SAFETY: hasLegacyRtcCallDefaults accepts only record-shaped rtc settings.
   const rtc = params.entry.rtc as Record<string, unknown>;
-  const previousProfiles = isRecord(rtc.agentProfiles) ? rtc.agentProfiles : {};
-  const profiles = new Map(Object.entries(previousProfiles));
   const agentIds = new Set([...params.inheritedAgentIds, ...rtcAdmissionAgentIds(params.entry)]);
+  const authoredProfiles = isRecord(rtc.agentProfiles) ? rtc.agentProfiles : {};
+  const previousProfiles = Object.hasOwn(rtc, "agentProfiles")
+    ? authoredProfiles
+    : agentIds.size > 0
+      ? (params.inheritedAgentProfiles ?? {})
+      : {};
+  const profiles = new Map(Object.entries(previousProfiles));
   for (const agentId of agentIds) {
     const currentProfile = profiles.get(agentId);
     const previous = isRecord(currentProfile) ? currentProfile : {};
+    const authored = isRecord(authoredProfiles[agentId]) ? authoredProfiles[agentId] : {};
     const profile: Record<string, unknown> = { ...previous };
-    if (Object.hasOwn(rtc, "agentThinkingLevel") && !Object.hasOwn(profile, "agentThinkingLevel")) {
+    if (
+      Object.hasOwn(rtc, "agentThinkingLevel") &&
+      !Object.hasOwn(authored, "agentThinkingLevel")
+    ) {
       profile.agentThinkingLevel = rtc.agentThinkingLevel;
     }
-    if (Object.hasOwn(rtc, "speakCommentary") && !Object.hasOwn(profile, "speakCommentary")) {
+    if (Object.hasOwn(rtc, "speakCommentary") && !Object.hasOwn(authored, "speakCommentary")) {
       profile.speakCommentary = rtc.speakCommentary;
     }
     profiles.set(agentId, profile);
@@ -242,6 +253,7 @@ function normalizeMatrixEntry(params: {
   pathPrefix: string;
   changes: string[];
   inheritedAgentIds: ReadonlySet<string>;
+  inheritedAgentProfiles?: Record<string, unknown>;
 }): { entry: Record<string, unknown>; changed: boolean } {
   const network = migrateLegacyFlatAllowPrivateNetworkAlias(params);
   const dmPolicy = migrateLegacyTrustedDmPolicy({ ...params, entry: network.entry });
@@ -290,22 +302,38 @@ export function normalizeCompatibilityConfig({
     changes,
   });
   const matrix = isRecord(aliases.config.channels?.matrix) ? aliases.config.channels.matrix : {};
-  const inheritedAgentIds = rtcAdmissionAgentIds(matrix);
+  const rootAdmissionAgentIds = rtcAdmissionAgentIds(matrix);
+  const inheritedAgentIds = new Set(rootAdmissionAgentIds);
   const accounts = isRecord(matrix.accounts) ? matrix.accounts : {};
   for (const account of Object.values(accounts)) {
     for (const agentId of rtcAdmissionAgentIds(account)) {
       inheritedAgentIds.add(agentId);
     }
   }
+  let rootAgentProfiles: Record<string, unknown> = {};
   return normalizeChannelConfigEntries({
     cfg: aliases.config,
     channelId: "matrix",
     changes,
-    normalizeEntry: (params) =>
-      normalizeMatrixEntry({
+    normalizeEntry: (params) => {
+      const rtc = isRecord(params.entry.rtc) ? params.entry.rtc : null;
+      // Account RTC objects merge over the root, but an explicit admissions
+      // list replaces the root list (including an explicit empty list).
+      const accountInheritedAgentIds =
+        rtc && Object.hasOwn(rtc, "admissions") ? new Set<string>() : rootAdmissionAgentIds;
+      const isRoot = params.pathPrefix === "channels.matrix";
+      const normalized = normalizeMatrixEntry({
         ...params,
-        inheritedAgentIds:
-          params.pathPrefix === "channels.matrix" ? inheritedAgentIds : new Set<string>(),
-      }),
+        inheritedAgentIds: isRoot ? inheritedAgentIds : accountInheritedAgentIds,
+        inheritedAgentProfiles: isRoot ? undefined : rootAgentProfiles,
+      });
+      if (isRoot) {
+        const normalizedRtc = isRecord(normalized.entry.rtc) ? normalized.entry.rtc : null;
+        rootAgentProfiles = isRecord(normalizedRtc?.agentProfiles)
+          ? normalizedRtc.agentProfiles
+          : {};
+      }
+      return normalized;
+    },
   });
 }

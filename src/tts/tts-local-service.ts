@@ -39,5 +39,6 @@ function readLocalServiceConfig(
   if (!isRecord(value) || !normalizeOptionalString(value.command)) {
     throw new Error(`tts.providers.${providerId}.localService.command must be a non-empty string`);
   }
+  // SAFETY: this is a schema-validated provider config; the local-service owner revalidates launch settings.
   return value as ProviderLocalServiceConfig;
 }

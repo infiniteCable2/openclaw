@@ -28,6 +28,7 @@ export async function checkLocalServiceIdleStop(
   if (!value || typeof value !== "object") {
     throw new Error("local service idle-stop check returned an invalid decision");
   }
+  // SAFETY: the object guard permits property inspection; every consumed field is validated below.
   const decision = value as Record<string, unknown>;
   const validUntilEpoch = decision.validUntilEpoch;
   if (

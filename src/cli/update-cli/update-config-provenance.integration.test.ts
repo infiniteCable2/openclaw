@@ -6,6 +6,7 @@ import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAccountListHelpers } from "../../channels/plugins/account-helpers.js";
 import * as legacyBindingRepair from "../../commands/doctor/shared/legacy-config-binding-repair.runtime.js";
+import type { runPostCorePluginConvergence } from "../../commands/doctor/shared/post-core-plugin-convergence.js";
 import { replaceConfigFile } from "../../config/config.js";
 import {
   createConfigIO,
@@ -64,7 +65,14 @@ vi.mock("../../plugins/update-cohort.js", () => ({
   },
 }));
 vi.mock("../../commands/doctor/shared/post-core-plugin-convergence.js", () => ({
-  runPostCorePluginConvergence: async () => ({
+  runPostCorePluginConvergence: async ({
+    cfg,
+  }: Parameters<typeof runPostCorePluginConvergence>[0]): ReturnType<
+    typeof runPostCorePluginConvergence
+  > => ({
+    config: cfg,
+    configChanges: [],
+    installedPluginIdRecovery: new Map(),
     changes: [],
     warnings: [],
     installRecords: {},
@@ -207,7 +215,7 @@ describe("update config provenance", () => {
         const { snapshot, writeOptions } = await createConfigIO({
           pluginValidation: "skip",
         }).readConfigFileSnapshotForWrite();
-        expect(snapshot.sourceConfigBeforeMigrations?.agents?.list).toEqual([
+        expect(snapshot.sourceConfigBeforeMigrations).toHaveProperty("agents.list", [
           { id: "ops" },
           { id: "research" },
         ]);
@@ -243,6 +251,7 @@ describe("update config provenance", () => {
         expect(persisted.bindings).toEqual([
           narrowerRoute,
           { agentId: "ops", match: { channel: "discord", accountId: "default" } },
+          { agentId: "ops", match: { channel: "discord", accountId: "*" } },
         ]);
       });
     },
@@ -302,6 +311,7 @@ describe("update config provenance", () => {
           expect(result.repaired).toBe(true);
         } else if (flow === "converge") {
           await convergeUpdatePlugins({
+            candidateRuntime: true,
             result: {
               status: "ok",
               mode: "git",

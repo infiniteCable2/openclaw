@@ -15,7 +15,7 @@ function createCollectionControl() {
 
 it("collects superseded resident rows and their materializations after metadata refreshes", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const cfg = { agents: { list: [{ id: "main", default: true }] } };
+    const cfg = { agents: { entries: { main: {} } } };
     setRuntimeConfigSnapshot(cfg);
     const keys = Array.from({ length: 4 }, (_, index) => `agent:main:retention-${index}`);
     const write = (key: string, revision: number) =>
@@ -40,6 +40,19 @@ it("collects superseded resident rows and their materializations after metadata 
       materialized: WeakRef<object>;
     }[] = [];
     const selections: WeakRef<object>[] = [];
+    function captureSelections() {
+      for (const opts of [{}, { agentId: "main" }, { configuredAgentsOnly: true }]) {
+        for (const activeOnly of [false, true]) {
+          selections.push(
+            ...prepareSessionRowSelection(
+              projection,
+              { ...opts, activeOnly },
+              { ordered: true },
+            ).entries.map((pair) => new WeakRef(pair)),
+          );
+        }
+      }
+    }
     const control = createCollectionControl();
     function refreshEntries(revision: number) {
       for (const row of projection.selectEntries().filter(ready)) {
@@ -63,7 +76,7 @@ it("collects superseded resident rows and their materializations after metadata 
         expect(result.sessions.map((row) => row.label)).toEqual(
           keys.map(() => `Revision ${revision}`),
         );
-        selections.push(new WeakRef(prepareSessionRowSelection(projection, {}).entries));
+        captureSelections();
       }
       // A publication must release the last list even when no subsequent viewer arrives.
       refreshEntries(5);
@@ -80,7 +93,7 @@ it("collects superseded resident rows and their materializations after metadata 
       expect(projection.selectEntries().filter(ready)).toHaveLength(keys.length);
       await listProjectedSessions({ projection, opts: {} });
       const disposedEntries = projection.selectEntries().map((row) => new WeakRef(row.entry));
-      selections.push(new WeakRef(prepareSessionRowSelection(projection, {}).entries));
+      captureSelections();
       projection.dispose();
       await nextTurn();
       queryObjects(WeakRef);
@@ -90,6 +103,45 @@ it("collects superseded resident rows and their materializations after metadata 
       projection.dispose();
       release();
       await nextTurn();
+    }
+  });
+});
+
+it("does not retain a superseded child entry through a held parent display row", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = { agents: { entries: { main: {} } } };
+    setRuntimeConfigSnapshot(cfg);
+    const parent = "agent:main:compact-parent";
+    const child = "agent:main:compact-child";
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: parent },
+      { sessionId: "compact-parent", updatedAt: 1 },
+    );
+    const writeChild = (updatedAt: number) =>
+      replaceSessionEntrySync(
+        { agentId: "main", sessionKey: child },
+        { sessionId: "compact-child", updatedAt, parentSessionKey: parent },
+      );
+    writeChild(1);
+    const release = retainSessionListForegroundWork();
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+    try {
+      await projection.ensureMaterialized();
+      const heldParent = projection.describe({ agentId: "main", key: parent })!;
+      const retiredChild = new WeakRef(projection.describe({ agentId: "main", key: child })!.entry);
+      writeChild(2);
+      await projection.ensureMaterialized();
+      await nextTurn();
+      queryObjects(WeakRef);
+      expect(retiredChild.deref()).toBeUndefined();
+      // Retained consumers may still hold the old parent; it needs only child display facts.
+      expect(heldParent.materialized.source.childLinks?.[0]?.entry.sessionId).toBe("compact-child");
+      expect(
+        projection.snapshot({ agentId: "main", key: parent }, { now: 2 }).row?.childSessions,
+      ).toEqual([child]);
+    } finally {
+      projection.dispose();
+      release();
     }
   });
 });

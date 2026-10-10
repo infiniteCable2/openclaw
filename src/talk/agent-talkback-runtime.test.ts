@@ -13,6 +13,21 @@ function makeLogger() {
   };
 }
 
+type QueueParams = Parameters<typeof createRealtimeVoiceAgentTalkbackQueue>[0];
+
+function createQueue(params: Pick<QueueParams, "consult"> & Partial<QueueParams>) {
+  return createRealtimeVoiceAgentTalkbackQueue({
+    debounceMs: 1,
+    isStopped: () => false,
+    logger: makeLogger(),
+    logPrefix: "[test]",
+    responseStyle: "brief",
+    fallbackText: "fallback",
+    deliver: vi.fn(),
+    ...params,
+  });
+}
+
 function expectConsultRequest(
   call: unknown,
   expected: { metadata: unknown; question: string; responseStyle: string },
@@ -150,13 +165,9 @@ describe("realtime voice agent talkback queue", () => {
       .mockResolvedValueOnce({ text: "owner-answer" })
       .mockResolvedValueOnce({ text: "guest-answer" });
     const deliver = vi.fn();
-    const queue = createRealtimeVoiceAgentTalkbackQueue({
+    const queue = createQueue({
       debounceMs: 10,
-      isStopped: () => false,
       logger,
-      logPrefix: "[test]",
-      responseStyle: "brief",
-      fallbackText: "fallback",
       consult,
       deliver,
     });
@@ -196,15 +207,9 @@ describe("realtime voice agent talkback queue", () => {
           }),
       )
       .mockResolvedValue({ text: "queued-answer" });
-    const queue = createRealtimeVoiceAgentTalkbackQueue({
-      debounceMs: 1,
-      isStopped: () => false,
+    const queue = createQueue({
       logger,
-      logPrefix: "[test]",
-      responseStyle: "brief",
-      fallbackText: "fallback",
       consult,
-      deliver: vi.fn(),
     });
 
     queue.enqueue("first");
@@ -240,15 +245,9 @@ describe("realtime voice agent talkback queue", () => {
           }),
       )
       .mockResolvedValue({ text: "queued-answer" });
-    const queue = createRealtimeVoiceAgentTalkbackQueue({
-      debounceMs: 1,
-      isStopped: () => false,
+    const queue = createQueue({
       logger,
-      logPrefix: "[test]",
-      responseStyle: "brief",
-      fallbackText: "fallback",
       consult,
-      deliver: vi.fn(),
     });
 
     queue.enqueue("first");
@@ -273,13 +272,8 @@ describe("realtime voice agent talkback queue", () => {
     vi.useFakeTimers();
     const logger = makeLogger();
     const deliver = vi.fn();
-    const queue = createRealtimeVoiceAgentTalkbackQueue({
-      debounceMs: 1,
-      isStopped: () => false,
+    const queue = createQueue({
       logger,
-      logPrefix: "[test]",
-      responseStyle: "brief",
-      fallbackText: "fallback",
       consult: vi.fn(async () => {
         throw new Error("boom");
       }),
@@ -296,15 +290,9 @@ describe("realtime voice agent talkback queue", () => {
   it("cancels pending debounced work on close", async () => {
     vi.useFakeTimers();
     const consult = vi.fn(async () => ({ text: "answer" }));
-    const queue = createRealtimeVoiceAgentTalkbackQueue({
+    const queue = createQueue({
       debounceMs: 100,
-      isStopped: () => false,
-      logger: makeLogger(),
-      logPrefix: "[test]",
-      responseStyle: "brief",
-      fallbackText: "fallback",
       consult,
-      deliver: vi.fn(),
     });
 
     queue.enqueue("question");
@@ -330,13 +318,8 @@ describe("realtime voice agent talkback queue", () => {
         }),
     );
     const deliver = vi.fn();
-    const queue = createRealtimeVoiceAgentTalkbackQueue({
-      debounceMs: 1,
-      isStopped: () => false,
+    const queue = createQueue({
       logger,
-      logPrefix: "[test]",
-      responseStyle: "brief",
-      fallbackText: "fallback",
       consult,
       deliver,
     });

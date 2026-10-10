@@ -260,15 +260,20 @@ export function renderPanelTabStrip<T extends PanelTabStripTab>(params: {
 }) {
   const controlsFor = (tab: T) =>
     typeof params.ariaControls === "string" ? params.ariaControls : params.ariaControls(tab);
+  const newControlId = params.tabs[0] ? `${params.tabs[0].domId}-new` : undefined;
   const newButton = (slotted: boolean) =>
     params.newControl === nothing
       ? nothing
       : params.newControl
-        ? html`<span slot=${slotted ? "nav" : nothing} class="tabstrip-new-control"
+        ? html`<span
+            id=${newControlId ?? nothing}
+            slot=${slotted ? "nav" : nothing}
+            class="tabstrip-new-control"
             >${params.newControl}</span
           >`
         : html`
             <button
+              id=${newControlId ?? nothing}
               slot=${slotted ? "nav" : nothing}
               class="rail-header__action tabstrip-new"
               type="button"
@@ -320,6 +325,29 @@ export function renderPanelTabStrip<T extends PanelTabStripTab>(params: {
           const selected = tab.id === params.activeId;
           const reorderId = tab.reorderId ?? tab.id;
           const draggable = Boolean(params.onReorder) && tab.draggable !== false;
+          const handleTabDrag = (event: DragEvent) => {
+            const target = event.currentTarget;
+            if (!params.onReorder || !event.dataTransfer || !(target instanceof Element)) {
+              return;
+            }
+            const dropping = event.type === "drop";
+            const sourceId =
+              draggedPanelTabId(target) ||
+              (dropping ? event.dataTransfer.getData(PANEL_TAB_DRAG_TYPE) : "");
+            if (!sourceId || sourceId === reorderId) {
+              return;
+            }
+            event.preventDefault();
+            if (dropping) {
+              const placement = panelTabDropPlacement(event, target);
+              finishPanelTabDrag(target);
+              params.onReorder(sourceId, reorderId, placement);
+            } else {
+              event.dataTransfer.dropEffect = "move";
+              clearPanelTabDropTargets(target);
+              target.classList.add(`is-drop-${panelTabDropPlacement(event, target)}`);
+            }
+          };
           // Every gap outside a group keeps its separator so activating a tab cannot
           // reflow the row; the pair touching the active tab is faded out in CSS instead.
           const showSeparator =
@@ -396,26 +424,7 @@ export function renderPanelTabStrip<T extends PanelTabStripTab>(params: {
                   }
                 }
               }}
-              @dragover=${(event: DragEvent) => {
-                if (!params.onReorder || !event.dataTransfer) {
-                  return;
-                }
-                const sourceId =
-                  event.currentTarget instanceof Element
-                    ? draggedPanelTabId(event.currentTarget)
-                    : "";
-                if (!sourceId || sourceId === reorderId) {
-                  return;
-                }
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
-                const target = event.currentTarget;
-                if (!(target instanceof Element)) {
-                  return;
-                }
-                clearPanelTabDropTargets(target);
-                target.classList.add(`is-drop-${panelTabDropPlacement(event, target)}`);
-              }}
+              @dragover=${handleTabDrag}
               @dragleave=${(event: DragEvent) => {
                 if (
                   event.currentTarget instanceof Element &&
@@ -427,23 +436,7 @@ export function renderPanelTabStrip<T extends PanelTabStripTab>(params: {
                   event.currentTarget.classList.remove("is-drop-before", "is-drop-after");
                 }
               }}
-              @drop=${(event: DragEvent) => {
-                if (!params.onReorder || !event.dataTransfer) {
-                  return;
-                }
-                const target = event.currentTarget;
-                const sourceId =
-                  target instanceof Element
-                    ? draggedPanelTabId(target) || event.dataTransfer.getData(PANEL_TAB_DRAG_TYPE)
-                    : "";
-                if (!sourceId || sourceId === reorderId || !(target instanceof Element)) {
-                  return;
-                }
-                event.preventDefault();
-                const placement = panelTabDropPlacement(event, target);
-                finishPanelTabDrag(target);
-                params.onReorder(sourceId, reorderId, placement);
-              }}
+              @drop=${handleTabDrag}
               @dragend=${(event: DragEvent) => {
                 if (event.currentTarget instanceof Element) {
                   finishPanelTabDrag(event.currentTarget);
@@ -462,6 +455,7 @@ export function renderPanelTabStrip<T extends PanelTabStripTab>(params: {
               }
             </wa-tab>
             <button
+              id=${`${tab.domId}-close`}
               slot="nav"
               class="rail-header__action tabstrip-tab__close"
               type="button"
@@ -525,6 +519,15 @@ export function renderPanelTabStrip<T extends PanelTabStripTab>(params: {
       )}
       ${newButton(true)}
     </wa-tab-group>
+    <!-- WA's nav slot owns visual layout; action buttons belong beside the tablist in the accessibility tree. -->
+    <span
+      role="group"
+      style="display: contents"
+      aria-owns=${[
+        ...params.tabs.map((tab) => `${tab.domId}-close`),
+        ...(params.newControl === nothing ? [] : [newControlId]),
+      ].join(" ")}
+    ></span>
   `;
 }
 

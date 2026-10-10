@@ -46,10 +46,12 @@ function asLivekitTransport(value: unknown): LivekitTransportConfig | null {
   if (!value || typeof value !== "object") {
     return null;
   }
+  // SAFETY: only unknown-valued properties are inspected after the object guard.
   const transport = value as { type?: unknown; livekit_service_url?: unknown };
   if (transport.type !== "livekit" || typeof transport.livekit_service_url !== "string") {
     return null;
   }
+  // SAFETY: the LiveKit discriminator and its required service URL were checked above.
   return value as LivekitTransportConfig;
 }
 

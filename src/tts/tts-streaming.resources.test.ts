@@ -35,7 +35,7 @@ function createFixture(
     explicitRelease?: boolean;
     ending?: "eof" | "error" | "blocked";
     initialState?: "empty" | "error" | "chunk";
-    projectionFailure?: "result" | "config-model" | "config-voice" | "audioStream" | "release";
+    projectionFailure?: "result" | "config-model" | "audioStream" | "release";
     holdRelease?: boolean;
     invalidMetadata?: boolean;
     releaseFailure?: boolean;
@@ -115,8 +115,8 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
         record("release"); state.released.resolve(); state.aborted.resolve();
         await state.releaseResume.promise; record("released"); if (state.options.releaseFailure) throw new Error("native cleanup failure");
       })();
-      if (state.options.projectionFailure?.startsWith("config-")) {
-        Object.defineProperty(request.providerConfig, state.options.projectionFailure === "config-model" ? "modelId" : "speakerVoiceId", { get() { throw new Error("native config projection failure"); } });
+      if (state.options.projectionFailure === "config-model") {
+        Object.defineProperty(request.providerConfig, "modelId", { get() { throw new Error("native config projection failure"); } });
       }
       if (["audioStream", "release"].includes(state.options.projectionFailure)) {
         state.work.push(state.trackAsyncWork(async () => { await state.aborted.promise; record("capture-tail"); }));
@@ -157,18 +157,23 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     plugin,
     state,
     run,
-    withEnvironment: (operation: () => Promise<void>) =>
-      withEnvAsync(
-        {
-          OPENCLAW_HOME: dir,
-          OPENCLAW_STATE_DIR: dir,
-          OPENCLAW_CONFIG_PATH: path.join(dir, "config.json"),
-        },
-        async () => {
-          useNoBundledPlugins();
-          await operation();
-        },
-      ),
+    async runTest(operation: () => Promise<void>) {
+      try {
+        await withEnvAsync(
+          {
+            OPENCLAW_HOME: dir,
+            OPENCLAW_STATE_DIR: dir,
+            OPENCLAW_CONFIG_PATH: path.join(dir, "config.json"),
+          },
+          async () => {
+            useNoBundledPlugins();
+            await operation();
+          },
+        );
+      } finally {
+        await this.cleanup();
+      }
+    },
     async cleanup() {
       aborted.resolve();
       tail.resolve();
@@ -213,7 +218,7 @@ describe("streaming speech registration ownership", () => {
       const release = vi.fn();
       acquireLocalService.mockResolvedValue({ release });
       try {
-        await fixture.withEnvironment(async () => {
+        await fixture.runTest(async () => {
           const params = { text: "Hello", cfg: fixture.cfg, prefsPath: fixture.prefsPath };
           const result: TtsStreamResult =
             mode === "speech"
@@ -224,9 +229,6 @@ describe("streaming speech registration ownership", () => {
           expect(result.success).toBe(true);
           expect(release).not.toHaveBeenCalled();
           expect(fixture.state.connections.every((entry) => entry.database.isOpen)).toBe(true);
-          if (result.audioStream) {
-            await result.audioStream.cancel();
-          }
           await result.release?.();
           await result.release?.();
           expect(release).toHaveBeenCalledOnce();
@@ -245,7 +247,7 @@ describe("streaming speech registration ownership", () => {
       const release = vi.fn();
       acquireLocalService.mockResolvedValue({ release });
       try {
-        await fixture.withEnvironment(async () => {
+        await fixture.runTest(async () => {
           const result = await fixture.run();
           expect(result.success).toBe(false);
           expect(release).toHaveBeenCalledOnce();
@@ -257,115 +259,77 @@ describe("streaming speech registration ownership", () => {
     },
   );
 
-  it.each(["eof", "error"] as const)(
-    "keeps explicit cleanup after %s and closes on release",
-    async (ending) => {
-      const fixture = createFixture({ ending });
+  it.each([
+    { ending: "eof", explicitRelease: true },
+    { ending: "error", explicitRelease: true },
+    { ending: "eof", explicitRelease: false },
+    { ending: "error", explicitRelease: false },
+  ] as const)("closes after $ending with explicit release=$explicitRelease", async (options) => {
+    const fixture = createFixture(options);
+    await fixture.runTest(async () => {
+      const result = await fixture.run();
+      expect(result.success).toBe(true);
+      const reader = result.audioStream!.getReader();
       try {
-        await fixture.withEnvironment(async () => {
-          const result = await fixture.run();
-          expect(result.success).toBe(true);
-          const reader = result.audioStream!.getReader();
-          try {
-            expect((await reader.read()).value).toEqual(pcm);
-            if (ending === "error") {
-              await expect(reader.read()).rejects.toThrow("native read failure");
-            } else {
-              expect((await reader.read()).done).toBe(true);
-            }
-            expect(fixture.state.events.some((event) => event.phase === "release")).toBe(false);
-            expect(fixture.state.connections.every((entry) => entry.database.isOpen)).toBe(true);
-            await result.release?.();
-            await result.release?.();
-            expect(fixture.state.events.filter((event) => event.phase === "release").length).toBe(
-              1,
-            );
-            expectClosed(fixture);
-          } finally {
-            reader.releaseLock();
-            await result.release?.();
-          }
-        });
+        expect((await reader.read()).value).toEqual(pcm);
+        if (options.ending === "error") {
+          await expect(reader.read()).rejects.toThrow("native read failure");
+        } else {
+          expect((await reader.read()).done).toBe(true);
+        }
+        if (options.explicitRelease) {
+          expect(fixture.state.events.some((event) => event.phase === "release")).toBe(false);
+          expect(fixture.state.connections.every((entry) => entry.database.isOpen)).toBe(true);
+          await result.release?.();
+          await result.release?.();
+          expect(fixture.state.events.filter((event) => event.phase === "release").length).toBe(1);
+        }
+        expectClosed(fixture);
       } finally {
-        await fixture.cleanup();
+        reader.releaseLock();
+        await result.release?.();
       }
-    },
-  );
-
-  it.each(["eof", "error"] as const)(
-    "releases a provider with no release callback after %s",
-    async (ending) => {
-      const fixture = createFixture({ ending, explicitRelease: false });
-      try {
-        await fixture.withEnvironment(async () => {
-          const result = await fixture.run();
-          const reader = result.audioStream!.getReader();
-          try {
-            expect((await reader.read()).value).toEqual(pcm);
-            if (ending === "error") {
-              await expect(reader.read()).rejects.toThrow("native read failure");
-            } else {
-              expect((await reader.read()).done).toBe(true);
-            }
-            expectClosed(fixture);
-          } finally {
-            reader.releaseLock();
-            await result.release?.();
-          }
-        });
-      } finally {
-        await fixture.cleanup();
-      }
-    },
-  );
+    });
+  });
 
   it("releases an unopened stream without requiring a reader", async () => {
     const fixture = createFixture();
-    try {
-      await fixture.withEnvironment(async () => {
-        const result = await fixture.run();
-        await result.release?.();
-        expect(fixture.state.events.some((event) => event.phase === "pull")).toBe(false);
-        expectClosed(fixture);
-      });
-    } finally {
-      await fixture.cleanup();
-    }
+    await fixture.runTest(async () => {
+      const result = await fixture.run();
+      await result.release?.();
+      expect(fixture.state.events.some((event) => event.phase === "pull")).toBe(false);
+      expectClosed(fixture);
+    });
   });
 
   it.each(["managed", "raw"] as const)(
     "preserves %s registration custody after stream handoff",
     async (kind) => {
       const fixture = createFixture();
-      try {
-        await fixture.withEnvironment(async () => {
-          const inspection =
-            kind === "managed"
-              ? await acquirePluginRegistryForInspection({ config: fixture.cfg })
-              : undefined;
-          const registry =
-            inspection?.registry ?? loadPluginRegistryHandle({ config: fixture.cfg });
-          const result = await withPluginRuntimeRegistryScope(registry, fixture.run);
-          await inspection?.release();
-          const reader = result.audioStream!.getReader();
-          try {
-            expect((await reader.read()).value).toEqual(pcm);
-            expect((await reader.read()).done).toBe(true);
-            await result.release?.();
-            if (kind === "managed") {
-              expectClosed(fixture);
-            } else {
-              expect(fixture.state.connections.every((entry) => entry.database.isOpen)).toBe(true);
-              expect(fixture.state.connections.every((entry) => entry.disposals === 0)).toBe(true);
-            }
-          } finally {
-            reader.releaseLock();
-            await result.release?.();
+      await fixture.runTest(async () => {
+        const inspection =
+          kind === "managed"
+            ? await acquirePluginRegistryForInspection({ config: fixture.cfg })
+            : undefined;
+        const registry = inspection?.registry ?? loadPluginRegistryHandle({ config: fixture.cfg });
+        const result = await withPluginRuntimeRegistryScope(registry, fixture.run);
+        await inspection?.release();
+        const reader = result.audioStream!.getReader();
+        try {
+          expect((await reader.read()).value).toEqual(pcm);
+          expect((await reader.read()).done).toBe(true);
+          await result.release?.();
+          if (kind === "managed") {
+            expectClosed(fixture);
+          } else {
+            expect(fixture.state.connections.every((entry) => entry.database.isOpen)).toBe(true);
+            expect(fixture.state.connections.every((entry) => entry.disposals === 0)).toBe(true);
           }
-        });
-      } finally {
-        await fixture.cleanup();
-      }
+        } finally {
+          reader.releaseLock();
+          await result.release?.();
+        }
+      });
     },
   );
 
@@ -373,54 +337,50 @@ describe("streaming speech registration ownership", () => {
     "%s aborts before joining the blocked pull and retains its actual tail/context",
     async (method) => {
       const fixture = createFixture({ ending: "blocked" });
-      try {
-        await fixture.withEnvironment(async () => {
-          const result = await fixture.run();
-          const reader = result.audioStream!.getReader();
-          const read = reader.read();
-          await fixture.state.started.promise;
-          let settled = false;
-          const closing = fixture.state.context
-            .run("foreign", () => (method === "cancel" ? reader.cancel("stop") : result.release!()))
-            .then(() => {
-              settled = true;
-            });
-          try {
-            await nextTurn();
-            expect(fixture.state.events.some((event) => event.phase === "release")).toBe(true);
-            expect(settled).toBe(false);
-            expect(fixture.state.connections.every((entry) => entry.database.isOpen)).toBe(true);
-            fixture.state.tail.resolve();
-            await closing;
-            await read;
-            expect(
-              fixture.state.events
-                .filter((event) => ["cancel", "release", "tail"].includes(event.phase))
-                .every((event) => event.context === "source"),
-            ).toBe(true);
-            expectClosed(fixture);
-          } finally {
-            fixture.state.aborted.resolve();
-            fixture.state.tail.resolve();
-            await closing;
-            await read;
-            reader.releaseLock();
-            await result.release?.();
-          }
-        });
-      } finally {
-        await fixture.cleanup();
-      }
+      await fixture.runTest(async () => {
+        const result = await fixture.run();
+        const reader = result.audioStream!.getReader();
+        const read = reader.read();
+        await fixture.state.started.promise;
+        let settled = false;
+        const closing = fixture.state.context
+          .run("foreign", () => (method === "cancel" ? reader.cancel("stop") : result.release!()))
+          .then(() => {
+            settled = true;
+          });
+        try {
+          await nextTurn();
+          expect(fixture.state.events.some((event) => event.phase === "release")).toBe(true);
+          expect(settled).toBe(false);
+          expect(fixture.state.connections.every((entry) => entry.database.isOpen)).toBe(true);
+          fixture.state.tail.resolve();
+          await closing;
+          await read;
+          expect(
+            fixture.state.events
+              .filter((event) => ["cancel", "release", "tail"].includes(event.phase))
+              .every((event) => event.context === "source"),
+          ).toBe(true);
+          expectClosed(fixture);
+        } finally {
+          fixture.state.aborted.resolve();
+          fixture.state.tail.resolve();
+          await closing;
+          await read;
+          reader.releaseLock();
+          await result.release?.();
+        }
+      });
     },
   );
 
-  it.each(["result", "config-model", "config-voice"] as const)(
+  it.each(["result", "config-model"] as const)(
     "closes a stream when %s metadata projection fails before fallback",
     async (projectionFailure) => {
       const primary = createFixture({ id: "primary-stream", projectionFailure, holdRelease: true });
       const fallback = createFixture({ id: "fallback-stream" });
       try {
-        await primary.withEnvironment(async () => {
+        await primary.runTest(async () => {
           const cfg: OpenClawConfig = {
             ...primary.cfg,
             plugins: {
@@ -458,31 +418,26 @@ describe("streaming speech registration ownership", () => {
           }
         });
       } finally {
-        await primary.cleanup();
         await fallback.cleanup();
       }
     },
   );
   it("releases a successful provider result rejected by the public metadata guard", async () => {
     const fixture = createFixture({ invalidMetadata: true });
-    try {
-      await fixture.withEnvironment(async () => {
-        const result = await fixture.run();
-        expect(result.success).toBe(false);
-        expect(result.error).toBe("Streaming TTS conversion failed");
-        expect(fixture.state.events.filter((event) => event.phase === "release").length).toBe(1);
-        expectClosed(fixture);
-      });
-    } finally {
-      await fixture.cleanup();
-    }
+    await fixture.runTest(async () => {
+      const result = await fixture.run();
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("Streaming TTS conversion failed");
+      expect(fixture.state.events.filter((event) => event.phase === "release").length).toBe(1);
+      expectClosed(fixture);
+    });
   });
 
   it("keeps a post-byte stream failure with the selected provider", async () => {
     const primary = createFixture({ id: "primary-stream", ending: "error" });
     const fallback = createFixture({ id: "fallback-stream" });
     try {
-      await primary.withEnvironment(async () => {
+      await primary.runTest(async () => {
         const cfg: OpenClawConfig = {
           ...primary.cfg,
           plugins: {
@@ -508,24 +463,19 @@ describe("streaming speech registration ownership", () => {
         }
       });
     } finally {
-      await primary.cleanup();
       await fallback.cleanup();
     }
   });
 
   it("preserves the projection error when its stream cleanup also fails", async () => {
     const fixture = createFixture({ projectionFailure: "result", releaseFailure: true });
-    try {
-      await fixture.withEnvironment(async () => {
-        const result = await fixture.run();
-        expect(result.success).toBe(false);
-        expect(result.error).toContain("native result projection failure");
-        expect(result.error).not.toContain("native cleanup failure");
-        expectClosed(fixture);
-      });
-    } finally {
-      await fixture.cleanup();
-    }
+    await fixture.runTest(async () => {
+      const result = await fixture.run();
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("native result projection failure");
+      expect(result.error).not.toContain("native cleanup failure");
+      expectClosed(fixture);
+    });
   });
   it.each([
     { projectionFailure: "audioStream", releaseFailure: false },
@@ -535,64 +485,56 @@ describe("streaming speech registration ownership", () => {
     "uses the other cleanup field when $projectionFailure fails (cleanup rejects: $releaseFailure)",
     async ({ projectionFailure, releaseFailure }) => {
       const fixture = createFixture({ projectionFailure, releaseFailure });
-      try {
-        await fixture.withEnvironment(async () => {
-          const pending = fixture.run();
-          try {
-            await fixture.state.started.promise;
-            await nextTurn();
-            expect(
-              fixture.state.events.some(
-                (event) =>
-                  event.phase === (projectionFailure === "audioStream" ? "release" : "cancel"),
-              ),
-            ).toBe(true);
-            const result = await pending;
-            expect(result.success).toBe(false);
-            expect(result.error).toContain(`native ${projectionFailure} projection failure`);
-            expect(fixture.state.events.some((event) => event.phase === "capture-tail")).toBe(true);
-            expectClosed(fixture);
-          } finally {
-            fixture.state.aborted.resolve();
-            await pending;
-          }
-        });
-      } finally {
-        await fixture.cleanup();
-      }
+      await fixture.runTest(async () => {
+        const pending = fixture.run();
+        try {
+          await fixture.state.started.promise;
+          await nextTurn();
+          expect(
+            fixture.state.events.some(
+              (event) =>
+                event.phase === (projectionFailure === "audioStream" ? "release" : "cancel"),
+            ),
+          ).toBe(true);
+          const result = await pending;
+          expect(result.success).toBe(false);
+          expect(result.error).toContain(`native ${projectionFailure} projection failure`);
+          expect(fixture.state.events.some((event) => event.phase === "capture-tail")).toBe(true);
+          expectClosed(fixture);
+        } finally {
+          fixture.state.aborted.resolve();
+          await pending;
+        }
+      });
     },
   );
   it.each(["empty", "error", "chunk"] as const)(
     "finishes a no-release source in initial state %s without an extra EOF read",
     async (initialState) => {
       const fixture = createFixture({ explicitRelease: false, initialState });
-      try {
-        await fixture.withEnvironment(async () => {
-          const result = await fixture.run();
-          const reader = result.audioStream!.getReader();
-          try {
-            if (initialState === "chunk") {
-              expect((await reader.read()).value).toEqual(pcm);
-            }
-            if (initialState === "error") {
-              await expect(reader.closed).rejects.toThrow("native initial failure");
-            } else {
-              await expect(reader.closed).resolves.toBeUndefined();
-            }
-            expectClosed(fixture);
-            if (initialState === "error") {
-              await expect(reader.read()).rejects.toThrow("native initial failure");
-            } else {
-              expect((await reader.read()).done).toBe(true);
-            }
-          } finally {
-            reader.releaseLock();
-            await result.release?.();
+      await fixture.runTest(async () => {
+        const result = await fixture.run();
+        const reader = result.audioStream!.getReader();
+        try {
+          if (initialState === "chunk") {
+            expect((await reader.read()).value).toEqual(pcm);
           }
-        });
-      } finally {
-        await fixture.cleanup();
-      }
+          if (initialState === "error") {
+            await expect(reader.closed).rejects.toThrow("native initial failure");
+          } else {
+            await expect(reader.closed).resolves.toBeUndefined();
+          }
+          expectClosed(fixture);
+          if (initialState === "error") {
+            await expect(reader.read()).rejects.toThrow("native initial failure");
+          } else {
+            expect((await reader.read()).done).toBe(true);
+          }
+        } finally {
+          reader.releaseLock();
+          await result.release?.();
+        }
+      });
     },
   );
 });

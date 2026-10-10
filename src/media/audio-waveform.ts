@@ -1,7 +1,7 @@
 import path from "node:path";
+import { withTempWorkspace } from "@openclaw/fs-safe/temp";
 import { extensionForMime } from "@openclaw/media-core/mime";
 import { writeExternalFileWithinRoot } from "../infra/fs-safe.js";
-import { withTempWorkspace } from "../infra/private-temp-workspace.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { runFfmpeg } from "./ffmpeg-exec.js";
 import { MEDIA_FFMPEG_MAX_AUDIO_DURATION_SECS } from "./ffmpeg-limits.js";

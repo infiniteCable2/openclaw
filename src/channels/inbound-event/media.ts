@@ -26,6 +26,7 @@ export type ChannelInboundMediaInput = {
   height?: number | null;
   transcribed?: boolean | null;
   voiceMessage?: boolean | null;
+  speechInput?: boolean | null;
   messageId?: string | null;
 };
 
@@ -79,9 +80,7 @@ export function formatMediaPlaceholderText(media: readonly MediaPlaceholderTextF
  * Legacy environment fields consumed by prompt/context builders.
  * @deprecated Pass ordered `InboundMediaFacts[]` as the context's `media` field.
  */
-export type ChannelInboundMediaPayload = {
-  [Key in keyof MediaFactLegacyProjection]: MediaFactLegacyProjection[Key];
-};
+export type ChannelInboundMediaPayload = MediaFactLegacyProjection;
 
 /** Appends an unavailable-media notice to real caption text, or returns the notice alone. */
 export function formatInboundMediaUnavailableText(params: {
@@ -124,14 +123,9 @@ type InboundMediaProbeCandidate = {
 /** Adds best-effort audio/video metadata without probing URL-only media. */
 export async function toInboundMediaFactsWithMetadata(
   media: readonly ChannelInboundMediaInput[] | null | undefined,
-  defaults: {
-    kind?: InboundMediaFacts["kind"];
-    messageId?: string;
-    transcribed?: (media: ChannelInboundMediaInput, index: number) => boolean;
-  } = {},
+  defaults: Parameters<typeof toInboundMediaFacts>[1] = {},
 ): Promise<InboundMediaFacts[]> {
   const facts = toInboundMediaFacts(media, defaults);
-  const enriched = [...facts];
   const candidates: InboundMediaProbeCandidate[] = [];
   for (const [index, fact] of facts.entries()) {
     const kind = resolveProbeKind(fact);
@@ -149,9 +143,9 @@ export async function toInboundMediaFactsWithMetadata(
     },
   );
   for (const [candidateIndex, candidate] of candidates.entries()) {
-    enriched[candidate.index] = { ...candidate.fact, ...metadata[candidateIndex] };
+    facts[candidate.index] = { ...candidate.fact, ...metadata[candidateIndex] };
   }
-  return enriched;
+  return facts;
 }
 
 /** Projects facts into history without transient turn-only fields. */
@@ -171,14 +165,10 @@ export function toHistoryMediaEntries(
       messageId: entry.messageId,
       voiceMessage: entry.voiceMessage,
     };
-    if (entry.durationMs) {
-      historyEntry.durationMs = entry.durationMs;
-    }
-    if (entry.width) {
-      historyEntry.width = entry.width;
-    }
-    if (entry.height) {
-      historyEntry.height = entry.height;
+    for (const key of ["durationMs", "width", "height"] as const) {
+      if (entry[key]) {
+        historyEntry[key] = entry[key];
+      }
     }
     return historyEntry;
   });

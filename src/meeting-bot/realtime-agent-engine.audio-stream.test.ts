@@ -26,13 +26,20 @@ async function createAudioStreamFixture(params: {
   audioFormat?: MeetingRealtimeAudioFormat;
   consultAgent?: Parameters<typeof startMeetingAgentRealtimeEngine>[0]["consultAgent"];
   onActivity?: Parameters<typeof startMeetingAgentRealtimeEngine>[0]["onActivity"];
+  invalidResult?: "missing-stream" | "invalid-rate" | "locked-stream";
 }) {
   const controllerReady = createDeferred<ReadableStreamDefaultController<Uint8Array>>();
   const firstRead = createDeferred();
   const secondRead = createDeferred();
   const reads = [firstRead, secondRead];
   const cancelled = vi.fn();
-  const release = vi.fn(async () => undefined);
+  const released = createDeferred();
+  let retainedReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const release = vi.fn(async () => {
+    retainedReader?.releaseLock();
+    retainedReader = undefined;
+    released.resolve();
+  });
   const beginOutput = vi.fn();
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
   const synthesisStarted = vi.fn();
@@ -73,23 +80,27 @@ async function createAudioStreamFixture(params: {
       tts: {
         streamTextToSpeechTelephony: async () => {
           synthesisStarted();
+          const stream = new ReadableStream<Uint8Array>(
+            {
+              start(controller) {
+                controllerReady.resolve(controller);
+              },
+              pull() {
+                reads.shift()?.resolve();
+              },
+              cancel: cancelled,
+            },
+            { highWaterMark: 0 },
+          );
+          if (params.invalidResult === "locked-stream") {
+            retainedReader = stream.getReader();
+          }
           return {
             success: true,
-            sampleRate: params.sampleRate,
+            sampleRate: params.invalidResult === "invalid-rate" ? 0 : params.sampleRate,
             outputFormat: params.outputFormat,
             release,
-            audioStream: new ReadableStream<Uint8Array>(
-              {
-                start(controller) {
-                  controllerReady.resolve(controller);
-                },
-                pull() {
-                  reads.shift()?.resolve();
-                },
-                cancel: cancelled,
-              },
-              { highWaterMark: 0 },
-            ),
+            audioStream: params.invalidResult === "missing-stream" ? undefined : stream,
           };
         },
       },
@@ -112,12 +123,15 @@ async function createAudioStreamFixture(params: {
   });
   handle.speak("A synthetic audio stream.");
   const controller = await controllerReady.promise;
-  await firstRead.promise;
+  if (!params.invalidResult) {
+    await firstRead.promise;
+  }
   return {
     handle,
     controller,
     secondRead: secondRead.promise,
     release,
+    released: released.promise,
     cancelled,
     beginOutput,
     writeOutput,
@@ -129,6 +143,36 @@ async function createAudioStreamFixture(params: {
 }
 
 describe("meeting TTS stream conversion", () => {
+  it.each(["missing-stream", "invalid-rate", "locked-stream"] as const)(
+    "releases acquired TTS resources when playback cannot start (%s)",
+    async (invalidResult) => {
+      const fixture = await createAudioStreamFixture({
+        sampleRate: 24_000,
+        outputFormat: "pcm",
+        invalidResult,
+      });
+      try {
+        await fixture.released;
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.writeOutput).not.toHaveBeenCalled();
+        expect(fixture.beginOutput).not.toHaveBeenCalled();
+        const nextReleased = createDeferred();
+        const releaseResources = fixture.release.getMockImplementation()!;
+        fixture.release.mockImplementationOnce(async () => {
+          await releaseResources();
+          nextReleased.resolve();
+        });
+        fixture.handle.speak("Another synthetic reply.");
+        await nextReleased.promise;
+        expect(fixture.synthesisStarted).toHaveBeenCalledTimes(2);
+        expect(fixture.release).toHaveBeenCalledTimes(2);
+      } finally {
+        await fixture.handle.stop();
+      }
+      expect(fixture.release).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("retains interrupted speech when cancellation races the first sink handoff", async () => {
     vi.useFakeTimers();
     const handedOff = createDeferred();

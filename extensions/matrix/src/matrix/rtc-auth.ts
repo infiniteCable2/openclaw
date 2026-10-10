@@ -75,6 +75,7 @@ export async function requestMatrixRtcCredentials(params: {
   if (!body || typeof body !== "object") {
     throw new Error("MatrixRTC authorization returned an invalid response");
   }
+  // SAFETY: the object guard permits inspection only; credentials and URL trust are validated below.
   const candidate = body as { url?: unknown; jwt?: unknown };
   if (typeof candidate.url !== "string" || typeof candidate.jwt !== "string") {
     throw new Error("MatrixRTC authorization response is missing connection credentials");

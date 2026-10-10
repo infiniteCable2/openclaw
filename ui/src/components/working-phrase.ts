@@ -6,8 +6,7 @@ import { html, nothing } from "lit";
 import { property } from "lit/decorators.js";
 import { t } from "../i18n/index.ts";
 import { fnv1aUtf16 } from "../lib/fnv1a.ts";
-import { OpenClawLightDomContentsElement } from "../lit/openclaw-element.ts";
-import { PollController } from "../lit/poll-controller.ts";
+import { TickingLabel } from "./ticking-label.ts";
 
 const PHRASE_KEYS = [
   "shelling",
@@ -58,37 +57,22 @@ function displayedPhraseIndex(seed: string, bucket: number, length: number): num
   return (offset + bucket * stride) % length;
 }
 
-class WorkingPhrase extends OpenClawLightDomContentsElement {
+class WorkingPhrase extends TickingLabel {
   @property({ type: Number }) startMs: number | null = null;
   @property() seed = "";
   @property({ attribute: false }) phrases: readonly string[] | undefined;
 
-  private readonly polling = new PollController(this, 1_000, () => this.requestUpdate(), false);
-
-  override connectedCallback() {
-    super.connectedCallback();
-    this.syncTimer();
+  protected override get ticking() {
+    return this.startMs != null && this.phrases?.length !== 0;
   }
 
-  override updated() {
-    this.syncTimer();
-  }
-
-  private syncTimer() {
-    if (this.isConnected && this.startMs != null && this.phrases?.length !== 0) {
-      this.polling.start();
-    } else {
-      this.polling.stop();
-    }
-  }
-
-  override render() {
+  protected override currentLabel() {
     if (this.startMs == null || this.phrases?.length === 0) {
-      return nothing;
+      return undefined;
     }
     const elapsed = Date.now() - this.startMs;
     if (elapsed < WORKING_PHRASE_SHOW_AFTER_MS) {
-      return nothing;
+      return undefined;
     }
     const sinceShown = elapsed - WORKING_PHRASE_SHOW_AFTER_MS;
     const bucket = Math.floor(sinceShown / WORKING_PHRASE_ROTATE_EVERY_MS);
@@ -97,10 +81,11 @@ class WorkingPhrase extends OpenClawLightDomContentsElement {
       bucket,
       this.phrases?.length ?? PHRASE_KEYS.length,
     );
-    const phrase = this.phrases
-      ? this.phrases[index]
-      : t(`chat.progressLabels.${PHRASE_KEYS[index]}`);
-    return html`<span>·</span> ${phrase}…`;
+    return this.phrases ? this.phrases[index] : t(`chat.progressLabels.${PHRASE_KEYS[index]}`);
+  }
+
+  override render() {
+    return this.label === undefined ? nothing : html`<span>·</span> ${this.label}…`;
   }
 }
 

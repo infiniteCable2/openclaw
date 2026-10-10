@@ -109,7 +109,7 @@ async function connectControlSocket(
         socket.once("error", reject);
       });
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
       if (code !== "ENOENT" && code !== "ECONNREFUSED") {
         throw error;
       }
@@ -194,6 +194,7 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
       this.#controlBuffer = this.#controlBuffer.subarray(newline + 1);
       let event: ControlEvent;
       try {
+        // SAFETY: events originate from the validated bridge on its private 0600 control socket.
         event = JSON.parse(line.toString("utf8")) as ControlEvent;
       } catch {
         this.#markFatal();
