@@ -2,33 +2,33 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { convertMeetingTtsAudioForBridge } from "./realtime-audio-format.js";
-import type { MeetingRealtimeAudioFormat } from "./realtime-audio-format.js";
-import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
+import { convertSpeechTtsAudio } from "./audio-format.js";
+import type { SpeechAudioFormat } from "./audio-format.js";
+import type { SpeechAudioTransport } from "./transport.js";
 
 const MAX_WAITING_AUDIO_BYTES = 8 * 1024 * 1024;
 const WAITING_AUDIO_FRAME_MS = 20;
 
-export type MeetingWaitingAudioConfig = {
+export type SpeechWaitingAudioConfig = {
   filePath: string;
   startDelayMs: number;
   resumeDelayMs?: number;
   volume: number;
 };
 
-export type PreparedMeetingWaitingAudio = {
+export type PreparedSpeechWaitingAudio = {
   pcm: Buffer;
   frameBytes: number;
   startDelayMs: number;
   resumeDelayMs: number;
 };
 
-export type MeetingWaitingAudioPlayback = {
+export type SpeechWaitingAudioPlayback = {
   schedule(delayMs?: number): void;
   stop(): Promise<void>;
 };
 
-const preparedAudioCache = new Map<string, Promise<PreparedMeetingWaitingAudio>>();
+const preparedAudioCache = new Map<string, Promise<PreparedSpeechWaitingAudio>>();
 
 function readPcm16MonoWav(input: Buffer): { pcm: Buffer; sampleRate: number } {
   if (
@@ -87,10 +87,10 @@ function scalePcm16(input: Buffer, volume: number): Buffer {
   return output;
 }
 
-export async function prepareMeetingWaitingAudio(
-  config: MeetingWaitingAudioConfig | undefined,
-  audioFormat: MeetingRealtimeAudioFormat,
-): Promise<PreparedMeetingWaitingAudio | undefined> {
+export async function prepareSpeechWaitingAudio(
+  config: SpeechWaitingAudioConfig | undefined,
+  audioFormat: SpeechAudioFormat,
+): Promise<PreparedSpeechWaitingAudio | undefined> {
   if (!config) {
     return undefined;
   }
@@ -131,7 +131,7 @@ export async function prepareMeetingWaitingAudio(
       }
       const source = readPcm16MonoWav(sourceBytes);
       const scaled = scalePcm16(source.pcm, config.volume);
-      const pcm = convertMeetingTtsAudioForBridge(scaled, source.sampleRate, audioFormat, "pcm");
+      const pcm = convertSpeechTtsAudio(scaled, source.sampleRate, audioFormat, "pcm");
       if (pcm.byteLength === 0) {
         throw new Error("meeting waiting audio conversion produced no audio");
       }
@@ -164,9 +164,9 @@ function nextLoopingFrame(audio: Buffer, offset: number, frameBytes: number): Bu
   return frame;
 }
 
-export async function playMeetingWaitingAudio(params: {
-  audio: PreparedMeetingWaitingAudio;
-  transport: Pick<MeetingRealtimeAudioTransport, "writeOutput">;
+export async function playSpeechWaitingAudio(params: {
+  audio: PreparedSpeechWaitingAudio;
+  transport: Pick<SpeechAudioTransport, "writeOutput">;
   signal: AbortSignal;
   onStarted?: () => void;
 }): Promise<void> {
@@ -193,12 +193,12 @@ export async function playMeetingWaitingAudio(params: {
   }
 }
 
-export function createMeetingWaitingAudioPlayback(params: {
-  audio: PreparedMeetingWaitingAudio | undefined;
-  transport: Pick<MeetingRealtimeAudioTransport, "clearOutput" | "writeOutput">;
+export function createSpeechWaitingAudioPlayback(params: {
+  audio: PreparedSpeechWaitingAudio | undefined;
+  transport: Pick<SpeechAudioTransport, "clearOutput" | "writeOutput">;
   isStopped: () => boolean;
   onError: (error: unknown) => void;
-}): MeetingWaitingAudioPlayback {
+}): SpeechWaitingAudioPlayback {
   let generation = 0;
   let stopTail = Promise.resolve();
   let playback:
@@ -253,7 +253,7 @@ export function createMeetingWaitingAudioPlayback(params: {
       if (controller.signal.aborted || params.isStopped() || currentGeneration !== generation) {
         return;
       }
-      await playMeetingWaitingAudio({
+      await playSpeechWaitingAudio({
         audio,
         transport: params.transport,
         signal: controller.signal,

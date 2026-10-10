@@ -10,6 +10,7 @@ import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { renderFileContextBlock } from "../media/file-context.js";
 import { extractFileContentFromBuffer } from "../media/input-files.js";
 import type { MediaFact } from "../media/media-facts.js";
+import { resolveMediaProcessingIntent } from "../media/media-processing.js";
 import { classifyMediaReferenceSource } from "../media/media-reference.js";
 import { resolveAttachmentKind } from "./attachments.js";
 import type { ExtractedFileImage } from "./extracted-file-images.js";
@@ -226,6 +227,9 @@ export async function extractFileContext(params: {
   const images: ExtractedFileImage[] = [];
   const localPathSelfServeUpgrades: LocalPathSelfServeUpgrade[] = [];
   for (const attachment of attachments) {
+    if (!resolveMediaProcessingIntent(attachment).automaticUnderstanding) {
+      continue;
+    }
     const { outcome, filename, mimeType } = await classifyFileAttachment({
       attachment,
       cache,

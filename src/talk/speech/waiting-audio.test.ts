@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { playMeetingWaitingAudio, prepareMeetingWaitingAudio } from "./waiting-audio.js";
+import { playSpeechWaitingAudio, prepareSpeechWaitingAudio } from "./waiting-audio.js";
 
 const tempDirs: string[] = [];
 
@@ -44,7 +44,7 @@ describe("meeting waiting audio", () => {
   it("loads, scales, and converts a bounded mono PCM16 WAV", async () => {
     const filePath = await writeTrustedWav(pcm16MonoWav([10_000, -10_000, 5_000, -5_000], 24_000));
 
-    const prepared = await prepareMeetingWaitingAudio(
+    const prepared = await prepareSpeechWaitingAudio(
       { filePath, startDelayMs: 1_200, volume: 0.5 },
       "pcm16-24khz",
     );
@@ -58,7 +58,7 @@ describe("meeting waiting audio", () => {
     const filePath = await writeTrustedWav(Buffer.from("not a wave"));
 
     await expect(
-      prepareMeetingWaitingAudio({ filePath, startDelayMs: 0, volume: 0.14 }, "pcm16-24khz"),
+      prepareSpeechWaitingAudio({ filePath, startDelayMs: 0, volume: 0.14 }, "pcm16-24khz"),
     ).rejects.toThrow("RIFF/WAVE");
   });
 
@@ -70,7 +70,7 @@ describe("meeting waiting audio", () => {
       }
     });
 
-    await playMeetingWaitingAudio({
+    await playSpeechWaitingAudio({
       audio: { pcm: Buffer.alloc(1_200, 1), frameBytes: 960, startDelayMs: 0, resumeDelayMs: 800 },
       transport: { writeOutput },
       signal: controller.signal,

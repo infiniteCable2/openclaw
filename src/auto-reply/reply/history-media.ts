@@ -12,6 +12,8 @@ export type RecentInboundHistoryImage = {
   path: string;
   contentType?: string;
   kind?: MediaAttachment["kind"];
+  purpose?: MediaAttachment["purpose"];
+  speechInput?: boolean;
   sender: string;
   sentAtMs: number;
   messagePosition: number;
@@ -61,6 +63,8 @@ export function resolveRecentInboundHistoryImages(params: {
           url: media.url,
           mime: media.contentType,
           kind: media.kind,
+          purpose: media.purpose,
+          speechInput: media.speechInput,
           index: mediaIndex,
         })
       ) {
@@ -82,6 +86,8 @@ export function resolveRecentInboundHistoryImages(params: {
         path: mediaPath,
         ...(contentType ? { contentType } : {}),
         ...(media.kind ? { kind: media.kind } : {}),
+        ...(media.purpose ? { purpose: media.purpose } : {}),
+        ...(typeof media.speechInput === "boolean" ? { speechInput: media.speechInput } : {}),
         sender: entry.sender,
         sentAtMs: timestamp,
         messagePosition: index + 1,

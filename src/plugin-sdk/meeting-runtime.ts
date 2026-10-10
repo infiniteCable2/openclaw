@@ -1,5 +1,5 @@
 /**
- * Public SDK subpath for shared browser-meeting audio transports and realtime engines.
+ * Supported meeting SDK facade over the central speech owner and meeting-specific transports.
  */
 
 export {

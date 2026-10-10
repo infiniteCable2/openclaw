@@ -1,15 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createPluginRuntime } from "../plugins/runtime/index.js";
-import type { RealtimeVoiceProviderPlugin } from "../plugins/types.js";
-import { createDeferredCore } from "../shared/deferred.js";
-import type { RealtimeVoiceAgentConsultToolPolicy } from "../talk/agent-consult-tool.js";
-import { REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ } from "../talk/provider-types.js";
-import type {
-  RealtimeVoiceBridge,
-  RealtimeVoiceBridgeCreateRequest,
-} from "../talk/provider-types.js";
-import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
-import { startMeetingRealtimeEngine, type MeetingAgentConsultParams } from "./realtime-engine.js";
+import { createPluginRuntime } from "../../plugins/runtime/index.js";
+import type { RealtimeVoiceProviderPlugin } from "../../plugins/types.js";
+import { createDeferredCore } from "../../shared/deferred.js";
+import type { RealtimeVoiceAgentConsultToolPolicy } from "../agent-consult-tool.js";
+import { REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ } from "../provider-types.js";
+import type { RealtimeVoiceBridge, RealtimeVoiceBridgeCreateRequest } from "../provider-types.js";
+import { startSpeechRealtimeSession } from "./provider-session.js";
+import type { SpeechAudioTransport } from "./transport.js";
+import type { SpeechAgentConsultParams } from "./types.js";
 
 async function createLiveFixture(
   options: {
@@ -17,7 +15,7 @@ async function createLiveFixture(
     continuous?: boolean;
     toolPolicy?: RealtimeVoiceAgentConsultToolPolicy;
     connect?: () => Promise<void>;
-    consultAgent?: (params: MeetingAgentConsultParams) => Promise<{ text: string }>;
+    consultAgent?: (params: SpeechAgentConsultParams) => Promise<{ text: string }>;
   } = {},
 ) {
   const continuous = options.continuous ?? true;
@@ -64,7 +62,7 @@ async function createLiveFixture(
   const startBargeInMonitor = vi.fn();
   const consultAgent = vi.fn(options.consultAgent ?? (async () => ({ text: "The answer." })));
   const handleToolCall = vi.fn(async () => {});
-  const transport: MeetingRealtimeAudioTransport = {
+  const transport: SpeechAudioTransport = {
     inputAudioIsolated: options.isolated ?? true,
     startInput: (handler) => {
       input = handler;
@@ -76,20 +74,19 @@ async function createLiveFixture(
     clearOutput,
     startBargeInMonitor,
   };
-  const handle = await startMeetingRealtimeEngine({
+  const handle = await startSpeechRealtimeSession({
     config: {
-      chrome: { audioFormat: "pcm16-24khz" },
-      realtime: {
-        strategy: "bidi",
-        provider: provider.id,
-        providers: {},
-        toolPolicy: options.toolPolicy ?? "safe-read-only",
-      },
+      audioFormat: "pcm16-24khz",
+
+      strategy: "bidi",
+      provider: provider.id,
+      providers: {},
+      toolPolicy: options.toolPolicy ?? "safe-read-only",
     },
     fullConfig: {},
     runtime: createPluginRuntime(),
-    platform: { displayName: "Test Meeting", logScope: "[meeting]", sessionIdPrefix: "meeting" },
-    meetingSessionId: "meeting-1",
+    surface: { displayName: "Test Meeting", logScope: "[meeting]", sessionIdPrefix: "meeting" },
+    sessionId: "meeting-1",
     requesterSessionKey: "agent:main:requester",
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     providers: [provider],
@@ -190,7 +187,7 @@ describe("meeting native continuous voice", () => {
   it("refuses mixed loopback input before connecting native voice", async () => {
     const connect = vi.fn(async () => {});
     await expect(createLiveFixture({ isolated: false, connect })).rejects.toThrow(
-      "Remove chrome.audioInputCommand",
+      "Use an isolated capture transport before connecting",
     );
     expect(connect).not.toHaveBeenCalled();
   });
@@ -231,7 +228,7 @@ describe("meeting native continuous voice", () => {
           });
           expect(fixture.consultAgent).toHaveBeenCalledWith(
             expect.objectContaining({
-              meetingSessionId: "meeting-1",
+              sessionId: "meeting-1",
               requesterSessionKey: "agent:main:requester",
               args: { question: "Check the project" },
             }),

@@ -1,23 +1,18 @@
 import { setImmediate } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
-import type { RealtimeVoiceProviderPlugin } from "../plugins/types.js";
-import { createDeferredCore } from "../shared/deferred.js";
-import type {
-  RealtimeVoiceBridge,
-  RealtimeVoiceBridgeCreateRequest,
-} from "../talk/provider-types.js";
-import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
-import {
-  startMeetingRealtimeEngine,
-  type MeetingRealtimeToolCallParams,
-} from "./realtime-engine.js";
+import type { RealtimeVoiceProviderPlugin } from "../../plugins/types.js";
+import { createDeferredCore } from "../../shared/deferred.js";
+import type { RealtimeVoiceBridge, RealtimeVoiceBridgeCreateRequest } from "../provider-types.js";
+import { startSpeechRealtimeSession } from "./provider-session.js";
+import type { SpeechAudioTransport } from "./transport.js";
+import type { SpeechRealtimeToolCallParams } from "./types.js";
 
 type PendingWrite = {
   resolve: () => void;
 };
 
 async function createEngineFixture(options?: {
-  handleToolCall?: (params: MeetingRealtimeToolCallParams) => Promise<void>;
+  handleToolCall?: (params: SpeechRealtimeToolCallParams) => Promise<void>;
 }) {
   let callbacks: RealtimeVoiceBridgeCreateRequest | undefined;
   let onHumanBargeIn: ((audio: Buffer) => boolean) | undefined;
@@ -62,9 +57,9 @@ async function createEngineFixture(options?: {
   );
   const clearOutput = vi.fn(async () => {});
   const beginOutput = vi.fn();
-  const stopTransport = vi.fn<MeetingRealtimeAudioTransport["stop"]>(async () => {});
-  const disposeTransport = vi.fn<MeetingRealtimeAudioTransport["dispose"]>(async () => {});
-  const transport: MeetingRealtimeAudioTransport = {
+  const stopTransport = vi.fn<SpeechAudioTransport["stop"]>(async () => {});
+  const disposeTransport = vi.fn<SpeechAudioTransport["dispose"]>(async () => {});
+  const transport: SpeechAudioTransport = {
     beginOutput,
     clearOutput,
     dispose: disposeTransport,
@@ -77,21 +72,20 @@ async function createEngineFixture(options?: {
     writeOutput,
   };
   const logger = { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
-  const handle = await startMeetingRealtimeEngine({
+  const handle = await startSpeechRealtimeSession({
     config: {
-      chrome: { audioFormat: "pcm16-24khz" },
-      realtime: {
-        strategy: "bidi",
-        provider: "test",
-        providers: { test: {} },
-      },
+      audioFormat: "pcm16-24khz",
+
+      strategy: "bidi",
+      provider: "test",
+      providers: { test: {} },
     },
     consultAgent: vi.fn(async () => ({ text: "unused" })),
     fullConfig: {} as never,
     handleToolCall: options?.handleToolCall ?? vi.fn(async () => {}),
     logger,
-    meetingSessionId: "meeting-1",
-    platform: {
+    sessionId: "meeting-1",
+    surface: {
       displayName: "Test Meeting",
       logScope: "[meeting-test]",
       sessionIdPrefix: "meeting-test",
@@ -167,6 +161,54 @@ async function createEngineFixture(options?: {
 }
 
 describe("meeting realtime engine output ownership", () => {
+  it.each(["write", "clear"] as const)(
+    "keeps native transport custody until its admitted %s finishes",
+    async (operation) => {
+      const fixture = await createEngineFixture();
+      const clearing = createDeferredCore();
+      const clearStarted = createDeferredCore();
+      const captureStopped = createDeferredCore();
+      fixture.stopTransport.mockImplementationOnce(async () => {
+        captureStopped.resolve();
+      });
+      fixture.clearOutput.mockImplementationOnce(async () => {
+        clearStarted.resolve();
+        await clearing.promise;
+      });
+      if (operation === "write") {
+        fixture.sendOutputAudio(Buffer.from([1]), "output-1");
+        await fixture.waitForWriteStart(1);
+      } else {
+        fixture.callbacks.onClearAudio("barge-in");
+        await clearStarted.promise;
+      }
+      const closing = fixture.handle.stop();
+      const concurrentClose = fixture.handle.stop();
+      try {
+        await captureStopped.promise;
+        expect(fixture.disposeTransport).not.toHaveBeenCalled();
+        expect(
+          fixture.handle.getHealth().recentTalkEvents?.map((event) => event.type),
+        ).not.toContain("session.closed");
+        if (operation === "write") {
+          fixture.releaseWrite(0);
+        } else {
+          clearing.resolve();
+        }
+        await Promise.all([closing, concurrentClose]);
+        expect(fixture.disposeTransport).toHaveBeenCalledOnce();
+        await fixture.handle.stop();
+        expect(fixture.disposeTransport).toHaveBeenCalledOnce();
+      } finally {
+        clearing.resolve();
+        if (operation === "write") {
+          fixture.releaseWrite(0);
+        }
+        await closing;
+      }
+    },
+  );
+
   it.each(["resolve", "reject"] as const)(
     "drains provider transcripts before %s cleanup releases transport",
     async (outcome) => {
@@ -178,6 +220,7 @@ describe("meeting realtime engine output ownership", () => {
         settled = true;
       });
       const concurrentClose = fixture.handle.stop();
+      const results = Promise.allSettled([closing, concurrentClose]);
       try {
         await vi.waitFor(() => expect(fixture.closeBridge).toHaveBeenCalledOnce());
         expect(settled).toBe(false);
@@ -199,15 +242,34 @@ describe("meeting realtime engine output ownership", () => {
         } else {
           providerClosed.resolve();
         }
-        await Promise.all([closing, concurrentClose]);
-        expect(settled).toBe(true);
+        const attempts = await results;
+        expect(attempts.map((result) => result.status)).toEqual(
+          outcome === "reject" ? ["rejected", "rejected"] : ["fulfilled", "fulfilled"],
+        );
+        expect(settled).toBe(outcome === "resolve");
         expect(fixture.stopTransport).toHaveBeenCalledOnce();
         expect(fixture.disposeTransport).toHaveBeenCalledOnce();
+        expect(fixture.handle.getHealth().bridgeClosed).toBe(outcome === "resolve");
+        if (outcome === "reject") {
+          expect(
+            fixture.handle.getHealth().recentTalkEvents?.map((event) => event.type),
+          ).not.toContain("session.closed");
+          fixture.closeBridge.mockResolvedValueOnce(undefined);
+        }
         await fixture.handle.stop();
-        expect(fixture.closeBridge).toHaveBeenCalledOnce();
+        await fixture.handle.stop();
+        expect(fixture.closeBridge).toHaveBeenCalledTimes(outcome === "reject" ? 2 : 1);
+        expect(fixture.stopTransport).toHaveBeenCalledOnce();
+        expect(fixture.disposeTransport).toHaveBeenCalledOnce();
+        expect(
+          fixture.handle
+            .getHealth()
+            .recentTalkEvents?.filter((event) => event.type === "session.closed"),
+        ).toHaveLength(1);
       } finally {
         providerClosed.resolve();
-        await closing;
+        await results;
+        await fixture.handle.stop();
       }
     },
   );

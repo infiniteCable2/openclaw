@@ -60,7 +60,12 @@ export type RealtimeVoiceBridgeSessionParams = Omit<
   onReady?: (session: RealtimeVoiceBridgeSession) => void;
 };
 
-type RealtimeVoiceSessionPhase = "admitting" | "provider-terminal" | "closing" | "disposed";
+type RealtimeVoiceSessionPhase =
+  | "admitting"
+  | "provider-terminal"
+  | "closing"
+  | "cleanup-failed"
+  | "disposed";
 
 export function createRealtimeVoiceBridgeSession(
   params: RealtimeVoiceBridgeSessionParams,
@@ -76,6 +81,7 @@ export function createRealtimeVoiceBridgeSession(
   let closeReported = false;
   let detached = false;
   let closeCompletion: Promise<void> | undefined;
+  let closeOptions: Parameters<RealtimeVoiceBridge["close"]>[0];
   const isAdmitting = () => phase === "admitting";
   const requireBridge = () => {
     if (!bridgeRef.current) {
@@ -110,24 +116,35 @@ export function createRealtimeVoiceBridgeSession(
         return closeCompletion;
       }
       const bridge = requireBridge();
-      detached = isAdmitting() && options?.disposition === "detach";
+      if (phase !== "cleanup-failed") {
+        closeOptions = options;
+        detached = isAdmitting() && options?.disposition === "detach";
+      }
       phase = "closing";
       try {
-        const completion = bridge.close(options);
+        const completion = bridge.close(closeOptions);
         if (completion) {
-          closeCompletion = completion.finally(() => {
-            phase = "disposed";
-          });
+          closeCompletion = completion.then(
+            () => {
+              phase = "disposed";
+            },
+            (error: unknown) => {
+              phase = "cleanup-failed";
+              closeCompletion = undefined;
+              throw error;
+            },
+          );
           return closeCompletion;
         }
       } catch (error) {
-        phase = "disposed";
+        phase = "cleanup-failed";
+        closeCompletion = undefined;
         throw error;
       }
       phase = "disposed";
     },
     connect: () => {
-      if (phase === "closing" || phase === "disposed") {
+      if (phase === "closing" || phase === "cleanup-failed" || phase === "disposed") {
         return Promise.reject(new Error("Realtime voice session is closed"));
       }
       if (phase === "provider-terminal") {
@@ -344,7 +361,7 @@ export function createRealtimeVoiceBridgeSession(
       if (!bridgeRef.current) {
         terminalBeforeBridgeAdoption = true;
       }
-      if (phase !== "closing" && phase !== "disposed") {
+      if (phase !== "closing" && phase !== "cleanup-failed" && phase !== "disposed") {
         phase = "provider-terminal";
       }
       if (closeReported) {

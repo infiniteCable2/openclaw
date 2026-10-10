@@ -29,9 +29,12 @@ export type PersistedUserTurnMediaInput = Pick<
   | "hydrationSuppressed"
   | "messageId"
   | "path"
+  | "purpose"
   | "sizeBytes"
+  | "speechInput"
   | "transcribed"
   | "url"
+  | "voiceMessage"
   | "width"
 > & {
   kind?: string | null;

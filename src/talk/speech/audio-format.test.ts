@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { createMeetingSttAudioConverter } from "./realtime-audio-format.js";
+import { createSpeechSttAudioConverter } from "./audio-format.js";
 
 describe("meeting STT audio formats", () => {
+  it("keeps admitted linear 16 kHz capture unchanged for a 16 kHz STT provider", () => {
+    const converter = createSpeechSttAudioConverter("pcm16-16khz", "pcm16-16khz");
+    const input = Buffer.from([1, 0, 2, 0]);
+    expect(converter.process(input)).toBe(input);
+    expect(converter.flush()).toEqual(Buffer.alloc(0));
+  });
   it("keeps legacy mu-law input unchanged", () => {
-    const converter = createMeetingSttAudioConverter("g711-ulaw-8khz", "g711-ulaw-8khz");
+    const converter = createSpeechSttAudioConverter("g711-ulaw-8khz", "g711-ulaw-8khz");
     const input = Buffer.alloc(160, 0xff);
     expect(converter.process(input)).toBe(input);
   });
@@ -13,8 +19,8 @@ describe("meeting STT audio formats", () => {
     for (let offset = 0; offset < input.length; offset += 2) {
       input.writeInt16LE(Math.round(Math.sin(offset / 20) * 10_000), offset);
     }
-    const whole = createMeetingSttAudioConverter("pcm16-24khz", "pcm16-16khz");
-    const split = createMeetingSttAudioConverter("pcm16-24khz", "pcm16-16khz");
+    const whole = createSpeechSttAudioConverter("pcm16-24khz", "pcm16-16khz");
+    const split = createSpeechSttAudioConverter("pcm16-24khz", "pcm16-16khz");
     const expected = Buffer.concat([whole.process(input), whole.flush()]);
     const actual = Buffer.concat([
       split.process(input.subarray(0, 240)),

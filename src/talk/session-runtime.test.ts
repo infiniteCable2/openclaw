@@ -573,7 +573,7 @@ describe("realtime voice bridge finalization", () => {
     ]);
     onTranscript.mockClear();
 
-    const closing = session.close();
+    const closing = session.close({ disposition: "detach" });
     expect(closing).toBeInstanceOf(Promise);
     expect(session.close()).toBe(closing);
     session.sendAudio(Buffer.from("late input"));
@@ -612,6 +612,35 @@ describe("realtime voice bridge finalization", () => {
     callbacks?.onTranscript?.("assistant", "stale words", true);
     expect(onTranscript).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
+    close.mockImplementationOnce(() => Promise.resolve());
+    await expect(session.connect()).rejects.toThrow("Realtime voice session is closed");
+    session.sendAudio(Buffer.from("input after failed close"));
+    callbacks?.onAudio(Buffer.from("output after failed close"));
+    expect(sendAudio).not.toHaveBeenCalled();
+    await session.close({ disposition: "abort" });
+    expect(close.mock.calls).toEqual([[{ disposition: "detach" }], [{ disposition: "detach" }]]);
+    await session.close();
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains a synchronously failed cleanup without reopening admission", async () => {
+    const failure = new Error("synchronous cleanup failure");
+    const close = vi.fn().mockImplementationOnce(() => {
+      throw failure;
+    });
+    const sendAudio = vi.fn();
+    const session = createRealtimeVoiceBridgeSession({
+      provider: makeVoiceProvider(() => makeBridge({ close, sendAudio })),
+      providerConfig: {},
+      audioSink: { sendAudio: vi.fn() },
+    });
+    expect(() => session.close()).toThrow(failure);
+    await expect(session.connect()).rejects.toThrow("Realtime voice session is closed");
+    session.sendAudio(Buffer.from("late input"));
+    expect(sendAudio).not.toHaveBeenCalled();
+    await session.close();
+    await session.close();
+    expect(close).toHaveBeenCalledTimes(2);
   });
 });
 

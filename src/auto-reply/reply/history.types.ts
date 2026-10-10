@@ -16,6 +16,8 @@ export type HistoryMediaEntry = Pick<
   | "kind"
   | "messageId"
   | "path"
+  | "purpose"
+  | "speechInput"
   | "url"
   | "voiceMessage"
   | "width"

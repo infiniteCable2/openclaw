@@ -18,6 +18,7 @@ import {
 } from "../talk/agent-consult-tool.js";
 import { controlRealtimeVoiceAgentRun } from "../talk/agent-run-control.js";
 import type { RealtimeVoiceTool } from "../talk/provider-types.js";
+import { readSpeechRealtimeToolAbortSignal } from "../talk/speech/provider-continuity.js";
 import type {
   MeetingAgentConsultSurface,
   MeetingPlatformRuntimeMetadata,
@@ -27,7 +28,6 @@ import type {
   MeetingRealtimeToolCallParams,
   MeetingRuntimePlatform,
 } from "./realtime-engine.js";
-import { readMeetingRealtimeToolAbortSignal } from "./realtime-tool-continuity.js";
 
 export function createMeetingRealtimeEngineBindings(params: {
   platform: MeetingPlatformRuntimeMetadata;
@@ -80,7 +80,7 @@ export function createMeetingRealtimeEngineBindings(params: {
       }),
     tools: resolveRealtimeVoiceAgentConsultTools(params.config.realtime.toolPolicy),
     handleToolCall: async (call) => {
-      const abortSignal = readMeetingRealtimeToolAbortSignal(call.session);
+      const abortSignal = readSpeechRealtimeToolAbortSignal(call.session);
       await handleMeetingRealtimeConsultToolCall({
         surface,
         config: params.fullConfig,
@@ -182,12 +182,21 @@ async function consultMeetingAgent(
               cleanup();
               signal.throwIfAborted();
             }
-            params.onRunControl?.((text, onQueueAccepted) =>
-              controlRealtimeVoiceAgentRun({
+            params.onRunControl?.(async (text, onQueueAccepted, options) => {
+              options?.signal?.throwIfAborted();
+              options?.assertCurrent?.();
+              return controlRealtimeVoiceAgentRun({
                 sessionKey,
-                runTarget: { runId, signal, isCurrent },
+                runTarget: {
+                  runId,
+                  signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
+                  isCurrent: (candidateSessionId) => {
+                    options?.assertCurrent?.();
+                    return isCurrent(candidateSessionId);
+                  },
+                },
                 // A spoken addition is not an instruction to abandon the preceding request.
-                mode: "followup",
+                mode: options?.mode ?? "followup",
                 waitForTranscriptCommit: true,
                 onQueueAccepted,
                 getSteeringContext: () =>
@@ -214,8 +223,8 @@ async function consultMeetingAgent(
                   }
                   return prepared.toolAuthorityOverlay;
                 },
-              }),
-            );
+              });
+            });
             return { abortSignal: signal, cleanup };
           }
         : undefined,

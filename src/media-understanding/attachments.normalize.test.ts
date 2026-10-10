@@ -48,12 +48,40 @@ describe("normalizeAttachments", () => {
         { path: "/tmp/file.wav", contentType: "audio/wav", voiceMessage: false },
         { path: "/tmp/device.wav", contentType: "audio/wav", speechInput: true },
         { path: "/tmp/relay.wav", contentType: "audio/wav" },
+        {
+          path: "/tmp/explicit-voice.wav",
+          contentType: "audio/wav",
+          purpose: "communication",
+          voiceMessage: false,
+        },
+        {
+          path: "/tmp/analysis.wav",
+          contentType: "audio/wav",
+          purpose: "analysis",
+          speechInput: true,
+        },
+        {
+          path: "/tmp/raw-relay.wav",
+          contentType: "audio/wav",
+          purpose: "relay",
+          voiceMessage: true,
+        },
+        {
+          path: "/tmp/recording.wav",
+          contentType: "audio/wav",
+          purpose: "recording",
+          speechInput: true,
+        },
       ],
     });
     expect(attachments.map((entry) => entry.speechInput === true)).toEqual([
       true,
       false,
       true,
+      false,
+      true,
+      false,
+      false,
       false,
     ]);
   });

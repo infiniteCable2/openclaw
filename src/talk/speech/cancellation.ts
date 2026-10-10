@@ -1,14 +1,15 @@
-import type { RealtimeVoiceSessionHarness } from "../talk/realtime-session-harness.js";
-import type { RealtimeVoiceTranscriptEntry } from "../talk/session-log-runtime.js";
-import { normalizeMeetingTtsPromptText } from "./realtime-engine-support.js";
-import type { createMeetingBargeInGate } from "./realtime-output-gate.js";
+import type { RealtimeVoiceSessionHarness } from "../realtime-session-harness.js";
+import type { RealtimeVoiceTranscriptEntry } from "../session-log-runtime.js";
+import type { createSpeechBargeInGate } from "./output-gate.js";
+import type { SpeechStreamCancellation } from "./stream-cleanup.js";
+import { normalizeSpeechPromptText } from "./support.js";
 
 /** A confirmed caller turn ends both queued output and any in-flight synthesis. */
-export function createMeetingSpeechCancellation(params: {
+export function createSpeechCancellation(params: {
   harness: () => RealtimeVoiceSessionHarness;
   activeTtsAborts: Set<AbortController>;
-  activeTtsReaders: Set<ReadableStreamDefaultReader<Uint8Array>>;
-  bargeInGate: ReturnType<typeof createMeetingBargeInGate>;
+  activeTtsReaders: Set<SpeechStreamCancellation>;
+  bargeInGate: ReturnType<typeof createSpeechBargeInGate>;
 }) {
   const captureInterruptedTranscript = () => {
     const harness = params.harness();
@@ -32,7 +33,7 @@ export function createMeetingSpeechCancellation(params: {
   };
   const recordUnplayedAnswer = (entries: readonly RealtimeVoiceTranscriptEntry[], text: string) => {
     const harness = params.harness();
-    let remaining = normalizeMeetingTtsPromptText(text) ?? "";
+    let remaining = normalizeSpeechPromptText(text) ?? "";
     // Streaming already recorded this utterance's chunks with their individual
     // delivery facts. Keep those facts, including commentary absent from the
     // final answer, and append only the final text they do not already cover.

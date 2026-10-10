@@ -1,6 +1,7 @@
 /** Detects inbound media and audio facts in channel message context. */
 import { normalizeMimeType } from "@openclaw/media-core/mime";
 import { isMeaningfulMediaFact, normalizeMediaFacts } from "../../media/media-facts.js";
+import { resolveMediaProcessingIntent } from "../../media/media-processing.js";
 import type { RuntimeMsgContext as MsgContext } from "../templating.js";
 
 /** Minimal inbound media fields used by media/audio detection. */
@@ -22,10 +23,14 @@ export function hasInboundMedia(ctx: InboundMediaContext): boolean {
 
 /** Returns true when current-turn media still needs automatic understanding. */
 export function hasInboundMediaForUnderstanding(ctx: InboundMediaContext): boolean {
+  const media = meaningfulMedia(ctx);
   if (!ctx.SkipStickerMediaUnderstanding) {
-    return hasInboundMedia(ctx);
+    return Boolean(
+      media.some((fact) => resolveMediaProcessingIntent(fact).automaticUnderstanding) ||
+      (media.length === 0 && (ctx.StickerMediaIncluded || ctx.Sticker)),
+    );
   }
-  return meaningfulMedia(ctx).length > 1;
+  return media.slice(1).some((fact) => resolveMediaProcessingIntent(fact).automaticUnderstanding);
 }
 
 /** Returns true when the current turn carries structured audio media facts. */
@@ -47,5 +52,5 @@ export function hasInboundVoiceMessage(ctx: InboundMediaContext): boolean {
     const type = normalizeMimeType(media.contentType);
     return media.kind === "audio" || type === "audio" || type?.startsWith("audio/") === true;
   });
-  return audio.some((media) => media.voiceMessage !== false);
+  return audio.some((media) => resolveMediaProcessingIntent(media).voiceReply);
 }

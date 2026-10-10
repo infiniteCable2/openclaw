@@ -273,7 +273,16 @@ export const TalkAgentControlResultSchema = closedObject({
 export const TalkSessionCreateParamsSchema = closedObject({
   sessionKey: Type.Optional(Type.String()),
   voiceChangeId: Type.Optional(NonEmptyString),
-  capabilities: Type.Optional(Type.Array(Type.Literal("voice-selection"), { uniqueItems: true })),
+  capabilities: Type.Optional(
+    Type.Array(
+      Type.Union([
+        Type.Literal("voice-selection"),
+        Type.Literal("isolated-input"),
+        Type.Literal("output-gate"),
+      ]),
+      { uniqueItems: true },
+    ),
+  ),
   spawnedBy: Type.Optional(NonEmptyString),
   provider: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
@@ -406,6 +415,8 @@ export const TalkSessionCreateResultSchema = closedObject({
   model: Type.Optional(Type.String()),
   voice: Type.Optional(Type.String()),
   expiresAt: Type.Optional(Type.Number()),
+  /** A server speech relay requires this mark acknowledged after playback setup. */
+  readyMark: Type.Optional(NonEmptyString),
 });
 
 /** Generic success result for Talk session lifecycle calls. */

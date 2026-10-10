@@ -21,6 +21,22 @@ describe("hasInboundMedia", () => {
 });
 
 describe("hasInboundVoiceMessage", () => {
+  it.each([
+    { purpose: "communication" as const, voice: true, understanding: true },
+    { purpose: "analysis" as const, voice: false, understanding: true },
+    { purpose: "recording" as const, voice: false, understanding: false },
+    { purpose: "relay" as const, voice: false, understanding: false },
+  ])(
+    "honors explicit $purpose without losing physical audio presence",
+    ({ purpose, voice, understanding }) => {
+      const ctx = { media: [{ kind: "audio" as const, purpose, voiceMessage: true }] };
+      expect(hasInboundVoiceMessage(ctx)).toBe(voice);
+      expect(hasInboundMediaForUnderstanding(ctx)).toBe(understanding);
+      expect(hasInboundAudio(ctx)).toBe(true);
+      expect(hasInboundMedia(ctx)).toBe(true);
+    },
+  );
+
   it("accepts explicit voice-message proof and legacy unmarked audio", () => {
     expect(hasInboundVoiceMessage({ media: [{ kind: "audio", voiceMessage: true }] })).toBe(true);
     expect(hasInboundVoiceMessage({ media: [{ contentType: "audio/ogg" }] })).toBe(true);
@@ -87,5 +103,15 @@ describe("hasInboundAudio", () => {
     };
     expect(hasInboundMediaForUnderstanding(context)).toBe(true);
     expect(hasInboundAudio(context)).toBe(true);
+  });
+
+  it("does not let sticker hints override explicit raw media purpose", () => {
+    expect(
+      hasInboundMediaForUnderstanding({
+        StickerMediaIncluded: true,
+        media: [{ kind: "sticker", purpose: "relay" }],
+      }),
+    ).toBe(false);
+    expect(hasInboundMediaForUnderstanding({ StickerMediaIncluded: true })).toBe(true);
   });
 });

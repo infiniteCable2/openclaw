@@ -5,6 +5,7 @@ import type { MediaKind } from "@openclaw/media-core/constants";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { RuntimeMsgContext as MsgContext } from "../auto-reply/templating.js";
 import { normalizeMediaFacts, resolveMediaFactKind } from "../media/media-facts.js";
+import { resolveMediaProcessingIntent } from "../media/media-processing.js";
 import type { MediaAttachment } from "./types.js";
 
 /** Normalizes a local attachment path while rejecting remote file URLs and Windows UNC paths. */
@@ -39,8 +40,11 @@ export function normalizeAttachments(ctx: MsgContext): MediaAttachment[] {
         index,
         alreadyTranscribed: fact.transcribed === true,
       };
-      if (fact.speechInput === true || fact.voiceMessage === true) {
+      if (resolveMediaProcessingIntent(fact).speechInput) {
         attachment.speechInput = true;
+      }
+      if (fact.purpose) {
+        attachment.purpose = fact.purpose;
       }
       const kind = fact.fileName ? (resolveMediaFactKind(fact) ?? fact.kind) : fact.kind;
       if (kind) {
@@ -70,10 +74,16 @@ export function resolveAttachmentKind(attachment: MediaAttachment): Exclude<Medi
 
 /** Returns true when the attachment is classified as audio media. */
 export function isAudioAttachment(attachment: MediaAttachment): boolean {
-  return resolveAttachmentKind(attachment) === "audio";
+  return (
+    resolveMediaProcessingIntent(attachment).automaticUnderstanding &&
+    resolveAttachmentKind(attachment) === "audio"
+  );
 }
 
 /** Returns true when the attachment is classified as image media. */
 export function isImageAttachment(attachment: MediaAttachment): boolean {
-  return resolveAttachmentKind(attachment) === "image";
+  return (
+    resolveMediaProcessingIntent(attachment).automaticUnderstanding &&
+    resolveAttachmentKind(attachment) === "image"
+  );
 }

@@ -27,6 +27,7 @@ export type ChannelInboundMediaInput = {
   transcribed?: boolean | null;
   voiceMessage?: boolean | null;
   speechInput?: boolean | null;
+  purpose?: InboundMediaFacts["purpose"] | null;
   messageId?: string | null;
 };
 
@@ -164,6 +165,8 @@ export function toHistoryMediaEntries(
       kind: entry.kind,
       messageId: entry.messageId,
       voiceMessage: entry.voiceMessage,
+      ...(typeof entry.speechInput === "boolean" ? { speechInput: entry.speechInput } : {}),
+      ...(entry.purpose ? { purpose: entry.purpose } : {}),
     };
     for (const key of ["durationMs", "width", "height"] as const) {
       if (entry[key]) {

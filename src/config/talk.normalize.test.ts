@@ -4,6 +4,39 @@ import { TALK_TEST_PROVIDER_ID } from "../test-utils/talk-test-provider.js";
 import { buildTalkConfigResponse, normalizeTalkSection } from "./talk.js";
 
 describe("talk normalization", () => {
+  it("preserves admitted speech policy without exposing server artifacts through talk.config", () => {
+    const speech = {
+      agentProfiles: {
+        reader: {
+          responseStreaming: "sentence" as const,
+          speakCommentary: true,
+          waitingAudio: {
+            filePath: "/tmp/wait.wav",
+            startDelayMs: 0,
+            resumeDelayMs: 800,
+            volume: 0.2,
+          },
+          greeting: { enabled: true, prompt: " Brief greeting. ", timeZone: " UTC " },
+        },
+        writer: { responseStreaming: "off" as const, speakCommentary: false },
+      },
+    };
+    const normalized = normalizeTalkSection({ speech });
+    expect(normalized?.speech).toEqual({
+      agentProfiles: {
+        ...speech.agentProfiles,
+        reader: {
+          ...speech.agentProfiles.reader,
+          greeting: { enabled: true, prompt: "Brief greeting.", timeZone: "UTC" },
+        },
+      },
+    });
+    expect(buildTalkConfigResponse(normalized)).toBeUndefined();
+    expect(buildTalkConfigResponse({ ...normalized, agentId: "reader" })).toEqual({
+      agentId: "reader",
+    });
+  });
+
   it("preserves the explicit ambient Talk agent", () => {
     expect(normalizeTalkSection({ agentId: " ops " })).toEqual({ agentId: "ops" });
     expect(buildTalkConfigResponse({ agentId: "ops" })).toEqual({ agentId: "ops" });

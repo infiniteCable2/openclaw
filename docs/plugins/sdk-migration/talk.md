@@ -82,7 +82,15 @@ Browser-owned WebRTC/provider-websocket sessions use `talk.client.create`,
 because the browser owns provider negotiation and media transport while the
 Gateway owns credentials, instructions, and tool policy. `talk.session.*` is
 the common Gateway-managed surface for gateway-relay realtime, gateway-relay
-transcription, and managed-room native STT/TTS sessions.
+transcription, server-processed gateway-relay STT/TTS, and managed-room native
+STT/TTS sessions.
+
+Server STT-agent-TTS and meeting adapters use the same speech owner for readiness,
+greetings, streaming synthesis, waiting audio, output generations, and pending
+input. The supported `meeting-runtime` contracts remain transport adapters, not
+a second speech implementation. Native Talk still owns session admission,
+agent-run control, confirmation, and durable voice history. Batch channel media
+keeps its native media-understanding and awaited reply-delivery owners.
 
 Legacy configs that place realtime selectors beside `talk.provider` /
 `talk.providers` should be repaired with `openclaw doctor --fix`; runtime Talk
@@ -94,6 +102,7 @@ The supported `talk.session.create` combinations are intentionally small:
 | --------------- | --------------- | --------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------ |
 | `realtime`      | `gateway-relay` | `agent-consult` | Gateway            | Full-duplex provider audio bridged through the Gateway; tool calls route through the agent-consult tool.           |
 | `transcription` | `gateway-relay` | `none`          | Gateway            | Streaming STT only; callers send input audio and receive transcript events.                                        |
+| `stt-tts`       | `gateway-relay` | `agent-consult` | Gateway            | Server STT and TTS through the shared speech owner; the client owns capture and playback.                          |
 | `stt-tts`       | `managed-room`  | `agent-consult` | Native/client room | Push-to-talk and walkie-talkie style rooms where the client owns capture/playback and the Gateway owns turn state. |
 | `stt-tts`       | `managed-room`  | `direct-tools`  | Native/client room | Admin-only room mode for trusted first-party surfaces that execute Gateway tool actions directly.                  |
 
@@ -117,13 +126,40 @@ Method map for readers migrating from the older `talk.realtime.*` /
 
 The unified control vocabulary is also deliberately narrow:
 
-| Method                          | Applies to                                              | Contract                                                                                                                                                                                                                  |
-| ------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `talk.session.appendAudio`      | `realtime/gateway-relay`, `transcription/gateway-relay` | Append a base64 PCM audio chunk to the provider session owned by the same Gateway connection.                                                                                                                             |
-| `talk.session.cancelOutput`     | `realtime/gateway-relay`                                | Stop assistant audio output without necessarily ending the user turn.                                                                                                                                                     |
-| `talk.session.submitToolResult` | `realtime/gateway-relay`                                | Complete a provider tool call after any asynchronous completion exposed by its bridge; pass `options.willContinue` for interim output or, when supported, `options.suppressResponse` to avoid another assistant response. |
-| `talk.session.steer`            | agent-backed Talk sessions                              | Send spoken `status`, `steer`, `cancel`, or `followup` control to the active embedded run resolved from the Talk session.                                                                                                 |
-| `talk.session.close`            | all unified sessions                                    | Stop relay sessions or revoke managed-room state, then forget the unified session id.                                                                                                                                     |
+| Method                          | Applies to                                                                       | Contract                                                                                                                                                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `talk.session.appendAudio`      | `realtime/gateway-relay`, `transcription/gateway-relay`, `stt-tts/gateway-relay` | Append a base64 PCM audio chunk to the session owned by the same Gateway connection.                                                                                                                                      |
+| `talk.session.cancelOutput`     | `realtime/gateway-relay`, `stt-tts/gateway-relay`                                | Stop assistant audio delivery without cancelling the underlying agent task.                                                                                                                                               |
+| `talk.session.submitToolResult` | `realtime/gateway-relay`                                                         | Complete a provider tool call after any asynchronous completion exposed by its bridge; pass `options.willContinue` for interim output or, when supported, `options.suppressResponse` to avoid another assistant response. |
+| `talk.session.steer`            | agent-backed Talk sessions                                                       | Send spoken `status`, `steer`, `cancel`, or `followup` control to the active embedded run resolved from the Talk session.                                                                                                 |
+| `talk.session.close`            | all unified sessions                                                             | Stop relay sessions or revoke managed-room state, then forget the unified session id.                                                                                                                                     |
+
+### Server-processed speech relay
+
+Request `mode: "stt-tts"`, `transport: "gateway-relay"`, and
+`brain: "agent-consult"`. The `provider` and `model` select transcription;
+the agent's configured TTS voice supplies output. This mode does not support
+realtime voice replacement or client-supplied tool results.
+
+The result declares mono PCM16 input at 16 kHz and output at 24 kHz, plus a
+session-specific `readyMark`. Subscribe to `talk.event`, prepare playback, then
+acknowledge that exact mark with `talk.session.acknowledgeMark`. Neither received
+microphone bytes nor a locally created output track count as playback readiness.
+Capture and audio delivery are gated until acknowledgment; preparation leases
+remain held until the session closes.
+
+Clients with echo-isolated capture and reversible playback gating may negotiate
+both `isolated-input` and `output-gate` in `capabilities`. The client must apply
+the `outputGate` events (`normal`, `duck`, `paused`) to playback. Omitting these
+capabilities keeps non-full-duplex input suppression; declaring isolated input
+without a playback gate is rejected rather than silently weakening barge-in.
+Media capability declarations do not grant agent or tool authority.
+
+Audio arrives as bounded `audio` events with `audioBase64`; text arrives as
+final `transcript` events. The nested `talkEvent` retains the common turn/event
+envelope, including output start/end and cancellation. An enqueued frame is not
+proof that the user heard it. Closing or losing the owning Gateway connection
+fences new work and joins accepted transcript writes and provider cleanup.
 
 Do not introduce provider or platform special cases in core to make this work.
 Core owns Talk session semantics. Provider plugins own vendor session setup.

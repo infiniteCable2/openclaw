@@ -7,11 +7,13 @@ import {
   withClientVoiceSessionSettlement,
 } from "../../talk/client-voice-session-lifecycle.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
+import type { TalkSpeechRelaySession } from "./speech-relay.js";
 
 type TalkConnectionCleanupKind =
   | "browser-control"
   | "realtime-relay"
   | "transcription-relay"
+  | "speech-relay"
   | "voice-selection";
 
 type UnifiedTalkSessionRecord =
@@ -30,7 +32,8 @@ type UnifiedTalkSessionRecord =
       kind: "managed-room";
       handoffId: string;
       roomId: string;
-    };
+    }
+  | TalkSpeechRelaySession;
 
 const unifiedTalkSessions = resolveGlobalMap<string, UnifiedTalkSessionRecord>(
   Symbol.for("openclaw.unifiedTalkSessions"),
@@ -237,6 +240,33 @@ export function rememberUnifiedTalkSession(
   unifiedTalkSessions.set(sessionId, session);
 }
 
+/** Admission and cleanup use the native Talk registry, including sessions still preparing. */
+export function rememberTalkSpeechRelaySession(session: TalkSpeechRelaySession): void {
+  const sessions = [...unifiedTalkSessions.values()].filter(
+    (entry) => entry.kind === "speech-relay",
+  );
+  if (
+    sessions.length >= 64 ||
+    sessions.filter((entry) => entry.connId === session.connId).length >= 2
+  ) {
+    throw new Error("Too many active speech Talk sessions for this connection or Gateway");
+  }
+  rememberUnifiedTalkSession(session.id, session);
+  registerTalkConnectionCleanup(session.connId, "speech-relay", async () => {
+    const owned = [...unifiedTalkSessions.values()].filter(
+      (entry): entry is TalkSpeechRelaySession =>
+        entry.kind === "speech-relay" && entry.connId === session.connId,
+    );
+    const results = await Promise.allSettled(owned.map((entry) => entry.close()));
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Talk speech relay cleanup did not complete");
+    }
+  });
+}
+
 export function getUnifiedTalkSession(sessionId: string): UnifiedTalkSessionRecord {
   const session = unifiedTalkSessions.get(sessionId);
   if (!session) {
@@ -245,10 +275,10 @@ export function getUnifiedTalkSession(sessionId: string): UnifiedTalkSessionReco
   return session;
 }
 
-/** Retains the realtime relay's admitted target without reinterpreting current defaults. */
+/** Retains the relay's admitted target without reinterpreting current defaults. */
 export function resolveUnifiedTalkSessionTarget(sessionId: string, connId: string | undefined) {
   const session = unifiedTalkSessions.get(sessionId);
-  if (session?.kind !== "realtime-relay") {
+  if (session?.kind !== "realtime-relay" && session?.kind !== "speech-relay") {
     return undefined;
   }
   requireUnifiedTalkSessionConn(session, connId);

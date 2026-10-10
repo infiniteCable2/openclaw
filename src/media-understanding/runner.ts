@@ -1,7 +1,6 @@
 // Media-understanding runner resolves providers/models, local roots, auth, and
 // per-capability execution decisions for message attachments.
 import { findNormalizedProviderValue } from "@openclaw/model-catalog-core/provider-id";
-import { ok } from "@openclaw/normalization-core/result";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeNullableString,
@@ -9,14 +8,12 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import type { ActiveMediaModel } from "../../packages/media-understanding-common/src/active-model.js";
-import { isMediaUnderstandingSkipError } from "../../packages/media-understanding-common/src/errors.js";
 import {
   normalizeMediaExecutionProviderId,
   normalizeMediaProviderId,
 } from "../../packages/media-understanding-common/src/provider-id.js";
 import { providerSupportsCapability } from "../../packages/media-understanding-common/src/provider-supports.js";
 import { isMinimaxVlmModel, isMinimaxVlmProvider } from "../agents/minimax-vlm.js";
-import { isProviderAuthError } from "../agents/model-auth-runtime-shared.js";
 import {
   buildModelAliasIndex,
   inferUniqueProviderFromConfiguredModels,
@@ -35,7 +32,6 @@ import type {
 } from "../config/types.tools.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { logWarn } from "../logger.js";
-import { normalizeMediaFacts } from "../media/media-facts.js";
 import { classifyMediaReferenceSource } from "../media/media-reference.js";
 import { createLazyRuntimeModule, createLazyRuntimeNamedExport } from "../shared/lazy-runtime.js";
 import { MediaAttachmentCache, selectAttachments } from "./attachments.js";
@@ -58,20 +54,14 @@ import {
   resolveScopeDecision,
   type ResolvedMediaModelEntry,
 } from "./resolve.js";
-import {
-  buildModelDecision,
-  formatDecisionSummary,
-  runCliEntry,
-  runProviderEntry,
-  type MediaRequestOverrides,
-} from "./runner.entries.js";
+import { runAttachmentEntries } from "./runner.attempts.js";
+import { formatDecisionSummary, type MediaRequestOverrides } from "./runner.entries.js";
 import type {
   MediaAttachment,
   MediaAttachmentDisposition,
   MediaAttachmentProcessing,
   MediaUnderstandingCapability,
   MediaUnderstandingDecision,
-  MediaUnderstandingModelDecision,
   MediaUnderstandingOutput,
   MediaUnderstandingProvider,
 } from "./types.js";
@@ -536,111 +526,6 @@ async function resolveAutoProviderModelEntry(
     provider: providerId,
     model,
   };
-}
-
-async function runAttachmentEntries(
-  params: Omit<
-    Parameters<typeof runProviderEntry>[0],
-    "entry" | "attachmentIndex" | "secretOwnerId"
-  > & {
-    ctx: MsgContext;
-    attachment: MediaAttachment;
-    entries: Iterable<ResolvedMediaModelEntry> | AsyncIterable<ResolvedMediaModelEntry>;
-    automaticAudio: boolean;
-  },
-): Promise<{
-  output: MediaUnderstandingOutput | null;
-  attempts: MediaUnderstandingModelDecision[];
-  processing: MediaAttachmentProcessing;
-}> {
-  const { entries, capability } = params;
-  const attachmentIndex = params.attachment.index;
-  const speechFact = normalizeMediaFacts(params.ctx.media)[attachmentIndex];
-  const attempts: MediaUnderstandingModelDecision[] = [];
-  let processing: MediaAttachmentProcessing = "omitted";
-  for await (const candidate of entries) {
-    const { entry } = candidate;
-    const entryType = entry.type ?? (entry.command ? "cli" : "provider");
-    try {
-      const attempt =
-        entryType === "cli"
-          ? ok(await runCliEntry({ ...params, entry }))
-          : await runProviderEntry({
-              ...params,
-              entry,
-              attachmentIndex,
-              speechInput: speechFact?.speechInput === true || speechFact?.voiceMessage === true,
-              secretOwnerId: candidate.secretOwnerId,
-            });
-      if (!attempt.ok) {
-        if (
-          !(params.automaticAudio && isProviderAuthError(attempt.error, "missing-provider-auth"))
-        ) {
-          attempts.push(
-            buildModelDecision({
-              entry,
-              entryType,
-              outcome: "failed",
-              reason: String(attempt.error),
-            }),
-          );
-        }
-        continue;
-      }
-      const result = attempt.value;
-      // Successful empty CLI/API output was processed; unavailable auth was not.
-      processing = "completed";
-      if (result?.text) {
-        const decision = buildModelDecision({ entry, entryType, outcome: "success" });
-        if (result.provider) {
-          decision.provider = result.provider;
-        }
-        decision.model = result.model;
-        if (result.requestedBackend) {
-          decision.requestedBackend = result.requestedBackend;
-        }
-        if (result.observedBackend) {
-          decision.observedBackend = result.observedBackend;
-        }
-        attempts.push(decision);
-        return { output: result, attempts, processing };
-      }
-      attempts.push(
-        buildModelDecision({ entry, entryType, outcome: "skipped", reason: "empty output" }),
-      );
-    } catch (err) {
-      if (isMediaUnderstandingSkipError(err)) {
-        attempts.push(
-          buildModelDecision({
-            entry,
-            entryType,
-            outcome: "skipped",
-            reason: `${err.reason}: ${err.message}`,
-          }),
-        );
-        if (shouldLogVerbose()) {
-          logVerbose(`Skipping ${capability} model due to ${err.reason}: ${err.message}`);
-        }
-      } else {
-        attempts.push(
-          buildModelDecision({
-            entry,
-            entryType,
-            outcome: "failed",
-            reason: String(err),
-          }),
-        );
-        if (shouldLogVerbose()) {
-          logVerbose(`${capability} understanding failed: ${String(err)}`);
-        }
-      }
-    }
-    if (params.automaticAudio && entryType === "provider") {
-      break;
-    }
-  }
-
-  return { output: null, attempts, processing };
 }
 
 function hasFailedMediaAttempt(attachments: MediaUnderstandingDecision["attachments"]): boolean {

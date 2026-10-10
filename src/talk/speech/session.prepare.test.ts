@@ -3,15 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
-import { toErrorObject } from "../infra/errors.js";
-import type { PluginRuntime } from "../plugins/runtime/types.js";
-import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
-import {
-  prepareMeetingAgentRealtimeEngine,
-  startMeetingAgentRealtimeEngine,
-} from "./realtime-agent-engine.js";
-import type { MeetingAgentConsultParams } from "./realtime-engine.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import { toErrorObject } from "../../infra/errors.js";
+import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
+import { startSpeechSession } from "./session.js";
+import type { SpeechAgentConsultParams } from "./types.js";
 
 function createProvider(prepareSession: RealtimeTranscriptionProviderPlugin["prepareSession"]) {
   return {
@@ -23,22 +20,12 @@ function createProvider(prepareSession: RealtimeTranscriptionProviderPlugin["pre
   } satisfies RealtimeTranscriptionProviderPlugin;
 }
 
-function createRuntime(
-  prepareTextToSpeechTelephony: PluginRuntime["tts"]["prepareTextToSpeechTelephony"],
-) {
-  return {
-    tts: { prepareTextToSpeechTelephony },
-  } as unknown as PluginRuntime;
-}
-
 const config = {
-  chrome: { audioFormat: "pcm16-24khz" as const },
-  realtime: {
-    strategy: "agent" as const,
-    agentId: "reader",
-    transcriptionProvider: "prepared-stt",
-    providers: { "prepared-stt": {} },
-  },
+  audioFormat: "pcm16-24khz" as const,
+
+  agentId: "reader",
+  transcriptionProvider: "prepared-stt",
+  providers: { "prepared-stt": {} },
 };
 
 async function createWaitingAudioFixture(): Promise<{ dir: string; filePath: string }> {
@@ -65,100 +52,12 @@ async function createWaitingAudioFixture(): Promise<{ dir: string; filePath: str
   return { dir, filePath };
 }
 
-describe("prepareMeetingAgentRealtimeEngine", () => {
-  it("prepares both speech directions and retains their resources", async () => {
-    const releaseStt = vi.fn();
-    const releaseTts = vi.fn(async () => undefined);
-    const prepareSession = vi.fn(async () => ({ release: releaseStt }));
-    const prepareTts = vi.fn(async () => ({ success: true, release: releaseTts }));
-    const signal = new AbortController().signal;
-
-    const preparation = await prepareMeetingAgentRealtimeEngine({
-      config,
-      fullConfig: {} as never,
-      runtime: createRuntime(prepareTts),
-      providers: [createProvider(prepareSession)],
-      ttsContext: { agentId: "reader", channelId: "matrix", accountId: "personal" },
-      signal,
-    });
-
-    expect(prepareSession).toHaveBeenCalledWith(
-      expect.objectContaining({ providerConfig: {}, signal: expect.any(AbortSignal) }),
-    );
-    expect(prepareTts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: "reader",
-        channelId: "matrix",
-        accountId: "personal",
-        signal: expect.any(AbortSignal),
-      }),
-    );
-    await preparation.release();
-    await preparation.release();
-    expect(releaseStt).toHaveBeenCalledOnce();
-    expect(releaseTts).toHaveBeenCalledOnce();
-  });
-
-  it("releases a prepared STT provider when TTS readiness fails", async () => {
-    const releaseStt = vi.fn();
-    const provider = createProvider(vi.fn(async () => ({ release: releaseStt })));
-
-    await expect(
-      prepareMeetingAgentRealtimeEngine({
-        config,
-        fullConfig: {} as never,
-        runtime: createRuntime(vi.fn(async () => ({ success: false, error: "not ready" }))),
-        providers: [provider],
-      }),
-    ).rejects.toThrow("not ready");
-    expect(releaseStt).toHaveBeenCalledOnce();
-  });
-
-  it("keeps overlapping call preparations independently leased", async () => {
-    const releaseStt = [vi.fn(), vi.fn()];
-    const releaseTts = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
-    let sttCall = 0;
-    let ttsCall = 0;
-    const provider = createProvider(
-      vi.fn(async () => ({ release: releaseStt[sttCall++] as () => void })),
-    );
-    const runtime = createRuntime(
-      vi.fn(async () => ({ success: true, release: releaseTts[ttsCall++] })),
-    );
-
-    const [first, second] = await Promise.all([
-      prepareMeetingAgentRealtimeEngine({
-        config,
-        fullConfig: {} as never,
-        runtime,
-        providers: [provider],
-      }),
-      prepareMeetingAgentRealtimeEngine({
-        config,
-        fullConfig: {} as never,
-        runtime,
-        providers: [provider],
-      }),
-    ]);
-
-    await first.release();
-    expect(releaseStt[0]).toHaveBeenCalledOnce();
-    expect(releaseTts[0]).toHaveBeenCalledOnce();
-    expect(releaseStt[1]).not.toHaveBeenCalled();
-    expect(releaseTts[1]).not.toHaveBeenCalled();
-
-    await second.release();
-    expect(releaseStt[1]).toHaveBeenCalledOnce();
-    expect(releaseTts[1]).toHaveBeenCalledOnce();
-  });
-});
-
 describe("meeting transcript granularity", () => {
   it.each([undefined, "segment", "utterance"] as const)(
     "preserves serial consults with %s transcript granularity",
     async (transcriptGranularity) => {
       vi.useFakeTimers();
-      let handle: Awaited<ReturnType<typeof startMeetingAgentRealtimeEngine>> | undefined;
+      let handle: Awaited<ReturnType<typeof startSpeechSession>> | undefined;
       const completion = createDeferred<{ text: string; delivered: true }>();
       try {
         const provider = { ...createProvider(undefined), transcriptGranularity };
@@ -173,17 +72,17 @@ describe("meeting transcript granularity", () => {
           };
         });
         const consultAgent = vi
-          .fn(async (_params: MeetingAgentConsultParams) => ({
+          .fn(async (_params: SpeechAgentConsultParams) => ({
             text: "",
             delivered: true as const,
           }))
           .mockImplementationOnce(() => completion.promise);
-        handle = await startMeetingAgentRealtimeEngine({
+        handle = await startSpeechSession({
           config,
           fullConfig: {},
           runtime: {} as PluginRuntime,
-          platform: { displayName: "Test meeting", logScope: "test", sessionIdPrefix: "test" },
-          meetingSessionId: "transcript-granularity",
+          surface: { displayName: "Test meeting", logScope: "test", sessionIdPrefix: "test" },
+          sessionId: "transcript-granularity",
           transport: {
             onFatal() {},
             startInput() {},
@@ -279,24 +178,24 @@ async function createControlledStreamingEngine() {
     return { success: true, audioStream, release, sampleRate: 24_000, outputFormat: "pcm" };
   });
   const completion = createDeferred<{ text: string; delivered: true }>();
-  let consult: MeetingAgentConsultParams | undefined;
-  const consultAgent = vi.fn((params: MeetingAgentConsultParams) => {
+  let consult: SpeechAgentConsultParams | undefined;
+  const consultAgent = vi.fn((params: SpeechAgentConsultParams) => {
     consult = params;
     return completion.promise;
   });
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
   const clearOutput = vi.fn(async () => undefined);
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const handle = await startMeetingAgentRealtimeEngine({
-    config: { ...config, realtime: { ...config.realtime, responseStreaming: "sentence" } },
+  const handle = await startSpeechSession({
+    config: { ...config, responseStreaming: "sentence" },
     fullConfig: {},
     runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
-    platform: {
+    surface: {
       displayName: "Test meeting",
       logScope: "test meeting",
       sessionIdPrefix: "test-meeting",
     },
-    meetingSessionId: "controlled-stream",
+    sessionId: "controlled-stream",
     transport: {
       onFatal: vi.fn(),
       startInput: vi.fn(),
@@ -338,7 +237,7 @@ async function createControlledStreamingEngine() {
   };
 }
 
-describe("startMeetingAgentRealtimeEngine streaming output", () => {
+describe("startSpeechSession streaming output", () => {
   it("does not resume prepared or later sentences after a transcribed caller turn", async () => {
     const fixture = await createControlledStreamingEngine();
     try {
@@ -472,24 +371,24 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
     }));
     let finishConsult: ((result: { text: string; delivered: true }) => void) | undefined;
     const consultAgent = vi.fn(
-      (_params: MeetingAgentConsultParams) =>
+      (_params: SpeechAgentConsultParams) =>
         new Promise<{ text: string; delivered: true }>((resolve) => {
           finishConsult = resolve;
         }),
     );
-    const handle = await startMeetingAgentRealtimeEngine({
+    const handle = await startSpeechSession({
       config: {
         ...config,
-        realtime: { ...config.realtime, responseStreaming: "sentence" },
+        responseStreaming: "sentence",
       },
       fullConfig: {} as never,
       runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
-      platform: {
+      surface: {
         displayName: "Test meeting",
         logScope: "test meeting",
         sessionIdPrefix: "test-meeting",
       },
-      meetingSessionId: "meeting-stream",
+      sessionId: "meeting-stream",
       transport: {
         onFatal: vi.fn(),
         startInput: vi.fn(),
@@ -554,29 +453,29 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       outputFormat: "pcm" as const,
       sampleRate: 24_000,
     }));
-    let consult: MeetingAgentConsultParams | undefined;
+    let consult: SpeechAgentConsultParams | undefined;
     let finishConsult: ((result: { text: string; delivered: true }) => void) | undefined;
     const consultAgent = vi.fn(
-      (params: MeetingAgentConsultParams) =>
+      (params: SpeechAgentConsultParams) =>
         new Promise<{ text: string; delivered: true }>((resolve) => {
           consult = params;
           finishConsult = resolve;
         }),
     );
     const writes: Buffer[] = [];
-    const handle = await startMeetingAgentRealtimeEngine({
+    const handle = await startSpeechSession({
       config: {
         ...config,
-        realtime: { ...config.realtime, responseStreaming: "sentence" },
+        responseStreaming: "sentence",
       },
       fullConfig: {} as never,
       runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
-      platform: {
+      surface: {
         displayName: "Test meeting",
         logScope: "test meeting",
         sessionIdPrefix: "test-meeting",
       },
-      meetingSessionId: "meeting-one-ahead",
+      sessionId: "meeting-one-ahead",
       transport: {
         onFatal: vi.fn(),
         startInput: vi.fn(),
@@ -630,7 +529,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
 
   it("clears configured waiting audio before the first synthesized speech frame", async () => {
     const fixture = await createWaitingAudioFixture();
-    let handle: Awaited<ReturnType<typeof startMeetingAgentRealtimeEngine>> | undefined;
+    let handle: Awaited<ReturnType<typeof startSpeechSession>> | undefined;
     try {
       let onTranscript: ((text: string) => void) | undefined;
       const provider = createProvider(undefined);
@@ -654,10 +553,10 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
         outputFormat: "pcm" as const,
         sampleRate: 24_000,
       }));
-      let consult: MeetingAgentConsultParams | undefined;
+      let consult: SpeechAgentConsultParams | undefined;
       let finishConsult: ((result: { text: string; delivered: true }) => void) | undefined;
       const consultAgent = vi.fn(
-        (params: MeetingAgentConsultParams) =>
+        (params: SpeechAgentConsultParams) =>
           new Promise<{ text: string; delivered: true }>((resolve) => {
             consult = params;
             finishConsult = resolve;
@@ -665,23 +564,20 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       );
       const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
       const clearOutput = vi.fn(async () => undefined);
-      handle = await startMeetingAgentRealtimeEngine({
+      handle = await startSpeechSession({
         config: {
           ...config,
-          realtime: {
-            ...config.realtime,
-            responseStreaming: "sentence",
-            waitingAudio: { filePath: fixture.filePath, startDelayMs: 0, volume: 0.14 },
-          },
+          responseStreaming: "sentence",
+          waitingAudio: { filePath: fixture.filePath, startDelayMs: 0, volume: 0.14 },
         },
         fullConfig: {} as never,
         runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
-        platform: {
+        surface: {
           displayName: "Test meeting",
           logScope: "test meeting",
           sessionIdPrefix: "test-meeting",
         },
-        meetingSessionId: "meeting-waiting-audio",
+        sessionId: "meeting-waiting-audio",
         transport: {
           onFatal: vi.fn(),
           startInput: vi.fn(),
@@ -746,34 +642,34 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
           );
         }),
     );
-    let firstConsult: MeetingAgentConsultParams | undefined;
+    let firstConsult: SpeechAgentConsultParams | undefined;
     let finishFirst: ((result: { text: string; delivered: true }) => void) | undefined;
     const consultAgent = vi
-      .fn((params: MeetingAgentConsultParams) => {
+      .fn((params: SpeechAgentConsultParams) => {
         firstConsult = params;
         return new Promise<{ text: string; delivered: true }>((resolve) => {
           finishFirst = resolve;
         });
       })
-      .mockImplementationOnce((params: MeetingAgentConsultParams) => {
+      .mockImplementationOnce((params: SpeechAgentConsultParams) => {
         firstConsult = params;
         return new Promise<{ text: string; delivered: true }>((resolve) => {
           finishFirst = resolve;
         });
       });
-    const handle = await startMeetingAgentRealtimeEngine({
+    const handle = await startSpeechSession({
       config: {
         ...config,
-        realtime: { ...config.realtime, responseStreaming: "sentence" },
+        responseStreaming: "sentence",
       },
       fullConfig: {} as never,
       runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
-      platform: {
+      surface: {
         displayName: "Test meeting",
         logScope: "test meeting",
         sessionIdPrefix: "test-meeting",
       },
-      meetingSessionId: "meeting-barge-in",
+      sessionId: "meeting-barge-in",
       transport: {
         supportsFullDuplexInput: true,
         onFatal: vi.fn(),
@@ -813,7 +709,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       close: vi.fn(),
       isConnected: () => true,
     });
-    const handle = await startMeetingAgentRealtimeEngine({
+    const handle = await startSpeechSession({
       config,
       fullConfig: {} as never,
       runtime: {
@@ -833,12 +729,12 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
           })),
         },
       } as unknown as PluginRuntime,
-      platform: {
+      surface: {
         displayName: "Test meeting",
         logScope: "test meeting",
         sessionIdPrefix: "test-meeting",
       },
-      meetingSessionId: "meeting-1",
+      sessionId: "meeting-1",
       transport: {
         onFatal: vi.fn(),
         startInput: vi.fn(),
@@ -896,16 +792,16 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
           );
         }),
     );
-    const handle = await startMeetingAgentRealtimeEngine({
+    const handle = await startSpeechSession({
       config,
       fullConfig: {} as never,
       runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
-      platform: {
+      surface: {
         displayName: "Test meeting",
         logScope: "test meeting",
         sessionIdPrefix: "test-meeting",
       },
-      meetingSessionId: "meeting-1",
+      sessionId: "meeting-1",
       transport: {
         supportsFullDuplexInput: true,
         onFatal: vi.fn(),
@@ -945,7 +841,7 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
       isConnected: () => true,
     });
     const writeOutput = vi.fn(async () => undefined);
-    const handle = await startMeetingAgentRealtimeEngine({
+    const handle = await startSpeechSession({
       config,
       fullConfig: {} as never,
       runtime: {
@@ -963,12 +859,12 @@ describe("startMeetingAgentRealtimeEngine streaming output", () => {
           })),
         },
       } as unknown as PluginRuntime,
-      platform: {
+      surface: {
         displayName: "Test meeting",
         logScope: "test meeting",
         sessionIdPrefix: "test-meeting",
       },
-      meetingSessionId: "meeting-1",
+      sessionId: "meeting-1",
       transport: {
         supportsFullDuplexInput: true,
         onFatal: vi.fn(),

@@ -6,11 +6,44 @@ import {
   normalizeMediaFacts,
   PERSISTED_LEGACY_MEDIA_KEYS,
   readPersistedMediaFacts,
+  resolveMediaFactKind,
 } from "./media-facts.js";
 
 const canonicalFact = { path: "/media/canonical.png", contentType: "image/png" };
 
 describe("canonical persisted media", () => {
+  it.each(["communication", "analysis", "recording", "relay"] as const)(
+    "preserves %s intent while guarding native image and video hydration",
+    (purpose) => {
+      const original = {
+        role: "user",
+        content: "original source",
+        timestamp: 123,
+        __openclaw: {
+          media: [
+            { path: "/tmp/input.png", kind: "image", purpose },
+            { path: "/tmp/input.mp4", kind: "video", purpose },
+          ],
+        },
+      };
+      const persisted = canonicalizePersistedUserMessageMedia(original).message;
+      const [image, video] = readPersistedMediaFacts(persisted)!;
+      expect(image?.purpose).toBe(purpose);
+      expect(video?.purpose).toBe(purpose);
+      expect(resolveMediaFactKind(image!)).toBe("image");
+      expect(resolveMediaFactKind(video!)).toBe("video");
+      const automatic = purpose === "communication" || purpose === "analysis";
+      expect(isImageMediaFact(image!)).toBe(automatic);
+      expect(isVideoMediaFact(video!)).toBe(automatic);
+      expect(persisted).toMatchObject({ content: "original source", timestamp: 123 });
+    },
+  );
+
+  it("rejects invalid explicit purpose instead of silently enabling processing", () => {
+    expect(() =>
+      normalizeMediaFacts([{ path: "/tmp/input.wav", purpose: "invalid" } as never]),
+    ).toThrow("Unsupported media processing purpose");
+  });
   it.each([
     {
       name: "legacy-only",

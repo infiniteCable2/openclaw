@@ -61,6 +61,28 @@ describe("buildLateMediaAttachedProjection canonical persistence", () => {
 });
 
 describe("buildPersistedUserTurnMessage media projection", () => {
+  it.each(["communication", "analysis", "recording", "relay"] as const)(
+    "retains %s intent and original voice evidence across persistence and reconstruction",
+    (purpose) => {
+      const media = {
+        path: "/tmp/input.wav",
+        contentType: "audio/wav",
+        kind: "audio" as const,
+        purpose,
+        voiceMessage: false,
+        speechInput: true,
+        durationMs: 1234,
+      };
+      const message = buildPersistedUserTurnMessage({
+        text: "original",
+        timestamp: 123,
+        media: [media],
+      });
+      expect(buildPersistedUserTurnMediaInputsFromFields(message)).toEqual([media]);
+      expect(message).toMatchObject({ content: "original", timestamp: 123 });
+    },
+  );
+
   it.each([
     {
       name: "zero attachments",

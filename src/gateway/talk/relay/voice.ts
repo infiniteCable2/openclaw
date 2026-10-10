@@ -18,34 +18,63 @@ import {
   VOICE_TRANSCRIPT_QUEUE_POLICY,
 } from "../../../talk/voice-transcript.js";
 import { sleep } from "../../../utils/sleep.js";
-import { drainingRelaySessions, type RelaySession } from "./state.js";
+import type { RelaySession } from "./state.js";
+
+// Both provider-native and server STT/TTS relays use the same durable voice
+// record, confirmation barrier and transcript queue. Media orchestration is not
+// part of that custody contract.
+export type RelayVoiceSessionOwner = Pick<
+  RelaySession,
+  | "id"
+  | "sessionTarget"
+  | "provider"
+  | "voiceConfig"
+  | "context"
+  | "voiceSessionCreated"
+  | "voiceTranscriptSeq"
+  | "voiceTranscriptQueue"
+  | "confirmationReadiness"
+  | "voiceSessionClose"
+  | "failSession"
+> & { closing?: unknown };
 
 const RELAY_TRANSCRIPT_RETRY_DELAYS_MS = [0, 500, 2_000] as const;
 
-function logRelayVoiceFailure(session: RelaySession, message: string, error: unknown): void {
+function logRelayVoiceFailure(
+  session: RelayVoiceSessionOwner,
+  message: string,
+  error: unknown,
+): void {
   session.context.logGateway?.warn(`${message}: ${formatErrorMessage(error)}`);
 }
 
-export function ensureRelayVoiceSession(
-  session: RelaySession,
+function createRequiredRelayVoiceSession(
+  session: RelayVoiceSessionOwner,
   source?: ClientVoiceSessionSource,
-): boolean {
+): void {
   if (session.voiceSessionCreated) {
-    return true;
+    return;
   }
   const { agentId, sessionKey } = session.sessionTarget;
+  createOrResumeClientVoiceSession(
+    {
+      agentId,
+      sessionKey,
+      provider: session.provider,
+      origin: "relay",
+      voiceSessionId: session.id,
+    },
+    source,
+  );
+  session.voiceSessionCreated = true;
+}
+
+export function ensureRelayVoiceSession(
+  session: RelayVoiceSessionOwner,
+  source?: ClientVoiceSessionSource,
+): boolean {
   try {
-    createOrResumeClientVoiceSession(
-      {
-        agentId,
-        sessionKey,
-        provider: session.provider,
-        origin: "relay",
-        voiceSessionId: session.id,
-      },
-      source,
-    );
-    session.voiceSessionCreated = true;
+    createRequiredRelayVoiceSession(session, source);
     return true;
   } catch (error) {
     logRelayVoiceFailure(session, "realtime relay voice session create failed", error);
@@ -54,7 +83,7 @@ export function ensureRelayVoiceSession(
 }
 
 export function enqueueRelayVoiceTranscript(
-  session: RelaySession,
+  session: RelayVoiceSessionOwner,
   role: "user" | "assistant",
   text: string,
   retainedSource?: ClientVoiceSessionSource,
@@ -138,44 +167,59 @@ export function enqueueRelayVoiceTranscript(
 }
 
 export function closeRelayVoiceSession(
-  session: RelaySession,
+  session: RelayVoiceSessionOwner,
   retainedSource?: ClientVoiceSessionSource,
 ): Promise<void> {
   if (session.voiceSessionClose) {
     return session.voiceSessionClose;
   }
   session.voiceTranscriptQueue.seal();
-  if (!ensureRelayVoiceSession(session, retainedSource)) {
-    session.voiceSessionClose = Promise.resolve();
-    return session.voiceSessionClose;
-  }
   const { agentId, sessionKey } = session.sessionTarget;
   const source = retainedSource ?? captureClientVoiceSessionSource(agentId);
-  session.voiceSessionClose = withClientVoiceSessionSettlement(
-    () =>
-      session.voiceTranscriptQueue.flush().then(async () => {
-        const config = session.voiceConfig ?? session.context.getRuntimeConfig();
-        await closeRelayVoiceSessionRecord(
-          {
-            agentId,
-            sessionKey,
-            voiceSessionId: session.id,
-            config,
-          },
-          source,
-        );
-      }),
+  const closing = withClientVoiceSessionSettlement(
+    async () => {
+      // Creation belongs to the same admitted close owner. A failed or unknown
+      // record creation cannot manufacture a successful close receipt.
+      createRequiredRelayVoiceSession(session, source);
+      await session.voiceTranscriptQueue.flush({ requireSuccess: true });
+      const config = session.voiceConfig ?? session.context.getRuntimeConfig();
+      await closeRelayVoiceSessionRecord(
+        {
+          agentId,
+          sessionKey,
+          voiceSessionId: session.id,
+          config,
+        },
+        source,
+      );
+    },
     async (error) => {
-      await session.voiceTranscriptQueue.flush();
+      try {
+        await session.voiceTranscriptQueue.flush({ requireSuccess: true });
+      } catch (prefixError) {
+        throw new AggregateError(
+          [error, prefixError],
+          "Relay voice close lost transcript custody",
+          {
+            cause: prefixError,
+          },
+        );
+      }
       throw error;
     },
     source.settlementContext,
   ).catch((error: unknown) => {
+    // A definite refusal can be retried against the same sealed transcript
+    // prefix. An unknown write outcome retains custody and must not be replayed.
+    if (session.voiceSessionClose === closing && !hasSqliteWorkerOutcomeUnknown(error)) {
+      session.voiceSessionClose = undefined;
+    }
     logRelayVoiceFailure(session, "realtime relay voice session close failed", error);
+    throw error;
   });
-  drainingRelaySessions.add(session);
-  void session.voiceSessionClose.finally(() => {
-    drainingRelaySessions.delete(session);
-  });
-  return session.voiceSessionClose;
+  session.voiceSessionClose = closing;
+  // Relay transport owners retain draining sessions; this shared record writer
+  // cannot take ownership of a provider-specific bridge or drop its capacity hold.
+  void closing.catch(() => {});
+  return closing;
 }

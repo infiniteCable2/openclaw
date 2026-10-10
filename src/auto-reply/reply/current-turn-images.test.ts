@@ -3,6 +3,7 @@ import "../../test-utils/prepare-compiled-subprocesses.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSolidPngBuffer } from "../../../test/helpers/image-fixtures.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { deleteTestEnvValue, setTestEnvValue } from "../../test-utils/env.js";
@@ -33,6 +34,53 @@ describe("resolveCurrentTurnImages", () => {
   afterEach(() => {
     restoreProcessState();
     vi.restoreAllMocks();
+  });
+
+  it("does not reclassify recording or relay history as ordinary image attachments", async () => {
+    await withTestDir({ prefix: "openclaw-history-purpose-" }, async (base) => {
+      const stateDir = path.join(base, "state");
+      const mediaDir = path.join(stateDir, "media", "inbound");
+      await fs.mkdir(mediaDir, { recursive: true });
+      setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+      const purposes = ["communication", "analysis", "recording", "relay"] as const;
+      const media = await Promise.all(
+        purposes.map(async (purpose, index) => {
+          const imagePath = path.join(mediaDir, `${purpose}.png`);
+          await fs.writeFile(
+            imagePath,
+            createSolidPngBuffer(1, 1, { r: 30 * index, g: 40, b: 50 }),
+          );
+          return { path: imagePath, contentType: "image/png", kind: "image" as const, purpose };
+        }),
+      );
+      const result = await resolveAgentTurnAttachments({
+        ctx: {
+          Body: "follow-up text",
+          Timestamp: 1_700_000_060_000,
+          InboundHistory: [
+            {
+              sender: "@example",
+              body: "source attachments",
+              timestamp: 1_700_000_000_000,
+              media,
+            },
+          ],
+        } satisfies MsgContext,
+        cfg: {},
+      });
+      expect(result.recentHistoryImages.map((image) => image.purpose)).toEqual([
+        "communication",
+        "analysis",
+      ]);
+      expect(result.attachments).toEqual(
+        await Promise.all(
+          media.slice(0, 2).map(async (image) => ({
+            mediaType: "image/png",
+            data: (await fs.readFile(image.path)).toString("base64"),
+          })),
+        ),
+      );
+    });
   });
 
   it("hydrates Telegram-style state-relative media into native prompt images", async () => {

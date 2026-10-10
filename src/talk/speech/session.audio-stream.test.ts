@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
-import type { PluginRuntime } from "../plugins/runtime/types.js";
-import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
-import { pcmToMulaw } from "../talk/audio-codec.js";
-import { startMeetingAgentRealtimeEngine } from "./realtime-agent-engine.js";
-import {
-  convertMeetingTtsAudioForBridge,
-  type MeetingRealtimeAudioFormat,
-} from "./realtime-audio-format.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
+import { pcmToMulaw } from "../audio-codec.js";
+import { convertSpeechTtsAudio, type SpeechAudioFormat } from "./audio-format.js";
+import { startSpeechSession } from "./session.js";
 
 function createPcm(sampleRate: number, sampleCount = 257): Buffer {
   const pcm = Buffer.alloc(sampleCount * 2);
@@ -23,10 +20,11 @@ function createPcm(sampleRate: number, sampleCount = 257): Buffer {
 async function createAudioStreamFixture(params: {
   sampleRate: number;
   outputFormat: string;
-  audioFormat?: MeetingRealtimeAudioFormat;
-  consultAgent?: Parameters<typeof startMeetingAgentRealtimeEngine>[0]["consultAgent"];
-  onActivity?: Parameters<typeof startMeetingAgentRealtimeEngine>[0]["onActivity"];
+  audioFormat?: SpeechAudioFormat;
+  consultAgent?: Parameters<typeof startSpeechSession>[0]["consultAgent"];
+  onActivity?: Parameters<typeof startSpeechSession>[0]["onActivity"];
   invalidResult?: "missing-stream" | "invalid-rate" | "locked-stream";
+  holdPreparation?: Promise<void>;
 }) {
   const controllerReady = createDeferred<ReadableStreamDefaultController<Uint8Array>>();
   const firstRead = createDeferred();
@@ -41,6 +39,7 @@ async function createAudioStreamFixture(params: {
     released.resolve();
   });
   const beginOutput = vi.fn();
+  const dispose = vi.fn(async () => undefined);
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
   const synthesisStarted = vi.fn();
   let speechStart: (() => void) | undefined;
@@ -66,14 +65,12 @@ async function createAudioStreamFixture(params: {
       };
     },
   };
-  const handle = await startMeetingAgentRealtimeEngine({
+  const handle = await startSpeechSession({
     config: {
-      chrome: { audioFormat: params.audioFormat ?? "pcm16-24khz" },
-      realtime: {
-        strategy: "agent",
-        transcriptionProvider: provider.id,
-        providers: { [provider.id]: {} },
-      },
+      audioFormat: params.audioFormat ?? "pcm16-24khz",
+
+      transcriptionProvider: provider.id,
+      providers: { [provider.id]: {} },
     },
     fullConfig: {},
     runtime: {
@@ -95,6 +92,9 @@ async function createAudioStreamFixture(params: {
           if (params.invalidResult === "locked-stream") {
             retainedReader = stream.getReader();
           }
+          if (params.holdPreparation) {
+            await params.holdPreparation;
+          }
           return {
             success: true,
             sampleRate: params.invalidResult === "invalid-rate" ? 0 : params.sampleRate,
@@ -105,8 +105,8 @@ async function createAudioStreamFixture(params: {
         },
       },
     } as unknown as PluginRuntime,
-    platform: { displayName: "Test meeting", logScope: "test", sessionIdPrefix: "test" },
-    meetingSessionId: "tts-stream-conversion",
+    surface: { displayName: "Test meeting", logScope: "test", sessionIdPrefix: "test" },
+    sessionId: "tts-stream-conversion",
     transport: {
       onFatal() {},
       startInput() {},
@@ -114,7 +114,7 @@ async function createAudioStreamFixture(params: {
       writeOutput,
       clearOutput: async () => undefined,
       stop: async () => undefined,
-      dispose: async () => undefined,
+      dispose,
     },
     providers: [provider],
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -123,7 +123,7 @@ async function createAudioStreamFixture(params: {
   });
   handle.speak("A synthetic audio stream.");
   const controller = await controllerReady.promise;
-  if (!params.invalidResult) {
+  if (!params.invalidResult && !params.holdPreparation) {
     await firstRead.promise;
   }
   return {
@@ -134,6 +134,7 @@ async function createAudioStreamFixture(params: {
     released: released.promise,
     cancelled,
     beginOutput,
+    dispose,
     writeOutput,
     synthesisStarted,
     speechStart,
@@ -143,6 +144,134 @@ async function createAudioStreamFixture(params: {
 }
 
 describe("meeting TTS stream conversion", () => {
+  it("keeps the stream hold while a source cancellation is still pending", async () => {
+    const fixture = await createAudioStreamFixture({ sampleRate: 24_000, outputFormat: "pcm" });
+    const cancellationStarted = createDeferred();
+    const cancellation = createDeferred();
+    fixture.cancelled.mockImplementationOnce(async () => {
+      cancellationStarted.resolve();
+      await cancellation.promise;
+    });
+    const closing = fixture.handle.stop();
+    try {
+      await cancellationStarted.promise;
+      expect(fixture.release).not.toHaveBeenCalled();
+      expect(fixture.dispose).not.toHaveBeenCalled();
+      cancellation.resolve();
+      await closing;
+      expect(fixture.release).toHaveBeenCalledOnce();
+      expect(fixture.dispose).toHaveBeenCalledOnce();
+    } finally {
+      cancellation.resolve();
+      await closing;
+      await fixture.handle.stop();
+    }
+  });
+
+  it("cancels a late prepared stream before releasing its provider hold", async () => {
+    const preparation = createDeferred();
+    const fixture = await createAudioStreamFixture({
+      sampleRate: 24_000,
+      outputFormat: "pcm",
+      holdPreparation: preparation.promise,
+    });
+    const closing = fixture.handle.stop();
+    try {
+      preparation.resolve();
+      await closing;
+      expect(fixture.cancelled).toHaveBeenCalledOnce();
+      expect(fixture.release).toHaveBeenCalledOnce();
+      expect(fixture.cancelled.mock.invocationCallOrder[0]).toBeLessThan(
+        fixture.release.mock.invocationCallOrder[0]!,
+      );
+      expect(fixture.writeOutput).not.toHaveBeenCalled();
+      expect(fixture.beginOutput).not.toHaveBeenCalled();
+    } finally {
+      preparation.resolve();
+      await closing;
+      await fixture.handle.stop();
+    }
+  });
+
+  it.each(["cancel", "unlock"] as const)(
+    "keeps the provider hold when reader %s is unconfirmed",
+    async (operation) => {
+      const fixture = await createAudioStreamFixture({ sampleRate: 24_000, outputFormat: "pcm" });
+      const failure = new Error("synthetic reader cleanup failure");
+      let unlock: { mockRestore(): void } | undefined;
+      if (operation === "cancel") {
+        fixture.cancelled.mockRejectedValueOnce(failure);
+      } else {
+        unlock = vi
+          .spyOn(ReadableStreamDefaultReader.prototype, "releaseLock")
+          .mockImplementationOnce(() => {
+            throw failure;
+          });
+      }
+      try {
+        await expect(fixture.handle.stop()).rejects.toThrow(
+          "Speech session resources did not close",
+        );
+        expect(fixture.release).not.toHaveBeenCalled();
+        expect(fixture.dispose).not.toHaveBeenCalled();
+        expect(
+          fixture.handle.getHealth().recentTalkEvents?.map((event) => event.type),
+        ).not.toContain("session.closed");
+        await fixture.handle.stop();
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.dispose).toHaveBeenCalledOnce();
+        await fixture.handle.stop();
+        expect(fixture.release).toHaveBeenCalledOnce();
+      } finally {
+        unlock?.mockRestore();
+        await fixture.handle.stop();
+      }
+    },
+  );
+
+  it.each(["active", "stopped"] as const)(
+    "retains failed %s stream cleanup until a later stop confirms release",
+    async (state) => {
+      const fixture = await createAudioStreamFixture({ sampleRate: 24_000, outputFormat: "pcm" });
+      const failedRelease = createDeferred();
+      const cleanupFailure = new Error("synthetic stream release failure");
+      fixture.release.mockImplementationOnce(async () => {
+        failedRelease.resolve();
+        throw cleanupFailure;
+      });
+      try {
+        let stopping: Promise<void>;
+        if (state === "active") {
+          fixture.controller.enqueue(createPcm(24_000));
+          fixture.controller.close();
+          await failedRelease.promise;
+          stopping = fixture.handle.stop();
+        } else {
+          stopping = fixture.handle.stop();
+        }
+        await expect(stopping).rejects.toThrow("Speech session resources did not close");
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.dispose).not.toHaveBeenCalled();
+        expect(
+          fixture.handle.getHealth().recentTalkEvents?.map((event) => event.type),
+        ).not.toContain("session.closed");
+        const writes = fixture.writeOutput.mock.calls.length;
+        await fixture.handle.stop();
+        await fixture.handle.stop();
+        expect(fixture.release).toHaveBeenCalledTimes(2);
+        expect(fixture.dispose).toHaveBeenCalledOnce();
+        expect(fixture.writeOutput).toHaveBeenCalledTimes(writes);
+        expect(
+          fixture.handle
+            .getHealth()
+            .recentTalkEvents?.filter((event) => event.type === "session.closed"),
+        ).toHaveLength(1);
+      } finally {
+        await fixture.handle.stop();
+      }
+    },
+  );
+
   it.each(["missing-stream", "invalid-rate", "locked-stream"] as const)(
     "releases acquired TTS resources when playback cannot start (%s)",
     async (invalidResult) => {
@@ -156,6 +285,7 @@ describe("meeting TTS stream conversion", () => {
         expect(fixture.release).toHaveBeenCalledOnce();
         expect(fixture.writeOutput).not.toHaveBeenCalled();
         expect(fixture.beginOutput).not.toHaveBeenCalled();
+        expect(fixture.cancelled).toHaveBeenCalledTimes(invalidResult === "invalid-rate" ? 1 : 0);
         const nextReleased = createDeferred();
         const releaseResources = fixture.release.getMockImplementation()!;
         fixture.release.mockImplementationOnce(async () => {
@@ -292,7 +422,7 @@ describe("meeting TTS stream conversion", () => {
       const fixture = await createAudioStreamFixture({ ...params, onActivity });
       const pcm = createPcm(params.sampleRate);
       const source = params.outputFormat === "mulaw" ? pcmToMulaw(pcm) : pcm;
-      const expected = convertMeetingTtsAudioForBridge(
+      const expected = convertSpeechTtsAudio(
         source,
         params.sampleRate,
         params.audioFormat,
@@ -304,6 +434,7 @@ describe("meeting TTS stream conversion", () => {
         }
         fixture.controller.close();
         await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledOnce());
+        expect(fixture.cancelled).not.toHaveBeenCalled();
         const writes = fixture.writeOutput.mock.calls.map(([audio]) => audio);
         expect(Buffer.concat(writes)).toEqual(expected);
         expect(writes.every((audio) => audio.length > 0)).toBe(true);
@@ -339,7 +470,7 @@ describe("meeting TTS stream conversion", () => {
       fixture.controller.close();
       await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledOnce());
       expect(fixture.writeOutput).toHaveBeenCalledExactlyOnceWith(
-        convertMeetingTtsAudioForBridge(source, 16_000, "pcm16-24khz", "pcm"),
+        convertSpeechTtsAudio(source, 16_000, "pcm16-24khz", "pcm"),
       );
       expect(fixture.beginOutput).toHaveBeenCalledOnce();
     } finally {
@@ -356,7 +487,7 @@ describe("meeting TTS stream conversion", () => {
         fixture.controller.enqueue(source);
         await fixture.secondRead;
         const output = Buffer.concat(fixture.writeOutput.mock.calls.map(([audio]) => audio));
-        const complete = convertMeetingTtsAudioForBridge(source, 16_000, "pcm16-24khz", "pcm");
+        const complete = convertSpeechTtsAudio(source, 16_000, "pcm16-24khz", "pcm");
         expect(output.length).toBeGreaterThan(0);
         expect(fixture.handle.getHealth().recentRealtimeTranscript).toEqual([
           expect.objectContaining({ role: "assistant", audioDelivery: "started" }),

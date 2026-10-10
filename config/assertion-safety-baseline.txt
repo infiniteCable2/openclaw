@@ -2071,7 +2071,6 @@ src/gateway/session-transcript-title-reader.ts	1
 src/gateway/sessions-history-http.ts	1
 src/gateway/stale-install.ts	1
 src/gateway/system-ca-warmup.ts	1
-src/gateway/talk/handlers/index.ts	3
 src/gateway/talk/relay/session-create.ts	1
 src/gateway/talk/session-config.ts	1
 src/gateway/test-http-response.ts	4
@@ -2297,7 +2296,6 @@ src/meeting-bot/chrome-node-result.ts	2
 src/meeting-bot/platform-adapter.ts	7
 src/meeting-bot/plugin-entry.ts	5
 src/meeting-bot/plugin-shell.ts	1
-src/meeting-bot/realtime-tool-continuity.ts	2
 src/meeting-bot/runtime-facade.ts	4
 src/meeting-bot/runtime-probes.ts	6
 src/meeting-bot/runtime-setup.ts	1

@@ -17,6 +17,7 @@ import type {
 } from "./types.gateway.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 import { parseSecretRef } from "./types.secrets.js";
+import { TalkSpeechSchema } from "./zod-schema.talk-speech.js";
 
 function normalizeInteger(value: unknown, min: number): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= min ? value : undefined;
@@ -152,6 +153,7 @@ export function normalizeTalkSection(value: TalkConfig | undefined): TalkConfig 
     silenceTimeoutMs: normalizeInteger(value.silenceTimeoutMs, 1),
     providers: normalizeTalkProviders(value.providers),
     realtime: normalizeTalkRealtimeConfig(value.realtime),
+    speech: value.speech === undefined ? undefined : TalkSpeechSchema.parse(value.speech),
     provider: normalizeOptionalString(value.provider),
   });
 }

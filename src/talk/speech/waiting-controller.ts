@@ -1,9 +1,9 @@
-import type { RealtimeTranscriptionSessionCallbacks } from "../realtime-transcription/provider-types.js";
-import type { MeetingWaitingAudioPlayback } from "./waiting-audio.js";
+import type { RealtimeTranscriptionSessionCallbacks } from "../../realtime-transcription/provider-types.js";
+import type { SpeechWaitingAudioPlayback } from "./waiting-audio.js";
 
 /** Correlate transcription/consult feedback without creating a second playback queue. */
-export function createMeetingAgentWaitingAudio(params: {
-  playback: MeetingWaitingAudioPlayback;
+export function createSpeechWaitingController(params: {
+  playback: SpeechWaitingAudioPlayback;
   isStopped: () => boolean;
   canStart: () => boolean;
   resumeDelayMs: number;

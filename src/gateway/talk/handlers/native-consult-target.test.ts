@@ -1,11 +1,10 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "./native-consult-target.test-support.js";
+import { describe, expect, it, vi } from "vitest";
 import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
 import {
   clearActiveEmbeddedRun,
   setActiveEmbeddedRun,
 } from "../../../agents/embedded-agent-runner/runs.js";
-import { testing as embeddedRunTesting } from "../../../agents/embedded-agent-runner/runs.test-support.js";
 import { REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS } from "../../../agents/realtime-bootstrap-context.test-support.js";
 import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.js";
 import {
@@ -15,13 +14,9 @@ import {
   replaceSessionEntry,
   replaceSessionEntrySync,
 } from "../../../config/sessions/session-accessor.js";
-import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
-import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
-import { setActivePluginRegistry } from "../../../plugins/runtime.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { controlRealtimeVoiceAgentRun } from "../../../talk/agent-run-control.js";
 import {
   createOrResumeClientVoiceSession,
@@ -29,24 +24,10 @@ import {
   resolveClientVoiceRunBinding,
 } from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
-import type {
-  RealtimeVoiceAgentConsultRunner,
-  RealtimeVoiceBridgeCreateRequest,
-  RealtimeVoiceGatewayControl,
-  RealtimeVoiceProviderCapabilities,
-} from "../../../talk/provider-types.js";
+import type { RealtimeVoiceBridgeCreateRequest } from "../../../talk/provider-types.js";
 import { makeBridge } from "../../../talk/session-runtime.test-support.js";
-import {
-  createOpenClawTestState,
-  type OpenClawTestState,
-} from "../../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../../chat-abort.js";
-import { handleGatewayRequest } from "../../server-methods.js";
-import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
-import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
-import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
-import { drainingRelaySessions } from "../relay/state.js";
 import { resolveOwnedActiveTalkRunTarget } from "../run-ownership.js";
 import {
   cleanupTalkConnection,
@@ -59,196 +40,23 @@ import {
   requestTalkVoiceChange,
   resolveTalkVoiceSession,
 } from "../voice-selection.js";
-import { talkClientHandlers } from "./client.js";
+import {
+  callback,
+  providerInstructions,
+  browserControl,
+  submitProviderResult,
+  context,
+  mocks,
+  testState,
+  dispatch,
+  createRelayCall,
+} from "./native-consult-target.test-support.js";
 import { talkSessionHandlers } from "./session.js";
-
-const mocks = vi.hoisted(() => ({
-  capabilities: {
-    transports: ["webrtc", "gateway-relay"],
-    inputAudioFormats: [{ encoding: "pcm16", sampleRateHz: 24000, channels: 1 }],
-    outputAudioFormats: [{ encoding: "pcm16", sampleRateHz: 24000, channels: 1 }],
-    supportsToolCalls: false,
-  } satisfies RealtimeVoiceProviderCapabilities,
-  resolveProvider: vi.fn(),
-  runEmbeddedAgent: vi.fn(async (_params: RunEmbeddedAgentParams) => ({
-    payloads: [{ text: "Synthetic consult answer" }],
-    meta: { durationMs: 0 },
-  })),
-}));
-
-vi.mock("../../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: mocks.runEmbeddedAgent }));
-vi.mock("../../../agents/bootstrap-files.js", () => ({
-  resolveBootstrapFilesForRun: async () => [],
-}));
-vi.mock("../../../talk/provider-resolver.js", () => ({
-  resolveConfiguredRealtimeVoiceProvider: mocks.resolveProvider,
-}));
-vi.mock("../../../talk/provider-registry.js", () => ({ listRealtimeVoiceProviders: () => [] }));
-
-let state: OpenClawTestState;
-let config: OpenClawConfig;
-let client: ReturnType<typeof sharingPolicyClient> & { connId: string };
-let callback: RealtimeVoiceAgentConsultRunner | undefined;
-let providerInstructions: string | undefined;
-const browserVoiceSessionIds = new Set<string>();
-let browserControl: RealtimeVoiceGatewayControl | undefined;
-const submitProviderResult = vi.fn();
-const context = {
-  getRuntimeConfig: () => config,
-  getClientConnIds: () => new Set([client.connId]),
-  chatAbortControllers: new Map(),
-  broadcastToConnIds: vi.fn(),
-  logGateway: { warn: vi.fn() },
-} as unknown as GatewayRequestContext;
-
-async function dispatch(
-  method: string,
-  params: Record<string, unknown>,
-  handlers: GatewayRequestHandlers = {},
-) {
-  const respond = vi.fn();
-  await handleGatewayRequest({
-    req: { type: "req", id: "native-consult", method, params },
-    client,
-    context,
-    isWebchatConnect: () => false,
-    respond,
-    extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
-  });
-  const payload = respond.mock.calls.at(-1)?.[1];
-  if (
-    method === "talk.client.create" &&
-    isRecord(payload) &&
-    typeof payload.voiceSessionId === "string"
-  ) {
-    browserVoiceSessionIds.add(payload.voiceSessionId);
-  }
-  return respond;
-}
-
-beforeEach(async () => {
-  state = await createOpenClawTestState({ label: "talk-native-consult" });
-  config = {
-    agents: {
-      ownership: "explicit",
-      entries: { primary: {}, voice: { workspace: state.workspaceDir } },
-    },
-    talk: { agentId: "voice" },
-  };
-  client = {
-    ...sharingPolicyClient({ user: ensureProfileForEmail("native-listener@example.test").id }),
-    connId: "native-consult-client",
-  };
-  callback = undefined;
-  providerInstructions = undefined;
-  browserVoiceSessionIds.clear();
-  browserControl = undefined;
-  vi.clearAllMocks();
-  mocks.runEmbeddedAgent.mockReset().mockResolvedValue({
-    payloads: [{ text: "Synthetic consult answer" }],
-    meta: { durationMs: 0 },
-  });
-  context.chatAbortControllers.clear();
-  setActivePluginRegistry(createEmptyPluginRegistry());
-  const provider: RealtimeVoiceProviderPlugin = {
-    id: "synthetic-voice",
-    label: "Synthetic voice",
-    capabilities: mocks.capabilities,
-    isConfigured: () => true,
-    createBrowserSession: async (request) => {
-      providerInstructions = request.instructions;
-      callback = request.runAgentConsult;
-      browserControl = request.gatewayControl;
-      browserControl?.bindBridge({
-        connect: async () => undefined,
-        sendAudio: () => undefined,
-        setMediaTimestamp: () => undefined,
-        handleBargeIn: () => undefined,
-        submitToolResult: submitProviderResult,
-        acknowledgeMark: () => undefined,
-        close: () => undefined,
-        isConnected: () => true,
-      });
-      return {
-        provider: "synthetic-voice",
-        transport: "webrtc",
-        clientSecret: "synthetic-offer",
-        offerUrl: "/test/offer",
-      };
-    },
-    createBridge: (request) => {
-      providerInstructions = request.instructions;
-      callback = request.runAgentConsult;
-      return {
-        connect: async () => undefined,
-        sendAudio: () => undefined,
-        setMediaTimestamp: () => undefined,
-        handleBargeIn: () => undefined,
-        submitToolResult: () => undefined,
-        acknowledgeMark: () => undefined,
-        close: () => undefined,
-        isConnected: () => true,
-      };
-    },
-  };
-  Object.defineProperty(provider, Symbol.for("openclaw.internal.realtime-voice-provider.v1"), {
-    value: { isBrowserSessionConfigured: () => true, cancelBrowserSession: async () => undefined },
-  });
-  mocks.resolveProvider.mockReturnValue({
-    provider,
-    providerConfig: {},
-    capabilities: {
-      ...mocks.capabilities,
-      supportsGatewayControl: true,
-      handlesAgentConsult: true,
-    },
-  });
-});
-
-afterEach(async () => {
-  try {
-    for (const browserVoiceSessionId of browserVoiceSessionIds) {
-      await closeTalkClientGatewayControlSession({
-        voiceSessionId: browserVoiceSessionId,
-        sessionKey: "main",
-        connId: client.connId,
-      });
-    }
-    cleanupTalkConnection(client.connId, context.logGateway);
-    await Promise.all(
-      [...drainingRelaySessions].map(
-        (session) => session.closing?.completion ?? session.voiceSessionClose ?? Promise.resolve(),
-      ),
-    );
-  } finally {
-    clientVoiceSessionTesting.reset();
-    embeddedRunTesting.resetActiveEmbeddedRuns();
-    setActivePluginRegistry(createEmptyPluginRegistry());
-    await state.cleanup();
-  }
-});
-
-async function createRelayCall(params: Record<string, unknown> = {}) {
-  const respond = await dispatch("talk.session.create", {
-    sessionKey: "main",
-    mode: "realtime",
-    transport: "gateway-relay",
-    brain: "agent-consult",
-    ...params,
-  });
-  expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
-  const sessionId = (respond.mock.calls[0]![1] as { sessionId: string }).sessionId;
-  const record = getUnifiedTalkSession(sessionId);
-  if (record.kind !== "realtime-relay") {
-    throw new Error("Expected realtime relay");
-  }
-  return { sessionId, target: record.sessionTarget };
-}
 
 it.each([undefined, "main"])(
   "retains the opaque relay owner when Talk defaults change (key=%s)",
   async (sessionKey) => {
-    config.session = { scope: "global" };
+    testState.config.session = { scope: "global" };
     const { sessionId } = await createRelayCall();
     expect(providerInstructions).toBe(REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS);
     await replaceSessionEntry(
@@ -260,7 +68,7 @@ it.each([undefined, "main"])(
         createdActor: { type: "human", source: "profile", id: "another-person" },
       },
     );
-    config = { ...config, talk: { agentId: "primary" } };
+    testState.config = { ...testState.config, talk: { agentId: "primary" } };
     expect(
       await dispatch("talk.session.steer", {
         sessionId,
@@ -317,7 +125,7 @@ it.each([undefined, "main"])(
 
 it("rejects retained relay mapping changes even when the physical store is unchanged", async () => {
   const { sessionId } = await createRelayCall();
-  config = { ...config, session: { mainKey: "home" } };
+  testState.config = { ...testState.config, session: { mainKey: "home" } };
   expect(
     await dispatch("talk.session.steer", { sessionId, text: "status", mode: "status" }),
   ).toHaveBeenCalledWith(
@@ -364,7 +172,7 @@ function registerOwnedEmbeddedRun(runId: string, sessionId: string) {
     sessionId,
     sessionKey: "global",
     agentId: "voice",
-    ownerConnId: client.connId,
+    ownerConnId: testState.client.connId,
     timeoutMs: 60_000,
     kind: "chat-send",
   });
@@ -384,8 +192,8 @@ function registerOwnedEmbeddedRun(runId: string, sessionId: string) {
 }
 
 it("rechecks RPC sharing authorization after the control runtime import", async () => {
-  config.session = { scope: "global" };
-  const target = prepareTalkSessionTarget(config, "main");
+  testState.config.session = { scope: "global" };
+  const target = prepareTalkSessionTarget(testState.config, "main");
   const scope = { agentId: "voice", sessionKey: "global", storePath: target.storePath };
   await replaceSessionEntry(scope, {
     sessionId: "acl-session",
@@ -394,7 +202,7 @@ it("rechecks RPC sharing authorization after the control runtime import", async 
   });
   const { registration, abort } = registerOwnedEmbeddedRun("acl-run", "acl-session");
   const authorization = resolveSessionMutationAuthorization({
-    client,
+    client: testState.client,
     method: "talk.client.steer",
     requestParams: { sessionKey: "main" },
     context,
@@ -402,7 +210,7 @@ it("rechecks RPC sharing authorization after the control runtime import", async 
   expect(authorization.error).toBeNull();
   const runTarget = resolveOwnedActiveTalkRunTarget({
     context,
-    clientConnId: client.connId,
+    clientConnId: testState.client.connId,
     sessionTarget: target,
     scope: { kind: "session" },
     assertCurrent: authorization.authorization!.assertCurrent,
@@ -442,8 +250,8 @@ it.each([
   "voice binding removed",
   "voice binding replaced",
 ] as const)("fences %s Gateway registration while exact control loads", async (change) => {
-  config.session = { scope: "global" };
-  const target = prepareTalkSessionTarget(config, "main");
+  testState.config.session = { scope: "global" };
+  const target = prepareTalkSessionTarget(testState.config, "main");
   const runId = "captured-run";
   const voiceScope = { agentId: target.agentId, sessionKey: target.sessionKey };
   const voiceSessionId = createOrResumeClientVoiceSession({ ...voiceScope, origin: "client" });
@@ -451,7 +259,7 @@ it.each([
   const { registration, abort } = registerOwnedEmbeddedRun(runId, "captured-session");
   const runTarget = resolveOwnedActiveTalkRunTarget({
     context,
-    clientConnId: client.connId,
+    clientConnId: testState.client.connId,
     sessionTarget: target,
     scope: { kind: "voice-session", voiceSessionId },
   });
@@ -505,7 +313,7 @@ it.each([
 });
 
 it("preserves status and cancellation for an owned queued chat.send reply", async () => {
-  config.session = { scope: "global" };
+  testState.config.session = { scope: "global" };
   const respond = await dispatch("talk.client.create", {
     sessionKey: "main",
     mode: "realtime",
@@ -521,7 +329,7 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
     sessionId,
     sessionKey: "global",
     agentId: "voice",
-    ownerConnId: client.connId,
+    ownerConnId: testState.client.connId,
     timeoutMs: 60_000,
     kind: "chat-send",
   });
@@ -533,8 +341,8 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
   });
   const runTarget = resolveOwnedActiveTalkRunTarget({
     context,
-    clientConnId: client.connId,
-    sessionTarget: prepareTalkSessionTarget(config, "main"),
+    clientConnId: testState.client.connId,
+    sessionTarget: prepareTalkSessionTarget(testState.config, "main"),
     scope: { kind: "session" },
   });
   const resolvedSessionId = "materialized-reply-session";
@@ -549,8 +357,8 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
   });
   const voiceTarget = resolveOwnedActiveTalkRunTarget({
     context,
-    clientConnId: client.connId,
-    sessionTarget: prepareTalkSessionTarget(config, "main"),
+    clientConnId: testState.client.connId,
+    sessionTarget: prepareTalkSessionTarget(testState.config, "main"),
     scope: { kind: "voice-session", voiceSessionId },
   });
   try {
@@ -627,7 +435,10 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
 
 it("restores bounded relay history after the original voice provider finishes closing", async () => {
   const configuredInstructions = "Keep native answers brief.";
-  config.talk = { ...config.talk, realtime: { instructions: configuredInstructions } };
+  testState.config.talk = {
+    ...testState.config.talk,
+    realtime: { instructions: configuredInstructions },
+  };
   const closeStarted = createDeferredCore();
   const finishClose = createDeferredCore();
   const requests: RealtimeVoiceBridgeCreateRequest[] = [];
@@ -677,11 +488,11 @@ it("restores bounded relay history after the original voice provider finishes cl
   const changing = requestTalkVoiceChange({
     session: resolveTalkVoiceSession({
       kind: "client",
-      connId: client.connId,
+      connId: testState.client.connId,
       voiceSessionId: original.sessionId,
     }),
     voice: "ember",
-    requesterConnId: client.connId,
+    requesterConnId: testState.client.connId,
     assertCurrent: () => {},
     send,
   });
@@ -734,7 +545,7 @@ it("restores bounded relay history after the original voice provider finishes cl
     replacementRequest.onReady?.();
     await completeTalkVoiceChange({
       changeId,
-      connId: client.connId,
+      connId: testState.client.connId,
       voiceSessionId: replacement.sessionId,
       outcome: "ready",
     });
@@ -767,7 +578,7 @@ it("restores bounded relay history after the original voice provider finishes cl
   } finally {
     finishClose.resolve();
     await closing;
-    cleanupTalkConnection(client.connId, context.logGateway);
+    cleanupTalkConnection(testState.client.connId, context.logGateway);
     await changing.catch(() => {});
   }
 });
@@ -777,9 +588,12 @@ describe.each(["browser", "relay"] as const)("native %s Talk consultation", (tra
     { name: "custom main", scope: "per-sender" as const, canonicalKey: "agent:voice:home" },
     { name: "global", scope: "global" as const, canonicalKey: "global" },
   ])("uses the created $name session in the provider callback", async ({ scope, canonicalKey }) => {
-    config.session = { mainKey: "home", scope };
-    config.talk = { ...config.talk, realtime: { instructions: "Keep native answers brief." } };
-    const target = prepareTalkSessionTarget(config, "main");
+    testState.config.session = { mainKey: "home", scope };
+    testState.config.talk = {
+      ...testState.config.talk,
+      realtime: { instructions: "Keep native answers brief." },
+    };
+    const target = prepareTalkSessionTarget(testState.config, "main");
     const method = transport === "browser" ? "talk.client.create" : "talk.session.create";
     const respond = await dispatch(method, {
       sessionKey: "main",
@@ -830,7 +644,7 @@ describe.each(["browser-rpc", "browser-provider", "relay"] as const)(
       "other call",
       ...(surface === "relay" ? [] : ["same call"]),
     ])("keeps %s control within its declared scope", async (replacement) => {
-      config.session = { scope: "global" };
+      testState.config.session = { scope: "global" };
       const started = createDeferredCore<RunEmbeddedAgentParams>();
       const finish = createDeferredCore();
       let aborted = false;

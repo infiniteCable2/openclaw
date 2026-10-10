@@ -1,4 +1,5 @@
 import type { MediaUnderstandingAttachmentsConfig } from "../config/types.tools.js";
+import { resolveMediaProcessingIntent } from "../media/media-processing.js";
 import { resolveAttachmentKind } from "./attachments.normalize.js";
 import type { MediaAttachment, MediaUnderstandingCapability } from "./types.js";
 
@@ -32,6 +33,9 @@ export function selectAttachments(params: {
 }): { selected: MediaAttachment[]; droppedAttachmentIndexes: number[] } {
   const { capability, attachments, policy } = params;
   const matches = attachments.filter((item) => {
+    if (!resolveMediaProcessingIntent(item).automaticUnderstanding) {
+      return false;
+    }
     // Preflight audio has already been consumed; rerunning STT would duplicate transcript output.
     if (capability === "audio" && item.alreadyTranscribed) {
       return false;

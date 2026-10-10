@@ -1,5 +1,5 @@
-import type { RealtimeVoiceBridgeEvent } from "../talk/provider-types.js";
-import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
+import type { RealtimeVoiceBridgeEvent } from "../provider-types.js";
+import type { SpeechAudioTransport } from "./transport.js";
 
 const STALE_RESPONSE_LIMIT = 16;
 const AUDIO_DELTA_EVENTS = new Set([
@@ -12,8 +12,8 @@ const OUTPUT_MAX_WRITE_MS = 500;
 const OUTPUT_MAX_PENDING_FRAMES = 256;
 
 /** Serializes native playback writes and fences queued audio across interruption. */
-export function createMeetingRealtimeOutputQueue(params: {
-  transport: MeetingRealtimeAudioTransport;
+export function createSpeechRealtimeOutputQueue(params: {
+  transport: SpeechAudioTransport;
   bytesPerMs: number;
   onFailure: (source: string, error: unknown) => void;
 }) {
@@ -30,6 +30,7 @@ export function createMeetingRealtimeOutputQueue(params: {
   let clearCount = 0;
   let lastClearAt: string | undefined;
   let clearTail = Promise.resolve();
+  let activeWrite: Promise<void> | undefined;
   const queue: Array<{
     audio: Buffer;
     audible: boolean;
@@ -98,7 +99,7 @@ export function createMeetingRealtimeOutputQueue(params: {
             batchBytes,
           );
     writePhase = "scheduled";
-    void Promise.resolve()
+    const writing: Promise<void> = Promise.resolve()
       .then(async () => {
         if (stopped || next.generation !== generation) {
           return;
@@ -125,6 +126,9 @@ export function createMeetingRealtimeOutputQueue(params: {
         }
       })
       .finally(() => {
+        if (activeWrite === writing) {
+          activeWrite = undefined;
+        }
         writePhase = "idle";
         if (next.generation === generation) {
           pendingBytes -= batchBytes;
@@ -138,6 +142,7 @@ export function createMeetingRealtimeOutputQueue(params: {
         }
         pump();
       });
+    activeWrite = writing;
   };
 
   return {
@@ -167,13 +172,21 @@ export function createMeetingRealtimeOutputQueue(params: {
       clearAfterActive = false;
       reset();
     },
+    async drain(): Promise<void> {
+      // Stop fences new writes; join the existing pump and admitted clears
+      // before the transport can be disposed. No audio is replayed here.
+      while (activeWrite) {
+        await activeWrite;
+      }
+      await clearTail;
+    },
     pending: () => ({ pendingBytes, pendingFrames }),
     hasUnplayedAudibleAudio: () => pendingAudibleFrames > 0 || Date.now() < audibleUntilMs,
     getHealth: () => ({ clearCount, lastClearAt }),
   };
 }
 
-export function createMeetingRealtimeOutputOwner() {
+export function createSpeechRealtimeOutputOwner() {
   let nextResponseId: string | undefined;
   let announcedResponseId: string | undefined;
   let currentResponseId: string | undefined;

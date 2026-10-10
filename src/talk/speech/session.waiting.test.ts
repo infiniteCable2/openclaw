@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
-import type { PluginRuntime } from "../plugins/runtime/types.js";
-import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
-import type { RealtimeTranscriptionSessionCreateRequest } from "../realtime-transcription/provider-types.js";
-import { startMeetingAgentRealtimeEngine } from "./realtime-agent-engine.js";
-import type { MeetingAgentConsultParams } from "./realtime-engine.js";
-import { createMeetingWaitingAudioPlayback } from "./waiting-audio.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
+import type { RealtimeTranscriptionSessionCreateRequest } from "../../realtime-transcription/provider-types.js";
+import { startSpeechSession } from "./session.js";
+import type { SpeechAgentConsultParams } from "./types.js";
+import { createSpeechWaitingAudioPlayback } from "./waiting-audio.js";
 
 vi.mock("./waiting-audio.js", () => ({
-  prepareMeetingWaitingAudio: vi.fn(async () => undefined),
-  createMeetingWaitingAudioPlayback: vi.fn(() => ({
+  prepareSpeechWaitingAudio: vi.fn(async () => undefined),
+  createSpeechWaitingAudioPlayback: vi.fn(() => ({
     schedule: vi.fn(),
     stop: vi.fn(async () => undefined),
   })),
@@ -21,7 +21,7 @@ async function setup(options?: {
   fullDuplexEchoWindow?: boolean;
 }) {
   let callbacks!: RealtimeTranscriptionSessionCreateRequest;
-  let consult!: MeetingAgentConsultParams;
+  let consult!: SpeechAgentConsultParams;
   let audio!: ReadableStreamDefaultController<Uint8Array>;
   const completion = createDeferred<{ text: string; delivered: true }>();
   const readerStarted = createDeferred();
@@ -54,24 +54,23 @@ async function setup(options?: {
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
   const setOutputGate = vi.fn(async () => undefined);
   const transportStop = vi.fn(async () => undefined);
-  const consultAgent = vi.fn((request: MeetingAgentConsultParams) => {
+  const transportDispose = vi.fn(async () => undefined);
+  const consultAgent = vi.fn((request: SpeechAgentConsultParams) => {
     consult = request;
     return completion.promise;
   });
-  const handle = await startMeetingAgentRealtimeEngine({
+  const handle = await startSpeechSession({
     config: {
-      chrome: { audioFormat: "pcm16-24khz" },
-      realtime: {
-        strategy: "agent",
-        transcriptionProvider: "test-stt",
-        responseStreaming: "sentence",
-        providers: {},
-      },
+      audioFormat: "pcm16-24khz",
+
+      transcriptionProvider: "test-stt",
+      responseStreaming: "sentence",
+      providers: {},
     },
     fullConfig: {},
     runtime: { tts: { streamTextToSpeechTelephony: synthesis } } as unknown as PluginRuntime,
-    platform: { displayName: "Test", logScope: "test", sessionIdPrefix: "test" },
-    meetingSessionId: "test-call",
+    surface: { displayName: "Test", logScope: "test", sessionIdPrefix: "test" },
+    sessionId: "test-call",
     ...(options?.initialGreeting ? { initialGreeting: options.initialGreeting } : {}),
     transport: {
       inputAudioIsolated: options?.fullDuplexEchoWindow !== true,
@@ -83,13 +82,13 @@ async function setup(options?: {
       writeOutput,
       clearOutput: async () => {},
       stop: transportStop,
-      dispose: async () => {},
+      dispose: transportDispose,
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     providers: [provider],
     consultAgent,
   });
-  const playback = vi.mocked(createMeetingWaitingAudioPlayback).mock.results.at(-1)!.value;
+  const playback = vi.mocked(createSpeechWaitingAudioPlayback).mock.results.at(-1)!.value;
   return {
     callbacks,
     handle,
@@ -97,6 +96,7 @@ async function setup(options?: {
     writeOutput,
     setOutputGate,
     transportStop,
+    transportDispose,
     consultAgent,
     synthesis,
     readerStarted,
@@ -126,6 +126,63 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("speech-confirmed waiting audio", () => {
+  it("does not schedule greeting playback after stop settles remote readiness", async () => {
+    const remoteReady = createDeferred();
+    const f = await setup({
+      initialGreeting: { text: "Hello, caller.", audio: Buffer.from([1, 0]) },
+      remoteReady: remoteReady.promise,
+    });
+    f.transportStop.mockImplementationOnce(async () => {
+      remoteReady.resolve();
+    });
+    try {
+      await f.handle.stop();
+      expect(f.writeOutput).not.toHaveBeenCalled();
+      expect(f.transportDispose).toHaveBeenCalledOnce();
+      expect(
+        f.handle.getHealth().recentTalkEvents?.filter((event) => event.type === "session.closed"),
+      ).toHaveLength(1);
+    } finally {
+      remoteReady.resolve();
+      await f.close();
+    }
+  });
+
+  it("joins an admitted greeting write before disposing its transport", async () => {
+    const f = await setup({
+      initialGreeting: { text: "Hello, caller.", audio: Buffer.from([1, 0]) },
+    });
+    const writing = createDeferred();
+    const writeStarted = createDeferred();
+    const captureStopped = createDeferred();
+    f.writeOutput.mockImplementationOnce(async () => {
+      writeStarted.resolve();
+      await writing.promise;
+    });
+    f.transportStop.mockImplementationOnce(async () => {
+      captureStopped.resolve();
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(150);
+    await writeStarted.promise;
+    const closing = f.handle.stop();
+    try {
+      await captureStopped.promise;
+      expect(f.transportDispose).not.toHaveBeenCalled();
+      expect(f.handle.getHealth().recentTalkEvents?.map((event) => event.type)).not.toContain(
+        "session.closed",
+      );
+      writing.resolve();
+      await closing;
+      expect(f.transportDispose).toHaveBeenCalledOnce();
+      expect(f.writeOutput).toHaveBeenCalledOnce();
+    } finally {
+      writing.resolve();
+      await closing;
+      await f.close();
+    }
+  });
+
   it("resumes after the quiet gap without waiting for the full-duplex echo tail", async () => {
     const f = await setup({ fullDuplexEchoWindow: true });
     try {

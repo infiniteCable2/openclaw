@@ -10,6 +10,9 @@ export const MAX_DOCUMENT_BYTES = 100 * 1024 * 1024; // 100MB
 /** Canonical media families used by attachment facts, routing, and MIME classification. */
 export type MediaKind = "image" | "audio" | "video" | "document" | "sticker" | "unknown";
 
+/** Authoritative use of media, independent of its format or delivery channel. */
+export type MediaProcessingPurpose = "communication" | "analysis" | "recording" | "relay";
+
 /** Maps a MIME type to the media family used for size limits and routing. */
 export function mediaKindFromMime(mime?: string | null): MediaKind | undefined {
   if (!mime) {

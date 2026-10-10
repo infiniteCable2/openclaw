@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createMeetingInputOnset } from "./realtime-input-onset.js";
+import { createSpeechInputOnset } from "./input-onset.js";
 
 describe("meeting input completion reservations", () => {
   afterEach(() => vi.useRealTimers());
 
   it("expires from original onset, even if duplicated or claimed without an admission result", async () => {
     vi.useFakeTimers();
-    const onset = createMeetingInputOnset<string>();
+    const onset = createSpeechInputOnset<string>();
     onset.begin("b", "owner-a");
     const completion = onset.waitForChange(() => true);
     await vi.advanceTimersByTimeAsync(119_000);
@@ -26,7 +26,7 @@ describe("meeting input completion reservations", () => {
 
   it("retains onset ownership after expiry until a late transcript settles it", async () => {
     vi.useFakeTimers();
-    const onset = createMeetingInputOnset<string>();
+    const onset = createSpeechInputOnset<string>();
     onset.begin("b", "retired-owner");
     await vi.advanceTimersByTimeAsync(120_000);
     await onset.wait();
@@ -41,7 +41,7 @@ describe("meeting input completion reservations", () => {
 
   it("scopes completion to its original owner and wakes on abort without consuming input", async () => {
     vi.useFakeTimers();
-    const onset = createMeetingInputOnset<string>();
+    const onset = createSpeechInputOnset<string>();
     const controller = new AbortController();
     onset.begin("b", "owner-a");
     expect(onset.waitForChange((owner) => owner === "owner-b")).toBeUndefined();

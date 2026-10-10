@@ -1,31 +1,29 @@
 import { normalizeOptionalString as readLogString } from "@openclaw/normalization-core/string-coerce";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type {
   RealtimeTranscriptionProviderPlugin,
   RealtimeVoiceProviderPlugin,
-} from "../plugins/types.js";
+} from "../../plugins/types.js";
 import {
   getRealtimeTranscriptionProvider,
   listRealtimeTranscriptionProviders,
-} from "../realtime-transcription/provider-registry.js";
-import type { RealtimeTranscriptionProviderConfig } from "../realtime-transcription/provider-types.js";
+} from "../../realtime-transcription/provider-registry.js";
+import type { RealtimeTranscriptionProviderConfig } from "../../realtime-transcription/provider-types.js";
+import { truncateUtf16Safe } from "../../utils.js";
 import {
   resolveConfiguredRealtimeVoiceProvider,
   type ResolvedRealtimeVoiceProvider,
-} from "../talk/provider-resolver.js";
-import type { RealtimeVoiceProviderConfig } from "../talk/provider-types.js";
-import { truncateUtf16Safe } from "../utils.js";
-import type { MeetingRealtimeAudioFormat } from "./realtime-audio-format.js";
+} from "../provider-resolver.js";
+import type { RealtimeVoiceProviderConfig } from "../provider-types.js";
+import type { SpeechAudioFormat } from "./audio-format.js";
 
-type MeetingRealtimeProviderSelectionConfig = {
-  realtime: {
-    agentId?: string;
-    provider?: string;
-    transcriptionProvider?: string;
-    voiceProvider?: string;
-    model?: string;
-    providers: Record<string, Record<string, unknown>>;
-  };
+type SpeechProviderSelectionConfig = {
+  agentId?: string;
+  provider?: string;
+  transcriptionProvider?: string;
+  voiceProvider?: string;
+  model?: string;
+  providers: Record<string, Record<string, unknown>>;
 };
 
 type ResolvedRealtimeTranscriptionProvider = {
@@ -33,54 +31,56 @@ type ResolvedRealtimeTranscriptionProvider = {
   providerConfig: RealtimeTranscriptionProviderConfig;
 };
 
-export function meetingOutputBytesPerMs(audioFormat: MeetingRealtimeAudioFormat): number {
+export function speechOutputBytesPerMs(audioFormat: SpeechAudioFormat): number {
   return audioFormat === "g711-ulaw-8khz" ? 8 : 48;
 }
 
-export function resolveMeetingRealtimeProvider(params: {
-  config: MeetingRealtimeProviderSelectionConfig;
+export function resolveSpeechRealtimeProvider(params: {
+  config: SpeechProviderSelectionConfig;
   fullConfig: OpenClawConfig;
   providers?: RealtimeVoiceProviderPlugin[];
 }): ResolvedRealtimeVoiceProvider {
-  const providerId = params.config.realtime.voiceProvider ?? params.config.realtime.provider;
+  const providerId = params.config.voiceProvider ?? params.config.provider;
   return resolveConfiguredRealtimeVoiceProvider({
     configuredProviderId: providerId,
-    providerConfigs: params.config.realtime.providers,
+    providerConfigs: params.config.providers,
     cfg: params.fullConfig,
-    agentId: params.config.realtime.agentId,
+    agentId: params.config.agentId,
     surface: "gateway-relay",
     useProviderDefaultModel: true,
     providers: params.providers,
-    defaultModel: params.config.realtime.model,
+    defaultModel: params.config.model,
     noRegisteredProviderMessage: "No configured realtime voice provider registered",
   });
 }
 
-export function resolveMeetingRealtimeTranscriptionProvider(params: {
-  config: MeetingRealtimeProviderSelectionConfig;
+export function resolveSpeechTranscriptionProvider(params: {
+  config: SpeechProviderSelectionConfig;
   fullConfig: OpenClawConfig;
   providers?: RealtimeTranscriptionProviderPlugin[];
 }): ResolvedRealtimeTranscriptionProvider {
-  const providers = params.providers ?? listRealtimeTranscriptionProviders(params.fullConfig);
-  if (providers.length === 0) {
-    throw new Error("No configured realtime transcription provider registered");
-  }
-  const providerId =
-    params.config.realtime.transcriptionProvider ?? params.config.realtime.provider;
+  const providerId = params.config.transcriptionProvider ?? params.config.provider;
   const configuredProvider = providerId
-    ? (params.providers?.find(
-        (entry) => entry.id === providerId || entry.aliases?.includes(providerId),
-      ) ?? getRealtimeTranscriptionProvider(providerId, params.fullConfig))
+    ? params.providers
+      ? params.providers.find(
+          (entry) => entry.id === providerId || entry.aliases?.includes(providerId),
+        )
+      : getRealtimeTranscriptionProvider(providerId, params.fullConfig)
     : undefined;
-  const provider = configuredProvider ?? providers[0];
+  if (providerId && !configuredProvider) {
+    throw new Error(`Realtime transcription provider "${providerId}" is not registered`);
+  }
+  // Targeted native lookup retains lazy plugin loading; an explicitly supplied
+  // provider set remains an authoritative operation scope and cannot be escaped.
+  const provider =
+    configuredProvider ??
+    (params.providers ?? listRealtimeTranscriptionProviders(params.fullConfig))[0];
   if (!provider) {
     throw new Error("No configured realtime transcription provider registered");
   }
   const rawConfig = providerId
-    ? (params.config.realtime.providers[providerId] ??
-      params.config.realtime.providers[provider.id] ??
-      {})
-    : (params.config.realtime.providers[provider.id] ?? {});
+    ? (params.config.providers[providerId] ?? params.config.providers[provider.id] ?? {})
+    : (params.config.providers[provider.id] ?? {});
   const providerConfig = provider.resolveConfig
     ? provider.resolveConfig({ cfg: params.fullConfig, rawConfig })
     : rawConfig;
@@ -90,7 +90,7 @@ export function resolveMeetingRealtimeTranscriptionProvider(params: {
   return { provider, providerConfig };
 }
 
-export function buildMeetingSpeakExactUserMessage(text: string): string {
+export function buildSpeechSpeakExactUserMessage(text: string): string {
   return [
     "Speak this exact OpenClaw answer to the meeting, without adding, removing, or rephrasing words.",
     `Answer: ${JSON.stringify(text)}`,
@@ -116,13 +116,13 @@ function resolveProviderModelForLog(params: {
   );
 }
 
-export function formatMeetingRealtimeVoiceModelLog(params: {
+export function formatSpeechRealtimeVoiceModelLog(params: {
   logScope: string;
   strategy: string;
   provider: RealtimeVoiceProviderPlugin;
   providerConfig: RealtimeVoiceProviderConfig;
   fallbackModel?: string;
-  audioFormat: MeetingRealtimeAudioFormat;
+  audioFormat: SpeechAudioFormat;
 }): string {
   return [
     `${params.logScope} realtime voice bridge starting: strategy=${formatLogValue(params.strategy)}`,
@@ -132,11 +132,11 @@ export function formatMeetingRealtimeVoiceModelLog(params: {
   ].join(" ");
 }
 
-export function formatMeetingAgentAudioModelLog(params: {
+export function formatSpeechAgentAudioModelLog(params: {
   logScope: string;
   provider: RealtimeTranscriptionProviderPlugin;
   providerConfig: RealtimeTranscriptionProviderConfig;
-  audioFormat: MeetingRealtimeAudioFormat;
+  audioFormat: SpeechAudioFormat;
 }): string {
   return [
     `${params.logScope} agent audio bridge starting: transcriptionProvider=${formatLogValue(
@@ -148,7 +148,7 @@ export function formatMeetingAgentAudioModelLog(params: {
   ].join(" ");
 }
 
-type MeetingTtsResultLogFields = {
+type SpeechTtsResultLogFields = {
   provider?: string;
   providerModel?: string;
   providerVoice?: string;
@@ -157,10 +157,10 @@ type MeetingTtsResultLogFields = {
   fallbackFrom?: string;
 };
 
-export function formatMeetingAgentTtsResultLog(
+export function formatSpeechTtsResultLog(
   logScope: string,
   prefix: string,
-  result: MeetingTtsResultLogFields,
+  result: SpeechTtsResultLogFields,
 ): string {
   return [
     `${logScope} ${prefix} TTS: provider=${formatLogValue(result.provider)}`,
@@ -172,7 +172,7 @@ export function formatMeetingAgentTtsResultLog(
   ].join(" ");
 }
 
-export function formatMeetingTranscriptSummaryLog(
+export function formatSpeechTranscriptSummaryLog(
   logScope: string,
   prefix: string,
   text: string,
@@ -180,7 +180,7 @@ export function formatMeetingTranscriptSummaryLog(
   return `${logScope} ${prefix}: chars=${text.length}`;
 }
 
-export function normalizeMeetingTtsPromptText(text: string | undefined): string | undefined {
+export function normalizeSpeechPromptText(text: string | undefined): string | undefined {
   const trimmed = text?.trim();
   if (!trimmed) {
     return undefined;

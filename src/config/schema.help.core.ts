@@ -271,6 +271,38 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     "Use this to override the thinking level for the regular agent run behind Talk realtime consults.",
   "talk.consultFastMode":
     "Use this to set true or false fast mode for the regular agent run behind Talk realtime consults.",
+  "talk.speech":
+    "Server-processed speech presentation policy. These settings do not select an agent or grant session, tool, or device access.",
+  "talk.speech.agentProfiles":
+    "Policies keyed by exact admitted agent ID. Missing entries use normal speech behavior, never another agent's profile or the ambient Talk owner.",
+  "talk.speech.agentProfiles.*":
+    "Streaming, spoken commentary, waiting audio and optional greeting for this exact agent's server-processed Talk sessions.",
+  "talk.speech.agentProfiles.*.responseStreaming":
+    'Speech synthesis delivery: "sentence" (default) produces incremental speech; "off" waits for the final response. Spoken commentary requires explicit "sentence".',
+  "talk.speech.agentProfiles.*.speakCommentary":
+    "Allows brief model progress statements to be synthesized between actions. Default: false. Requires responseStreaming=sentence; it does not expose reasoning text.",
+  "talk.speech.agentProfiles.*.waitingAudio":
+    "Optional local waiting music prepared with speech readiness and played only while work is pending and no speech is playing.",
+  "talk.speech.agentProfiles.*.waitingAudio.filePath":
+    "Gateway-readable PCM16 mono WAV file used as waiting audio. This is a file artifact, not a plugin lookup or remote URL.",
+  "talk.speech.agentProfiles.*.waitingAudio.startDelayMs":
+    "Non-negative delay in milliseconds before waiting audio starts during an accepted request.",
+  "talk.speech.agentProfiles.*.waitingAudio.resumeDelayMs":
+    "Non-negative delay before waiting audio resumes between speech segments while work continues. Default: 800 milliseconds.",
+  "talk.speech.agentProfiles.*.waitingAudio.volume":
+    "Waiting audio amplitude multiplier from 0 (silent) to 1 (original level).",
+  "talk.speech.agentProfiles.*.greeting":
+    "Optional agent-generated opening speech prepared before session readiness. Playback still waits for the remote audio-ready acknowledgement and remains interruptible.",
+  "talk.speech.agentProfiles.*.greeting.enabled":
+    "Enables greeting preparation for this agent's server-processed speech sessions. Default: false.",
+  "talk.speech.agentProfiles.*.greeting.prompt":
+    "Short greeting instruction. Omitted uses a brief personal greeting appropriate to the current time; greeting generation has no tools.",
+  "talk.speech.agentProfiles.*.greeting.timeZone":
+    "Time zone for the time-aware greeting, for example UTC. Omitted uses the Gateway's local time zone.",
+  "talk.speech.agentProfiles.*.greeting.timeoutMs":
+    "Positive whole-number deadline for greeting model and TTS preparation in milliseconds. Default: 30000.",
+  "talk.speech.agentProfiles.*.greeting.onFailure":
+    'Greeting preparation failure policy: "reject" (default) refuses readiness; "continue" admits the session without greeting.',
   "talk.speechLocale":
     'BCP 47 locale id for Talk speech recognition on device nodes and the iOS system-voice fallback, for example "ru-RU". Leave unset to use each device default.',
   "talk.interruptOnSpeech":

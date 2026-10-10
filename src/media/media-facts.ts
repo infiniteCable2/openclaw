@@ -1,4 +1,4 @@
-import type { MediaKind } from "@openclaw/media-core/constants";
+import type { MediaKind, MediaProcessingPurpose } from "@openclaw/media-core/constants";
 import {
   getFileExtension,
   kindFromMime,
@@ -11,6 +11,10 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeMediaProcessingPurpose,
+  resolveMediaProcessingIntent,
+} from "./media-processing.js";
 import type { PromptImageOrderEntry } from "./prompt-image-order.js";
 
 /** One ordered runtime attachment; array position is its alignment identity. */
@@ -31,6 +35,8 @@ export type MediaFact = {
   voiceMessage?: boolean;
   /** Channel-authored intent to recognize speech addressed to the agent, not relay media. */
   speechInput?: boolean;
+  /** Explicit use of the original media; raw recording/relay bypass automatic understanding. */
+  purpose?: MediaProcessingPurpose;
   messageId?: string;
   workspaceDir?: string;
   /** Internal proof that this exact fact was covered by a legacy staged projection. */
@@ -226,6 +232,7 @@ export function canonicalizePersistedUserMessageMedia<T extends object>(
       ...(fact.transcribed ? { transcribed: true } : {}),
       ...(typeof fact.voiceMessage === "boolean" ? { voiceMessage: fact.voiceMessage } : {}),
       ...(typeof fact.speechInput === "boolean" ? { speechInput: fact.speechInput } : {}),
+      ...(fact.purpose ? { purpose: fact.purpose } : {}),
       ...(fact.messageId ? { messageId: fact.messageId } : {}),
       ...(fact.workspaceDir ? { workspaceDir: fact.workspaceDir } : {}),
       ...(fact.staged || stagedMedia?.[index]?.staged ? { staged: true } : {}),
@@ -314,13 +321,19 @@ export function resolveMediaFactKind(fact: MediaFactInput): MediaKind | undefine
 
 /** Returns whether a fact can produce native image input. */
 export function isImageMediaFact(fact: MediaFactInput): boolean {
+  if (!resolveMediaProcessingIntent(fact).automaticUnderstanding) {
+    return false;
+  }
   const kind = resolveMediaFactKind(fact);
   return kind === "image" || kind === "sticker";
 }
 
 /** Returns whether a fact can produce native video input. */
 export function isVideoMediaFact(fact: MediaFactInput): boolean {
-  return resolveMediaFactKind(fact) === "video";
+  return (
+    resolveMediaProcessingIntent(fact).automaticUnderstanding &&
+    resolveMediaFactKind(fact) === "video"
+  );
 }
 
 type MediaFactDefaults<TInput extends MediaFactInput = MediaFactInput> = {
@@ -366,6 +379,7 @@ function normalizeMediaFact<TInput extends MediaFactInput>(
   const durationMs = normalizePositiveInteger(input.durationMs);
   const width = normalizePositiveInteger(input.width);
   const height = normalizePositiveInteger(input.height);
+  const purpose = normalizeMediaProcessingPurpose(input.purpose);
   return {
     path: normalizeOptionalString(input.path),
     url: normalizeOptionalString(input.url),
@@ -383,6 +397,7 @@ function normalizeMediaFact<TInput extends MediaFactInput>(
     transcribed: input.transcribed === true || defaults.transcribed?.(input, index) === true,
     ...(typeof input.voiceMessage === "boolean" ? { voiceMessage: input.voiceMessage } : {}),
     ...(typeof input.speechInput === "boolean" ? { speechInput: input.speechInput } : {}),
+    ...(purpose ? { purpose } : {}),
     messageId: normalizeOptionalString(input.messageId) ?? defaults.messageId,
     ...(workspaceDir ? { workspaceDir } : {}),
     ...(input.staged === true ? { staged: true } : {}),

@@ -13,10 +13,10 @@ import type {
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import * as audioFormat from "../talk/speech/audio-format.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { createMeetingRealtimeEngineBindings } from "./agent-consult.js";
 import { startMeetingAgentRealtimeEngine } from "./realtime-agent-engine.js";
-import * as audioFormat from "./realtime-audio-format.js";
 import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
 import {
   MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS,
@@ -345,23 +345,21 @@ describe("meeting shutdown", () => {
     const fixture = await createFixture();
     const synthesis = createDeferredCore<typeof spokenResult>();
     const sink = createDeferredCore();
-    const createConverter = audioFormat.createMeetingTtsAudioStreamConverter;
+    const createConverter = audioFormat.createSpeechTtsAudioStreamConverter;
     const conversion = vi.fn();
-    vi.spyOn(audioFormat, "createMeetingTtsAudioStreamConverter").mockImplementation(
-      (...params) => {
-        const converter = createConverter(...params);
-        return {
-          process(audio) {
-            conversion("process");
-            return converter.process(audio);
-          },
-          flush() {
-            conversion("flush");
-            return converter.flush();
-          },
-        };
-      },
-    );
+    vi.spyOn(audioFormat, "createSpeechTtsAudioStreamConverter").mockImplementation((...params) => {
+      const converter = createConverter(...params);
+      return {
+        process(audio) {
+          conversion("process");
+          return converter.process(audio);
+        },
+        flush() {
+          conversion("flush");
+          return converter.flush();
+        },
+      };
+    });
     fixture.textToSpeechTelephony.mockReturnValueOnce(synthesis.promise);
     fixture.writeOutput.mockReturnValueOnce(sink.promise);
     try {
@@ -373,18 +371,16 @@ describe("meeting shutdown", () => {
         expect(fixture.writeOutput).toHaveBeenCalledOnce();
         expect(conversion).toHaveBeenCalledExactlyOnceWith("process");
       }
-      // stop seals the turn immediately, then drains admitted stream work.
+      // Stop seals the turn immediately, but full closure awaits admitted work
+      // and confirmed transport disposal.
       // Inspect that boundary before allowing the deliberately pending work to settle.
       const stopping = fixture.stop(shutdown);
       await setImmediate();
       const ended = fixture.eventTypes();
       expect
-        .soft(ended.slice(stage === "sink" ? -3 : -2))
-        .toEqual([
-          ...(stage === "sink" ? ["output.audio.done"] : []),
-          "turn.ended",
-          "session.closed",
-        ]);
+        .soft(ended.slice(stage === "sink" ? -2 : -1))
+        .toEqual([...(stage === "sink" ? ["output.audio.done"] : []), "turn.ended"]);
+      expect(ended).not.toContain("session.closed");
       const conversions = conversion.mock.calls.length;
       const writes = fixture.writeOutput.mock.calls.length;
       const warnings = fixture.logger.warn.mock.calls.length;
@@ -400,7 +396,7 @@ describe("meeting shutdown", () => {
       }
       await stopping;
       await setImmediate();
-      expect.soft(fixture.eventTypes()).toEqual(ended);
+      expect.soft(fixture.eventTypes()).toEqual([...ended, "session.closed"]);
       expect.soft(conversion).toHaveBeenCalledTimes(conversions);
       expect.soft(fixture.writeOutput).toHaveBeenCalledTimes(writes);
       expect.soft(fixture.logger.warn).toHaveBeenCalledTimes(warnings);

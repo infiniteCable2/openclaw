@@ -11,9 +11,6 @@ import {
   prepareMeetingAgentGreeting,
   prepareMeetingAgentRealtimeEngine,
   startMeetingAgentRealtimeEngine,
-  type MeetingAgentRealtimePreparation,
-  type MeetingRealtimeAudioEngineHandle,
-  type MeetingRealtimeAudioTransport,
 } from "openclaw/plugin-sdk/meeting-runtime";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import type { CoreConfig, MatrixConfig } from "../types.js";
@@ -24,6 +21,7 @@ import {
   assertMatrixRtcPinnedTransports,
 } from "./rtc-admission.js";
 import { requestMatrixRtcCredentials, type MatrixRtcMembershipIdentity } from "./rtc-auth.js";
+import { stopCall, type ActiveCall } from "./rtc-call-lifecycle.js";
 import {
   findMatrixRtcAdmission,
   resolveMatrixRtcAgentProfile,
@@ -35,7 +33,6 @@ import type { MatrixClient } from "./sdk.js";
 import type { MatrixRtcIncomingMediaKey } from "./sdk/matrix-rtc.js";
 
 const KEY_WAIT_TIMEOUT_MS = 15_000;
-const LEAVE_TIMEOUT_MS = 5_000;
 const SLOT_ID = "m.call#ROOM";
 const INCOMING_KEY_BUFFER_TTL_MS = 60_000;
 const INCOMING_KEY_CLOCK_SKEW_MS = 5_000;
@@ -58,19 +55,6 @@ const MATRIX_RTC_PLATFORM = {
     participantIdentity: (transport: string) => transport,
   },
 } as const;
-
-type ActiveCall = {
-  abort: AbortController;
-  engine?: MeetingRealtimeAudioEngineHandle;
-  preparation?: MeetingAgentRealtimePreparation;
-  transport?: MeetingRealtimeAudioTransport;
-  session: MatrixRTCSession;
-  joined: boolean;
-  stopping: boolean;
-  startup?: Promise<void>;
-  stopPromise?: Promise<void>;
-  disposeListeners: () => void;
-};
 
 function mediaKeyId(key: MatrixRtcMediaKey): string {
   return `${key.participantIdentity}\0${key.index}`;
@@ -106,33 +90,6 @@ async function waitForInitialMediaKeys(params: {
     await delay(25, undefined, { signal: params.signal });
   }
   return [...params.keys.values()];
-}
-
-async function stopCall(call: ActiveCall): Promise<void> {
-  call.abort.abort();
-  // Startup owns every handle until it settles, even after cancellation. Only
-  // then can cleanup dispose a late transport or the engine that adopted it.
-  await call.startup;
-  call.disposeListeners();
-  try {
-    if (call.engine) {
-      await call.engine.stop();
-    } else if (call.transport) {
-      try {
-        await call.transport.stop();
-      } finally {
-        await call.transport.dispose();
-      }
-    }
-  } finally {
-    try {
-      if (call.joined) {
-        await call.session.leaveRoomSession(LEAVE_TIMEOUT_MS).catch(() => false);
-      }
-    } finally {
-      await call.preparation?.release();
-    }
-  }
 }
 
 export function registerMatrixRtcController(params: {
@@ -173,8 +130,12 @@ export function registerMatrixRtcController(params: {
   const stopCallSafely = async (call: ActiveCall) => {
     try {
       await stopCall(call);
+      call.cleanupError = undefined;
+      return true;
     } catch (error) {
+      call.cleanupError = error;
       params.logger.warn(`matrix rtc: call cleanup failed: ${formatErrorMessage(error)}`);
+      return false;
     }
   };
 
@@ -183,21 +144,27 @@ export function registerMatrixRtcController(params: {
     if (!call) {
       return;
     }
-    if (call.stopping) {
-      await call.stopPromise;
-      return;
+    if (call.stopPromise) {
+      return call.stopPromise;
     }
     // Keep ownership in the map until leaveRoomSession finishes. The SDK emits
     // membership changes while leaving; dropping ownership first lets those
     // self-generated events re-enter beginCall and fan one failure into retries.
     call.stopping = true;
-    const stopPromise = stopCallSafely(call).finally(() => {
-      if (calls.get(roomId) === call) {
-        calls.delete(roomId);
-      }
-    });
+    const stopPromise = stopCallSafely(call)
+      .then((released) => {
+        // A failed lease release remains owned and blocks replacement admission.
+        // A later end/stop request retries only the still-held cleanup resources.
+        if (released && calls.get(roomId) === call) {
+          calls.delete(roomId);
+        }
+        return released;
+      })
+      .finally(() => {
+        call.stopPromise = undefined;
+      });
     call.stopPromise = stopPromise;
-    await stopPromise;
+    return stopPromise;
   };
 
   const beginCall = (roomId: string, session: MatrixRTCSession) => {
@@ -329,6 +296,9 @@ export function registerMatrixRtcController(params: {
             accountId: params.accountId,
           },
           signal: abort.signal,
+          onPreparation: (preparation) => {
+            call.preparation = preparation;
+          },
         });
         abort.signal.throwIfAborted();
         params.logger.info("matrix rtc: speech providers ready");
@@ -374,12 +344,20 @@ export function registerMatrixRtcController(params: {
                 accountId: params.accountId,
               },
               signal: greetingSignal,
+              onPreparation: (preparation) => {
+                call.greetingPreparation = preparation;
+              },
             });
+            call.greetingPreparation = undefined;
           } catch {
             abort.signal.throwIfAborted();
             if (greeting.onFailure !== "continue") {
               throw new Error("MatrixRTC greeting preparation failed before call admission");
             }
+            // A failed greeting is optional; its resource cleanup is not.
+            await call.greetingPreparation?.release();
+            call.greetingPreparation = undefined;
+            abort.signal.throwIfAborted();
             params.logger.warn(
               "matrix rtc: greeting preparation failed; continuing without greeting",
             );
@@ -588,6 +566,10 @@ export function registerMatrixRtcController(params: {
           transport: mediaTransport,
           logger: params.logger,
           consultAgent: bindings.consultAgent,
+          onSession: (engine) => {
+            call.engine = engine;
+            call.transport = undefined;
+          },
           ...(initialGreeting ? { initialGreeting } : {}),
         });
         call.transport = undefined;
@@ -678,29 +660,36 @@ export function registerMatrixRtcController(params: {
     attachAdmittedSession(roomId, "membership-event");
   });
   const abortListener = () => {
-    void stop();
+    void stop().catch((error: unknown) => {
+      params.logger.warn(`matrix rtc: controller cleanup failed: ${formatErrorMessage(error)}`);
+    });
   };
   params.abortSignal?.addEventListener("abort", abortListener, { once: true });
 
   const stop = async () => {
-    if (stopped) {
-      return;
+    if (!stopped) {
+      stopped = true;
+      disposeStarted();
+      disposeEnded();
+      disposeRoomAvailable();
+      disposeRtcMembershipEvent();
+      for (const observed of observedSessions.values()) {
+        observed.dispose();
+      }
+      observedSessions.clear();
+      failedRemoteMemberships.clear();
+      incomingKeys.clear();
+      incomingKeyConsumers.clear();
+      disposeIncomingMediaKey();
+      params.abortSignal?.removeEventListener("abort", abortListener);
     }
-    stopped = true;
-    disposeStarted();
-    disposeEnded();
-    disposeRoomAvailable();
-    disposeRtcMembershipEvent();
-    for (const observed of observedSessions.values()) {
-      observed.dispose();
-    }
-    observedSessions.clear();
-    failedRemoteMemberships.clear();
-    incomingKeys.clear();
-    incomingKeyConsumers.clear();
-    disposeIncomingMediaKey();
-    params.abortSignal?.removeEventListener("abort", abortListener);
     await Promise.all([...calls.keys()].map((roomId) => endCall(roomId)));
+    if (calls.size > 0) {
+      throw new AggregateError(
+        [...calls.values()].map((call) => call.cleanupError),
+        "MatrixRTC call cleanup failed; retry controller.stop()",
+      );
+    }
   };
 
   return {

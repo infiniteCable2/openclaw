@@ -1,11 +1,8 @@
-import type { RealtimeTranscriptionSessionCallbacks } from "../realtime-transcription/provider-types.js";
-import type {
-  MeetingRealtimeAudioTransport,
-  MeetingOutputGate,
-} from "./realtime-audio-transport.js";
+import type { RealtimeTranscriptionSessionCallbacks } from "../../realtime-transcription/provider-types.js";
+import type { SpeechAudioTransport, SpeechOutputGate } from "./transport.js";
 
-export function createMeetingBargeInGate(params: {
-  transport: MeetingRealtimeAudioTransport;
+export function createSpeechBargeInGate(params: {
+  transport: SpeechAudioTransport;
   isStopped: () => boolean;
   hasActiveOutput: () => boolean;
   onFailure: (error: unknown) => void;
@@ -17,7 +14,7 @@ export function createMeetingBargeInGate(params: {
   // queue time to drain after an unconfirmed candidate releases the gate.
   const POST_PAUSE_DRAIN_MS = 3_000;
 
-  const setGate = (mode: MeetingOutputGate) => {
+  const setGate = (mode: SpeechOutputGate) => {
     if (!params.transport.setOutputGate || params.isStopped()) {
       return;
     }

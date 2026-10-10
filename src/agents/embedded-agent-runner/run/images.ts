@@ -21,6 +21,7 @@ import {
   readPersistedMediaFacts,
   type MediaFact,
 } from "../../../media/media-facts.js";
+import { resolveMediaProcessingIntent } from "../../../media/media-processing.js";
 import { resolveMediaReferenceLocalPath } from "../../../media/media-reference.js";
 import type { PromptImageOrderEntry } from "../../../media/prompt-image-order.js";
 import { finalizeRuntimePromptImages } from "../../../media/runtime-prompt-image-provenance.js";
@@ -258,7 +259,12 @@ export async function detectAndLoadPromptImages(
     (message ? readPersistedMediaImageLayout(message) : undefined) ?? params.mediaImageLayout;
   const suppressed = new Set([
     ...(mediaImageLayout?.suppressedFactIndexes ?? []),
-    ...media.flatMap((fact, index) => (fact.hydrationSuppressed === true ? [index] : [])),
+    ...media.flatMap((fact, index) =>
+      fact.hydrationSuppressed === true ||
+      !resolveMediaProcessingIntent(fact).automaticUnderstanding
+        ? [index]
+        : [],
+    ),
   ]);
   const imageFactIndexes = media.flatMap((fact, factIndex) =>
     isImageMediaFact(fact) && !suppressed.has(factIndex) ? [factIndex] : [],
@@ -336,10 +342,30 @@ export async function detectAndLoadPromptImages(
   const attachmentRawKeys = new Set(
     attachmentRefs.flatMap((ref) => ref.aliases.flatMap((alias) => rawAliasDedupeKey(alias) ?? [])),
   );
+  // A text projection cannot turn a raw-purpose attachment into a new,
+  // unowned image request. Only match its admitted identity and aliases;
+  // unrelated explicitly referenced images retain native handling.
+  const rawMedia = media.filter(
+    (fact) => !resolveMediaProcessingIntent(fact).automaticUnderstanding,
+  );
+  const rawMediaRefs = rawMedia.flatMap((fact) => {
+    const ref = resolveMediaFactLocalRef(fact);
+    return ref ? [{ ...ref, workspaceDir: fact.workspaceDir }] : [];
+  });
+  const rawMediaKeys = new Set(
+    rawMediaRefs.map((ref) => refDedupeKey(ref, ref.workspaceDir ?? params.workspaceDir)),
+  );
+  const rawMediaAliasKeys = new Set(
+    rawMedia.flatMap((fact) =>
+      [fact.path, fact.url].flatMap((alias) => (alias ? (rawAliasDedupeKey(alias) ?? []) : [])),
+    ),
+  );
   const promptRefs = detectImageReferences(params.prompt).filter(
     (ref) =>
       !attachmentRawKeys.has(rawAliasDedupeKey(ref.raw) ?? "") &&
-      !attachmentKeys.has(refDedupeKey(ref, params.workspaceDir)),
+      !attachmentKeys.has(refDedupeKey(ref, params.workspaceDir)) &&
+      !rawMediaAliasKeys.has(rawAliasDedupeKey(ref.raw) ?? "") &&
+      !rawMediaKeys.has(refDedupeKey(ref, params.workspaceDir)),
   );
   const detectedRefs = [
     ...refs.flatMap(({ detect, hydrate, raw, type, resolved }) =>

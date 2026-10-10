@@ -13,6 +13,7 @@ import {
   type MediaFact,
   type MediaFactInput,
 } from "../media/media-facts.js";
+import { normalizeMediaProcessingPurpose } from "../media/media-processing.js";
 import { applyInputProvenanceToUserMessage } from "./input-provenance.js";
 import { buildPersistedUserTurnMetadata } from "./user-turn-transcript.metadata.js";
 import type {
@@ -66,6 +67,7 @@ function normalizeStructuredMediaEntryForTranscript(
   const height = asPositiveSafeInteger(media.height);
   const fileName = normalizeOptionalString(media.fileName);
   const sizeBytes = asFiniteNumberInRange(media.sizeBytes, { min: 0 });
+  const purpose = normalizeMediaProcessingPurpose(media.purpose);
   return {
     ...(mediaPath ? { path: resolveTranscriptMediaPath(mediaPath, workspaceDir) } : {}),
     ...(mediaUrl ? { url: mediaUrl } : {}),
@@ -78,6 +80,9 @@ function normalizeStructuredMediaEntryForTranscript(
     ...(width ? { width } : {}),
     ...(height ? { height } : {}),
     ...(media.transcribed === true ? { transcribed: true } : {}),
+    ...(typeof media.voiceMessage === "boolean" ? { voiceMessage: media.voiceMessage } : {}),
+    ...(typeof media.speechInput === "boolean" ? { speechInput: media.speechInput } : {}),
+    ...(purpose ? { purpose } : {}),
     ...(messageId ? { messageId } : {}),
     ...(workspaceDir ? { workspaceDir } : {}),
     ...(media.hydrationSuppressed === true ? { hydrationSuppressed: true } : {}),
@@ -129,6 +134,15 @@ export function buildPersistedUserTurnMediaInputsFromFields(
     }
     if (fact.height !== undefined) {
       media.height = fact.height;
+    }
+    if (fact.purpose !== undefined) {
+      media.purpose = fact.purpose;
+    }
+    if (fact.voiceMessage !== undefined) {
+      media.voiceMessage = fact.voiceMessage;
+    }
+    if (fact.speechInput !== undefined) {
+      media.speechInput = fact.speechInput;
     }
     return media;
   });

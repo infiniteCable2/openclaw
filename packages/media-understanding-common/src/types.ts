@@ -1,3 +1,5 @@
+import type { MediaProcessingPurpose } from "@openclaw/media-core/constants";
+
 export type MediaUnderstandingKind =
   | "audio.transcription"
   | "video.description"
@@ -29,6 +31,7 @@ export type MediaAttachment = {
   alreadyTranscribed?: boolean;
   /** Explicit channel intent: this audio is speech addressed to the agent. */
   speechInput?: boolean;
+  purpose?: MediaProcessingPurpose;
 };
 
 /** Normalized text output produced by media understanding. */

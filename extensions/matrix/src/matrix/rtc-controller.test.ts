@@ -3,6 +3,7 @@ import { EventType } from "matrix-js-sdk/lib/@types/event.js";
 import { ClientEvent } from "matrix-js-sdk/lib/client.js";
 import { MatrixRTCSessionEvent } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
 import { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
+import type { MeetingAgentRealtimePreparation } from "openclaw/plugin-sdk/meeting-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -10,12 +11,27 @@ const mocks = vi.hoisted(() => ({
     platform: {},
     consultAgent: vi.fn(),
   })),
-  prepareMeetingAgentRealtimeEngine: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
-  prepareMeetingAgentGreeting: vi.fn(async (_params: { meetingSessionId: string }) => ({
-    text: "Hello, caller.",
-    audio: Buffer.from([1, 0]),
-  })),
-  startMeetingAgentRealtimeEngine: vi.fn(async () => ({ stop: vi.fn(async () => undefined) })),
+  prepareMeetingAgentRealtimeEngine: vi.fn(
+    async (_params: {
+      onPreparation?: (preparation: MeetingAgentRealtimePreparation) => void;
+    }) => ({ release: vi.fn(async () => undefined) }),
+  ),
+  prepareMeetingAgentGreeting: vi.fn(
+    async (_params: {
+      meetingSessionId: string;
+      onPreparation?: (preparation: MeetingAgentRealtimePreparation) => void;
+    }) => ({
+      text: "Hello, caller.",
+      audio: Buffer.from([1, 0]),
+    }),
+  ),
+  startMeetingAgentRealtimeEngine: vi.fn(
+    async (
+      _params: Parameters<
+        typeof import("openclaw/plugin-sdk/meeting-runtime").startMeetingAgentRealtimeEngine
+      >[0],
+    ) => ({ stop: vi.fn(async () => undefined) }),
+  ),
   requestMatrixRtcCredentials: vi.fn(async () => ({
     url: "wss://rtc.example.test",
     token: "test-token",
@@ -328,6 +344,43 @@ describe("registerMatrixRtcController", () => {
     await harness.controller.stop();
   });
 
+  it("cannot continue admission or release readiness while greeting cleanup remains failed", async () => {
+    let cleanupFails = true;
+    const greetingRelease = vi.fn(async () => {
+      if (cleanupFails) {
+        throw new Error("synthetic greeting hold cleanup failed");
+      }
+    });
+    const readinessRelease = vi.fn(async () => undefined);
+    mocks.prepareMeetingAgentRealtimeEngine.mockResolvedValueOnce({ release: readinessRelease });
+    mocks.prepareMeetingAgentGreeting.mockImplementationOnce(async (params) => {
+      params.onPreparation?.({ release: greetingRelease });
+      throw new Error("synthetic greeting generation failed");
+    });
+    const harness = createHarness("matrix_2_0", { greeting: true, greetingOnFailure: "continue" });
+    harness.setRoomKnown(true);
+    harness.session.memberships = [harness.remoteMembership];
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+    expect(greetingRelease).toHaveBeenCalledTimes(2);
+    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(mocks.requestMatrixRtcCredentials).not.toHaveBeenCalled();
+    expect(mocks.startMeetingAgentRealtimeEngine).not.toHaveBeenCalled();
+    expect(readinessRelease).not.toHaveBeenCalled();
+    // Neither a repeated membership signal nor a failed stop can discard its owner.
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+    expect(mocks.prepareMeetingAgentGreeting).toHaveBeenCalledOnce();
+    await expect(harness.controller.stop()).rejects.toThrow("retry controller.stop()");
+    cleanupFails = false;
+    await harness.controller.stop();
+    await harness.controller.stop();
+    expect(readinessRelease).toHaveBeenCalledOnce();
+    expect(greetingRelease.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      readinessRelease.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("retains and releases readiness acquired after cancellation without joining", async () => {
     const pending =
       Promise.withResolvers<Awaited<ReturnType<typeof mocks.prepareMeetingAgentRealtimeEngine>>>();
@@ -346,6 +399,35 @@ describe("registerMatrixRtcController", () => {
     pending.resolve({ release });
     await stopping;
     expect(release).toHaveBeenCalledOnce();
+    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(mocks.requestMatrixRtcCredentials).not.toHaveBeenCalled();
+  });
+
+  it("keeps failed-start cleanup owned until an explicit stop retry releases it", async () => {
+    const cleanupFailure = new Error("synthetic lease release failure");
+    const release = vi
+      .fn(async () => undefined)
+      .mockRejectedValueOnce(cleanupFailure)
+      .mockRejectedValueOnce(cleanupFailure);
+    mocks.prepareMeetingAgentRealtimeEngine.mockImplementationOnce(async (params) => {
+      params.onPreparation?.({ release });
+      throw new Error("synthetic readiness failure");
+    });
+    const harness = createHarness("matrix_2_0");
+    harness.setRoomKnown(true);
+    harness.session.memberships = [harness.remoteMembership];
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+    expect(release).toHaveBeenCalledOnce();
+    // Replacement admission cannot discard a still-owned failed cleanup lease.
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+    expect(mocks.prepareMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
+    await expect(harness.controller.stop()).rejects.toThrow("retry controller.stop()");
+    expect(release).toHaveBeenCalledTimes(2);
+    await harness.controller.stop();
+    await harness.controller.stop();
+    expect(release).toHaveBeenCalledTimes(3);
     expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
     expect(mocks.requestMatrixRtcCredentials).not.toHaveBeenCalled();
   });
@@ -643,6 +725,48 @@ describe("registerMatrixRtcController", () => {
 
     await harness.controller.stop();
   });
+
+  it.each(["unconfirmed-or-timed-out", "rejected"] as const)(
+    "keeps a %s membership leave owned without repeating completed media cleanup",
+    async (failureMode) => {
+      const release = vi.fn(async () => undefined);
+      mocks.prepareMeetingAgentRealtimeEngine.mockResolvedValueOnce({ release });
+      const harness = createHarness("matrix_2_0");
+      harness.setRoomKnown(true);
+      harness.session.memberships = [harness.remoteMembership];
+      harness.managerEmitter.emit("session_started", roomId, harness.session);
+      await flushPromises();
+      const engine = await mocks.startMeetingAgentRealtimeEngine.mock.results[0]!.value;
+      harness.session.leaveRoomSession.mockImplementation(async () => {
+        if (failureMode === "rejected") {
+          throw new Error("synthetic membership leave failure");
+        }
+        return false;
+      });
+
+      harness.managerEmitter.emit("session_ended", roomId, harness.session);
+      await flushPromises();
+      expect(harness.session.leaveRoomSession).toHaveBeenCalledWith(5_000);
+      expect(engine.stop).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      // The still-owned membership blocks replacement admission even though its
+      // independent media resources have already been released successfully.
+      harness.managerEmitter.emit("session_started", roomId, harness.session);
+      await flushPromises();
+      expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
+      await expect(harness.controller.stop()).rejects.toThrow("retry controller.stop()");
+      expect(harness.session.leaveRoomSession).toHaveBeenCalledTimes(2);
+      expect(engine.stop).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+
+      harness.session.leaveRoomSession.mockResolvedValue(true);
+      await harness.controller.stop();
+      await harness.controller.stop();
+      expect(harness.session.leaveRoomSession).toHaveBeenCalledTimes(3);
+      expect(engine.stop).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+    },
+  );
 
   it("does not retry a failed remote call membership until that membership changes", async () => {
     vi.useFakeTimers();

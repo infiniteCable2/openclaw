@@ -7,6 +7,7 @@ import { MemorySearchSchema } from "./zod-schema.memory-search.js";
 import { NodeHostAgentRunsSchema, NodeHostWorkerRunsSchema } from "./zod-schema.node-host.js";
 import { SecretInputSchema } from "./zod-schema.secret-input.js";
 import { sensitive } from "./zod-schema.sensitive.js";
+import { TalkSpeechSchema } from "./zod-schema.talk-speech.js";
 
 const EdgeAuthHeadersSchema = z
   .record(z.string(), SecretInputSchema.register(sensitive))
@@ -240,6 +241,7 @@ export const TalkSchema = z
     provider: z.string().optional(),
     providers: z.record(z.string(), TalkProviderEntrySchema).optional(),
     realtime: TalkRealtimeSchema.optional(),
+    speech: TalkSpeechSchema.optional(),
     consultThinkingLevel: z.enum(ALL_THINKING_LEVELS).optional(),
     consultFastMode: z.boolean().optional(),
     speechLocale: z.string().optional(),

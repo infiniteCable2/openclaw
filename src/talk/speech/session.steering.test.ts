@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
-import type { PluginRuntime } from "../plugins/runtime/types.js";
-import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
-import type { RealtimeVoiceAgentControlResult } from "../talk/agent-run-control.js";
-import { startMeetingAgentRealtimeEngine } from "./realtime-agent-engine.js";
-import type { MeetingAgentConsultParams } from "./realtime-engine.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
+import type { RealtimeVoiceAgentControlResult } from "../agent-run-control.js";
+import { startSpeechSession } from "./session.js";
+import type { SpeechAgentConsultParams } from "./types.js";
 
 async function createFixture(streaming: "off" | "sentence" = "sentence", echoDetection = false) {
   vi.useFakeTimers();
@@ -24,8 +24,8 @@ async function createFixture(streaming: "off" | "sentence" = "sentence", echoDet
   const control = vi.fn(
     (_text: string, _onQueueAccepted?: (accepted: boolean) => void) => admitted.promise,
   );
-  let consult!: MeetingAgentConsultParams;
-  const consultAgent = vi.fn(async (params: MeetingAgentConsultParams) => {
+  let consult!: SpeechAgentConsultParams;
+  const consultAgent = vi.fn(async (params: SpeechAgentConsultParams) => {
     consult = params;
     params.onRunControl?.(control);
     try {
@@ -46,20 +46,18 @@ async function createFixture(streaming: "off" | "sentence" = "sentence", echoDet
     }),
   }));
   const writeOutput = vi.fn(async () => {});
-  const handle = await startMeetingAgentRealtimeEngine({
+  const handle = await startSpeechSession({
     config: {
-      chrome: { audioFormat: "pcm16-24khz" },
-      realtime: {
-        strategy: "agent",
-        transcriptionProvider: provider.id,
-        responseStreaming: streaming,
-        providers: { [provider.id]: {} },
-      },
+      audioFormat: "pcm16-24khz",
+
+      transcriptionProvider: provider.id,
+      responseStreaming: streaming,
+      providers: { [provider.id]: {} },
     },
     fullConfig: {},
     runtime: { tts: { streamTextToSpeechTelephony: tts } } as unknown as PluginRuntime,
-    platform: { displayName: "Test", logScope: "test", sessionIdPrefix: "test" },
-    meetingSessionId: "steering",
+    surface: { displayName: "Test", logScope: "test", sessionIdPrefix: "test" },
+    sessionId: "steering",
     transport: {
       onFatal() {},
       startInput() {},
@@ -111,6 +109,83 @@ const accepted: RealtimeVoiceAgentControlResult = {
 describe("meeting native input steering", () => {
   afterEach(() => vi.useRealTimers());
 
+  it("returns idle without inventing output and rejects steering without an active native owner", async () => {
+    const f = await createFixture();
+    try {
+      expect(f.handle.cancelOutput()).toEqual({ status: "idle", turnId: undefined });
+      await expect(f.handle.steer({ text: "Do this." })).rejects.toThrow(
+        "No active native speech consult",
+      );
+      expect(f.consultAgent).not.toHaveBeenCalled();
+      expect(f.control).not.toHaveBeenCalled();
+    } finally {
+      await f.handle.stop();
+    }
+  });
+
+  it("cancels queued delivery before synthesis without aborting or replaying the agent task", async () => {
+    const f = await createFixture();
+    try {
+      f.say("Check the light.");
+      await f.drain();
+      await f.consult.onSpeakableText?.({ type: "chunk", text: "I am checking." });
+      const turnId = f.handle
+        .getHealth()
+        .recentTalkEvents.findLast((event) => event.type === "turn.started")?.turnId;
+      expect(f.handle.cancelOutput({ turnId: "different" }).status).toBe("stale");
+      expect(f.handle.cancelOutput({ turnId }).status).toBe("applied");
+      f.done.resolve({ text: "The light is on.", delivered: true });
+      await f.drain();
+      expect(f.writeOutput).not.toHaveBeenCalled();
+      expect(f.consult.abortSignal?.aborted).toBe(false);
+      expect(f.consultAgent).toHaveBeenCalledOnce();
+      expect(f.consult.transcript).toContainEqual(
+        expect.objectContaining({
+          text: "The light is on.",
+          audioDelivery: "unplayed",
+        }),
+      );
+    } finally {
+      f.done.resolve({ text: "" });
+      await f.handle.stop();
+    }
+  });
+
+  it("uses the exact native control callback for explicit steering and awaits its settlement", async () => {
+    const f = await createFixture("off");
+    try {
+      f.say("Check the light.");
+      await f.drain();
+      const assertCurrent = vi.fn();
+      const signal = new AbortController().signal;
+      const steering = f.handle.steer({
+        text: "Also check the printer.",
+        mode: "followup",
+        signal,
+        assertCurrent,
+      });
+      await f.drain();
+      expect(f.control).toHaveBeenCalledWith(
+        "Also check the printer.",
+        undefined,
+        expect.objectContaining({ mode: "followup", signal, assertCurrent }),
+      );
+      f.done.resolve({ text: "Both are ready." });
+      await f.drain();
+      expect(f.tts).not.toHaveBeenCalled();
+      f.admitted.resolve(accepted);
+      await expect(steering).resolves.toEqual(accepted);
+      await f.drain();
+      expect(f.consultAgent).toHaveBeenCalledOnce();
+      expect(f.consult.abortSignal?.aborted).toBe(false);
+      expect(f.tts).toHaveBeenCalledWith(expect.objectContaining({ text: "Both are ready." }));
+    } finally {
+      f.admitted.resolve(accepted);
+      f.done.resolve({ text: "" });
+      await f.handle.stop();
+    }
+  });
+
   it.each(["off", "sentence"] as const)(
     "binds speech onset to A when A finishes before B's transcript with %s output",
     async (streaming) => {
@@ -126,7 +201,7 @@ describe("meeting native input steering", () => {
         await f.drain();
         expect(f.writeOutput).not.toHaveBeenCalled();
         expect(f.consult.abortSignal?.aborted).toBe(false);
-        let next: MeetingAgentConsultParams | undefined;
+        let next: SpeechAgentConsultParams | undefined;
         f.consultAgent.mockImplementationOnce(async (params) => {
           next = params;
           return { text: "The light is on. The printer is ready." };
@@ -308,7 +383,7 @@ describe("meeting native input steering", () => {
       f.callbacks.onSpeechActivity?.({ utteranceId: "b", state: "candidate" });
       const startedAt = new Date().toISOString();
       await vi.advanceTimersByTimeAsync(10_000);
-      let next: MeetingAgentConsultParams | undefined;
+      let next: SpeechAgentConsultParams | undefined;
       f.consultAgent.mockImplementationOnce(async (params) => {
         next = params;
         return { text: "Both results." };
@@ -343,7 +418,7 @@ describe("meeting native input steering", () => {
       await f.drain();
       expect(f.consultAgent).toHaveBeenCalledOnce();
       expect(f.tts).not.toHaveBeenCalled();
-      let next: MeetingAgentConsultParams | undefined;
+      let next: SpeechAgentConsultParams | undefined;
       f.consultAgent.mockImplementationOnce(async (params) => {
         next = params;
         return { text: "Results A, B and C" };
@@ -469,7 +544,7 @@ describe("meeting native input steering", () => {
       f.admitted.resolve({ ...accepted, ok: false, queued: false, reason: "no_active_run" });
       await f.drain();
       expect(f.control).toHaveBeenCalledExactlyOnceWith("Check the printer.");
-      let next: MeetingAgentConsultParams | undefined;
+      let next: SpeechAgentConsultParams | undefined;
       f.consultAgent.mockImplementationOnce(async (params) => {
         next = params;
         return { text: "All checked." };

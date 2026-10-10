@@ -1,28 +1,28 @@
 import type {
   RealtimeVoiceAgentConsultRunner,
   RealtimeVoiceToolCallEvent,
-} from "../talk/provider-types.js";
-import type { RealtimeVoiceSessionHarness } from "../talk/realtime-session-harness.js";
-import type { RealtimeVoiceBridgeSession } from "../talk/session-runtime.js";
-import type { TalkEventInput } from "../talk/talk-events.js";
+} from "../provider-types.js";
+import type { RealtimeVoiceSessionHarness } from "../realtime-session-harness.js";
+import type { RealtimeVoiceBridgeSession } from "../session-runtime.js";
+import type { TalkEventInput } from "../talk-events.js";
 
-type MeetingRealtimeToolContinuityCall = {
+type SpeechRealtimeToolContinuityCall = {
   session: RealtimeVoiceBridgeSession;
   event: RealtimeVoiceToolCallEvent;
   onTalkEvent: (event: TalkEventInput) => void;
 };
 
-const meetingRealtimeToolAbortSignals = new WeakMap<RealtimeVoiceBridgeSession, AbortSignal>();
+const speechRealtimeToolAbortSignals = new WeakMap<RealtimeVoiceBridgeSession, AbortSignal>();
 
-export function readMeetingRealtimeToolAbortSignal(
+export function readSpeechRealtimeToolAbortSignal(
   session: RealtimeVoiceBridgeSession,
 ): AbortSignal | undefined {
-  return meetingRealtimeToolAbortSignals.get(session);
+  return speechRealtimeToolAbortSignals.get(session);
 }
 
-export function createMeetingRealtimeToolContinuity<
-  TCall extends MeetingRealtimeToolContinuityCall,
->(handleToolCall: (call: TCall) => Promise<void>) {
+export function createSpeechRealtimeToolContinuity<TCall extends SpeechRealtimeToolContinuityCall>(
+  handleToolCall: (call: TCall) => Promise<void>,
+) {
   let epoch = 0;
   const activeControllers = new Set<AbortController>();
 
@@ -72,14 +72,18 @@ export function createMeetingRealtimeToolContinuity<
       callId: params.call.event.callId,
       payload: { name: params.call.event.name, args: params.call.event.args },
     });
+    // Only submitToolResult is replaced below with an epoch-guarded delegate.
+    // SAFETY: The facade inherits every session member from the supplied session.
     const guardedSession = Object.create(params.session) as RealtimeVoiceBridgeSession;
-    meetingRealtimeToolAbortSignals.set(guardedSession, controller.signal);
+    speechRealtimeToolAbortSignals.set(guardedSession, controller.signal);
     guardedSession.submitToolResult = (callId, result, options) => {
       if (!isActive()) {
         return;
       }
       return params.session.submitToolResult(callId, result, options);
     };
+    // The caller supplies TCall minus the two owned fields; restoring those fields
+    // preserves all caller-specific members without changing their values.
     return handleToolCall({
       ...params.call,
       session: guardedSession,
@@ -88,14 +92,14 @@ export function createMeetingRealtimeToolContinuity<
           params.harness.emit({ ...event, turnId: event.turnId ?? turnId });
         }
       },
-    } as TCall)
+    } as TCall) // SAFETY: The spread retains TCall's fields and restores the two owned fields.
       .catch((error: unknown) => {
         if (isActive()) {
           throw error;
         }
       })
       .finally(() => {
-        meetingRealtimeToolAbortSignals.delete(guardedSession);
+        speechRealtimeToolAbortSignals.delete(guardedSession);
         activeControllers.delete(controller);
       });
   };

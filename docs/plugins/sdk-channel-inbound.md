@@ -121,6 +121,19 @@ compatibility. The compatibility registry deprecated them on 2026-07-24 with a
 [removal timeline](/plugins/sdk-migration/removal-timeline). New plugins should
 not construct or read them.
 
+An attachment may also carry an explicit `purpose`: `communication`, `analysis`,
+`recording`, or `relay`. Communication identifies conversational speech; analysis
+allows native media understanding without conversational speech enhancement or
+an automatic voice reply. Recording and relay retain raw media without automatic
+transcription, file extraction, or model image/video hydration. They do not
+implement a network relay or prevent explicitly requested tools from accessing
+the artifact. The purpose survives channel normalization and transcript storage.
+When omitted, existing native voice-message behavior is retained, including
+legacy unmarked audio replies. Channel adapters should explicitly mark ordinary
+audio files as non-voice messages. Explicit purposes take precedence over legacy
+voice flags. Preserve media-fact ownership when supplying inline image blocks:
+unowned images remain native inputs, not inferred recording or relay artifacts.
+
 Bundled/native channels that already receive the injected plugin runtime
 object can call the same helpers under `runtime.channel.inbound.*` instead of
 importing this subpath directly:

@@ -98,6 +98,74 @@ describe("mixed prompt image hydration", () => {
 });
 
 describe("structured prompt media replay", () => {
+  it.each(["communication", "analysis", "recording", "relay"] as const)(
+    "honors %s purpose for existing owned inline bytes and persisted replay slots",
+    async (purpose) => {
+      const inlineImage = { type: "image" as const, data: TINY_PNG_BASE64, mimeType: "image/png" };
+      const media = [{ kind: "image" as const, purpose }];
+      const direct = await detectAndLoadPromptImages({
+        prompt: "original attachment",
+        media,
+        existingImages: [inlineImage],
+        existingImageFactIndexes: [0],
+        mediaImageLayout: { slots: [{ kind: "inline", factIndex: 0 }] },
+        workspaceDir: "/tmp",
+        model: { input: ["text", "image"] },
+      });
+      const automatic = purpose === "communication" || purpose === "analysis";
+      expect(direct.images).toEqual(automatic ? [inlineImage] : []);
+      expect(direct.failedMediaCount).toBe(0);
+
+      const original = buildPersistedUserTurnMessage({
+        text: "original attachment",
+        media,
+        mediaImageLayout: { slots: [{ kind: "inline", factIndex: 0 }] },
+      });
+      const restored = JSON.parse(
+        JSON.stringify({
+          ...original,
+          content: [{ type: "text", text: "original attachment" }, inlineImage],
+          __openclaw: { ...original.__openclaw, mediaImageBlockFactIndexes: [0] },
+        }),
+      ) as AgentMessage;
+      const replay = await hydratePromptMediaMessages([restored], {
+        workspaceDir: "/tmp",
+        model: { input: ["text", "image"] },
+      });
+      expect(replay[0]?.content).toEqual([
+        { type: "text", text: "original attachment" },
+        ...(automatic ? [inlineImage] : []),
+      ]);
+      expect(
+        (replay[0] as unknown as { __openclaw: { media: unknown[] } }).__openclaw.media,
+      ).toEqual([expect.objectContaining({ purpose })]);
+    },
+  );
+
+  it.each(["recording", "relay"] as const)(
+    "does not rediscover a %s attachment from its projected path in prompt text",
+    async (purpose) => {
+      const workspaceDir = tempDirs.make("openclaw-raw-purpose-");
+      const rawPath = path.join(workspaceDir, "raw.png");
+      const otherPath = path.join(workspaceDir, "other.png");
+      const otherImage = createSolidPngBuffer(1, 1, { r: 0, g: 255, b: 0 });
+      await fs.writeFile(rawPath, Buffer.from(TINY_PNG_BASE64, "base64"));
+      await fs.writeFile(otherPath, otherImage);
+      const result = await detectAndLoadPromptImages({
+        prompt: `Source ${rawPath}; independent image ${otherPath}`,
+        media: [{ path: rawPath, contentType: "image/png", purpose }],
+        workspaceDir,
+        model: { input: ["text", "image"] },
+        workspaceOnly: true,
+      });
+      expect(result.loadedCount).toBe(1);
+      expect(result.images).toEqual([
+        { type: "image", data: otherImage.toString("base64"), mimeType: "image/png" },
+      ]);
+      expect(result.detectedRefs).toEqual([{ raw: otherPath, resolved: otherPath, type: "path" }]);
+    },
+  );
+
   it("keeps per-slot provenance when the same image object is reused", () => {
     const sharedImage = { type: "image" as const, data: TINY_PNG_BASE64, mimeType: "image/png" };
     const { images } = finalizeRuntimePromptImages([

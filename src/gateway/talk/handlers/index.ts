@@ -29,7 +29,7 @@ import type {
   TalkProviderConfig,
   TalkRealtimeConfig,
 } from "../../../config/types.gateway.js";
-import type { OpenClawConfig, TtsConfig, TtsProviderConfigMap } from "../../../config/types.js";
+import type { OpenClawConfig } from "../../../config/types.js";
 import { resolveProviderRawConfig } from "../../../plugin-sdk/provider-selection-runtime.js";
 import type { RealtimeVoicePublicClientHints } from "../../../plugins/provider-policy-surface.js";
 import { canonicalizeRealtimeTranscriptionProviderId } from "../../../realtime-transcription/provider-registry.js";
@@ -58,10 +58,7 @@ import {
   getSpeechProvider,
   listSpeechProviders,
 } from "../../../tts/provider-registry.js";
-import {
-  withSpeakerSelectionCompat,
-  withSpeakerSelectionFallbackCompat,
-} from "../../../tts/speaker.js";
+import { withSpeakerSelectionFallbackCompat } from "../../../tts/speaker.js";
 import { CODE_HEAVY_SPOKEN_FALLBACK, isCodeHeavySpeechText } from "../../../tts/speech-text.js";
 import { synthesizeTalkSpeech } from "../../../tts/tts-synthesis.js";
 import {
@@ -69,7 +66,7 @@ import {
   resolveTtsConfig,
   type TtsDirectiveOverrides,
 } from "../../../tts/tts.js";
-import { getVoiceProviderConfig, providerMatchesId } from "../../../tts/voice-models.js";
+import { getVoiceProviderConfig } from "../../../tts/voice-models.js";
 import { ADMIN_SCOPE, READ_SCOPE, TALK_SECRETS_SCOPE } from "../../operator-scopes.js";
 import { respondUnavailable } from "../../server-methods/response.js";
 import { inferSpeechMimeType } from "../../server-methods/speech-mime.js";
@@ -83,15 +80,14 @@ import {
   listTalkTranscriptionProviders,
   resolveConfiguredRealtimeTranscriptionProvider,
 } from "../session-config.js";
+import {
+  buildTalkTtsConfig,
+  withTalkBaseTtsSpeakerSelectionCompat,
+  type TalkSpeakReason,
+} from "../speech-config.js";
 import { talkClientHandlers } from "./client.js";
 import { talkSessionHandlers } from "./session.js";
 import { talkVoiceHandlers } from "./voice.js";
-
-type TalkSpeakReason =
-  | "talk_unconfigured"
-  | "talk_provider_unsupported"
-  | "synthesis_failed"
-  | "invalid_audio_result";
 
 function resolveCatalogProviderSelection(
   configuredProvider: string | undefined,
@@ -135,95 +131,6 @@ function resolveTalkVoiceId(
     }
   }
   return requested;
-}
-
-function withTalkBaseTtsSpeakerSelectionCompat(
-  baseTts: Record<string, unknown>,
-  talkProvider?: { provider: { id: string; aliases?: readonly string[] }; apiKey?: unknown },
-): Record<string, unknown> {
-  const next = withSpeakerSelectionCompat(baseTts);
-  const providers = asOptionalRecord(baseTts.providers);
-  if (providers) {
-    next.providers = Object.fromEntries(
-      Object.entries(providers).map(([providerId, providerConfig]) => {
-        const normalized = withSpeakerSelectionCompat(asOptionalRecord(providerConfig) ?? {});
-        // Talk-owned overrides must shield provider normalization from a cold global TTS ref.
-        if (
-          typeof talkProvider?.apiKey === "string" &&
-          providerMatchesId(talkProvider.provider, providerId) &&
-          typeof normalized.apiKey === "object"
-        ) {
-          normalized.apiKey = talkProvider.apiKey;
-        }
-        return [providerId, normalized];
-      }),
-    );
-  }
-  for (const [key, value] of Object.entries(baseTts)) {
-    if (key === "providers") {
-      continue;
-    }
-    const record = asOptionalRecord(value);
-    if (record) {
-      next[key] = withSpeakerSelectionCompat(record);
-    }
-  }
-  return next;
-}
-
-function buildTalkTtsConfig(
-  config: OpenClawConfig,
-):
-  | { cfg: OpenClawConfig; provider: string; providerConfig: TalkProviderConfig }
-  | { error: string; reason: TalkSpeakReason } {
-  const resolved = resolveActiveTalkProviderConfig(config.talk);
-  const provider = canonicalizeSpeechProviderId(resolved?.provider, config);
-  if (!resolved || !provider) {
-    return {
-      error: "talk.speak unavailable: talk provider not configured",
-      reason: "talk_unconfigured",
-    };
-  }
-  assertSecretOwnerAvailable("capability", "talk:speech");
-
-  const speechProvider = getSpeechProvider(provider, config);
-  if (!speechProvider) {
-    return {
-      error: `talk.speak unavailable: speech provider "${provider}" does not support Talk mode`,
-      reason: "talk_provider_unsupported",
-    };
-  }
-
-  const providerConfig = withSpeakerSelectionFallbackCompat(resolved.config);
-  const baseTts = withTalkBaseTtsSpeakerSelectionCompat(asOptionalRecord(config.tts) ?? {}, {
-    provider: speechProvider,
-    apiKey: providerConfig.apiKey,
-  }) as TtsConfig;
-  const resolvedProviderConfig =
-    speechProvider.resolveTalkConfig?.({
-      cfg: config,
-      baseTtsConfig: baseTts as Record<string, unknown>,
-      talkProviderConfig: providerConfig,
-      timeoutMs: baseTts.timeoutMs ?? 30_000,
-    }) ?? providerConfig;
-  const talkTts: TtsConfig = {
-    ...baseTts,
-    auto: "always",
-    provider,
-    providers: {
-      ...((asOptionalRecord(baseTts.providers) ?? {}) as TtsProviderConfigMap),
-      [provider]: resolvedProviderConfig,
-    },
-  };
-
-  return {
-    provider,
-    providerConfig,
-    cfg: {
-      ...config,
-      tts: talkTts,
-    },
-  };
 }
 
 function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
@@ -311,6 +218,7 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
               });
             }),
           modes: ["stt-tts"],
+          transports: ["gateway-relay", "managed-room"],
           brains: ["agent-consult"],
         };
         if (provider.models) {
@@ -355,9 +263,9 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
           configured: configuredOrFalse(() =>
             provider.isConfigured({ cfg: config, providerConfig }),
           ),
-          modes: ["transcription"],
+          modes: ["transcription", "stt-tts"],
           transports: ["gateway-relay"],
-          brains: ["none"],
+          brains: ["none", "agent-consult"],
         };
         if (provider.models?.length) {
           entry.models = [...provider.models];

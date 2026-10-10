@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PluginRuntime } from "../plugins/runtime/types.js";
-import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
-import { startMeetingAgentRealtimeEngine } from "./realtime-agent-engine.js";
+import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
+import { startSpeechSession } from "./session.js";
 
-describe("startMeetingAgentRealtimeEngine barge-in gate", () => {
+describe("startSpeechSession barge-in gate", () => {
   it("keeps playback when VAD confirms but decoding is empty, then cancels on a caller transcript", async () => {
     const streamCancelled = vi.fn();
     const clearOutput = vi.fn(async () => undefined);
@@ -36,15 +36,13 @@ describe("startMeetingAgentRealtimeEngine barge-in gate", () => {
       }),
     } satisfies RealtimeTranscriptionProviderPlugin;
     const writeOutput = vi.fn(async () => undefined);
-    const handle = await startMeetingAgentRealtimeEngine({
+    const handle = await startSpeechSession({
       config: {
-        chrome: { audioFormat: "pcm16-24khz" },
-        realtime: {
-          strategy: "agent",
-          agentId: "reader",
-          transcriptionProvider: "prepared-stt",
-          providers: { "prepared-stt": {} },
-        },
+        audioFormat: "pcm16-24khz",
+
+        agentId: "reader",
+        transcriptionProvider: "prepared-stt",
+        providers: { "prepared-stt": {} },
       },
       fullConfig: {} as never,
       runtime: {
@@ -62,12 +60,12 @@ describe("startMeetingAgentRealtimeEngine barge-in gate", () => {
           })),
         },
       } as unknown as PluginRuntime,
-      platform: {
+      surface: {
         displayName: "Test meeting",
         logScope: "test meeting",
         sessionIdPrefix: "test-meeting",
       },
-      meetingSessionId: "meeting-1",
+      sessionId: "meeting-1",
       transport: {
         onFatal: vi.fn(),
         startInput: vi.fn(),

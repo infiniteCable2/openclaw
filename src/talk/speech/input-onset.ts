@@ -1,5 +1,5 @@
 /** Session-local acoustic reservations, not agent work or run authority. */
-export function createMeetingInputOnset<T>() {
+export function createSpeechInputOnset<T>() {
   const pending = new Map<
     string,
     { value: T; done: Promise<void>; release: () => void; claimed: boolean; expired: boolean }

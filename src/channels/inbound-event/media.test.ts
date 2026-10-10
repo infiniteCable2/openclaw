@@ -439,4 +439,15 @@ describe("channel inbound media facts", () => {
       },
     ]);
   });
+
+  it.each(["communication", "analysis", "recording", "relay"] as const)(
+    "retains %s intent through inbound normalization and history projection",
+    (purpose) => {
+      const media = [
+        { path: "/tmp/input.wav", contentType: "audio/wav", purpose, speechInput: true },
+      ];
+      expect(toInboundMediaFacts(media)[0]?.purpose).toBe(purpose);
+      expect(toHistoryMediaEntries(media)[0]).toMatchObject({ purpose, speechInput: true });
+    },
+  );
 });

@@ -69,6 +69,8 @@ export async function resolveAgentTurnAttachments(params: {
     path: image.path,
     mime: image.contentType,
     kind: image.kind,
+    purpose: image.purpose,
+    speechInput: image.speechInput,
     index: firstHistoryAttachmentIndex + index,
   }));
   const mediaAttachments = [...currentAttachments, ...historyAttachments];
