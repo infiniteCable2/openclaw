@@ -132,10 +132,13 @@ describe("structured prompt media replay", () => {
         workspaceDir: "/tmp",
         model: { input: ["text", "image"] },
       });
-      expect(replay[0]?.content).toEqual([
-        { type: "text", text: "original attachment" },
-        ...(automatic ? [inlineImage] : []),
-      ]);
+      expect(replay[0]).toMatchObject({
+        role: "user",
+        content: [
+          { type: "text", text: "original attachment" },
+          ...(automatic ? [inlineImage] : []),
+        ],
+      });
       expect(
         (replay[0] as unknown as { __openclaw: { media: unknown[] } }).__openclaw.media,
       ).toEqual([expect.objectContaining({ purpose })]);

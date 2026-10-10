@@ -55,7 +55,7 @@ describe("canonical media purpose at native processing boundaries", () => {
           {
             path: audioPath,
             contentType: "audio/wav",
-            purpose,
+            ...(purpose === undefined ? {} : { purpose }),
             speechInput: true,
             voiceMessage: true,
           },
@@ -84,6 +84,9 @@ describe("canonical media purpose at native processing boundaries", () => {
         expect(ctx.Body).toBe("original instruction");
       }
       expect(ctx.media?.[0]).toMatchObject(originalFacts![0]!);
+      if (purpose === undefined) {
+        expect(ctx.media?.[0]).not.toHaveProperty("purpose");
+      }
       expect(await fs.readFile(audioPath)).toEqual(bytes);
     },
   );
