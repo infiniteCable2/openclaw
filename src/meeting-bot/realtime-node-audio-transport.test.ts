@@ -185,7 +185,11 @@ describe("node meeting realtime audio transport", () => {
     await transport.clearOutput();
     await transport.writeOutput(Buffer.from([3, 4]));
 
-    expect(invoke.mock.calls.map(([call]) => call.params.outputGeneration)).toEqual([7, 8, 8]);
+    expect(invoke.mock.calls).toMatchObject([
+      [{ params: { outputGeneration: 7 } }],
+      [{ params: { outputGeneration: 8 } }],
+      [{ params: { outputGeneration: 8 } }],
+    ]);
     await transport.stop();
   });
 
@@ -195,11 +199,12 @@ describe("node meeting realtime audio transport", () => {
 
     await transport.writeOutput(Buffer.alloc(60_000));
 
-    const pushes = invoke.mock.calls.filter(([call]) => call.params.action === "pushAudio");
-    expect(pushes).toHaveLength(3);
-    expect(pushes.map(([call]) => Buffer.from(call.params.base64, "base64").byteLength)).toEqual([
-      24_000, 24_000, 12_000,
-    ]);
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke.mock.calls).toMatchObject(
+      [24_000, 24_000, 12_000].map((size) => [
+        { params: { action: "pushAudio", base64: Buffer.alloc(size).toString("base64") } },
+      ]),
+    );
     await transport.stop();
   });
 

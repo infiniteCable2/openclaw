@@ -20,7 +20,7 @@ describe("Talk speech profile admission", () => {
             reader: { responseStreaming: "sentence", speakCommentary: true },
           },
         },
-      }).speech?.agentProfiles.reader.speakCommentary,
+      }).speech?.agentProfiles.reader?.speakCommentary,
     ).toBe(true);
   });
   it("accepts explicit streaming, commentary, waiting audio and greeting policy", () => {
@@ -45,7 +45,7 @@ describe("Talk speech profile admission", () => {
             },
           },
         },
-      }).agentProfiles.reader.greeting,
+      }).agentProfiles.reader?.greeting,
     ).toMatchObject({ prompt: "Brief greeting.", timeZone: "UTC" });
   });
 
@@ -69,6 +69,20 @@ describe("Talk speech profile admission", () => {
     "rejects ambiguous or reserved profile key %j",
     (id) => {
       expect(TalkSpeechSchema.safeParse({ agentProfiles: { [id]: {} } }).success).toBe(false);
+      expect(TalkSchema.safeParse({ speech: { agentProfiles: { [id]: {} } } }).success).toBe(false);
     },
   );
+
+  it("rejects a JSON-owned prototype key without silently removing it", () => {
+    const speech = JSON.parse('{"agentProfiles":{"__proto__":{},"reader":{}}}');
+    const result = TalkSchema.safeParse({ speech });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ["speech", "agentProfiles", "__proto__"] }),
+        ]),
+      );
+    }
+  });
 });

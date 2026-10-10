@@ -129,7 +129,6 @@ describe("config IO plugin metadata snapshots", () => {
     for (let read = 0; read < 2; read++) {
       const context = createConfigIoContext({ env: {}, observe: false });
       const loader = context.createValidationPluginMetadataSnapshotLoader({
-        effectiveConfigRaw: config,
         env: {},
       });
       loader.load(config);

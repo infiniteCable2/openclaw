@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   getRealtimeVoiceBridgeEventHealth,
   getRealtimeVoiceTranscriptHealth,
+  isLikelyRealtimeVoiceAssistantEchoTranscript,
   recordRealtimeVoiceBridgeEvent,
   recordRealtimeVoiceTranscript,
   type RealtimeVoiceBridgeEventLogEntry,

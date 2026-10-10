@@ -34,15 +34,32 @@ export const TalkSpeechAgentProfileSchema = z
     }
   });
 
+const TalkSpeechAgentProfilesSchema = z.record(
+  z
+    .string()
+    .min(1)
+    .refine(
+      (id) => id === id.trim() && !isBlockedObjectKey(id),
+      "Speech profile keys must be exact agent IDs without surrounding whitespace or reserved object keys",
+    ),
+  TalkSpeechAgentProfileSchema,
+);
+
 export const TalkSpeechSchema = z.strictObject({
-  agentProfiles: z.record(
-    z
-      .string()
-      .min(1)
-      .refine(
-        (id) => id === id.trim() && !isBlockedObjectKey(id),
-        "Speech profile keys must be exact agent IDs without surrounding whitespace or reserved object keys",
-      ),
-    TalkSpeechAgentProfileSchema,
-  ),
+  agentProfiles: z.preprocess((value: z.input<typeof TalkSpeechAgentProfilesSchema>, ctx) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const key of Object.getOwnPropertyNames(value)) {
+        if (!isBlockedObjectKey(key)) {
+          continue;
+        }
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: "Speech profile keys must not contain blocked object keys",
+        });
+        return z.NEVER;
+      }
+    }
+    return value;
+  }, TalkSpeechAgentProfilesSchema),
 });

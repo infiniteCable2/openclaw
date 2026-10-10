@@ -404,6 +404,8 @@ export type EmbeddedAgentParams = {
   sessionKey?: string;
   prompt?: string;
   transcriptPrompt?: string;
+  deliverCommentaryBlocks?: RunEmbeddedAgentInternalParams["deliverCommentaryBlocks"];
+  extraSystemPrompt?: RunEmbeddedAgentInternalParams["extraSystemPrompt"];
   currentInboundContext?: RunEmbeddedAgentInternalParams["currentInboundContext"];
   lifecycleGeneration?: string;
   onDeferredLifecycleOwner?: (owner: DeferredEmbeddedRunLifecycleOwner) => void;
