@@ -11,13 +11,19 @@ import { createMediaAttachmentCache, normalizeMediaAttachments, runCapability } 
 import { createSafeAudioFixtureBuffer } from "./runner.test-utils.js";
 import type { AudioTranscriptionRequest } from "./types.js";
 
-vi.mock("../agents/model-auth.js", async () => {
+vi.mock("../agents/model-auth.js", async (importOriginal) => {
   const { createAvailableModelAuthMockModule } = await import("./runner.test-mocks.js");
-  return createAvailableModelAuthMockModule();
+  return {
+    ...(await importOriginal<typeof import("../agents/model-auth.js")>()),
+    ...createAvailableModelAuthMockModule(),
+  };
 });
-vi.mock("../plugins/capability-provider-runtime.js", async () => {
+vi.mock("../plugins/capability-provider-runtime.js", async (importOriginal) => {
   const { createEmptyCapabilityProviderMockModule } = await import("./runner.test-mocks.js");
-  return createEmptyCapabilityProviderMockModule();
+  return {
+    ...(await importOriginal<typeof import("../plugins/capability-provider-runtime.js")>()),
+    ...createEmptyCapabilityProviderMockModule(),
+  };
 });
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);

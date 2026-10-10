@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 
 const registry = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn() }));
-vi.mock("../../realtime-transcription/provider-registry.js", () => ({
+vi.mock("../../realtime-transcription/provider-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../realtime-transcription/provider-registry.js")>()),
   getRealtimeTranscriptionProvider: registry.get,
   listRealtimeTranscriptionProviders: registry.list,
 }));

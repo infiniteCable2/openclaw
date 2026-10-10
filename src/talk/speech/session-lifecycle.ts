@@ -46,15 +46,20 @@ export function createSpeechSessionLifecycle(params: {
         }
       };
       await release(params.closeTranscription);
-      await release(params.stopWaiting);
       // Closing capture may unblock an admitted sink write. Start it before
-      // draining output; disposal must wait until that work has settled.
+      // joining either waiting playback or speech output; both own sink writes.
       const captureStopped = release(params.stopTransport);
+      const waitingStopped = release(params.stopWaiting);
       await release(params.drainOutput);
-      await captureStopped;
-      // Failed capture/output cleanup still owns resources. Disposal cannot
-      // run ahead of either owner or falsely confirm a closed session.
-      if (!pending.has(params.stopTransport) && !pending.has(params.drainOutput)) {
+      await Promise.all([captureStopped, waitingStopped]);
+      // Any failed cleanup retains custody. Disposal cannot run ahead of an
+      // input, transcription, waiting-playback or speech-output owner.
+      if (
+        !pending.has(params.closeTranscription) &&
+        !pending.has(params.stopWaiting) &&
+        !pending.has(params.stopTransport) &&
+        !pending.has(params.drainOutput)
+      ) {
         await release(params.disposeTransport);
       }
       if (failures.length > 0) {

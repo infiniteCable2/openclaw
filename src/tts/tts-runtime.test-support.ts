@@ -146,7 +146,8 @@ vi.mock("./tts-core.js", async () => {
   return { ...actual, scheduleCleanup: vi.fn() };
 });
 
-vi.mock("./tts-local-service.js", () => ({
+vi.mock("./tts-local-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./tts-local-service.js")>()),
   acquireSpeechProviderLocalService: acquireSpeechProviderLocalServiceMock,
 }));
 

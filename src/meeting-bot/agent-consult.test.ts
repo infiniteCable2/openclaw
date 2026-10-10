@@ -14,11 +14,15 @@ const {
     vi.fn<typeof import("../talk/agent-run-control.js").controlRealtimeVoiceAgentRun>(),
 }));
 
-vi.mock("../talk/agent-consult-runtime.js", () => ({
+vi.mock("../talk/agent-consult-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../talk/agent-consult-runtime.js")>()),
   consultRealtimeVoiceAgent,
   prepareRealtimeVoiceAgentExecutionContext,
 }));
-vi.mock("../talk/agent-run-control.js", () => ({ controlRealtimeVoiceAgentRun }));
+vi.mock("../talk/agent-run-control.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../talk/agent-run-control.js")>()),
+  controlRealtimeVoiceAgentRun,
+}));
 
 import { createMeetingRealtimeEngineBindings } from "./agent-consult.js";
 import type {

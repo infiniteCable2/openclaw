@@ -58,14 +58,22 @@ const mocks = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock("../../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: mocks.runEmbeddedAgent }));
-vi.mock("../../../agents/bootstrap-files.js", () => ({
+vi.mock("../../../agents/embedded-agent.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../agents/embedded-agent.js")>()),
+  runEmbeddedAgent: mocks.runEmbeddedAgent,
+}));
+vi.mock("../../../agents/bootstrap-files.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../agents/bootstrap-files.js")>()),
   resolveBootstrapFilesForRun: async () => [],
 }));
-vi.mock("../../../talk/provider-resolver.js", () => ({
+vi.mock("../../../talk/provider-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../talk/provider-resolver.js")>()),
   resolveConfiguredRealtimeVoiceProvider: mocks.resolveProvider,
 }));
-vi.mock("../../../talk/provider-registry.js", () => ({ listRealtimeVoiceProviders: () => [] }));
+vi.mock("../../../talk/provider-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../talk/provider-registry.js")>()),
+  listRealtimeVoiceProviders: () => [],
+}));
 // Only the hardware synthesis boundary is synthetic. Runtime construction,
 // speech orchestration, native admission and durable voice custody remain real.
 vi.mock("../../../plugin-sdk/tts-runtime.js", async (importOriginal) => ({

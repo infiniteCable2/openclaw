@@ -7,7 +7,8 @@ import { startSpeechSession } from "./session.js";
 import type { SpeechAgentConsultParams } from "./types.js";
 import { createSpeechWaitingAudioPlayback } from "./waiting-audio.js";
 
-vi.mock("./waiting-audio.js", () => ({
+vi.mock("./waiting-audio.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./waiting-audio.js")>()),
   prepareSpeechWaitingAudio: vi.fn(async () => undefined),
   createSpeechWaitingAudioPlayback: vi.fn(() => ({
     schedule: vi.fn(),

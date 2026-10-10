@@ -7,7 +7,8 @@ const mocks = vi.hoisted(() => ({
   runFfmpeg: vi.fn(),
 }));
 
-vi.mock("./ffmpeg-exec.js", () => ({
+vi.mock("./ffmpeg-exec.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./ffmpeg-exec.js")>()),
   runFfmpeg: mocks.runFfmpeg,
 }));
 

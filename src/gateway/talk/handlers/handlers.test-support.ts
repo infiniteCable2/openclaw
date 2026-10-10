@@ -93,7 +93,8 @@ const mocks = vi.hoisted(() => ({
   agentRuntime: {},
 }));
 
-vi.mock("../../../config/config.js", () => ({
+vi.mock("../../../config/config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../config/config.js")>()),
   readConfigFileSnapshot: mocks.readConfigFileSnapshot,
 }));
 
@@ -102,21 +103,27 @@ vi.mock("../../../state/user-preferences.js", async (importOriginal) => ({
   getCanonicalUserPreferences: mocks.getCanonicalUserPreferences,
 }));
 
-vi.mock("../../../tts/provider-registry.js", () => ({
+vi.mock("../../../tts/provider-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../tts/provider-registry.js")>()),
   canonicalizeSpeechProviderId: mocks.canonicalizeSpeechProviderId,
   getSpeechProvider: mocks.getSpeechProvider,
   listSpeechProviders: mocks.listSpeechProviders,
 }));
 
-vi.mock("../../../tts/tts.js", () => ({
+vi.mock("../../../tts/tts.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../tts/tts.js")>()),
   getResolvedSpeechProviderConfig: mocks.getResolvedSpeechProviderConfig,
   resolveTtsConfig: mocks.resolveTtsConfig,
   synthesizeSpeech: mocks.synthesizeSpeech,
 }));
 
-vi.mock("../../../tts/tts-synthesis.js", () => ({ synthesizeTalkSpeech: mocks.synthesizeSpeech }));
+vi.mock("../../../tts/tts-synthesis.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../tts/tts-synthesis.js")>()),
+  synthesizeTalkSpeech: mocks.synthesizeSpeech,
+}));
 
-vi.mock("../../../talk/provider-registry.js", () => ({
+vi.mock("../../../talk/provider-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../talk/provider-registry.js")>()),
   canonicalizeRealtimeVoiceProviderId: mocks.canonicalizeRealtimeVoiceProviderId,
   getRealtimeVoiceProvider: (providerId: string | undefined) =>
     mocks
@@ -125,13 +132,17 @@ vi.mock("../../../talk/provider-registry.js", () => ({
   listRealtimeVoiceProviders: mocks.listRealtimeVoiceProviders,
 }));
 
-vi.mock("../../../realtime-transcription/provider-registry.js", () => ({
+vi.mock("../../../realtime-transcription/provider-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../../realtime-transcription/provider-registry.js")
+  >()),
   canonicalizeRealtimeTranscriptionProviderId: mocks.canonicalizeRealtimeTranscriptionProviderId,
   getRealtimeTranscriptionProvider: mocks.getRealtimeTranscriptionProvider,
   listRealtimeTranscriptionProviders: mocks.listRealtimeTranscriptionProviders,
 }));
 
-vi.mock("../../../talk/provider-resolver.js", () => ({
+vi.mock("../../../talk/provider-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../talk/provider-resolver.js")>()),
   isRealtimeVoiceProviderConfigured: mocks.isRealtimeVoiceProviderConfigured,
   resolveConfiguredRealtimeVoiceProvider: mocks.resolveConfiguredRealtimeVoiceProvider,
   resolveRealtimeVoiceProviderCapabilities: mocks.resolveRealtimeVoiceProviderCapabilities,
@@ -147,7 +158,8 @@ vi.mock("../../../talk/provider-internal.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../../talk/agent-run-control.js", () => ({
+vi.mock("../../../talk/agent-run-control.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../talk/agent-run-control.js")>()),
   controlRealtimeVoiceAgentRun: mocks.controlRealtimeVoiceAgentRun,
 }));
 
@@ -159,11 +171,13 @@ vi.mock("../../../talk/agent-consult-runtime.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../../plugins/runtime/index.js", () => ({
+vi.mock("../../../plugins/runtime/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../plugins/runtime/index.js")>()),
   createPluginRuntime: () => ({ agent: mocks.agentRuntime }),
 }));
 
-vi.mock("../../../agents/realtime-bootstrap-context.js", () => ({
+vi.mock("../../../agents/realtime-bootstrap-context.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../agents/realtime-bootstrap-context.js")>()),
   resolveRealtimeVoiceAgentContextInstructions: mocks.resolveRealtimeVoiceAgentContextInstructions,
 }));
 
@@ -175,7 +189,8 @@ vi.mock("../../../agents/agent-scope.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../session-transcript-preview.js", () => ({
+vi.mock("../../session-transcript-preview.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../session-transcript-preview.js")>()),
   readSessionPreviewItemsFromTranscriptAsync: mocks.readSessionPreviewItemsFromTranscriptAsync,
 }));
 
@@ -193,12 +208,14 @@ vi.mock("../../../talk/client-voice-session.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../server-methods/chat-send-handler.js", () => ({
+vi.mock("../../server-methods/chat-send-handler.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../server-methods/chat-send-handler.js")>()),
   handleChatSend: mocks.chatSend,
   handleTrustedInternalChatSend: mocks.chatSend,
 }));
 
-vi.mock("../../sessions-resolve.js", () => ({
+vi.mock("../../sessions-resolve.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions-resolve.js")>()),
   withPreparedSessionResolve: async (
     { isCurrent: _isCurrent, ...params }: Record<string, unknown>,
     consume: (result: unknown) => unknown,

@@ -23,7 +23,8 @@ import { textToSpeechStream } from "./tts-streaming.js";
 import { prepareTextToSpeechTelephony, streamTextToSpeechTelephony } from "./tts-telephony.js";
 
 const acquireLocalService = vi.hoisted(() => vi.fn());
-vi.mock("./tts-local-service.js", () => ({
+vi.mock("./tts-local-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./tts-local-service.js")>()),
   acquireSpeechProviderLocalService: acquireLocalService,
 }));
 

@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const ensureProviderLocalServiceMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../agents/provider-local-service.js", () => ({
+vi.mock("../agents/provider-local-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/provider-local-service.js")>()),
   ensureProviderLocalService: ensureProviderLocalServiceMock,
 }));
 

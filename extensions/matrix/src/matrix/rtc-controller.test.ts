@@ -43,18 +43,21 @@ const mocks = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock("openclaw/plugin-sdk/meeting-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/meeting-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/meeting-runtime")>()),
   createMeetingRealtimeEngineBindings: mocks.createMeetingRealtimeEngineBindings,
   prepareMeetingAgentRealtimeEngine: mocks.prepareMeetingAgentRealtimeEngine,
   prepareMeetingAgentGreeting: mocks.prepareMeetingAgentGreeting,
   startMeetingAgentRealtimeEngine: mocks.startMeetingAgentRealtimeEngine,
 }));
 
-vi.mock("./rtc-auth.js", () => ({
+vi.mock("./rtc-auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./rtc-auth.js")>()),
   requestMatrixRtcCredentials: mocks.requestMatrixRtcCredentials,
 }));
 
-vi.mock("./rtc-media-transport.js", () => ({
+vi.mock("./rtc-media-transport.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./rtc-media-transport.js")>()),
   createMatrixRtcMediaTransport: mocks.createMatrixRtcMediaTransport,
 }));
 
