@@ -10,17 +10,12 @@ import * as gatewayRuntime from "openclaw/plugin-sdk/gateway-runtime";
 import {
   convertMeetingTtsAudioForBridge,
   createLocalMeetingRealtimeAudioTransport,
-  createMeetingRealtimeEngineBindings,
-  createNodeMeetingRealtimeAudioTransport,
   startMeetingAgentRealtimeEngine,
   startMeetingRealtimeEngine,
 } from "openclaw/plugin-sdk/meeting-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RealtimeTranscriptionProviderPlugin } from "openclaw/plugin-sdk/realtime-transcription";
-import type {
-  RealtimeVoiceBridge,
-  RealtimeVoiceProviderPlugin,
-} from "openclaw/plugin-sdk/realtime-voice";
+import type { RealtimeVoiceProviderPlugin } from "openclaw/plugin-sdk/realtime-voice";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawStateDatabaseAsync,
@@ -33,7 +28,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import plugin from "./index.js";
 import { findGoogleMeetCalendarEvent } from "./src/calendar.js";
 import { registerGoogleMeetCli } from "./src/cli.js";
-import { resolveGoogleMeetConfig, type GoogleMeetConfig } from "./src/config.js";
+import { resolveGoogleMeetConfig } from "./src/config.js";
 import { normalizeMeetUrl } from "./src/meet-url.js";
 import { buildGoogleMeetPreflightReport, fetchGoogleMeetArtifacts } from "./src/meet.js";
 import {
@@ -55,6 +50,12 @@ import {
   setupGoogleMeetPlugin,
   withPlatform,
 } from "./src/test-support/plugin-harness.js";
+import {
+  createGoogleMeetTestEngineBindings,
+  createTestMeetTranscriptionProvider,
+  createTestMeetVoiceProvider,
+  startTestNodeRealtimeAudioBridge,
+} from "./src/test-support/realtime-engine.test-helpers.js";
 import * as chromeTransport from "./src/transports/chrome.js";
 import { GOOGLE_MEET_PLATFORM_ADAPTER } from "./src/transports/google-meet-platform-adapter.js";
 import {
@@ -88,132 +89,6 @@ function createIsolatedTestDir(prefix: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), prefix));
   testTempDirs.add(dir);
   return dir;
-}
-
-type TestMeetVoiceBridgeRequest = Parameters<RealtimeVoiceProviderPlugin["createBridge"]>[0];
-
-function createTestMeetTranscriptionProvider(
-  options: { createSession?: RealtimeTranscriptionProviderPlugin["createSession"] } = {},
-) {
-  let request: Parameters<RealtimeTranscriptionProviderPlugin["createSession"]>[0] | undefined;
-  const sttSession = {
-    connect: vi.fn(async () => {}),
-    sendAudio: vi.fn<(audio: Buffer) => void>(),
-    close: vi.fn(),
-    isConnected: vi.fn(() => true),
-  };
-  const provider: RealtimeTranscriptionProviderPlugin = {
-    id: "openai",
-    label: "OpenAI",
-    defaultModel: "gpt-4o-transcribe",
-    autoSelectOrder: 1,
-    resolveConfig: ({ rawConfig }) => rawConfig,
-    isConfigured: () => true,
-    createSession: (nextRequest) => {
-      request = nextRequest;
-      return options.createSession ? options.createSession(nextRequest) : sttSession;
-    },
-  };
-  return {
-    provider,
-    sttSession,
-    sendAudio: sttSession.sendAudio,
-    requireRequest: () => {
-      if (!request) {
-        throw new Error("Expected realtime transcription callbacks");
-      }
-      return request;
-    },
-  };
-}
-
-function createTestMeetVoiceProvider(
-  options: {
-    defaultModel?: string;
-    handleBargeIn?: RealtimeVoiceBridge["handleBargeIn"];
-    sendUserMessage?: RealtimeVoiceBridge["sendUserMessage"];
-    triggerGreeting?: RealtimeVoiceBridge["triggerGreeting"];
-  } = {},
-) {
-  let request: TestMeetVoiceBridgeRequest | undefined;
-  const bridge = {
-    connect: vi.fn(async () => {}),
-    sendAudio: vi.fn(),
-    ...(options.sendUserMessage ? { sendUserMessage: options.sendUserMessage } : {}),
-    setMediaTimestamp: vi.fn(),
-    ...(options.handleBargeIn ? { handleBargeIn: options.handleBargeIn } : {}),
-    submitToolResult: vi.fn(),
-    acknowledgeMark: vi.fn(),
-    close: vi.fn(),
-    ...(options.triggerGreeting ? { triggerGreeting: options.triggerGreeting } : {}),
-    isConnected: vi.fn(() => true),
-  };
-  const provider: RealtimeVoiceProviderPlugin = {
-    id: "openai",
-    label: "OpenAI",
-    ...(options.defaultModel ? { defaultModel: options.defaultModel } : {}),
-    autoSelectOrder: 1,
-    resolveConfig: ({ rawConfig }) => rawConfig,
-    isConfigured: () => true,
-    createBridge: (nextRequest) => {
-      request = nextRequest;
-      return bridge;
-    },
-  };
-  return {
-    bridge,
-    provider,
-    sendAudio: bridge.sendAudio,
-    requireRequest: () => {
-      if (!request) {
-        throw new Error("Expected realtime bridge callbacks");
-      }
-      return request;
-    },
-  };
-}
-
-function createGoogleMeetTestEngineBindings(params: {
-  config: Parameters<typeof createMeetingRealtimeEngineBindings>[0]["config"];
-  fullConfig: Parameters<typeof createMeetingRealtimeEngineBindings>[0]["fullConfig"];
-  runtime: Parameters<typeof createMeetingRealtimeEngineBindings>[0]["runtime"];
-  logger: Parameters<typeof createMeetingRealtimeEngineBindings>[0]["logger"];
-}) {
-  return createMeetingRealtimeEngineBindings({
-    platform: GOOGLE_MEET_PLATFORM_ADAPTER,
-    ...params,
-  });
-}
-
-type TestNodeRealtimeEngineParams = Omit<
-  Parameters<typeof startMeetingRealtimeEngine>[0],
-  "config" | "consultAgent" | "handleToolCall" | "platform" | "tools" | "transport"
-> & {
-  config: GoogleMeetConfig;
-  nodeId: string;
-  bridgeId: string;
-};
-
-async function startTestNodeRealtimeAudioBridge(params: TestNodeRealtimeEngineParams) {
-  const { nodeId, bridgeId, ...engineParams } = params;
-  const transport = createNodeMeetingRealtimeAudioTransport({
-    runtime: params.runtime,
-    nodeId,
-    bridgeId,
-    logger: params.logger,
-    commandName: "googlemeet.chrome",
-    logScope: "[google-meet]",
-    logPrefix: "node",
-  });
-  Reflect.set(transport, Symbol.for("openclaw.internal.meeting-node-output-generation.v1"), true);
-  return await startMeetingRealtimeEngine({
-    ...engineParams,
-    ...createGoogleMeetTestEngineBindings(engineParams),
-    logPrefix: "node",
-    talkSessionId: `google-meet:${params.meetingSessionId}:${bridgeId}:node-realtime`,
-    talkContext: { nodeId, bridgeId },
-    transport,
-  });
 }
 
 const voiceCallMocks = vi.hoisted(() => ({
@@ -2854,18 +2729,20 @@ describe("google-meet plugin", () => {
     };
     const consultAgent = vi.fn(async () => ({ text: "Use the Portugal launch data." }));
     const turnEnded = createDeferred<void>();
-
-    const handle = await startMeetingAgentRealtimeEngine({
+    const engineParams = {
       config: resolveGoogleMeetConfig({
         realtime: { provider: "openai", agentId: "jay", introMessage: "" },
       }),
       fullConfig: {},
       runtime,
-      platform: GOOGLE_MEET_PLATFORM_ADAPTER,
+      logger: noopLogger,
+    };
+    const handle = await startMeetingAgentRealtimeEngine({
+      ...engineParams,
+      platform: createGoogleMeetTestEngineBindings(engineParams).platform,
       consultAgent,
       meetingSessionId: "meet-1",
       transport,
-      logger: noopLogger,
       providers: [provider],
       onTalkEvent: (event) => {
         if (event.type === "turn.ended") {
@@ -2879,8 +2756,14 @@ describe("google-meet plugin", () => {
       "[google-meet] agent audio bridge starting: transcriptionProvider=openai transcriptionModel=gpt-4o-transcribe tts=telephony audioFormat=pcm16-24khz",
     );
     deliverInput(Buffer.from([1, 0, 2, 0, 3, 0, 4, 0]));
+    const timersBeforeTranscript = vi.getTimerCount();
     callbacks.onTranscript?.("Please summarize the launch.");
-    await vi.advanceTimersToNextTimerAsync();
+    expect(vi.getTimerCount()).toBe(timersBeforeTranscript + 1);
+    // SDK background work can own an earlier timer; cross the actual talkback debounce.
+    await vi.advanceTimersByTimeAsync(900);
+    expect(consultAgent).toHaveBeenCalledTimes(1);
+    expect(runtime.tts.streamTextToSpeechTelephony).toHaveBeenCalledTimes(1);
+    expect(writeOutput).toHaveBeenCalledTimes(1);
     await turnEnded.promise;
 
     expect(sendAudio).toHaveBeenCalledTimes(1);
@@ -2974,7 +2857,7 @@ describe("google-meet plugin", () => {
     const callbacks = requireRequest();
 
     callbacks.onTranscript?.("Question from the meeting.");
-    await vi.advanceTimersToNextTimerAsync();
+    await vi.advanceTimersByTimeAsync(900);
     await vi.waitFor(() => {
       expect(logger.warn).toHaveBeenCalledWith("[google-meet] agent TTS failed: audio sink failed");
     });
@@ -3001,15 +2884,18 @@ describe("google-meet plugin", () => {
     const config = resolveGoogleMeetConfig({
       realtime: { provider: "openai", agentId: "jay", introMessage: "" },
     });
+    const engineParams = {
+      config,
+      fullConfig: {},
+      runtime: createTestPluginApi().runtime,
+      logger: noopLogger,
+    };
     await expect(
       startMeetingAgentRealtimeEngine({
-        config,
-        fullConfig: {},
-        runtime: createTestPluginApi().runtime,
-        platform: GOOGLE_MEET_PLATFORM_ADAPTER,
+        ...engineParams,
+        platform: createGoogleMeetTestEngineBindings(engineParams).platform,
         consultAgent: async () => ({ text: "" }),
         meetingSessionId: "meet-fatal",
-        logger: noopLogger,
         providers: [provider],
         transport: {
           // Pre-registration fatal replays synchronously; startup must abort before createSession.
@@ -3021,7 +2907,7 @@ describe("google-meet plugin", () => {
           dispose: vi.fn(async () => {}),
         },
       }),
-    ).rejects.toThrow("transport failed before transcription provider setup");
+    ).rejects.toThrow("Google Meet audio transport stopped during provider setup");
     expect(createSession).not.toHaveBeenCalled();
     expect(stop).toHaveBeenCalled();
   });
@@ -3039,25 +2925,24 @@ describe("google-meet plugin", () => {
     type BridgeProcess = ReturnType<
       NonNullable<Parameters<typeof createLocalMeetingRealtimeAudioTransport>[0]["spawn"]>
     >;
-    function bridgeProcess(
-      stdio: Pick<BridgeProcess, "stdin" | "stdout" | "stderr">,
-    ): BridgeProcess {
+    function bridgeProcess(stdio: Pick<BridgeProcess, "stdin" | "stdout" | "stderr">) {
+      const kill = vi.fn((signal?: NodeJS.Signals) => {
+        child.signalCode = signal ?? "SIGTERM";
+        return true;
+      });
       const child: BridgeProcess = Object.assign(new EventEmitter(), stdio, {
         exitCode: null,
         signalCode: null,
-        kill: vi.fn((signal?: NodeJS.Signals) => {
-          child.signalCode = signal ?? "SIGTERM";
-          return true;
-        }),
+        kill,
       });
-      return child;
+      return { child, kill };
     }
-    const outputProcess = bridgeProcess({
+    const { child: outputProcess, kill: outputKill } = bridgeProcess({
       stdin: outputStdin,
       stdout: null,
       stderr: outputStderr,
     });
-    const inputProcess = bridgeProcess({
+    const { child: inputProcess, kill: inputKill } = bridgeProcess({
       stdin: null,
       stdout: inputStdout,
       stderr: inputStderr,
@@ -3078,15 +2963,18 @@ describe("google-meet plugin", () => {
       logScope: "[google-meet]",
       spawn: spawnMock,
     });
-    const handle = await startMeetingAgentRealtimeEngine({
+    const engineParams = {
       config,
       fullConfig: {},
       runtime: createTestPluginApi().runtime,
-      platform: GOOGLE_MEET_PLATFORM_ADAPTER,
+      logger: noopLogger,
+    };
+    const handle = await startMeetingAgentRealtimeEngine({
+      ...engineParams,
+      platform: createGoogleMeetTestEngineBindings(engineParams).platform,
       consultAgent: async () => ({ text: "" }),
       meetingSessionId: "meet-1",
       transport,
-      logger: noopLogger,
       providers: [provider],
     });
 
@@ -3097,8 +2985,8 @@ describe("google-meet plugin", () => {
     await handle.stop();
     expect(handle.getHealth().bridgeClosed).toBe(true);
     expect(sttSession.close).toHaveBeenCalled();
-    expect(inputProcess.kill).toHaveBeenCalledWith("SIGTERM");
-    expect(outputProcess.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(inputKill).toHaveBeenCalledWith("SIGTERM");
+    expect(outputKill).toHaveBeenCalledWith("SIGTERM");
 
     expect(() => inputStderr.emit("error", new Error("stderr EPIPE"))).not.toThrow();
     expect(() => outputStderr.emit("error", new Error("output EPIPE"))).not.toThrow();

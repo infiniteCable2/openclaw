@@ -200,7 +200,10 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
         this.#markFatal();
         return;
       }
-      if (event.type === "fatal") {
+      if (
+        event.type === "fatal" ||
+        (event.type === "ready" && typeof event.output_gate !== "boolean")
+      ) {
         this.#markFatal();
         return;
       }
@@ -420,7 +423,7 @@ export async function createMatrixRtcMediaTransport(params: {
     transport = new NativeMatrixRtcAudioTransport({ child, control, tempDir });
     child.off("error", onChildError);
     const ready = await transport.waitForControlEvent("ready");
-    if (ready.type !== "ready" || ready.output_gate !== true) {
+    if (ready.type !== "ready" || !ready.output_gate) {
       throw new Error("MatrixRTC media bridge does not support reversible output gating");
     }
     if (params.requireRemoteAudioReady && ready.remote_audio_ready !== true) {

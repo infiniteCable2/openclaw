@@ -5,25 +5,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSpeechWaitingAudioPlayback, prepareSpeechWaitingAudio } from "./waiting-audio.js";
 
 // This native launcher leaves Node Promise timers real; bind only their clock
-// to Sinon and retain cancellation through the existing abort-race owner.
+// to Sinon for this owner's void-valued delays and retain cancellation through
+// the existing abort-race owner.
 vi.mock("node:timers/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:timers/promises")>();
   const { racePromiseWithAbortSignal } = await import("../../infra/abort-signal.js");
   return {
     ...actual,
-    async setTimeout<T = void>(
+    async setTimeout(
       delay?: Parameters<typeof actual.setTimeout>[0],
-      value?: T,
+      _value?: void,
       options?: Parameters<typeof actual.setTimeout>[2],
-    ): Promise<T> {
+    ): Promise<void> {
       let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
       try {
         return await racePromiseWithAbortSignal(
           () =>
-            new Promise<T>((resolve) => {
-              timer = globalThis.setTimeout(resolve, delay, value);
+            new Promise<void>((resolve) => {
+              const scheduledTimer = globalThis.setTimeout(resolve, delay);
+              timer = scheduledTimer;
               if (options?.ref === false) {
-                timer.unref();
+                scheduledTimer.unref();
               }
             }),
           options?.signal,

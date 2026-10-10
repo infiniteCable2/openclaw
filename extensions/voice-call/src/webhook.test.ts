@@ -15,6 +15,7 @@ import { MockProvider } from "./providers/mock.js";
 import { PlivoProvider } from "./providers/plivo.js";
 import { TwilioProvider } from "./providers/twilio.js";
 import type { CallRecord } from "./types.js";
+import { createCapturingLogger, expectPrivateLogMetadata } from "./webhook-log.test-support.js";
 import { createWebhookReplayCache, reserveWebhookReplay } from "./webhook-replay.js";
 import { VoiceCallWebhookServer } from "./webhook.js";
 import type { RealtimeCallHandler } from "./webhook/realtime-handler.js";
@@ -152,31 +153,6 @@ function createServer(...args: WebhookServerArgs) {
   const server = new VoiceCallWebhookServer(createTestPluginServiceScheduler(), ...args);
   onTestFinished(() => server.stop());
   return server;
-}
-
-function createCapturingLogger() {
-  const messages: string[] = [];
-  const capture = (message: string) => messages.push(message);
-  return {
-    messages,
-    logger: { info: capture, warn: capture, error: capture },
-  };
-}
-
-function expectPrivateLogMetadata(params: {
-  messages: readonly string[];
-  identifiers: readonly string[];
-  privateText: readonly string[];
-}) {
-  const output = params.messages.join(" ");
-  expect(output).toContain("[voice-call]");
-  expect(output).toContain("chars=");
-  for (const identifier of params.identifiers) {
-    expect(output).toContain(identifier);
-  }
-  for (const privateText of params.privateText) {
-    expect(output).not.toContain(privateText);
-  }
 }
 
 function expectWebhookUrl(url: string, expectedPath: string) {

@@ -52,6 +52,27 @@ function acknowledgeGate(control: net.Socket, gate: "normal" | "duck" | "paused"
 }
 
 describe("MatrixRTC media output framing", () => {
+  it.each([true, false])("preserves the boolean output capability %s", async (outputGate) => {
+    const { control, transport } = createTransportFixture();
+    const pending = transport.waitForControlEvent("ready");
+    const event = { type: "ready", output_gate: outputGate };
+    control.emit("data", Buffer.from(`${JSON.stringify(event)}\n`));
+    await expect(pending).resolves.toEqual(event);
+  });
+
+  it.each(["true", 1, null, undefined])(
+    "rejects a malformed output capability %s before admitting readiness",
+    async (outputGate) => {
+      const { control, transport } = createTransportFixture();
+      const pending = transport.waitForControlEvent("ready");
+      control.emit(
+        "data",
+        Buffer.from(`${JSON.stringify({ type: "ready", output_gate: outputGate })}\n`),
+      );
+      await expect(pending).rejects.toThrow("MatrixRTC native media bridge failed");
+    },
+  );
+
   it("declares its remote participant track as full-duplex input", () => {
     const { transport } = createTransportFixture();
 

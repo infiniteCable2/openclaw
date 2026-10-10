@@ -4,25 +4,27 @@ import { createSpeechSessionLifecycle } from "./session-lifecycle.js";
 import { createSpeechWaitingAudioPlayback } from "./waiting-audio.js";
 
 // This native launcher leaves Node Promise timers real; bind only their clock
-// to Sinon and retain cancellation through the existing abort-race owner.
+// to Sinon for this owner's void-valued delays and retain cancellation through
+// the existing abort-race owner.
 vi.mock("node:timers/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:timers/promises")>();
   const { racePromiseWithAbortSignal } = await import("../../infra/abort-signal.js");
   return {
     ...actual,
-    async setTimeout<T = void>(
+    async setTimeout(
       delay?: Parameters<typeof actual.setTimeout>[0],
-      value?: T,
+      _value?: void,
       options?: Parameters<typeof actual.setTimeout>[2],
-    ): Promise<T> {
+    ): Promise<void> {
       let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
       try {
         return await racePromiseWithAbortSignal(
           () =>
-            new Promise<T>((resolve) => {
-              timer = globalThis.setTimeout(resolve, delay, value);
+            new Promise<void>((resolve) => {
+              const scheduledTimer = globalThis.setTimeout(resolve, delay);
+              timer = scheduledTimer;
               if (options?.ref === false) {
-                timer.unref();
+                scheduledTimer.unref();
               }
             }),
           options?.signal,
@@ -79,7 +81,9 @@ describe("speech session teardown ownership", () => {
     expect(vi.getTimerCount()).toBe(1);
     await vi.advanceTimersToNextTimerAsync();
     await writeStarted.promise;
+    const disposeTransport = vi.fn(async () => undefined);
     const { resources, lifecycle } = createLifecycle({
+      disposeTransport,
       stopWaiting: vi.fn(async () => {
         waitingStopStarted.resolve();
         await playback.stop();
@@ -98,7 +102,7 @@ describe("speech session teardown ownership", () => {
       expect(onError).not.toHaveBeenCalled();
       expect(resources.disposeTransport).toHaveBeenCalledTimes(1);
       expect(clearOutput.mock.invocationCallOrder[0]).toBeLessThan(
-        resources.disposeTransport.mock.invocationCallOrder[0]!,
+        disposeTransport.mock.invocationCallOrder[0]!,
       );
       expect(resources.publishClosed).toHaveBeenCalledTimes(1);
     } finally {
