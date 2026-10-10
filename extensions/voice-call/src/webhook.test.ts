@@ -345,7 +345,7 @@ describe("VoiceCallWebhookServer realtime transcription provider selection", () 
     try {
       await server.start();
       expect(mocks.getRealtimeTranscriptionProvider).not.toHaveBeenCalled();
-      expect(mocks.listRealtimeTranscriptionProviders).toHaveBeenCalledWith(null, ["openai"]);
+      expect(mocks.listRealtimeTranscriptionProviders).toHaveBeenCalledWith(undefined, ["openai"]);
       const mediaStreamHandler = server.getMediaStreamHandler();
       if (!mediaStreamHandler) {
         throw new Error("expected media stream handler");
