@@ -1,4 +1,4 @@
-export type SpeechOutputLoopbackHealth = {
+type SpeechOutputLoopbackHealth = {
   lastOutputLoopbackAt?: string;
   lastOutputLoopbackCorrelation?: number;
   lastOutputLoopbackPeak?: number;

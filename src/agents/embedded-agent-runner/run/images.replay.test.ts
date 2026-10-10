@@ -121,13 +121,13 @@ describe("structured prompt media replay", () => {
         media,
         mediaImageLayout: { slots: [{ kind: "inline", factIndex: 0 }] },
       });
-      const restored = JSON.parse(
-        JSON.stringify({
-          ...original,
-          content: [{ type: "text", text: "original attachment" }, inlineImage],
-          __openclaw: { ...original.__openclaw, mediaImageBlockFactIndexes: [0] },
-        }),
-      ) as AgentMessage;
+      // Replay consumes serialized transcript bytes, not an in-memory clone.
+      const serialized = JSON.stringify({
+        ...original,
+        content: [{ type: "text", text: "original attachment" }, inlineImage],
+        __openclaw: { ...original["__openclaw"], mediaImageBlockFactIndexes: [0] },
+      });
+      const restored = JSON.parse(serialized) as AgentMessage;
       const replay = await hydratePromptMediaMessages([restored], {
         workspaceDir: "/tmp",
         model: { input: ["text", "image"] },
@@ -139,9 +139,9 @@ describe("structured prompt media replay", () => {
           ...(automatic ? [inlineImage] : []),
         ],
       });
-      expect(
-        (replay[0] as unknown as { __openclaw: { media: unknown[] } }).__openclaw.media,
-      ).toEqual([expect.objectContaining({ purpose })]);
+      expect(replay[0]).toMatchObject({
+        __openclaw: { media: [expect.objectContaining({ purpose })] },
+      });
     },
   );
 

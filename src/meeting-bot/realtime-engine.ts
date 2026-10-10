@@ -14,12 +14,6 @@ export type {
   SpeechSessionHealth as MeetingRealtimeAudioEngineHealth,
   SpeechRealtimeSessionHandle as MeetingRealtimeAudioEngineHandle,
 } from "../talk/speech/types.js";
-export {
-  SPEECH_AGENT_TRANSCRIPT_DEBOUNCE_MS as MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS,
-  SPEECH_OUTPUT_ECHO_SUPPRESSION_TAIL_MS as MEETING_OUTPUT_ECHO_SUPPRESSION_TAIL_MS,
-  SPEECH_TRANSCRIPT_ECHO_LOOKBACK_MS as MEETING_TRANSCRIPT_ECHO_LOOKBACK_MS,
-} from "../talk/speech/types.js";
-
 export type MeetingRealtimeEngineConfig = {
   chrome: { audioFormat: MeetingRealtimeAudioFormat };
   realtime: {

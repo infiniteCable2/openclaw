@@ -635,6 +635,7 @@ export async function startSpeechRealtimeSession(params: {
       throw new AggregateError(
         [error, cleanupError],
         "Speech realtime setup and resource cleanup failed",
+        { cause: cleanupError },
       );
     }
     throw error;

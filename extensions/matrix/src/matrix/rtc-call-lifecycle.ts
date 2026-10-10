@@ -28,6 +28,7 @@ export async function stopCall(call: ActiveCall): Promise<void> {
   // then can cleanup dispose a late transport or the engine that adopted it.
   await call.startup;
   call.disposeListeners();
+  const errors: unknown[] = [];
   try {
     if (call.engine) {
       await call.engine.stop();
@@ -40,25 +41,37 @@ export async function stopCall(call: ActiveCall): Promise<void> {
       }
       call.transport = undefined;
     }
-  } finally {
-    try {
-      if (call.joined) {
-        if (!(await call.session.leaveRoomSession(LEAVE_TIMEOUT_MS))) {
-          // The SDK also returns false after a timed-out leave locally disables
-          // participation. Local isJoined=false does not confirm server custody.
-          throw new Error("MatrixRTC membership leave was not confirmed");
-        }
-        call.joined = false;
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    if (call.joined) {
+      if (!(await call.session.leaveRoomSession(LEAVE_TIMEOUT_MS))) {
+        // The SDK also returns false after a timed-out leave locally disables
+        // participation. Local isJoined=false does not confirm server custody.
+        throw new Error("MatrixRTC membership leave was not confirmed");
       }
-    } finally {
-      // Readiness holds cannot unload a provider while accepted output is still
-      // draining or its transport teardown remains unconfirmed.
-      if (!call.engine && !call.transport) {
-        await call.greetingPreparation?.release();
-        call.greetingPreparation = undefined;
-        await call.preparation?.release();
-        call.preparation = undefined;
-      }
+      call.joined = false;
     }
+  } catch (error) {
+    errors.push(error);
+  }
+  // Readiness holds cannot unload a provider while accepted output is still
+  // draining or its transport teardown remains unconfirmed.
+  try {
+    if (!call.engine && !call.transport) {
+      await call.greetingPreparation?.release();
+      call.greetingPreparation = undefined;
+      await call.preparation?.release();
+      call.preparation = undefined;
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "MatrixRTC call cleanup failed");
   }
 }

@@ -1,6 +1,6 @@
 // Asterisk AudioSocket framing primitives.
 
-export const AUDIOSOCKET_HEADER_BYTES = 3;
+const AUDIOSOCKET_HEADER_BYTES = 3;
 export const AUDIOSOCKET_MAX_PAYLOAD_BYTES = 0xffff;
 
 export const AudioSocketType = {

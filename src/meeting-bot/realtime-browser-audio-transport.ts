@@ -112,13 +112,22 @@ export async function createBrowserMeetingRealtimeAudioTransport(params: {
         handler();
       }
     },
-    startInput(onAudio) {
+    async startInput(onAudio) {
       if (inputStarted) {
         throw new Error("audio input transport already started");
       }
       inputStarted = true;
       // The native bus contains assistant injection. Keep it solely for waveform verification.
-      params.nativeTransport.startInput(() => {});
+      try {
+        await params.nativeTransport.startInput(() => {});
+      } catch (error) {
+        fail(error);
+        throw error;
+      }
+      // Capture startup can settle after teardown; never admit a late browser pull.
+      if (stopped) {
+        return;
+      }
       const pull = async () => {
         if (stopped) {
           return;

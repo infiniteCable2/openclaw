@@ -19,7 +19,6 @@ type MatrixDmConfig = NonNullable<MatrixConfigSchemaValue["dm"]> & {
 
 export type MatrixRtcConfig = NonNullable<MatrixConfigSchemaValue["rtc"]>;
 export type MatrixRtcAdmission = NonNullable<MatrixRtcConfig["admissions"]>[number];
-export type MatrixRtcWaitingAudioConfig = NonNullable<MatrixRtcConfig["waitingAudio"]>;
 
 export type MatrixAccountConfig = Omit<
   MatrixConfigSchemaValue,

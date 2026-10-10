@@ -181,6 +181,7 @@ export function createSpeechOutput(params: {
         const result = preparation.result;
         const resources = createSpeechStreamCleanup(result, activeTtsReaders);
         const release = () => resources.release();
+        let cleanupFailure: { error: unknown } | undefined;
         try {
           if (!isCurrentSpeechUtterance(utterance) || controller.signal.aborted) {
             return;
@@ -289,10 +290,15 @@ export function createSpeechOutput(params: {
             }
           } catch (error) {
             failedReleases.set(release, { error, reported: false });
-            throw error;
+            cleanupFailure = { error };
           } finally {
             activeTtsAborts.delete(controller);
           }
+        }
+        // Keep the playback error primary if both phases fail. The retained
+        // release owner reports its own failure through drain and can retry.
+        if (cleanupFailure) {
+          throw cleanupFailure.error;
         }
       })
       .catch((error: unknown) => {

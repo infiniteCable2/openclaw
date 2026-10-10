@@ -284,6 +284,7 @@ function createAsteriskRegistrationFixture() {
     coreConfig: {},
     transcriptionProvider: {
       id: "test-stt",
+      label: "Synthetic transcription",
       isConfigured: () => true,
       createSession: () => ({
         connect: async () => {},
@@ -305,7 +306,7 @@ describe("VoiceCallWebhookServer Asterisk registration", () => {
     const register = vi.spyOn(fixture.provider, "registerInboundCall");
     try {
       const baseUrl = await fixture.server.start();
-      const requestUrl = requireBoundRequestUrl(fixture.server, baseUrl);
+      const requestUrl = new URL(baseUrl);
       requestUrl.pathname = fixture.config.asterisk.registrationPath;
       const post = async (token: string, from: string) =>
         await fetch(requestUrl, {

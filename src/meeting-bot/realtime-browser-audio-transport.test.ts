@@ -9,7 +9,7 @@ function setup() {
   let nativeInput: ((audio: Buffer) => void) | undefined;
   const nativeTransport = {
     onFatal: vi.fn(),
-    startInput: vi.fn((handler) => {
+    startInput: vi.fn<MeetingRealtimeAudioTransport["startInput"]>((handler) => {
       nativeInput = handler;
     }),
     stop: vi.fn(async () => {}),
@@ -18,9 +18,11 @@ function setup() {
     clearOutput: vi.fn(async () => {}),
   } satisfies MeetingRealtimeAudioTransport;
   const pulls: ReturnType<typeof createDeferredCore<Record<string, unknown>>>[] = [];
+  const actions: string[] = [];
   const callBrowser = vi.fn(async (request: MeetingBrowserRequestParams) => {
     const body = request.body as { fn: string };
     const { action, captureId } = JSON.parse(body.fn) as { action: string; captureId: string };
+    actions.push(action);
     if (action === "pull") {
       const pending = createDeferredCore<Record<string, unknown>>();
       pulls.push(pending);
@@ -44,6 +46,7 @@ function setup() {
     },
     nativeTransport,
     callBrowser,
+    actions,
     nativeInput: (audio: Buffer) => nativeInput?.(audio),
     create: () =>
       createBrowserMeetingRealtimeAudioTransport({
@@ -68,7 +71,7 @@ describe("isolated meeting browser audio transport", () => {
     const fixture = setup();
     const transport = await fixture.create();
     const received = vi.fn();
-    transport.startInput(received);
+    await transport.startInput(received);
     await setImmediate();
     const assistant = Buffer.from([1, 0, 2, 0]);
     const remote = Buffer.from([3, 0, 4, 0]);
@@ -89,7 +92,7 @@ describe("isolated meeting browser audio transport", () => {
     const received = vi.fn();
     const fatal = vi.fn();
     transport.onFatal(fatal);
-    transport.startInput(received);
+    await transport.startInput(received);
     await setImmediate();
     // Browser evaluations are serialized, so stop retires the host immediately while
     // waiting for the in-flight page read to leave the tab lock.
@@ -102,7 +105,7 @@ describe("isolated meeting browser audio transport", () => {
     const next = setup();
     const nextTransport = await next.create();
     nextTransport.onFatal(fatal);
-    nextTransport.startInput(received);
+    await nextTransport.startInput(received);
     await setImmediate();
     next.resolvePull({ closed: true });
     await setImmediate();
@@ -110,5 +113,40 @@ describe("isolated meeting browser audio transport", () => {
     expect(received).not.toHaveBeenCalled();
     expect(next.nativeTransport.stop).toHaveBeenCalledOnce();
     await nextTransport.stop();
+  });
+
+  it("reports an asynchronous native input startup failure to its fatal owner", async () => {
+    const fixture = setup();
+    const failure = new Error("native capture startup failed");
+    fixture.nativeTransport.startInput.mockImplementationOnce(async () => {
+      throw failure;
+    });
+    const transport = await fixture.create();
+    const fatal = vi.fn();
+    const received = vi.fn();
+    transport.onFatal(fatal);
+
+    await expect(transport.startInput(received)).rejects.toBe(failure);
+    expect(fatal).toHaveBeenCalledOnce();
+    await transport.stop();
+    expect(fixture.nativeTransport.stop).toHaveBeenCalledOnce();
+    expect(fixture.actions).toEqual(["start", "stop"]);
+    expect(received).not.toHaveBeenCalled();
+  });
+
+  it("does not start browser pulls when native capture settles after stop", async () => {
+    const fixture = setup();
+    const startup = createDeferredCore();
+    fixture.nativeTransport.startInput.mockReturnValueOnce(startup.promise);
+    const transport = await fixture.create();
+    const received = vi.fn();
+    const starting = transport.startInput(received);
+
+    expect(fixture.callBrowser).toHaveBeenCalledOnce();
+    await transport.stop();
+    startup.resolve();
+    await starting;
+    expect(fixture.actions).toEqual(["start", "stop"]);
+    expect(received).not.toHaveBeenCalled();
   });
 });

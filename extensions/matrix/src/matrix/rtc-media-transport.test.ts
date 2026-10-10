@@ -2,15 +2,12 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type net from "node:net";
 import { describe, expect, it, vi } from "vitest";
-import {
-  encodeMatrixRtcOutputFrame,
-  NativeMatrixRtcAudioTransport,
-} from "./rtc-media-transport.js";
+import { NativeMatrixRtcAudioTransport } from "./rtc-media-transport.js";
 
 function createTransportFixture(options: { backpressure?: boolean } = {}) {
   const stdin = Object.assign(new EventEmitter(), {
     writable: true,
-    write: vi.fn(() => !options.backpressure),
+    write: vi.fn((_chunk: Buffer) => !options.backpressure),
     end: vi.fn(),
   });
   const stdout = Object.assign(new EventEmitter(), {
@@ -74,14 +71,17 @@ describe("MatrixRTC media output framing", () => {
     expect(ready).toBe(true);
   });
 
-  it("encodes one bounded generation-tagged PCM frame", () => {
+  it("encodes one bounded generation-tagged PCM frame", async () => {
+    const { stdin, transport } = createTransportFixture();
     const pcm = Buffer.from([1, 0, 2, 0]);
-    const frame = encodeMatrixRtcOutputFrame(42, pcm);
+    await transport.writeOutput(pcm);
+    expect(stdin.write).toHaveBeenCalledOnce();
+    const frame = stdin.write.mock.calls[0]![0];
 
     expect(frame.subarray(0, 4).toString("ascii")).toBe("OCAP");
     expect(frame.readUInt8(4)).toBe(1);
     expect(frame.subarray(5, 8)).toEqual(Buffer.alloc(3));
-    expect(frame.readBigUInt64BE(8)).toBe(42n);
+    expect(frame.readBigUInt64BE(8)).toBe(0n);
     expect(frame.readUInt32BE(16)).toBe(pcm.byteLength);
     expect(frame.subarray(20)).toEqual(pcm);
   });
@@ -100,8 +100,8 @@ describe("MatrixRTC media output framing", () => {
     await transport.writeOutput(Buffer.alloc(480, 2));
 
     expect(stdin.write).toHaveBeenCalledTimes(2);
-    expect((stdin.write.mock.calls[0]![0] as Buffer).readBigUInt64BE(8)).toBe(0n);
-    expect((stdin.write.mock.calls[1]![0] as Buffer).readBigUInt64BE(8)).toBe(1n);
+    expect(stdin.write.mock.calls[0]?.[0].readBigUInt64BE(8)).toBe(0n);
+    expect(stdin.write.mock.calls[1]?.[0].readBigUInt64BE(8)).toBe(1n);
   });
 
   it("fences a backpressured write as soon as output is cleared", async () => {

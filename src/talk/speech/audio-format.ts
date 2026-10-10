@@ -19,10 +19,7 @@ export function resolveSpeechAudioFormat(audioFormat: SpeechAudioFormat) {
     : REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ;
 }
 
-export function convertSpeechInputForStt(
-  audio: Buffer,
-  audioFormat: SpeechInputAudioFormat,
-): Buffer {
+function convertSpeechInputForStt(audio: Buffer, audioFormat: SpeechInputAudioFormat): Buffer {
   if (audioFormat === "g711-ulaw-8khz") {
     return audio;
   }

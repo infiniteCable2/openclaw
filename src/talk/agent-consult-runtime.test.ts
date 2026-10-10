@@ -10,10 +10,7 @@ import {
 import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
-import {
-  consultRealtimeVoiceAgent,
-  REALTIME_VOICE_AGENT_CONSULT_SENDER_AUTH_VERSION,
-} from "./agent-consult-runtime.js";
+import { consultRealtimeVoiceAgent } from "./agent-consult-runtime.js";
 import {
   createAgentRuntime,
   requireEmbeddedAgentCall,
@@ -23,11 +20,6 @@ import {
   type ForkSessionEntryFromParentParams,
   type ForkSessionEntryFromParentResult,
 } from "./agent-consult-runtime.test-support.js";
-import {
-  REALTIME_VOICE_AGENT_CONSULT_TOOL,
-  resolveRealtimeVoiceAgentConsultTools,
-  resolveRealtimeVoiceAgentConsultToolsAllow,
-} from "./agent-consult-tool.js";
 import { checkClientVoiceToolConfirmationPolicy } from "./client-voice-confirmation.js";
 import {
   createOrResumeClientVoiceSession,

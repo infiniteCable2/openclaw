@@ -98,6 +98,7 @@ export async function prepareSpeechSession(params: {
       throw new AggregateError(
         [reason, cleanupError],
         "Speech preparation and resource cleanup failed",
+        { cause: cleanupError },
       );
     }
     throw reason;

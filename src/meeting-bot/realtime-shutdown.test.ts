@@ -14,14 +14,12 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import * as audioFormat from "../talk/speech/audio-format.js";
+import { SPEECH_AGENT_TRANSCRIPT_DEBOUNCE_MS } from "../talk/speech/types.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { createMeetingRealtimeEngineBindings } from "./agent-consult.js";
 import { startMeetingAgentRealtimeEngine } from "./realtime-agent-engine.js";
 import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
-import {
-  MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS,
-  startMeetingRealtimeEngine,
-} from "./realtime-engine.js";
+import { startMeetingRealtimeEngine } from "./realtime-engine.js";
 
 const environment = captureEnv(["OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH"]);
 let stateDir: string;
@@ -235,13 +233,13 @@ describe("meeting shutdown", () => {
       });
       try {
         fixture.transcript("Please give me a project status update.");
-        await vi.advanceTimersByTimeAsync(MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS);
+        await vi.advanceTimersByTimeAsync(SPEECH_AGENT_TRANSCRIPT_DEBOUNCE_MS);
         await playbackStarted.promise;
         expect(fixture.runEmbeddedAgent).toHaveBeenCalledOnce();
         expect(fixture.writeOutput).toHaveBeenCalledOnce();
         fixture.inputAudio(Buffer.alloc(960, 1));
         fixture.transcript(answer);
-        await vi.advanceTimersByTimeAsync(MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS);
+        await vi.advanceTimersByTimeAsync(SPEECH_AGENT_TRANSCRIPT_DEBOUNCE_MS);
         expect(fixture.sendAudio).toHaveBeenCalledTimes(isolated ? 1 : 0);
         if (isolated) {
           await secondRunStarted.promise;
@@ -269,7 +267,7 @@ describe("meeting shutdown", () => {
       });
       try {
         fixture.transcript("Please answer this meeting question.");
-        await vi.advanceTimersByTimeAsync(MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS);
+        await vi.advanceTimersByTimeAsync(SPEECH_AGENT_TRANSCRIPT_DEBOUNCE_MS);
         await delivered.promise;
         await setImmediate();
         expect(fixture.runEmbeddedAgent).toHaveBeenCalledOnce();
@@ -316,7 +314,7 @@ describe("meeting shutdown", () => {
     });
     try {
       fixture.transcript("Please check this for the meeting.");
-      await vi.advanceTimersByTimeAsync(MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS);
+      await vi.advanceTimersByTimeAsync(SPEECH_AGENT_TRANSCRIPT_DEBOUNCE_MS);
       const run = await started.promise;
       const aborted = vi.fn();
       run.abortSignal?.addEventListener("abort", aborted, { once: true });

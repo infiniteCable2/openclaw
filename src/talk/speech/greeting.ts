@@ -123,7 +123,6 @@ export async function prepareSpeechGreeting(params: {
   if (!text || text.length > MAX_GREETING_CHARS) {
     throw new Error("Meeting greeting was empty or too long");
   }
-  let acquisition: ReturnType<PluginRuntime["tts"]["streamTextToSpeechTelephony"]> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let readerCancelled = false;
   let readerReleased = false;
@@ -183,7 +182,7 @@ export async function prepareSpeechGreeting(params: {
     },
   };
   let preparationPublished = false;
-  acquisition = Promise.resolve().then(() => {
+  const acquisition = Promise.resolve().then(() => {
     if (!preparationPublished) {
       throw new Error("Speech greeting cleanup ownership could not be published");
     }
@@ -249,7 +248,9 @@ export async function prepareSpeechGreeting(params: {
     await preparation.release();
   } catch (error) {
     if (failed) {
-      throw new AggregateError([failure, error], "Speech greeting and resource cleanup failed");
+      throw new AggregateError([failure, error], "Speech greeting and resource cleanup failed", {
+        cause: error,
+      });
     }
     throw error;
   }

@@ -91,7 +91,7 @@ describe("prepareSpeechSession", () => {
 
   it("reports release failures and retries only the unreleased resource", async () => {
     const failure = new Error("lease release failed");
-    const firstRelease = createDeferred<void>();
+    const firstRelease = createDeferred();
     const releaseStt = vi
       .fn(() => firstRelease.promise)
       .mockImplementationOnce(() => firstRelease.promise)

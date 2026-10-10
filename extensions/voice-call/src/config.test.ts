@@ -73,7 +73,7 @@ describe("errand features config", () => {
   });
 });
 
-function createBaseConfig(provider: "telnyx" | "twilio" | "plivo" | "mock"): VoiceCallConfig {
+function createBaseConfig(provider: NonNullable<VoiceCallConfig["provider"]>): VoiceCallConfig {
   return createVoiceCallBaseConfig({ provider });
 }
 

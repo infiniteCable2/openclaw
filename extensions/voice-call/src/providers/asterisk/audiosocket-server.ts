@@ -9,7 +9,7 @@ import {
   uuidFromAudioSocketPayload,
 } from "./audiosocket.js";
 
-export type AsteriskAudioSocketRegistration = {
+type AsteriskAudioSocketRegistration = {
   uuid: string;
   from: string;
   to: string;

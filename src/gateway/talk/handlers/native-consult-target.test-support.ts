@@ -410,7 +410,6 @@ export const testState = {
   },
 };
 export {
-  state,
   callback,
   providerInstructions,
   browserControl,

@@ -21,7 +21,7 @@ import {
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { checkClientVoiceToolConfirmationPolicy } from "../../talk/client-voice-confirmation.js";
 import { resetClientVoiceConfirmationStateForTest } from "../../talk/client-voice-confirmation.test-support.js";
-import type { SpeechAgentRunControl } from "../../talk/speech/types.js";
+import type { SpeechAgentConsultParams } from "../../talk/speech/types.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -29,6 +29,9 @@ import {
 import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
 
 const core = vi.hoisted(() => vi.fn<typeof runEmbeddedAgent>());
+type SpeechAgentRunControl = NonNullable<
+  Parameters<NonNullable<SpeechAgentConsultParams["onRunControl"]>>[0]
+>;
 // mock-isolation: Exercise real Talk admission and terminal custody without starting a model runtime.
 vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: core }));
 

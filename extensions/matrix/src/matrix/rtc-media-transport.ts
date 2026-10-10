@@ -31,7 +31,7 @@ type ControlEvent =
   | { type: "stopped" }
   | { type: "fatal"; code?: string };
 
-export function encodeMatrixRtcOutputFrame(generation: number, audio: Buffer): Buffer {
+function encodeMatrixRtcOutputFrame(generation: number, audio: Buffer): Buffer {
   if (!Number.isSafeInteger(generation) || generation < 0) {
     throw new Error("MatrixRTC media output generation is invalid");
   }

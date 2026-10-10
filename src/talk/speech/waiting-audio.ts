@@ -164,7 +164,7 @@ function nextLoopingFrame(audio: Buffer, offset: number, frameBytes: number): Bu
   return frame;
 }
 
-export async function playSpeechWaitingAudio(params: {
+async function playSpeechWaitingAudio(params: {
   audio: PreparedSpeechWaitingAudio;
   transport: Pick<SpeechAudioTransport, "writeOutput">;
   signal: AbortSignal;

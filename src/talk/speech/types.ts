@@ -85,12 +85,12 @@ export type SpeechSessionConfig = {
   waitingAudio?: SpeechWaitingAudioConfig;
 };
 
-export type SpeechAgentControlOptions = {
+type SpeechAgentControlOptions = {
   mode?: RealtimeVoiceAgentControlMode;
   signal?: AbortSignal;
   assertCurrent?: () => void;
 };
-export type SpeechAgentRunControl = (
+type SpeechAgentRunControl = (
   text: string,
   onQueueAccepted?: (accepted: boolean) => void,
   options?: SpeechAgentControlOptions,
@@ -111,7 +111,7 @@ export type SpeechAgentConsultParams = {
 export type SpeechSessionHealth = ReturnType<RealtimeVoiceSessionHarness["getHealth"]> &
   SpeechAudioTransportHealth & { lastClearAt?: string; clearCount?: number; bridgeClosed: boolean };
 
-export type SpeechOutputCancellationResult = {
+type SpeechOutputCancellationResult = {
   status: "applied" | "stale" | "idle";
   turnId?: string;
 };

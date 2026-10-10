@@ -59,7 +59,7 @@ describe("node meeting realtime audio transport", () => {
     const transport = createTransport(invoke);
     const onAudio = vi.fn();
 
-    transport.startInput(onAudio);
+    await transport.startInput(onAudio);
     await vi.advanceTimersByTimeAsync(250);
     await vi.waitFor(() => {
       expect(onAudio).toHaveBeenCalledWith(Buffer.from([5, 4, 3]));
@@ -89,7 +89,7 @@ describe("node meeting realtime audio transport", () => {
     const onAudio = vi.fn();
     transport.onFatal(onFatal);
 
-    transport.startInput(onAudio);
+    await transport.startInput(onAudio);
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => {
       expect(onFatal).toHaveBeenCalledTimes(1);
@@ -124,7 +124,7 @@ describe("node meeting realtime audio transport", () => {
     await transport.writeOutput(output);
     const health = transport.getHealth?.();
     const onAudio = vi.fn();
-    transport.startInput(onAudio);
+    await transport.startInput(onAudio);
     await transport.stop();
     pendingPull.resolve({ base64: output.toString("base64") });
     await setImmediate();

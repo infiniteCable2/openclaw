@@ -158,7 +158,7 @@ export async function startSpeechSession(
         );
       }
     },
-    stopTransport: input.stop,
+    stopTransport: () => input.stop(),
     disposeTransport: () => params.transport.dispose(),
     publishClosed: () => {
       harness.emit({
@@ -168,7 +168,8 @@ export async function startSpeechSession(
       });
     },
   });
-  const { stop, stopAfterFailure } = lifecycle;
+  const stop = () => lifecycle.stop();
+  const stopAfterFailure = (source: string) => lifecycle.stopAfterFailure(source);
 
   const bargeInGate = createSpeechBargeInGate({
     transport: params.transport,
@@ -696,6 +697,7 @@ export async function startSpeechSession(
       throw new AggregateError(
         [error, cleanupError],
         "Speech session setup and resource cleanup failed",
+        { cause: cleanupError },
       );
     }
     throw error;

@@ -5,23 +5,30 @@ import type { RuntimeLogger } from "../../plugins/runtime/types.js";
 export function createSpeechSessionLifecycle(params: {
   logger: RuntimeLogger;
   logScope: string;
-  fence(): void;
-  closeTranscription(): void;
-  stopWaiting(): Promise<void>;
-  drainOutput(): Promise<void>;
-  stopTransport(): Promise<void>;
-  disposeTransport(): Promise<void>;
-  publishClosed(): void;
+  fence: () => void;
+  closeTranscription: () => void | Promise<void>;
+  stopWaiting: () => Promise<void>;
+  drainOutput: () => Promise<void>;
+  stopTransport: () => Promise<void>;
+  disposeTransport: () => Promise<void>;
+  publishClosed: () => void;
 }) {
   let fenced = false;
   let closedPublished = false;
   let stopPromise: Promise<void> | undefined;
-  const pending = new Set([
-    params.closeTranscription,
-    params.stopWaiting,
-    params.drainOutput,
-    params.stopTransport,
-    params.disposeTransport,
+  const resources = {
+    closeTranscription: () => params.closeTranscription(),
+    stopWaiting: () => params.stopWaiting(),
+    drainOutput: () => params.drainOutput(),
+    stopTransport: () => params.stopTransport(),
+    disposeTransport: () => params.disposeTransport(),
+  };
+  const pending = new Set<() => void | Promise<void>>([
+    resources.closeTranscription,
+    resources.stopWaiting,
+    resources.drainOutput,
+    resources.stopTransport,
+    resources.disposeTransport,
   ]);
 
   const stop = async () => {
@@ -45,22 +52,22 @@ export function createSpeechSessionLifecycle(params: {
           failures.push(error);
         }
       };
-      await release(params.closeTranscription);
+      await release(resources.closeTranscription);
       // Closing capture may unblock an admitted sink write. Start it before
       // joining either waiting playback or speech output; both own sink writes.
-      const captureStopped = release(params.stopTransport);
-      const waitingStopped = release(params.stopWaiting);
-      await release(params.drainOutput);
+      const captureStopped = release(resources.stopTransport);
+      const waitingStopped = release(resources.stopWaiting);
+      await release(resources.drainOutput);
       await Promise.all([captureStopped, waitingStopped]);
       // Any failed cleanup retains custody. Disposal cannot run ahead of an
       // input, transcription, waiting-playback or speech-output owner.
       if (
-        !pending.has(params.closeTranscription) &&
-        !pending.has(params.stopWaiting) &&
-        !pending.has(params.stopTransport) &&
-        !pending.has(params.drainOutput)
+        !pending.has(resources.closeTranscription) &&
+        !pending.has(resources.stopWaiting) &&
+        !pending.has(resources.stopTransport) &&
+        !pending.has(resources.drainOutput)
       ) {
-        await release(params.disposeTransport);
+        await release(resources.disposeTransport);
       }
       if (failures.length > 0) {
         throw new AggregateError(failures, "Speech session resources did not close");
@@ -88,6 +95,6 @@ export function createSpeechSessionLifecycle(params: {
         );
       });
     },
-    isTranscriptionClosed: () => !pending.has(params.closeTranscription),
+    isTranscriptionClosed: () => !pending.has(resources.closeTranscription),
   };
 }

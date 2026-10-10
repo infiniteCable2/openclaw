@@ -175,8 +175,12 @@ export function createSpeechRealtimeOutputQueue(params: {
     async drain(): Promise<void> {
       // Stop fences new writes; join the existing pump and admitted clears
       // before the transport can be disposed. No audio is replayed here.
-      while (activeWrite) {
-        await activeWrite;
+      for (;;) {
+        const writing = activeWrite;
+        if (!writing) {
+          break;
+        }
+        await writing;
       }
       await clearTail;
     },

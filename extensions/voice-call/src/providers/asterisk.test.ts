@@ -2,7 +2,7 @@ import net from "node:net";
 import type {
   RealtimeTranscriptionSessionCallbacks,
   RealtimeTranscriptionSessionCreateRequest,
-} from "openclaw/plugin-sdk/realtime-transcription";
+} from "openclaw/plugin-sdk/realtime-transcription-session";
 import { pcmToMulaw } from "openclaw/plugin-sdk/realtime-voice-provider";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AsteriskConfig } from "../config.js";
@@ -62,6 +62,7 @@ describe("AsteriskProvider", () => {
       coreConfig: {},
       transcriptionProvider: {
         id: "test-stt",
+        label: "Synthetic transcription",
         isConfigured: () => true,
         createSession: () => ({
           connect: async () => {
@@ -212,6 +213,7 @@ describe("AsteriskProvider", () => {
       coreConfig: {},
       transcriptionProvider: {
         id: "test-stt",
+        label: "Synthetic transcription",
         isConfigured: () => true,
         createSession: (request: RealtimeTranscriptionSessionCreateRequest) => {
           callbacks = request;
@@ -288,6 +290,7 @@ describe("AsteriskProvider", () => {
         coreConfig: {},
         transcriptionProvider: {
           id: "test-stt",
+          label: "Synthetic transcription",
           isConfigured: () => true,
           createSession: (request) => {
             callbacks = request;
@@ -347,6 +350,7 @@ describe("AsteriskProvider", () => {
       coreConfig: {},
       transcriptionProvider: {
         id: "test-stt",
+        label: "Synthetic transcription",
         isConfigured: () => true,
         createSession: () => ({
           connect: async () => {},

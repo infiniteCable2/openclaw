@@ -27,7 +27,7 @@ describe("assertMatrixRtcCallAdmission", () => {
     expect(admitted()).toEqual({ userId: allowedUserId });
   });
 
-  it.each([
+  it.each<[Partial<Parameters<typeof assertMatrixRtcCallAdmission>[0]>, string]>([
     [{ isDirectRoom: false }, "restricted to direct rooms"],
     [{ joinedUserIds: [allowedUserId, selfUserId, "@other:example.test"] }, "exact two-user"],
     [{ routedAgentId: "ops" }, "normal Matrix agent route"],
@@ -39,7 +39,7 @@ describe("assertMatrixRtcCallAdmission", () => {
       { memberships: [{ userId: allowedUserId }, { userId: allowedUserId }] },
       "exactly one active membership",
     ],
-  ] as const)("rejects an invalid admission", (overrides, message) => {
+  ])("rejects an invalid admission", (overrides, message) => {
     expect(() => admitted(overrides)).toThrow(message);
   });
 });

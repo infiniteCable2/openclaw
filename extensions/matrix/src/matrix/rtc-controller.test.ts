@@ -771,6 +771,30 @@ describe("registerMatrixRtcController", () => {
     },
   );
 
+  it("preserves media and membership failures while retaining readiness for a stop retry", async () => {
+    const mediaFailure = new Error("synthetic media stop failure");
+    const membershipFailure = new Error("synthetic membership leave failure");
+    const release = vi.fn(async () => undefined);
+    mocks.prepareMeetingAgentRealtimeEngine.mockResolvedValueOnce({ release });
+    const harness = createHarness("matrix_2_0");
+    harness.setRoomKnown(true);
+    harness.session.memberships = [harness.remoteMembership];
+    harness.managerEmitter.emit("session_started", roomId, harness.session);
+    await flushPromises();
+    const engine = await mocks.startMeetingAgentRealtimeEngine.mock.results[0]!.value;
+    engine.stop.mockRejectedValueOnce(mediaFailure);
+    harness.session.leaveRoomSession.mockRejectedValueOnce(membershipFailure);
+
+    await expect(harness.controller.stop()).rejects.toMatchObject({
+      errors: [expect.objectContaining({ errors: [mediaFailure, membershipFailure] })],
+    });
+    expect(release).not.toHaveBeenCalled();
+    await harness.controller.stop();
+    expect(engine.stop).toHaveBeenCalledTimes(2);
+    expect(harness.session.leaveRoomSession).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("does not retry a failed remote call membership until that membership changes", async () => {
     vi.useFakeTimers();
     const harness = createHarness("compatibility", { emitInitialKeys: false });

@@ -142,7 +142,7 @@ export function registerMatrixRtcController(params: {
   const endCall = async (roomId: string) => {
     const call = calls.get(roomId);
     if (!call) {
-      return;
+      return undefined;
     }
     if (call.stopPromise) {
       return call.stopPromise;

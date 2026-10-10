@@ -165,9 +165,13 @@ export function toHistoryMediaEntries(
       kind: entry.kind,
       messageId: entry.messageId,
       voiceMessage: entry.voiceMessage,
-      ...(typeof entry.speechInput === "boolean" ? { speechInput: entry.speechInput } : {}),
-      ...(entry.purpose ? { purpose: entry.purpose } : {}),
     };
+    if (typeof entry.speechInput === "boolean") {
+      historyEntry.speechInput = entry.speechInput;
+    }
+    if (entry.purpose) {
+      historyEntry.purpose = entry.purpose;
+    }
     for (const key of ["durationMs", "width", "height"] as const) {
       if (entry[key]) {
         historyEntry[key] = entry[key];

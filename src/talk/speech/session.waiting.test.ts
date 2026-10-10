@@ -233,7 +233,7 @@ describe("speech-confirmed waiting audio", () => {
   });
 
   it("does not play a prepared greeting until remote audio is ready and a short delay passes", async () => {
-    const remoteReady = createDeferred<void>();
+    const remoteReady = createDeferred();
     const f = await setup({
       initialGreeting: { text: "Hello, caller.", audio: Buffer.from([1, 0]) },
       remoteReady: remoteReady.promise,
@@ -255,7 +255,7 @@ describe("speech-confirmed waiting audio", () => {
   });
 
   it("cancels a prepared greeting when caller speech starts before remote audio is ready", async () => {
-    const remoteReady = createDeferred<void>();
+    const remoteReady = createDeferred();
     const f = await setup({
       initialGreeting: { text: "Hello, caller.", audio: Buffer.from([1, 0]) },
       remoteReady: remoteReady.promise,
@@ -272,7 +272,7 @@ describe("speech-confirmed waiting audio", () => {
   });
 
   it("ends the call if the caller's audio track never becomes ready", async () => {
-    const remoteReady = createDeferred<void>();
+    const remoteReady = createDeferred();
     const f = await setup({
       initialGreeting: { text: "Hello, caller.", audio: Buffer.from([1, 0]) },
       remoteReady: remoteReady.promise,

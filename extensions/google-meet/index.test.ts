@@ -1,17 +1,21 @@
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough, Writable } from "node:stream";
 import { createContext, Script } from "node:vm";
 import { Command } from "commander";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import * as gatewayRuntime from "openclaw/plugin-sdk/gateway-runtime";
 import {
   convertMeetingTtsAudioForBridge,
+  createLocalMeetingRealtimeAudioTransport,
   createMeetingRealtimeEngineBindings,
   createNodeMeetingRealtimeAudioTransport,
   startMeetingAgentRealtimeEngine,
   startMeetingRealtimeEngine,
 } from "openclaw/plugin-sdk/meeting-runtime";
+import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RealtimeTranscriptionProviderPlugin } from "openclaw/plugin-sdk/realtime-transcription";
 import type {
   RealtimeVoiceBridge,
@@ -87,6 +91,41 @@ function createIsolatedTestDir(prefix: string): string {
 }
 
 type TestMeetVoiceBridgeRequest = Parameters<RealtimeVoiceProviderPlugin["createBridge"]>[0];
+
+function createTestMeetTranscriptionProvider(
+  options: { createSession?: RealtimeTranscriptionProviderPlugin["createSession"] } = {},
+) {
+  let request: Parameters<RealtimeTranscriptionProviderPlugin["createSession"]>[0] | undefined;
+  const sttSession = {
+    connect: vi.fn(async () => {}),
+    sendAudio: vi.fn<(audio: Buffer) => void>(),
+    close: vi.fn(),
+    isConnected: vi.fn(() => true),
+  };
+  const provider: RealtimeTranscriptionProviderPlugin = {
+    id: "openai",
+    label: "OpenAI",
+    defaultModel: "gpt-4o-transcribe",
+    autoSelectOrder: 1,
+    resolveConfig: ({ rawConfig }) => rawConfig,
+    isConfigured: () => true,
+    createSession: (nextRequest) => {
+      request = nextRequest;
+      return options.createSession ? options.createSession(nextRequest) : sttSession;
+    },
+  };
+  return {
+    provider,
+    sttSession,
+    sendAudio: sttSession.sendAudio,
+    requireRequest: () => {
+      if (!request) {
+        throw new Error("Expected realtime transcription callbacks");
+      }
+      return request;
+    },
+  };
+}
 
 function createTestMeetVoiceProvider(
   options: {
@@ -1482,6 +1521,7 @@ describe("google-meet plugin", () => {
 
   function mockLocalMeetBrowserRequestWithTabState(options?: {
     reused?: boolean;
+    micMuted?: boolean;
     tabUrlAfterJoin?: string;
     leaveClicked?: boolean;
     nonFinalTranscriptGate?: Promise<void>;
@@ -1586,7 +1626,9 @@ describe("google-meet plugin", () => {
             };
           }
           joined = true;
-          return { result: JSON.stringify(meetBrowserState({ micMuted: true })) };
+          return {
+            result: JSON.stringify(meetBrowserState({ micMuted: options?.micMuted ?? true })),
+          };
         }
         throw new Error(`unexpected browser request path ${request.path}`);
       },
@@ -2756,7 +2798,7 @@ describe("google-meet plugin", () => {
 
   it("runs configured Chrome audio bridge commands before launch", async () => {
     await withPlatform("darwin", async () => {
-      const callGatewayFromCli = mockLocalMeetBrowserRequest();
+      const callGatewayFromCli = mockLocalMeetBrowserRequestWithTabState({ micMuted: false });
       const { methods, runCommandWithTimeout } = setup({
         defaultMode: "bidi",
         chrome: {
@@ -2765,20 +2807,7 @@ describe("google-meet plugin", () => {
           audioBridgeCommand: ["bridge", "start"],
         },
       });
-      const handler = methods.get("googlemeet.join") as
-        | ((ctx: {
-            params: Record<string, unknown>;
-            respond: ReturnType<typeof vi.fn>;
-          }) => Promise<void>)
-        | undefined;
-      const respond = vi.fn();
-
-      await handler?.({
-        params: { url: MEET_URL },
-        respond,
-      });
-
-      expectRespondedOk(respond);
+      await invokeGoogleMeetGatewayMethodForTest(methods, "googlemeet.join", { url: MEET_URL });
       expect(runCommandWithTimeout).toHaveBeenCalledWith(["bridge", "status"], {
         timeoutMs: 30000,
       });
@@ -2804,75 +2833,67 @@ describe("google-meet plugin", () => {
   it("uses realtime transcription plus regular TTS in Chrome agent mode", async () => {
     vi.useFakeTimers();
     const { provider, requireRequest, sendAudio } = createTestMeetTranscriptionProvider();
-    const inputStdout = new PassThrough();
-    const outputStdinWrites: Buffer[] = [];
-    const outputStdin = new Writable({
-      write(chunk, _encoding, done) {
-        outputStdinWrites.push(Buffer.from(chunk));
-        done();
-      },
-    });
-    const inputProcess = testBridgeProcess({ stdout: inputStdout, stdin: null });
-    const outputProcess = testBridgeProcess({ stdin: outputStdin, stdout: null });
-    const spawnMock = vi.fn().mockReturnValueOnce(outputProcess).mockReturnValueOnce(inputProcess);
-    const sessionStore: Record<string, unknown> = {};
-    const runtime = {
-      tts: {
-        streamTextToSpeechTelephony: vi.fn(async () => ({
-          success: true,
-          audioStream: new ReadableStream({
-            start(controller) {
-              controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
-              controller.close();
-            },
-          }),
-          sampleRate: 24_000,
-          provider: "elevenlabs",
-          providerModel: "eleven_multilingual_v2",
-          providerVoice: "pMsXgVXv3BLzUgSXRplE",
-          outputFormat: "pcm16",
-        })),
-      },
-      agent: {
-        resolveAgentDir: vi.fn(() => "/tmp/agent"),
-        resolveAgentWorkspaceDir: vi.fn(() => "/tmp/workspace"),
-        ensureAgentWorkspace: vi.fn(async () => {}),
-        session: createMockSessionRuntime(sessionStore),
-        runEmbeddedAgent: vi.fn(async () => ({
-          payloads: [{ text: "Use the Portugal launch data." }],
-          meta: {},
-        })),
-        resolveAgentTimeoutMs: vi.fn(() => 1000),
-      },
+    const { transport, deliverInput, writeOutput } = createTestMeetRealtimeAudioTransport();
+    const runtime = createTestPluginApi().runtime;
+    runtime.tts = {
+      ...runtime.tts,
+      streamTextToSpeechTelephony: vi.fn(async () => ({
+        success: true,
+        audioStream: new ReadableStream({
+          start(controller) {
+            controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+            controller.close();
+          },
+        }),
+        sampleRate: 24_000,
+        provider: "elevenlabs",
+        providerModel: "eleven_multilingual_v2",
+        providerVoice: "pMsXgVXv3BLzUgSXRplE",
+        outputFormat: "pcm16",
+      })),
     };
+    const consultAgent = vi.fn(async () => ({ text: "Use the Portugal launch data." }));
+    const turnEnded = createDeferred<void>();
 
-    const handle = await startTestLocalAgentAudioBridge({
+    const handle = await startMeetingAgentRealtimeEngine({
       config: resolveGoogleMeetConfig({
         realtime: { provider: "openai", agentId: "jay", introMessage: "" },
       }),
-      fullConfig: {} as never,
-      runtime: runtime as never,
+      fullConfig: {},
+      runtime,
+      platform: GOOGLE_MEET_PLATFORM_ADAPTER,
+      consultAgent,
       meetingSessionId: "meet-1",
-      inputCommand: ["capture-meet"],
-      outputCommand: ["play-meet"],
+      transport,
       logger: noopLogger,
       providers: [provider],
-      spawn: spawnMock,
+      onTalkEvent: (event) => {
+        if (event.type === "turn.ended") {
+          turnEnded.resolve();
+        }
+      },
     });
     const callbacks = requireRequest();
 
     expect(noopLogger.info).toHaveBeenCalledWith(
       "[google-meet] agent audio bridge starting: transcriptionProvider=openai transcriptionModel=gpt-4o-transcribe tts=telephony audioFormat=pcm16-24khz",
     );
-    inputStdout.write(Buffer.from([1, 0, 2, 0, 3, 0, 4, 0]));
+    deliverInput(Buffer.from([1, 0, 2, 0, 3, 0, 4, 0]));
     callbacks.onTranscript?.("Please summarize the launch.");
-    await vi.advanceTimersByTimeAsync(TEST_TALKBACK_DEBOUNCE_MS);
+    await vi.advanceTimersToNextTimerAsync();
+    await turnEnded.promise;
 
     expect(sendAudio).toHaveBeenCalledTimes(1);
-    const audioChunk = mockCallArg(sendAudio, 0) as Buffer;
+    const audioChunk = sendAudio.mock.calls[0]?.[0];
     expect(Buffer.isBuffer(audioChunk)).toBe(true);
-    expect(audioChunk.byteLength).toBeGreaterThan(0);
-    expect(runtime.agent.runEmbeddedAgent).toHaveBeenCalled();
+    expect(audioChunk?.byteLength).toBeGreaterThan(0);
+    expect(consultAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: expect.objectContaining({ question: "Please summarize the launch." }),
+        meetingSessionId: "meet-1",
+        abortSignal: expect.any(AbortSignal),
+      }),
+    );
     expect(runtime.tts.streamTextToSpeechTelephony).toHaveBeenCalledWith(
       expect.objectContaining({
         text: "Use the Portugal launch data.",
@@ -2884,11 +2905,11 @@ describe("google-meet plugin", () => {
     expect(noopLogger.info).toHaveBeenCalledWith(
       "[google-meet] agent TTS: provider=elevenlabs model=eleven_multilingual_v2 voice=pMsXgVXv3BLzUgSXRplE outputFormat=pcm16 sampleRate=24000",
     );
-    expect(Buffer.concat(outputStdinWrites)).toEqual(Buffer.from([1, 0, 2, 0]));
+    expect(writeOutput).toHaveBeenCalledWith(Buffer.from([1, 0, 2, 0]));
     const health = handle.getHealth();
     expect(health.providerConnected).toBe(true);
-    expect(health.audioInputActive).toBe(true);
-    expect(health.audioOutputActive).toBe(true);
+    expect(health.lastInputBytes).toBe(8);
+    expect(health.lastOutputBytes).toBe(4);
     expect(health.realtimeTranscriptLines).toBe(2);
     expect(health.lastRealtimeTranscriptRole).toBe("assistant");
     const talkEventTypes = health.recentTalkEvents?.map((event) => event.type) ?? [];
@@ -2917,27 +2938,28 @@ describe("google-meet plugin", () => {
     const { transport, writeOutput } = createTestMeetRealtimeAudioTransport();
     writeOutput.mockRejectedValueOnce(new Error("audio sink failed"));
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const runtime = createTestPluginApi().runtime;
+    runtime.tts = {
+      ...runtime.tts,
+      streamTextToSpeechTelephony: vi.fn(async () => ({
+        success: true,
+        audioStream: new ReadableStream({
+          start(controller) {
+            controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+            controller.close();
+          },
+        }),
+        sampleRate: 24_000,
+        provider: "test",
+        outputFormat: "pcm16",
+      })),
+    };
     const handle = await startMeetingAgentRealtimeEngine({
       config: resolveGoogleMeetConfig({
         realtime: { provider: "openai", agentId: "jay", introMessage: "" },
       }),
-      fullConfig: {} as never,
-      runtime: {
-        tts: {
-          streamTextToSpeechTelephony: vi.fn(async () => ({
-            success: true,
-            audioStream: new ReadableStream({
-              start(controller) {
-                controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
-                controller.close();
-              },
-            }),
-            sampleRate: 24_000,
-            provider: "test",
-            outputFormat: "pcm16",
-          })),
-        },
-      } as never,
+      fullConfig: {},
+      runtime,
       platform: {
         displayName: "Google Meet",
         logScope: "[google-meet]",
@@ -2952,7 +2974,7 @@ describe("google-meet plugin", () => {
     const callbacks = requireRequest();
 
     callbacks.onTranscript?.("Question from the meeting.");
-    await vi.advanceTimersByTimeAsync(TEST_TALKBACK_DEBOUNCE_MS);
+    await vi.advanceTimersToNextTimerAsync();
     await vi.waitFor(() => {
       expect(logger.warn).toHaveBeenCalledWith("[google-meet] agent TTS failed: audio sink failed");
     });
@@ -2982,14 +3004,10 @@ describe("google-meet plugin", () => {
     await expect(
       startMeetingAgentRealtimeEngine({
         config,
-        fullConfig: {} as never,
-        runtime: {} as never,
-        ...createGoogleMeetTestEngineBindings({
-          config,
-          fullConfig: {} as never,
-          runtime: {} as never,
-          logger: noopLogger,
-        }),
+        fullConfig: {},
+        runtime: createTestPluginApi().runtime,
+        platform: GOOGLE_MEET_PLATFORM_ADAPTER,
+        consultAgent: async () => ({ text: "" }),
         meetingSessionId: "meet-fatal",
         logger: noopLogger,
         providers: [provider],
@@ -3018,36 +3036,65 @@ describe("google-meet plugin", () => {
         done();
       },
     });
-    const outputProcess = testBridgeProcess({
+    type BridgeProcess = ReturnType<
+      NonNullable<Parameters<typeof createLocalMeetingRealtimeAudioTransport>[0]["spawn"]>
+    >;
+    function bridgeProcess(
+      stdio: Pick<BridgeProcess, "stdin" | "stdout" | "stderr">,
+    ): BridgeProcess {
+      const child: BridgeProcess = Object.assign(new EventEmitter(), stdio, {
+        exitCode: null,
+        signalCode: null,
+        kill: vi.fn((signal?: NodeJS.Signals) => {
+          child.signalCode = signal ?? "SIGTERM";
+          return true;
+        }),
+      });
+      return child;
+    }
+    const outputProcess = bridgeProcess({
       stdin: outputStdin,
       stdout: null,
       stderr: outputStderr,
     });
-    const inputProcess = testBridgeProcess({
+    const inputProcess = bridgeProcess({
       stdin: null,
       stdout: inputStdout,
       stderr: inputStderr,
     });
-    const spawnMock = vi.fn().mockReturnValueOnce(outputProcess).mockReturnValueOnce(inputProcess);
-
-    const handle = await startTestLocalAgentAudioBridge({
-      config: resolveGoogleMeetConfig({
-        realtime: { provider: "openai", agentId: "jay", introMessage: "" },
-      }),
-      fullConfig: {} as never,
-      runtime: {} as never,
-      meetingSessionId: "meet-1",
+    const spawnMock = vi.fn<
+      NonNullable<Parameters<typeof createLocalMeetingRealtimeAudioTransport>[0]["spawn"]>
+    >((command) => (command === "capture-meet" ? inputProcess : outputProcess));
+    const config = resolveGoogleMeetConfig({
+      realtime: { provider: "openai", agentId: "jay", introMessage: "" },
+    });
+    const transport = createLocalMeetingRealtimeAudioTransport({
       inputCommand: ["capture-meet"],
       outputCommand: ["play-meet"],
+      bargeInRmsThreshold: config.chrome.bargeInRmsThreshold,
+      bargeInPeakThreshold: config.chrome.bargeInPeakThreshold,
+      bargeInCooldownMs: config.chrome.bargeInCooldownMs,
+      logger: noopLogger,
+      logScope: "[google-meet]",
+      spawn: spawnMock,
+    });
+    const handle = await startMeetingAgentRealtimeEngine({
+      config,
+      fullConfig: {},
+      runtime: createTestPluginApi().runtime,
+      platform: GOOGLE_MEET_PLATFORM_ADAPTER,
+      consultAgent: async () => ({ text: "" }),
+      meetingSessionId: "meet-1",
+      transport,
       logger: noopLogger,
       providers: [provider],
-      spawn: spawnMock,
     });
 
     expect(() => inputStdout.emit("error", new Error("EPIPE"))).not.toThrow();
     expect(noopLogger.warn).toHaveBeenCalledWith(
       "[google-meet] audio input command stdout failed: EPIPE",
     );
+    await handle.stop();
     expect(handle.getHealth().bridgeClosed).toBe(true);
     expect(sttSession.close).toHaveBeenCalled();
     expect(inputProcess.kill).toHaveBeenCalledWith("SIGTERM");

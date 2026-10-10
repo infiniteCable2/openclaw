@@ -1,7 +1,40 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createSpeechSessionLifecycle } from "./session-lifecycle.js";
-import { playSpeechWaitingAudio } from "./waiting-audio.js";
+import { createSpeechWaitingAudioPlayback } from "./waiting-audio.js";
+
+// This native launcher leaves Node Promise timers real; bind only their clock
+// to Sinon and retain cancellation through the existing abort-race owner.
+vi.mock("node:timers/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:timers/promises")>();
+  const { racePromiseWithAbortSignal } = await import("../../infra/abort-signal.js");
+  return {
+    ...actual,
+    async setTimeout<T = void>(
+      delay?: Parameters<typeof actual.setTimeout>[0],
+      value?: T,
+      options?: Parameters<typeof actual.setTimeout>[2],
+    ): Promise<T> {
+      let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+      try {
+        return await racePromiseWithAbortSignal(
+          () =>
+            new Promise<T>((resolve) => {
+              timer = globalThis.setTimeout(resolve, delay, value);
+              if (options?.ref === false) {
+                timer.unref();
+              }
+            }),
+          options?.signal,
+        );
+      } finally {
+        globalThis.clearTimeout(timer);
+      }
+    },
+  };
+});
+
+afterEach(() => vi.useRealTimers());
 
 function createLifecycle(
   overrides: Partial<Parameters<typeof createSpeechSessionLifecycle>[0]> = {},
@@ -23,26 +56,33 @@ function createLifecycle(
 
 describe("speech session teardown ownership", () => {
   it("stops capture before joining a backpressured waiting-audio write", async () => {
+    vi.useFakeTimers();
     const writeStarted = createDeferred();
     const writeReleased = createDeferred();
     const waitingStopStarted = createDeferred();
-    const controller = new AbortController();
-    const playback = playSpeechWaitingAudio({
+    const clearOutput = vi.fn(async () => undefined);
+    const onError = vi.fn();
+    const playback = createSpeechWaitingAudioPlayback({
       audio: { pcm: Buffer.alloc(960), frameBytes: 960, startDelayMs: 0, resumeDelayMs: 800 },
-      signal: controller.signal,
+      isStopped: () => false,
+      onError,
       transport: {
+        clearOutput,
         async writeOutput() {
           writeStarted.resolve();
           await writeReleased.promise;
         },
       },
     });
+    playback.schedule();
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersToNextTimerAsync();
     await writeStarted.promise;
     const { resources, lifecycle } = createLifecycle({
       stopWaiting: vi.fn(async () => {
-        controller.abort();
         waitingStopStarted.resolve();
-        await playback;
+        await playback.stop();
       }),
       stopTransport: vi.fn(async () => {
         writeReleased.resolve();
@@ -53,13 +93,19 @@ describe("speech session teardown ownership", () => {
       await waitingStopStarted.promise;
       expect(resources.stopTransport).toHaveBeenCalledTimes(1);
       await stopping;
+      expect(vi.getTimerCount()).toBe(0);
+      expect(clearOutput).toHaveBeenCalledOnce();
+      expect(onError).not.toHaveBeenCalled();
       expect(resources.disposeTransport).toHaveBeenCalledTimes(1);
+      expect(clearOutput.mock.invocationCallOrder[0]).toBeLessThan(
+        resources.disposeTransport.mock.invocationCallOrder[0]!,
+      );
       expect(resources.publishClosed).toHaveBeenCalledTimes(1);
     } finally {
       // Settle the admitted write even when the ordering assertion fails.
-      controller.abort();
       writeReleased.resolve();
       await stopping;
+      await playback.stop();
     }
   });
 

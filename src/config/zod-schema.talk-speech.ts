@@ -9,7 +9,7 @@ const TalkSpeechWaitingAudioSchema = z.strictObject({
   volume: z.number().min(0).max(1),
 }) satisfies z.ZodType<SpeechWaitingAudioConfig>;
 
-export const TalkSpeechAgentProfileSchema = z
+const TalkSpeechAgentProfileSchema = z
   .strictObject({
     responseStreaming: z.enum(["off", "sentence"]).optional(),
     speakCommentary: z.boolean().optional(),

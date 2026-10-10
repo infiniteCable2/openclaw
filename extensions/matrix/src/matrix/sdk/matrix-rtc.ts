@@ -5,7 +5,6 @@ import {
   type IOpenIDToken,
   type MatrixClient as MatrixJsClient,
 } from "matrix-js-sdk/lib/client.js";
-import type { CallMembership } from "matrix-js-sdk/lib/matrixrtc/CallMembership.js";
 import type { LivekitTransportConfig } from "matrix-js-sdk/lib/matrixrtc/LivekitTransport.js";
 import type { MatrixRTCSession } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
 import { MatrixRTCSessionManagerEvents } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSessionManager.js";
@@ -13,7 +12,7 @@ import type { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
 import type { Room } from "matrix-js-sdk/lib/models/room.js";
 import type { ReceivedToDeviceMessage } from "matrix-js-sdk/lib/sync-accumulator.js";
 
-export type MatrixRtcSelfIdentity = {
+type MatrixRtcSelfIdentity = {
   userId: string;
   deviceId: string;
 };
@@ -176,5 +175,3 @@ export function createMatrixRtcClientFacade(client: MatrixJsClient): MatrixRtcCl
     },
   };
 }
-
-export type { CallMembership, MatrixRTCSession };
