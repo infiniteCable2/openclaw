@@ -1,6 +1,9 @@
 {
   "id": "matrix",
   "categories": ["channels"],
+  "backupResources": [
+    { "disposition": "include", "scope": "state", "relativePath": "matrix/accounts" }
+  ],
   "doctorContract": {
     "configRepair": true,
     "stateMigrations": [
