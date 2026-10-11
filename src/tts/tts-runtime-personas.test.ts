@@ -1,6 +1,7 @@
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import {
   activateSecretsRuntimeSnapshot,
   clearSecretsRuntimeSnapshot,
@@ -28,11 +29,13 @@ import {
   synthesizeMock,
   synthesizeSpeech,
   streamTextToSpeechTelephony,
+  textToSpeechStream,
   textToSpeechTelephony,
   transcodeAudioBufferMock,
   type OpenClawConfig,
   type ReplyPayload,
   type SpeechTelephonySynthesisRequest,
+  type SpeechSynthesisRequest,
   type TtsConfig,
 } from "./tts-runtime.test-support.js";
 
@@ -434,6 +437,191 @@ describe("TTS runtime persona behavior", () => {
     });
     expect(telephonyRequest.text).toBe(text);
     expect(telephonyRequest).not.toHaveProperty("target");
+  });
+
+  it.each(["buffered", "telephony", "stream", "telephony-stream"] as const)(
+    "passes structured expression through the native %s synthesis owner without changing plain text",
+    async (mode) => {
+      const expression = {
+        emotion: "joyful",
+        parts: [{ text: "Hello " }, { event: "laugh" }, { text: "there.", emphasis: true }],
+      };
+      const telephony = vi.fn(async (_request: SpeechTelephonySynthesisRequest) => ({
+        audioBuffer: Buffer.from("voice"),
+        outputFormat: "pcm",
+        sampleRate: 24_000,
+      }));
+      const streamResult = () => ({
+        audioStream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        outputFormat: "pcm",
+        sampleRate: 24_000,
+        fileExtension: ".pcm",
+        voiceCompatible: true,
+      });
+      const stream = vi.fn(async (_request: SpeechSynthesisRequest) => streamResult());
+      const telephonyStream = vi.fn(async (_request: SpeechTelephonySynthesisRequest) =>
+        streamResult(),
+      );
+      installSpeechProviders([
+        createMockSpeechProvider("mock", {
+          getExpressionCapabilities: ({ providerConfig }) =>
+            providerConfig.model === "expressive-model"
+              ? { emotions: ["joyful"], vocalEvents: ["laugh"], emphasis: true, whisper: false }
+              : undefined,
+          synthesizeTelephony: telephony,
+          streamSynthesize: stream,
+          streamSynthesizeTelephony: telephonyStream,
+        }),
+      ]);
+      const cfg: OpenClawConfig = {
+        tts: { provider: "mock", providers: { mock: { model: "expressive-model" } } },
+        talk: {
+          speech: {
+            agentProfiles: {
+              reader: {
+                expression: { channels: { matrix: { targets: ["voice-note", "telephony"] } } },
+              },
+            },
+          },
+        },
+      };
+      const common = { text: "Hello there.", cfg, agentId: "reader", overrides: { expression } };
+      const dispatch = (agentId = "reader") => {
+        switch (mode) {
+          case "buffered":
+            return synthesizeSpeech({ ...common, agentId, channel: "matrix" });
+          case "telephony":
+            return textToSpeechTelephony({ ...common, agentId, channelId: "matrix" });
+          case "stream":
+            return textToSpeechStream({ ...common, agentId, channel: "matrix" });
+          case "telephony-stream":
+            return streamTextToSpeechTelephony({ ...common, agentId, channelId: "matrix" });
+        }
+      };
+      const result = await dispatch();
+      expect(result.success).toBe(true);
+      const request =
+        mode === "buffered"
+          ? requireFirstSynthesisRequest("expression synthesis")
+          : requireRecord(
+              requireFirstCallParam(
+                (mode === "telephony" ? telephony : mode === "stream" ? stream : telephonyStream)
+                  .mock.calls,
+                "expression stream/telephony",
+              ),
+              "expression request",
+            );
+      expect(request.text).toBe("Hello there.");
+      expect(request.expression).toEqual(expression);
+      if ("release" in result) {
+        await result.release?.();
+      }
+
+      acquireSpeechProviderLocalServiceMock.mockClear();
+      synthesizeMock.mockClear();
+      telephony.mockClear();
+      stream.mockClear();
+      telephonyStream.mockClear();
+      const denied = await dispatch("other");
+      expect(denied.success).toBe(false);
+      expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
+      expect(synthesizeMock).not.toHaveBeenCalled();
+      expect(telephony).not.toHaveBeenCalled();
+      expect(stream).not.toHaveBeenCalled();
+      expect(telephonyStream).not.toHaveBeenCalled();
+
+      const unsupportedCfg: OpenClawConfig = {
+        ...cfg,
+        tts: { provider: "mock", providers: { mock: { model: "plain-model" } } },
+      };
+      const unsupported = await synthesizeSpeech({
+        ...common,
+        cfg: unsupportedCfg,
+        channel: "matrix",
+      });
+      expect(unsupported.success).toBe(false);
+      expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["override-model", "prepared-model", "prepared-text"] as const)(
+    "refuses expression when %s invalidates its admitted model or projection",
+    async (mode) => {
+      const release = vi.fn();
+      if (mode !== "override-model") {
+        acquireSpeechProviderLocalServiceMock.mockResolvedValueOnce({ release });
+      }
+      installSpeechProviders([
+        createMockSpeechProvider("mock", {
+          getExpressionCapabilities: ({ providerConfig, providerOverrides }) =>
+            (providerOverrides?.modelId ?? providerConfig.model) === "expressive-model"
+              ? { emotions: ["joyful"], vocalEvents: [], emphasis: false, whisper: false }
+              : undefined,
+          prepareSynthesis: vi.fn(async () =>
+            mode === "prepared-model"
+              ? { providerConfig: { model: "plain-model" } }
+              : mode === "prepared-text"
+                ? { text: "Changed." }
+                : undefined,
+          ),
+        }),
+      ]);
+      const result = await synthesizeSpeech({
+        text: "Hello.",
+        cfg: {
+          tts: { provider: "mock", providers: { mock: { model: "expressive-model" } } },
+          talk: {
+            speech: {
+              agentProfiles: {
+                reader: { expression: { channels: { matrix: { targets: ["voice-note"] } } } },
+              },
+            },
+          },
+        },
+        agentId: "reader",
+        channel: "matrix",
+        overrides: {
+          expression: { emotion: "joyful", parts: [{ text: "Hello." }] },
+          ...(mode === "override-model"
+            ? { providerOverrides: { mock: { modelId: "plain-model" } } }
+            : {}),
+        },
+      });
+      expect(result.success).toBe(false);
+      expect(synthesizeMock).not.toHaveBeenCalled();
+      if (mode === "override-model") {
+        expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
+      } else {
+        expect(release).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
+  it("rejects overlong structured speech before summarizing or truncating its spans", async () => {
+    await withOpenClawTestState({ label: "expression-length" }, async (state) => {
+      const text = "x".repeat(2_000);
+      const payload = setReplyPayloadMetadata(
+        { text: "Complete visible answer." },
+        {
+          ttsExplicit: true,
+          tts: { tagged: true, text, expression: { parts: [{ text }] } },
+        },
+      );
+      await expect(
+        maybeApplyTtsToPayload({
+          payload,
+          cfg: { tts: { provider: "mock", prefsPath: state.path("tts-prefs.json") } },
+          channel: "matrix",
+          agentId: "reader",
+        }),
+      ).rejects.toThrow("Structured speech expression exceeds the spoken text limit");
+      expect(synthesizeMock).not.toHaveBeenCalled();
+      expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
+    });
   });
 
   it("applies agent-scoped persona bindings to telephony synthesis", async () => {

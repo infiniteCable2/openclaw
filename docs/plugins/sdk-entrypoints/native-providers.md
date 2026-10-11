@@ -40,6 +40,26 @@ Object registrations remain supported. Before publishing a plugin that uses
 factory arguments, set its `compat.pluginApi` floor to a host release that
 supports them; a lower `minHostVersion` does not override that API requirement.
 
+### Speech expression metadata
+
+Speech providers can expose synchronous
+`getExpressionCapabilities({ providerConfig, providerOverrides })`, returning
+`{ emotions, vocalEvents, emphasis, whisper }` for the selected model, or
+`undefined` when unsupported. This is admitted metadata, not a network discovery
+hook. A provider serving several backends must not advertise one backend's
+vocabulary for every model. Resolve the effective model using the same config and
+overrides as synthesis; core checks again after provider preparation. Verify the installed worker against that metadata at
+admission, and invalidate it with its provider/worker configuration lifecycle.
+
+Native synthesis requests optionally carry a typed `expression` beside their
+authoritative plain `text`. Core checks exact agent/channel/target opt-in,
+projection, budgets, and the selected model vocabulary before requesting synthesis
+resources. Providers translate the structured expression into their own backend
+notation; they must not accept bypassing expression through unrelated opaque
+overrides. Exported types `SpeechExpression` and `SpeechExpressionCapabilities`
+are available from `openclaw/plugin-sdk/plugin-entry` and the existing speech
+type facades.
+
 ## Computer Use providers
 
 **Import:** `openclaw/plugin-sdk/computer-use`

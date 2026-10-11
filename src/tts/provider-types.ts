@@ -1,5 +1,7 @@
 import type { TalkProviderConfig } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.js";
+import type { SpeechExpression } from "../llm/types.js";
+export type { SpeechExpression } from "../llm/types.js";
 import type {
   ResolvedTtsPersona,
   TtsModelOverrideConfig,
@@ -18,6 +20,14 @@ export type SpeechProviderConfig = TtsProviderConfig;
 /** Provider-owned per-request directive/persona overrides. */
 export type SpeechProviderOverrides = Record<string, unknown>;
 
+/** Admitted, provider/model-specific presentation vocabulary, not a markup dialect. */
+export type SpeechExpressionCapabilities = {
+  emotions: readonly string[];
+  vocalEvents: readonly string[];
+  emphasis: boolean;
+  whisper: boolean;
+};
+
 /** Policy controlling which [[tts:*]] directive fields can affect synthesis. */
 export type SpeechModelOverridePolicy = {
   [Key in keyof TtsModelOverrideConfig]-?: Exclude<TtsModelOverrideConfig[Key], undefined>;
@@ -26,6 +36,7 @@ export type SpeechModelOverridePolicy = {
 /** Parsed directive overrides grouped by provider. */
 export type TtsDirectiveOverrides = {
   ttsText?: string;
+  expression?: SpeechExpression;
   provider?: SpeechProviderId;
   providerOverrides?: Record<string, SpeechProviderOverrides>;
 };
@@ -49,6 +60,7 @@ export type SpeechProviderConfiguredContext = {
 /** Request for buffered speech synthesis. */
 export type SpeechSynthesisRequest = {
   text: string;
+  expression?: SpeechExpression;
   cfg: OpenClawConfig;
   providerConfig: SpeechProviderConfig;
   target: SpeechSynthesisTarget;

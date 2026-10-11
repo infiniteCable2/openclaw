@@ -11,11 +11,17 @@ import {
 } from "../plugins/capability-provider-acquisition.js";
 import type { SpeechProviderPlugin } from "../plugins/types.js";
 import {
+  assertSpeechExpressionSupported,
+  isSpeechExpressionEnabled,
+  parseSpeechExpression,
+} from "./expression.js";
+import {
   createSpeechProviderRegistry,
   normalizeSpeechProviderId,
 } from "./provider-registry-core.js";
 import type {
   SpeechProviderConfig,
+  SpeechExpression,
   SpeechProviderOverrides,
   SpeechProviderPrepareSynthesisContext,
   SpeechSynthesisRequest,
@@ -202,6 +208,7 @@ type TtsRequestSetup = {
   cfg: OpenClawConfig;
   config: ResolvedTtsConfig;
   persona?: ResolvedTtsPersona;
+  speechContext: { agentId?: string; channelId?: string };
   providers: VoiceProviderCandidate[];
   prepareProviderRegistry: () => Promise<TtsProviderRegistry>;
 };
@@ -320,6 +327,7 @@ export async function acquireTtsRequest(
         cfg,
         config,
         persona,
+        speechContext: { agentId: params.agentId, channelId: params.channelId },
         providers: params.disableFallback
           ? [resolvePrimaryTtsProviderCandidate(provider, cfg, providerRegistry)]
           : resolveTtsProviderCandidates(provider, cfg, providerRegistry),
@@ -383,6 +391,8 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   persona?: ResolvedTtsPersona;
   providers: VoiceProviderCandidate[];
   synthesisText: string;
+  expression?: SpeechExpression;
+  speechContext?: { agentId?: string; channelId?: string };
   providerOverrides?: Record<string, SpeechProviderOverrides>;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -453,6 +463,23 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         continue;
       }
 
+      const providerOverrides = params.providerOverrides?.[resolvedProvider.provider.id];
+      if (params.expression) {
+        if (!isSpeechExpressionEnabled({ cfg, ...params.speechContext, target: params.target })) {
+          throw new Error(
+            "Speech expressions are disabled for this exact agent, channel and target",
+          );
+        }
+        parseSpeechExpression(params.expression, params.synthesisText);
+        assertSpeechExpressionSupported(
+          params.expression,
+          resolvedProvider.provider.getExpressionCapabilities?.({
+            providerConfig: resolvedProvider.providerConfig,
+            providerOverrides,
+          }),
+        );
+      }
+
       const operation = params.selectOperation({ provider, resolvedProvider });
       if (operation.kind === "skip") {
         recordSkipped(provider, operation, { personaBinding: resolvedProvider.personaBinding });
@@ -479,7 +506,6 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         }
       };
       try {
-        const providerOverrides = params.providerOverrides?.[resolvedProvider.provider.id];
         const prepared =
           params.prepareSynthesis === false
             ? {
@@ -492,14 +518,27 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
                 cfg,
                 providerConfig: resolvedProvider.providerConfig,
                 providerOverrides,
+                ...(params.expression ? { expression: params.expression } : {}),
                 persona: resolvedProvider.synthesisPersona,
                 personaProviderConfig: resolvedProvider.personaProviderConfig,
                 target: params.target,
                 timeoutMs,
               });
+        if (params.expression) {
+          // Provider preparation must not detach expression spans from their admitted plain text.
+          parseSpeechExpression(params.expression, prepared.text);
+          assertSpeechExpressionSupported(
+            params.expression,
+            resolvedProvider.provider.getExpressionCapabilities?.({
+              providerConfig: prepared.providerConfig,
+              providerOverrides: prepared.providerOverrides,
+            }),
+          );
+        }
         const synthesis = await operation.synthesize(
           {
             ...prepared,
+            ...(params.expression ? { expression: params.expression } : {}),
             cfg,
             target: params.target,
             timeoutMs,

@@ -44,6 +44,38 @@ configuration. Other allow/deny layers can still remove it.
 Tool profiles do not affect [automatic TTS](/tools/tts/output#auto-tts-behavior):
 `tts.auto` still speaks replies when the agent cannot call the `tts` tool.
 
+## Structured speech expressions
+
+`message(action="send")` accepts optional `voiceExpression` alongside plain
+`voiceText`. The expression is a speech-only fact: its ordered text parts must
+concatenate **exactly** to `voiceText`. Event parts have no visible text. Keep the
+complete, clean answer in `message`; do not place provider emotion markup there.
+
+```json
+{
+  "action": "send",
+  "message": "Hello there.",
+  "voiceText": "Hello there.",
+  "voiceExpression": {
+    "emotion": "joyful",
+    "parts": [{ "text": "Hello " }, { "event": "laugh" }, { "text": "there.", "emphasis": true }]
+  }
+}
+```
+
+The shown declarations are illustrative, not universally supported. Expression
+delivery requires an explicit exact-agent/channel/synthesis-target opt-in under
+`talk.speech.agentProfiles.<agentId>.expression.channels.<channel>.targets` and
+the selected provider/model's admitted expression capabilities. Without either,
+the expression request fails before synthesis; it does not silently speak the
+markup or fall back to a neutral rendering. There is no new `[[tts:...]]` syntax.
+
+This structured-send contract does **not** by itself make automatic final answers,
+live commentary, or prepared greetings produce expressions. Those paths retain
+their existing plain-text behavior until their native producer supplies the same
+structured facts. A provider's `whisper` capability alone does not imply a whisper
+emotion/event identifier; use only its declared vocabulary.
+
 ## Gateway RPC
 
 | Method            | Purpose                                      |

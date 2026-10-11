@@ -636,6 +636,10 @@ describe("runMessageAction core send routing", () => {
         target: "channel:abc",
         message: "Visible greeting",
         voiceText: "hello there",
+        voiceExpression: {
+          emotion: "joyful",
+          parts: [{ text: "hello " }, { event: "laugh" }, { text: "there", emphasis: true }],
+        },
         voiceProvider: "mock",
         voiceId: "voice-7",
         asVoice: true,
@@ -660,6 +664,10 @@ describe("runMessageAction core send routing", () => {
     expect(getReplyPayloadMetadata(ttsPayload as object)?.tts).toEqual({
       tagged: true,
       text: "hello there",
+      expression: {
+        emotion: "joyful",
+        parts: [{ text: "hello " }, { event: "laugh" }, { text: "there", emphasis: true }],
+      },
       directives: [
         {
           provider: "mock",

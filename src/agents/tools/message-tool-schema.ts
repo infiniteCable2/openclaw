@@ -189,6 +189,34 @@ function buildSendSchema(options: MessageToolSchemaOptions) {
       Type.String({ description: "Per-send speech provider override." }),
     ),
     voiceId: Type.Optional(Type.String({ description: "Per-send speech voice override." })),
+    voiceExpression: Type.Optional(
+      Type.Object(
+        {
+          emotion: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+          parts: Type.Array(
+            Type.Union([
+              Type.Object(
+                {
+                  text: Type.String({ minLength: 1 }),
+                  emphasis: Type.Optional(Type.Boolean()),
+                },
+                { additionalProperties: false },
+              ),
+              Type.Object(
+                { event: Type.String({ minLength: 1, maxLength: 64 }) },
+                { additionalProperties: false },
+              ),
+            ]),
+            { minItems: 1, maxItems: 128 },
+          ),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Optional speech-only expression with voiceText. Concatenated text parts must exactly equal voiceText; message remains plain. Use only explicitly advertised provider declarations when enabled for this agent/channel.",
+        },
+      ),
+    ),
     silent: Type.Optional(Type.Boolean()),
     quoteText: Type.Optional(Type.String({ description: "Telegram reply quote text." })),
     gifPlayback: Type.Optional(Type.Boolean()),

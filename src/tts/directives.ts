@@ -163,6 +163,9 @@ export function resolveTtsDirectiveFacts(
   policy: SpeechModelOverridePolicy,
   options?: ParseTtsDirectiveOptions,
 ): Omit<TtsDirectiveParseResult, "cleanedText"> {
+  if (facts?.expression && (!policy.enabled || !policy.allowText)) {
+    throw new Error("Structured speech expressions require enabled speech text overrides");
+  }
   if (!facts || !policy.enabled) {
     return { overrides: {}, warnings: [], hasDirective: false };
   }
@@ -172,6 +175,9 @@ export function resolveTtsDirectiveFacts(
   const warnings: string[] = [];
   if (policy.allowText && facts.text != null) {
     overrides.ttsText = facts.text;
+  }
+  if (policy.allowText && facts.expression != null) {
+    overrides.expression = facts.expression;
   }
 
   for (const directive of facts.directives ?? []) {

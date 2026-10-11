@@ -5,6 +5,8 @@ import type {
   OpenClawPluginDefinition,
   ProviderBuiltInModelSuppressionContext as ProviderBuiltInModelSuppressionContextType,
 } from "../plugins/types.js";
+
+export type { SpeechExpression, SpeechExpressionCapabilities } from "../tts/provider-types.js";
 import { createCachedLazyValueGetter } from "./lazy-value.js";
 
 export type {

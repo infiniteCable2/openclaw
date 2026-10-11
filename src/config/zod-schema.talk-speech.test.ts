@@ -85,4 +85,25 @@ describe("Talk speech profile admission", () => {
       );
     }
   });
+
+  it("admits exact expression channel/target opt-ins without changing other presentation", () => {
+    const profile = {
+      expression: { channels: { matrix: { targets: ["audio-file", "telephony"] } } },
+    };
+    expect(
+      TalkSpeechSchema.parse({ agentProfiles: { reader: profile } }).agentProfiles.reader,
+    ).toEqual(profile);
+  });
+
+  it.each([
+    { channels: { matrix: { targets: ["anything"] } } },
+    { channels: { matrix: { targets: ["voice-note"], enabled: true } } },
+    { channels: { " matrix ": { targets: ["voice-note"] } } },
+    { channels: { constructor: { targets: ["voice-note"] } } },
+    { enabled: true },
+  ])("rejects ambiguous expression policy %j", (expression) => {
+    expect(TalkSpeechSchema.safeParse({ agentProfiles: { reader: { expression } } }).success).toBe(
+      false,
+    );
+  });
 });

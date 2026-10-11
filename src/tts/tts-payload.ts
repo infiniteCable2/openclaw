@@ -225,6 +225,11 @@ export async function maybeApplyTtsToPayloadCore(
   }
 
   if (textForAudio.length > maxLength) {
+    if (directives.overrides.expression) {
+      throw new Error(
+        "Structured speech expression exceeds the spoken text limit; shorten voiceText",
+      );
+    }
     if (!isSummarizationEnabled(prefsPath)) {
       logVerbose(
         `TTS: truncating long text (${textForAudio.length} > ${maxLength}), summarization disabled.`,

@@ -133,6 +133,7 @@ export async function streamTextToSpeechTelephony(
       executeTtsProviderAttempts({
         ...acquired.setup,
         synthesisText: params.text,
+        expression: params.overrides?.expression,
         providerOverrides: params.overrides?.providerOverrides,
         timeoutMs: params.timeoutMs,
         signal: params.signal,
@@ -197,6 +198,7 @@ export async function textToSpeechTelephony(
       return await executeTtsProviderAttempts({
         ...setup,
         synthesisText: params.text,
+        expression: params.overrides?.expression,
         providerOverrides: params.overrides?.providerOverrides,
         timeoutMs: params.timeoutMs,
         target: "telephony",

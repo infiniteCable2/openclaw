@@ -5,6 +5,8 @@ export type { ResolvedTtsConfig, ResolvedTtsModelOverrides } from "../tts/tts-ty
 export type {
   SpeechDirectiveTokenParseContext,
   SpeechDirectiveTokenParseResult,
+  SpeechExpression,
+  SpeechExpressionCapabilities,
   SpeechListVoicesRequest,
   SpeechModelOverridePolicy,
   SpeechProviderConfig,

@@ -1,12 +1,13 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { AssistantDeliveryTtsFacts, AssistantMessage } from "../../llm/types.js";
 import { extractAssistantPhaseText } from "../../shared/chat-message-content.js";
+import { parseSpeechExpression } from "../../tts/expression.js";
 import type { LatestTranscriptAssistantText } from "./session-accessor.types.js";
 
 type AssistantDeliveryFacts = NonNullable<AssistantMessage["openclawDelivery"]>;
 
 /** Decode only persisted delivery facts; transcript records cannot supply runtime authority. */
-function readAssistantDeliveryFacts(value: unknown): AssistantDeliveryFacts | undefined {
+export function readAssistantDeliveryFacts(value: unknown): AssistantDeliveryFacts | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -34,6 +35,14 @@ function readAssistantDeliveryFacts(value: unknown): AssistantDeliveryFacts | un
     const tts: AssistantDeliveryTtsFacts = { tagged: true };
     if (typeof value.tts.text === "string") {
       tts.text = value.tts.text;
+    }
+    if (value.tts.expression !== undefined) {
+      try {
+        tts.expression = parseSpeechExpression(value.tts.expression, tts.text ?? "");
+      } catch {
+        // Invalid speech-only facts must not turn into a neutral rendering on replay.
+        return Object.keys(facts).length ? facts : undefined;
+      }
     }
     if (Array.isArray(value.tts.directives)) {
       tts.directives = value.tts.directives.flatMap((directive) => {

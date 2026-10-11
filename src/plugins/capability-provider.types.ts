@@ -33,8 +33,10 @@ import type { TranscriptSourceProvider as TranscriptsSourceProviderCapability } 
 import type {
   SpeechDirectiveTokenParseContext,
   SpeechDirectiveTokenParseResult,
+  SpeechExpressionCapabilities,
   SpeechProviderConfiguredContext,
   SpeechProviderConfig,
+  SpeechProviderOverrides,
   SpeechProviderResolveConfigContext,
   SpeechProviderResolveTalkConfigContext,
   SpeechProviderResolveTalkOverridesContext,
@@ -441,6 +443,11 @@ export type SpeechProviderPlugin = {
   defaultModel?: string;
   models?: readonly string[];
   voices?: readonly string[];
+  /** Synchronous, admitted model metadata; no discovery or network calls on the hot path. */
+  getExpressionCapabilities?: (context: {
+    providerConfig: SpeechProviderConfig;
+    providerOverrides?: SpeechProviderOverrides;
+  }) => SpeechExpressionCapabilities | undefined;
   resolveConfig?: (ctx: SpeechProviderResolveConfigContext) => SpeechProviderConfig;
   parseDirectiveToken?: (ctx: SpeechDirectiveTokenParseContext) => SpeechDirectiveTokenParseResult;
   resolveTalkConfig?: (ctx: SpeechProviderResolveTalkConfigContext) => SpeechProviderConfig;

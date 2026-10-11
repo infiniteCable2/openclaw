@@ -9,6 +9,7 @@ import {
   parseInlineDirectiveParts,
   stripInlineDirectivePartsForDelivery,
 } from "../../utils/directive-tags.js";
+import { readAssistantDeliveryFacts } from "./transcript-assistant-delivery-read.js";
 export { projectAssistantTranscriptText } from "./transcript-assistant-delivery-read.js";
 
 type AssistantDirectiveMessage = {
@@ -49,6 +50,9 @@ function mergeTtsFacts(
   return {
     tagged: true,
     ...((current?.text ?? next.text) != null ? { text: current?.text ?? next.text } : {}),
+    ...((current?.expression ?? next.expression) != null
+      ? { expression: current?.expression ?? next.expression }
+      : {}),
     ...(current?.directives || next.directives
       ? { directives: [...(current?.directives ?? []), ...(next.directives ?? [])] }
       : {}),
@@ -102,6 +106,10 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
   if (facts) {
     const currentFacts = isRecord(message.openclawDelivery) ? message.openclawDelivery : undefined;
     const mergedFacts = { ...currentFacts, ...facts };
+    const currentTts = readAssistantDeliveryFacts(currentFacts)?.tts;
+    if (currentTts && facts.tts) {
+      mergedFacts.tts = mergeTtsFacts(currentTts, facts.tts);
+    }
     if (facts.replyToId) {
       delete mergedFacts.replyToCurrent;
     } else if (facts.replyToCurrent) {

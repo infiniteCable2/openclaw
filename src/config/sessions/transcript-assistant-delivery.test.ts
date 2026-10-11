@@ -1,7 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { applyAssistantDeliveryDirectives } from "./transcript-assistant-delivery.js";
+import {
+  applyAssistantDeliveryDirectives,
+  projectAssistantTranscriptText,
+} from "./transcript-assistant-delivery.js";
 
 describe("assistant delivery normalization across native parts", () => {
+  it("preserves speech-only expressions through transcript projection and marker retirement", () => {
+    const expression = { emotion: "joyful", parts: [{ text: "Hello." }] };
+    const message = {
+      role: "assistant",
+      content: [{ type: "text", text: "[[tts:voice=example]]Visible answer." }],
+      openclawDelivery: { tts: { tagged: true, text: "Hello.", expression } },
+    };
+    applyAssistantDeliveryDirectives(message);
+    const projected = projectAssistantTranscriptText(message);
+    expect(projected?.text).toBe("Visible answer.");
+    expect(projected?.openclawDelivery?.tts).toMatchObject({ text: "Hello.", expression });
+    expect(projected?.text).not.toContain("joyful");
+    expect(
+      projectAssistantTranscriptText({
+        ...message,
+        openclawDelivery: { tts: { tagged: true, text: "Different.", expression } },
+      })?.openclawDelivery?.tts,
+    ).toBeUndefined();
+  });
   it.each([
     {
       name: "reply IDs containing code bytes",

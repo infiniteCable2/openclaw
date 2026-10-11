@@ -489,9 +489,16 @@ export function setRuntimeContextRetention(
   message.runtimeContextCarrierRetained = retained;
 }
 
+/** Speech-only presentation; text parts project exactly to the authoritative plain speech text. */
+export type SpeechExpression = {
+  emotion?: string;
+  parts: Array<{ text: string; emphasis?: boolean } | { event: string }>;
+};
+
 export type AssistantDeliveryTtsFacts = {
   tagged: true;
   text?: string;
+  expression?: SpeechExpression;
   directives?: Array<{
     provider?: string;
     values: Record<string, string>;

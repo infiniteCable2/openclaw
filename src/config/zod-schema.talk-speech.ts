@@ -13,6 +13,19 @@ const TalkSpeechAgentProfileSchema = z
   .strictObject({
     responseStreaming: z.enum(["off", "sentence"]).optional(),
     speakCommentary: z.boolean().optional(),
+    expression: z
+      .strictObject({
+        channels: z.record(
+          z
+            .string()
+            .min(1)
+            .refine((id) => id === id.trim() && !isBlockedObjectKey(id)),
+          z.strictObject({
+            targets: z.array(z.enum(["audio-file", "voice-note", "telephony"])).max(3),
+          }),
+        ),
+      })
+      .optional(),
     waitingAudio: TalkSpeechWaitingAudioSchema.optional(),
     greeting: z
       .strictObject({

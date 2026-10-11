@@ -2,7 +2,11 @@
 import { describe, expect, it } from "vitest";
 import type { SpeechProviderPlugin } from "../plugins/types.js";
 import { extractTtsDirectiveParts } from "./directive-facts.js";
-import { createTtsDirectiveTextStreamCleaner, parseTtsDirectives } from "./directives.js";
+import {
+  createTtsDirectiveTextStreamCleaner,
+  parseTtsDirectives,
+  resolveTtsDirectiveFacts,
+} from "./directives.js";
 import type {
   SpeechDirectiveTokenParseContext,
   SpeechDirectiveTokenParseResult,
@@ -346,6 +350,18 @@ describe("parseTtsDirectives provider-aware routing", () => {
 });
 
 describe("createTtsDirectiveTextStreamCleaner", () => {
+  it("carries canonical expression facts only when structured speech text overrides are allowed", () => {
+    const expression = { emotion: "joyful", parts: [{ text: "Hello." }] };
+    const facts = { tagged: true as const, text: "Hello.", expression };
+    expect(resolveTtsDirectiveFacts(facts, fullPolicy).overrides).toEqual({
+      ttsText: "Hello.",
+      expression,
+    });
+    expect(() => resolveTtsDirectiveFacts(facts, { ...fullPolicy, allowText: false })).toThrow(
+      "Structured speech expressions require enabled speech text overrides",
+    );
+    expect(() => resolveTtsDirectiveFacts(facts, { ...fullPolicy, enabled: false })).toThrow();
+  });
   it("strips directive tags split across streamed chunks", () => {
     const cleaner = createTtsDirectiveTextStreamCleaner();
 

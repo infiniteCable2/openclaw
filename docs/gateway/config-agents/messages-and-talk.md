@@ -287,6 +287,16 @@ transport properties.
   preparation fails; `"continue"` admits it without a greeting only after
   acquired greeting resources have been released successfully. Cleanup failure
   remains a failed admission, with its pending resources retained for cleanup.
+- `expression.channels.<channel>.targets`: explicit speech-expression opt-in for
+  this exact agent and channel. Allowed synthesis targets are `"audio-file"`,
+  `"voice-note"`, and `"telephony"`; an empty or absent list disables expressions.
+  The targets describe provider output requirements, not input-media classification:
+  a channel may synthesize an audio file and transcode it into a voice note later.
+  Select that channel's actual target. This neither changes the inbound voice-note
+  policy nor authorizes ordinary audio attachments to be treated as conversations.
+  Structured sends additionally require the selected provider/model's advertised
+  capabilities. Automatic live replies/commentary/greetings stay plain until
+  their native producer supplies speech-expression facts.
 
 Missing profiles retain normal sentence speech delivery without commentary,
 waiting music, or greeting. Existing `talk.consultThinkingLevel` and

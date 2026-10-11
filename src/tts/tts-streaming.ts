@@ -33,7 +33,10 @@ export async function streamSpeech(
       const target = resolveTtsSynthesisTarget(params.channel);
       return executeTtsProviderAttempts({
         ...acquired.setup,
-        synthesisText: normalizeSpeechText(params.text),
+        synthesisText: params.overrides?.expression
+          ? params.text
+          : normalizeSpeechText(params.text),
+        expression: params.overrides?.expression,
         providerOverrides: params.overrides?.providerOverrides,
         timeoutMs: params.timeoutMs,
         target,

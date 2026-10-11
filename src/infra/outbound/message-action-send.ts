@@ -29,6 +29,7 @@ import { dedupeByKey } from "../../shared/dedupe-by-key.js";
 import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citation-control-markers.js";
 import { findCodeRegions } from "../../shared/text/code-regions.js";
 import { stripFormattedReasoningMessage } from "../../shared/text/formatted-reasoning-message.js";
+import { parseSpeechExpression } from "../../tts/expression.js";
 import { parseInlineDirectives } from "../../utils/directive-tags.js";
 import { throwIfAborted } from "./abort.js";
 import {
@@ -117,6 +118,10 @@ export async function buildMessagePayload(params: {
   const voiceText = readToolStringParam(actionParams, "voiceText");
   const voiceProvider = readToolStringParam(actionParams, "voiceProvider");
   const voiceId = readToolStringParam(actionParams, "voiceId");
+  const voiceExpression =
+    actionParams.voiceExpression === undefined
+      ? undefined
+      : parseSpeechExpression(actionParams.voiceExpression, voiceText ?? "");
   let message =
     readToolStringParam(actionParams, "message", {
       required: !hasMediaHint && !hasPresentation && !hasInteractive && !location && !voiceText,
@@ -305,6 +310,7 @@ export async function buildMessagePayload(params: {
       ? {
           tagged: true as const,
           ...(voiceText ? { text: voiceText } : {}),
+          ...(voiceExpression ? { expression: voiceExpression } : {}),
           ...(voiceProvider || voiceId
             ? {
                 directives: [
@@ -475,6 +481,7 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
   delete params.voiceText;
   delete params.voiceProvider;
   delete params.voiceId;
+  delete params.voiceExpression;
   throwIfAborted(abortSignal);
   // Send payload construction performs the final media-list normalization, so
   // bind access to those canonical sources instead of the earlier action hints.
