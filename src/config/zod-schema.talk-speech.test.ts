@@ -95,13 +95,14 @@ describe("Talk speech profile admission", () => {
     ).toEqual(profile);
   });
 
-  it.for([
+  const invalidExpressionPolicies = [
     { channels: { matrix: { targets: ["anything"] } } },
     { channels: { matrix: { targets: ["voice-note"], enabled: true } } },
     { channels: { " matrix ": { targets: ["voice-note"] } } },
     { channels: { constructor: { targets: ["voice-note"] } } },
     { enabled: true },
-  ])("rejects ambiguous expression policy %j", (expression) => {
+  ] as const;
+  it.for(invalidExpressionPolicies)("rejects ambiguous expression policy %j", (expression) => {
     expect(TalkSpeechSchema.safeParse({ agentProfiles: { reader: { expression } } }).success).toBe(
       false,
     );
