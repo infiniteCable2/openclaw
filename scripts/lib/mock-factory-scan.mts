@@ -500,6 +500,18 @@ export function scanClosedMockFactories(
           );
           hash.update("factory-node:");
           for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFile; kind = scanner.scan()) {
+            // Raw token scans can stop at a bare hash inside a valid regex. Use
+            // the scanner's hash rescan without changing already advancing tokens.
+            if (
+              kind === ts.SyntaxKind.PrivateIdentifier &&
+              scanner.getTokenEnd() === scanner.getTokenStart() &&
+              source.text[scanner.getTokenStart()] === "#"
+            ) {
+              scanner.reScanHashToken();
+            }
+            if (scanner.getTokenEnd() <= scanner.getTokenStart()) {
+              throw new Error(`Mock factory token scan did not advance in ${source.fileName}`);
+            }
             hash.update(JSON.stringify([scanner.getTokenText()]));
           }
         }

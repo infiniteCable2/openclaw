@@ -19,6 +19,30 @@ function git(cwd: string, ...args: string[]) {
 }
 
 describe("first-party mock export ratchet", () => {
+  it("fingerprints bare hashes in valid regexes without losing token identity", () => {
+    const patterns = ["&#39;", "&#40;", "#", "##", "[#]", "\\#"];
+    const sources = patterns.map(
+      (pattern) => `vi.mock("./value.js", () => ({ pattern: /${pattern}/g }));`,
+    );
+    sources.push(
+      'vi.mock("./value.js", () => ( /* formatting */ { pattern: /&#39;/g }));',
+      'vi.mock("./value.js", () => { class Value { #name = "example"; read() { return this.#name; } } return { Value }; });',
+    );
+    using parser = createNativeTypeScriptParser();
+    const syntax = parser.parseSourceFiles(
+      sources.map((text, index) => ({ fileName: `hash-fixture-${index}.ts`, text })),
+    );
+    expect(parser.getSyntacticDiagnostics()).toEqual([]);
+    const fingerprints = syntax.map((source) => {
+      const findings = scanClosedMockFactories(source, () => ["src/value.ts"]);
+      expect(findings).toHaveLength(1);
+      return findings[0]!.fingerprint;
+    });
+    expect(new Set(fingerprints.slice(0, patterns.length)).size).toBe(patterns.length);
+    expect(fingerprints[patterns.length]).toBe(fingerprints[0]);
+    expect(fingerprints.at(-1)).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
   it("distinguishes real module pass-through, isolation, and closed or unproven factories", () => {
     const cases: [string, number][] = [
       ['vi.mock("./value.js", () => ({ read: vi.fn() }));', 1],
