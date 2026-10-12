@@ -50,6 +50,7 @@ describe("meeting agent greeting preparation", () => {
     expect(consultAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "call-1",
+        speechExpressionCaptureOnly: true,
         requesterSessionKey: "agent:example:matrix:direct:owner",
         args: expect.objectContaining({
           question: expect.stringContaining("09:00"),
@@ -60,6 +61,54 @@ describe("meeting agent greeting preparation", () => {
     expect(tts).toHaveBeenCalledWith(expect.objectContaining({ text: "Guten Morgen, Alex!" }));
     expect(greeting.text).toBe("Guten Morgen, Alex!");
     expect(greeting.audio.byteLength).toBeGreaterThan(0);
+  });
+
+  it("passes captured expression and worker admission through the native TTS overrides contract", async () => {
+    const text = "Hello!";
+    const expression = { emotion: "joyful", parts: [{ text }] };
+    const expectedSpeechSelection = {
+      provider: "example",
+      model: "prepared-model",
+      voice: "prepared-voice",
+    };
+    const localServiceAdmission = {
+      generation: "synthetic-worker",
+      signal: new AbortController().signal,
+    };
+    const tts = vi.fn<PluginRuntime["tts"]["streamTextToSpeechTelephony"]>(async () => ({
+      success: true,
+      sampleRate: 24_000,
+      outputFormat: "pcm",
+      audioStream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+          controller.close();
+        },
+      }),
+    }));
+    await prepareSpeechGreeting({
+      ...greetingParams({ tts: { streamTextToSpeechTelephony: tts } } as unknown as PluginRuntime),
+      consultAgent: async () => ({
+        text,
+        utterances: [
+          {
+            text,
+            speech: { tagged: true, text, expression },
+            localServiceAdmission,
+            expectedSpeechSelection,
+          },
+        ],
+      }),
+    });
+    expect(tts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text,
+        overrides: { expression },
+        localServiceAdmission,
+        expectedSpeechSelection,
+      }),
+    );
+    expect(tts.mock.calls[0]?.[0]).not.toHaveProperty("expression");
   });
 
   it("releases a stalled greeting stream when the call is aborted", async () => {

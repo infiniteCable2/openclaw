@@ -19,6 +19,7 @@ import {
 import { controlRealtimeVoiceAgentRun } from "../talk/agent-run-control.js";
 import type { RealtimeVoiceTool } from "../talk/provider-types.js";
 import { readSpeechRealtimeToolAbortSignal } from "../talk/speech/provider-continuity.js";
+import { prepareSpeechExpressionContext } from "../tts/expression-preparation.js";
 import type {
   MeetingAgentConsultSurface,
   MeetingPlatformRuntimeMetadata,
@@ -33,6 +34,8 @@ export function createMeetingRealtimeEngineBindings(params: {
   platform: MeetingPlatformRuntimeMetadata;
   /** Sender identity already verified by this transport's ingress admission. */
   senderId?: string | null;
+  /** Exact ingress-selected TTS scope; surface names never imply channel permission. */
+  ttsContext?: { agentId?: string; channelId?: string; accountId?: string };
   config: {
     realtime: {
       agentId?: string;
@@ -72,6 +75,7 @@ export function createMeetingRealtimeEngineBindings(params: {
         logger: params.logger,
         agentId: params.config.realtime.agentId,
         senderId: params.senderId,
+        ttsContext: params.ttsContext,
         toolPolicy: params.config.realtime.toolPolicy,
         additionalToolsAllow: params.config.realtime.additionalToolsAllow,
         agentThinkingLevel: params.config.realtime.agentThinkingLevel,
@@ -88,6 +92,7 @@ export function createMeetingRealtimeEngineBindings(params: {
         logger: params.logger,
         agentId: params.config.realtime.agentId,
         senderId: params.senderId,
+        ttsContext: params.ttsContext,
         toolPolicy: params.config.realtime.toolPolicy,
         additionalToolsAllow: params.config.realtime.additionalToolsAllow,
         agentThinkingLevel: params.config.realtime.agentThinkingLevel,
@@ -106,6 +111,7 @@ type MeetingAgentConsultContext = {
   logger: RuntimeLogger;
   agentId?: string;
   senderId?: string | null;
+  ttsContext?: { agentId?: string; channelId?: string; accountId?: string };
   toolPolicy: RealtimeVoiceAgentConsultToolPolicy;
   additionalToolsAllow?: string[];
   agentThinkingLevel?: Parameters<typeof consultRealtimeVoiceAgent>[0]["thinkLevel"];
@@ -130,6 +136,22 @@ async function consultMeetingAgent(
     params.toolPolicy === "safe-read-only"
       ? [...new Set([...(baseToolsAllow ?? []), ...(params.additionalToolsAllow ?? [])])]
       : baseToolsAllow;
+  if (params.ttsContext?.agentId && params.ttsContext.agentId !== agentId) {
+    throw new Error("Speech expression scope does not match the admitted agent");
+  }
+  const speechExpressionContext = await prepareSpeechExpressionContext({
+    cfg: params.config,
+    tts: params.runtime.tts,
+    agentId,
+    channelId: params.ttsContext?.channelId,
+    accountId: params.ttsContext?.accountId,
+    target: "telephony",
+    currentSourceSpeechTarget: true,
+    commentaryEnabled: params.speakCommentary === true && !params.speechExpressionCaptureOnly,
+    signal: params.abortSignal,
+  });
+  const admittedToolsAllow =
+    speechExpressionContext && params.speechExpressionCaptureOnly ? ["message"] : toolsAllow;
   let releaseRunControl: (() => void) | undefined;
   try {
     return await consultRealtimeVoiceAgent({
@@ -152,7 +174,9 @@ async function consultMeetingAgent(
       questionSourceLabel: params.surface.questionSourceLabel,
       thinkLevel,
       speakCommentary: params.speakCommentary,
-      toolsAllow,
+      toolsAllow: admittedToolsAllow,
+      speechExpressionContext,
+      speechExpressionCaptureOnly: params.speechExpressionCaptureOnly,
       extraSystemPrompt: params.surface.extraSystemPrompt,
       abortSignal: params.abortSignal,
       onSpeakableText: params.onSpeakableText,
@@ -216,7 +240,7 @@ async function consultMeetingAgent(
                     sessionKey,
                     spawnedBy: requesterSessionKey,
                     messageProvider: params.surface.provider,
-                    toolsAllow,
+                    toolsAllow: admittedToolsAllow,
                   });
                   if (!isCurrent(sessionId) || prepared.sessionEntry?.sessionId !== sessionId) {
                     throw new Error("The active meeting consult session has changed");
@@ -230,7 +254,11 @@ async function consultMeetingAgent(
         : undefined,
     });
   } finally {
-    releaseRunControl?.();
+    try {
+      releaseRunControl?.();
+    } finally {
+      await speechExpressionContext?.release();
+    }
   }
 }
 
@@ -282,7 +310,9 @@ async function handleMeetingRealtimeConsultToolCall(
   });
   let result: { text: string };
   try {
-    result = await consultMeetingAgent({ ...params, args: params.event.args });
+    const consulted = await consultMeetingAgent({ ...params, args: params.event.args });
+    // Provider tool results are text, not host-owned speech playback/admission state.
+    result = { text: consulted.text };
   } catch (error) {
     if (params.abortSignal?.aborted) {
       return;

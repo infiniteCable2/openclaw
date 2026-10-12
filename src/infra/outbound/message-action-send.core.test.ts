@@ -5,6 +5,7 @@ import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -726,5 +727,53 @@ describe("runMessageAction core send routing", () => {
       }),
     );
     expect(sendText).toHaveBeenCalledOnce();
+  });
+
+  it("passes the native task signal to buffered speech and never sends its cancelled result", async () => {
+    const sendText = vi.fn();
+    const sendMedia = vi.fn();
+    registerTestChatPlugin({ deliveryMode: "direct", sendText, sendMedia });
+    const caller = new AbortController();
+    const started = createDeferred();
+    ttsMocks.maybeApplyTtsToPayload.mockImplementationOnce(
+      async (params: {
+        payload: unknown;
+        signal?: AbortSignal;
+        assertCommitAllowed?: () => void;
+      }) => {
+        expect(params.signal).toBe(caller.signal);
+        expect(params.assertCommitAllowed).toEqual(expect.any(Function));
+        started.resolve(undefined);
+        return await new Promise<never>((_resolve, reject) => {
+          params.signal?.addEventListener("abort", () => reject(params.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+    const send = runMessageAction({
+      cfg: {
+        channels: { testchat: { enabled: true } },
+        tts: { auto: "inbound" },
+      } as OpenClawConfig,
+      action: "send",
+      params: {
+        channel: "testchat",
+        target: "channel:example",
+        message: "Visible reply.",
+        voiceText: "Spoken reply.",
+        voiceExpression: { parts: [{ text: "Spoken reply." }] },
+      },
+      inboundAudio: true,
+      abortSignal: caller.signal,
+      assertDirectAdapterHandoff: () => caller.signal.throwIfAborted(),
+      dryRun: false,
+    });
+    const rejected = expect(send).rejects.toThrow("Cancelled voice send");
+    await started.promise;
+    caller.abort(new Error("Cancelled voice send"));
+    await rejected;
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendMedia).not.toHaveBeenCalled();
   });
 });

@@ -9,6 +9,7 @@ import {
 } from "../secrets/runtime.js";
 import { discoverConfigSecretTargetsByIds } from "../secrets/target-registry.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import type { MessageSpeechAdmission } from "./message-speech-admission.js";
 import {
   clearRuntimeConfigSnapshot,
   createMockSpeechProvider,
@@ -17,6 +18,7 @@ import {
   installSpeechProviders,
   isTtsProviderConfigured,
   maybeApplyTtsToPayload,
+  maybeApplyTtsToPayloadCore,
   prepareTextToSpeechTelephony,
   prepareSynthesisMock,
   acquireSpeechProviderLocalServiceMock,
@@ -602,8 +604,200 @@ describe("TTS runtime persona behavior", () => {
     },
   );
 
+  it.each(["provider", "model", "voice", "worker"] as const)(
+    "does not synthesize after the pre-model admitted speech %s changes",
+    async (changed) => {
+      installSpeechProviders([
+        createMockSpeechProvider("mock", {
+          getExpressionCapabilities: () => ({
+            emotions: ["joyful"],
+            vocalEvents: [],
+            emphasis: false,
+            whisper: false,
+          }),
+        }),
+      ]);
+      const signal = new AbortController().signal;
+      if (changed === "worker") {
+        acquireSpeechProviderLocalServiceMock.mockResolvedValueOnce({
+          release: vi.fn(),
+          admission: { generation: "worker-current", signal },
+        });
+      }
+      const result = await synthesizeSpeech({
+        text: "Hello.",
+        agentId: "example",
+        channel: "matrix",
+        cfg: {
+          tts: {
+            provider: "mock",
+            providers: { mock: { model: "expressive-model", voice: "voice-example" } },
+          },
+          talk: {
+            speech: {
+              agentProfiles: {
+                example: { expression: { channels: { matrix: { targets: ["voice-note"] } } } },
+              },
+            },
+          },
+        },
+        overrides: { expression: { emotion: "joyful", parts: [{ text: "Hello." }] } },
+        expectedSpeechSelection: {
+          provider: changed === "provider" ? "previous-provider" : "mock",
+          model: changed === "model" ? "previous-model" : "expressive-model",
+          voice: changed === "voice" ? "previous-voice" : "voice-example",
+        },
+        localServiceAdmission:
+          changed === "worker" ? { generation: "worker-previous", signal } : undefined,
+        disableFallback: true,
+      });
+      expect(result.success).toBe(false);
+      expect(synthesizeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])(
+    "retains native allowVoice=%s policy on an admitted final voice-note wire payload",
+    async (allowVoice) => {
+      await withOpenClawTestState({ label: "expression-wire-voice" }, async (state) => {
+        setTtsMachinePrefsPathResolver(() => state.path("tts-prefs.json"));
+        const provider = createMockSpeechProvider("mock", {
+          getExpressionCapabilities: () => ({
+            emotions: ["joyful"],
+            vocalEvents: [],
+            emphasis: false,
+            whisper: false,
+          }),
+        });
+        installSpeechProviders([provider]);
+        const cfg: OpenClawConfig = {
+          tts: {
+            auto: "inbound",
+            provider: "mock",
+            modelOverrides: { allowVoice },
+            providers: { mock: { model: "expressive-model", voice: "default-voice" } },
+          },
+          talk: {
+            speech: {
+              agentProfiles: {
+                example: { expression: { channels: { matrix: { targets: ["voice-note"] } } } },
+              },
+            },
+          },
+        };
+        const facts = {
+          tagged: true as const,
+          text: "Hello.",
+          expression: { emotion: "joyful", parts: [{ text: "Hello." }] },
+          directives: [{ values: { speakervoice: "directed-voice" } }],
+        };
+        const admission: MessageSpeechAdmission = {
+          runId: "run-example",
+          sessionId: "session-example",
+          agentId: "example",
+          route: { channel: "matrix", to: "room:example" },
+          assertCurrent: vi.fn(),
+          prefsPath: state.path("tts-prefs.json"),
+          preparedTtsPreferences: {},
+          sessionAuto: "inbound",
+          expectedSpeechSelection: {
+            provider: "mock",
+            model: "expressive-model",
+            voice: "default-voice",
+          },
+        };
+        const persist = vi.fn(async () => "fixture-voice.ogg");
+        const result = await maybeApplyTtsToPayloadCore(
+          {
+            payload: setReplyPayloadMetadata({ text: "Hello." }, { ttsExplicit: true, tts: facts }),
+            cfg,
+            channel: "matrix",
+            agentId: "example",
+            kind: "final",
+            inboundAudio: true,
+            preparedTtsPreferences: admission.preparedTtsPreferences,
+            messageSpeechAdmission: admission,
+          },
+          persist,
+        );
+        expect(result.text).toBe("Hello.");
+        expect(result.audioAsVoice).toBe(true);
+        expect(result.mediaUrl).toBe("fixture-voice.ogg");
+        expect(persist).toHaveBeenCalledOnce();
+        const request = requireFirstSynthesisRequest("native expression voice override");
+        expect(request.target).toBe("voice-note");
+        expect(request.providerOverrides).toEqual(
+          allowVoice
+            ? {
+                speakerVoice: "directed-voice",
+                voice: "directed-voice",
+                voiceName: "directed-voice",
+              }
+            : undefined,
+        );
+        expect(JSON.stringify(result)).not.toContain("expectedSpeechSelection");
+      });
+    },
+  );
+
+  it.each(["always", "inbound"] as const)(
+    "rejects a plain native automatic final payload when voice-note expression is enabled (%s)",
+    async (auto) => {
+      await withOpenClawTestState({ label: "automatic-expression-final" }, async (state) => {
+        setTtsMachinePrefsPathResolver(() => state.path("tts-prefs.json"));
+        const payload = { text: "Neutral automatic final answer." };
+        const cfg: OpenClawConfig = {
+          tts: {
+            auto,
+            provider: "mock",
+            providers: { mock: { model: "expressive-model" } },
+          },
+          talk: {
+            speech: {
+              agentProfiles: {
+                example: { expression: { channels: { matrix: { targets: ["voice-note"] } } } },
+              },
+            },
+          },
+        };
+        await expect(
+          maybeApplyTtsToPayload({
+            payload,
+            cfg,
+            channel: "matrix",
+            agentId: "example",
+            kind: "final",
+            inboundAudio: true,
+            preparedTtsPreferences: {},
+          }),
+        ).rejects.toThrow("native structured expression");
+        expect(synthesizeMock).not.toHaveBeenCalled();
+        expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
+        for (const cold of [
+          { cfg: { ...cfg, tts: { ...cfg.tts, auto: "off" as const } }, inboundAudio: true },
+          { cfg: { ...cfg, tts: { ...cfg.tts, auto: "tagged" as const } }, inboundAudio: true },
+          { cfg: { ...cfg, tts: { ...cfg.tts, auto: "inbound" as const } }, inboundAudio: false },
+        ]) {
+          expect(
+            await maybeApplyTtsToPayload({
+              payload,
+              ...cold,
+              channel: "matrix",
+              agentId: "example",
+              kind: "final",
+              preparedTtsPreferences: {},
+            }),
+          ).toBe(payload);
+        }
+        expect(synthesizeMock).not.toHaveBeenCalled();
+        expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
+      });
+    },
+  );
+
   it("rejects overlong structured speech before summarizing or truncating its spans", async () => {
     await withOpenClawTestState({ label: "expression-length" }, async (state) => {
+      setTtsMachinePrefsPathResolver(() => state.path("tts-prefs.json"));
       const text = "x".repeat(2_000);
       const payload = setReplyPayloadMetadata(
         { text: "Complete visible answer." },
@@ -615,7 +809,7 @@ describe("TTS runtime persona behavior", () => {
       await expect(
         maybeApplyTtsToPayload({
           payload,
-          cfg: { tts: { provider: "mock", prefsPath: state.path("tts-prefs.json") } },
+          cfg: { tts: { provider: "mock" } },
           channel: "matrix",
           agentId: "reader",
         }),

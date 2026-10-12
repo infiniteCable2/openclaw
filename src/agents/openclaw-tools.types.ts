@@ -3,8 +3,10 @@ import type { InboundEventKind } from "../channels/inbound-event/kind.js";
 import type { ConversationReadInvocationOrigin } from "../channels/plugins/conversation-read-origin.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
+import type { CurrentSourceReplyTarget } from "../infra/outbound/message-action-contracts.js";
 import type { MemoryAudience } from "../plugins/memory-provider-types.js";
 import type { InputProvenance } from "../sessions/input-provenance.js";
+import type { MessageSpeechAdmission } from "../tts/message-speech-admission.js";
 import type { HookContext } from "./agent-tools.before-tool-call.js";
 import type { AgentRunClientContext, AgentRunMessageContext } from "./command/shared-types.js";
 import type { PreparedPairedComputerUse } from "./computer-use-node-capabilities.js";
@@ -32,6 +34,8 @@ export type OpenClawSharedToolsOptions = {
    */
   questionPrompt?: QuestionPromptDelivery;
   toolBindings?: Readonly<Record<string, unknown>>;
+  currentSourceReplyTarget?: CurrentSourceReplyTarget;
+  messageSpeechAdmission?: MessageSpeechAdmission;
   /** Trusted runtime-only authorization for one bounded cross-conversation recall pass. */
   conversationRecall?: ConversationRecallContext;
   /** Host-resolved memory partition shared by plugin tools for this turn. */

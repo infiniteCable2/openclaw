@@ -9,6 +9,33 @@ import { createTempHomeEnv } from "../test-utils/temp-home.js";
 import { persistTtsAudioToMediaStore } from "./tts-audio-store.js";
 
 describe("TTS audio media store", () => {
+  it("does not publish audio if the native caller retires while the media store prepares", async () => {
+    const tempHome = await createTempHomeEnv("openclaw-tts-cancelled-store-");
+    try {
+      const caller = new AbortController();
+      let checks = 0;
+      const saving = persistTtsAudioToMediaStore({
+        audioBuffer: Buffer.from("OggS cancelled voice"),
+        cfg: {},
+        fileExtension: ".ogg",
+        assertCommitAllowed: () => {
+          checks += 1;
+          caller.signal.throwIfAborted();
+        },
+      });
+      const rejected = expect(saving).rejects.toThrow("Caller retired before media commit");
+      // The first admission check ran synchronously; later publication must recheck it.
+      expect(checks).toBe(1);
+      caller.abort(new Error("Caller retired before media commit"));
+      await rejected;
+      const directory = path.join(tempHome.home, ".openclaw", "media", "tool-speech-synthesis");
+      expect(await fs.readdir(directory)).toEqual([]);
+      expect(checks).toBeGreaterThan(1);
+    } finally {
+      await tempHome.restore();
+    }
+  });
+
   it("saves allowlisted speech output and prunes it through media maintenance", async () => {
     const tempHome = await createTempHomeEnv("openclaw-tts-media-store-");
     try {

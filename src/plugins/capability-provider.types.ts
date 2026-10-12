@@ -447,7 +447,16 @@ export type SpeechProviderPlugin = {
   getExpressionCapabilities?: (context: {
     providerConfig: SpeechProviderConfig;
     providerOverrides?: SpeechProviderOverrides;
+    localServiceAdmission?: import("../agents/provider-local-service-target.js").ProviderLocalServiceLease["admission"];
   }) => SpeechExpressionCapabilities | undefined;
+  /** Admit actual service/model vocabulary during native readiness, never while listing providers. */
+  prepareExpressionCapabilities?: (context: {
+    providerConfig: SpeechProviderConfig;
+    providerOverrides?: SpeechProviderOverrides;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    localServiceAdmission?: import("../agents/provider-local-service-target.js").ProviderLocalServiceLease["admission"];
+  }) => Promise<void>;
   resolveConfig?: (ctx: SpeechProviderResolveConfigContext) => SpeechProviderConfig;
   parseDirectiveToken?: (ctx: SpeechDirectiveTokenParseContext) => SpeechDirectiveTokenParseResult;
   resolveTalkConfig?: (ctx: SpeechProviderResolveTalkConfigContext) => SpeechProviderConfig;

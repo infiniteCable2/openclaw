@@ -375,17 +375,19 @@ export async function startSpeechRealtimeSession(params: {
               if (stopped) {
                 throw new Error("Meeting realtime session is closed");
               }
-              return toolContinuity.runConsult(request, ({ prompt, signal }) => {
+              return toolContinuity.runConsult(request, async ({ prompt, signal }) => {
                 if (params.config.toolPolicy === "none") {
                   throw new Error("Agent delegation is disabled by the meeting tool policy");
                 }
-                return params.consultAgent({
+                const consulted = await params.consultAgent({
                   sessionId: params.sessionId,
                   requesterSessionKey: params.requesterSessionKey,
                   args: { question: prompt },
                   transcript: harness.transcript,
                   abortSignal: signal,
                 });
+                // Provider results retain only their public text contract, not host playback state.
+                return { text: consulted.text };
               });
             },
           }

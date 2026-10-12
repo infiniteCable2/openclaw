@@ -37,6 +37,10 @@ import {
   registerClientVoiceConsultRun,
 } from "../../talk/client-voice-session.js";
 import type { SpeechAgentConsultParams } from "../../talk/speech/types.js";
+import {
+  prepareSpeechExpressionContext,
+  type PreparedSpeechExpressionContext,
+} from "../../tts/expression-preparation.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
 import {
@@ -68,6 +72,10 @@ const loadTalkAgentExecution = createLazyRuntimeModule(async () => {
 });
 
 type TalkRequesterFinalRegistration = ReturnType<typeof registerRequesterFinalAttachment>;
+type TalkSpeechConsultParams = SpeechAgentConsultParams & {
+  speakCommentary?: boolean;
+  speechExpressionContext?: PreparedSpeechExpressionContext;
+};
 
 function createTalkClientAgentRuntime(params: {
   config: OpenClawConfig;
@@ -166,6 +174,8 @@ export { prepareTalkClientControlAuthority } from "./client-agent-consult-contro
 
 export function createTalkClientAgentConsultRunner(params: {
   config: OpenClawConfig;
+  /** Host-selected TTS scope, only for server-owned audio; never RPC input. */
+  speechTts?: { config: OpenClawConfig; channelId: string };
   context: Pick<GatewayRequestContext, "chatAbortControllers" | "logGateway">;
   sessionTarget: PreparedTalkSessionTarget;
   ownerConnId?: string;
@@ -225,7 +235,7 @@ export function createTalkClientAgentConsultRunner(params: {
     ready?: () => Promise<void>,
     assertCurrent?: () => void,
     source: TalkAgentConsultSource = "tool-call",
-    speech?: SpeechAgentConsultParams & { speakCommentary?: boolean },
+    speech?: TalkSpeechConsultParams,
   ) => {
     const parsedArgs = parseRealtimeVoiceAgentConsultArgs(args);
     const voiceSessionId = params.getVoiceSessionId();
@@ -295,7 +305,12 @@ export function createTalkClientAgentConsultRunner(params: {
           thinkLevel: talkConfig?.consultThinkingLevel,
           fastMode: talkConfig?.consultFastMode,
           ...authority,
+          ...(speech?.speechExpressionContext && speech.speechExpressionCaptureOnly
+            ? { toolsAllow: ["message"] }
+            : {}),
           abortSignal: signal,
+          speechExpressionContext: speech?.speechExpressionContext,
+          speechExpressionCaptureOnly: speech?.speechExpressionCaptureOnly,
           onSpeakableText: speech?.onSpeakableText
             ? (event) => {
                 if (event.type !== "abort") {
@@ -427,7 +442,7 @@ export function createTalkClientAgentConsultRunner(params: {
           },
         }),
       )
-      .then((result) => {
+      .then((result): RealtimeVoiceAgentConsultResult => {
         yielded = result.yielded === true;
         const confirmationReply = confirmationObservation?.readReply({
           includeConfirmationId: source === "tool-call",
@@ -436,6 +451,25 @@ export function createTalkClientAgentConsultRunner(params: {
           ? {
               ...result,
               text: confirmationReply,
+              // Host confirmation replaces model narration in both buffered speech
+              // and adopted-input recovery; no old model utterance may survive it.
+              ...(speech?.speechExpressionContext
+                ? {
+                    utterances: [
+                      {
+                        text: confirmationReply,
+                        speech: {
+                          tagged: true,
+                          text: confirmationReply,
+                          expression: { parts: [{ text: confirmationReply }] },
+                        },
+                        localServiceAdmission: speech.speechExpressionContext.localServiceAdmission,
+                        expectedSpeechSelection:
+                          speech.speechExpressionContext.expectedSpeechSelection,
+                      },
+                    ],
+                  }
+                : { utterances: undefined }),
               ...(result.delivered ? { delivered: false } : {}),
             }
           : result;
@@ -541,7 +575,7 @@ export function createTalkClientAgentConsultRunner(params: {
     assertCurrent?: () => void,
     requesterFinal?: TalkRequesterFinalBinding,
     source: TalkAgentConsultSource = "tool-call",
-    speech?: SpeechAgentConsultParams & { speakCommentary?: boolean },
+    speech?: TalkSpeechConsultParams,
   ) => {
     if (promptOwner) {
       throw new Error("A Talk consult is already active");
@@ -636,15 +670,34 @@ export function createTalkClientAgentConsultRunner(params: {
       const revokeControl = () => speech.onRunControl?.(undefined);
       speech.abortSignal?.addEventListener("abort", revokeControl, { once: true });
       let speechOwner: PromptOwner | undefined;
+      let expressionContext: PreparedSpeechExpressionContext | undefined;
+      const scopedSpeech: TalkSpeechConsultParams = { ...speech };
       try {
         const run = runOwnedArgs(
           speech.args,
           speech.abortSignal,
-          undefined,
+          async () => {
+            // runOwnedArgs reserves the native prompt owner before readiness can yield.
+            assertCurrent?.();
+            expressionContext = await prepareSpeechExpressionContext({
+              cfg: params.speechTts?.config ?? params.config,
+              tts: createPluginRuntime().tts,
+              agentId,
+              channelId: params.speechTts?.channelId,
+              target: "telephony",
+              currentSourceSpeechTarget: true,
+              commentaryEnabled:
+                speech.speakCommentary === true && !speech.speechExpressionCaptureOnly,
+              signal: speech.abortSignal,
+            });
+            assertCurrent?.();
+            expressionContext?.assertCurrent();
+            scopedSpeech.speechExpressionContext = expressionContext;
+          },
           assertCurrent,
           undefined,
           "native-delegation",
-          speech,
+          scopedSpeech,
         );
         speechOwner = promptOwner;
         const result = await run;
@@ -660,7 +713,11 @@ export function createTalkClientAgentConsultRunner(params: {
         throw error;
       } finally {
         speech.abortSignal?.removeEventListener("abort", revokeControl);
-        revokeControl();
+        try {
+          revokeControl();
+        } finally {
+          await expressionContext?.release();
+        }
       }
     },
   };

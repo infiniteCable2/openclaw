@@ -322,7 +322,7 @@ describe("realtime voice agent consult speech delivery", () => {
     const call = requireEmbeddedAgentCall(runEmbeddedAgent);
     expect(call.deliverCommentaryBlocks).toBe(true);
     expect(call.extraSystemPrompt).toContain(
-      "Do not start tool work silently: output one short, complete, user-facing sentence first",
+      "Do not start tool work silently: deliver one short, complete, user-facing sentence first",
     );
     expect(call.extraSystemPrompt).toContain(
       "After a tool fails, your approach changes, or a meaningful stage finishes",

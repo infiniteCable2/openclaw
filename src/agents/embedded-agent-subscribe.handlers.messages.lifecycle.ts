@@ -60,6 +60,12 @@ export function handleMessageEnd(
 ): void | Promise<void> {
   const msg = evt.message;
   if (msg.role === "user" && ctx.state.lastAssistant) {
+    const sourceTarget = ctx.params.currentSourceReplyTarget;
+    if (sourceTarget?.beginInput) {
+      sourceTarget.assertCurrent();
+      sourceTarget.beginInput(msg);
+      sourceTarget.assertCurrent();
+    }
     ctx.state.answerSegments.push({
       textEnd: ctx.state.assistantTexts.length,
       messageEnd: ctx.state.assistantMessageIndex,

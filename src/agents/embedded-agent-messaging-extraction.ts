@@ -7,7 +7,10 @@ import {
   normalizeOptionalStringifiedId,
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
-import type { ReplyMediaAttachment } from "../auto-reply/reply-payload.js";
+import {
+  copyReplyPayloadMetadata,
+  type ReplyMediaAttachment,
+} from "../auto-reply/reply-payload.js";
 import { getChannelPlugin, normalizeChannelId } from "../channels/plugins/index.js";
 import type { ChannelMessageActionName } from "../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -28,14 +31,25 @@ export function extractMessagingToolSourceReplyPayload(
   result: unknown,
 ): MessagingToolSourceReplyPayload | undefined {
   const details = readToolResultDetails(result);
-  if (!details || details.sourceReplySink !== "internal-ui") {
+  if (
+    !details ||
+    (details.sourceReplySink !== "internal-ui" && details.sourceReplySink !== "current-source")
+  ) {
     return undefined;
   }
   const status = normalizeOptionalLowercaseString(details.deliveryStatus);
   if (status && status !== "sent") {
     return undefined;
   }
-  return readSourceReplyPayload(details, readRecord(details.sourceReply) ?? details);
+  const source = readRecord(details.sourceReply) ?? details;
+  const payload = readSourceReplyPayload(details, source);
+  if (payload) {
+    copyReplyPayloadMetadata(source, payload);
+    if (details.sourceReplySink === "current-source") {
+      payload.sourceReplyTargetAccepted = true;
+    }
+  }
+  return payload;
 }
 
 /**

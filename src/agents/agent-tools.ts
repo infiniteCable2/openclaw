@@ -142,8 +142,9 @@ function* assembleOpenClawCodingTools(
   // The verified requester profile owns completion authority; its delivery grant
   // stays source-bound even when parent tools remain available to the turn.
   const sourceReplyOnly =
-    capabilityProfile.policy.requesterPolicySource === "completion-handoff" &&
-    options?.sourceReplyDeliveryMode === "message_tool_only";
+    options?.currentSourceReplyTarget?.sourceOnly === true ||
+    (capabilityProfile.policy.requesterPolicySource === "completion-handoff" &&
+      options?.sourceReplyDeliveryMode === "message_tool_only");
   const localModelLeanPreserveToolNames = resolveLocalModelLeanPreserveToolNames({
     toolNames: capabilityProfile.policy.explicitToolOverrideAllowlist,
     forceMessageTool: options?.forceMessageTool,

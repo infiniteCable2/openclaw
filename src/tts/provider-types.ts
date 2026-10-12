@@ -67,6 +67,9 @@ export type SpeechSynthesisRequest = {
   target: SpeechSynthesisTarget;
   providerOverrides?: SpeechProviderOverrides;
   timeoutMs: number;
+  /** Caller-owned task/tool cancellation, independent of worker readiness. */
+  signal?: AbortSignal;
+  localServiceAdmission?: import("../agents/provider-local-service-target.js").ProviderLocalServiceLease["admission"];
 };
 
 /** Buffered speech synthesis result plus file/voice-note compatibility metadata. */

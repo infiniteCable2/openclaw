@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import type { RealtimeVoiceProviderPlugin } from "../../plugins/types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import type { RealtimeVoiceAgentConsultResult } from "../agent-consult-runtime.js";
 import type { RealtimeVoiceAgentConsultToolPolicy } from "../agent-consult-tool.js";
 import { REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ } from "../provider-types.js";
 import type { RealtimeVoiceBridge, RealtimeVoiceBridgeCreateRequest } from "../provider-types.js";
@@ -239,6 +240,45 @@ describe("meeting native continuous voice", () => {
       }
     },
   );
+
+  it("projects rich host consult results to the provider's text-only callback contract", async () => {
+    const rich: RealtimeVoiceAgentConsultResult = {
+      text: "The answer.",
+      delivered: true,
+      yielded: true,
+      utterances: [
+        {
+          text: "The answer.",
+          speech: {
+            tagged: true,
+            text: "The answer.",
+            expression: { parts: [{ text: "The answer." }] },
+          },
+          localServiceAdmission: {
+            generation: "synthetic-worker",
+            signal: new AbortController().signal,
+          },
+          expectedSpeechSelection: {
+            provider: "example",
+            model: "prepared-model",
+            voice: "prepared-voice",
+          },
+        },
+      ],
+    };
+    const fixture = await createLiveFixture({ consultAgent: async () => rich });
+    try {
+      const consult = fixture.callbacks.runAgentConsult;
+      if (!consult) throw new Error("Expected native agent delegation");
+      const result = await consult({ prompt: "Check the project" });
+      expect(result).toEqual({ text: rich.text });
+      expect(Object.keys(result)).toEqual(["text"]);
+      expect(result).not.toBe(rich);
+      expect(fixture.consultAgent).toHaveBeenCalledOnce();
+    } finally {
+      await fixture.handle.stop();
+    }
+  });
 
   it.each(["native delegation", "function tool"] as const)(
     "rejects %s admission immediately after stop before bridge closure",

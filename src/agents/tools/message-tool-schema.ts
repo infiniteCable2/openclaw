@@ -141,6 +141,41 @@ const presentationMessageSchema = Type.Object(
   },
 );
 
+/** One named speech schema shared by full and current-source message surfaces. */
+export const MESSAGE_TOOL_SPEECH_PROPERTIES = {
+  voiceText: Type.Optional(
+    Type.String({ description: "Text to synthesize; message remains visible." }),
+  ),
+  voiceExpression: Type.Optional(
+    Type.Object(
+      {
+        emotion: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+        parts: Type.Array(
+          Type.Union([
+            Type.Object(
+              {
+                text: Type.String({ minLength: 1 }),
+                emphasis: Type.Optional(Type.Boolean()),
+              },
+              { additionalProperties: false },
+            ),
+            Type.Object(
+              { event: Type.String({ minLength: 1, maxLength: 64 }) },
+              { additionalProperties: false },
+            ),
+          ]),
+          { minItems: 1, maxItems: 128 },
+        ),
+      },
+      {
+        additionalProperties: false,
+        description:
+          "Optional speech-only expression with voiceText. Concatenated text parts must exactly equal voiceText; message remains plain. Use only explicitly advertised provider declarations when enabled for this agent/channel.",
+      },
+    ),
+  ),
+};
+
 function buildSendSchema(options: MessageToolSchemaOptions) {
   const props: Record<string, TSchema> = {
     message: Type.Optional(Type.String({ description: MESSAGE_TOOL_SEND_TEXT_DESCRIPTION })),
@@ -182,41 +217,12 @@ function buildSendSchema(options: MessageToolSchemaOptions) {
     asVoice: Type.Optional(
       Type.Boolean({ description: "Send audio as a voice note; combines with voiceText." }),
     ),
-    voiceText: Type.Optional(
-      Type.String({ description: "Text to synthesize; message remains visible." }),
-    ),
+    voiceText: MESSAGE_TOOL_SPEECH_PROPERTIES.voiceText,
     voiceProvider: Type.Optional(
       Type.String({ description: "Per-send speech provider override." }),
     ),
     voiceId: Type.Optional(Type.String({ description: "Per-send speech voice override." })),
-    voiceExpression: Type.Optional(
-      Type.Object(
-        {
-          emotion: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-          parts: Type.Array(
-            Type.Union([
-              Type.Object(
-                {
-                  text: Type.String({ minLength: 1 }),
-                  emphasis: Type.Optional(Type.Boolean()),
-                },
-                { additionalProperties: false },
-              ),
-              Type.Object(
-                { event: Type.String({ minLength: 1, maxLength: 64 }) },
-                { additionalProperties: false },
-              ),
-            ]),
-            { minItems: 1, maxItems: 128 },
-          ),
-        },
-        {
-          additionalProperties: false,
-          description:
-            "Optional speech-only expression with voiceText. Concatenated text parts must exactly equal voiceText; message remains plain. Use only explicitly advertised provider declarations when enabled for this agent/channel.",
-        },
-      ),
-    ),
+    voiceExpression: MESSAGE_TOOL_SPEECH_PROPERTIES.voiceExpression,
     silent: Type.Optional(Type.Boolean()),
     quoteText: Type.Optional(Type.String({ description: "Telegram reply quote text." })),
     gifPlayback: Type.Optional(Type.Boolean()),

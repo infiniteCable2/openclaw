@@ -135,7 +135,9 @@ export async function transcodeAudioBuffer(params: {
   sourceExtension: string;
   targetExtension: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<AudioContainerTranscodeOutcome> {
+  params.signal?.throwIfAborted();
   const source = normalizeContainerExt(params.sourceExtension);
   const target = normalizeContainerExt(params.targetExtension);
   if (!source || !target) {
@@ -163,12 +165,15 @@ export async function transcodeAudioBuffer(params: {
       // Opus-in-CAF matches native Messages voice memo attachments.
       ["-f", "caff", "-d", "opus@24000", "-c", "1", inPath, outPath],
       params.timeoutMs ?? 5000,
+      params.signal,
     );
+    params.signal?.throwIfAborted();
     if (failure !== undefined) {
       return { ok: false, reason: "transcoder-failed", detail: failure };
     }
     return { ok: true, buffer: tmp.read(`out.${target}`) };
   } catch (err) {
+    params.signal?.throwIfAborted();
     return { ok: false, reason: "transcoder-failed", detail: (err as Error).message };
   } finally {
     tmp.cleanup();
@@ -180,17 +185,23 @@ function normalizeContainerExt(ext: string): string | undefined {
   return /^[a-z0-9]{1,12}$/.test(trimmed) ? trimmed : undefined;
 }
 
-async function runAfconvert(args: string[], timeoutMs: number): Promise<string | undefined> {
+async function runAfconvert(
+  args: string[],
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
   try {
     const result = await runCommandWithTimeout(["/usr/bin/afconvert", ...args], {
       maxOutputBytes: 1024,
       timeoutMs,
+      signal,
     });
     if (result.termination === "timeout") {
       return `timeout-${timeoutMs}ms`;
     }
     return result.code === 0 ? undefined : `exit-${result.code ?? "unknown"}`;
   } catch (err) {
+    signal?.throwIfAborted();
     return err instanceof Error ? err.message : String(err);
   }
 }

@@ -1,7 +1,13 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { OpenClawConfig } from "../config/types.js";
 import { finishCapabilityOperation } from "../plugins/capability-provider-acquisition.js";
-import type { SpeechTelephonySynthesisResult, TtsDirectiveOverrides } from "./provider-types.js";
+import type { PreparedSpeechExpressionContext } from "./expression-preparation.js";
+import { isSpeechExpressionEnabled } from "./expression.js";
+import type {
+  SpeechTelephonySynthesisResult,
+  SpeechSynthesisTarget,
+  TtsDirectiveOverrides,
+} from "./provider-types.js";
 import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
 import type {
   TtsTelephonyPreparationResult,
@@ -23,10 +29,19 @@ type TtsTelephonyContext = {
   agentId?: string;
   channelId?: string;
   accountId?: string;
+  localServiceAdmission?: import("./provider-types.js").SpeechSynthesisRequest["localServiceAdmission"];
+  expectedSpeechSelection?: PreparedSpeechExpressionContext["expectedSpeechSelection"];
 };
 
 export async function prepareTextToSpeechTelephony(
   params: TtsTelephonyContext & { signal?: AbortSignal },
+): Promise<TtsTelephonyPreparationResult> {
+  return await prepareTextToSpeech({ ...params, target: "telephony" });
+}
+
+/** Explicit readiness for the requested speech target; callers retain and release native admission. */
+export async function prepareTextToSpeech(
+  params: TtsTelephonyContext & { signal?: AbortSignal; target: SpeechSynthesisTarget },
 ): Promise<TtsTelephonyPreparationResult> {
   assertSpeechRuntimeAvailable();
   const acquired = await acquireTtsRequest({
@@ -39,6 +54,12 @@ export async function prepareTextToSpeechTelephony(
   }
   let outcome: Result<TtsTelephonyPreparationResult, unknown>;
   try {
+    const expressiveReadiness = isSpeechExpressionEnabled({
+      cfg: params.cfg,
+      agentId: params.agentId,
+      channelId: params.channelId,
+      target: params.target,
+    });
     const result = await acquired.run(() =>
       executeTtsProviderAttempts({
         ...acquired.setup,
@@ -46,19 +67,21 @@ export async function prepareTextToSpeechTelephony(
         providerOverrides: params.overrides?.providerOverrides,
         timeoutMs: params.timeoutMs,
         signal: params.signal,
-        target: "telephony",
-        logLabel: "TTS telephony preparation",
-        requireStreamingTelephony: true,
-        prepareSynthesis: false,
+        target: params.target,
+        logLabel: "TTS speech preparation",
+        requireStreamingTelephony: params.target === "telephony",
+        // Expressive readiness must admit the same provider-selected model/voice
+        // as synthesis. Legacy readiness retains its preparation-free contract.
+        prepareSynthesis: expressiveReadiness,
+        prepareExpressionCapabilities: expressiveReadiness,
         selectOperation: () => ({
           kind: "ready",
-          synthesize: async (
-            _request,
-            { retainLocalService },
-          ): Promise<{ release?: () => Promise<void> }> => {
+          synthesize: async (request, { retainLocalService, expressionCapabilities }) => {
             const retainedResource = retainLocalService();
             return {
               release: retainedResource ? async () => retainedResource.release() : undefined,
+              expressionCapabilities,
+              localServiceAdmission: request.localServiceAdmission,
             };
           },
           cleanupFailedProjection: async (synthesis) => {
@@ -69,6 +92,8 @@ export async function prepareTextToSpeechTelephony(
           success: true as const,
           ...metadata,
           release: synthesis.release,
+          expressionCapabilities: synthesis.expressionCapabilities,
+          localServiceAdmission: synthesis.localServiceAdmission,
         }),
       }),
     );
@@ -134,6 +159,8 @@ export async function streamTextToSpeechTelephony(
         ...acquired.setup,
         synthesisText: params.text,
         expression: params.overrides?.expression,
+        localServiceAdmission: params.localServiceAdmission,
+        expectedSpeechSelection: params.expectedSpeechSelection,
         providerOverrides: params.overrides?.providerOverrides,
         timeoutMs: params.timeoutMs,
         signal: params.signal,
@@ -199,6 +226,8 @@ export async function textToSpeechTelephony(
         ...setup,
         synthesisText: params.text,
         expression: params.overrides?.expression,
+        localServiceAdmission: params.localServiceAdmission,
+        expectedSpeechSelection: params.expectedSpeechSelection,
         providerOverrides: params.overrides?.providerOverrides,
         timeoutMs: params.timeoutMs,
         target: "telephony",

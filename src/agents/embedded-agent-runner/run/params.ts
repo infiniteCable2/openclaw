@@ -5,10 +5,12 @@ import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { GroupToolPolicyConfig } from "../../../config/types.tools.js";
 import type { CronRuntimeAuthority } from "../../../cron/runtime-authority.js";
 import type { CronScheduledToolCallerOrigin } from "../../../cron/scheduled-tool-policy.js";
+import type { CurrentSourceReplyTarget } from "../../../infra/outbound/message-action-contracts.js";
 import type { RuntimePluginToolGrant } from "../../../plugins/runtime/tool-grant.js";
 import type { CommandQueueEnqueueFn } from "../../../process/command-queue.types.js";
 import type { SkillLibraryAuthoringCapability } from "../../../skills/library/authoring.js";
 import type { ExplicitSkillSelection } from "../../../skills/types.js";
+import type { MessageSpeechAdmission } from "../../../tts/message-speech-admission.js";
 import type { ModelFallbackAvailability } from "../../agent-scope.js";
 import type { MemoryFlushToolRunContext } from "../../agent-tools.memory-flush.types.js";
 import type { AssistantErrorTranscript } from "../../assistant-error-transcript.js";
@@ -75,6 +77,10 @@ export type RunEmbeddedAgentParams = {
   sandboxAgentId?: string;
   /** Out-of-band plugin bindings attached by the run initiator. */
   toolBindings?: Readonly<Record<string, unknown>>;
+  currentSourceReplyTarget?: CurrentSourceReplyTarget;
+  /** Prepared source speech, independent of ordinary native message routing. */
+  messageSpeechAdmission?: MessageSpeechAdmission;
+  sessionTtsAuto?: string;
   /** Raw peer observed by the inbound routing owner, before identity linking. */
   conversationRoutePeerId?: string;
   /** What initiated this agent run: "user", "heartbeat", "cron", "memory", "overflow", or "manual". */
@@ -312,6 +318,9 @@ export type EmbeddedForegroundPromptContext = Pick<
   | "clientCaps"
   | "gatewayUiCommandTarget"
   | "toolBindings"
+  | "currentSourceReplyTarget"
+  | "messageSpeechAdmission"
+  | "sessionTtsAuto"
   | "trigger"
   | "messageTo"
   | "messageThreadId"

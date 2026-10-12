@@ -342,6 +342,7 @@ function prepareStream(
     onDeliveredMessageToolOnlySourceReply: agentSession.markSourceReplyDelivered,
     trajectoryRecorder: input.trajectoryRecorder,
     onBlockReply: input.onBlockReply,
+    currentSourceReplyTarget: attempt.currentSourceReplyTarget,
     onBlockReplyFlush: input.onBlockReplyFlush,
     onBeforeTerminalDelivery,
     deferTerminalDelivery: shouldRunBeforeAgentFinalize === true,

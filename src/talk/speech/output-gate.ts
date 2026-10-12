@@ -8,6 +8,7 @@ export function createSpeechBargeInGate(params: {
   onFailure: (error: unknown) => void;
 }) {
   let owner: string | undefined;
+  let ownershipRevision = 0;
   let outputPaused = false;
   let waitingAudioHeldUntil = 0;
   // Matrix's native playout can retain PCM while paused. Give its bounded
@@ -32,6 +33,7 @@ export function createSpeechBargeInGate(params: {
       return;
     }
     owner = undefined;
+    ownershipRevision += 1;
     setGate("normal");
   };
 
@@ -44,6 +46,7 @@ export function createSpeechBargeInGate(params: {
     if (event.state === "candidate") {
       if (params.hasActiveOutput()) {
         owner = event.utteranceId;
+        ownershipRevision += 1;
         setGate("duck");
       }
     } else if (event.state === "sustained") {
@@ -57,9 +60,15 @@ export function createSpeechBargeInGate(params: {
 
   const clearOutput = async () => {
     const currentOwner = owner;
+    const currentRevision = ownershipRevision;
     try {
       await params.transport.clearOutput();
-    } finally {
+    } catch (error) {
+      // Never resume retained PCM when the transport could not clear it.
+      params.onFailure(error);
+      throw error;
+    }
+    if (currentRevision === ownershipRevision) {
       release(currentOwner);
       // Confirmed interruption clears the queued PCM, so no post-pause drain remains.
       outputPaused = false;

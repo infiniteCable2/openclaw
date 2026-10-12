@@ -35,7 +35,9 @@ const prepareSynthesisMock = vi.hoisted(() =>
   vi.fn(async (_ctx: SpeechProviderPrepareSynthesisContext) => undefined),
 );
 const acquireSpeechProviderLocalServiceMock = vi.hoisted(() =>
-  vi.fn(async () => undefined as { release: () => void } | undefined),
+  vi.fn<typeof import("./tts-local-service.js").acquireSpeechProviderLocalService>(
+    async () => undefined,
+  ),
 );
 
 const listSpeechProvidersMock = vi.hoisted(() =>
@@ -158,6 +160,7 @@ export const {
   getTtsProvider,
   isTtsProviderConfigured,
   listSpeechVoices,
+  prepareTextToSpeech,
   prepareTextToSpeechTelephony,
   prepareTtsRequest,
   resolveTtsConfig,

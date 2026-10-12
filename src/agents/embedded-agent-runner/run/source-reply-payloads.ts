@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { SourceReplyDeliveryMode } from "../../../auto-reply/get-reply-options.types.js";
 import {
+  copyReplyPayloadMetadata,
   markReplyPayloadForSourceSuppressionDelivery,
   setReplyPayloadMetadata,
   type ReplyPayload,
@@ -29,6 +30,9 @@ export function buildSourceReplyPayloadState(params: {
 } {
   const sourceReplyPayloads = params.payloads ?? [];
   const replyItems = sourceReplyPayloads.flatMap((payload, index): ReplyPayload[] => {
+    if (payload.sourceReplyTargetAccepted) {
+      return [];
+    }
     const text = normalizeOptionalString(payload.text) ?? "";
     const media = resolveSourceReplyMediaUrls(payload);
     if (
@@ -45,19 +49,22 @@ export function buildSourceReplyPayloadState(params: {
     // send. Both must reach the source even when automatic replies are suppressed,
     // and both are mirrored into the transcript; delivery writes the row unless
     // the message tool already owns it.
-    const reply: ReplyPayload = markReplyPayloadForSourceSuppressionDelivery({
-      text,
-      ...(payload.mediaUrl || media[0] ? { mediaUrl: payload.mediaUrl || media[0] } : {}),
-      ...(media.length ? { mediaUrls: media } : {}),
-      ...(payload.audioAsVoice ? { audioAsVoice: true } : {}),
-      ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
-      ...(payload.trustedLocalMedia !== undefined
-        ? { trustedLocalMedia: payload.trustedLocalMedia }
-        : {}),
-      ...(payload.presentation ? { presentation: payload.presentation } : {}),
-      ...(payload.interactive ? { interactive: payload.interactive } : {}),
-      ...(payload.channelData ? { channelData: payload.channelData } : {}),
-    });
+    const reply: ReplyPayload = copyReplyPayloadMetadata(
+      payload,
+      markReplyPayloadForSourceSuppressionDelivery({
+        text,
+        ...(payload.mediaUrl || media[0] ? { mediaUrl: payload.mediaUrl || media[0] } : {}),
+        ...(media.length ? { mediaUrls: media } : {}),
+        ...(payload.audioAsVoice ? { audioAsVoice: true } : {}),
+        ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
+        ...(payload.trustedLocalMedia !== undefined
+          ? { trustedLocalMedia: payload.trustedLocalMedia }
+          : {}),
+        ...(payload.presentation ? { presentation: payload.presentation } : {}),
+        ...(payload.interactive ? { interactive: payload.interactive } : {}),
+        ...(payload.channelData ? { channelData: payload.channelData } : {}),
+      }),
+    );
     if (params.sessionKey) {
       const idempotencyKey =
         payload.idempotencyKey ??
@@ -75,7 +82,9 @@ export function buildSourceReplyPayloadState(params: {
     }
     return [reply];
   });
-  const hasSourceReplyPayload = replyItems.length > 0;
+  const hasSourceReplyPayload =
+    replyItems.length > 0 ||
+    sourceReplyPayloads.some((payload) => payload.sourceReplyTargetAccepted);
   const deliveredSourceReplyViaMessageTool =
     params.sourceReplyDeliveryMode === "message_tool_only" &&
     params.didDeliverSourceReplyViaMessageTool === true;

@@ -157,14 +157,23 @@ export function createTtsDirectiveTextStreamCleaner(): TtsDirectiveTextStreamCle
   };
 }
 
+/** One permission owner for expressive preparation and persisted speech facts. */
+export function assertSpeechExpressionOverridePolicy(
+  policy: Pick<SpeechModelOverridePolicy, "enabled" | "allowText">,
+): void {
+  if (!policy.enabled || !policy.allowText) {
+    throw new Error("Structured speech expressions require enabled speech text overrides");
+  }
+}
+
 /** Resolve persisted TTS facts against the active model/provider policy. */
 export function resolveTtsDirectiveFacts(
   facts: AssistantDeliveryTtsFacts | undefined,
   policy: SpeechModelOverridePolicy,
   options?: ParseTtsDirectiveOptions,
 ): Omit<TtsDirectiveParseResult, "cleanedText"> {
-  if (facts?.expression && (!policy.enabled || !policy.allowText)) {
-    throw new Error("Structured speech expressions require enabled speech text overrides");
+  if (facts?.expression) {
+    assertSpeechExpressionOverridePolicy(policy);
   }
   if (!facts || !policy.enabled) {
     return { overrides: {}, warnings: [], hasDirective: false };

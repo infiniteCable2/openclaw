@@ -103,6 +103,7 @@ export type SpeechAgentConsultParams = {
   transcript: RealtimeVoiceAgentConsultTranscriptEntry[];
   abortSignal?: AbortSignal;
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
+  speechExpressionCaptureOnly?: true;
   waitForPendingInput?: (signal?: AbortSignal) => void | Promise<void>;
   /** Exact active native owner; undefined revokes admission. Never replay a queued input. */
   onRunControl?: (control: SpeechAgentRunControl | undefined) => void;

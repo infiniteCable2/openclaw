@@ -79,6 +79,31 @@ JavaScript-only host export; its declarations are excluded from the package.
     telephony returns ordered audio chunks plus sample rate. Release both the
     preparation and stream handles when the live session ends.
 
+    Hosts with `api.runtime.tts.prepareTextToSpeech` can also prepare an explicit
+    `audio-file` or `voice-note` target with the exact agent and channel context.
+    Its retained handle supplies `expressionCapabilities` and optional
+    `localServiceAdmission` for the selected model. Read capabilities only while
+    the admission signal is live, carry that admission into expressive synthesis,
+    and release the handle when the run ends. Older hosts omit this method;
+    integrations requiring service-backed expression must report that limitation.
+    Readiness may start the configured worker, so it is for requested speech
+    readiness, never provider inventory.
+
+    Speech providers can implement optional `prepareExpressionCapabilities` to
+    admit bounded service metadata after native local-service acquisition. The
+    synchronous `getExpressionCapabilities` consumes the same admission and
+    effective model selection without network calls. Worker readiness publishes
+    an opaque `X-OpenClaw-Service-Generation`; native service exit, replacement,
+    and shutdown revoke its admission signal. A persistent supervisor process
+    identity does not establish worker identity. Providers without these optional
+    hooks preserve existing synthesis behavior.
+
+    Buffered and streaming synthesis requests may carry a caller-owned `signal`.
+    Providers must use it for cancellable work independently of the worker's
+    readiness admission: a live worker does not keep an aborted task alive.
+    Native local-media synthesis combines both signals, cancels its job, and
+    releases its task lease without changing the worker's readiness policy.
+
   </Accordion>
   <Accordion title="api.runtime.mediaUnderstanding">
     Image, audio, and video analysis.

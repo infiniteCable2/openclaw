@@ -4,6 +4,7 @@ import {
   HEARTBEAT_RESPONSE_TOOL_NAME,
   normalizeHeartbeatToolResponse,
 } from "../auto-reply/heartbeat-tool-response.js";
+import { copyReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { projectAgentToolActivity } from "../infra/agent-activity-events.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import type { PluginHookAfterToolCallEvent } from "../plugins/types.js";
@@ -377,10 +378,12 @@ export async function handleToolExecutionEnd(
     }
     const sourceReplyPayload = extractMessagingToolSourceReplyPayload(result);
     if (sourceReplyPayload) {
-      ctx.state.messagingToolSourceReplyPayloads.push({
-        ...sourceReplyPayload,
-        ...(sourceReplyFinal !== undefined ? { sourceReplyFinal } : {}),
-      });
+      ctx.state.messagingToolSourceReplyPayloads.push(
+        copyReplyPayloadMetadata(sourceReplyPayload, {
+          ...sourceReplyPayload,
+          ...(sourceReplyFinal !== undefined ? { sourceReplyFinal } : {}),
+        }),
+      );
       ctx.trimMessagingToolSent();
     }
   }

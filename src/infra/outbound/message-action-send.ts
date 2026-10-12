@@ -115,7 +115,7 @@ export async function buildMessagePayload(params: {
       ? undefined
       : normalizeOutboundLocation(rawLocation);
   const caption = readToolStringParam(actionParams, "caption", { trim: false }) ?? "";
-  const voiceText = readToolStringParam(actionParams, "voiceText");
+  const voiceText = readToolStringParam(actionParams, "voiceText", { trim: false });
   const voiceProvider = readToolStringParam(actionParams, "voiceProvider");
   const voiceId = readToolStringParam(actionParams, "voiceId");
   const voiceExpression =
@@ -473,6 +473,13 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
     sessionKey: input.sessionKey,
     inboundAudio: input.inboundAudio,
     dryRun,
+    runId: input.runId,
+    sessionId: input.sessionId,
+    target: to,
+    threadId: resolvedThreadId,
+    messageSpeechAdmission: input.messageSpeechAdmission,
+    signal: abortSignal,
+    assertCommitAllowed: input.assertDirectAdapterHandoff,
   });
   if (ttsPayload !== sendPayload.payload) {
     sendPayload = updateSendPayloadPartsFromReplyPayload(sendPayload, ttsPayload);

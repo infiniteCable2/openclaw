@@ -263,6 +263,11 @@ export function registerMatrixRtcController(params: {
         const bindings = createMeetingRealtimeEngineBindings({
           platform: MATRIX_RTC_PLATFORM,
           senderId: remote.userId,
+          ttsContext: {
+            agentId: admission.agentId,
+            channelId: "matrix",
+            accountId: params.accountId,
+          },
           config: {
             realtime: {
               agentId: admission.agentId,
@@ -309,6 +314,11 @@ export function registerMatrixRtcController(params: {
           const greetingBindings = createMeetingRealtimeEngineBindings({
             platform: MATRIX_RTC_PLATFORM,
             senderId: remote.userId,
+            ttsContext: {
+              agentId: admission.agentId,
+              channelId: "matrix",
+              accountId: params.accountId,
+            },
             config: {
               realtime: {
                 agentId: admission.agentId,

@@ -8,7 +8,9 @@ export async function acquireSpeechProviderLocalService(params: {
   providerId: string;
   providerConfig: SpeechProviderConfig;
   signal?: AbortSignal;
-}): Promise<{ release: () => void } | undefined> {
+}): Promise<
+  import("../agents/provider-local-service-target.js").ProviderLocalServiceLease | undefined
+> {
   const service = readLocalServiceConfig(params.providerId, params.providerConfig.localService);
   if (!service) {
     return undefined;

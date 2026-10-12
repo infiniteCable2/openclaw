@@ -339,6 +339,7 @@ export async function createTalkSpeechRelaySession(params: {
   const createRunner = (authority: TalkAgentConsultAuthority) =>
     createTalkClientAgentConsultRunner({
       config: params.cfg,
+      speechTts: { config: speechConfig, channelId: "talk" },
       context: params.context,
       sessionTarget: params.sessionTarget,
       ownerConnId: params.connId,
@@ -369,7 +370,7 @@ export async function createTalkSpeechRelaySession(params: {
       onPreparation(prepared) {
         preparation = prepared;
       },
-      ttsContext: { agentId: params.sessionTarget.agentId },
+      ttsContext: { agentId: params.sessionTarget.agentId, channelId: "talk" },
     });
     assertActive();
     let initialGreeting;
@@ -392,7 +393,7 @@ export async function createTalkSpeechRelaySession(params: {
           prompt: greeting.prompt,
           timeZone: greeting.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
           audioFormat: config.audioFormat,
-          ttsContext: { agentId: params.sessionTarget.agentId },
+          ttsContext: { agentId: params.sessionTarget.agentId, channelId: "talk" },
           signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(greeting.timeoutMs)]),
           onPreparation(prepared) {
             greetingPreparation = prepared;
@@ -427,7 +428,7 @@ export async function createTalkSpeechRelaySession(params: {
       surface: { displayName: "Talk", logScope: "talk", sessionIdPrefix: "talk" },
       sessionId: id,
       requesterSessionKey: params.sessionTarget.canonicalKey,
-      ttsContext: { agentId: params.sessionTarget.agentId },
+      ttsContext: { agentId: params.sessionTarget.agentId, channelId: "talk" },
       transport,
       logger: params.context.logGateway,
       providers: [params.provider],

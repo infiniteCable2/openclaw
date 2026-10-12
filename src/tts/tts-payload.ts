@@ -1,5 +1,6 @@
 import {
   getReplyPayloadMetadata,
+  isHostNoticePayload,
   markReplyPayloadAsTtsSupplement,
   type ReplyPayload,
 } from "../auto-reply/reply-payload.js";
@@ -11,6 +12,8 @@ import { hasReplyPayloadContent } from "../interactive/payload.js";
 import { truncateUtf16Safe } from "../utils.js";
 import { normalizeMessageChannel } from "../utils/message-channel-core.js";
 import { parseTtsDirectives, resolveTtsDirectiveFacts } from "./directives.js";
+import { isSpeechExpressionEnabled } from "./expression.js";
+import type { MessageSpeechAdmission } from "./message-speech-admission.js";
 import { canonicalizeSpeechProviderId, getSpeechProvider } from "./provider-registry.js";
 import type { SpeechVoiceOption } from "./provider-types.js";
 import { assertSpeechRuntimeAvailable, isSpeechRuntimeAvailable } from "./runtime-availability.js";
@@ -33,6 +36,7 @@ import {
   type ResolvedTtsConfig,
 } from "./tts-settings.js";
 import { textToSpeechCore, type TtsAudioPersistence } from "./tts-synthesis.js";
+import { resolveTtsSynthesisTarget } from "./tts-synthesis.js";
 
 let lastTtsAttempt: TtsStatusEntry | undefined;
 
@@ -121,10 +125,17 @@ export async function maybeApplyTtsToPayloadCore(
     ttsAuto?: string;
     agentId?: string;
     accountId?: string;
+    messageSpeechAdmission?: MessageSpeechAdmission;
+    signal?: AbortSignal;
+    assertCommitAllowed?: () => void;
   },
   persistTtsAudio: TtsAudioPersistence,
 ): Promise<ReplyPayload> {
+  params.signal?.throwIfAborted();
   if (!isSpeechRuntimeAvailable()) {
+    if (params.messageSpeechAdmission || getReplyPayloadMetadata(params.payload)?.tts?.expression) {
+      throw new Error("Native speech runtime is unavailable for the admitted expressive reply");
+    }
     return applyExplicitSpeechVisibleFallback(params.payload, params.channel);
   }
   if (params.payload.isCompactionNotice) {
@@ -139,8 +150,13 @@ export async function maybeApplyTtsToPayloadCore(
     channelId: params.channel,
     accountId: params.accountId,
   });
+  params.signal?.throwIfAborted();
   const ttsMetadata = getReplyPayloadMetadata(params.payload);
   const explicitTts = ttsMetadata?.ttsExplicit === true;
+  params.messageSpeechAdmission?.assertCurrent();
+  if (params.messageSpeechAdmission && autoMode !== "always" && autoMode !== "inbound") {
+    throw new Error("Automatic speech policy changed after expression admission");
+  }
   if (!explicitTts && (autoMode === "off" || ttsMetadata?.commandReply)) {
     return params.payload;
   }
@@ -159,6 +175,14 @@ export async function maybeApplyTtsToPayloadCore(
         ...resolveTtsDirectiveFacts(ttsMetadata.tts, config.modelOverrides, directiveOptions),
       }
     : parseTtsDirectives(text, config.modelOverrides, directiveOptions);
+  const automaticExpressionRequired =
+    (autoMode === "always" || (autoMode === "inbound" && params.inboundAudio === true)) &&
+    isSpeechExpressionEnabled({
+      cfg,
+      agentId: params.agentId,
+      channelId: params.channel,
+      target: resolveTtsSynthesisTarget(params.channel),
+    });
   if (directives.warnings.length > 0) {
     logVerbose(`TTS: ignored directive overrides (${directives.warnings.join("; ")})`);
   }
@@ -173,7 +197,9 @@ export async function maybeApplyTtsToPayloadCore(
   }
 
   const visibleText = directives.cleanedText.trim();
-  const explicitTtsText = directives.ttsText?.trim() || "";
+  const explicitTtsText = directives.overrides.expression
+    ? (directives.ttsText ?? "")
+    : directives.ttsText?.trim() || "";
   const ttsText = explicitTtsText || visibleText;
   const configuredInboundVoiceReply =
     !explicitTts && autoMode === "inbound" && params.inboundAudio === true;
@@ -209,6 +235,16 @@ export async function maybeApplyTtsToPayloadCore(
   }
   if (reply.hasMedia || hasLegacyFinalMediaDirective(text)) {
     return nextPayload;
+  }
+  if (
+    (params.messageSpeechAdmission || automaticExpressionRequired) &&
+    !directives.overrides.expression &&
+    !isHostNoticePayload(params.payload) &&
+    !params.payload.isReasoning
+  ) {
+    throw new Error(
+      "Enabled automatic speech requires a native structured expression; neutral fallback is unavailable",
+    );
   }
   if (!explicitTtsText && !allowShortInboundVoiceReply && ttsText.trim().length < 10) {
     return nextPayload;
@@ -279,9 +315,27 @@ export async function maybeApplyTtsToPayloadCore(
       overrides: directives.overrides,
       agentId: params.agentId,
       accountId: params.accountId,
+      localServiceAdmission: params.messageSpeechAdmission?.localServiceAdmission,
+      expectedSpeechSelection: params.messageSpeechAdmission?.expectedSpeechSelection,
+      disableFallback: params.messageSpeechAdmission ? true : undefined,
+      signal: params.signal,
+      assertCommitAllowed:
+        params.assertCommitAllowed || params.messageSpeechAdmission
+          ? () => {
+              params.assertCommitAllowed?.();
+              params.messageSpeechAdmission?.assertCurrent();
+            }
+          : undefined,
     },
     persistTtsAudio,
   );
+  params.signal?.throwIfAborted();
+  params.messageSpeechAdmission?.assertCurrent();
+  if (directives.overrides.expression && (!result.success || !result.audioPath)) {
+    throw new Error(
+      result.error ?? "Structured speech synthesis failed; neutral fallback is unavailable",
+    );
+  }
 
   const succeeded = result.success && Boolean(result.audioPath);
   lastTtsAttempt = {

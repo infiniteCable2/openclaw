@@ -35,6 +35,10 @@ import {
   listConfiguredMessageChannels,
   resolveMessageChannelSelection,
 } from "./channel-selection.js";
+import {
+  deliverToCurrentSourceReplyTarget,
+  isImplicitCurrentSourceSend,
+} from "./current-source-reply-target.js";
 import { assertOutboundHandoffCurrent, OutboundHandoffRejectedError } from "./deliver-handoff.js";
 import { shouldUseInternalSourceReplySink } from "./internal-source-reply.js";
 import { validateExplicitMessageAccountSelection } from "./message-account-selection.js";
@@ -534,7 +538,14 @@ async function runMessageActionWithAuthority(
   if (action === "send" && hasPollCreationParams(params)) {
     throw new Error('Poll fields require action "poll"; use action "poll" instead of "send".');
   }
+  if (input.currentSourceReplyTarget && isImplicitCurrentSourceSend(action, params)) {
+    return deliverToCurrentSourceReplyTarget({ ...input, params, agentId: resolvedAgentId });
+  }
   if (await shouldUseInternalSourceReplySink(input, params)) {
+    if (input.messageSpeechAdmission) {
+      input.messageSpeechAdmission.assertCurrent();
+      throw new Error("Admitted native speech source lost its configured channel delivery");
+    }
     return handleInternalSourceReplySendAction({ ...input, agentId: resolvedAgentId }, params);
   }
   if (params.clawhub !== undefined) {

@@ -1,6 +1,13 @@
+import type { ProviderLocalServiceLease } from "../../agents/provider-local-service-target.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import type { AssistantDeliveryTtsFacts } from "../../llm/types.js";
 import type { PluginRuntime, RuntimeLogger } from "../../plugins/runtime/types.js";
+import { parseSpeechExpression } from "../../tts/expression.js";
+import type {
+  RealtimeVoiceAgentConsultResult,
+  RealtimeVoiceSpeechUtterance,
+} from "../agent-consult-runtime.js";
 import type { RealtimeVoiceSessionHarness } from "../realtime-session-harness.js";
 import type { RealtimeVoiceTranscriptEntry } from "../session-log-runtime.js";
 import { createSpeechTtsAudioStreamConverter } from "./audio-format.js";
@@ -113,9 +120,22 @@ export function createSpeechOutput(params: {
     utterance.generation === params.getOutputGeneration() &&
     !utterance.finalized;
 
-  const enqueueSpeechChunk = (text: string | undefined, utterance: SpeechUtterance) => {
+  const enqueueSpeechChunk = (
+    text: string | undefined,
+    utterance: SpeechUtterance,
+    speech?: AssistantDeliveryTtsFacts,
+    localServiceAdmission?: NonNullable<ProviderLocalServiceLease["admission"]>,
+    expectedSpeechSelection?: RealtimeVoiceSpeechUtterance["expectedSpeechSelection"],
+  ) => {
     const harness = params.getHarness();
-    const normalized = normalizeSpeechPromptText(text);
+    const normalized = speech?.expression ? text : normalizeSpeechPromptText(text);
+    if (speech?.expression) {
+      if (text !== speech.text) {
+        throw new Error("Speech utterance changed after expression admission");
+      }
+      parseSpeechExpression(speech.expression, text ?? "");
+      localServiceAdmission?.signal.throwIfAborted();
+    }
     if (!normalized || !isCurrentSpeechUtterance(utterance)) {
       return;
     }
@@ -154,6 +174,9 @@ export function createSpeechOutput(params: {
       try {
         const result = await params.runtime.tts.streamTextToSpeechTelephony({
           text: normalized,
+          ...(speech?.expression ? { overrides: { expression: speech.expression } } : {}),
+          ...(speech?.expression && localServiceAdmission ? { localServiceAdmission } : {}),
+          ...(speech?.expression && expectedSpeechSelection ? { expectedSpeechSelection } : {}),
           cfg: params.fullConfig,
           signal: controller.signal,
           ...(ttsAgentId ? { agentId: ttsAgentId } : {}),
@@ -371,11 +394,35 @@ export function createSpeechOutput(params: {
     });
   };
 
+  const enqueueSpeechResult = (
+    result: RealtimeVoiceAgentConsultResult,
+    utterance: SpeechUtterance,
+  ) => {
+    for (const part of result.utterances ?? []) {
+      enqueueSpeechChunk(
+        part.text,
+        utterance,
+        part.speech,
+        part.localServiceAdmission,
+        part.expectedSpeechSelection,
+      );
+    }
+    finalizeSpeechUtterance(utterance, result.text);
+  };
+
+  const enqueueSpeakText = (text: string | undefined) => {
+    const utterance = createSpeechUtterance(params.getWaitingTurn());
+    enqueueSpeechChunk(text, utterance);
+    finalizeSpeechUtterance(utterance, text);
+  };
+
   return {
     writeOutputAudio,
     createSpeechUtterance,
     isCurrentSpeechUtterance,
     enqueueSpeechChunk,
+    enqueueSpeechResult,
+    enqueueSpeakText,
     finalizeSpeechUtterance,
     hasPendingOutput: () => pendingChunks > 0,
     async drain() {

@@ -9,13 +9,16 @@ import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options
 import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
 import type { ChannelMessageActionName } from "../../channels/plugins/types.public.js";
 import type { AgentRuntimeMessageActionContext } from "../../gateway/message-action-turn-capability.js";
+import type { CurrentSourceReplyTarget } from "../../infra/outbound/message-action-contracts.js";
 import { MessageActionDeniedError } from "../../infra/outbound/message-action-denial.js";
 import { sourceDeliveryTargetsMatch } from "../../infra/outbound/source-delivery-plan.js";
 import { normalizeOptionalAccountId } from "../../routing/account-id.js";
 import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citation-control-markers.js";
+import type { MessageSpeechAdmission } from "../../tts/message-speech-admission.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
 import { channelTargetSchema, stringEnum } from "../schema/typebox.js";
 import { readToolStringParam } from "./common.js";
+import { MESSAGE_TOOL_SPEECH_PROPERTIES } from "./message-tool-schema.js";
 import { normalizeEscapedLineBreaksForVisibleText } from "./message-tool-visible-content.js";
 
 export function resolveSourceReplySinkDeliveryMode(
@@ -48,6 +51,17 @@ export const SOURCE_REPLY_ONLY_MESSAGE_SCHEMA = Type.Object({
   replyTo: Type.Optional(Type.String()),
   threadId: Type.Optional(Type.String()),
 });
+export function buildSourceReplyOnlyMessageSchema(speech: boolean, currentSource = false): TObject {
+  return speech || currentSource
+    ? Type.Object({
+        ...SOURCE_REPLY_ONLY_MESSAGE_SCHEMA.properties,
+        ...(speech ? MESSAGE_TOOL_SPEECH_PROPERTIES : {}),
+        ...(currentSource
+          ? { replyPhase: Type.Optional(stringEnum(["commentary", "final_answer"])) }
+          : {}),
+      })
+    : SOURCE_REPLY_ONLY_MESSAGE_SCHEMA;
+}
 const SOURCE_REPLY_ONLY_RUNTIME_ARG_NAMES = new Set(["to", "channelId", "final"]);
 const SOURCE_REPLY_FINAL_PROPERTY = Type.Optional(
   Type.Boolean({
@@ -132,21 +146,43 @@ export function enforceSourceReplyOnlyMessageAction(params: {
   currentMessageId?: string | number;
   currentAccountId?: string;
   trustedTurnContext?: AgentRuntimeMessageActionContext;
+  currentSourceReplyTarget?: CurrentSourceReplyTarget;
+  messageSpeechAdmission?: MessageSpeechAdmission;
 }): void {
   if (params.action !== "send") {
     throw sourceReplyPolicyError(
       `Completion source replies permit only action "send", not "${params.action}".`,
     );
   }
+  const allowedSchema = buildSourceReplyOnlyMessageSchema(
+    params.currentSourceReplyTarget?.speechExpressionRequired === true ||
+      Boolean(params.messageSpeechAdmission),
+    Boolean(params.currentSourceReplyTarget),
+  );
   for (const name of Object.keys(params.args)) {
     if (
-      !Object.hasOwn(SOURCE_REPLY_ONLY_MESSAGE_SCHEMA.properties, name) &&
+      !Object.hasOwn(allowedSchema.properties, name) &&
       !SOURCE_REPLY_ONLY_RUNTIME_ARG_NAMES.has(name)
     ) {
       throw sourceReplyPolicyError(`Completion source replies cannot use the "${name}" argument.`);
     }
   }
   enforceSourceReplyOnlyTextDirectives(params.args);
+  params.messageSpeechAdmission?.assertCurrent();
+
+  if (params.currentSourceReplyTarget) {
+    params.currentSourceReplyTarget.assertCurrent();
+    if (
+      ["channel", "target", "to", "channelId", "accountId", "threadId", "replyTo"].some(
+        (key) => normalizeOptionalStringifiedId(params.args[key]) !== undefined,
+      )
+    ) {
+      throw sourceReplyPolicyError(
+        "This current-source producer cannot address another destination.",
+      );
+    }
+    return;
+  }
 
   const sourceContext = params.trustedTurnContext?.toolContext ?? params;
   const sourceChannel = normalizeMessageChannel(sourceContext.currentChannelProvider);

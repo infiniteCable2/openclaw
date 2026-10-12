@@ -74,6 +74,8 @@ export type TtsTelephonyStreamResult = TtsProviderMediaOutcome & {
 
 export type TtsTelephonyPreparationResult = TtsProviderMediaOutcome & {
   release?: () => Promise<void>;
+  expressionCapabilities?: import("./provider-types.js").SpeechExpressionCapabilities;
+  localServiceAdmission?: import("../agents/provider-local-service-target.js").ProviderLocalServiceLease["admission"];
 };
 
 export type TtsStatusEntry = TtsAttemptOutcome & {

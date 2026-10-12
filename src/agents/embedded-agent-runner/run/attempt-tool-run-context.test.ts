@@ -72,17 +72,19 @@ describe("buildEmbeddedAttemptToolRunContext", () => {
     "preserves originating inbound audio %s",
     (currentInboundAudio) => {
       const context = buildEmbeddedAttemptToolRunContext({ currentInboundAudio });
-      const withOperation = buildEmbeddedAttemptToolRunContext({
+      const attempt = {
         currentInboundAudio,
         replyOperation: { acceptedSteeredInboundAudio: false },
-      });
+      };
+      const withOperation = buildEmbeddedAttemptToolRunContext(attempt);
+      attempt.replyOperation.acceptedSteeredInboundAudio = true;
 
       expect(context.hasCurrentInboundAudio?.()).toBe(currentInboundAudio === true);
       expect(withOperation.hasCurrentInboundAudio?.()).toBe(currentInboundAudio === true);
     },
   );
 
-  it("reads accepted steering at execution without crossing operation owners", () => {
+  it("does not convert a text reply to speech when steered audio is accepted", () => {
     let acceptedSteeredInboundAudio = false;
     const attempt = {
       currentInboundAudio: false,
@@ -99,12 +101,6 @@ describe("buildEmbeddedAttemptToolRunContext", () => {
     expect(context.hasCurrentInboundAudio?.()).toBe(false);
 
     acceptedSteeredInboundAudio = true;
-    expect(context.hasCurrentInboundAudio?.()).toBe(true);
-    expect(
-      buildEmbeddedAttemptToolRunContext({
-        currentInboundAudio: false,
-        replyOperation: { acceptedSteeredInboundAudio: false },
-      }).hasCurrentInboundAudio?.(),
-    ).toBe(false);
+    expect(context.hasCurrentInboundAudio?.()).toBe(false);
   });
 });

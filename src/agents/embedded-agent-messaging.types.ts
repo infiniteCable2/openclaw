@@ -32,6 +32,8 @@ export type MessagingToolSourceReplyPayload = Pick<
 > & {
   idempotencyKey?: string;
   transcriptOwner?: true;
+  /** Current-source custody already accepted this payload; never replay through a channel mirror. */
+  sourceReplyTargetAccepted?: true;
   /** Current-source progress (`false`) or completed reply (`true`). */
   sourceReplyFinal?: boolean;
   /** Authored by a `canDeliverSourceReply` tool: the host sends it, so the turn is complete. */

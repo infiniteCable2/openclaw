@@ -226,6 +226,7 @@ export async function startSpeechSession(
     createSpeechUtterance,
     isCurrentSpeechUtterance,
     enqueueSpeechChunk,
+    enqueueSpeakText,
     finalizeSpeechUtterance,
     writeOutputAudio,
   } = speechOutput;
@@ -248,12 +249,6 @@ export async function startSpeechSession(
     harness.finishOutputAudio("cancelled");
     harness.endTurn("cancelled");
     params.onActivity?.("listening");
-  };
-
-  const enqueueSpeakText = (text: string | undefined) => {
-    const utterance = createSpeechUtterance(currentWaitingTurn);
-    enqueueSpeechChunk(text, utterance);
-    finalizeSpeechUtterance(utterance, text);
   };
 
   // The closures above only run after harness creation; they capture this later `const`.
@@ -314,7 +309,7 @@ export async function startSpeechSession(
         activeConsult = consult;
         responseQuestion = question;
         let failure: { error: unknown } | undefined;
-        const result = await params
+        const result: Awaited<ReturnType<typeof params.consultAgent>> = await params
           .consultAgent({
             sessionId: params.sessionId,
             requesterSessionKey: params.requesterSessionKey,
@@ -330,7 +325,13 @@ export async function startSpeechSession(
               ? {
                   onSpeakableText: (event) => {
                     if (event.type === "chunk") {
-                      enqueueSpeechChunk(event.text, utterance);
+                      enqueueSpeechChunk(
+                        event.text,
+                        utterance,
+                        event.speech,
+                        event.localServiceAdmission,
+                        event.expectedSpeechSelection,
+                      );
                     } else if (event.type === "done") {
                       finalizeSpeechUtterance(utterance, event.text);
                     } else {
@@ -381,6 +382,11 @@ export async function startSpeechSession(
             // The latest native answer consolidates wanted results and respects
             // corrections. Never replay old PCM or preceding answer payloads.
             currentWaitingTurn = waitingTurn;
+            if (result.utterances?.length) {
+              const currentUtterance = createSpeechUtterance(waitingTurn);
+              speechOutput.enqueueSpeechResult(result, currentUtterance);
+              return { ...result, delivered: true };
+            }
             return { ...result, delivered: false };
           }
           speechCancellation.recordUnplayedAnswer(utterance.transcriptEntries, result.text);
@@ -402,6 +408,10 @@ export async function startSpeechSession(
           if (currentWaitingTurn === waitingTurn) {
             currentWaitingTurn = undefined;
           }
+        }
+        if (!result.delivered && result.utterances?.length) {
+          speechOutput.enqueueSpeechResult(result, utterance);
+          return { ...result, delivered: true };
         }
         return result;
       },

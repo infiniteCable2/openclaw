@@ -263,6 +263,71 @@ describe("createMeetingRealtimeEngineBindings", () => {
     expect(controlRealtimeVoiceAgentRun).not.toHaveBeenCalled();
   });
 
+  it("retains exact speech readiness and releases it even when control cleanup throws", async () => {
+    const release = vi.fn(async () => undefined);
+    const prepareTextToSpeech = vi.fn(async () => ({
+      success: true,
+      provider: "test-tts",
+      expressionCapabilities: {
+        emotions: ["joyful"],
+        vocalEvents: ["sigh"],
+        emphasis: true,
+        whisper: false,
+      },
+      release,
+    }));
+    const bindings = createMeetingRealtimeEngineBindings({
+      platform,
+      ttsContext: { agentId: "operator", channelId: "matrix", accountId: "test-account" },
+      config: { realtime: { agentId: "operator", toolPolicy: "owner" } },
+      fullConfig: {
+        agents: { entries: { operator: {} } },
+        talk: {
+          speech: {
+            agentProfiles: {
+              operator: {
+                expression: { channels: { matrix: { targets: ["telephony"] } } },
+              },
+            },
+          },
+        },
+      },
+      runtime: { agent: {}, tts: { prepareTextToSpeech } } as never,
+      logger: {} as never,
+    });
+    consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
+      expect(consult.speechExpressionContext?.guidance).toContain(
+        'Emotion identifiers: ["joyful"]',
+      );
+      expect(consult.toolsAllow).toBeUndefined();
+      consult.onRunStarted?.({
+        runId: "control-cleanup",
+        sessionId: "session-cleanup",
+        timeoutMs: 1000,
+      });
+      return { text: "Done" };
+    });
+    await expect(
+      bindings.consultAgent({
+        meetingSessionId: "control-cleanup",
+        args: { question: "Check the fixture" },
+        transcript: [],
+        onRunControl(control) {
+          if (control === undefined) throw new Error("Synthetic control cleanup failure");
+        },
+      }),
+    ).rejects.toThrow("Synthetic control cleanup failure");
+    expect(prepareTextToSpeech).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "operator",
+        channelId: "matrix",
+        accountId: "test-account",
+        target: "telephony",
+      }),
+    );
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("targets the configured default agent when agentId is omitted", async () => {
     await createBindings(undefined).consultAgent({
       meetingSessionId: "meeting-1",
@@ -445,5 +510,35 @@ describe("createMeetingRealtimeEngineBindings", () => {
     expect(consultRealtimeVoiceAgent).toHaveBeenCalledTimes(1);
     expect(submitToolResult).toHaveBeenCalledTimes(1);
     expect(events.map((event) => event.type)).toEqual(["tool.progress"]);
+  });
+
+  it("keeps native speech and worker admission out of provider tool results", async () => {
+    const submitToolResult = vi.fn(async () => undefined);
+    consultRealtimeVoiceAgent.mockResolvedValueOnce({
+      text: "Done",
+      utterances: [
+        {
+          text: "Done",
+          localServiceAdmission: {
+            generation: "synthetic-private-generation",
+            signal: new AbortController().signal,
+          },
+        },
+      ],
+    });
+    await createBindings("Support").handleToolCall({
+      strategy: "bidi",
+      session: makeSession(submitToolResult),
+      event: {
+        itemId: "item-host-facts",
+        callId: "call-host-facts",
+        name: "openclaw_agent_consult",
+        args: { question: "Check the fixture" },
+      },
+      meetingSessionId: "meeting-host-facts",
+      transcript: [],
+      onTalkEvent: () => {},
+    });
+    expect(submitToolResult).toHaveBeenCalledExactlyOnceWith("call-host-facts", { text: "Done" });
   });
 });

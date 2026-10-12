@@ -280,8 +280,10 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
   const projectMemoryWriteInstruction = buildProjectMemoryWriteInstruction(
     attempt.preparedModelRuntime?.projectKey,
   );
+  attempt.messageSpeechAdmission?.assertCurrent();
   const extraSystemPrompt = joinPresentTextSegments([
     attempt.extraSystemPrompt,
+    attempt.messageSpeechAdmission?.guidance,
     projectMemoryWriteInstruction,
     buildModelToolsUnavailablePrompt(params.modelToolsEnabled),
   ]);

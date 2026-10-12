@@ -294,7 +294,7 @@ export function projectEmbeddedMessageDeliveryFact(
   if (result.kind === "send") {
     return result.handledBy === "core" && result.sendResult
       ? projectSend(result.sendResult)
-      : result.handledBy === "internal-source"
+      : result.handledBy === "internal-source" || result.handledBy === "current-source"
         ? {
             status: result.dryRun ? "dryRun" : "settled",
             partialDelivery: false,

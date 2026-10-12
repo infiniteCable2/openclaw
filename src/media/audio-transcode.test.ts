@@ -8,6 +8,26 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 
 const runFfmpegMock = vi.hoisted(() => vi.fn());
 const runCommandWithTimeoutMock = vi.hoisted(() => vi.fn());
+const platformFixture = vi.hoisted(() => ({ restore: undefined as (() => void) | undefined }));
+
+vi.mock("@openclaw/fs-safe/temp", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@openclaw/fs-safe/temp")>();
+  return {
+    ...actual,
+    tempWorkspaceSync: (...args: Parameters<typeof actual.tempWorkspaceSync>) => {
+      // Only the recipe selector is macOS-shaped. Real staging must retain the
+      // host's native descriptor/security semantics, particularly on Windows.
+      platformFixture.restore?.();
+      platformFixture.restore = undefined;
+      return actual.tempWorkspaceSync(...args);
+    },
+  };
+});
+
+function selectDarwinRecipe() {
+  const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+  platformFixture.restore = () => platform.mockRestore();
+}
 
 vi.mock("./ffmpeg-exec.js", () => ({
   runFfmpeg: runFfmpegMock,
@@ -23,6 +43,11 @@ let transcodeAudioBufferToOpus: typeof import("./audio-transcode.js").transcodeA
 beforeAll(async () => {
   vi.resetModules();
   ({ transcodeAudioBuffer, transcodeAudioBufferToOpus } = await import("./audio-transcode.js"));
+});
+
+afterEach(() => {
+  platformFixture.restore?.();
+  platformFixture.restore = undefined;
 });
 
 afterAll(() => {
@@ -201,8 +226,32 @@ describe("transcodeAudioBuffer", () => {
     runFfmpegMock.mockReset();
   });
 
+  it("forwards caller cancellation to afconvert without converting it into a codec fallback", async () => {
+    selectDarwinRecipe();
+    const caller = new AbortController();
+    let inputPath: string | undefined;
+    runCommandWithTimeoutMock.mockImplementationOnce(
+      async (args: string[], options: { signal?: AbortSignal }) => {
+        expect(options.signal).toBe(caller.signal);
+        inputPath = args.at(-2);
+        caller.abort(new Error("Caller cancelled codec"));
+        return { termination: "signal", code: null };
+      },
+    );
+    await expect(
+      transcodeAudioBuffer({
+        audioBuffer: Buffer.from("cancelled"),
+        sourceExtension: "mp3",
+        targetExtension: "caf",
+        signal: caller.signal,
+      }),
+    ).rejects.toThrow("Caller cancelled codec");
+    expect(inputPath).toBeDefined();
+    expect(inputPath ? existsSync(inputPath) : true).toBe(false);
+  });
+
   it("returns a failure and cleans its workspace when input staging fails", async () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    selectDarwinRecipe();
     let workspaceDir: string | undefined;
     __setFsSafeTestHooksForTest({
       beforeFileStoreSyncPrivateWrite: (filePath) => {

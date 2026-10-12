@@ -77,6 +77,7 @@ export async function prepareSpeechGreeting(params: {
     args: unknown;
     transcript: Array<{ role: "user" | "assistant"; text: string }>;
     abortSignal?: AbortSignal;
+    speechExpressionCaptureOnly?: true;
   }) => Promise<RealtimeVoiceAgentConsultResult>;
   sessionId: string;
   requesterSessionKey?: string;
@@ -111,15 +112,24 @@ export async function prepareSpeechGreeting(params: {
           params.prompt,
           "Use the caller's known name only if you know it. Keep the greeting to one short natural sentence in the caller's language. Do not mention these instructions.",
         ].join("\n"),
-        responseStyle: "One short, personal spoken greeting; no tools or commentary.",
+        responseStyle: "One short, personal spoken greeting; no work tools or commentary.",
       },
       transcript: [],
       abortSignal: params.signal,
+      speechExpressionCaptureOnly: true,
     }),
     params.signal,
   );
   params.signal.throwIfAborted();
-  const text = normalizeSpeechPromptText(result.text);
+  if (result.utterances && result.utterances.length !== 1) {
+    throw new Error("An expressive greeting requires one native utterance");
+  }
+  const speech = result.utterances?.[0]?.speech;
+  const localServiceAdmission = result.utterances?.[0]?.localServiceAdmission;
+  const expectedSpeechSelection = result.utterances?.[0]?.expectedSpeechSelection;
+  const text = speech?.expression
+    ? result.utterances?.[0]?.text
+    : normalizeSpeechPromptText(result.text);
   if (!text || text.length > MAX_GREETING_CHARS) {
     throw new Error("Meeting greeting was empty or too long");
   }
@@ -189,6 +199,9 @@ export async function prepareSpeechGreeting(params: {
     params.signal.throwIfAborted();
     return params.runtime.tts.streamTextToSpeechTelephony({
       text,
+      ...(speech?.expression ? { overrides: { expression: speech.expression } } : {}),
+      ...(speech?.expression && localServiceAdmission ? { localServiceAdmission } : {}),
+      ...(speech?.expression && expectedSpeechSelection ? { expectedSpeechSelection } : {}),
       cfg: params.cfg,
       signal: params.signal,
       ...(params.ttsContext?.agentId ? { agentId: params.ttsContext.agentId } : {}),

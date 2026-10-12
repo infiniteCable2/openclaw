@@ -2,6 +2,7 @@ import { asOptionalObjectRecord, isRecord } from "@openclaw/normalization-core/r
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { AgentToolResult } from "../../agents/runtime/index.js";
 import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
+import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { InboundEventKind } from "../../channels/inbound-event/kind.js";
 import type { DurableMessageSendIntent, OutboundReplyFacts } from "../../channels/message/types.js";
 import {
@@ -19,6 +20,7 @@ import type { ChannelProgressDraftCompositorSnapshot } from "../../channels/prog
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MessageActionAuthorization } from "../../gateway/message-action-turn-capability.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
+import type { MessageSpeechAdmission } from "../../tts/message-speech-admission.js";
 import type { GatewayClientMode, GatewayClientName } from "../../utils/message-channel.js";
 import type { DeliverOutboundPayloadsParams } from "./deliver-contracts.js";
 import type { ConversationDeliveryTarget } from "./delivery-completion.js";
@@ -43,6 +45,28 @@ export type MessageActionGateway = Omit<
   clientName: GatewayClientName;
   clientDisplayName?: string;
   mode: GatewayClientMode;
+};
+
+/** Invocation-owned current-source custody; this receipt never claims audible playback. */
+export type CurrentSourceReplyTarget = {
+  runId: string;
+  sessionId: string;
+  assertCurrent: () => void;
+  /** Native user-message adoption rotates only this input's reply capture. */
+  beginInput?: (input: object) => void;
+  /** Capture-only producers restrict the existing message surface to this source. */
+  sourceOnly?: true;
+  /** Admit speech arguments on a restricted source surface only for this live target. */
+  speechExpressionRequired?: true;
+  deliver: (
+    payload: ReplyPayload,
+    context: {
+      final: boolean;
+      phase: "commentary" | "final_answer";
+      toolCallId?: string;
+      idempotencyKey?: string;
+    },
+  ) => Promise<void>;
 };
 
 export type MessageActionInput = Pick<
@@ -122,6 +146,11 @@ export type MessageActionInput = Pick<
   sourceReplyTranscriptOnly?: boolean;
   sourceReplyFinal?: boolean;
   sourceReplyToolCallId?: string;
+  /** Host-only callable, never reconstructed from tool arguments or persisted state. */
+  currentSourceReplyTarget?: CurrentSourceReplyTarget;
+  currentSourceReplyPhase?: "commentary" | "final_answer";
+  /** Native source-bound TTS readiness, never forwarded to channel plugins or queued payloads. */
+  messageSpeechAdmission?: MessageSpeechAdmission;
   inboundEventKind?: InboundEventKind;
   inboundAudio?: boolean;
 };
@@ -148,7 +177,7 @@ export type MessageActionResult =
       channel: ChannelId;
       action: "send";
       to: string;
-      handledBy: "plugin" | "core" | "internal-source";
+      handledBy: "plugin" | "core" | "internal-source" | "current-source";
       payload: unknown;
       normalization?: MessageActionNormalization;
       /** Exact text handed to the direct transport after core normalization and hooks. */

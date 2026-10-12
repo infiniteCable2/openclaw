@@ -1,11 +1,11 @@
 import path from "node:path";
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
 import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
+import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import * as directives from "../../tts/directives.js";
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
@@ -20,6 +20,7 @@ import {
   setNoAbort,
 } from "./dispatch-from-config.test-harness.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
+import { replyRunRegistry } from "./reply-run-registry.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 beforeAll(globalBeforeAll0);
@@ -27,6 +28,38 @@ beforeEach(() => {
   describe0BeforeEach0();
   setNoAbort();
 });
+
+it.each([false, true])(
+  "keeps originating voice-reply policy %s after accepting steered audio",
+  async (inboundAudio) => {
+    const sessionKey = "agent:main:telegram:direct:voice-origin";
+    const dispatcher = createReplyDispatcher({ deliver: async () => {} });
+    await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        SessionKey: sessionKey,
+        ...(inboundAudio ? { media: [{ kind: "audio", voiceMessage: true }] } : {}),
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async () => {
+        const operation = expectDefined(
+          replyRunRegistry.get(sessionKey),
+          "expected originating reply operation",
+        );
+        operation.markSteeredInputAccepted({ inboundAudio: true });
+        expect(operation.acceptedSteeredInboundAudio).toBe(true);
+        return { text: "The original request and its addition are complete." };
+      },
+    });
+    dispatcher.markComplete();
+    await dispatcher.waitForIdle();
+    expect(ttsMocks.maybeApplyTtsToPayload).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "final", inboundAudio }),
+    );
+  },
+);
 
 it.each([
   {
@@ -145,7 +178,7 @@ it("settles retained followup streams before external cleanup", async () => {
 
 describe("source completion", () => {
   afterEach(() => vi.restoreAllMocks());
-  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+  const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-source-completion-");
 
   const fencedFirst = "```ts\nconst x = \n```";
   const fencedSecond = "```ts\n1;\n```";
@@ -210,7 +243,7 @@ describe("source completion", () => {
       : undefined;
     const preparedScope = actualSessions
       ? {
-          storePath: path.join(tempDirs.make("openclaw-source-completion-"), "sessions.json"),
+          storePath: path.join(sessionDirs.make(), "sessions.json"),
           sessionKey: "agent:main:discord:direct:source-completion",
         }
       : undefined;

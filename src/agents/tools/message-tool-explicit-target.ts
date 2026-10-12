@@ -1,6 +1,8 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { PreparedMessageToolCatalog } from "../../channels/plugins/message-action-discovery.js";
 import type { ChannelMessageActionName } from "../../channels/plugins/types.public.js";
+import { isImplicitCurrentSourceSend } from "../../infra/outbound/current-source-reply-target.js";
+import type { CurrentSourceReplyTarget } from "../../infra/outbound/message-action-contracts.js";
 import { MessageActionDeniedError } from "../../infra/outbound/message-action-denial.js";
 import {
   actionRequiresTarget,
@@ -13,6 +15,7 @@ import { createMessageToolDecisionRecorder } from "./message-tool-decision.js";
 type ExplicitMessageTargetContext = {
   currentChannelProvider?: string;
   preparedMessageToolCatalog?: PreparedMessageToolCatalog;
+  currentSourceReplyTarget?: CurrentSourceReplyTarget;
 };
 
 type ExplicitMessageTargetGuard = {
@@ -26,6 +29,10 @@ function requireExplicitMessageTarget(
   action: ChannelMessageActionName,
   context: ExplicitMessageTargetContext,
 ): void {
+  if (context.currentSourceReplyTarget && isImplicitCurrentSourceSend(action, params)) {
+    context.currentSourceReplyTarget.assertCurrent();
+    return;
+  }
   if (action !== "broadcast" && !actionRequiresTarget(action)) {
     return;
   }
@@ -63,6 +70,7 @@ export function createMessageToolExplicitTargetGuard(params: {
   currentChannelProvider?: string;
   preparedMessageToolCatalog?: PreparedMessageToolCatalog;
   decisionChannel?: string;
+  currentSourceReplyTarget?: CurrentSourceReplyTarget;
 }): ExplicitMessageTargetGuard {
   const toolCallIds = new WeakMap<object, string>();
   const requireTarget = (actionParams: Record<string, unknown>, action: ChannelMessageActionName) =>

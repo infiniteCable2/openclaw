@@ -10,6 +10,7 @@ export const persistTtsAudioToMediaStore: TtsAudioPersistence = async ({
   audioBuffer,
   cfg,
   fileExtension,
+  assertCommitAllowed,
 }) => {
   const originalFilename = `voice${fileExtension}`;
   const saved = await saveMediaBuffer(
@@ -18,6 +19,8 @@ export const persistTtsAudioToMediaStore: TtsAudioPersistence = async ({
     TTS_MEDIA_SUBDIR,
     resolveGeneratedMediaMaxBytes(cfg, "audio"),
     originalFilename,
+    undefined,
+    { assertCommitAllowed },
   );
   return saved.path;
 };

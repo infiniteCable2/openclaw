@@ -1,4 +1,6 @@
+import path from "node:path";
 import { isCanonicalDottedDecimalIPv4, isLoopbackIpAddress } from "@openclaw/net-policy/ip";
+import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import type { ModelProviderLocalServiceConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ProviderLocalServiceReconciler } from "./provider-local-service-reconcile.js";
@@ -18,7 +20,11 @@ export type ProviderLocalServiceTarget = {
 export type ConfiguredProviderLocalServiceTarget = Omit<ProviderLocalServiceTarget, "service">;
 
 /** Lease returned for a started or already-running local provider service. */
-export type ProviderLocalServiceLease = { release: () => void };
+export type ProviderLocalServiceLease = {
+  release: () => void;
+  /** Worker-provided readiness identity, revoked by its existing service owner. */
+  admission?: { readonly generation: string; readonly signal: AbortSignal };
+};
 
 /** Host-injected acquisition hook that cannot supply process configuration. */
 export type AcquireConfiguredProviderLocalService = (
@@ -38,6 +44,25 @@ export function resolveConfiguredProviderLocalServiceTarget(
     throw new Error(`Local endpoint must match models.providers.${target.providerId}.baseUrl`);
   }
   return { ...target, service: provider.localService };
+}
+
+export function validateLocalServiceConfig(
+  service: ModelProviderLocalServiceConfig,
+  provider: string,
+) {
+  if (!path.isAbsolute(service.command)) {
+    throw new Error(`models.providers.${provider}.localService.command must be an absolute path`);
+  }
+  if (service.idleStopCheck && !path.isAbsolute(service.idleStopCheck.command)) {
+    throw new Error(
+      `models.providers.${provider}.localService.idleStopCheck.command must be an absolute path`,
+    );
+  }
+  if (service.idleStopCheck && clampPositiveTimerTimeoutMs(service.idleStopMs) === undefined) {
+    throw new Error(
+      `models.providers.${provider}.localService.idleStopMs must be positive with idleStopCheck`,
+    );
+  }
 }
 
 function readConfiguredProviderBaseUrl(

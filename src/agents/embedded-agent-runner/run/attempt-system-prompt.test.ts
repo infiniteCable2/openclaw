@@ -8,12 +8,14 @@ import {
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import type { MessageSpeechAdmission } from "../../../tts/message-speech-admission.js";
 import { prepareSystemAgentRunAdmission } from "../../admitted-run-context.js";
 import { addSession, deleteSession } from "../../bash-process-registry.js";
 import { createProcessSessionFixture } from "../../bash-process-registry.test-helpers.js";
 import { buildBootstrapBudgetState } from "../../bootstrap-budget.js";
 import type { AgentTool } from "../../runtime/index.js";
 import { makeProviderModelFixture } from "../../test-helpers/provider-model-fixture.js";
+import { buildEmbeddedForegroundPromptContext } from "./agent-end-context.js";
 import { createAttemptSetupFixture } from "./attempt-setup.test-support.js";
 import { buildAttemptSystemPrompt } from "./attempt-system-prompt.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
@@ -73,6 +75,7 @@ async function preparePermissionPrompt(
   session?: Pick<EmbeddedRunAttemptParams, "sessionKey" | "sandboxSessionKey">,
   skills?: { prompt: string; toolsAllow?: string[]; initialToolNames?: string[] },
   webSearchUnconfigured?: () => boolean,
+  messageSpeechAdmission?: MessageSpeechAdmission,
 ) {
   const tool = (name: string): AgentTool => ({
     name,
@@ -110,6 +113,8 @@ async function preparePermissionPrompt(
     admittedRunContext: await admitPrompt({}),
     thinkLevel,
     toolsAllow: skills?.toolsAllow,
+    extraSystemPrompt: "Original caller context.",
+    messageSpeechAdmission,
     sourceReplyDeliveryMode:
       requireExplicitMessageTarget === undefined ? undefined : "message_tool_only",
   } as EmbeddedRunAttemptParams;
@@ -162,6 +167,55 @@ async function preparePermissionPrompt(
 }
 
 describe("buildAttemptSystemPrompt", () => {
+  it("uses admitted speech guidance without inheriting it into a detached foreground snapshot", async () => {
+    const speech: MessageSpeechAdmission = {
+      runId: "permission-prompt",
+      sessionId: "permission-prompt",
+      agentId: "main",
+      route: { channel: "matrix", to: "room:example" },
+      assertCurrent: vi.fn(),
+      preparedTtsPreferences: { machinePrefsPath: "fixture-prefs" },
+      prefsPath: "fixture-prefs",
+      expectedSpeechSelection: { provider: "example" },
+      guidance: "ADMITTED_SPEECH_GUIDANCE_MARKER",
+    };
+    const { attempt, prepared } = await preparePermissionPrompt(
+      false,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      speech,
+    );
+    expect(prepared.systemPromptText).toContain(speech.guidance);
+    expect(speech.assertCurrent).toHaveBeenCalled();
+    expect(attempt.extraSystemPrompt).toBe("Original caller context.");
+    const foreground = buildEmbeddedForegroundPromptContext(
+      { ...attempt, agentId: "main" },
+      "/tmp/example-agent",
+    );
+    expect(foreground.extraSystemPrompt).toBe("Original caller context.");
+    expect(foreground).not.toHaveProperty("messageSpeechAdmission");
+  });
+
+  it("does not build a model prompt from retired speech admission", async () => {
+    await expect(
+      preparePermissionPrompt(false, undefined, false, undefined, undefined, undefined, {
+        runId: "permission-prompt",
+        sessionId: "permission-prompt",
+        agentId: "main",
+        route: { channel: "matrix", to: "room:example" },
+        assertCurrent: () => {
+          throw new Error("Speech admission retired");
+        },
+        preparedTtsPreferences: { machinePrefsPath: "fixture-prefs" },
+        prefsPath: "fixture-prefs",
+        expectedSpeechSelection: { provider: "example" },
+        guidance: "Retired speech guidance",
+      }),
+    ).rejects.toThrow("Speech admission retired");
+  });
   it("carries the prepared missing-search fact into the actual initial prompt and tool refresh", async () => {
     let missing = true;
     const { prepared, read, refreshSystemPrompt } = await preparePermissionPrompt(

@@ -24,7 +24,7 @@ describe("provider readiness wait", () => {
               command: process.execPath,
               args: [
                 "-e",
-                `const http=require("http");http.createServer((req,res)=>{res.writeHead(200);res.end("ok");}).listen(${port},"127.0.0.1");`,
+                `const http=require("http");let generation="worker1";http.createServer((req,res)=>{if(req.url==="/rotate")generation="worker2";res.writeHead(200,{"X-OpenClaw-Service-Generation":generation});res.end("ok");}).listen(${port},"127.0.0.1");`,
               ],
               readyTimeoutMs: 5_000,
               idleStopMs: 1,
@@ -49,7 +49,18 @@ describe("provider readiness wait", () => {
     phases.length = 0;
     const warmLease = await acquire(target);
     expect(warmLease).toBeDefined();
+    expect(coldLease?.admission?.generation).toBe("worker1");
+    expect(warmLease?.admission).toBe(coldLease?.admission);
+    await fetch(`http://127.0.0.1:${port}/rotate`);
+    phases.length = 0;
+    const replacement = await acquire(target);
+    expect(coldLease?.admission?.signal.aborted).toBe(true);
+    expect(replacement?.admission?.generation).toBe("worker2");
+    expect(replacement?.admission?.signal.aborted).toBe(false);
+    await stopManagedProviderLocalServices();
+    expect(replacement?.admission?.signal.aborted).toBe(true);
     coldLease?.release();
     warmLease?.release();
+    replacement?.release();
   });
 });

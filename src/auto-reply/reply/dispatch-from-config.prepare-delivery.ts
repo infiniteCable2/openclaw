@@ -119,9 +119,8 @@ export async function prepareDispatchDelivery(state: GatherDispatchRequestReadyS
         payload,
         kind,
         preparedTtsPreferences,
-        inboundAudio:
-          state.inboundAudio ||
-          state.getDispatchReplyOperation()?.acceptedSteeredInboundAudio === true,
+        // A steered voice message supplements the task without changing its reply mode.
+        inboundAudio: state.inboundAudio,
       });
     } finally {
       finishFinalizationWork?.();

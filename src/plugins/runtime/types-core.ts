@@ -478,6 +478,8 @@ export type PluginRuntimeCore = {
     resizeToJpeg: typeof import("../../media/media-services.js").resizeToJpeg;
   };
   tts: {
+    /** Explicit readiness; absent on older hosts. Never call for cold inventory. */
+    prepareTextToSpeech?: TtsRuntimeApi["prepareTextToSpeech"];
     prepareTtsRequest: PrepareTtsRequest;
     prepareTextToSpeechTelephony: PrepareTextToSpeechTelephony;
     streamTextToSpeechTelephony: StreamTextToSpeechTelephony;
@@ -585,7 +587,9 @@ export type PluginRuntimeCore = {
         reconcile?: import("../provider-plugin.types.js").ProviderPlugin["reconcileLocalService"];
       },
       signal?: AbortSignal | null,
-    ) => Promise<{ release: () => void } | undefined>;
+    ) => Promise<
+      import("../../agents/provider-local-service-target.js").ProviderLocalServiceLease | undefined
+    >;
   };
   modelConfig: {
     /** Read-only model selection; no session mutation or harness execution authority. */

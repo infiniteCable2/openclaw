@@ -46,6 +46,7 @@ export { prepareTtsRequest, resolveExplicitTtsOverrides } from "./tts-request.js
 export { streamSpeech, textToSpeechStream } from "./tts-streaming.js";
 export { synthesizeSpeech } from "./tts-synthesis.js";
 export {
+  prepareTextToSpeech,
   prepareTextToSpeechTelephony,
   streamTextToSpeechTelephony,
   textToSpeechTelephony,

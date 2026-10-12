@@ -2,22 +2,17 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
 import { resolveActiveReplyOperationForSessionId } from "../../auto-reply/reply/reply-run-registry.js";
-import type { ChatType } from "../../channels/chat-type.js";
-import type { InboundEventKind } from "../../channels/inbound-event/kind.js";
-import type { ConversationReadInvocationOrigin } from "../../channels/plugins/conversation-read-origin.js";
-import type { PreparedMessageToolCatalog } from "../../channels/plugins/message-action-discovery.js";
 import { isScheduledMessageWriteAction } from "../../channels/plugins/message-action-dispatch.js";
 import type { ChannelMessageActionName } from "../../channels/plugins/types.public.js";
 import { resolveCommandSecretRefsViaGateway } from "../../cli/command-secret-gateway.js";
 import { getScopedChannelsCommandSecretTargets } from "../../cli/command-secret-targets.js";
 import { resolveMessageSecretScope } from "../../cli/message-secret-scope.js";
 import { getRuntimeConfig } from "../../config/config.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import * as messageActionTurnCapability from "../../gateway/message-action-turn-capability.js";
 import type { MessageActionAuthorization } from "../../gateway/message-action-turn-capability.js";
 import { resolveMessageChannelSelection } from "../../infra/outbound/channel-selection.js";
+import { isImplicitCurrentSourceSend } from "../../infra/outbound/current-source-reply-target.js";
 import {
   resolveMessageBroadcastAccountPlan,
   validateExplicitMessageAccountSelection,
@@ -34,9 +29,13 @@ import { withPreparedChannelReadAuthority } from "../../shared/channel-read-auth
 import { resolveSessionAgentId } from "../agent-scope.js";
 import * as embeddedMessageDelivery from "../embedded-agent-message-delivery.js";
 import { createSandboxBridgeReadFile } from "../sandbox-media-paths.js";
-import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
 import { type AnyAgentTool, jsonResult, readToolStringParam } from "./common.js";
 import { captureGatewayToolCallerAssertion } from "./gateway-caller-context.js";
+import {
+  buildMessageToolSourceReplySchema,
+  deliverMessageToolCurrentSource,
+  prepareMessageToolSourceReply,
+} from "./message-tool-current-source.js";
 import {
   createMessageToolDecisionRecorder,
   resolveTrustedDecisionChannel,
@@ -56,23 +55,18 @@ import {
   buildMessageToolDeliveryFingerprint,
   normalizeMessageToolIdempotencyKeyPart,
 } from "./message-tool-idempotency.js";
+import type { MessageToolOptions } from "./message-tool-options.js";
 import {
   projectScheduledMessageActionPartialResult,
   shouldRevalidateCompletedMessageAction,
 } from "./message-tool-scheduled-execution.js";
-import { MessageToolSchema } from "./message-tool-schema.js";
 import {
-  addSourceReplyFinalControl,
-  enforceSourceReplyOnlyMessageAction,
-  enforceSourceReplyOnlyTextDirectives,
   enforceTrustedTurnExplicitAccount,
   resolveSourceReplySinkDeliveryMode,
-  SOURCE_REPLY_ONLY_MESSAGE_SCHEMA,
 } from "./message-tool-source-policy.js";
 import { createMessageToolTurnAuthority } from "./message-tool-turn-authority.js";
 import {
   hasSanitizedSendPayloadContent,
-  sanitizeMessageToolVisiblePayload,
   type VisibleTextSuppressionReason,
 } from "./message-tool-visible-content.js";
 import { isPollVoteEchoText, resolvePollVoteEchoRoute } from "./poll-vote-echo.js";
@@ -85,50 +79,6 @@ const recentPollVoteBySession = new Map<
   string,
   { option: string; route: string; recordedAt: number }
 >();
-
-type MessageToolOptions = {
-  agentAccountId?: string;
-  agentSessionKey?: string;
-  runSessionKey?: string;
-  runId?: string;
-  sessionId?: string;
-  agentId?: string;
-  config?: OpenClawConfig;
-  preparedMessageToolCatalog?: PreparedMessageToolCatalog;
-  getRuntimeConfig?: () => OpenClawConfig;
-  admitScheduledInvocation?: () => OpenClawConfig;
-  getScopedChannelsCommandSecretTargets?: typeof getScopedChannelsCommandSecretTargets;
-  resolveCommandSecretRefsViaGateway?: typeof resolveCommandSecretRefsViaGateway;
-  runMessageAction?: typeof runMessageAction;
-  currentChannelId?: string;
-  currentChatType?: ChatType;
-  currentMessagingTarget?: string;
-  messageActionTurnCapability?: string;
-  currentChannelProvider?: string;
-  currentThreadTs?: string;
-  agentThreadId?: string | number;
-  currentMessageId?: string | number;
-  currentInboundAudio?: boolean;
-  hasCurrentInboundAudio?: () => boolean;
-  replyToMode?: "off" | "first" | "all" | "batched";
-  hasRepliedRef?: { value: boolean };
-  sameChannelThreadRequired?: boolean;
-  sandboxRoot?: string;
-  sandboxContainerWorkdir?: string;
-  sandboxFsBridge?: SandboxFsBridge;
-  sandboxReadOnlyResourceMounts?: readonly { hostPath: string; containerPath: string }[];
-  sandboxWorkspaceMediaReadAllowed?: boolean;
-  requireExplicitTarget?: boolean;
-  sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
-  inputProvenance?: import("../../sessions/input-provenance.js").InputProvenance;
-  /** Process-local completion authority: send only to the current source route. */
-  sourceReplyOnly?: boolean;
-  inboundEventKind?: InboundEventKind;
-  requesterSenderId?: string;
-  senderIsOwner?: boolean;
-  conversationReadOrigin?: ConversationReadInvocationOrigin;
-  workspaceDir?: string;
-};
 
 export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
   const loadConfigForTool = options?.getRuntimeConfig ?? getRuntimeConfig;
@@ -206,6 +156,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         currentChannelProvider: inferredCurrentChannel.currentChannelProvider,
         preparedMessageToolCatalog,
         decisionChannel,
+        currentSourceReplyTarget: options.currentSourceReplyTarget,
       })
     : undefined;
   // Schema and prompt must use the same snapshot; repeated discovery can drift
@@ -213,12 +164,15 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
   const actions = messageToolDiscoveryParams
     ? resolveMessageToolActionSchemaActions(messageToolDiscoveryParams)
     : undefined;
-  const baseSchema = options?.sourceReplyOnly
-    ? SOURCE_REPLY_ONLY_MESSAGE_SCHEMA
-    : messageToolDiscoveryParams
-      ? buildMessageToolSchema(messageToolDiscoveryParams, actions ?? [])
-      : MessageToolSchema;
-  const schema = addSourceReplyFinalControl(baseSchema);
+  const schema = buildMessageToolSourceReplySchema({
+    sourceReplyOnly: options?.sourceReplyOnly,
+    currentSourceReplyTarget: options?.currentSourceReplyTarget,
+    messageSpeechAdmission: options?.messageSpeechAdmission,
+    discoverySchema:
+      !options?.sourceReplyOnly && messageToolDiscoveryParams
+        ? buildMessageToolSchema(messageToolDiscoveryParams, actions ?? [])
+        : undefined,
+  });
   const description = options?.sourceReplyOnly
     ? "Send a message to the current source conversation. Supports actions: send."
     : buildMessageToolDescription(actions);
@@ -300,33 +254,53 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         assertDashboardReadCurrent?.();
       };
       assertActionCurrent();
-      if (options?.sourceReplyOnly) {
-        decisions.runBoundary(() =>
-          enforceSourceReplyOnlyMessageAction({
+      const { requestedSourceReplyFinal, suppressedVisiblePayloadReason } =
+        prepareMessageToolSourceReply(
+          {
             action,
             args: params,
+            sourceReplyOnly: options?.sourceReplyOnly,
+            agentSessionKey: options?.agentSessionKey,
             currentChannelProvider: effectiveCurrentChannel.currentChannelProvider,
             currentChannelId: effectiveCurrentChannel.currentChannelId,
             currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
             currentThreadTs,
-            currentMessageId: options.currentMessageId,
+            currentMessageId: options?.currentMessageId,
             currentAccountId: agentAccountId,
             trustedTurnContext,
-          }),
+            currentSourceReplyTarget: options?.currentSourceReplyTarget,
+            messageSpeechAdmission: options?.messageSpeechAdmission,
+          },
+          decisions,
         );
-      }
-      // `final` is a host-owned source-reply completion control. It must
-      // not be dispatched to a provider or participate in idempotency.
-      const requestedSourceReplyFinal =
-        typeof params.final === "boolean" ? params.final : undefined;
-      delete params.final;
 
-      const suppressedVisiblePayloadReason = sanitizeMessageToolVisiblePayload(
-        params,
-        options?.agentSessionKey,
-      );
-      if (options?.sourceReplyOnly) {
-        decisions.runBoundary(() => enforceSourceReplyOnlyTextDirectives(params));
+      // A host-bound source target owns this send before channel discovery or secret preparation.
+      // Addressed sends keep the configured external route below.
+      if (options?.currentSourceReplyTarget && isImplicitCurrentSourceSend(action, params)) {
+        return await deliverMessageToolCurrentSource({
+          input: {
+            cfg: rawConfig,
+            action,
+            params,
+            currentSourceReplyTarget: options.currentSourceReplyTarget,
+            sourceReplyFinal: requestedSourceReplyFinal ?? true,
+            sourceReplyToolCallId: toolCallId,
+            sessionKey: options.agentSessionKey,
+            sessionId: options.sessionId,
+            runId: options.runId,
+            agentId: resolvedAgentId,
+            messageActionAuthorization,
+            assertDirectAdapterHandoff: assertActionCurrent,
+            abortSignal: signal,
+          },
+          runMessageAction: runMessageActionForTool,
+          recordActionResult: (result) => decisions.recordActionResult(result, decisionChannel),
+        });
+      }
+      if (params.replyPhase !== undefined) {
+        throw new Error(
+          "replyPhase is available only for the admitted implicit current-source target",
+        );
       }
 
       if (
@@ -586,6 +560,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
                 sandboxRoot: options?.sandboxRoot,
                 sandboxContainerWorkdir: options?.sandboxContainerWorkdir,
                 sourceReplyDeliveryMode: sourceReplySinkDeliveryMode,
+                messageSpeechAdmission: options?.messageSpeechAdmission,
                 sourceReplyTranscriptOnly: options?.inputProvenance?.kind === "inter_session",
                 // Only an admitted channel source can arm terminal restart reconciliation.
                 // Source-less scheduled and ambient sends remain ordinary message actions.

@@ -6,9 +6,10 @@ import {
 } from "../agents/agent-run-terminal-outcome.js";
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import { withCommentaryGuidance } from "../agents/commentary-guidance.js";
+import { applyEmbeddedAttemptToolsAllow } from "../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
-import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
+import type { ProviderLocalServiceLease } from "../agents/provider-local-service-target.js";
 import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import { resolveLoadedSessionThreadInfo } from "../channels/plugins/session-thread-info-loaded.js";
 import { buildSpawnAuthorityReceipt } from "../config/sessions/session-entry-lineage.js";
@@ -18,10 +19,11 @@ import {
 } from "../config/sessions/session-entry-provenance.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { toErrorObject } from "../infra/errors.js";
+import type { AssistantDeliveryTtsFacts } from "../llm/types.js";
 import type { RuntimeLogger, PluginRuntimeCore } from "../plugins/runtime/types-core.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { isModelSelectionLocked, ModelSelectionLockedError } from "../sessions/model-overrides.js";
+import type { PreparedSpeechExpressionContext } from "../tts/expression-preparation.js";
 import { deliveryContextFromSession } from "../utils/delivery-context.read.js";
 import {
   hasDeliveryTargetFields,
@@ -29,9 +31,9 @@ import {
   normalizeSessionDeliveryState,
   type DeliveryContext,
 } from "../utils/delivery-context.shared.js";
+import { createRealtimeVoiceConsultSpeechDelivery } from "./agent-consult-speech-delivery.js";
 import {
   buildRealtimeVoiceAgentConsultPrompt,
-  collectRealtimeVoiceAgentConsultVisibleText,
   type RealtimeVoiceAgentConsultTranscriptEntry,
 } from "./agent-consult-tool.js";
 
@@ -40,32 +42,36 @@ export type RealtimeVoiceAgentConsultRuntime = PluginRuntimeCore["agent"];
 /**
  * Speakable text returned to the realtime voice bridge after an agent consult.
  */
-export type RealtimeVoiceAgentConsultResult = { text: string; delivered?: boolean; yielded?: true };
+export type RealtimeVoiceSpeechUtterance = {
+  text: string;
+  speech?: AssistantDeliveryTtsFacts;
+  /** Transient provider generation; never part of transcript or delivery metadata. */
+  localServiceAdmission?: NonNullable<ProviderLocalServiceLease["admission"]>;
+  expectedSpeechSelection?: PreparedSpeechExpressionContext["expectedSpeechSelection"];
+};
+export type RealtimeVoiceAgentConsultResult = {
+  text: string;
+  delivered?: boolean;
+  yielded?: true;
+  /** Ordered admitted utterances for buffered playback; includes explicit commentary. */
+  utterances?: RealtimeVoiceSpeechUtterance[];
+};
+export type RealtimeVoiceSpeechExpressionContext = {
+  guidance: string;
+  assertCurrent: () => void;
+  localServiceAdmission?: NonNullable<ProviderLocalServiceLease["admission"]>;
+  expectedSpeechSelection?: PreparedSpeechExpressionContext["expectedSpeechSelection"];
+};
 
 /** Safe, final-answer-only text events emitted while a realtime consult is running. */
 export type RealtimeVoiceAgentConsultSpeechEvent =
-  | { type: "chunk"; text: string }
+  | ({ type: "chunk" } & RealtimeVoiceSpeechUtterance)
   | { type: "done"; text: string }
   | { type: "abort" };
 
 const REALTIME_VOICE_YIELD_ACK_MAX_CHARS = 500;
 const REALTIME_VOICE_YIELD_ACK_FALLBACK =
   "I started that work and will share the result when it is ready.";
-
-function hasQueuedSpeechSuffix(chunks: readonly string[], text: string): boolean {
-  let remaining = text.replaceAll(/\s+/g, " ").trim();
-  for (const queuedChunk of chunks.toReversed()) {
-    const chunk = queuedChunk.replaceAll(/\s+/g, " ").trim();
-    if (remaining === chunk) {
-      return true;
-    }
-    if (!remaining.endsWith(` ${chunk}`)) {
-      return false;
-    }
-    remaining = remaining.slice(0, -chunk.length - 1);
-  }
-  return false;
-}
 
 /**
  * Sender-auth contract revision for official realtime voice plugins.
@@ -420,6 +426,10 @@ export async function consultRealtimeVoiceAgent(params: {
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
   /** Speak completed commentary blocks on this consult only, without adding them to final text. */
   speakCommentary?: boolean;
+  /** Caller has already admitted the exact speech target and retained its provider lease. */
+  speechExpressionContext?: RealtimeVoiceSpeechExpressionContext;
+  /** Precompute greeting utterances; never execute external actions or play audio. */
+  speechExpressionCaptureOnly?: true;
   waitForPendingInput?: RunEmbeddedAgentParams["waitForPendingInput"];
   onRunStarted?: (params: {
     runId: string;
@@ -533,43 +543,29 @@ export async function consultRealtimeVoiceAgent(params: {
         ? AbortSignal.any([lifecycleAbortController.signal, runRegistration.abortSignal])
         : lifecycleAbortController.signal;
 
-      const streamedChunks: string[] = [];
-      let commentarySpeechQueued = false;
-      const spokenCommentaryEnabled =
-        params.speakCommentary === true && Boolean(params.onSpeakableText);
-      let speechDelivery = Promise.resolve();
-      let speechDeliveryError: Error | undefined;
-      let speechDeliveryAborted = false;
-      let speechAbortCompletion: Promise<void> | undefined;
-      const emitSpeechEvent = (event: RealtimeVoiceAgentConsultSpeechEvent) => {
-        if (!params.onSpeakableText || speechDeliveryError || speechDeliveryAborted) {
-          return;
+      let sourceTargetOpen = true;
+      const assertExpressionCurrent = () => {
+        abortSignal.throwIfAborted();
+        if (!sourceTargetOpen || !sessionWorkAdmission.isActive()) {
+          throw new Error("Current-source speech target is no longer active");
         }
-        speechDelivery = speechDelivery
-          .then(async () => {
-            if (!speechDeliveryAborted && !speechDeliveryError && !abortSignal.aborted) {
-              await params.onSpeakableText?.(event);
-            }
-          })
-          .catch((error: unknown) => {
-            speechDeliveryError = toErrorObject(error, "Realtime voice speech delivery failed");
-          });
+        params.speechExpressionContext?.assertCurrent();
       };
-      const abortSpeechDelivery = (): Promise<void> => {
-        if (!params.onSpeakableText) {
-          return Promise.resolve();
-        }
-        speechDeliveryAborted = true;
-        return (speechAbortCompletion ??= Promise.resolve().then(async () => {
-          try {
-            // Notify the sink before joining: abort may release an in-flight write.
-            await params.onSpeakableText?.({ type: "abort" });
-          } catch {
-            // Preserve the original consult or delivery failure.
-          }
-          await speechDelivery;
-        }));
-      };
+      const speechDelivery = createRealtimeVoiceConsultSpeechDelivery({
+        runId,
+        sessionId,
+        abortSignal,
+        assertExpressionCurrent,
+        assertNotInterrupted: () => assertRealtimeVoiceConsultNotInterrupted(abortSignal),
+        onSpeakableText: params.onSpeakableText,
+        speakCommentary: params.speakCommentary,
+        speechExpressionContext: params.speechExpressionContext,
+        speechExpressionCaptureOnly: params.speechExpressionCaptureOnly,
+        fallbackText: params.fallbackText,
+        logger: params.logger,
+      });
+      const { currentSourceReplyTarget, spokenCommentaryEnabled, abortSpeechDelivery } =
+        speechDelivery;
       const onSpeechAbort = () => {
         void abortSpeechDelivery();
       };
@@ -577,6 +573,16 @@ export async function consultRealtimeVoiceAgent(params: {
 
       try {
         assertRealtimeVoiceConsultNotInterrupted(abortSignal);
+        if (currentSourceReplyTarget) {
+          assertExpressionCurrent();
+          if (
+            applyEmbeddedAttemptToolsAllow([{ name: "message" }], params.toolsAllow).length === 0
+          ) {
+            throw new Error(
+              "Enabled speech expression requires the message tool permitted by this run's native policy",
+            );
+          }
+        }
         // Voice consults suppress verbose/reasoning presentation because the bridge needs a short,
         // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
         const runPromise = params.agentRuntime.runEmbeddedAgent({
@@ -618,7 +624,15 @@ export async function consultRealtimeVoiceAgent(params: {
           verboseLevel: "off",
           reasoningLevel: "off",
           toolResultFormat: "plain",
-          ...(params.onSpeakableText
+          ...(currentSourceReplyTarget
+            ? {
+                currentSourceReplyTarget,
+                forceMessageTool: true,
+                sourceReplyDeliveryMode: "message_tool_only" as const,
+                ...(params.speechExpressionCaptureOnly ? { toolExecutionAllow: ["message"] } : {}),
+              }
+            : {}),
+          ...(params.onSpeakableText && !currentSourceReplyTarget
             ? {
                 deliverCommentaryBlocks: spokenCommentaryEnabled,
                 blockReplyBreak: "text_end" as const,
@@ -627,32 +641,7 @@ export async function consultRealtimeVoiceAgent(params: {
                   maxChars: 320,
                   breakPreference: "sentence" as const,
                 },
-                onBlockReply: (payload: {
-                  text?: string;
-                  isError?: boolean;
-                  isReasoning?: boolean;
-                  isCommentary?: boolean;
-                }) => {
-                  if (payload.isCommentary) {
-                    if (
-                      spokenCommentaryEnabled &&
-                      !payload.isError &&
-                      !payload.isReasoning &&
-                      typeof payload.text === "string" &&
-                      payload.text.trim()
-                    ) {
-                      commentarySpeechQueued = true;
-                      emitSpeechEvent({ type: "chunk", text: payload.text.trim() });
-                    }
-                    return;
-                  }
-                  const text = collectRealtimeVoiceAgentConsultVisibleText([payload]);
-                  if (!text) {
-                    return;
-                  }
-                  streamedChunks.push(text);
-                  emitSpeechEvent({ type: "chunk", text });
-                },
+                onBlockReply: speechDelivery.onBlockReply,
               }
             : {}),
           execSession: sessionEntry,
@@ -662,9 +651,15 @@ export async function consultRealtimeVoiceAgent(params: {
           runId,
           lane: params.lane,
           extraSystemPrompt: withCommentaryGuidance(
-            params.extraSystemPrompt ??
-              "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+            [
+              params.extraSystemPrompt ??
+                "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+              params.speechExpressionContext?.guidance,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
             spokenCommentaryEnabled,
+            currentSourceReplyTarget ? "structured-speech" : "text",
           ),
           agentDir,
           abortSignal,
@@ -672,7 +667,6 @@ export async function consultRealtimeVoiceAgent(params: {
         });
         const result = await runPromise;
         assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
-
         const yielded = result.meta?.yielded === true;
         const acknowledgment = yielded
           ? (typeof result.meta.yieldAcknowledgment === "string"
@@ -682,90 +676,19 @@ export async function consultRealtimeVoiceAgent(params: {
                 )
               : "") || REALTIME_VOICE_YIELD_ACK_FALLBACK
           : undefined;
-        let yieldedSpeech = acknowledgment;
-        if (acknowledgment && (streamedChunks.length > 0 || commentarySpeechQueued)) {
-          const spoken = collectRealtimeVoiceAgentConsultVisibleText(
-            streamedChunks.map((chunk) => ({ text: chunk })),
-          );
-          const alreadyQueued =
-            streamedChunks.at(-1)?.replaceAll(/\s+/g, " ").trim() === acknowledgment ||
-            spoken?.replaceAll(/\s+/g, " ").trim() === acknowledgment;
-          // A done event consolidates already queued speech; it does not append new
-          // audio after chunks. Yield acknowledgments therefore need their own chunk.
-          if (!alreadyQueued) {
-            streamedChunks.push(acknowledgment);
-            emitSpeechEvent({ type: "chunk", text: acknowledgment });
-          }
-          yieldedSpeech =
-            collectRealtimeVoiceAgentConsultVisibleText(
-              streamedChunks.map((chunk) => ({ text: chunk })),
-            ) ?? acknowledgment;
-        }
-        // Earlier segments remain in native context, but may have been superseded
-        // by a correction. Only the model's current answer decides what to repeat.
-        const payloads = result.payloads ?? [];
-        const currentInputPayloads = payloads.filter(
-          (payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer !== true,
-        );
-        const text =
-          yieldedSpeech ??
-          collectRealtimeVoiceAgentConsultVisibleText(currentInputPayloads) ??
-          // Chunks have no input ownership. After a proven input boundary they
-          // cannot recover the current answer from already spoken earlier text.
-          (currentInputPayloads.length === payloads.length
-            ? collectRealtimeVoiceAgentConsultVisibleText(
-                streamedChunks.map((streamedText) => ({ text: streamedText })),
-              )
-            : null);
-        if (!text) {
-          params.logger.warn(
-            "[talk] agent consult produced no answer: agent returned no speakable text",
-          );
-          const fallbackText =
-            params.fallbackText ?? "I need a moment to verify that before answering.";
-          if (streamedChunks.length > 0 || commentarySpeechQueued) {
-            // As with yield acknowledgments, done does not append new audio.
-            emitSpeechEvent({ type: "chunk", text: fallbackText });
-          }
-          emitSpeechEvent({ type: "done", text: fallbackText });
-          await speechDelivery;
-          assertRealtimeVoiceConsultNotInterrupted(abortSignal);
-          if (speechDeliveryError) {
-            throw speechDeliveryError;
-          }
-          return {
-            text: fallbackText,
-            ...(params.onSpeakableText ? { delivered: true } : {}),
-          };
-        }
-        if (
-          !yielded &&
-          ((currentInputPayloads.length < payloads.length && streamedChunks.length > 0) ||
-            (commentarySpeechQueued && streamedChunks.length === 0)) &&
-          !hasQueuedSpeechSuffix(streamedChunks, text)
-        ) {
-          // Earlier-input speech may be all the sink has received. Done only
-          // consolidates queued audio; append the current answer unless already queued.
-          emitSpeechEvent({ type: "chunk", text });
-        }
-        emitSpeechEvent({ type: "done", text });
-        await speechDelivery;
-        assertRealtimeVoiceConsultNotInterrupted(abortSignal);
-        if (speechDeliveryError) {
-          throw speechDeliveryError;
-        }
-        return {
-          text,
-          ...(yielded ? { yielded: true as const } : {}),
-          ...(params.onSpeakableText ? { delivered: true } : {}),
-        };
+        return await speechDelivery.finish({
+          yielded,
+          acknowledgment,
+          payloads: result.payloads ?? [],
+        });
       } catch (error) {
         await abortSpeechDelivery();
         assertRealtimeVoiceConsultNotInterrupted(abortSignal);
         throw error;
       } finally {
+        sourceTargetOpen = false;
         abortSignal.removeEventListener("abort", onSpeechAbort);
-        await speechAbortCompletion;
+        await speechDelivery.abortCompletion;
         runRegistration?.cleanup?.();
       }
     });

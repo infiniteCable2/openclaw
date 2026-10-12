@@ -15,6 +15,8 @@ type AttemptToolRunFacts = Pick<
   | "gatewayUiCommandTarget"
   | "pinnedWidgetAuthoring"
   | "toolBindings"
+  | "currentSourceReplyTarget"
+  | "messageSpeechAdmission"
   | "chatType"
   | "agentAccountId"
   | "messageTo"
@@ -62,10 +64,9 @@ export function buildEmbeddedAttemptToolRunContext(
     conversationToolPolicy?: GroupToolPolicyConfig;
     trace?: DiagnosticTraceContext;
     currentInboundAudio?: boolean;
-    replyOperation?: { readonly acceptedSteeredInboundAudio: boolean };
   },
 ) {
-  const { currentInboundAudio, replyOperation } = params;
+  const { currentInboundAudio } = params;
   // Collector output is mandatory result transport, even on a narrowed tool surface.
   const runtimeToolAllowlist = mergeForcedEmbeddedAttemptToolsAllow(params.toolsAllow, {
     forceMessageTool: params.forceMessageTool,
@@ -77,6 +78,8 @@ export function buildEmbeddedAttemptToolRunContext(
     gatewayUiCommandTarget: params.gatewayUiCommandTarget,
     pinnedWidgetAuthoring: params.pinnedWidgetAuthoring,
     toolBindings: params.toolBindings,
+    currentSourceReplyTarget: params.currentSourceReplyTarget,
+    messageSpeechAdmission: params.messageSpeechAdmission,
     chatType: params.chatType,
     agentAccountId: params.agentAccountId,
     messageTo: params.messageTo,
@@ -116,9 +119,8 @@ export function buildEmbeddedAttemptToolRunContext(
     swarmCollector: params.swarmCollector,
     swarmOutputSchema: params.swarmOutputSchema,
     currentInboundAudio,
-    // Read accepted steering from the captured owner when the tool executes.
-    hasCurrentInboundAudio: () =>
-      currentInboundAudio === true || replyOperation?.acceptedSteeredInboundAudio === true,
+    // Accepted additions update the task, not the originating reply's speech policy.
+    hasCurrentInboundAudio: () => currentInboundAudio === true,
     ...(runtimeToolAllowlist ? { runtimeToolAllowlist } : {}),
     ...(params.conversationToolPolicy
       ? { conversationToolPolicy: params.conversationToolPolicy }

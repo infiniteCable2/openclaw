@@ -1,7 +1,6 @@
 /** Manages optional local provider processes; request leases keep shared services alive. */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import path from "node:path";
 import {
   clampPositiveTimerTimeoutMs,
   resolvePositiveTimerTimeoutMs,
@@ -38,7 +37,10 @@ import type {
   ProviderLocalServiceLease,
   ProviderLocalServiceTarget,
 } from "./provider-local-service-target.js";
-import { resolveConfiguredProviderLocalServiceTarget } from "./provider-local-service-target.js";
+import {
+  resolveConfiguredProviderLocalServiceTarget,
+  validateLocalServiceConfig,
+} from "./provider-local-service-target.js";
 import { setManagedProviderLocalServicesStop } from "./provider-runtime-lifecycle.js";
 import { unwrapHeadersInitSentinelsForProviderEgress } from "./provider-secret-egress.js";
 
@@ -63,6 +65,8 @@ type ManagedLocalService = {
   idleTimer?: NodeJS.Timeout;
   lastExit?: LocalServiceExit;
   diagnostics?: LocalServiceDiagnostics;
+  admission?: NonNullable<ProviderLocalServiceLease["admission"]>;
+  admissionAbort?: AbortController;
 };
 
 const services = new Map<string, ManagedLocalService>();
@@ -196,8 +200,10 @@ async function acquireProviderLocalService(
         !managed.processStop &&
         !hasLocalServiceProcessExited(currentProcess.child)
       ) {
-        return { release };
+        installServiceAdmission(managed, healthy);
+        return { release, ...(managed.admission ? { admission: managed.admission } : {}) };
       }
+      if (!healthy) invalidateServiceAdmission(managed);
       if (!managed.starting) {
         // Concurrent callers share one startup promise for the same service key.
         const startup = {
@@ -229,7 +235,8 @@ async function acquireProviderLocalService(
           (await probeHealth(healthUrl, healthHeaders, signal)));
       assertCurrentServiceAcquisition(key, managed, signal);
       if (ready && !managed.processStop) {
-        return { release };
+        if (typeof ready === "object") installServiceAdmission(managed, ready);
+        return { release, ...(managed.admission ? { admission: managed.admission } : {}) };
       }
       release();
       return undefined;
@@ -250,6 +257,35 @@ async function acquireProviderLocalService(
     throw error;
   } finally {
     signal?.removeEventListener("abort", onReadinessAbort);
+  }
+}
+
+function invalidateServiceAdmission(managed: ManagedLocalService): void {
+  const controller = managed.admissionAbort;
+  managed.admission = undefined;
+  managed.admissionAbort = undefined;
+  if (controller) {
+    const error = new Error("Local service worker generation retired");
+    error.name = "LocalServiceAdmissionError";
+    controller.abort(error);
+  }
+}
+
+function installServiceAdmission(
+  managed: ManagedLocalService,
+  readiness: { generation?: string },
+): void {
+  if (
+    managed.admission?.generation === readiness.generation &&
+    !managed.admission?.signal.aborted
+  ) {
+    return;
+  }
+  invalidateServiceAdmission(managed);
+  if (readiness.generation) {
+    const controller = new AbortController();
+    managed.admissionAbort = controller;
+    managed.admission = { generation: readiness.generation, signal: controller.signal };
   }
 }
 
@@ -277,22 +313,6 @@ export function getManagedProviderLocalServiceDiagnosticsForTest(): LocalService
       .map((managed) => managed.diagnostics)
       .filter((value): value is LocalServiceDiagnostics => value !== undefined),
   );
-}
-
-function validateLocalServiceConfig(service: ModelProviderLocalServiceConfig, provider: string) {
-  if (!path.isAbsolute(service.command)) {
-    throw new Error(`models.providers.${provider}.localService.command must be an absolute path`);
-  }
-  if (service.idleStopCheck && !path.isAbsolute(service.idleStopCheck.command)) {
-    throw new Error(
-      `models.providers.${provider}.localService.idleStopCheck.command must be an absolute path`,
-    );
-  }
-  if (service.idleStopCheck && clampPositiveTimerTimeoutMs(service.idleStopMs) === undefined) {
-    throw new Error(
-      `models.providers.${provider}.localService.idleStopMs must be positive with idleStopCheck`,
-    );
-  }
 }
 
 function resolveHealthUrl(service: ModelProviderLocalServiceConfig, baseUrl: string): string {
@@ -341,7 +361,7 @@ async function probeHealth(
   url: string,
   headers: HeadersInit | undefined,
   signal?: AbortSignal | null,
-): Promise<boolean> {
+): Promise<{ generation?: string } | false> {
   throwIfAborted(signal);
   // Only the actual health request may materialize retained sentinel headers.
   const egressHeaders = unwrapHeadersInitSentinelsForProviderEgress(
@@ -356,7 +376,10 @@ async function probeHealth(
   let response: Response | undefined;
   try {
     response = await fetch(url, { headers: egressHeaders, signal: controller.signal });
-    return response.ok;
+    if (!response.ok) return false;
+    // Optional bounded readiness metadata; legacy health endpoints remain status-only.
+    const generation = response.headers.get("x-openclaw-service-generation");
+    return generation && /^[A-Za-z0-9._-]{1,128}$/u.test(generation) ? { generation } : {};
   } catch {
     if (signal?.aborted) {
       throw toAbortError(signal);
@@ -382,6 +405,7 @@ async function startAndWaitForLocalService(params: {
   const healthy = await probeHealth(healthUrl, healthHeaders, signal);
   assertCurrentServiceAcquisition(key, managed, signal);
   if (healthy) {
+    installServiceAdmission(managed, healthy);
     return;
   }
   if (managed.process) {
@@ -439,6 +463,7 @@ async function startAndWaitForLocalService(params: {
       `${provider} local service exited: ${signalLocal ? `signal=${signalLocal}` : `code=${code ?? 0}`}`,
     );
     if (managed.process === owned) {
+      invalidateServiceAdmission(managed);
       managed.lastExit = exit;
     }
   });
@@ -456,7 +481,10 @@ async function startAndWaitForLocalService(params: {
   );
   const deadline = Date.now() + readyTimeoutMs;
   for (;;) {
-    if (await probeHealth(healthUrl, healthHeaders, signal)) {
+    const readiness = await probeHealth(healthUrl, healthHeaders, signal);
+    assertCurrentServiceAcquisition(key, managed, signal);
+    if (readiness && !hasLocalServiceProcessExited(child)) {
+      installServiceAdmission(managed, readiness);
       diagnostics.readyAt = Date.now();
       diagnostics.lastHealthyAt = diagnostics.readyAt;
       // Drain readiness diagnostics so pipes cannot pin one-shot hosts.
@@ -497,6 +525,7 @@ function scheduleIdleStop(
   }
   if (!managed.process) {
     if (!managed.starting) {
+      invalidateServiceAdmission(managed);
       services.delete(key);
       setManagedProviderLocalServicesStop(
         services.size > 0 ? stopManagedProviderLocalServices : undefined,
@@ -558,6 +587,7 @@ function stopManagedService(
   reason: string,
 ): Promise<void> {
   const stopping = (managed.stopping ??= {});
+  invalidateServiceAdmission(managed);
   if (stopping.promise) {
     return stopping.promise;
   }
@@ -592,6 +622,7 @@ function stopManagedService(
 
 async function stopManagedProcess(managed: ManagedLocalService, signal: AbortSignal) {
   throwIfAborted(signal);
+  invalidateServiceAdmission(managed);
   if (!managed.processStop) {
     const owned = managed.process;
     managed.lastExit = undefined;
@@ -624,6 +655,7 @@ async function stopManagedProcess(managed: ManagedLocalService, signal: AbortSig
 }
 
 function forceStopManagedService(key: string, managed: ManagedLocalService) {
+  invalidateServiceAdmission(managed);
   clearIdleTimer(managed);
   const owned = managed.processStop?.process ?? managed.process;
   managed.process = undefined;

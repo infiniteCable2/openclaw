@@ -13,7 +13,7 @@ import {
   listSpeechProviders,
   normalizeSpeechProviderId,
 } from "./provider-registry.js";
-import type { SpeechProviderConfig } from "./provider-types.js";
+import type { SpeechProviderConfig, SpeechSynthesisTarget } from "./provider-types.js";
 import { withSpeakerSelectionCompat } from "./speaker.js";
 import {
   DEFAULT_TTS_TIMEOUT_MS,
@@ -198,6 +198,113 @@ export function mergeProviderConfigWithPersona(params: {
     },
     personaProviderConfig,
     personaBinding: "applied",
+  };
+}
+
+export type TtsProviderReadyResolution =
+  | {
+      kind: "ready";
+      provider: SpeechProviderPlugin;
+      providerConfig: SpeechProviderConfig;
+      localServiceProviderConfig: SpeechProviderConfig;
+      personaProviderConfig?: SpeechProviderConfig;
+      synthesisPersona?: ResolvedTtsPersona;
+      personaBinding: "applied" | "missing" | "none";
+    }
+  | {
+      kind: "skip";
+      reasonCode: "no_provider_registered" | "not_configured" | "unsupported_for_telephony";
+      message: string;
+      personaBinding?: "missing";
+    };
+
+export function resolveReadySpeechProvider(params: {
+  provider: TtsProvider;
+  cfg: OpenClawConfig;
+  config: ResolvedTtsConfig;
+  persona?: ResolvedTtsPersona;
+  voiceModel?: VoiceModelRef;
+  target: SpeechSynthesisTarget;
+  requireStreamingTelephony?: boolean;
+  providerRegistry: TtsProviderRegistry;
+}): TtsProviderReadyResolution {
+  const resolvedProvider = params.providerRegistry.getSpeechProvider(params.provider, params.cfg);
+  if (!resolvedProvider) {
+    return {
+      kind: "skip",
+      reasonCode: "no_provider_registered",
+      message: `${params.provider}: no provider registered`,
+    };
+  }
+  const providerConfig = getResolvedSpeechProviderConfigForVoiceModel({
+    config: params.config,
+    providerId: resolvedProvider.id,
+    cfg: params.cfg,
+    voiceModel: params.voiceModel,
+    registry: params.providerRegistry,
+  });
+  const merged = mergeProviderConfigWithPersona({
+    providerConfig,
+    persona: params.persona,
+    providerId: resolvedProvider.id,
+  });
+  if (params.persona?.fallbackPolicy === "fail" && merged.personaBinding === "missing") {
+    return {
+      kind: "skip",
+      reasonCode: "not_configured",
+      message: `${params.provider}: persona ${params.persona.id} has no provider binding`,
+      personaBinding: "missing",
+    };
+  }
+  if (
+    !resolvedProvider.isConfigured({
+      cfg: params.cfg,
+      providerConfig: merged.providerConfig,
+      timeoutMs: resolveSpeechProviderTimeoutMs({
+        config: params.config,
+        provider: resolvedProvider,
+      }),
+    })
+  ) {
+    return {
+      kind: "skip",
+      reasonCode: "not_configured",
+      message: `${params.provider}: not configured`,
+    };
+  }
+  if (
+    params.target === "telephony" &&
+    !resolvedProvider.synthesizeTelephony &&
+    !(params.requireStreamingTelephony && resolvedProvider.streamSynthesizeTelephony)
+  ) {
+    return {
+      kind: "skip",
+      reasonCode: "unsupported_for_telephony",
+      message: `${params.provider}: unsupported for telephony`,
+    };
+  }
+  if (
+    params.requireStreamingTelephony &&
+    !resolvedProvider.streamSynthesizeTelephony &&
+    !resolvedProvider.synthesizeTelephony
+  ) {
+    return {
+      kind: "skip",
+      reasonCode: "unsupported_for_telephony",
+      message: `${params.provider}: unsupported for telephony`,
+    };
+  }
+  return {
+    kind: "ready",
+    provider: resolvedProvider,
+    providerConfig: merged.providerConfig,
+    localServiceProviderConfig: providerConfig,
+    personaProviderConfig: merged.personaProviderConfig,
+    synthesisPersona:
+      params.persona?.fallbackPolicy === "provider-defaults" && merged.personaBinding === "missing"
+        ? undefined
+        : params.persona,
+    personaBinding: merged.personaBinding,
   };
 }
 

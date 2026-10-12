@@ -15,13 +15,14 @@ import {
   isSpeechExpressionEnabled,
   parseSpeechExpression,
 } from "./expression.js";
+import type { MessageSpeechAdmission } from "./message-speech-admission.js";
 import {
   createSpeechProviderRegistry,
   normalizeSpeechProviderId,
 } from "./provider-registry-core.js";
 import type {
-  SpeechProviderConfig,
   SpeechExpression,
+  SpeechExpressionCapabilities,
   SpeechProviderOverrides,
   SpeechProviderPrepareSynthesisContext,
   SpeechSynthesisRequest,
@@ -29,14 +30,14 @@ import type {
 } from "./provider-types.js";
 import { acquireSpeechProviderLocalService } from "./tts-local-service.js";
 import {
-  getResolvedSpeechProviderConfigForVoiceModel,
-  mergeProviderConfigWithPersona,
   resolvePersonaProviderConfig,
   resolvePrimaryTtsProviderCandidate,
+  resolveReadySpeechProvider,
   resolveSpeechProviderTimeoutMs,
   resolveTtsProvider,
   resolveTtsProviderCandidates,
   type TtsProviderRegistry,
+  type TtsProviderReadyResolution,
 } from "./tts-provider-resolution.js";
 import type { TtsProviderAttempt } from "./tts-runtime-types.js";
 import {
@@ -48,7 +49,7 @@ import {
   resolveTtsRuntimeConfig,
   type ResolvedTtsConfig,
 } from "./tts-settings.js";
-import type { VoiceModelRef, VoiceProviderCandidate } from "./voice-models.js";
+import type { VoiceProviderCandidate } from "./voice-models.js";
 
 // The transport names its abort "TimeoutError" (fetch-timeout.ts) and provider
 // deadlines throw plain Errors ending in "timed out"; AbortError alone misses both.
@@ -84,113 +85,6 @@ export async function throwTtsProjectionError(
     throw new AggregateError([error, result.reason], formatErrorMessage(error), { cause: error });
   }
   throw error;
-}
-
-type TtsProviderReadyResolution =
-  | {
-      kind: "ready";
-      provider: SpeechProviderPlugin;
-      providerConfig: SpeechProviderConfig;
-      localServiceProviderConfig: SpeechProviderConfig;
-      personaProviderConfig?: SpeechProviderConfig;
-      synthesisPersona?: ResolvedTtsPersona;
-      personaBinding: "applied" | "missing" | "none";
-    }
-  | {
-      kind: "skip";
-      reasonCode: "no_provider_registered" | "not_configured" | "unsupported_for_telephony";
-      message: string;
-      personaBinding?: "missing";
-    };
-
-function resolveReadySpeechProvider(params: {
-  provider: TtsProvider;
-  cfg: OpenClawConfig;
-  config: ResolvedTtsConfig;
-  persona?: ResolvedTtsPersona;
-  voiceModel?: VoiceModelRef;
-  target: SpeechSynthesisTarget;
-  requireStreamingTelephony?: boolean;
-  providerRegistry: TtsProviderRegistry;
-}): TtsProviderReadyResolution {
-  const resolvedProvider = params.providerRegistry.getSpeechProvider(params.provider, params.cfg);
-  if (!resolvedProvider) {
-    return {
-      kind: "skip",
-      reasonCode: "no_provider_registered",
-      message: `${params.provider}: no provider registered`,
-    };
-  }
-  const providerConfig = getResolvedSpeechProviderConfigForVoiceModel({
-    config: params.config,
-    providerId: resolvedProvider.id,
-    cfg: params.cfg,
-    voiceModel: params.voiceModel,
-    registry: params.providerRegistry,
-  });
-  const merged = mergeProviderConfigWithPersona({
-    providerConfig,
-    persona: params.persona,
-    providerId: resolvedProvider.id,
-  });
-  if (params.persona?.fallbackPolicy === "fail" && merged.personaBinding === "missing") {
-    return {
-      kind: "skip",
-      reasonCode: "not_configured",
-      message: `${params.provider}: persona ${params.persona.id} has no provider binding`,
-      personaBinding: "missing",
-    };
-  }
-  if (
-    !resolvedProvider.isConfigured({
-      cfg: params.cfg,
-      providerConfig: merged.providerConfig,
-      timeoutMs: resolveSpeechProviderTimeoutMs({
-        config: params.config,
-        provider: resolvedProvider,
-      }),
-    })
-  ) {
-    return {
-      kind: "skip",
-      reasonCode: "not_configured",
-      message: `${params.provider}: not configured`,
-    };
-  }
-  if (
-    params.target === "telephony" &&
-    !resolvedProvider.synthesizeTelephony &&
-    !(params.requireStreamingTelephony && resolvedProvider.streamSynthesizeTelephony)
-  ) {
-    return {
-      kind: "skip",
-      reasonCode: "unsupported_for_telephony",
-      message: `${params.provider}: unsupported for telephony`,
-    };
-  }
-  if (
-    params.requireStreamingTelephony &&
-    !resolvedProvider.streamSynthesizeTelephony &&
-    !resolvedProvider.synthesizeTelephony
-  ) {
-    return {
-      kind: "skip",
-      reasonCode: "unsupported_for_telephony",
-      message: `${params.provider}: unsupported for telephony`,
-    };
-  }
-  return {
-    kind: "ready",
-    provider: resolvedProvider,
-    providerConfig: merged.providerConfig,
-    localServiceProviderConfig: providerConfig,
-    personaProviderConfig: merged.personaProviderConfig,
-    synthesisPersona:
-      params.persona?.fallbackPolicy === "provider-defaults" && merged.personaBinding === "missing"
-        ? undefined
-        : params.persona,
-    personaBinding: merged.personaBinding,
-  };
 }
 
 type TtsRequestSetupParams = {
@@ -364,7 +258,10 @@ type TtsProviderOperation<TSynthesis> =
       kind: "ready";
       synthesize: (
         request: SpeechSynthesisRequest,
-        lifecycle: { retainLocalService: () => { release: () => void } | undefined },
+        lifecycle: {
+          retainLocalService: () => { release: () => void } | undefined;
+          expressionCapabilities?: SpeechExpressionCapabilities;
+        },
       ) => Promise<TSynthesis>;
       cleanupFailedProjection?: (synthesis: TSynthesis) => Promise<void>;
     }
@@ -397,9 +294,13 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   timeoutMs?: number;
   signal?: AbortSignal;
   target: SpeechSynthesisTarget;
+  localServiceAdmission?: SpeechSynthesisRequest["localServiceAdmission"];
+  expectedSpeechSelection?: MessageSpeechAdmission["expectedSpeechSelection"];
   logLabel: string;
   requireStreamingTelephony?: boolean;
   prepareSynthesis?: boolean;
+  /** Exact expressive readiness intent; ordinary synthesis must keep capability hooks cold. */
+  prepareExpressionCapabilities?: boolean;
   prepareProviderRegistry: () => Promise<TtsProviderRegistry>;
   selectOperation: (params: {
     provider: TtsProvider;
@@ -408,6 +309,8 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   buildSuccess: (params: TtsProviderSuccess<TSynthesis>) => TResult;
 }) {
   const { cfg, config, persona, providers } = params;
+  const prepareExpressionCapabilities =
+    params.expression !== undefined || params.prepareExpressionCapabilities === true;
   const errors: string[] = [];
   const attemptedProviders: string[] = [];
   const attempts: TtsProviderAttempt[] = [];
@@ -438,10 +341,12 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   );
 
   for (const { provider, voiceModel } of providers) {
+    params.signal?.throwIfAborted();
     attemptedProviders.push(provider);
     const providerStart = Date.now();
     try {
       const providerRegistry = await params.prepareProviderRegistry();
+      params.signal?.throwIfAborted();
       const resolvedProvider = resolveReadySpeechProvider({
         provider,
         cfg,
@@ -464,6 +369,12 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
       }
 
       const providerOverrides = params.providerOverrides?.[resolvedProvider.provider.id];
+      if (
+        params.expectedSpeechSelection &&
+        resolvedProvider.provider.id !== params.expectedSpeechSelection.provider
+      ) {
+        throw new Error("Selected speech provider changed after native expression admission");
+      }
       if (params.expression) {
         if (!isSpeechExpressionEnabled({ cfg, ...params.speechContext, target: params.target })) {
           throw new Error(
@@ -471,13 +382,15 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
           );
         }
         parseSpeechExpression(params.expression, params.synthesisText);
-        assertSpeechExpressionSupported(
-          params.expression,
-          resolvedProvider.provider.getExpressionCapabilities?.({
-            providerConfig: resolvedProvider.providerConfig,
-            providerOverrides,
-          }),
-        );
+        if (!resolvedProvider.provider.prepareExpressionCapabilities) {
+          assertSpeechExpressionSupported(
+            params.expression,
+            resolvedProvider.provider.getExpressionCapabilities?.({
+              providerConfig: resolvedProvider.providerConfig,
+              providerOverrides,
+            }),
+          );
+        }
       }
 
       const operation = params.selectOperation({ provider, resolvedProvider });
@@ -506,6 +419,19 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         }
       };
       try {
+        params.signal?.throwIfAborted();
+        if (params.expression && params.localServiceAdmission) {
+          params.localServiceAdmission.signal.throwIfAborted();
+          if (
+            params.localServiceAdmission.generation !== localServiceLease?.admission?.generation
+          ) {
+            const error = new Error(
+              "Speech worker generation changed after speech context admission",
+            );
+            error.name = "LocalServiceAdmissionError";
+            throw error;
+          }
+        }
         const prepared =
           params.prepareSynthesis === false
             ? {
@@ -523,17 +449,73 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
                 personaProviderConfig: resolvedProvider.personaProviderConfig,
                 target: params.target,
                 timeoutMs,
+                signal: params.signal,
+                localServiceAdmission: localServiceLease?.admission,
               });
+        // Preparation may select a different model, but cannot borrow readiness from another endpoint.
+        if (
+          prepareExpressionCapabilities &&
+          resolvedProvider.provider.prepareExpressionCapabilities &&
+          localServiceLease?.admission &&
+          prepared.providerConfig.baseUrl !== resolvedProvider.localServiceProviderConfig.baseUrl
+        ) {
+          throw new Error("Speech preparation changed the admitted local service endpoint");
+        }
+        params.signal?.throwIfAborted();
+        localServiceLease?.admission?.signal.throwIfAborted();
+        const expectedSelection = params.expectedSpeechSelection;
+        // The native directive owner has already applied allowVoice before selecting
+        // these per-request overrides. Its explicit voice wins over readiness's default;
+        // provider/model/capability/worker checks still bind this expressive utterance.
+        const hasExplicitVoiceOverride =
+          resolveTtsResultDetail({ providerConfig: {}, providerOverrides }, [
+            "speakerVoiceId",
+            "speakerVoice",
+            "voiceId",
+            "voiceName",
+            "voice",
+          ]) !== undefined;
+        if (
+          expectedSelection &&
+          ((expectedSelection.model !== undefined &&
+            resolveTtsResultDetail(prepared, ["modelId", "model"]) !== expectedSelection.model) ||
+            (!hasExplicitVoiceOverride &&
+              expectedSelection.voice !== undefined &&
+              resolveTtsResultDetail(prepared, [
+                "speakerVoiceId",
+                "speakerVoice",
+                "voiceId",
+                "voiceName",
+                "voice",
+              ]) !== expectedSelection.voice))
+        ) {
+          throw new Error(
+            "Selected speech model or voice changed after native expression admission",
+          );
+        }
+        if (prepareExpressionCapabilities) {
+          await resolvedProvider.provider.prepareExpressionCapabilities?.({
+            providerConfig: prepared.providerConfig,
+            providerOverrides: prepared.providerOverrides,
+            timeoutMs,
+            signal: params.signal,
+            localServiceAdmission: localServiceLease?.admission,
+          });
+        }
+        params.signal?.throwIfAborted();
+        localServiceLease?.admission?.signal.throwIfAborted();
+        const expressionCapabilities = prepareExpressionCapabilities
+          ? resolvedProvider.provider.getExpressionCapabilities?.({
+              providerConfig: prepared.providerConfig,
+              providerOverrides: prepared.providerOverrides,
+              localServiceAdmission: localServiceLease?.admission,
+            })
+          : undefined;
+        if (params.expression) params.localServiceAdmission?.signal.throwIfAborted();
         if (params.expression) {
           // Provider preparation must not detach expression spans from their admitted plain text.
           parseSpeechExpression(params.expression, prepared.text);
-          assertSpeechExpressionSupported(
-            params.expression,
-            resolvedProvider.provider.getExpressionCapabilities?.({
-              providerConfig: prepared.providerConfig,
-              providerOverrides: prepared.providerOverrides,
-            }),
-          );
+          assertSpeechExpressionSupported(params.expression, expressionCapabilities);
         }
         const synthesis = await operation.synthesize(
           {
@@ -542,8 +524,11 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
             cfg,
             target: params.target,
             timeoutMs,
+            signal: params.signal,
+            localServiceAdmission: localServiceLease?.admission,
           },
           {
+            expressionCapabilities,
             retainLocalService: () => {
               if (!localServiceLease) {
                 return undefined;
@@ -554,6 +539,9 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
           },
         );
         try {
+          params.signal?.throwIfAborted();
+          localServiceLease?.admission?.signal.throwIfAborted();
+          if (params.expression) params.localServiceAdmission?.signal.throwIfAborted();
           const latencyMs = Date.now() - providerStart;
           attempts.push({
             provider,
@@ -593,6 +581,8 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         }
       }
     } catch (err) {
+      // Caller cancellation ends the owned request, never another provider attempt.
+      params.signal?.throwIfAborted();
       const errorMsg = formatTtsProviderError(provider, err);
       const latencyMs = Date.now() - providerStart;
       errors.push(errorMsg);
@@ -606,6 +596,10 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         error: errorMsg,
       });
       const rawError = sanitizeTtsErrorForLog(err);
+      // A generation conflict must not reroute an expressive utterance to another worker/provider.
+      if (params.expression && err instanceof Error && err.name === "LocalServiceAdmissionError") {
+        break;
+      }
       if (provider === primaryProvider) {
         const hasFallbacks = providers.length > 1;
         logVerbose(

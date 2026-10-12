@@ -3,7 +3,8 @@ import type { OpenClawConfig } from "../config/types.js";
 import { logVerbose } from "../globals.js";
 import { transcodeAudioBuffer } from "../media/media-services.js";
 import { assertSecretOwnerAvailable } from "../secrets/runtime-degraded-state.js";
-import type { TtsDirectiveOverrides } from "./provider-types.js";
+import type { MessageSpeechAdmission } from "./message-speech-admission.js";
+import type { SpeechSynthesisRequest, TtsDirectiveOverrides } from "./provider-types.js";
 import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
 import { normalizeSpeechText } from "./speech-text.js";
 import type { TtsResult, TtsSynthesisResult } from "./tts-runtime-types.js";
@@ -18,6 +19,7 @@ export type TtsAudioPersistence = (params: {
   cfg: OpenClawConfig;
   fileExtension: string;
   outputFormat?: string;
+  assertCommitAllowed?: () => void;
 }) => Promise<string>;
 
 export function supportsNativeVoiceNoteTts(channel: string | undefined): boolean {
@@ -83,7 +85,14 @@ export async function textToSpeechCore(
   params: SpeechSynthesisParams,
   persistTtsAudio: TtsAudioPersistence,
 ): Promise<TtsResult> {
+  const assertCommitAllowed = () => {
+    params.signal?.throwIfAborted();
+    if (params.overrides?.expression) params.localServiceAdmission?.signal.throwIfAborted();
+    params.assertCommitAllowed?.();
+  };
+  assertCommitAllowed();
   const synthesis = await synthesizeSpeech(params);
+  assertCommitAllowed();
   if (!synthesis.success || !synthesis.audioBuffer || !synthesis.fileExtension) {
     return {
       success: false,
@@ -99,7 +108,9 @@ export async function textToSpeechCore(
     target: synthesis.target,
     audioBuffer: synthesis.audioBuffer,
     fileExtension: synthesis.fileExtension,
+    signal: params.signal,
   });
+  assertCommitAllowed();
   const audioBuffer = transcoded ? transcoded.audioBuffer : synthesis.audioBuffer;
   const fileExtension = transcoded ? transcoded.fileExtension : synthesis.fileExtension;
   const outputFormat = transcoded ? transcoded.outputFormat : synthesis.outputFormat;
@@ -114,13 +125,19 @@ export async function textToSpeechCore(
 
   let audioPath: string;
   try {
+    assertCommitAllowed();
     audioPath = await persistTtsAudio({
       audioBuffer,
       cfg: params.cfg,
       fileExtension,
       outputFormat,
+      ...(params.signal || params.assertCommitAllowed || params.localServiceAdmission
+        ? { assertCommitAllowed }
+        : {}),
     });
   } catch (err) {
+    // A retired caller is not a recoverable media-store failure or text fallback.
+    assertCommitAllowed();
     logVerbose(`TTS: audio persistence failed: ${sanitizeTtsErrorForLog(err)}`);
     return {
       success: false,
@@ -128,6 +145,7 @@ export async function textToSpeechCore(
       ...metadata,
     };
   }
+  assertCommitAllowed();
 
   return {
     success: true,
@@ -151,6 +169,7 @@ async function maybePreTranscodeForVoiceDelivery(params: {
   target: "audio-file" | "voice-note" | undefined;
   audioBuffer: Buffer;
   fileExtension: string;
+  signal?: AbortSignal;
 }): Promise<{ audioBuffer: Buffer; fileExtension: string; outputFormat?: string } | undefined> {
   if (params.target !== "audio-file") {
     return undefined;
@@ -168,6 +187,7 @@ async function maybePreTranscodeForVoiceDelivery(params: {
     audioBuffer: params.audioBuffer,
     sourceExtension: sourceExt,
     targetExtension: preferred,
+    signal: params.signal,
   });
   if (!outcome.ok) {
     if (outcome.reason === "transcoder-failed") {
@@ -194,8 +214,14 @@ type SpeechSynthesisParams = {
   overrides?: TtsDirectiveOverrides;
   disableFallback?: boolean;
   timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Host-owned publication fence; never passed to the speech provider. */
+  assertCommitAllowed?: () => void;
   agentId?: string;
   accountId?: string;
+  /** Transient readiness admitted before the model; never stored in delivery facts. */
+  localServiceAdmission?: SpeechSynthesisRequest["localServiceAdmission"];
+  expectedSpeechSelection?: MessageSpeechAdmission["expectedSpeechSelection"];
 };
 
 export async function synthesizeSpeech(params: SpeechSynthesisParams): Promise<TtsSynthesisResult> {
@@ -214,6 +240,7 @@ export async function synthesizeTalkSpeech(
 async function synthesizeSpeechInternal(
   params: SpeechSynthesisParams,
 ): Promise<TtsSynthesisResult> {
+  params.signal?.throwIfAborted();
   return await withOwnedTtsRequest(
     {
       text: params.text,
@@ -226,6 +253,7 @@ async function synthesizeSpeechInternal(
       accountId: params.accountId,
     },
     async (setup) => {
+      params.signal?.throwIfAborted();
       if ("error" in setup) {
         return { success: false, error: setup.error };
       }
@@ -237,8 +265,11 @@ async function synthesizeSpeechInternal(
           ? params.text
           : normalizeSpeechText(params.text),
         expression: params.overrides?.expression,
+        localServiceAdmission: params.localServiceAdmission,
+        expectedSpeechSelection: params.expectedSpeechSelection,
         providerOverrides: params.overrides?.providerOverrides,
         timeoutMs: params.timeoutMs,
+        signal: params.signal,
         target,
         logLabel: "TTS",
         selectOperation: ({ resolvedProvider }) => ({

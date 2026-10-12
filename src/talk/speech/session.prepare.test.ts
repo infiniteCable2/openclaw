@@ -358,7 +358,7 @@ describe("startSpeechSession streaming output", () => {
         isConnected: () => true,
       };
     });
-    const synthesize = vi.fn(async () => ({
+    const synthesize = vi.fn<PluginRuntime["tts"]["streamTextToSpeechTelephony"]>(async () => ({
       success: true,
       audioStream: new ReadableStream<Uint8Array>({
         start(controller) {
@@ -408,9 +408,38 @@ describe("startSpeechSession streaming output", () => {
     if (!consult) {
       throw new Error("Expected meeting consult params");
     }
-    await consult.onSpeakableText?.({ type: "chunk", text: "Erster Satz." });
+    const speech = {
+      tagged: true as const,
+      text: "Erster Satz.",
+      expression: { parts: [{ text: "Erster Satz." }] },
+    };
+    const localServiceAdmission = {
+      generation: "synthetic-worker",
+      signal: new AbortController().signal,
+    };
+    const expectedSpeechSelection = {
+      provider: "example",
+      model: "prepared-model",
+      voice: "prepared-voice",
+    };
+    await consult.onSpeakableText?.({
+      type: "chunk",
+      text: speech.text,
+      speech,
+      localServiceAdmission,
+      expectedSpeechSelection,
+    });
     await vi.waitFor(() => expect(synthesize).toHaveBeenCalledOnce());
-    expect(synthesize).toHaveBeenLastCalledWith(expect.objectContaining({ text: "Erster Satz." }));
+    expect(synthesize).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        text: speech.text,
+        overrides: { expression: speech.expression },
+        localServiceAdmission,
+        expectedSpeechSelection,
+      }),
+    );
+    expect(synthesize.mock.calls[0]?.[0].localServiceAdmission).toBe(localServiceAdmission);
+    expect(synthesize.mock.calls[0]?.[0].expectedSpeechSelection).toBe(expectedSpeechSelection);
 
     await consult.onSpeakableText?.({ type: "chunk", text: "Zweiter Satz." });
     await consult.onSpeakableText?.({
@@ -420,6 +449,9 @@ describe("startSpeechSession streaming output", () => {
     finishConsult?.({ text: "Erster Satz. Zweiter Satz.", delivered: true });
 
     await vi.waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
+    expect(synthesize.mock.calls[1]?.[0]).not.toHaveProperty("localServiceAdmission");
+    expect(synthesize.mock.calls[1]?.[0]).not.toHaveProperty("expectedSpeechSelection");
+    expect(synthesize.mock.calls[1]?.[0]).not.toHaveProperty("overrides");
     await vi.waitFor(() => {
       const assistantEntries = handle
         .getHealth()

@@ -72,6 +72,7 @@ function createRuntimeTts(): PluginRuntime["tts"] {
   const bindTtsRequestRuntime = createLazyRuntimeMethodBinder(loadTtsRequestRuntime);
   return {
     prepareTtsRequest: bindTtsRequestRuntime((runtime) => runtime.prepareTtsRequest),
+    prepareTextToSpeech: bindTtsRequestRuntime((runtime) => runtime.prepareTextToSpeech),
     prepareTextToSpeechTelephony: bindTtsRuntime((runtime) => runtime.prepareTextToSpeechTelephony),
     streamTextToSpeechTelephony: bindTtsRuntime((runtime) => runtime.streamTextToSpeechTelephony),
     textToSpeech: bindTtsRuntime((runtime) => runtime.textToSpeech),
