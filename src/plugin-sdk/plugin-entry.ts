@@ -7,8 +7,6 @@ import type {
 } from "../plugins/types.js";
 import { createCachedLazyValueGetter } from "./lazy-value.js";
 
-export type { SpeechExpression, SpeechExpressionCapabilities } from "../tts/provider-types.js";
-
 export type {
   StorageProvider,
   StorageProviderOpenParams,

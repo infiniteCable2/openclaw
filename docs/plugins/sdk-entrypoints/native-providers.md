@@ -56,9 +56,12 @@ authoritative plain `text`. Core checks exact agent/channel/target opt-in,
 projection, budgets, and the selected model vocabulary before requesting synthesis
 resources. Providers translate the structured expression into their own backend
 notation; they must not accept bypassing expression through unrelated opaque
-overrides. Exported types `SpeechExpression` and `SpeechExpressionCapabilities`
-are available from `openclaw/plugin-sdk/plugin-entry` and the existing speech
-type facades.
+overrides. The public `SpeechProviderPlugin` contract already describes both
+types. Providers can derive local aliases from its `synthesize` request's
+optional `expression` and the optional `getExpressionCapabilities` callback's
+result, excluding `undefined` where a concrete value is required. This keeps
+plugins on the existing public contract without importing local-only speech
+facades or adding convenience type exports.
 
 ## Computer Use providers
 
