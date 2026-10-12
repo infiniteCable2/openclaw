@@ -7,8 +7,9 @@ import {
   type Model,
 } from "openclaw/plugin-sdk/llm";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runAgentLoop, type AgentEvent, type AgentMessage } from "../plugin-sdk/agent-core.js";
+import { setPluginToolMeta } from "../plugins/tool-metadata.js";
 import { materializeBundleMcpToolsForRun } from "./agent-bundle-mcp-materialize.js";
 import type { SessionMcpRuntime } from "./agent-bundle-mcp-types.js";
 import { createZeroUsageFixture } from "./test-helpers/usage-fixtures.js";
@@ -17,6 +18,7 @@ import {
   applyToolSearchCatalog,
   createToolSearchCatalogRef,
   createToolSearchTools,
+  registerHeadlessToolSearchCatalog,
   TOOL_CALL_RAW_TOOL_NAME,
 } from "./tool-search.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
@@ -103,6 +105,57 @@ function assistantMessage(content: AssistantMessage["content"]): AssistantMessag
     timestamp: 1,
   };
 }
+
+describe("Tool Search structured image results", () => {
+  it("forwards structured tool images without serializing their base64 into model text", async () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const image = {
+      type: "image" as const,
+      mimeType: "image/jpeg",
+      data: Buffer.alloc(174_000, 0xab).toString("base64"),
+    };
+    const targetResult = {
+      content: [{ type: "text" as const, text: "Screen captured" }, image],
+      details: { ok: true, path: "/private/screen.png" },
+    };
+    const target: AnyAgentTool = {
+      name: "screen_capture",
+      label: "screen_capture",
+      description: "Capture a screen image",
+      parameters: {
+        type: "object",
+        properties: { value: { type: "string" } },
+      },
+      execute: vi.fn(async () => targetResult),
+    };
+    setPluginToolMeta(target, { pluginId: "fake-catalog", optional: true });
+    registerHeadlessToolSearchCatalog({ catalogRef, tools: [target] });
+    const call = expectDefined(
+      createToolSearchTools({ catalogRef }).find((tool) => tool.name === TOOL_CALL_RAW_TOOL_NAME),
+      "structured tool_call tool",
+    );
+
+    const result = await call.execute("screen-capture-call", { id: target.name });
+
+    expect(result.details).toMatchObject({ result: targetResult });
+    expect(result.content).toHaveLength(2);
+    const text = expectDefined(result.content[0], "model-facing text");
+    expect(text.type).toBe("text");
+    if (text.type !== "text") {
+      throw new Error("Expected model-facing text");
+    }
+    expect(text.text.length).toBeLessThan(1_000);
+    expect(text.text).not.toContain(image.data.slice(0, 100));
+    // Native tool_call forwards images separately, not as JSON placeholder blocks.
+    expect(JSON.parse(text.text)).toMatchObject({
+      result: {
+        content: [{ type: "text", text: "Screen captured" }],
+        details: targetResult.details,
+      },
+    });
+    expect(result.content[1]).toEqual(image);
+  });
+});
 
 describe("Tool Search MCP failures", () => {
   it("keeps deferred MCP images model-visible beside their text", async () => {

@@ -11,6 +11,7 @@ export const EventType = {
 } as const;
 
 export type RoomMessageEventContent = MessageEventContent & {
+  "org.matrix.msc3245.voice"?: unknown;
   info?: {
     mimetype?: string;
     size?: number;

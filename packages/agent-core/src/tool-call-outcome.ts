@@ -112,3 +112,10 @@ export function createErrorToolResult(
     details,
   };
 }
+
+export function createToolExecutionErrorResult(error: unknown): AgentToolResult<unknown> {
+  const result = createErrorToolResult(coerceErrorMessage(error));
+  return typeof error === "object" && error !== null
+    ? copyInternalToolResultState(error, result)
+    : result;
+}

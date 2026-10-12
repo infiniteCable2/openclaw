@@ -10,7 +10,6 @@ import {
   normalizeNullableString,
 } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { MediaUnderstandingSkipError } from "../../packages/media-understanding-common/src/errors.js";
 import { extractGeminiResponse } from "../../packages/media-understanding-common/src/output-extract.js";
 import { normalizeMediaExecutionProviderId } from "../../packages/media-understanding-common/src/provider-id.js";
@@ -66,7 +65,11 @@ import {
 } from "./local-audio.js";
 import { resolveOpenAiAudioAuthModelApi } from "./openai-audio-api.js";
 import { getMediaUnderstandingProvider, normalizeMediaProviderId } from "./provider-registry.js";
-import { resolveCliModelEntry, resolveEntryRunOptions } from "./resolve.js";
+import {
+  resolveCliModelEntry,
+  resolveEntryRunOptions,
+  trimMediaUnderstandingOutput,
+} from "./resolve.js";
 import { isTranscriptArtifactText } from "./transcription-text.js";
 import type {
   AudioTranscriptionResult,
@@ -81,14 +84,6 @@ import type {
 
 type ProviderRegistry = Map<string, MediaUnderstandingProvider>;
 const loadModelAuth = createLazyRuntimeModule(async () => await import("../agents/model-auth.js"));
-
-function trimOutput(text: string, maxChars?: number): string {
-  const trimmed = text.trim();
-  if (!maxChars || trimmed.length <= maxChars) {
-    return trimmed;
-  }
-  return truncateUtf16Safe(trimmed, maxChars).trim();
-}
 
 function extractSherpaOnnxText(raw: string): string | undefined {
   const tryParse = (value: string): string | undefined => {
@@ -665,7 +660,7 @@ export async function runProviderEntry(params: {
     return ok({
       kind: "image.description",
       attachmentIndex: params.attachmentIndex,
-      text: trimOutput(result.text, maxChars),
+      text: trimMediaUnderstandingOutput(result.text, maxChars),
       provider: requestProviderId,
       model: result.model ?? modelId,
     });
@@ -759,7 +754,7 @@ export async function runProviderEntry(params: {
     return ok({
       kind: "audio.transcription",
       attachmentIndex: params.attachmentIndex,
-      text: trimOutput(result.text, maxChars),
+      text: trimMediaUnderstandingOutput(result.text, maxChars),
       provider: providerId,
       model: result.model ?? model,
     });
@@ -819,7 +814,7 @@ export async function runProviderEntry(params: {
   return ok({
     kind: "video.description",
     attachmentIndex: params.attachmentIndex,
-    text: trimOutput(result.text, maxChars),
+    text: trimMediaUnderstandingOutput(result.text, maxChars),
     provider: providerId,
     model: result.model ?? model,
   });
@@ -920,7 +915,7 @@ export async function runCliEntry(
       stdout,
       mediaPath,
     });
-    const text = trimOutput(resolved, maxChars);
+    const text = trimMediaUnderstandingOutput(resolved, maxChars);
     if (!text || (capability === "audio" && isTranscriptArtifactText(resolved))) {
       return null;
     }

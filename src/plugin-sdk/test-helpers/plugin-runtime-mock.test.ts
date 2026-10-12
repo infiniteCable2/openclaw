@@ -26,6 +26,34 @@ function buildGroupContext(params: Pick<BuildContextParams, "supplemental" | "ex
 }
 
 describe("createPluginRuntimeMock", () => {
+  it("creates fresh TTS mocks and preserves partial TTS overrides", () => {
+    const first = createPluginRuntimeMock();
+    const second = createPluginRuntimeMock();
+    const listVoices = vi.fn<typeof first.tts.listVoices>();
+    const overridden = createPluginRuntimeMock({ tts: { listVoices } });
+    const methods = [
+      "prepareTtsRequest",
+      "prepareTextToSpeechTelephony",
+      "streamTextToSpeechTelephony",
+      "textToSpeech",
+      "textToSpeechStream",
+      "textToSpeechTelephony",
+      "listVoices",
+    ] as const;
+
+    for (const method of methods) {
+      expect(vi.isMockFunction(first.tts[method]), method).toBe(true);
+      expect(vi.isMockFunction(second.tts[method]), method).toBe(true);
+      expect(second.tts[method], method).not.toBe(first.tts[method]);
+      if (method !== "listVoices") {
+        expect(vi.isMockFunction(overridden.tts[method]), method).toBe(true);
+        expect(overridden.tts[method], method).not.toBe(first.tts[method]);
+        expect(overridden.tts[method], method).not.toBe(second.tts[method]);
+      }
+    }
+    expect(overridden.tts.listVoices).toBe(listVoices);
+  });
+
   it.each(["inbound", "turn"] as const)("reflects %s overrides through both aliases", (surface) => {
     const overrides = createPluginRuntimeMock().channel.inbound;
     const runtime = createPluginRuntimeMock({

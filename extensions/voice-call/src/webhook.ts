@@ -9,10 +9,7 @@ import {
 } from "openclaw/plugin-sdk/number-runtime";
 import type { PluginLogger, PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveConfiguredCapabilityProvider } from "openclaw/plugin-sdk/provider-selection-runtime";
-import {
-  normalizeOptionalString,
-  normalizeStringEntries,
-} from "openclaw/plugin-sdk/string-coerce-runtime";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   createWebhookInFlightLimiter,
   normalizeWebhookPath,
@@ -26,7 +23,6 @@ import {
   sendHttpRequestRejection,
 } from "../api.js";
 import type { OpenClawPluginApi } from "../api.js";
-import { isAllowlistedCaller, normalizePhoneNumber } from "./allowlist.js";
 import {
   normalizeVoiceCallConfig,
   resolveVoiceCallEffectiveConfig,
@@ -37,14 +33,14 @@ import { getHeader } from "./http-headers.js";
 import type { CallManager } from "./manager.js";
 import type { MediaStreamConfig } from "./media-stream.js";
 import { MediaStreamHandler } from "./media-stream.js";
-import type { AsteriskProvider } from "./providers/asterisk.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import { isProviderStatusTerminal } from "./providers/shared/call-status.js";
 import type { TwilioProvider } from "./providers/twilio.js";
-import { normalizeProxyIp } from "./proxy-ip.js";
+import { resolveMediaStreamClientIp } from "./proxy-ip.js";
 import { resolveCallAgentId } from "./resolve-call-agent-id.js";
 import type { CallRecord, NormalizedEvent, WebhookContext } from "./types.js";
 import type { WebhookResponsePayload } from "./webhook.types.js";
+import { handleAsteriskRegistrationRequest } from "./webhook/asterisk-registration.js";
 import type { RealtimeCallHandler } from "./webhook/realtime-handler.js";
 import { acceptRealtimeInboundRequest } from "./webhook/realtime-inbound-admission.js";
 import { startStaleCallReaper } from "./webhook/stale-call-reaper.js";
@@ -57,8 +53,6 @@ import { appendRecentTalkEventMetadata } from "./webhook/talk-event-metadata.js"
 const MAX_WEBHOOK_BODY_BYTES = WEBHOOK_BODY_READ_DEFAULTS.preAuth.maxBytes;
 const WEBHOOK_BODY_TIMEOUT_MS = WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs;
 const MISSING_REMOTE_ADDRESS_IN_FLIGHT_KEY = "__voice_call_no_remote__";
-const MAX_ASTERISK_REGISTRATION_BYTES = 8 * 1024;
-const ASTERISK_REGISTRATION_TIMEOUT_MS = 5_000;
 
 const loadRealtimeTranscriptionRuntime = createLazyRuntimeModule(
   () => import("./realtime-transcription.runtime.js"),
@@ -70,28 +64,6 @@ const loadResponseGeneratorModule = createLazyRuntimeModule(
 
 function buildRequestUrl(requestUrl: string | undefined): URL {
   return new URL(requestUrl ?? "/", "http://localhost");
-}
-
-function resolveForwardedClientIp(
-  request: http.IncomingMessage,
-  normalizedTrustedProxyIps: ReadonlySet<string>,
-): string | undefined {
-  const forwardedFor = getHeader(request.headers, "x-forwarded-for");
-  if (forwardedFor) {
-    const forwardedIps = normalizeStringEntries(forwardedFor.split(","));
-    if (forwardedIps.length > 0) {
-      for (let index = forwardedIps.length - 1; index >= 0; index -= 1) {
-        const hop = forwardedIps[index];
-        if (!normalizedTrustedProxyIps.has(normalizeProxyIp(hop) ?? "")) {
-          return hop;
-        }
-      }
-      return forwardedIps[0];
-    }
-  }
-
-  const realIp = getHeader(request.headers, "x-real-ip")?.trim();
-  return realIp || undefined;
 }
 
 function buildTwilioResponse(content = ""): WebhookResponsePayload {
@@ -212,29 +184,6 @@ export class VoiceCallWebhookServer {
     return this.streamDisconnectGrace;
   }
 
-  private resolveMediaStreamClientIp(request: http.IncomingMessage): string | undefined {
-    const remoteIp = request.socket.remoteAddress ?? undefined;
-    const normalizedTrustedProxyIps = new Set(
-      this.config.webhookSecurity.trustedProxyIPs
-        .map((ip) => normalizeProxyIp(ip))
-        .filter((ip): ip is string => Boolean(ip)),
-    );
-    const normalizedRemoteIp = normalizeProxyIp(remoteIp);
-    const fromTrustedProxy =
-      normalizedRemoteIp !== undefined && normalizedTrustedProxyIps.has(normalizedRemoteIp);
-    const shouldTrustForwardingHeaders =
-      this.config.webhookSecurity.trustForwardingHeaders && fromTrustedProxy;
-
-    if (shouldTrustForwardingHeaders) {
-      const forwardedIp = resolveForwardedClientIp(request, normalizedTrustedProxyIps);
-      if (forwardedIp) {
-        return forwardedIp;
-      }
-    }
-
-    return remoteIp;
-  }
-
   private shouldSuppressBargeInForInitialMessage(call: CallRecord | undefined): boolean {
     // Suppress only while the initial greeting is actively being played.
     // If playback fails and the call leaves "speaking", do not block auto-response.
@@ -312,7 +261,8 @@ export class VoiceCallWebhookServer {
       maxPendingConnections: streaming.maxPendingConnections,
       maxPendingConnectionsPerIp: streaming.maxPendingConnectionsPerIp,
       maxConnections: streaming.maxConnections,
-      resolveClientIp: (request) => this.resolveMediaStreamClientIp(request),
+      resolveClientIp: (request) =>
+        resolveMediaStreamClientIp(request, this.config.webhookSecurity),
       shouldAcceptStream: ({ callId, token }) => {
         // The classic media handler parses Twilio frames and only Twilio issues
         // its per-call token. Other carriers use their separate realtime path.
@@ -620,7 +570,14 @@ export class VoiceCallWebhookServer {
       normalizeWebhookPath(url.pathname) ===
         normalizeWebhookPath(this.config.asterisk.registrationPath)
     ) {
-      return await this.handleRateLimitedAsteriskRegistration(req);
+      return await handleAsteriskRegistrationRequest({
+        req,
+        provider: this.provider,
+        config: this.config,
+        logger: this.logger,
+        inFlightLimiter: this.webhookInFlightLimiter,
+        inFlightKey: req.socket.remoteAddress || MISSING_REMOTE_ADDRESS_IN_FLIGHT_KEY,
+      });
     }
 
     if (normalizeWebhookPath(url.pathname) !== normalizeWebhookPath(webhookPath)) {
@@ -776,91 +733,6 @@ export class VoiceCallWebhookServer {
     }
   }
 
-  private async handleRateLimitedAsteriskRegistration(
-    req: http.IncomingMessage,
-  ): Promise<WebhookResponsePayload> {
-    const remoteAddress = req.socket.remoteAddress;
-    const inFlightKey = remoteAddress || MISSING_REMOTE_ADDRESS_IN_FLIGHT_KEY;
-    if (!this.webhookInFlightLimiter.tryAcquire(inFlightKey)) {
-      this.logger.warn("Asterisk registration rejected: too many in-flight requests");
-      return { statusCode: 429, body: "Too Many Requests" };
-    }
-    try {
-      return await this.handleAsteriskRegistration(req);
-    } finally {
-      this.webhookInFlightLimiter.release(inFlightKey);
-    }
-  }
-
-  private async handleAsteriskRegistration(
-    req: http.IncomingMessage,
-  ): Promise<WebhookResponsePayload> {
-    if (req.method !== "POST") {
-      return { statusCode: 405, body: "Method Not Allowed" };
-    }
-    const authorization = getHeader(req.headers, "authorization") ?? "";
-    const match = /^Bearer (?<token>\S+)$/u.exec(authorization);
-    if (!match?.groups?.token) {
-      return { statusCode: 401, body: "Unauthorized" };
-    }
-    const provider = this.provider as AsteriskProvider;
-    if (!provider.verifyRegistrationToken(match.groups.token)) {
-      return { statusCode: 401, body: "Unauthorized" };
-    }
-    let rawBody: string;
-    try {
-      rawBody = await readRequestBodyWithLimit(req, {
-        maxBytes: MAX_ASTERISK_REGISTRATION_BYTES,
-        timeoutMs: ASTERISK_REGISTRATION_TIMEOUT_MS,
-      });
-    } catch {
-      return { statusCode: 400, body: "Invalid registration" };
-    }
-    let body: unknown;
-    try {
-      body = JSON.parse(rawBody);
-    } catch {
-      return { statusCode: 400, body: "Invalid registration" };
-    }
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return { statusCode: 400, body: "Invalid registration" };
-    }
-    const registration = body as Record<string, unknown>;
-    if (
-      typeof registration.uuid !== "string" ||
-      typeof registration.from !== "string" ||
-      typeof registration.to !== "string"
-    ) {
-      return { statusCode: 400, body: "Invalid registration" };
-    }
-    if (!this.shouldAcceptInboundCaller(registration.from)) {
-      this.logger.info("Asterisk inbound call rejected before AudioSocket admission");
-      return { statusCode: 403, body: "Forbidden" };
-    }
-    try {
-      provider.registerInboundCall(
-        {
-          uuid: registration.uuid,
-          from: registration.from,
-          to: registration.to,
-          direction: "inbound",
-        },
-        match.groups.token,
-      );
-      return { statusCode: 202, body: "Accepted" };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith("Unauthorized")) {
-        return { statusCode: 401, body: "Unauthorized" };
-      }
-      this.logger.warn(`Asterisk registration rejected: ${message}`);
-      return {
-        statusCode: message.includes("already registered") ? 409 : 400,
-        body: "Invalid registration",
-      };
-    }
-  }
-
   private pruneReplayResponses(rawNow: number): void {
     const now = asDateTimestampMs(rawNow);
     if (now !== undefined) {
@@ -1011,18 +883,6 @@ export class VoiceCallWebhookServer {
     // Initial TwiML fetches without gathered input may enter realtime handling.
     // Replay checks run before this helper so retries cannot mint new stream tokens.
     return !params.get("SpeechResult") && !params.get("Digits") ? params : null;
-  }
-
-  private shouldAcceptInboundCaller(from: string | undefined): boolean {
-    switch (this.config.inboundPolicy) {
-      case "open":
-        return true;
-      case "allowlist":
-      case "pairing":
-        return isAllowlistedCaller(normalizePhoneNumber(from), this.config.allowFrom);
-      default:
-        return false;
-    }
   }
 
   private async processParsedEvents(events: NormalizedEvent[]): Promise<boolean> {

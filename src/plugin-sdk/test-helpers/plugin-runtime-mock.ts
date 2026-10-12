@@ -35,6 +35,7 @@ import { createPluginModelRuntimeMock } from "./plugin-runtime-model-mock.js";
 import { createPluginSessionRuntimeMock } from "./plugin-runtime-session-mock.js";
 import { createPluginStateRuntimeMock } from "./plugin-runtime-state-mock.js";
 import { createPluginThreadBindingsRuntimeMock } from "./plugin-runtime-thread-bindings-mock.js";
+import { createPluginTtsRuntimeMock } from "./plugin-runtime-tts-mock.js";
 
 type InboundDebounceFlush = ReturnType<InboundDebounceCreateParams<unknown>["onFlush"]>;
 type InboundDebounceFlushFactory = Parameters<InboundDebounceCreateParams<unknown>["onFlush"]>[1];
@@ -643,15 +644,7 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
       getImageMetadata: vi.fn<PluginRuntime["media"]["getImageMetadata"]>(),
       resizeToJpeg: vi.fn<PluginRuntime["media"]["resizeToJpeg"]>(),
     },
-    tts: {
-      prepareTtsRequest: vi.fn<PluginRuntime["tts"]["prepareTtsRequest"]>(),
-      prepareTextToSpeechTelephony: vi.fn<PluginRuntime["tts"]["prepareTextToSpeechTelephony"]>(),
-      streamTextToSpeechTelephony: vi.fn<PluginRuntime["tts"]["streamTextToSpeechTelephony"]>(),
-      textToSpeech: vi.fn<PluginRuntime["tts"]["textToSpeech"]>(),
-      textToSpeechStream: vi.fn<PluginRuntime["tts"]["textToSpeechStream"]>(),
-      textToSpeechTelephony: vi.fn<PluginRuntime["tts"]["textToSpeechTelephony"]>(),
-      listVoices: vi.fn<PluginRuntime["tts"]["listVoices"]>(),
-    },
+    tts: createPluginTtsRuntimeMock(),
     mediaUnderstanding: {
       resolveAudioInputBudget: vi
         .fn<PluginRuntime["mediaUnderstanding"]["resolveAudioInputBudget"]>()

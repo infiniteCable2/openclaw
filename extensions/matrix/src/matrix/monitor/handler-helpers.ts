@@ -185,7 +185,7 @@ export function isMatrixVoiceMessageContent(content: RoomMessageEventContent): b
   ) {
     return false;
   }
-  const marker = (content as Record<string, unknown>)["org.matrix.msc3245.voice"];
+  const marker = content["org.matrix.msc3245.voice"];
   return Boolean(marker && typeof marker === "object" && !Array.isArray(marker));
 }
 

@@ -4,6 +4,7 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type {
@@ -102,6 +103,14 @@ function resolveMaxChars(params: MediaEntryRunParams): number | undefined {
     return configured;
   }
   return DEFAULT_MAX_CHARS_BY_CAPABILITY[capability];
+}
+
+export function trimMediaUnderstandingOutput(text: string, maxChars?: number): string {
+  const trimmed = text.trim();
+  if (!maxChars || trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return truncateUtf16Safe(trimmed, maxChars).trim();
 }
 
 export function resolveMaxBytes(params: MediaEntryRunParams): number {

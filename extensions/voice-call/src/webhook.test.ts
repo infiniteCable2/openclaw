@@ -1,23 +1,43 @@
 import crypto from "node:crypto";
-import type { IncomingMessage } from "node:http";
+import { IncomingMessage } from "node:http";
+import { Socket } from "node:net";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RealtimeTranscriptionProviderPlugin } from "openclaw/plugin-sdk/realtime-transcription";
+import { createWebhookInFlightLimiter } from "openclaw/plugin-sdk/webhook-ingress";
 import * as webhookRequestGuards from "openclaw/plugin-sdk/webhook-request-guards";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { VoiceCallConfigSchema, resolveVoiceCallConfig, type VoiceCallConfig } from "./config.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { VoiceCallConfig } from "./config.js";
 import type { CallManager } from "./manager.js";
 import type { MediaStreamConfig } from "./media-stream.js";
-import { AsteriskProvider } from "./providers/asterisk.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import { MockProvider } from "./providers/mock.js";
 import { PlivoProvider } from "./providers/plivo.js";
 import { TwilioProvider } from "./providers/twilio.js";
+import { resolveMediaStreamClientIp } from "./proxy-ip.js";
 import type { CallRecord } from "./types.js";
 import { createCapturingLogger, expectPrivateLogMetadata } from "./webhook-log.test-support.js";
 import { createWebhookReplayCache, reserveWebhookReplay } from "./webhook-replay.js";
 import { VoiceCallWebhookServer } from "./webhook.js";
+import {
+  provider,
+  expectNoTwilioStreamState,
+  expectPlivoCallStateReleased,
+  createRealtimeHandler,
+  type TwilioProviderTestDouble,
+  type WebhookServerArgs,
+  createConfig,
+  createCall,
+  automaticReplyManagerStub,
+  createManager,
+  createServer,
+  postSignedTwilioWebhook,
+  createTwilioVerificationProvider,
+  createTwilioStreamingProvider,
+  createAsteriskRegistrationFixture,
+  postWebhookForm,
+} from "./webhook.test-fixtures.js";
+import { handleAsteriskRegistrationRequest } from "./webhook/asterisk-registration.js";
 import type { RealtimeCallHandler } from "./webhook/realtime-handler.js";
 
 const mocks = vi.hoisted(() => {
@@ -60,101 +80,6 @@ vi.mock("./response-generator.js", () => ({
   generateVoiceResponse: mocks.generateVoiceResponse,
 }));
 
-const provider: VoiceCallProvider = {
-  name: "mock",
-  verifyWebhook: () => ({ ok: true, verifiedRequestKey: "mock:req:base" }),
-  parseWebhookEvent: () => ({ events: [] }),
-  initiateCall: async () => ({ providerCallId: "provider-call", status: "initiated" }),
-  hangupCall: async () => {},
-  playTts: async () => {},
-  startListening: async () => {},
-  stopListening: async () => {},
-  getCallStatus: async () => ({ status: "in-progress", isTerminal: false }),
-};
-
-function createRealtimeHandler(
-  buildTwiMLPayload: RealtimeCallHandler["buildTwiMLPayload"],
-): RealtimeCallHandler {
-  return {
-    buildTwiMLPayload,
-    close: async () => {},
-    getStreamPathPattern: () => "/voice/stream/realtime",
-    handleWebSocketUpgrade: () => {},
-    registerToolHandler: () => {},
-    setPublicUrl: () => {},
-  } as unknown as RealtimeCallHandler;
-}
-
-type TwilioProviderTestDouble = VoiceCallProvider &
-  Pick<
-    TwilioProvider,
-    | "isValidStreamToken"
-    | "registerCallStream"
-    | "unregisterCallStream"
-    | "hasRegisteredStream"
-    | "clearTtsQueue"
-  >;
-
-type VoiceCallConfigInput = Parameters<typeof resolveVoiceCallConfig>[0];
-
-const createConfig = (overrides: VoiceCallConfigInput = {}): VoiceCallConfig => {
-  const config = VoiceCallConfigSchema.parse({
-    ...overrides,
-    serve: { ...overrides.serve, port: overrides.serve?.port || 1 },
-  });
-  config.serve.port = overrides.serve?.port ?? 0;
-  return config;
-};
-
-const createCall = (startedAt: number): CallRecord => ({
-  callId: "call-1",
-  agentId: "main",
-  providerCallId: "provider-call-1",
-  provider: "mock",
-  direction: "outbound",
-  state: "initiated",
-  from: "+15550001234",
-  to: "+15550005678",
-  startedAt,
-  transcript: [],
-  processedEventIds: [],
-});
-
-const automaticReplyManagerStub = {
-  updateCallMetadata: async (
-    call: CallRecord,
-    update: (metadata: CallRecord["metadata"]) => CallRecord["metadata"],
-  ) => {
-    call.metadata = update(call.metadata);
-  },
-  createAutoResponseGuard: () => ({ isCurrent: () => true, release: () => {} }),
-  invalidateAutoResponse: () => {},
-};
-
-const createManager = (calls: CallRecord[]) => {
-  const endCall = vi.fn(async () => ({ success: true }));
-  const processEvent = vi.fn<CallManager["processEvent"]>(async () => ({ kind: "processed" }));
-  const manager = {
-    ...automaticReplyManagerStub,
-    getActiveCalls: () => calls,
-    endCall,
-    processEvent,
-  } as unknown as CallManager;
-
-  return { manager, endCall, processEvent };
-};
-
-type WebhookServerArgs =
-  ConstructorParameters<typeof VoiceCallWebhookServer> extends [unknown, ...infer Args]
-    ? Args
-    : never;
-
-function createServer(...args: WebhookServerArgs) {
-  const server = new VoiceCallWebhookServer(createTestPluginServiceScheduler(), ...args);
-  onTestFinished(() => server.stop());
-  return server;
-}
-
 function expectWebhookUrl(url: string, expectedPath: string) {
   const parsed = new URL(url);
   expect(parsed.pathname).toBe(expectedPath);
@@ -162,118 +87,10 @@ function expectWebhookUrl(url: string, expectedPath: string) {
   expect(parsed.port).not.toBe("0");
 }
 
-function expectNoTwilioStreamState(providerLocal: TwilioProvider) {
-  const state = providerLocal as unknown as {
-    callStreamMap: Map<string, string>;
-    streamAuthTokens: Map<string, string>;
-  };
-  expect(state.callStreamMap.size).toBe(0);
-  expect(state.streamAuthTokens.size).toBe(0);
-}
-
-function expectPlivoCallStateReleased(
-  providerLocal: PlivoProvider,
-  params: { callId: string; requestUuid: string; callUuid: string },
-) {
-  const state = providerLocal as unknown as {
-    requestUuidToCallUuid: Map<string, string>;
-    callIdToWebhookUrl: Map<string, string>;
-    callUuidToWebhookUrl: Map<string, string>;
-    pendingSpeakByCallId: Map<string, unknown>;
-    pendingListenByCallId: Map<string, unknown>;
-  };
-  expect(state.requestUuidToCallUuid.has(params.requestUuid)).toBe(false);
-  expect(state.callIdToWebhookUrl.has(params.callId)).toBe(false);
-  expect(state.callUuidToWebhookUrl.has(params.callUuid)).toBe(false);
-  expect(state.pendingSpeakByCallId.has(params.callId)).toBe(false);
-  expect(state.pendingListenByCallId.has(params.callId)).toBe(false);
-}
-
 async function expectTwilioReplayTwiML(response: Response) {
   expect(response.status).toBe(200);
   expect(response.headers.get("content-type")).toContain("text/xml");
   expect(await response.text()).toBe('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
-}
-
-async function postSignedTwilioWebhook(params: {
-  baseUrl: string;
-  authToken: string;
-  body: string;
-}): Promise<Response> {
-  const url = new URL(params.baseUrl);
-  let signedMaterial = url.toString();
-  for (const [key, value] of [...new URLSearchParams(params.body)].toSorted(([left], [right]) =>
-    left.localeCompare(right),
-  )) {
-    signedMaterial += key + value;
-  }
-  const signature = crypto
-    .createHmac("sha1", params.authToken)
-    .update(signedMaterial)
-    .digest("base64");
-  return await postWebhookForm(url, params.body, {
-    "x-twilio-signature": signature,
-  });
-}
-
-function createTwilioVerificationProvider(
-  overrides: Partial<TwilioProviderTestDouble> = {},
-): VoiceCallProvider {
-  return {
-    ...provider,
-    name: "twilio",
-    verifyWebhook: () => ({ ok: true, verifiedRequestKey: "twilio:req:test" }),
-    ...overrides,
-  };
-}
-
-function createTwilioStreamingProvider(
-  overrides: Partial<TwilioProviderTestDouble> = {},
-): TwilioProviderTestDouble {
-  return {
-    ...createTwilioVerificationProvider(),
-    isValidStreamToken: () => true,
-    registerCallStream: () => {},
-    unregisterCallStream: () => {},
-    hasRegisteredStream: () => true,
-    clearTtsQueue: () => {},
-    ...overrides,
-  };
-}
-
-function createAsteriskRegistrationFixture() {
-  const base = createConfig();
-  const config = createConfig({
-    provider: "asterisk",
-    inboundPolicy: "allowlist",
-    allowFrom: ["+15550001111"],
-    streaming: { ...base.streaming, enabled: true },
-    asterisk: {
-      ...base.asterisk,
-      registrationToken: "registration-secret",
-      audioSocket: { ...base.asterisk.audioSocket, port: 0 },
-    },
-  });
-  const asteriskProvider = new AsteriskProvider({
-    config: config.asterisk,
-    registrationToken: "registration-secret",
-    coreConfig: {},
-    transcriptionProvider: {
-      id: "test-stt",
-      label: "Synthetic transcription",
-      isConfigured: () => true,
-      createSession: () => ({
-        connect: async () => {},
-        sendAudio: () => {},
-        close: () => {},
-        isConnected: () => true,
-      }),
-    },
-    transcriptionProviderConfig: {},
-  });
-  const { manager } = createManager([]);
-  const server = createServer(config, manager, asteriskProvider);
-  return { config, provider: asteriskProvider, server };
 }
 
 describe("VoiceCallWebhookServer Asterisk registration", () => {
@@ -307,6 +124,44 @@ describe("VoiceCallWebhookServer Asterisk registration", () => {
     } finally {
       await fixture.server.stop();
       await fixture.provider.stop();
+    }
+  });
+
+  it("rejects a name-spoofed Asterisk provider before body read and releases its limiter", async () => {
+    const socket = new Socket();
+    const req = new IncomingMessage(socket);
+    req.method = "POST";
+    req.headers = { authorization: "Bearer registration-secret" };
+    const spoofed = {
+      ...provider,
+      name: "asterisk" as const,
+      verifyRegistrationToken: vi.fn(() => true),
+      registerInboundCall: vi.fn(),
+    };
+    const readBody = vi.spyOn(webhookRequestGuards, "readRequestBodyWithLimit");
+    const inFlightLimiter = createWebhookInFlightLimiter({ maxInFlightPerKey: 1 });
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    try {
+      await expect(
+        handleAsteriskRegistrationRequest({
+          req,
+          provider: spoofed,
+          config: createConfig({ provider: "asterisk" }),
+          logger,
+          inFlightLimiter,
+          inFlightKey: "synthetic-request",
+        }),
+      ).resolves.toEqual({ statusCode: 401, body: "Unauthorized" });
+      expect(readBody).not.toHaveBeenCalled();
+      expect(spoofed.verifyRegistrationToken).not.toHaveBeenCalled();
+      expect(spoofed.registerInboundCall).not.toHaveBeenCalled();
+      expect(inFlightLimiter.size()).toBe(0);
+      expect(inFlightLimiter.tryAcquire("synthetic-request")).toBe(true);
+    } finally {
+      inFlightLimiter.clear();
+      readBody.mockRestore();
+      req.destroy();
+      socket.destroy();
     }
   });
 });
@@ -486,52 +341,27 @@ describe("VoiceCallWebhookServer media stream client IP resolution", () => {
       expected: "198.51.100.10",
     },
   ])("resolves client IP with $name", ({ trust, proxies, remote, expected }) => {
-    const { manager } = createManager([]);
-    const server = createServer(
-      createConfig({
-        webhookSecurity: {
-          allowedHosts: ["voice.example.com"],
-          trustForwardingHeaders: trust,
-          trustedProxyIPs: proxies,
-        },
-      }),
-      manager,
-      createTwilioStreamingProvider(),
-    );
-    const resolve = (
-      server as unknown as {
-        resolveMediaStreamClientIp: (request: {
-          headers: Record<string, string>;
-          socket: { remoteAddress?: string };
-        }) => string | undefined;
-      }
-    ).resolveMediaStreamClientIp.bind(server);
+    const config = createConfig({
+      webhookSecurity: {
+        allowedHosts: ["voice.example.com"],
+        trustForwardingHeaders: trust,
+        trustedProxyIPs: proxies,
+      },
+    });
     expect(
-      resolve({
-        headers: {
-          "x-forwarded-for": "192.0.2.99, 198.51.100.10, 203.0.113.10",
-          "x-real-ip": "198.51.100.11",
+      resolveMediaStreamClientIp(
+        {
+          headers: {
+            "x-forwarded-for": "192.0.2.99, 198.51.100.10, 203.0.113.10",
+            "x-real-ip": "198.51.100.11",
+          },
+          socket: { remoteAddress: remote },
         },
-        socket: { remoteAddress: remote },
-      }),
+        config.webhookSecurity,
+      ),
     ).toBe(expected);
   });
 });
-
-async function postWebhookForm(
-  baseUrl: string | URL,
-  body: string,
-  headers: Record<string, string> = {},
-) {
-  return await fetch(baseUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-      ...headers,
-    },
-    body,
-  });
-}
 
 describe("VoiceCallWebhookServer stale call reaper", () => {
   beforeEach(() => {

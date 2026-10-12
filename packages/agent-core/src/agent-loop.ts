@@ -34,6 +34,7 @@ import {
 import { combineExecutedToolBatches } from "./tool-batch-completion.js";
 import {
   createErrorToolResult,
+  createToolExecutionErrorResult,
   finalizeToolCallOutcome,
   type FinalizedToolCallOutcome,
 } from "./tool-call-outcome.js";
@@ -1366,13 +1367,6 @@ async function completeUnstartedToolCall(
   );
   await emitToolExecutionEnd(finalized, batch);
   return finalized;
-}
-
-function createToolExecutionErrorResult(error: unknown): AgentToolResult<unknown> {
-  const result = createErrorToolResult(coerceErrorMessage(error));
-  return typeof error === "object" && error !== null
-    ? copyInternalToolResultState(error, result)
-    : result;
 }
 
 function immediateToolCallError(message: string): ImmediateToolCallOutcome {
