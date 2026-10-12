@@ -95,7 +95,7 @@ describe("Talk speech profile admission", () => {
     ).toEqual(profile);
   });
 
-  it.each([
+  it.for([
     { channels: { matrix: { targets: ["anything"] } } },
     { channels: { matrix: { targets: ["voice-note"], enabled: true } } },
     { channels: { " matrix ": { targets: ["voice-note"] } } },
