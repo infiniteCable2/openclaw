@@ -501,6 +501,7 @@ describe("TTS runtime persona behavior", () => {
           case "telephony-stream":
             return streamTextToSpeechTelephony({ ...common, agentId, channelId: "matrix" });
         }
+        throw new Error("Unexpected synthesis test mode");
       };
       const result = await dispatch();
       expect(result.success).toBe(true);

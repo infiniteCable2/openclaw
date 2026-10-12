@@ -1,12 +1,13 @@
 import type { TalkProviderConfig } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.js";
-import type { SpeechExpression } from "../llm/types.js";
-export type { SpeechExpression } from "../llm/types.js";
 import type {
   ResolvedTtsPersona,
   TtsModelOverrideConfig,
   TtsProviderConfig,
 } from "../config/types.tts.js";
+import type { SpeechExpression } from "../llm/types.js";
+
+export type { SpeechExpression } from "../llm/types.js";
 
 /** Canonical speech provider identifier after provider registry normalization. */
 export type SpeechProviderId = string;
