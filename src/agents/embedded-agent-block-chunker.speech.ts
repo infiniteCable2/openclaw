@@ -54,7 +54,7 @@ export function findSpeechChunkEnd(
     at <= profile.maxChars && countSpeechWords(text.slice(0, at)) <= profile.maxWords;
   const eligible = [...candidates]
     .filter((at) => at > 0 && safe(at) && fits(at) && at >= profile.minChars)
-    .sort((a, b) => a - b);
+    .toSorted((a, b) => a - b);
   // Chatterbox's established paragraph units stay independent. Backends with a
   // minimum synthesis size may instead accumulate several short paragraphs.
   const paragraph = eligible.find((at) => /^\n[\t ]*\n/u.test(text.slice(at)));
