@@ -7,7 +7,7 @@ let sentences: Intl.Segmenter | undefined;
 let words: Intl.Segmenter | undefined;
 
 /** Same Unicode letter/number/underscore groups as standalone Python's Unicode \w budget. */
-export function countSpeechWords(text: string): number {
+function countSpeechWords(text: string): number {
   return [...text.matchAll(/[\p{L}\p{N}_]+/gu)].length;
 }
 

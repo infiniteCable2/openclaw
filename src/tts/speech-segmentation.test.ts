@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { EmbeddedBlockChunker } from "../agents/embedded-agent-block-chunker.js";
-import { countSpeechWords } from "../agents/embedded-agent-block-chunker.speech.js";
 import type { SpeechSegmentationProfile } from "./provider-types.js";
 import { prepareSpeechSegments } from "./speech-segmentation.js";
 
@@ -43,7 +42,7 @@ describe("native model-specific speech segmentation", () => {
     expect(segments.length).toBeGreaterThan(1);
     expect(segments.map((segment) => segment.text).join(" ")).toBe(text);
     for (const segment of segments) {
-      expect(countSpeechWords(segment.text)).toBeLessThanOrEqual(6);
+      expect(segment.text.split(/\s+/u).length).toBeLessThanOrEqual(6);
       expect(segment.text.length).toBeLessThanOrEqual(64);
     }
   });
@@ -117,10 +116,21 @@ describe("native model-specific speech segmentation", () => {
         .map((part) => part.text)
         .join(""),
     ).toBe(text);
-    expect(countSpeechWords("9:30 Uhr, 3,5 Grad – größer_werden")).toBe(7);
     expect(() => prepareSpeechSegments("x".repeat(80), { ...profile, maxChars: 64 })).toThrow(
       "One speech word",
     );
+  });
+
+  it("keeps times, decimals and Unicode words within the selected word budget", () => {
+    const text = "9:30 Uhr, 3,5 Grad – größer_werden";
+    const segments = prepareSpeechSegments(text, {
+      ...profile,
+      targetWords: 3,
+      maxWords: 3,
+      maxChars: 64,
+    });
+    expect(segments.map((part) => part.text)).toEqual(["9:30 Uhr,", "3,5 Grad –", "größer_werden"]);
+    expect(segments.map((part) => part.text).join(" ")).toBe(text);
   });
 
   it("does not split German titles, initials, abbreviations, times or numeric lists", () => {
