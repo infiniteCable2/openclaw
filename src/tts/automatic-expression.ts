@@ -107,7 +107,7 @@ export async function prepareAutomaticSpeechExpressionContext(params: {
         localServiceAdmission: prepared.localServiceAdmission,
         expectedSpeechSelection: prepared.expectedSpeechSelection,
       },
-      release: prepared.release,
+      release: prepared.release.bind(prepared),
     };
   } catch (error) {
     try {
@@ -116,6 +116,7 @@ export async function prepareAutomaticSpeechExpressionContext(params: {
       throw new AggregateError(
         [error, cleanupError],
         "Automatic speech admission and cleanup failed",
+        { cause: cleanupError },
       );
     }
     throw error;

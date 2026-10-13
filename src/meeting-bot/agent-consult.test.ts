@@ -313,7 +313,9 @@ describe("createMeetingRealtimeEngineBindings", () => {
         args: { question: "Check the fixture" },
         transcript: [],
         onRunControl(control) {
-          if (control === undefined) throw new Error("Synthetic control cleanup failure");
+          if (control === undefined) {
+            throw new Error("Synthetic control cleanup failure");
+          }
         },
       }),
     ).rejects.toThrow("Synthetic control cleanup failure");

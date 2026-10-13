@@ -81,7 +81,9 @@ describe("native current-source reply custody", () => {
     const call = input();
     let current = true;
     call.currentSourceReplyTarget!.assertCurrent = () => {
-      if (!current) throw new Error("retired");
+      if (!current) {
+        throw new Error("retired");
+      }
     };
     call.currentSourceReplyTarget!.deliver = async () => {
       current = false;

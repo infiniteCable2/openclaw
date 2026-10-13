@@ -269,7 +269,9 @@ describe("meeting native continuous voice", () => {
     const fixture = await createLiveFixture({ consultAgent: async () => rich });
     try {
       const consult = fixture.callbacks.runAgentConsult;
-      if (!consult) throw new Error("Expected native agent delegation");
+      if (!consult) {
+        throw new Error("Expected native agent delegation");
+      }
       const result = await consult({ prompt: "Check the project" });
       expect(result).toEqual({ text: rich.text });
       expect(Object.keys(result)).toEqual(["text"]);

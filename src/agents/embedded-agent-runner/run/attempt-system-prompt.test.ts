@@ -168,12 +168,13 @@ async function preparePermissionPrompt(
 
 describe("buildAttemptSystemPrompt", () => {
   it("uses admitted speech guidance without inheriting it into a detached foreground snapshot", async () => {
+    const assertCurrent = vi.fn();
     const speech: MessageSpeechAdmission = {
       runId: "permission-prompt",
       sessionId: "permission-prompt",
       agentId: "main",
       route: { channel: "matrix", to: "room:example" },
-      assertCurrent: vi.fn(),
+      assertCurrent,
       preparedTtsPreferences: { machinePrefsPath: "fixture-prefs" },
       prefsPath: "fixture-prefs",
       expectedSpeechSelection: { provider: "example" },
@@ -189,7 +190,7 @@ describe("buildAttemptSystemPrompt", () => {
       speech,
     );
     expect(prepared.systemPromptText).toContain(speech.guidance);
-    expect(speech.assertCurrent).toHaveBeenCalled();
+    expect(assertCurrent).toHaveBeenCalled();
     expect(attempt.extraSystemPrompt).toBe("Original caller context.");
     const foreground = buildEmbeddedForegroundPromptContext(
       { ...attempt, agentId: "main" },

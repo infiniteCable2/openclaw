@@ -22,7 +22,7 @@ vi.mock("../../tts/tts-preferences.js", () => ({
 // mock-isolation: importing the real TTS runtime installs process-global availability/preferences resolvers and binds persistent synthesis; this fixture isolates that runtime handoff.
 vi.mock("../../tts/tts.runtime.js", () => ({ maybeApplyTtsToPayload: mocks.apply }));
 
-function admission(): MessageSpeechAdmission {
+function admission(assertCurrent = vi.fn()): MessageSpeechAdmission {
   return {
     runId: "run-example",
     sessionId: "session-example",
@@ -33,7 +33,7 @@ function admission(): MessageSpeechAdmission {
       to: "room:example",
       threadId: "thread-example",
     },
-    assertCurrent: vi.fn(),
+    assertCurrent,
     prefsPath: "fixture-prefs",
     preparedTtsPreferences: {},
     localServiceAdmission: {
@@ -145,7 +145,8 @@ describe("native message speech admission routing", () => {
     expect(mocks.apply).not.toHaveBeenCalled();
   });
   it("keeps requested attachment sends on their original non-TTS path", async () => {
-    const bound = admission();
+    const assertCurrent = vi.fn();
+    const bound = admission(assertCurrent);
     const payload = { text: "Requested file.", mediaUrl: "https://example.test/fixture.txt" };
     const result = await maybeApplyTtsToMessageActionSendPayload({
       ...route(bound),
@@ -154,7 +155,7 @@ describe("native message speech admission routing", () => {
       dryRun: false,
     });
     expect(result).toBe(payload);
-    expect(bound.assertCurrent).not.toHaveBeenCalled();
+    expect(assertCurrent).not.toHaveBeenCalled();
     expect(mocks.apply).not.toHaveBeenCalled();
   });
 
@@ -166,7 +167,8 @@ describe("native message speech admission routing", () => {
     { name: "thread", changes: { threadId: "other" } },
   ] as const;
   it.each(foreignRoutes)("does not loan source readiness to another $name", async ({ changes }) => {
-    const bound = admission();
+    const assertCurrent = vi.fn();
+    const bound = admission(assertCurrent);
     await maybeApplyTtsToMessageActionSendPayload({
       ...route(bound),
       ...changes,
@@ -177,6 +179,6 @@ describe("native message speech admission routing", () => {
     expect(mocks.apply).toHaveBeenCalledWith(
       expect.objectContaining({ messageSpeechAdmission: undefined }),
     );
-    expect(bound.assertCurrent).not.toHaveBeenCalled();
+    expect(assertCurrent).not.toHaveBeenCalled();
   });
 });

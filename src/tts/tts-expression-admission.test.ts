@@ -136,6 +136,7 @@ describe("native speech expression admission", () => {
         case "telephony-stream":
           return streamTextToSpeechTelephony({ ...common, channelId: "matrix" });
       }
+      throw new Error(`Unexpected speech selection mode: ${mode}`);
     };
     return {
       ready,
@@ -169,7 +170,9 @@ describe("native speech expression admission", () => {
           expect(fixture.prepareCapabilities).not.toHaveBeenCalled();
           expect(fixture.getCapabilities).not.toHaveBeenCalled();
         } finally {
-          if ("release" in result) await result.release?.();
+          if ("release" in result) {
+            await result.release?.();
+          }
         }
       } finally {
         await fixture.ready.release?.();
@@ -236,7 +239,9 @@ describe("native speech expression admission", () => {
           expect(result.success).toBe(true);
           expect(result.providerVoice).toBe(allowVoice ? "requested-voice" : "prepared-voice");
         } finally {
-          if ("release" in result) await result.release?.();
+          if ("release" in result) {
+            await result.release?.();
+          }
         }
       } finally {
         await fixture.ready.release?.();

@@ -35,8 +35,11 @@ import {
   resolveTtsSettingsSnapshot,
   type ResolvedTtsConfig,
 } from "./tts-settings.js";
-import { textToSpeechCore, type TtsAudioPersistence } from "./tts-synthesis.js";
-import { resolveTtsSynthesisTarget } from "./tts-synthesis.js";
+import {
+  resolveTtsSynthesisTarget,
+  textToSpeechCore,
+  type TtsAudioPersistence,
+} from "./tts-synthesis.js";
 
 let lastTtsAttempt: TtsStatusEntry | undefined;
 

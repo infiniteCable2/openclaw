@@ -99,8 +99,9 @@ describe("native expressive speech consult", () => {
       "sad",
     ]);
     for (const event of events) {
-      if (event.type === "chunk")
+      if (event.type === "chunk") {
         expect(event.expectedSpeechSelection).toBe(expectedSpeechSelection);
+      }
     }
     for (const part of result.utterances ?? []) {
       expect(part.expectedSpeechSelection).toBe(expectedSpeechSelection);
@@ -201,7 +202,7 @@ describe("native expressive speech consult", () => {
         },
       });
       context.params.currentSourceReplyTarget = target;
-      endMessage(context, { message: adoptedInput });
+      await endMessage(context, { message: adoptedInput });
       expect(context.state.answerSegments).toHaveLength(1);
       await target.deliver(utterance("Corrected answer.", "joyful"), {
         final: true,
@@ -303,7 +304,9 @@ describe("native expressive speech consult", () => {
         }
       }
       expect(events.filter((event) => event.type === "abort")).toHaveLength(0);
-      if (streamed) expect(events.at(-1)).toEqual({ type: "done", text: result.text });
+      if (streamed) {
+        expect(events.at(-1)).toEqual({ type: "done", text: result.text });
+      }
     },
   );
 

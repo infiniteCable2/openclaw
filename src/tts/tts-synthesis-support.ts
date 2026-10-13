@@ -511,7 +511,9 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
               localServiceAdmission: localServiceLease?.admission,
             })
           : undefined;
-        if (params.expression) params.localServiceAdmission?.signal.throwIfAborted();
+        if (params.expression) {
+          params.localServiceAdmission?.signal.throwIfAborted();
+        }
         if (params.expression) {
           // Provider preparation must not detach expression spans from their admitted plain text.
           parseSpeechExpression(params.expression, prepared.text);
@@ -541,7 +543,9 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         try {
           params.signal?.throwIfAborted();
           localServiceLease?.admission?.signal.throwIfAborted();
-          if (params.expression) params.localServiceAdmission?.signal.throwIfAborted();
+          if (params.expression) {
+            params.localServiceAdmission?.signal.throwIfAborted();
+          }
           const latencyMs = Date.now() - providerStart;
           attempts.push({
             provider,

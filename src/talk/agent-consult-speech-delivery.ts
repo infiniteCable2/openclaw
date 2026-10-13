@@ -44,7 +44,8 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
   fallbackText?: string;
   logger: Pick<RuntimeLogger, "warn">;
 }) {
-  const { runId, sessionId, abortSignal, assertExpressionCurrent } = params;
+  const { runId, sessionId, abortSignal } = params;
+  const assertExpressionCurrent = params.assertExpressionCurrent.bind(params);
   const streamedChunks: string[] = [];
   let commentarySpeechQueued = false;
   const spokenCommentaryEnabled =
@@ -64,7 +65,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
   >();
   const emitSpeechEvent = (event: RealtimeVoiceAgentConsultSpeechEvent) => {
     if (!params.onSpeakableText || speechDeliveryError || speechDeliveryAborted) {
-      return;
+      return undefined;
     }
     speechDelivery = speechDelivery
       .then(async () => {
@@ -193,7 +194,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
         payload.text.trim()
       ) {
         commentarySpeechQueued = true;
-        emitSpeechEvent({ type: "chunk", text: payload.text.trim() });
+        void emitSpeechEvent({ type: "chunk", text: payload.text.trim() });
       }
       return;
     }
@@ -202,7 +203,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
       return;
     }
     streamedChunks.push(text);
-    emitSpeechEvent({ type: "chunk", text });
+    void emitSpeechEvent({ type: "chunk", text });
   };
 
   const finish = async ({
@@ -282,7 +283,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
       // audio after chunks. Yield acknowledgments therefore need their own chunk.
       if (!alreadyQueued) {
         streamedChunks.push(acknowledgment);
-        emitSpeechEvent({ type: "chunk", text: acknowledgment });
+        void emitSpeechEvent({ type: "chunk", text: acknowledgment });
       }
       yieldedSpeech =
         collectRealtimeVoiceAgentConsultVisibleText(
@@ -312,9 +313,9 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
         params.fallbackText ?? "I need a moment to verify that before answering.";
       if (streamedChunks.length > 0 || commentarySpeechQueued) {
         // As with yield acknowledgments, done does not append new audio.
-        emitSpeechEvent({ type: "chunk", text: fallbackText });
+        void emitSpeechEvent({ type: "chunk", text: fallbackText });
       }
-      emitSpeechEvent({ type: "done", text: fallbackText });
+      void emitSpeechEvent({ type: "done", text: fallbackText });
       await speechDelivery;
       params.assertNotInterrupted();
       if (speechDeliveryError) {
@@ -333,9 +334,9 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
     ) {
       // Earlier-input speech may be all the sink has received. Done only
       // consolidates queued audio; append the current answer unless already queued.
-      emitSpeechEvent({ type: "chunk", text });
+      void emitSpeechEvent({ type: "chunk", text });
     }
-    emitSpeechEvent({ type: "done", text });
+    void emitSpeechEvent({ type: "done", text });
     await speechDelivery;
     params.assertNotInterrupted();
     if (speechDeliveryError) {

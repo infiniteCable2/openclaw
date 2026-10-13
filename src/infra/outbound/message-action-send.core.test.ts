@@ -734,6 +734,7 @@ describe("runMessageAction core send routing", () => {
     const sendMedia = vi.fn();
     registerTestChatPlugin({ deliveryMode: "direct", sendText, sendMedia });
     const caller = new AbortController();
+    const cancellation = new Error("Cancelled voice send");
     const started = createDeferred();
     ttsMocks.maybeApplyTtsToPayload.mockImplementationOnce(
       async (params: {
@@ -745,7 +746,7 @@ describe("runMessageAction core send routing", () => {
         expect(params.assertCommitAllowed).toEqual(expect.any(Function));
         started.resolve(undefined);
         return await new Promise<never>((_resolve, reject) => {
-          params.signal?.addEventListener("abort", () => reject(params.signal?.reason), {
+          params.signal?.addEventListener("abort", () => reject(cancellation), {
             once: true,
           });
         });
@@ -771,7 +772,7 @@ describe("runMessageAction core send routing", () => {
     });
     const rejected = expect(send).rejects.toThrow("Cancelled voice send");
     await started.promise;
-    caller.abort(new Error("Cancelled voice send"));
+    caller.abort(cancellation);
     await rejected;
     expect(sendText).not.toHaveBeenCalled();
     expect(sendMedia).not.toHaveBeenCalled();

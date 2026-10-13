@@ -203,7 +203,9 @@ async function acquireProviderLocalService(
         installServiceAdmission(managed, healthy);
         return { release, ...(managed.admission ? { admission: managed.admission } : {}) };
       }
-      if (!healthy) invalidateServiceAdmission(managed);
+      if (!healthy) {
+        invalidateServiceAdmission(managed);
+      }
       if (!managed.starting) {
         // Concurrent callers share one startup promise for the same service key.
         const startup = {
@@ -235,7 +237,9 @@ async function acquireProviderLocalService(
           (await probeHealth(healthUrl, healthHeaders, signal)));
       assertCurrentServiceAcquisition(key, managed, signal);
       if (ready && !managed.processStop) {
-        if (typeof ready === "object") installServiceAdmission(managed, ready);
+        if (typeof ready === "object") {
+          installServiceAdmission(managed, ready);
+        }
         return { release, ...(managed.admission ? { admission: managed.admission } : {}) };
       }
       release();
@@ -376,7 +380,9 @@ async function probeHealth(
   let response: Response | undefined;
   try {
     response = await fetch(url, { headers: egressHeaders, signal: controller.signal });
-    if (!response.ok) return false;
+    if (!response.ok) {
+      return false;
+    }
     // Optional bounded readiness metadata; legacy health endpoints remain status-only.
     const generation = response.headers.get("x-openclaw-service-generation");
     return generation && /^[A-Za-z0-9._-]{1,128}$/u.test(generation) ? { generation } : {};

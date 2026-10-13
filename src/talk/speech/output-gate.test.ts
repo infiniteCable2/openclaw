@@ -31,7 +31,7 @@ function fixture(clearOutput: SpeechAudioTransport["clearOutput"]) {
 
 describe("native output gate ownership during clear", () => {
   it("does not release a newer paused input after an older clear completes", async () => {
-    const clear = createDeferredCore<void>();
+    const clear = createDeferredCore();
     const f = fixture(() => clear.promise);
     f.pause("first");
     const pending = f.gate.clearOutput();
@@ -59,7 +59,7 @@ describe("native output gate ownership during clear", () => {
 
   it("does not erase a later rejected input's native post-pause drain", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1000);
-    const clear = createDeferredCore<void>();
+    const clear = createDeferredCore();
     const f = fixture(() => clear.promise);
     f.pause("first");
     const pending = f.gate.clearOutput();

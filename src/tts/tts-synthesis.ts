@@ -87,7 +87,9 @@ export async function textToSpeechCore(
 ): Promise<TtsResult> {
   const assertCommitAllowed = () => {
     params.signal?.throwIfAborted();
-    if (params.overrides?.expression) params.localServiceAdmission?.signal.throwIfAborted();
+    if (params.overrides?.expression) {
+      params.localServiceAdmission?.signal.throwIfAborted();
+    }
     params.assertCommitAllowed?.();
   };
   assertCommitAllowed();
