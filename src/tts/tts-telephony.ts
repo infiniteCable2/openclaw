@@ -9,7 +9,6 @@ import type {
   TtsDirectiveOverrides,
 } from "./provider-types.js";
 import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
-import { normalizeSpeechText } from "./speech-text.js";
 import type {
   TtsTelephonyPreparationResult,
   TtsTelephonyResult,
@@ -163,9 +162,7 @@ export async function streamTextToSpeechTelephony(
     const result = await acquired.run(() =>
       executeTtsProviderAttempts({
         ...acquired.setup,
-        synthesisText: params.overrides?.expression
-          ? params.text
-          : normalizeSpeechText(params.text),
+        synthesisText: params.text,
         expression: params.overrides?.expression,
         localServiceAdmission: params.localServiceAdmission,
         expectedSpeechSelection: params.expectedSpeechSelection,
@@ -232,9 +229,7 @@ export async function textToSpeechTelephony(
       }
       return await executeTtsProviderAttempts({
         ...setup,
-        synthesisText: params.overrides?.expression
-          ? params.text
-          : normalizeSpeechText(params.text),
+        synthesisText: params.text,
         expression: params.overrides?.expression,
         localServiceAdmission: params.localServiceAdmission,
         expectedSpeechSelection: params.expectedSpeechSelection,
