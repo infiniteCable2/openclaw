@@ -10,6 +10,10 @@ import {
   scanFenceSpans,
 } from "../../packages/markdown-core/src/fences.js";
 import type { SpeechSegmentationProfile } from "../tts/provider-types.js";
+import {
+  findSafeLineBreakIndex,
+  findSafeSentenceBreakIndex,
+} from "./embedded-agent-block-chunker.breaks.js";
 import { prepareIndentedCode } from "./embedded-agent-block-chunker.code.js";
 import {
   findSpeechChunkEnd,
@@ -64,54 +68,6 @@ type BlockChunkDrain = {
   mutablePreview?: boolean;
   emit: (chunk: string, options?: BlockChunkMetadata) => void;
 };
-
-function findSafeSentenceBreakIndex(
-  text: string,
-  unsafeSpans: readonly BreakSpan[],
-  minChars: number,
-  offset = 0,
-  openFence?: FenceSpan,
-): number {
-  const matches = text.matchAll(/[.!?](?=\s|$)/g);
-  let sentenceIdx = -1;
-  for (const match of matches) {
-    const at = match.index;
-    if (at < minChars) {
-      continue;
-    }
-    const candidate = at + 1;
-    if (
-      offset + candidate !== openFence?.end &&
-      isSafeFenceBreak(unsafeSpans, offset + candidate)
-    ) {
-      sentenceIdx = candidate;
-    }
-  }
-  return sentenceIdx >= minChars ? sentenceIdx : -1;
-}
-
-function findSafeLineBreakIndex(params: {
-  text: string;
-  unsafeSpans: readonly BreakSpan[];
-  minChars: number;
-  reverse: boolean;
-  separator: "\n" | "\n\n";
-  offset?: number;
-}): number {
-  const { text, unsafeSpans, minChars, reverse, separator, offset = 0 } = params;
-  let index = reverse ? text.lastIndexOf(separator) : text.indexOf(separator);
-  while (reverse ? index >= minChars : index !== -1) {
-    for (let candidate = index; candidate < index + separator.length; candidate++) {
-      if (candidate >= minChars && isSafeFenceBreak(unsafeSpans, offset + candidate)) {
-        return candidate;
-      }
-    }
-    index = reverse
-      ? text.lastIndexOf(separator, index - 1)
-      : text.indexOf(separator, index + separator.length);
-  }
-  return -1;
-}
 
 function findFenceCloseLineStart(buffer: string, fence: FenceSpan, offset = 0): number {
   const relativeFenceEnd = Math.min(buffer.length, Math.max(0, fence.end - offset));
