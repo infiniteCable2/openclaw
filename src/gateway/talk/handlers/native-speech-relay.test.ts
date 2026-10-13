@@ -40,6 +40,7 @@ it("public STT/TTS relay gates media readiness and uses native consultation, voi
   const audioBase64 = Buffer.alloc(640, 3).toString("base64");
   expect(target).toMatchObject({ agentId: "voice", canonicalKey: "global" });
   expect(hardware.provider.prepareSession).toHaveBeenCalledOnce();
+  expect(mocks.prepareSpeech).toHaveBeenCalledOnce();
   expect(mocks.prepareSpeech).toHaveBeenCalledWith(expect.objectContaining({ agentId: "voice" }));
   expect(
     await dispatch("talk.session.appendAudio", { sessionId, audioBase64 }),
@@ -75,6 +76,11 @@ it("public STT/TTS relay gates media readiness and uses native consultation, voi
   ).toHaveBeenCalledWith(true, { ok: true }, undefined);
   expect(hardware.input).toHaveBeenCalledWith(Buffer.from(audioBase64, "base64"));
   await withinTest(turnEnded.promise, signal);
+  expect(mocks.prepareSpeech).toHaveBeenCalledTimes(2);
+  expect(hardware.releaseTts).not.toHaveBeenCalled();
+  expect(hardware.turnTtsReleases).toHaveLength(1);
+  expect(hardware.turnTtsReleases[0]).not.toBe(hardware.releaseTts);
+  expect(hardware.turnTtsReleases[0]).toHaveBeenCalledOnce();
   expect(events.filter((event) => event.type === "audio")).toEqual([
     expect.objectContaining({ sessionId, audioBase64: hardware.output.toString("base64") }),
   ]);
@@ -95,6 +101,7 @@ it("public STT/TTS relay gates media readiness and uses native consultation, voi
   expect(hardware.close).toHaveBeenCalledOnce();
   expect(hardware.releaseStt).toHaveBeenCalledOnce();
   expect(hardware.releaseTts).toHaveBeenCalledOnce();
+  expect(hardware.turnTtsReleases[0]).toHaveBeenCalledOnce();
   expect(hardware.releaseStream).toHaveBeenCalledOnce();
   expect(context.chatAbortControllers.size).toBe(0);
   const scope = {

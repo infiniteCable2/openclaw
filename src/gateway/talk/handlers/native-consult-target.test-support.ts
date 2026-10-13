@@ -270,6 +270,7 @@ function installSyntheticSpeechHardware(options: { connect?: Promise<void> } = {
   let closed = false;
   const releaseStt = vi.fn(async () => undefined);
   const releaseTts = vi.fn(async () => undefined);
+  const turnTtsReleases: Array<typeof releaseTts> = [];
   const releaseStream = vi.fn(async () => undefined);
   const streamStarted = createDeferredCore();
   const connectStarted = createDeferredCore();
@@ -307,7 +308,14 @@ function installSyntheticSpeechHardware(options: { connect?: Promise<void> } = {
     provider,
   });
   setActivePluginRegistry(registry);
-  mocks.prepareSpeech.mockResolvedValue({ success: true, release: releaseTts });
+  // The relay retains its session hold; each consultation acquires a separate hold.
+  mocks.prepareSpeech
+    .mockResolvedValueOnce({ success: true, release: releaseTts })
+    .mockImplementation(async () => {
+      const release = vi.fn(async () => undefined);
+      turnTtsReleases.push(release);
+      return { success: true, release };
+    });
   mocks.streamSpeech.mockImplementation(async () => {
     streamStarted.resolve();
     return {
@@ -329,6 +337,7 @@ function installSyntheticSpeechHardware(options: { connect?: Promise<void> } = {
     output,
     releaseStt,
     releaseTts,
+    turnTtsReleases,
     releaseStream,
     streamStarted,
     connectStarted,
