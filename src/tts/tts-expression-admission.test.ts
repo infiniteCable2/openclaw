@@ -136,7 +136,7 @@ describe("native speech expression admission", () => {
         case "telephony-stream":
           return streamTextToSpeechTelephony({ ...common, channelId: "matrix" });
       }
-      throw new Error(`Unexpected speech selection mode: ${mode}`);
+      throw new Error("Unexpected speech selection mode");
     };
     return {
       ready,
