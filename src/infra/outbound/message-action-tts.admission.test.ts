@@ -1,25 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { MessageSpeechAdmission } from "../../tts/message-speech-admission.js";
-import {
-  maybeApplyTtsToMessageActionSendPayload,
-  resolveMessageSpeechAdmission,
-} from "./message-action-tts.js";
+import { maybeApplyTtsToMessageActionSendPayload } from "./message-action-tts.js";
 
 const mocks = vi.hoisted(() => ({
   apply: vi.fn(async ({ payload }: { payload: ReplyPayload }) => payload),
   prefs: vi.fn(async () => ({})),
 }));
-vi.mock("../../config/sessions.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../config/sessions.js")>()),
+// mock-isolation: Session-store resolution must not initialize persistent state in this handoff fixture.
+vi.mock("../../config/sessions.js", () => ({
   resolveSessionStorePathCore: () => "fixture-store",
 }));
-vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
+// mock-isolation: Foreign routes read fixture session preferences, never an operator database.
+vi.mock("../../config/sessions/session-accessor.js", () => ({
   loadSessionEntryReadOnly: () => ({ ttsAuto: "inbound" }),
 }));
-vi.mock("../../tts/tts-preferences.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../tts/tts-preferences.js")>()),
+// mock-isolation: The preference owner stays outside the admitted-worker handoff being tested.
+vi.mock("../../tts/tts-preferences.js", () => ({
   prepareTtsPreferences: mocks.prefs,
 }));
 // mock-isolation: importing the real TTS runtime installs process-global availability/preferences resolvers and binds persistent synthesis; this fixture isolates that runtime handoff.
@@ -48,7 +45,7 @@ function admission(): MessageSpeechAdmission {
 }
 function route(bound: MessageSpeechAdmission) {
   return {
-    admission: bound,
+    messageSpeechAdmission: bound,
     runId: bound.runId,
     sessionId: bound.sessionId,
     agentId: bound.agentId,
@@ -58,41 +55,29 @@ function route(bound: MessageSpeechAdmission) {
     threadId: bound.route.threadId,
   };
 }
+function speechPayload() {
+  return setReplyPayloadMetadata(
+    { text: "Hello." },
+    {
+      ttsExplicit: true,
+      tts: { tagged: true, text: "Hello.", expression: { parts: [{ text: "Hello." }] } },
+    },
+  );
+}
+
 describe("native message speech admission routing", () => {
-  it("accepts only the exact live source route and native run", () => {
-    const bound = admission();
-    expect(resolveMessageSpeechAdmission(route(bound))).toBe(bound);
-    for (const changes of [
-      { agentId: "other" },
-      { channel: "other" },
-      { accountId: "other" },
-      { target: "room:other" },
-      { threadId: "other" },
-    ]) {
-      expect(resolveMessageSpeechAdmission({ ...route(bound), ...changes })).toBeUndefined();
-    }
-    expect(() => resolveMessageSpeechAdmission({ ...route(bound), runId: "other-run" })).toThrow(
-      "does not belong",
-    );
-    bound.assertCurrent = () => {
-      throw new Error("retired native owner");
-    };
-    expect(() => resolveMessageSpeechAdmission(route(bound))).toThrow("retired native owner");
+  beforeEach(() => {
+    mocks.apply.mockClear();
+    mocks.prefs.mockClear();
   });
+
   it("carries the same worker admission to native synthesis without serializing it into reply facts", async () => {
     const bound = admission();
-    const payload = setReplyPayloadMetadata(
-      { text: "Hello." },
-      {
-        ttsExplicit: true,
-        tts: { tagged: true, text: "Hello.", expression: { parts: [{ text: "Hello." }] } },
-      },
-    );
+    const payload = speechPayload();
     const caller = new AbortController();
     const assertCommitAllowed = vi.fn();
     await maybeApplyTtsToMessageActionSendPayload({
       ...route(bound),
-      messageSpeechAdmission: bound,
       payload,
       cfg: {},
       dryRun: false,
@@ -111,13 +96,47 @@ describe("native message speech admission routing", () => {
     );
     expect(JSON.stringify(payload)).not.toContain("generation-example");
   });
+
+  it.each(["runId", "sessionId"] as const)(
+    "rejects a source admission from another %s before preparing synthesis",
+    async (identity) => {
+      const bound = admission();
+      await expect(
+        maybeApplyTtsToMessageActionSendPayload({
+          ...route(bound),
+          [identity]: "other",
+          payload: speechPayload(),
+          cfg: {},
+          dryRun: false,
+        }),
+      ).rejects.toThrow("does not belong");
+      expect(mocks.prefs).not.toHaveBeenCalled();
+      expect(mocks.apply).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a retired native owner before preparing synthesis", async () => {
+    const bound = admission();
+    bound.assertCurrent = () => {
+      throw new Error("retired native owner");
+    };
+    await expect(
+      maybeApplyTtsToMessageActionSendPayload({
+        ...route(bound),
+        payload: speechPayload(),
+        cfg: {},
+        dryRun: false,
+      }),
+    ).rejects.toThrow("retired native owner");
+    expect(mocks.prefs).not.toHaveBeenCalled();
+    expect(mocks.apply).not.toHaveBeenCalled();
+  });
+
   it("rejects a neutral source-text fallback before loading native synthesis", async () => {
-    mocks.apply.mockClear();
     const bound = admission();
     await expect(
       maybeApplyTtsToMessageActionSendPayload({
         ...route(bound),
-        messageSpeechAdmission: bound,
         payload: { text: "Neutral fallback." },
         cfg: {},
         dryRun: false,
@@ -130,29 +149,28 @@ describe("native message speech admission routing", () => {
     const payload = { text: "Requested file.", mediaUrl: "https://example.test/fixture.txt" };
     const result = await maybeApplyTtsToMessageActionSendPayload({
       ...route(bound),
-      messageSpeechAdmission: bound,
       payload,
       cfg: {},
       dryRun: false,
     });
     expect(result).toBe(payload);
     expect(bound.assertCurrent).not.toHaveBeenCalled();
+    expect(mocks.apply).not.toHaveBeenCalled();
   });
-  it("does not loan source readiness to an explicitly addressed foreign recipient", async () => {
-    mocks.apply.mockClear();
+
+  const foreignRoutes = [
+    { name: "agent", changes: { agentId: "other" } },
+    { name: "channel", changes: { channel: "other" } },
+    { name: "account", changes: { accountId: "other" } },
+    { name: "recipient", changes: { target: "room:other" } },
+    { name: "thread", changes: { threadId: "other" } },
+  ] as const;
+  it.each(foreignRoutes)("does not loan source readiness to another $name", async ({ changes }) => {
     const bound = admission();
-    const payload = setReplyPayloadMetadata(
-      { text: "Hello." },
-      {
-        ttsExplicit: true,
-        tts: { tagged: true, text: "Hello.", expression: { parts: [{ text: "Hello." }] } },
-      },
-    );
     await maybeApplyTtsToMessageActionSendPayload({
       ...route(bound),
-      target: "room:other",
-      messageSpeechAdmission: bound,
-      payload,
+      ...changes,
+      payload: speechPayload(),
       cfg: {},
       dryRun: false,
     });

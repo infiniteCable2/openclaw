@@ -38,7 +38,7 @@ function sourceReplyPolicyError(message: string): MessageActionDeniedError {
     "message-source-reply:current-conversation",
   );
 }
-export const SOURCE_REPLY_ONLY_MESSAGE_SCHEMA = Type.Object({
+const SOURCE_REPLY_ONLY_MESSAGE_SCHEMA = Type.Object({
   action: stringEnum(["send"], {
     description: "Send a text reply to the current source conversation.",
   }),

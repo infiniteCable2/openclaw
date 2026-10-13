@@ -20,7 +20,7 @@ const loadMessageActionTtsRuntime = createLazyRuntimeModule(
 );
 
 /** Exact resolved native handoff route, never the model's requested destination alone. */
-export function resolveMessageSpeechAdmission(params: {
+function resolveMessageSpeechAdmission(params: {
   admission?: MessageSpeechAdmission;
   runId?: string;
   sessionId?: string;

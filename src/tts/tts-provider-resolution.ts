@@ -175,7 +175,7 @@ export function resolvePersonaProviderConfig(
   return undefined;
 }
 
-export function mergeProviderConfigWithPersona(params: {
+function mergeProviderConfigWithPersona(params: {
   providerConfig: SpeechProviderConfig;
   persona?: ResolvedTtsPersona;
   providerId: string;
@@ -430,7 +430,7 @@ function resolveSpeechProviderConfig(
   );
 }
 
-export function getResolvedSpeechProviderConfigForVoiceModel(params: {
+function getResolvedSpeechProviderConfigForVoiceModel(params: {
   config: ResolvedTtsConfig;
   providerId: string;
   cfg: OpenClawConfig;
