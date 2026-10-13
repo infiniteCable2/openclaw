@@ -101,6 +101,27 @@ it("routes resume local-node handshakes only through the core broker fork", () =
 });
 
 it.each([
+  "src/gateway/talk/handlers/native-consult-target.test.ts",
+  "src/gateway/talk/handlers/native-speech-relay.test.ts",
+])("routes native Talk database fixtures through the host broker fork: %s", (file) => {
+  expect(buildVitestRunPlans([file])).toEqual([
+    {
+      config: "test/vitest/vitest.gateway-database-workers.config.ts",
+      forwardedArgs: [],
+      includePatterns: [file],
+      watchMode: false,
+    },
+  ]);
+  expect(createGatewayDatabaseWorkersVitestConfig().test?.pool).toBe("forks");
+  expect(canonicalGatewayFiles["gateway-database-workers"]).toContain(file);
+  expect(
+    Object.values(canonicalGatewayFiles)
+      .flat()
+      .filter((entry) => entry === file),
+  ).toEqual([file]);
+});
+
+it.each([
   {
     target: "src/gateway/config-reload.telegram-policy.test.ts",
     ownership: { config: "test/vitest/vitest.gateway.config.ts" },

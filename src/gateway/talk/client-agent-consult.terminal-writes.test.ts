@@ -1,5 +1,5 @@
 import path from "node:path";
-import { afterAll, afterEach, assert, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, assert, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import {
   getAdmittedRunDelegatedAuthority,
@@ -29,11 +29,27 @@ import {
 import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
 
 const core = vi.hoisted(() => vi.fn<typeof runEmbeddedAgent>());
+const speech = vi.hoisted(() => ({
+  prepare: vi.fn<typeof import("../../plugin-sdk/tts-runtime.js").prepareTextToSpeechTelephony>(),
+  release: vi.fn(async () => undefined),
+}));
+const segmentationProfile = {
+  minChars: 48,
+  targetWords: 32,
+  maxWords: 45,
+  maxChars: 320,
+  pauses: { paragraph: 320, sentence: 180, clause: 80, fragment: 60 },
+};
 type SpeechAgentRunControl = NonNullable<
   Parameters<NonNullable<SpeechAgentConsultParams["onRunControl"]>>[0]
 >;
 // mock-isolation: Exercise real Talk admission and terminal custody without starting a model runtime.
 vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: core }));
+// Only TTS hardware readiness is synthetic; native admission and terminal custody stay real.
+vi.mock("../../plugin-sdk/tts-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../plugin-sdk/tts-runtime.js")>()),
+  prepareTextToSpeechTelephony: speech.prepare,
+}));
 
 let state: OpenClawTestState;
 let config: OpenClawConfig;
@@ -42,8 +58,17 @@ beforeAll(async () => {
   config = { agents: { defaults: { workspace: state.workspaceDir, skipBootstrap: true } } };
   await state.writeConfig(config);
 });
+beforeEach(() => {
+  speech.prepare.mockResolvedValue({
+    success: true,
+    segmentationProfile,
+    release: speech.release,
+  });
+});
 afterEach(() => {
   core.mockReset();
+  speech.prepare.mockReset();
+  speech.release.mockClear();
   resetClientVoiceConfirmationStateForTest();
 });
 afterAll(async () => state?.cleanup());
@@ -190,6 +215,12 @@ it("streams permitted speech while pending input holds completion and releases c
   const controls: Array<SpeechAgentRunControl | undefined> = [];
   core.mockImplementation(async (params) => {
     return await withPublishedSpeechRun(params, async () => {
+      expect(params.blockReplyChunking).toEqual({
+        minChars: segmentationProfile.minChars,
+        maxChars: segmentationProfile.maxChars,
+        breakPreference: "sentence",
+        speech: segmentationProfile,
+      });
       await params.onBlockReply?.({ text: "Checking the device.", isCommentary: true });
       await params.onBlockReply?.({ text: "Private reasoning", isReasoning: true });
       await params.onBlockReply?.({ text: "The device is ready." });
@@ -237,6 +268,7 @@ it("streams permitted speech while pending input holds completion and releases c
       "Speech must stream before completion",
     );
     expect(settled).toBe(false);
+    expect(speech.release).not.toHaveBeenCalled();
     expect(events).toContainEqual({ type: "chunk", text: "Checking the device." });
     expect(events).not.toContainEqual({ type: "chunk", text: "Private reasoning" });
     expect(controls[0]).toBeTypeOf("function");
@@ -244,6 +276,7 @@ it("streams permitted speech while pending input holds completion and releases c
     assert(retainedControl);
     pendingInput.resolve();
     await expect(run).resolves.toEqual({ text: "The device is ready.", delivered: true });
+    expect(speech.release).toHaveBeenCalledTimes(1);
     expect(controls.at(-1)).toBeUndefined();
     expect(chatAbortControllers.size).toBe(0);
     await expect(retainedControl("An addition after retirement")).rejects.toThrow(
@@ -253,6 +286,8 @@ it("streams permitted speech while pending input holds completion and releases c
       text: "The device is ready.",
       delivered: true,
     });
+    expect(speech.prepare).toHaveBeenCalledTimes(2);
+    expect(speech.release).toHaveBeenCalledTimes(2);
   } finally {
     pendingInput.resolve();
     await run.catch(() => undefined);
@@ -298,5 +333,7 @@ it.each([false, true])(
     expect(result.delivered).toBe(false);
     expect(events.some((event) => event.text === "The message has been sent.")).toBe(false);
     expect(events).toEqual(partial ? [{ type: "chunk", text: "Checking that request." }] : []);
+    expect(speech.prepare).toHaveBeenCalledTimes(1);
+    expect(speech.release).toHaveBeenCalledTimes(1);
   },
 );
