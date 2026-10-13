@@ -239,58 +239,72 @@ describe("realtime voice agent consult speech delivery", () => {
     expect(onSpeakableText).toHaveBeenLastCalledWith({ type: "abort" });
   });
 
-  it("streams only native visible answer blocks and marks delivery complete", async () => {
-    const { runtime, runEmbeddedAgent } = createAgentRuntime([
-      { text: "Erster Satz.\n\nZweiter Satz." },
-    ]);
-    runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
-      await runParams?.onBlockReply?.({ text: "interne Planung", isReasoning: true });
-      await runParams?.onBlockReply?.({ text: "Checking the tools.", isCommentary: true });
-      await runParams?.onBlockReply?.({ text: "Erster Satz." });
-      await runParams?.onBlockReply?.({ text: "Zweiter Satz." });
-      return {
-        payloads: [{ text: "Erster Satz.\n\nZweiter Satz." }],
-        meta: {},
-      };
-    });
-    const onSpeakableText = vi.fn(
-      async (_event: RealtimeVoiceAgentConsultSpeechEvent) => undefined,
-    );
+  it.each([
+    undefined,
+    {
+      minChars: 130,
+      targetWords: 32,
+      maxWords: 45,
+      maxChars: 400,
+      pauses: { paragraph: 160, sentence: 120, clause: 60, fragment: 40 },
+    },
+  ])(
+    "streams native visible blocks with selected model budgets %j",
+    async (speechSegmentationProfile) => {
+      const { runtime, runEmbeddedAgent } = createAgentRuntime([
+        { text: "Erster Satz.\n\nZweiter Satz." },
+      ]);
+      runEmbeddedAgent.mockImplementationOnce(async (runParams?: RunEmbeddedAgentParams) => {
+        await runParams?.onBlockReply?.({ text: "interne Planung", isReasoning: true });
+        await runParams?.onBlockReply?.({ text: "Checking the tools.", isCommentary: true });
+        await runParams?.onBlockReply?.({ text: "Erster Satz." });
+        await runParams?.onBlockReply?.({ text: "Zweiter Satz." });
+        return {
+          payloads: [{ text: "Erster Satz.\n\nZweiter Satz." }],
+          meta: {},
+        };
+      });
+      const onSpeakableText = vi.fn(
+        async (_event: RealtimeVoiceAgentConsultSpeechEvent) => undefined,
+      );
 
-    const result = await consultRealtimeVoiceAgent({
-      cfg: {} as never,
-      agentRuntime: runtime as never,
-      logger: { warn: vi.fn() },
-      sessionKey: "voice:stream",
-      messageProvider: "voice",
-      lane: "voice",
-      runIdPrefix: "voice-realtime-consult:stream",
-      args: { question: "Antworte." },
-      transcript: [],
-      surface: "a live voice session",
-      userLabel: "User",
-      onSpeakableText,
-    });
+      const result = await consultRealtimeVoiceAgent({
+        cfg: {} as never,
+        agentRuntime: runtime as never,
+        logger: { warn: vi.fn() },
+        sessionKey: "voice:stream",
+        messageProvider: "voice",
+        lane: "voice",
+        runIdPrefix: "voice-realtime-consult:stream",
+        args: { question: "Antworte." },
+        transcript: [],
+        surface: "a live voice session",
+        userLabel: "User",
+        onSpeakableText,
+        speechSegmentationProfile,
+      });
 
-    expect(result).toEqual({ text: "Erster Satz.\n\nZweiter Satz.", delivered: true });
-    expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
-      { type: "chunk", text: "Erster Satz." },
-      { type: "chunk", text: "Zweiter Satz." },
-      { type: "done", text: "Erster Satz.\n\nZweiter Satz." },
-    ]);
-    const call = requireEmbeddedAgentCall(runEmbeddedAgent);
-    expect(call.enforceFinalTag).toBeUndefined();
-    expect(call.blockReplyBreak).toBe("text_end");
-    expect(call.blockReplyChunking).toEqual({
-      minChars: 48,
-      maxChars: 320,
-      breakPreference: "sentence",
-    });
-    expect(call.prompt).not.toContain("<final>...</final>");
-    expect(call.deliverCommentaryBlocks).toBe(false);
-    expect(call.extraSystemPrompt).not.toContain("User-facing progress updates are enabled");
-    expect(call.prompt).toContain("return only the concise result");
-  });
+      expect(result).toEqual({ text: "Erster Satz.\n\nZweiter Satz.", delivered: true });
+      expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
+        { type: "chunk", text: "Erster Satz." },
+        { type: "chunk", text: "Zweiter Satz." },
+        { type: "done", text: "Erster Satz.\n\nZweiter Satz." },
+      ]);
+      const call = requireEmbeddedAgentCall(runEmbeddedAgent);
+      expect(call.enforceFinalTag).toBeUndefined();
+      expect(call.blockReplyBreak).toBe("text_end");
+      expect(call.blockReplyChunking).toEqual({
+        minChars: speechSegmentationProfile?.minChars ?? 48,
+        maxChars: speechSegmentationProfile?.maxChars ?? 320,
+        breakPreference: "sentence",
+        ...(speechSegmentationProfile ? { speech: speechSegmentationProfile } : {}),
+      });
+      expect(call.prompt).not.toContain("<final>...</final>");
+      expect(call.deliverCommentaryBlocks).toBe(false);
+      expect(call.extraSystemPrompt).not.toContain("User-facing progress updates are enabled");
+      expect(call.prompt).toContain("return only the concise result");
+    },
+  );
 
   it("speaks opted-in commentary before tool work without adding it to the final answer", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();

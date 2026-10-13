@@ -7,6 +7,8 @@ export type {
   SpeechDirectiveTokenParseResult,
   SpeechExpression,
   SpeechExpressionCapabilities,
+  SpeechSegmentationProfile,
+  SpeechSynthesisSegment,
   SpeechListVoicesRequest,
   SpeechModelOverridePolicy,
   SpeechProviderConfig,

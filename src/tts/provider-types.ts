@@ -29,6 +29,18 @@ export type SpeechExpressionCapabilities = {
   whisper: boolean;
 };
 
+/** Model-owned synthesis budgets, admitted with the selected worker generation. */
+export type SpeechSegmentationProfile = {
+  minChars: number;
+  targetWords: number;
+  maxWords: number;
+  maxChars: number;
+  pauses: { paragraph: number; sentence: number; clause: number; fragment: number };
+};
+
+/** Native source slices; adapters must not normalize or independently split them again. */
+export type SpeechSynthesisSegment = { text: string; pauseMs: number };
+
 /** Policy controlling which [[tts:*]] directive fields can affect synthesis. */
 export type SpeechModelOverridePolicy = {
   [Key in keyof TtsModelOverrideConfig]-?: Exclude<TtsModelOverrideConfig[Key], undefined>;
@@ -62,6 +74,7 @@ export type SpeechProviderConfiguredContext = {
 export type SpeechSynthesisRequest = {
   text: string;
   expression?: SpeechExpression;
+  segments?: readonly SpeechSynthesisSegment[];
   cfg: OpenClawConfig;
   providerConfig: SpeechProviderConfig;
   target: SpeechSynthesisTarget;

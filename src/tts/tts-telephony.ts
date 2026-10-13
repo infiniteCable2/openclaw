@@ -9,6 +9,7 @@ import type {
   TtsDirectiveOverrides,
 } from "./provider-types.js";
 import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
+import { normalizeSpeechText } from "./speech-text.js";
 import type {
   TtsTelephonyPreparationResult,
   TtsTelephonyResult,
@@ -76,11 +77,15 @@ export async function prepareTextToSpeech(
         prepareExpressionCapabilities: expressiveReadiness,
         selectOperation: () => ({
           kind: "ready",
-          synthesize: async (request, { retainLocalService, expressionCapabilities }) => {
+          synthesize: async (
+            request,
+            { retainLocalService, expressionCapabilities, segmentationProfile },
+          ) => {
             const retainedResource = retainLocalService();
             return {
               release: retainedResource ? async () => retainedResource.release() : undefined,
               expressionCapabilities,
+              segmentationProfile,
               localServiceAdmission: request.localServiceAdmission,
             };
           },
@@ -93,6 +98,7 @@ export async function prepareTextToSpeech(
           ...metadata,
           release: synthesis.release,
           expressionCapabilities: synthesis.expressionCapabilities,
+          segmentationProfile: synthesis.segmentationProfile,
           localServiceAdmission: synthesis.localServiceAdmission,
         }),
       }),
@@ -157,7 +163,9 @@ export async function streamTextToSpeechTelephony(
     const result = await acquired.run(() =>
       executeTtsProviderAttempts({
         ...acquired.setup,
-        synthesisText: params.text,
+        synthesisText: params.overrides?.expression
+          ? params.text
+          : normalizeSpeechText(params.text),
         expression: params.overrides?.expression,
         localServiceAdmission: params.localServiceAdmission,
         expectedSpeechSelection: params.expectedSpeechSelection,
@@ -224,7 +232,9 @@ export async function textToSpeechTelephony(
       }
       return await executeTtsProviderAttempts({
         ...setup,
-        synthesisText: params.text,
+        synthesisText: params.overrides?.expression
+          ? params.text
+          : normalizeSpeechText(params.text),
         expression: params.overrides?.expression,
         localServiceAdmission: params.localServiceAdmission,
         expectedSpeechSelection: params.expectedSpeechSelection,

@@ -11,6 +11,7 @@ export type PreparedSpeechExpressionContext = {
   guidance: string;
   expectedSpeechSelection?: { provider: string; model?: string; voice?: string };
   localServiceAdmission?: TtsTelephonyPreparationResult["localServiceAdmission"];
+  segmentationProfile?: TtsTelephonyPreparationResult["segmentationProfile"];
   assertCurrent(): void;
   release(): Promise<void>;
 };
@@ -92,6 +93,7 @@ export async function prepareSpeechExpressionContext(params: {
           }
         : {}),
       localServiceAdmission: prepared.localServiceAdmission,
+      segmentationProfile: prepared.segmentationProfile,
       assertCurrent,
       release,
     };

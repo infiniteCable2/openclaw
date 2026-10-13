@@ -19,6 +19,64 @@ import {
 } from "./tts-runtime.test-support.js";
 
 describe("TTS runtime voice model and streaming behavior", () => {
+  it("prepares source-slice segments from the selected model profile before buffered synthesis", async () => {
+    const profile = {
+      minChars: 0,
+      targetWords: 32,
+      maxWords: 45,
+      maxChars: 400,
+      pauses: { paragraph: 320, sentence: 180, clause: 80, fragment: 60 },
+    };
+    const order: string[] = [];
+    installSpeechProviders([
+      createMockSpeechProvider("mock", {
+        prepareSegmentationProfile: async () => {
+          order.push("prepare");
+        },
+        getSegmentationProfile: () => {
+          order.push("read");
+          return profile;
+        },
+        synthesize: async (request) => {
+          order.push("synthesize");
+          expect(request.segments).toEqual([
+            { text: "Hallo Welt.", pauseMs: 320 },
+            { text: "Noch ein Absatz.", pauseMs: 180 },
+          ]);
+          return {
+            audioBuffer: Buffer.from("voice"),
+            fileExtension: ".ogg",
+            outputFormat: "ogg",
+            voiceCompatible: true,
+          };
+        },
+      }),
+    ]);
+    const result = await synthesizeSpeech({
+      text: "Hallo Welt.\n\nNoch ein Absatz.",
+      cfg: { tts: { enabled: true, provider: "mock" } },
+      disableFallback: true,
+    });
+    expect(result.success).toBe(true);
+    expect(order).toEqual(["prepare", "read", "synthesize"]);
+  });
+
+  it("refuses synthesis when an opted-in model profile was not admitted", async () => {
+    installSpeechProviders([
+      createMockSpeechProvider("mock", {
+        prepareSegmentationProfile: async () => undefined,
+        getSegmentationProfile: () => undefined,
+      }),
+    ]);
+    const result = await synthesizeSpeech({
+      text: "Hallo Welt.",
+      cfg: { tts: { enabled: true, provider: "mock" } },
+      disableFallback: true,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("segmentation budgets were not admitted");
+    expect(synthesizeMock).not.toHaveBeenCalled();
+  });
   afterEach(() => {
     setTtsMachinePrefsPathResolver();
     clearRuntimeConfigSnapshot();

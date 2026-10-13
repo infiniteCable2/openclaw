@@ -311,6 +311,7 @@ export function createTalkClientAgentConsultRunner(params: {
           abortSignal: signal,
           speechExpressionContext: speech?.speechExpressionContext,
           speechExpressionCaptureOnly: speech?.speechExpressionCaptureOnly,
+          speechSegmentationProfile: speech?.speechSegmentationProfile,
           onSpeakableText: speech?.onSpeakableText
             ? (event) => {
                 if (event.type !== "abort") {
@@ -671,6 +672,13 @@ export function createTalkClientAgentConsultRunner(params: {
       speech.abortSignal?.addEventListener("abort", revokeControl, { once: true });
       let speechOwner: PromptOwner | undefined;
       let expressionContext: PreparedSpeechExpressionContext | undefined;
+      let speechPreparation:
+        | Awaited<
+            ReturnType<
+              ReturnType<typeof createPluginRuntime>["tts"]["prepareTextToSpeechTelephony"]
+            >
+          >
+        | undefined;
       const scopedSpeech: TalkSpeechConsultParams = { ...speech };
       try {
         const run = runOwnedArgs(
@@ -693,6 +701,22 @@ export function createTalkClientAgentConsultRunner(params: {
             assertCurrent?.();
             expressionContext?.assertCurrent();
             scopedSpeech.speechExpressionContext = expressionContext;
+            if (speech.onSpeakableText && !expressionContext) {
+              speechPreparation = await createPluginRuntime().tts.prepareTextToSpeechTelephony({
+                cfg: params.speechTts?.config ?? params.config,
+                agentId,
+                channelId: params.speechTts?.channelId,
+                signal: speech.abortSignal,
+              });
+              assertCurrent?.();
+              if (!speechPreparation.success) {
+                throw new Error(
+                  speechPreparation.error ?? "Speech segmentation preparation failed",
+                );
+              }
+            }
+            scopedSpeech.speechSegmentationProfile =
+              expressionContext?.segmentationProfile ?? speechPreparation?.segmentationProfile;
           },
           assertCurrent,
           undefined,
@@ -716,7 +740,11 @@ export function createTalkClientAgentConsultRunner(params: {
         try {
           revokeControl();
         } finally {
-          await expressionContext?.release();
+          try {
+            await speechPreparation?.release?.();
+          } finally {
+            await expressionContext?.release();
+          }
         }
       }
     },

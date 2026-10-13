@@ -34,6 +34,7 @@ import type {
   SpeechDirectiveTokenParseContext,
   SpeechDirectiveTokenParseResult,
   SpeechExpressionCapabilities,
+  SpeechSegmentationProfile,
   SpeechProviderConfiguredContext,
   SpeechProviderConfig,
   SpeechProviderOverrides,
@@ -443,6 +444,20 @@ export type SpeechProviderPlugin = {
   defaultModel?: string;
   models?: readonly string[];
   voices?: readonly string[];
+  /** Synchronous model budgets admitted by the provider's readiness owner. */
+  getSegmentationProfile?: (context: {
+    providerConfig: SpeechProviderConfig;
+    providerOverrides?: SpeechProviderOverrides;
+    localServiceAdmission?: import("../agents/provider-local-service-target.js").ProviderLocalServiceLease["admission"];
+  }) => SpeechSegmentationProfile | undefined;
+  /** Discover model budgets under the current worker admission, never while listing providers. */
+  prepareSegmentationProfile?: (context: {
+    providerConfig: SpeechProviderConfig;
+    providerOverrides?: SpeechProviderOverrides;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    localServiceAdmission?: import("../agents/provider-local-service-target.js").ProviderLocalServiceLease["admission"];
+  }) => Promise<void>;
   /** Synchronous, admitted model metadata; no discovery or network calls on the hot path. */
   getExpressionCapabilities?: (context: {
     providerConfig: SpeechProviderConfig;

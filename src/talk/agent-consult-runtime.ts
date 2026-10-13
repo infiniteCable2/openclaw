@@ -430,6 +430,8 @@ export async function consultRealtimeVoiceAgent(params: {
   speechExpressionContext?: RealtimeVoiceSpeechExpressionContext;
   /** Precompute greeting utterances; never execute external actions or play audio. */
   speechExpressionCaptureOnly?: true;
+  /** Prepared selected-model budgets; only speech opts into word-based block streaming. */
+  speechSegmentationProfile?: import("../tts/provider-types.js").SpeechSegmentationProfile;
   waitForPendingInput?: RunEmbeddedAgentParams["waitForPendingInput"];
   onRunStarted?: (params: {
     runId: string;
@@ -637,9 +639,12 @@ export async function consultRealtimeVoiceAgent(params: {
                 deliverCommentaryBlocks: spokenCommentaryEnabled,
                 blockReplyBreak: "text_end" as const,
                 blockReplyChunking: {
-                  minChars: 48,
-                  maxChars: 320,
+                  minChars: params.speechSegmentationProfile?.minChars ?? 48,
+                  maxChars: params.speechSegmentationProfile?.maxChars ?? 320,
                   breakPreference: "sentence" as const,
+                  ...(params.speechSegmentationProfile
+                    ? { speech: params.speechSegmentationProfile }
+                    : {}),
                 },
                 onBlockReply: speechDelivery.onBlockReply,
               }

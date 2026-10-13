@@ -9,7 +9,12 @@ import {
   isSafeFenceBreak,
   scanFenceSpans,
 } from "../../packages/markdown-core/src/fences.js";
+import type { SpeechSegmentationProfile } from "../tts/provider-types.js";
 import { prepareIndentedCode } from "./embedded-agent-block-chunker.code.js";
+import {
+  findSpeechChunkEnd,
+  type SpeechProtectedSpan,
+} from "./embedded-agent-block-chunker.speech.js";
 import {
   findTableBreakIndex,
   findUnsplittableTableSpans,
@@ -23,6 +28,9 @@ export type BlockReplyChunking = {
   breakPreference?: "paragraph" | "newline" | "sentence";
   /** When true, prefer \n\n paragraph boundaries once minChars has been satisfied. */
   flushOnParagraph?: boolean;
+  /** Opt-in synthesis budgets; chat's Markdown transport budgets stay independent. */
+  speech?: SpeechSegmentationProfile;
+  speechProtectedSpans?: readonly SpeechProtectedSpan[];
 };
 
 type FenceSplit = {
@@ -277,6 +285,50 @@ export class EmbeddedBlockChunker {
     const preparedSourceBreaks = this.#preparedSourceBreaks;
     const chunking = this.#chunking;
     if (!this.#buffer || (!params.force && !chunking)) {
+      return;
+    }
+    if (chunking?.speech) {
+      while (this.#buffer.trim()) {
+        const leading = this.#buffer.length - this.#buffer.trimStart().length;
+        if (leading > 0 && this.#buffer.slice(0, leading).includes("\n")) {
+          this.#bufferStartsAtLineStart = true;
+        }
+        this.#buffer = this.#buffer.slice(leading);
+        this.#consumedLength += leading;
+        const offset = this.#consumedLength;
+        const end = findSpeechChunkEnd(
+          this.#buffer,
+          chunking.speech,
+          params.force,
+          chunking.speechProtectedSpans?.map((span) => ({
+            start: span.start - offset,
+            end: span.end - offset,
+          })),
+        );
+        if (end === 0) {
+          break;
+        }
+        const raw = this.#buffer.slice(0, end);
+        const chunk = raw.trimEnd();
+        if (chunk) {
+          this.#preparedSourceBreaks.push(offset + chunk.length);
+          emit(chunk, {
+            sourceText: chunk,
+            sourceGeneration: this.#sourceGeneration,
+            reconciledSourceBreak: reconciledSourceBreak || undefined,
+            sourceStart: this.#sourceOffset + offset,
+            sourceEnd: this.#sourceOffset + offset + chunk.length,
+            startsAtLineStart: offset === 0 || this.#bufferStartsAtLineStart,
+          });
+        }
+        this.#bufferStartsAtLineStart = raw.endsWith("\n");
+        this.#buffer = this.#buffer.slice(end);
+        this.#consumedLength += end;
+      }
+      if (params.force && !this.#buffer.trim()) {
+        this.#consumedLength += this.#buffer.length;
+        this.#buffer = "";
+      }
       return;
     }
     const emitChunk = (chunk: string, from: number, to: number, startsAtLineStart: boolean) => {

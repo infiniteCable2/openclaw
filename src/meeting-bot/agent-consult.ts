@@ -153,7 +153,23 @@ async function consultMeetingAgent(
   const admittedToolsAllow =
     speechExpressionContext && params.speechExpressionCaptureOnly ? ["message"] : toolsAllow;
   let releaseRunControl: (() => void) | undefined;
+  let speechPreparation:
+    | Awaited<ReturnType<PluginRuntime["tts"]["prepareTextToSpeechTelephony"]>>
+    | undefined;
   try {
+    speechPreparation =
+      params.onSpeakableText && !speechExpressionContext
+        ? await params.runtime.tts.prepareTextToSpeechTelephony({
+            cfg: params.config,
+            agentId,
+            channelId: params.ttsContext?.channelId,
+            accountId: params.ttsContext?.accountId,
+            signal: params.abortSignal,
+          })
+        : undefined;
+    if (speechPreparation && !speechPreparation.success) {
+      throw new Error(speechPreparation.error ?? "Speech segmentation preparation failed");
+    }
     return await consultRealtimeVoiceAgent({
       cfg: params.config,
       agentRuntime: params.runtime.agent,
@@ -180,6 +196,8 @@ async function consultMeetingAgent(
       extraSystemPrompt: params.surface.extraSystemPrompt,
       abortSignal: params.abortSignal,
       onSpeakableText: params.onSpeakableText,
+      speechSegmentationProfile:
+        speechExpressionContext?.segmentationProfile ?? speechPreparation?.segmentationProfile,
       waitForPendingInput: params.waitForPendingInput,
       onRunStarted: params.onRunControl
         ? ({ runId, sessionId }) => {
@@ -257,7 +275,11 @@ async function consultMeetingAgent(
     try {
       releaseRunControl?.();
     } finally {
-      await speechExpressionContext?.release();
+      try {
+        await speechPreparation?.release?.();
+      } finally {
+        await speechExpressionContext?.release();
+      }
     }
   }
 }

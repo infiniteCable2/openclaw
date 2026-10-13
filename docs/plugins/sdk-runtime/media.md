@@ -98,6 +98,28 @@ JavaScript-only host export; its declarations are excluded from the package.
     identity does not establish worker identity. Providers without these optional
     hooks preserve existing synthesis behavior.
 
+    Providers can also expose an optional `prepareSegmentationProfile` and
+    synchronous `getSegmentationProfile` pair. Discovery follows the same
+    prepared model and live worker admission as expression capabilities; one
+    bounded service response may publish both. The readiness handle returns
+    `segmentationProfile` with `minChars`, `targetWords`, `maxWords`, `maxChars`
+    and paragraph/sentence/clause/fragment pauses in milliseconds.
+
+    For opted-in providers the native block chunker owns both complete speech
+    requests and incremental spoken blocks. Linguistic word and sentence
+    boundaries guide packing; word and character ceilings remain hard limits.
+    A minimum size is only a preference: completed short answers and greetings
+    are not padded or withheld. Ordinary chat/Markdown chunking is unchanged.
+
+    Synthesis requests then carry optional `segments: [{text, pauseMs}, ...]`.
+    Texts are exact ordered slices of the prepared plain speech input, omitting
+    only boundary whitespace and preserving atomic emphasis spans. Consumers
+    validate the admitted plan and render it without another splitter. They
+    must not silently repair malformed plans or reuse a replaced worker's
+    profile. A standalone service may still own segmentation for HTTP clients
+    that do not supply a native plan; that is a separate external contract,
+    not a fallback after native admission fails.
+
     Buffered and streaming synthesis requests may carry a caller-owned `signal`.
     Providers must use it for cancellable work independently of the worker's
     readiness admission: a live worker does not keep an aborted task alive.

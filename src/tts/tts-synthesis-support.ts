@@ -23,11 +23,13 @@ import {
 import type {
   SpeechExpression,
   SpeechExpressionCapabilities,
+  SpeechSegmentationProfile,
   SpeechProviderOverrides,
   SpeechProviderPrepareSynthesisContext,
   SpeechSynthesisRequest,
   SpeechSynthesisTarget,
 } from "./provider-types.js";
+import { assertSpeechSegmentationProfile, prepareSpeechSegments } from "./speech-segmentation.js";
 import { acquireSpeechProviderLocalService } from "./tts-local-service.js";
 import {
   resolvePersonaProviderConfig,
@@ -261,6 +263,7 @@ type TtsProviderOperation<TSynthesis> =
         lifecycle: {
           retainLocalService: () => { release: () => void } | undefined;
           expressionCapabilities?: SpeechExpressionCapabilities;
+          segmentationProfile?: SpeechSegmentationProfile;
         },
       ) => Promise<TSynthesis>;
       cleanupFailedProjection?: (synthesis: TSynthesis) => Promise<void>;
@@ -433,7 +436,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
           }
         }
         const prepared =
-          params.prepareSynthesis === false
+          params.prepareSynthesis === false && !resolvedProvider.provider.getSegmentationProfile
             ? {
                 text: params.synthesisText,
                 providerConfig: resolvedProvider.providerConfig,
@@ -454,8 +457,9 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
               });
         // Preparation may select a different model, but cannot borrow readiness from another endpoint.
         if (
-          prepareExpressionCapabilities &&
-          resolvedProvider.provider.prepareExpressionCapabilities &&
+          ((prepareExpressionCapabilities &&
+            resolvedProvider.provider.prepareExpressionCapabilities) ||
+            resolvedProvider.provider.prepareSegmentationProfile) &&
           localServiceLease?.admission &&
           prepared.providerConfig.baseUrl !== resolvedProvider.localServiceProviderConfig.baseUrl
         ) {
@@ -511,6 +515,26 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
               localServiceAdmission: localServiceLease?.admission,
             })
           : undefined;
+        await resolvedProvider.provider.prepareSegmentationProfile?.({
+          providerConfig: prepared.providerConfig,
+          providerOverrides: prepared.providerOverrides,
+          timeoutMs,
+          signal: params.signal,
+          localServiceAdmission: localServiceLease?.admission,
+        });
+        params.signal?.throwIfAborted();
+        localServiceLease?.admission?.signal.throwIfAborted();
+        const segmentationProfile = resolvedProvider.provider.getSegmentationProfile?.({
+          providerConfig: prepared.providerConfig,
+          providerOverrides: prepared.providerOverrides,
+          localServiceAdmission: localServiceLease?.admission,
+        });
+        if (resolvedProvider.provider.prepareSegmentationProfile && !segmentationProfile) {
+          throw new Error("Speech segmentation budgets were not admitted for the selected worker");
+        }
+        if (segmentationProfile) {
+          assertSpeechSegmentationProfile(segmentationProfile);
+        }
         if (params.expression) {
           params.localServiceAdmission?.signal.throwIfAborted();
         }
@@ -522,6 +546,15 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         const synthesis = await operation.synthesize(
           {
             ...prepared,
+            ...(segmentationProfile && prepared.text.trim()
+              ? {
+                  segments: prepareSpeechSegments(
+                    prepared.text,
+                    segmentationProfile,
+                    params.expression,
+                  ),
+                }
+              : {}),
             ...(params.expression ? { expression: params.expression } : {}),
             cfg,
             target: params.target,
@@ -531,6 +564,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
           },
           {
             expressionCapabilities,
+            segmentationProfile,
             retainLocalService: () => {
               if (!localServiceLease) {
                 return undefined;
