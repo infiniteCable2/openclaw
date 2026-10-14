@@ -93,19 +93,22 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
             expressiveUtterances.length = 0;
             expressionComplete = false;
           },
-          speechExpressionRequired: true,
+          speechUtteranceOnly: true,
           ...(params.speechExpressionCaptureOnly ? { sourceOnly: true as const } : {}),
           async deliver(payload: ReplyPayload, context) {
             assertExpressionCurrent();
             const inputOwner = expressiveInput;
             const speech = getReplyPayloadMetadata(payload)?.tts;
-            if (!speech?.expression || speech.text === undefined || speech.text !== payload.text) {
-              throw new Error("Expressive speech requires exact structured utterance facts");
+            const spokenText = speech?.text ?? payload.text;
+            if (!spokenText?.trim() || spokenText !== payload.text) {
+              throw new Error("Source speech requires exact plain utterance facts");
             }
-            const spokenText = speech.text;
-            parseSpeechExpression(speech.expression, spokenText);
+            if (speech?.expression) {
+              parseSpeechExpression(speech.expression, spokenText);
+            }
             const callKey = context.idempotencyKey ?? context.toolCallId;
             const fingerprint = JSON.stringify({
+              text: spokenText,
               speech,
               final: context.final,
               phase: context.phase,

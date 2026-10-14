@@ -57,7 +57,7 @@ export type CurrentSourceReplyTarget = {
   /** Capture-only producers restrict the existing message surface to this source. */
   sourceOnly?: true;
   /** Admit speech arguments on a restricted source surface only for this live target. */
-  speechExpressionRequired?: true;
+  speechUtteranceOnly?: true;
   deliver: (
     payload: ReplyPayload,
     context: {

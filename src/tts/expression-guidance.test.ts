@@ -23,6 +23,9 @@ describe("admitted speech expression guidance", () => {
     expect(guidance).toContain('replyPhase="commentary" and final=false');
     expect(guidance).toContain("event parts contribute no visible text");
     expect(guidance).toContain("Do not write Kitten tags");
+    expect(guidance).toContain("Speech controls are optional");
+    expect(guidance).toContain("plain utterances without expression controls");
+    expect(guidance).not.toContain("Include a structured plan even for a neutral utterance");
     expect(capabilities).toEqual(original);
   });
 
@@ -47,6 +50,9 @@ describe("admitted speech expression guidance", () => {
     });
     expect(guidance).toContain("output target is voice-note");
     expect(guidance).toContain("Emphasis: unsupported");
+    expect(guidance).toContain(
+      "Ordinary assistant replies use the configured automatic speech delivery",
+    );
     expect(guidance).not.toContain("replyPhase");
   });
 });

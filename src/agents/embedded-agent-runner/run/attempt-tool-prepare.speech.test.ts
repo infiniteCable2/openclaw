@@ -36,7 +36,7 @@ describe("native speech presentation run ownership", () => {
       runId: "speech-prep",
       sessionId: "speech-prep",
       assertCurrent: vi.fn(),
-      speechExpressionRequired: true as const,
+      speechUtteranceOnly: true as const,
       deliver: vi.fn(async () => {}),
     };
     try {

@@ -7,7 +7,7 @@ import {
   createMockSpeechProvider,
   createTtsConfig,
   installSpeechProviders,
-  maybeApplyTtsToPayload,
+  maybeApplyTtsToPayloadCore,
   prepareSynthesisMock,
   prepareTextToSpeech,
   resolveTtsConfig,
@@ -250,32 +250,42 @@ describe("native speech expression admission", () => {
   );
 
   it.each([
-    { auto: "always", inboundAudio: false, expressionRequired: true },
-    { auto: "always", inboundAudio: true, expressionRequired: true },
-    { auto: "inbound", inboundAudio: true, expressionRequired: true },
-    { auto: "inbound", inboundAudio: false, expressionRequired: false },
-    { auto: "off", inboundAudio: true, expressionRequired: false },
-    { auto: "tagged", inboundAudio: true, expressionRequired: false },
+    { auto: "always", inboundAudio: false, voiceReply: true },
+    { auto: "always", inboundAudio: true, voiceReply: true },
+    { auto: "inbound", inboundAudio: true, voiceReply: true },
+    { auto: "inbound", inboundAudio: false, voiceReply: false },
+    { auto: "off", inboundAudio: true, voiceReply: false },
+    { auto: "tagged", inboundAudio: true, voiceReply: false },
   ] as const)(
-    "aligns final expression requirements with $auto and originating audio=$inboundAudio",
-    async ({ auto, inboundAudio, expressionRequired }) => {
+    "keeps plain native replies with expression enabled, auto=$auto and audio=$inboundAudio",
+    async ({ auto, inboundAudio, voiceReply }) => {
       const base = createTtsConfig("openclaw-expression-output-policy");
       const payload = { text: "This is a complete response to the original request." };
-      const pending = maybeApplyTtsToPayload({
-        cfg: { ...base, talk: config.talk, tts: { ...base.tts, auto } },
-        payload,
-        channel: "matrix",
-        agentId: "reader",
-        kind: "final",
-        inboundAudio,
-      });
-      if (expressionRequired) {
-        await expect(pending).rejects.toThrow("requires a native structured expression");
+      const result = await maybeApplyTtsToPayloadCore(
+        {
+          cfg: { ...base, talk: config.talk, tts: { ...base.tts, auto } },
+          payload,
+          channel: "matrix",
+          agentId: "reader",
+          kind: "final",
+          inboundAudio,
+        },
+        vi.fn(async () => "fixture-voice.ogg"),
+      );
+      if (voiceReply) {
+        expect(result).toMatchObject({
+          ...payload,
+          mediaUrl: "fixture-voice.ogg",
+          audioAsVoice: true,
+        });
+        expect(synthesizeMock).toHaveBeenCalledOnce();
+        expect(synthesizeMock.mock.calls[0]?.[0].expression).toBeUndefined();
+        expect(acquireSpeechProviderLocalServiceMock).toHaveBeenCalledOnce();
       } else {
-        expect(await pending).toBe(payload);
+        expect(result).toBe(payload);
+        expect(synthesizeMock).not.toHaveBeenCalled();
+        expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
       }
-      expect(synthesizeMock).not.toHaveBeenCalled();
-      expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
     },
   );
 

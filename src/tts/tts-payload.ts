@@ -1,6 +1,5 @@
 import {
   getReplyPayloadMetadata,
-  isHostNoticePayload,
   markReplyPayloadAsTtsSupplement,
   type ReplyPayload,
 } from "../auto-reply/reply-payload.js";
@@ -12,7 +11,6 @@ import { hasReplyPayloadContent } from "../interactive/payload.js";
 import { truncateUtf16Safe } from "../utils.js";
 import { normalizeMessageChannel } from "../utils/message-channel-core.js";
 import { parseTtsDirectives, resolveTtsDirectiveFacts } from "./directives.js";
-import { isSpeechExpressionEnabled } from "./expression.js";
 import type { MessageSpeechAdmission } from "./message-speech-admission.js";
 import { canonicalizeSpeechProviderId, getSpeechProvider } from "./provider-registry.js";
 import type { SpeechVoiceOption } from "./provider-types.js";
@@ -35,11 +33,7 @@ import {
   resolveTtsSettingsSnapshot,
   type ResolvedTtsConfig,
 } from "./tts-settings.js";
-import {
-  resolveTtsSynthesisTarget,
-  textToSpeechCore,
-  type TtsAudioPersistence,
-} from "./tts-synthesis.js";
+import { textToSpeechCore, type TtsAudioPersistence } from "./tts-synthesis.js";
 
 let lastTtsAttempt: TtsStatusEntry | undefined;
 
@@ -178,14 +172,6 @@ export async function maybeApplyTtsToPayloadCore(
         ...resolveTtsDirectiveFacts(ttsMetadata.tts, config.modelOverrides, directiveOptions),
       }
     : parseTtsDirectives(text, config.modelOverrides, directiveOptions);
-  const automaticExpressionRequired =
-    (autoMode === "always" || (autoMode === "inbound" && params.inboundAudio === true)) &&
-    isSpeechExpressionEnabled({
-      cfg,
-      agentId: params.agentId,
-      channelId: params.channel,
-      target: resolveTtsSynthesisTarget(params.channel),
-    });
   if (directives.warnings.length > 0) {
     logVerbose(`TTS: ignored directive overrides (${directives.warnings.join("; ")})`);
   }
@@ -239,16 +225,8 @@ export async function maybeApplyTtsToPayloadCore(
   if (reply.hasMedia || hasLegacyFinalMediaDirective(text)) {
     return nextPayload;
   }
-  if (
-    (params.messageSpeechAdmission || automaticExpressionRequired) &&
-    !directives.overrides.expression &&
-    !isHostNoticePayload(params.payload) &&
-    !params.payload.isReasoning
-  ) {
-    throw new Error(
-      "Enabled automatic speech requires a native structured expression; neutral fallback is unavailable",
-    );
-  }
+  // Expression capability is optional: plain replies keep the native TTS path.
+  // Explicit controls still pass through the same strict validation and admission.
   if (!explicitTtsText && !allowShortInboundVoiceReply && ttsText.trim().length < 10) {
     return nextPayload;
   }

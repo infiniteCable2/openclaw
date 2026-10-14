@@ -70,6 +70,11 @@ the selected provider/model's admitted expression capabilities. Without either,
 the expression request fails before synthesis; it does not silently speak the
 markup or fall back to a neutral rendering. There is no new `[[tts:...]]` syntax.
 
+Enabling expression support does not require an expression on every reply. Omit
+`voiceExpression` when no special emotion, emphasis, or vocal event is intended;
+plain replies retain their configured automatic TTS behavior and clean text
+projection. Explicit expression requests still require valid, supported controls.
+
 This structured-send contract does **not** by itself make automatic final answers,
 live commentary, or prepared greetings produce expressions. Those paths retain
 their existing plain-text behavior until their native producer supplies the same

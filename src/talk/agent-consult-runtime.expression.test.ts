@@ -53,11 +53,14 @@ describe("native expressive speech consult", () => {
         phase: "commentary",
         toolCallId: "progress",
       });
-      await target.deliver(utterance("First sentence.", "joyful"), {
-        final: false,
-        phase: "final_answer",
-        toolCallId: "first",
-      });
+      await target.deliver(
+        { text: "First sentence." },
+        {
+          final: false,
+          phase: "final_answer",
+          toolCallId: "first",
+        },
+      );
       await target.deliver(utterance("Second sentence.", "sad"), {
         final: true,
         phase: "final_answer",
@@ -95,7 +98,7 @@ describe("native expressive speech consult", () => {
     ]);
     expect(result.utterances?.map((part) => part.speech?.expression?.emotion)).toEqual([
       "neutral",
-      "joyful",
+      undefined,
       "sad",
     ]);
     for (const event of events) {
@@ -105,7 +108,9 @@ describe("native expressive speech consult", () => {
     }
     for (const part of result.utterances ?? []) {
       expect(part.expectedSpeechSelection).toBe(expectedSpeechSelection);
-      expect(part.speech).not.toHaveProperty("expectedSpeechSelection");
+      if (part.speech) {
+        expect(part.speech).not.toHaveProperty("expectedSpeechSelection");
+      }
     }
     expect(() => captured?.currentSourceReplyTarget?.assertCurrent()).toThrow("no longer active");
   });
@@ -181,6 +186,26 @@ describe("native expressive speech consult", () => {
       }),
     ).rejects.toThrow("completed native current-source reply");
     expect(sink.mock.calls.map(([event]) => event.type)).toEqual(["abort"]);
+  });
+
+  it("does not reuse a plain utterance identity for different words", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    runEmbeddedAgent.mockImplementationOnce(async (params?: RunEmbeddedAgentParams) => {
+      const target = params!.currentSourceReplyTarget!;
+      const context = { final: true, phase: "final_answer" as const, toolCallId: "same-call" };
+      await target.deliver({ text: "First answer." }, context);
+      await expect(target.deliver({ text: "Different answer." }, context)).rejects.toThrow(
+        "reused with different content",
+      );
+      return { payloads: [], meta: {} };
+    });
+    const result = await consultRealtimeVoiceAgent({
+      ...base,
+      agentRuntime: runtime as never,
+      speechExpressionContext: { guidance: "Use native sends.", assertCurrent: vi.fn() },
+    });
+    expect(result.text).toBe("First answer.");
+    expect(result.utterances).toHaveLength(1);
   });
 
   it("rotates final capture only at the native adopted-input boundary", async () => {

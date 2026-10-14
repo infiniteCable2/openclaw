@@ -35,7 +35,7 @@ export async function deliverToCurrentSourceReplyTarget(
   assertCurrent();
   const params = { ...input.params };
   if (
-    target.speechExpressionRequired &&
+    target.speechUtteranceOnly &&
     Object.keys(params).some(
       (key) =>
         !["message", "voiceText", "voiceExpression", "idempotencyKey", "dryRun"].includes(key),
@@ -48,14 +48,15 @@ export async function deliverToCurrentSourceReplyTarget(
   const parts = await buildMessagePayload({ actionParams: params, input, agentId: input.agentId });
   assertCurrent();
   const speech = getReplyPayloadMetadata(parts.payload)?.tts;
-  if (target.speechExpressionRequired) {
-    if (!speech?.expression || speech.text === undefined || speech.text !== parts.payload.text) {
-      throw new Error(
-        "Current-source speech requires an expression and exact plain message/voiceText",
-      );
+  if (target.speechUtteranceOnly) {
+    const spokenText = speech?.text ?? parts.payload.text;
+    if (!spokenText?.trim() || spokenText !== parts.payload.text) {
+      throw new Error("Current-source speech requires exact plain message/voiceText");
     }
-    parseSpeechExpression(speech.expression, speech.text);
-    if (speech.text.length > 320) {
+    if (speech?.expression) {
+      parseSpeechExpression(speech.expression, spokenText);
+    }
+    if (spokenText.length > 320) {
       throw new Error("Current-source speech utterances must be at most 320 characters");
     }
   }

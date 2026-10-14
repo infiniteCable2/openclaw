@@ -741,7 +741,7 @@ describe("TTS runtime persona behavior", () => {
   );
 
   it.each(["always", "inbound"] as const)(
-    "rejects a plain native automatic final payload when voice-note expression is enabled (%s)",
+    "speaks successive plain automatic replies when voice-note expression is enabled (%s)",
     async (auto) => {
       await withOpenClawTestState({ label: "automatic-expression-final" }, async (state) => {
         setTtsMachinePrefsPathResolver(() => state.path("tts-prefs.json"));
@@ -760,19 +760,40 @@ describe("TTS runtime persona behavior", () => {
             },
           },
         };
-        await expect(
-          maybeApplyTtsToPayload({
-            payload,
-            cfg,
-            channel: "matrix",
-            agentId: "example",
-            kind: "final",
-            inboundAudio: true,
-            preparedTtsPreferences: {},
-          }),
-        ).rejects.toThrow("native structured expression");
-        expect(synthesizeMock).not.toHaveBeenCalled();
-        expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
+        const persist = vi.fn(async () => "fixture-voice.ogg");
+        const assertCurrent = vi.fn();
+        const admission: MessageSpeechAdmission = {
+          runId: "plain-run",
+          sessionId: "plain-session",
+          agentId: "example",
+          route: { channel: "matrix", to: "room:example" },
+          assertCurrent,
+          prefsPath: state.path("tts-prefs.json"),
+          preparedTtsPreferences: {},
+          sessionAuto: auto,
+          expectedSpeechSelection: { provider: "mock", model: "expressive-model" },
+        };
+        for (const text of [payload.text, "A second plain answer after the first voice note."]) {
+          const result = await maybeApplyTtsToPayloadCore(
+            {
+              payload: { text },
+              cfg,
+              channel: "matrix",
+              agentId: "example",
+              kind: "final",
+              inboundAudio: true,
+              preparedTtsPreferences: {},
+              messageSpeechAdmission: admission,
+            },
+            persist,
+          );
+          expect(result).toMatchObject({ text, mediaUrl: "fixture-voice.ogg", audioAsVoice: true });
+        }
+        expect(synthesizeMock).toHaveBeenCalledTimes(2);
+        expect(acquireSpeechProviderLocalServiceMock).toHaveBeenCalledTimes(2);
+        expect(persist).toHaveBeenCalledTimes(2);
+        expect(synthesizeMock.mock.calls.every(([request]) => !request.expression)).toBe(true);
+        expect(assertCurrent).toHaveBeenCalled();
         for (const cold of [
           { cfg: { ...cfg, tts: { ...cfg.tts, auto: "off" as const } }, inboundAudio: true },
           { cfg: { ...cfg, tts: { ...cfg.tts, auto: "tagged" as const } }, inboundAudio: true },
@@ -789,8 +810,8 @@ describe("TTS runtime persona behavior", () => {
             }),
           ).toBe(payload);
         }
-        expect(synthesizeMock).not.toHaveBeenCalled();
-        expect(acquireSpeechProviderLocalServiceMock).not.toHaveBeenCalled();
+        expect(synthesizeMock).toHaveBeenCalledTimes(2);
+        expect(acquireSpeechProviderLocalServiceMock).toHaveBeenCalledTimes(2);
       });
     },
   );

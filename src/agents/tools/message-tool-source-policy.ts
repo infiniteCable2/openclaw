@@ -155,7 +155,7 @@ export function enforceSourceReplyOnlyMessageAction(params: {
     );
   }
   const allowedSchema = buildSourceReplyOnlyMessageSchema(
-    params.currentSourceReplyTarget?.speechExpressionRequired === true ||
+    params.currentSourceReplyTarget?.speechUtteranceOnly === true ||
       Boolean(params.messageSpeechAdmission),
     Boolean(params.currentSourceReplyTarget),
   );

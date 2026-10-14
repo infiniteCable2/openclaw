@@ -84,9 +84,6 @@ export async function maybeApplyTtsToMessageActionSendPayload(params: {
     hasExistingMedia || !hasSpeechText
       ? undefined
       : resolveMessageSpeechAdmission({ ...params, admission: params.messageSpeechAdmission });
-  if (speechAdmission && !getReplyPayloadMetadata(params.payload)?.tts?.expression) {
-    throw new Error("Enabled automatic speech requires a structured native message utterance");
-  }
   const sessionKey = params.sessionKey?.trim();
   let ttsAuto: TtsAutoMode | undefined = normalizeTtsAutoMode(speechAdmission?.sessionAuto);
   if (!speechAdmission && sessionKey) {

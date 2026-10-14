@@ -132,17 +132,19 @@ describe("native message speech admission routing", () => {
     expect(mocks.apply).not.toHaveBeenCalled();
   });
 
-  it("rejects a neutral source-text fallback before loading native synthesis", async () => {
+  it("passes plain source text and its retained admission to native synthesis", async () => {
     const bound = admission();
-    await expect(
-      maybeApplyTtsToMessageActionSendPayload({
-        ...route(bound),
-        payload: { text: "Neutral fallback." },
-        cfg: {},
-        dryRun: false,
-      }),
-    ).rejects.toThrow("structured native");
-    expect(mocks.apply).not.toHaveBeenCalled();
+    const payload = { text: "An ordinary spoken answer." };
+    await maybeApplyTtsToMessageActionSendPayload({
+      ...route(bound),
+      payload,
+      cfg: { tts: { auto: "inbound" } },
+      inboundAudio: true,
+      dryRun: false,
+    });
+    expect(mocks.apply).toHaveBeenCalledWith(
+      expect.objectContaining({ payload, messageSpeechAdmission: bound, inboundAudio: true }),
+    );
   });
   it("keeps requested attachment sends on their original non-TTS path", async () => {
     const assertCurrent = vi.fn();

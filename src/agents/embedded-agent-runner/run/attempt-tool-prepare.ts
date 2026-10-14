@@ -457,8 +457,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         ? constructedToolsRaw.filter((tool) => isAgentToolRestartSafe(tool, restartSafetyOptions))
         : constructedToolsRaw;
       if (
-        (attempt.currentSourceReplyTarget?.speechExpressionRequired ||
-          attempt.messageSpeechAdmission) &&
+        (attempt.currentSourceReplyTarget?.speechUtteranceOnly || attempt.messageSpeechAdmission) &&
         (!toolsRaw.some((tool) => tool.name === "message") ||
           (attempt.toolExecutionAllow !== undefined &&
             !isToolExecutionAllowed(attempt.toolExecutionAllow, "message")))

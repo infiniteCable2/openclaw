@@ -22,7 +22,7 @@ function input(): MessageActionInput {
       runId: "test-run",
       sessionId: "test-session",
       assertCurrent: vi.fn(),
-      speechExpressionRequired: true,
+      speechUtteranceOnly: true,
       deliver: vi.fn(async () => {}),
     },
   };
@@ -55,10 +55,25 @@ describe("native current-source reply custody", () => {
     expect(result.payload).not.toHaveProperty("audible");
   });
 
-  it("rejects missing expression, mismatched bytes and foreign run owners before handoff", async () => {
+  it.each([true, false])(
+    "accepts ordinary source speech with voiceText=%s and no expression",
+    async (voiceText) => {
+      const call = input();
+      delete call.params.voiceExpression;
+      if (!voiceText) delete call.params.voiceText;
+      await deliverToCurrentSourceReplyTarget(call);
+      const deliver = vi.mocked(call.currentSourceReplyTarget!.deliver);
+      expect(deliver).toHaveBeenCalledOnce();
+      const [payload] = expectDefined(deliver.mock.calls[0], "expected plain source handoff");
+      expect(payload.text).toBe("A sentence.");
+      expect(getReplyPayloadMetadata(payload)?.tts?.expression).toBeUndefined();
+    },
+  );
+
+  it("rejects malformed expression, mismatched bytes and foreign run owners before handoff", async () => {
     for (const mutation of [
       (call: MessageActionInput) => {
-        delete call.params.voiceExpression;
+        call.params.voiceExpression = { parts: [{ text: "Changed." }] };
       },
       (call: MessageActionInput) => {
         call.params.voiceText = "Changed.";
