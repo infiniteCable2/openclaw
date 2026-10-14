@@ -63,53 +63,59 @@ describe("meeting agent greeting preparation", () => {
     expect(greeting.audio.byteLength).toBeGreaterThan(0);
   });
 
-  it("passes captured expression and worker admission through the native TTS overrides contract", async () => {
-    const text = "Hello!";
-    const expression = { emotion: "joyful", parts: [{ text }] };
-    const expectedSpeechSelection = {
-      provider: "example",
-      model: "prepared-model",
-      voice: "prepared-voice",
-    };
-    const localServiceAdmission = {
-      generation: "synthetic-worker",
-      signal: new AbortController().signal,
-    };
-    const tts = vi.fn<PluginRuntime["tts"]["streamTextToSpeechTelephony"]>(async () => ({
-      success: true,
-      sampleRate: 24_000,
-      outputFormat: "pcm",
-      audioStream: new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
-          controller.close();
-        },
-      }),
-    }));
-    await prepareSpeechGreeting({
-      ...greetingParams({ tts: { streamTextToSpeechTelephony: tts } } as unknown as PluginRuntime),
-      consultAgent: async () => ({
-        text,
-        utterances: [
-          {
-            text,
-            speech: { tagged: true, text, expression },
-            localServiceAdmission,
-            expectedSpeechSelection,
+  it.each([true, false])(
+    "retains greeting worker admission with expression=%s",
+    async (expressive) => {
+      const text = "Hello!";
+      const expression = { emotion: "joyful", parts: [{ text }] };
+      const expectedSpeechSelection = {
+        provider: "example",
+        model: "prepared-model",
+        voice: "prepared-voice",
+      };
+      const localServiceAdmission = {
+        generation: "synthetic-worker",
+        signal: new AbortController().signal,
+      };
+      const tts = vi.fn<PluginRuntime["tts"]["streamTextToSpeechTelephony"]>(async () => ({
+        success: true,
+        sampleRate: 24_000,
+        outputFormat: "pcm",
+        audioStream: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(Uint8Array.from([1, 0, 2, 0]));
+            controller.close();
           },
-        ],
-      }),
-    });
-    expect(tts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text,
-        overrides: { expression },
-        localServiceAdmission,
-        expectedSpeechSelection,
-      }),
-    );
-    expect(tts.mock.calls[0]?.[0]).not.toHaveProperty("expression");
-  });
+        }),
+      }));
+      await prepareSpeechGreeting({
+        ...greetingParams({
+          tts: { streamTextToSpeechTelephony: tts },
+        } as unknown as PluginRuntime),
+        consultAgent: async () => ({
+          text,
+          utterances: [
+            {
+              text,
+              ...(expressive ? { speech: { tagged: true as const, text, expression } } : {}),
+              localServiceAdmission,
+              expectedSpeechSelection,
+            },
+          ],
+        }),
+      });
+      expect(tts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text,
+          ...(expressive ? { overrides: { expression } } : {}),
+          localServiceAdmission,
+          expectedSpeechSelection,
+        }),
+      );
+      expect(tts.mock.calls[0]?.[0]).not.toHaveProperty("expression");
+      if (!expressive) expect(tts.mock.calls[0]?.[0]).not.toHaveProperty("overrides");
+    },
+  );
 
   it("releases a stalled greeting stream when the call is aborted", async () => {
     let startedRead!: () => void;

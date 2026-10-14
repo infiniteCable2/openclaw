@@ -441,7 +441,12 @@ describe("startSpeechSession streaming output", () => {
     expect(synthesize.mock.calls[0]?.[0].localServiceAdmission).toBe(localServiceAdmission);
     expect(synthesize.mock.calls[0]?.[0].expectedSpeechSelection).toBe(expectedSpeechSelection);
 
-    await consult.onSpeakableText?.({ type: "chunk", text: "Zweiter Satz." });
+    await consult.onSpeakableText?.({
+      type: "chunk",
+      text: "Zweiter Satz.",
+      localServiceAdmission,
+      expectedSpeechSelection,
+    });
     await consult.onSpeakableText?.({
       type: "done",
       text: "Erster Satz. Zweiter Satz.",
@@ -449,8 +454,8 @@ describe("startSpeechSession streaming output", () => {
     finishConsult?.({ text: "Erster Satz. Zweiter Satz.", delivered: true });
 
     await vi.waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
-    expect(synthesize.mock.calls[1]?.[0]).not.toHaveProperty("localServiceAdmission");
-    expect(synthesize.mock.calls[1]?.[0]).not.toHaveProperty("expectedSpeechSelection");
+    expect(synthesize.mock.calls[1]?.[0].localServiceAdmission).toBe(localServiceAdmission);
+    expect(synthesize.mock.calls[1]?.[0].expectedSpeechSelection).toBe(expectedSpeechSelection);
     expect(synthesize.mock.calls[1]?.[0]).not.toHaveProperty("overrides");
     await vi.waitFor(() => {
       const assistantEntries = handle

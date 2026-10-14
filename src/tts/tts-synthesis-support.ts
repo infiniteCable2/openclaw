@@ -423,7 +423,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
       };
       try {
         params.signal?.throwIfAborted();
-        if (params.expression && params.localServiceAdmission) {
+        if (params.localServiceAdmission) {
           params.localServiceAdmission.signal.throwIfAborted();
           if (
             params.localServiceAdmission.generation !== localServiceLease?.admission?.generation
@@ -535,9 +535,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         if (segmentationProfile) {
           assertSpeechSegmentationProfile(segmentationProfile);
         }
-        if (params.expression) {
-          params.localServiceAdmission?.signal.throwIfAborted();
-        }
+        params.localServiceAdmission?.signal.throwIfAborted();
         if (params.expression) {
           // Provider preparation must not detach expression spans from their admitted plain text.
           parseSpeechExpression(params.expression, prepared.text);
@@ -577,9 +575,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         try {
           params.signal?.throwIfAborted();
           localServiceLease?.admission?.signal.throwIfAborted();
-          if (params.expression) {
-            params.localServiceAdmission?.signal.throwIfAborted();
-          }
+          params.localServiceAdmission?.signal.throwIfAborted();
           const latencyMs = Date.now() - providerStart;
           attempts.push({
             provider,
@@ -634,8 +630,8 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
         error: errorMsg,
       });
       const rawError = sanitizeTtsErrorForLog(err);
-      // A generation conflict must not reroute an expressive utterance to another worker/provider.
-      if (params.expression && err instanceof Error && err.name === "LocalServiceAdmissionError") {
+      // A generation conflict must not reroute an admitted utterance to another worker/provider.
+      if (err instanceof Error && err.name === "LocalServiceAdmissionError") {
         break;
       }
       if (provider === primaryProvider) {

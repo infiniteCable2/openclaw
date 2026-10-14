@@ -175,8 +175,8 @@ export function createSpeechOutput(params: {
         const result = await params.runtime.tts.streamTextToSpeechTelephony({
           text: normalized,
           ...(speech?.expression ? { overrides: { expression: speech.expression } } : {}),
-          ...(speech?.expression && localServiceAdmission ? { localServiceAdmission } : {}),
-          ...(speech?.expression && expectedSpeechSelection ? { expectedSpeechSelection } : {}),
+          ...(localServiceAdmission ? { localServiceAdmission } : {}),
+          ...(expectedSpeechSelection ? { expectedSpeechSelection } : {}),
           cfg: params.fullConfig,
           signal: controller.signal,
           ...(ttsAgentId ? { agentId: ttsAgentId } : {}),

@@ -200,8 +200,8 @@ export async function prepareSpeechGreeting(params: {
     return params.runtime.tts.streamTextToSpeechTelephony({
       text,
       ...(speech?.expression ? { overrides: { expression: speech.expression } } : {}),
-      ...(speech?.expression && localServiceAdmission ? { localServiceAdmission } : {}),
-      ...(speech?.expression && expectedSpeechSelection ? { expectedSpeechSelection } : {}),
+      ...(localServiceAdmission ? { localServiceAdmission } : {}),
+      ...(expectedSpeechSelection ? { expectedSpeechSelection } : {}),
       cfg: params.cfg,
       signal: params.signal,
       ...(params.ttsContext?.agentId ? { agentId: params.ttsContext.agentId } : {}),

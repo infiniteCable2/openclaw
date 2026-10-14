@@ -330,9 +330,13 @@ describe("native speech expression admission", () => {
     expect(worker.signal.aborted).toBe(false);
   });
 
-  it.each(["caller", "worker"] as const)(
-    "rejects %s cancellation while buffered synthesis runs, with no persistence or fallback",
-    async (cancelOwner) => {
+  it.each(
+    (["caller", "worker"] as const).flatMap((cancelOwner) =>
+      [true, false].map((expressive) => ({ cancelOwner, expressive })),
+    ),
+  )(
+    "rejects $cancelOwner cancellation with expression=$expressive, without persistence or fallback",
+    async ({ cancelOwner, expressive }) => {
       const caller = new AbortController();
       const worker = new AbortController();
       const admission = { generation: "worker1", signal: worker.signal };
@@ -361,7 +365,7 @@ describe("native speech expression admission", () => {
           agentId: "reader",
           signal: caller.signal,
           localServiceAdmission: admission,
-          overrides: { expression: { parts: [{ text: "Hello." }] } },
+          ...(expressive ? { overrides: { expression: { parts: [{ text: "Hello." }] } } } : {}),
         },
         persist,
       );
@@ -586,29 +590,32 @@ describe("native speech expression admission", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it("refuses a replaced pre-model generation without fallback or capability rediscovery", async () => {
-    const original = { generation: "worker1", signal: new AbortController().signal };
-    const replacement = { generation: "worker2", signal: new AbortController().signal };
-    const release = vi.fn();
-    acquireSpeechProviderLocalServiceMock.mockResolvedValue({ release, admission: replacement });
-    const prepare = vi.fn(async () => undefined);
-    installSpeechProviders([
-      createMockSpeechProvider("mock", { prepareExpressionCapabilities: prepare }),
-      createMockSpeechProvider("fallback", { getExpressionCapabilities: () => capabilities }),
-    ]);
-    const result = await synthesizeSpeech({
-      cfg: config,
-      text: "Hello.",
-      agentId: "reader",
-      channel: "matrix",
-      localServiceAdmission: original,
-      overrides: { expression: { parts: [{ text: "Hello." }] } },
-    });
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("generation changed");
-    expect(result.attemptedProviders).toEqual(["mock"]);
-    expect(prepare).not.toHaveBeenCalled();
-    expect(synthesizeMock).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledOnce();
-  });
+  it.each([true, false])(
+    "refuses a replaced generation without fallback with expression=%s",
+    async (expressive) => {
+      const original = { generation: "worker1", signal: new AbortController().signal };
+      const replacement = { generation: "worker2", signal: new AbortController().signal };
+      const release = vi.fn();
+      acquireSpeechProviderLocalServiceMock.mockResolvedValue({ release, admission: replacement });
+      const prepare = vi.fn(async () => undefined);
+      installSpeechProviders([
+        createMockSpeechProvider("mock", { prepareExpressionCapabilities: prepare }),
+        createMockSpeechProvider("fallback", { getExpressionCapabilities: () => capabilities }),
+      ]);
+      const result = await synthesizeSpeech({
+        cfg: config,
+        text: "Hello.",
+        agentId: "reader",
+        channel: "matrix",
+        localServiceAdmission: original,
+        ...(expressive ? { overrides: { expression: { parts: [{ text: "Hello." }] } } } : {}),
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("generation changed");
+      expect(result.attemptedProviders).toEqual(["mock"]);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(synthesizeMock).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+    },
+  );
 });
