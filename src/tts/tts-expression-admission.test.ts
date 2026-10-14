@@ -335,7 +335,7 @@ describe("native speech expression admission", () => {
       [true, false].map((expressive) => ({ cancelOwner, expressive })),
     ),
   )(
-    "rejects $cancelOwner cancellation with expression=$expressive, without persistence or fallback",
+    "discards $cancelOwner cancellation with expression=$expressive, without persistence or fallback",
     async ({ cancelOwner, expressive }) => {
       const caller = new AbortController();
       const worker = new AbortController();
@@ -369,7 +369,15 @@ describe("native speech expression admission", () => {
         },
         persist,
       );
-      const rejected = expect(pending).rejects.toThrow("Speech owner cancelled");
+      // Plain synthesis reports native failure facts; explicit speech and caller abort reject.
+      const cancelled =
+        expressive || cancelOwner === "caller"
+          ? expect(pending).rejects.toThrow("Speech owner cancelled")
+          : expect(pending).resolves.toMatchObject({
+              success: false,
+              error: expect.stringContaining("Speech owner cancelled"),
+              attemptedProviders: ["mock"],
+            });
       const request = await entered.promise;
       expect(request.signal).toBe(caller.signal);
       expect(request.localServiceAdmission).toBe(admission);
@@ -383,7 +391,7 @@ describe("native speech expression admission", () => {
         outputFormat: "ogg",
         voiceCompatible: true,
       });
-      await rejected;
+      await cancelled;
       expect(persist).not.toHaveBeenCalled();
       expect(synthesize).toHaveBeenCalledOnce();
       expect(synthesizeMock).not.toHaveBeenCalled();
