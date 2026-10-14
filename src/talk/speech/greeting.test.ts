@@ -113,7 +113,9 @@ describe("meeting agent greeting preparation", () => {
         }),
       );
       expect(tts.mock.calls[0]?.[0]).not.toHaveProperty("expression");
-      if (!expressive) expect(tts.mock.calls[0]?.[0]).not.toHaveProperty("overrides");
+      if (!expressive) {
+        expect(tts.mock.calls[0]?.[0]).not.toHaveProperty("overrides");
+      }
     },
   );
 

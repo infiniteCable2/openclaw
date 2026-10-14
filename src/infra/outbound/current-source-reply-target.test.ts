@@ -60,7 +60,9 @@ describe("native current-source reply custody", () => {
     async (voiceText) => {
       const call = input();
       delete call.params.voiceExpression;
-      if (!voiceText) delete call.params.voiceText;
+      if (!voiceText) {
+        delete call.params.voiceText;
+      }
       await deliverToCurrentSourceReplyTarget(call);
       const deliver = vi.mocked(call.currentSourceReplyTarget!.deliver);
       expect(deliver).toHaveBeenCalledOnce();
