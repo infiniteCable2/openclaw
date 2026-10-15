@@ -126,7 +126,7 @@ describe("speech session native video admission", () => {
       await f.drain();
       const consult = await f.consultEntered;
       expect(consult.images).toBeUndefined();
-      const run = createQueueTestRun({ prompt: consult.args.question });
+      const run = createQueueTestRun({ prompt: "Only audio, no camera." });
       run.run.toolBindings = consult.toolBindings;
       expect(() => prepareReplyToolAuthority(run).fingerprint()).not.toThrow();
       const source = consult.toolBindings?.video_inspect;
@@ -152,7 +152,7 @@ describe("speech session native video admission", () => {
       // Timer advancement admits talkback; real lazy module loading can finish later.
       // Observe the native consult boundary instead of assuming it is already warm.
       const consult = await f.consultEntered;
-      const run = createQueueTestRun({ prompt: consult.args.question });
+      const run = createQueueTestRun({ prompt: "What is visible?" });
       run.run.toolBindings = consult.toolBindings;
       expect(() => prepareReplyToolAuthority(run).fingerprint()).not.toThrow();
       expect(f.consultAgent).toHaveBeenCalledOnce();
