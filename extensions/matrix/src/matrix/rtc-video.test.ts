@@ -66,7 +66,7 @@ describe("MatrixRTC isolated video input", () => {
     const onFrame = vi.fn();
     mocks.encode.mockImplementationOnce(async (data) => {
       current = false;
-      return data;
+      return Buffer.from(data);
     });
     await consumeMatrixRtcVideo({
       source: chunks(frameHeader(), Buffer.alloc(4)),
