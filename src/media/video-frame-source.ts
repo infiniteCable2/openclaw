@@ -1,3 +1,4 @@
+import { registerHostToolBinding } from "../shared/host-tool-bindings.js";
 import type { BufferedVideoFrame } from "./video-frame-buffer.js";
 
 export type VideoFrameSource = {
@@ -19,6 +20,7 @@ export function createVideoFrameSource(
     },
   });
   admittedSources.add(source);
+  registerHostToolBinding(source);
   return source;
 }
 

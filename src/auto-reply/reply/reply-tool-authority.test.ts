@@ -8,12 +8,14 @@ import { captureGatewayDeviceRevocation } from "../../gateway/device-revocation.
 import { captureGatewayOperatorRunAuthority } from "../../gateway/operator-run-authority.js";
 import { createOperatorClient } from "../../gateway/server-plugin-in-process-dispatch.test-support.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
+import { createVideoFrameSource } from "../../media/video-frame-source.js";
 import type { GatewayAccessGrantRef } from "../../plugins/gateway-access-policy.types.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
+import { resolveFollowupDeliveryStorageKey } from "./queue/delivery-context.js";
 import type { ReplyToolAuthorityOverlay } from "./reply-run-registry.contracts.js";
 import type { ReplyBackendQueueMessageOptions } from "./reply-run-registry.js";
 import {
@@ -68,6 +70,38 @@ describe("reply tool authority", () => {
     resetCommandQueueStateForTest();
     resetDiagnosticRunActivityForTest();
     vi.restoreAllMocks();
+  });
+
+  it("admits a live video binding without frames and keeps native steering source-specific", () => {
+    const first = createQueueTestRun({ prompt: "Audio-only request with video permitted" });
+    const source = createVideoFrameSource(
+      () => undefined,
+      () => {},
+    );
+    first.run.toolBindings = { video_inspect: source };
+    // The real authority entrypoint used to structuredClone the source's methods
+    // before a model could process even an audio-only request.
+    const prepared = prepareReplyToolAuthority(first);
+    const fingerprint = prepared.fingerprint();
+    expect(fingerprint).toBe(resolveFollowupRunToolAuthorityFingerprint(first));
+    const same = { ...first, run: { ...first.run, toolBindings: { video_inspect: source } } };
+    expect(resolveFollowupDeliveryStorageKey(same)).toBe(resolveFollowupDeliveryStorageKey(first));
+    const other = {
+      ...first,
+      run: {
+        ...first.run,
+        toolBindings: {
+          video_inspect: createVideoFrameSource(
+            () => undefined,
+            () => {},
+          ),
+        },
+      },
+    };
+    expect(prepareReplyToolAuthority(other).fingerprint()).not.toBe(fingerprint);
+    expect(resolveFollowupDeliveryStorageKey(other)).not.toBe(
+      resolveFollowupDeliveryStorageKey(first),
+    );
   });
 
   it.each([

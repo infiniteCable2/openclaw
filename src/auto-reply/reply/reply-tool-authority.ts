@@ -47,6 +47,7 @@ import {
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { GATEWAY_OWNER_ONLY_CORE_TOOLS } from "../../security/dangerous-tools.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import { describeToolBindings, snapshotToolBindings } from "../../shared/host-tool-bindings.js";
 import type { RuntimeMsgContext } from "../templating.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import type { FollowupRun } from "./queue/types.js";
@@ -401,7 +402,7 @@ export function resolveFollowupRunToolAuthorityFingerprint(
           authority && themeProfileId === authority.profileId
             ? { ownProfile: true }
             : themeProfileId,
-        toolBindings: execution.toolBindings,
+        toolBindings: describeToolBindings(execution.toolBindings),
       }),
     )
     .digest("hex");
@@ -485,7 +486,7 @@ export function prepareReplyToolAuthority(
       toolOverrides: structuredClone(run.run.toolOverrides),
       execOverrides: structuredClone(run.run.execOverrides),
       bashElevated: structuredClone(run.run.bashElevated),
-      toolBindings: structuredClone(run.run.toolBindings),
+      toolBindings: snapshotToolBindings(run.run.toolBindings),
       clientCaps: run.run.clientCaps ? [...run.run.clientCaps] : undefined,
       gatewayUiCommandTarget: structuredClone(run.run.gatewayUiCommandTarget),
       memberRoleIds: run.run.memberRoleIds ? [...run.run.memberRoleIds] : undefined,

@@ -1,6 +1,9 @@
 import { encodePngRgba } from "rastermill";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
+import { prepareReplyToolAuthority } from "../../auto-reply/reply/reply-tool-authority.js";
+import { isVideoFrameSource } from "../../media/video-frame-source.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 import type { RealtimeVoiceAgentControlResult } from "../agent-run-control.js";
@@ -116,6 +119,29 @@ async function fixture(options: { pendingVideo?: boolean; runControl?: boolean }
 describe("speech session native video admission", () => {
   afterEach(() => vi.useRealTimers());
 
+  it("admits audio-only input with video permitted through native authority and revokes it on stop", async () => {
+    const f = await fixture();
+    try {
+      f.say("Only audio, no camera.", "audio-only");
+      await f.drain();
+      const consult = await f.consultEntered;
+      expect(consult.images).toBeUndefined();
+      const run = createQueueTestRun({ prompt: consult.args.question });
+      run.run.toolBindings = consult.toolBindings;
+      expect(() => prepareReplyToolAuthority(run).fingerprint()).not.toThrow();
+      const source = consult.toolBindings?.video_inspect;
+      if (!isVideoFrameSource(source)) {
+        throw new Error("Expected admitted live video source");
+      }
+      expect(source.read("missing-frame")).toBeUndefined();
+      await f.handle.stop();
+      expect(() => source.read("missing-frame")).toThrow("Live video source is closed");
+    } finally {
+      f.done.resolve({ text: "" });
+      await f.handle.stop();
+    }
+  });
+
   it("attaches the current utterance's frames to the initial native consult", async () => {
     const f = await fixture();
     try {
@@ -125,7 +151,10 @@ describe("speech session native video admission", () => {
       await f.drain();
       // Timer advancement admits talkback; real lazy module loading can finish later.
       // Observe the native consult boundary instead of assuming it is already warm.
-      await f.consultEntered;
+      const consult = await f.consultEntered;
+      const run = createQueueTestRun({ prompt: consult.args.question });
+      run.run.toolBindings = consult.toolBindings;
+      expect(() => prepareReplyToolAuthority(run).fingerprint()).not.toThrow();
       expect(f.consultAgent).toHaveBeenCalledOnce();
       expect(f.consultAgent.mock.calls[0]?.[0]).toMatchObject({
         args: { question: "What is visible?", context: expect.stringContaining("Video frames") },

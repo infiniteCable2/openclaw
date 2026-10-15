@@ -7,6 +7,7 @@ import { combineChannelAdmissionEvidence } from "../../../channels/message-acces
 import { combineGatewayLocalUserIngress } from "../../../gateway/local-user-ingress.js";
 import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
 import { resolveGlobalSingleton } from "../../../shared/global-singleton.js";
+import { describeToolBindings } from "../../../shared/host-tool-bindings.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
 import {
   resolveReplyOperatorAuthorityKey,
@@ -126,7 +127,7 @@ export function resolveFollowupDeliveryStorageKey(run: FollowupRun): string {
     execution.model,
     execution.messageProvider ?? "",
     JSON.stringify([...new Set(execution.clientCaps ?? [])].toSorted()),
-    stableStringify(execution.toolBindings ?? null),
+    stableStringify(describeToolBindings(execution.toolBindings) ?? null),
     execution.chatType ?? "",
     execution.agentAccountId ?? "",
     execution.conversationRoutePeerId ?? "",
