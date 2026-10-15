@@ -117,7 +117,7 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
     resolve(value: unknown) {
       return snapshots.get(value);
     },
-    mergeKey(this: void, value: unknown) {
+    mergeKey(this: void, value: unknown): symbol | undefined {
       return buffer && (value === undefined || snapshots.has(value)) ? mergeKey : undefined;
     },
     merge(this: void, left: unknown, right: unknown): VideoFrameSnapshot | undefined {
