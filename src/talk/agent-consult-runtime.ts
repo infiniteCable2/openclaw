@@ -395,6 +395,8 @@ export async function consultRealtimeVoiceAgent(params: {
   lane: string;
   runIdPrefix: string;
   args: unknown;
+  /** Host-admitted image snapshots belonging to this exact user input. */
+  images?: RunEmbeddedAgentParams["images"];
   transcript: RealtimeVoiceAgentConsultTranscriptEntry[];
   surface: string;
   userLabel: string;
@@ -613,6 +615,7 @@ export async function consultRealtimeVoiceAgent(params: {
             questionSourceLabel: params.questionSourceLabel,
             commentaryEnabled: spokenCommentaryEnabled,
           }),
+          images: params.images,
           provider: params.provider,
           model: params.model,
           thinkLevel: params.thinkLevel ?? "high",

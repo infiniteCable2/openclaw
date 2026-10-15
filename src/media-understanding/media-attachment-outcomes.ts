@@ -16,6 +16,8 @@ export function renderMediaAttachmentDisposition(
     case "handled":
     case "handed-to-native-vision":
       return null;
+    case "deferred-to-native-media":
+      return `[${label} attachment retained for native media preparation; visual inspection is not yet confirmed]`;
     case "not-selected":
       return `[${label} attachment not processed: attachment limit reached]`;
     case "capability-disabled":

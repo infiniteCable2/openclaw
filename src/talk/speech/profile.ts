@@ -5,6 +5,7 @@ import type { SpeechWaitingAudioConfig } from "./waiting-audio.js";
 export type ResolvedTalkSpeechAgentProfile = {
   responseStreaming: "off" | "sentence";
   speakCommentary: boolean;
+  video?: import("../../config/zod-schema.media-frames.js").SpeechVideoConfig;
   waitingAudio?: SpeechWaitingAudioConfig;
   greeting?: {
     enabled: true;
@@ -27,6 +28,7 @@ export function resolveTalkSpeechAgentProfile(
   return {
     responseStreaming: profile?.responseStreaming ?? "sentence",
     speakCommentary: profile?.speakCommentary ?? false,
+    ...(profile?.video?.enabled === true ? { video: profile.video } : {}),
     ...(profile?.waitingAudio ? { waitingAudio: profile.waitingAudio } : {}),
     ...(greeting?.enabled === true
       ? {

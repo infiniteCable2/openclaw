@@ -1,6 +1,9 @@
 /**
  * Supported meeting SDK facade over the central speech owner and meeting-specific transports.
  */
+export { resolveTalkSpeechAgentProfile } from "../talk/speech/profile.js";
+export type { SpeechVideoFrame } from "../talk/speech/transport.js";
+export type { SpeechVideoConfig } from "../config/zod-schema.media-frames.js";
 
 export {
   startMeetingRealtimeEngine,

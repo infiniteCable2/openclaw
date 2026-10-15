@@ -2,7 +2,6 @@
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { RealtimeTranscriptionSession } from "../../realtime-transcription/provider-types.js";
-import type { RealtimeVoiceAgentControlResult } from "../agent-run-control-shared.js";
 import {
   createRealtimeVoiceSessionHarness,
   type RealtimeVoiceSessionHarness,
@@ -14,6 +13,7 @@ import { playSpeechGreeting } from "./greeting.js";
 import { createSpeechInputOnset } from "./input-onset.js";
 import { createSpeechBargeInGate } from "./output-gate.js";
 import { createSpeechOutput, type SpeechUtterance } from "./output.js";
+import { createSpeechSessionControls } from "./session-controls.js";
 import { createSpeechSessionInput } from "./session-input.js";
 import { createSpeechSessionLifecycle } from "./session-lifecycle.js";
 import type { SpeechStreamCancellation } from "./stream-cleanup.js";
@@ -27,10 +27,11 @@ import {
   SPEECH_AGENT_TRANSCRIPT_DEBOUNCE_MS,
   SPEECH_OUTPUT_ECHO_SUPPRESSION_TAIL_MS,
   SPEECH_TRANSCRIPT_ECHO_LOOKBACK_MS,
-  type SpeechAgentConsultParams,
+  type SpeechActiveConsult,
   type SpeechSessionHandle,
   type SpeechSessionStartParams,
 } from "./types.js";
+import { createSpeechVideoInput } from "./video-input.js";
 import { createSpeechWaitingAudioPlayback, prepareSpeechWaitingAudio } from "./waiting-audio.js";
 import { createSpeechWaitingController } from "./waiting-controller.js";
 
@@ -39,6 +40,7 @@ export async function startSpeechSession(
 ): Promise<SpeechSessionHandle> {
   params.signal?.throwIfAborted();
   let stopped = false;
+  const video = createSpeechVideoInput(params.config.video);
   let sttSession: RealtimeTranscriptionSession | null = null;
   let realtimeReady = false;
   const activeTtsAborts = new Set<AbortController>();
@@ -48,26 +50,16 @@ export async function startSpeechSession(
   let outputTurnId: string | undefined;
   let greetingPending = params.initialGreeting !== undefined;
   let currentWaitingTurn: number | undefined;
-  // Admission belongs to the native run. This only serializes its acknowledgments
-  // before choosing an audio generation or handing an unadopted input to talkback.
-  let activeConsult:
-    | {
-        control?: Parameters<NonNullable<SpeechAgentConsultParams["onRunControl"]>>[0];
-        admissions: Promise<void>;
-        adoptedGeneration: number;
-        unconfirmed: boolean;
-        followupOnly: boolean;
-        question: string;
-      }
-    | undefined;
+  // Native runs own admission; the session only serializes acknowledgments and audio generations.
+  let activeConsult: SpeechActiveConsult | undefined;
   let responseQuestion: string | undefined;
   const inputOnset = createSpeechInputOnset<{
     consult: typeof activeConsult;
     speechStart: NonNullable<RealtimeVoiceTranscriptEntry["speechStart"]>;
     interruptedEntries: RealtimeVoiceTranscriptEntry[];
+    startedAtMs: number;
   }>();
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
-  const ttsAgentId = params.ttsContext?.agentId ?? params.config.agentId;
   const resolved = resolveSpeechTranscriptionProvider({
     config: params.config,
     fullConfig: params.fullConfig,
@@ -93,18 +85,17 @@ export async function startSpeechSession(
       );
     }
   };
-  const waitingAudioPlayback = createSpeechWaitingAudioPlayback({
-    audio: waitingAudio,
-    transport: params.transport,
-    isStopped: () => stopped,
-    onError: (error) => {
-      params.logger.warn(
-        `${params.surface.logScope} ${agentLogScope} waiting audio failed: ${formatErrorMessage(error)}`,
-      );
-    },
-  });
   const waiting = createSpeechWaitingController({
-    playback: waitingAudioPlayback,
+    playback: createSpeechWaitingAudioPlayback({
+      audio: waitingAudio,
+      transport: params.transport,
+      isStopped: () => stopped,
+      onError: (error) => {
+        params.logger.warn(
+          `${params.surface.logScope} ${agentLogScope} waiting audio failed: ${formatErrorMessage(error)}`,
+        );
+      },
+    }),
     isStopped: () => stopped,
     // Full-duplex sinks can resume music after estimated TTS playout; the longer
     // echo-suppression tail stays independent, and a paused gate adds a drain hold.
@@ -136,6 +127,7 @@ export async function startSpeechSession(
     logScope: `${params.surface.logScope} ${agentLogScope}`,
     fence() {
       stopped = true;
+      video.close();
       realtimeReady = false;
       inputOnset.close();
       speechCancellation.markInterruptedTranscript();
@@ -199,7 +191,7 @@ export async function startSpeechSession(
     surface: params.surface,
     sessionId: params.sessionId,
     ttsContext: params.ttsContext,
-    ttsAgentId,
+    ttsAgentId: params.ttsContext?.agentId ?? params.config.agentId,
     agentLogScope,
     logger: params.logger,
     onActivity: params.onActivity,
@@ -223,17 +215,8 @@ export async function startSpeechSession(
       outputTurnId = turnId;
     },
   });
-  const {
-    createSpeechUtterance,
-    isCurrentSpeechUtterance,
-    enqueueSpeechChunk,
-    enqueueSpeakText,
-    finalizeSpeechUtterance,
-    writeOutputAudio,
-  } = speechOutput;
-
   const abortSpeechUtterance = (utterance: SpeechUtterance) => {
-    if (!isCurrentSpeechUtterance(utterance)) {
+    if (!speechOutput.isCurrentSpeechUtterance(utterance)) {
       return;
     }
     outputGeneration += 1;
@@ -252,8 +235,7 @@ export async function startSpeechSession(
     params.onActivity?.("listening");
   };
 
-  // The closures above only run after harness creation; they capture this later `const`.
-  // Annotated because the consult closure references harness inside its own initializer.
+  // Annotate the self-referencing harness; earlier closures run only after construction.
   const harness: RealtimeVoiceSessionHarness = createRealtimeVoiceSessionHarness({
     onTalkEvent: params.onTalkEvent,
     talk: {
@@ -295,52 +277,69 @@ export async function startSpeechSession(
       logPrefix: `${params.surface.logScope} ${agentLogScope}`,
       responseStyle: "Brief, natural spoken answer for a live conversation.",
       fallbackText: "I hit an error while checking that. Please try again.",
-      consult: async ({ question, responseStyle, signal }) => {
+      onDiscardMetadata: (metadata) => video.resolve(metadata)?.release(),
+      metadataMergeKey: video.mergeKey,
+      mergeMetadata: video.merge,
+      consult: async ({ question, metadata, responseStyle, signal }) => {
         params.onActivity?.("processing");
         const waitingTurn = waiting.onTurnStarted();
         currentWaitingTurn = waitingTurn;
-        const utterance = createSpeechUtterance(waitingTurn);
+        const utterance = speechOutput.createSpeechUtterance(waitingTurn);
         const consult: NonNullable<typeof activeConsult> = {
           admissions: Promise.resolve(),
           adoptedGeneration: outputGeneration,
           unconfirmed: false,
           followupOnly: false,
           question,
+          releaseVideo: new Set(),
         };
         activeConsult = consult;
         responseQuestion = question;
         let failure: { error: unknown } | undefined;
-        const result: Awaited<ReturnType<typeof params.consultAgent>> = await params
-          .consultAgent({
-            sessionId: params.sessionId,
-            requesterSessionKey: params.requesterSessionKey,
-            args: { question, responseStyle },
-            transcript: harness.transcript,
-            abortSignal: signal,
-            onRunControl: (control) => {
-              consult.control = control;
-            },
-            waitForPendingInput: (runSignal) =>
-              inputOnset.waitForChange((onset) => onset.consult === consult, runSignal),
-            ...(params.config.responseStreaming === "sentence"
-              ? {
-                  onSpeakableText: (event) => {
-                    if (event.type === "chunk") {
-                      enqueueSpeechChunk(
-                        event.text,
-                        utterance,
-                        event.speech,
-                        event.localServiceAdmission,
-                        event.expectedSpeechSelection,
-                      );
-                    } else if (event.type === "done") {
-                      finalizeSpeechUtterance(utterance, event.text);
-                    } else {
-                      abortSpeechUtterance(utterance);
-                    }
-                  },
-                }
-              : {}),
+        const snapshot = video.resolve(metadata);
+        if (snapshot) {
+          consult.releaseVideo.add(snapshot.release);
+        }
+        const result: Awaited<ReturnType<typeof params.consultAgent>> = await Promise.resolve()
+          .then(async () => {
+            const visualInput = await video.prepare(snapshot, signal);
+            return params.consultAgent({
+              sessionId: params.sessionId,
+              requesterSessionKey: params.requesterSessionKey,
+              args: {
+                question,
+                responseStyle,
+                ...(visualInput.context ? { context: visualInput.context } : {}),
+              },
+              ...(visualInput.images.length ? { images: visualInput.images } : {}),
+              ...(video.source ? { toolBindings: { video_inspect: video.source } } : {}),
+              transcript: harness.transcript,
+              abortSignal: signal,
+              onRunControl: (control) => {
+                consult.control = control;
+              },
+              waitForPendingInput: (runSignal) =>
+                inputOnset.waitForChange((onset) => onset.consult === consult, runSignal),
+              ...(params.config.responseStreaming === "sentence"
+                ? {
+                    onSpeakableText: (event) => {
+                      if (event.type === "chunk") {
+                        speechOutput.enqueueSpeechChunk(
+                          event.text,
+                          utterance,
+                          event.speech,
+                          event.localServiceAdmission,
+                          event.expectedSpeechSelection,
+                        );
+                      } else if (event.type === "done") {
+                        speechOutput.finalizeSpeechUtterance(utterance, event.text);
+                      } else {
+                        abortSpeechUtterance(utterance);
+                      }
+                    },
+                  }
+                : {}),
+            });
           })
           .catch((error: unknown) => {
             waiting.onTurnFinished(waitingTurn);
@@ -362,6 +361,10 @@ export async function startSpeechSession(
             break;
           }
         }
+        for (const release of consult.releaseVideo) {
+          release();
+        }
+        consult.releaseVideo.clear();
         if (activeConsult === consult) {
           activeConsult = undefined;
         }
@@ -384,7 +387,7 @@ export async function startSpeechSession(
             // corrections. Never replay old PCM or preceding answer payloads.
             currentWaitingTurn = waitingTurn;
             if (result.utterances?.length) {
-              const currentUtterance = createSpeechUtterance(waitingTurn);
+              const currentUtterance = speechOutput.createSpeechUtterance(waitingTurn);
               speechOutput.enqueueSpeechResult(result, currentUtterance);
               return { ...result, delivered: true };
             }
@@ -402,7 +405,7 @@ export async function startSpeechSession(
         if (
           !result.text.trim() &&
           utterance.chunks.length === 0 &&
-          isCurrentSpeechUtterance(utterance)
+          speechOutput.isCurrentSpeechUtterance(utterance)
         ) {
           await waiting.stop(utterance.waitingGeneration);
           waiting.onTurnFinished(waitingTurn);
@@ -416,71 +419,30 @@ export async function startSpeechSession(
         }
         return result;
       },
-      deliver: enqueueSpeakText,
+      deliver: speechOutput.enqueueSpeakText,
     },
   });
 
   const handle: SpeechSessionHandle = {
     providerId: resolved.provider.id,
-    speak: enqueueSpeakText,
-    cancelOutput: (request = {}) => {
-      const turnId =
-        harness.isOutputPlaybackWindowActive() && outputTurnId
-          ? outputTurnId
-          : harness.talk.activeTurnId;
-      if (request.turnId && request.turnId !== turnId) {
-        return { status: "stale", turnId };
-      }
-      if (
-        stopped ||
-        (activeTtsAborts.size + activeTtsReaders.size === 0 &&
-          !speechOutput.hasPendingOutput() &&
-          !harness.isOutputPlaybackWindowActive() &&
-          !greetingPending)
-      ) {
-        return { status: "idle", turnId };
-      }
-      outputGeneration += 1;
-      greetingPending = false;
-      speechCancellation.markInterruptedTranscript();
-      harness.flushOutput(speechCancellation.cancelActiveSpeech);
-      harness.finishOutputAudio(request.reason ?? "cancelled");
-      // Delivery cancellation does not close talkback or abort the admitted agent run.
-      return { status: "applied", turnId };
-    },
-    steer: (request) => {
-      const consult = activeConsult;
-      const control = consult?.control;
-      if (stopped || !consult || !control || consult.followupOnly) {
-        return Promise.reject(new Error("No active native speech consult accepts steering"));
-      }
-      const generation = outputGeneration;
-      const admission = consult.admissions.then(
-        async (): Promise<RealtimeVoiceAgentControlResult> => {
-          request.signal?.throwIfAborted();
-          request.assertCurrent?.();
-          if (stopped || activeConsult !== consult || consult.control !== control) {
-            throw new Error("The native speech consult owner changed before steering");
-          }
-          const outcome = await control(request.text, undefined, request);
-          if (outcome.queued) {
-            consult.adoptedGeneration = generation;
-            consult.unconfirmed ||= !outcome.ok;
-            consult.followupOnly ||= !outcome.ok;
-          }
-          return outcome;
-        },
-      );
-      // Settlement holds native completion, including uncertain adoption. Never resubmit.
-      consult.admissions = admission.then(
-        () => undefined,
-        () => {
-          consult.unconfirmed = true;
-          consult.followupOnly = true;
-        },
-      );
-      return admission;
-    },
+    speak: speechOutput.enqueueSpeakText,
+    ...createSpeechSessionControls({
+      harness,
+      cancellation: speechCancellation,
+      getConsult: () => activeConsult,
+      isStopped: () => stopped,
+      getOutputGeneration: () => outputGeneration,
+      getOutputTurnId: () => outputTurnId,
+      hasOutput: () =>
+        activeTtsAborts.size + activeTtsReaders.size > 0 ||
+        speechOutput.hasPendingOutput() ||
+        harness.isOutputPlaybackWindowActive() ||
+        greetingPending,
+      invalidateOutput: () => {
+        outputGeneration++;
+        greetingPending = false;
+      },
+    }),
     getHealth: () => ({
       ...harness.getHealth({
         providerConnected: sttSession?.isConnected() ?? false,
@@ -517,6 +479,7 @@ export async function startSpeechSession(
         if (event.state === "candidate") {
           params.onActivity?.("sensing");
           try {
+            video.begin(event.utteranceId, Date.now());
             inputOnset.begin(event.utteranceId, {
               consult: activeConsult,
               interruptedEntries: speechCancellation.captureInterruptedTranscript(),
@@ -529,12 +492,14 @@ export async function startSpeechSession(
                     ? responseQuestion
                     : undefined),
               },
+              startedAtMs: Date.now(),
             });
           } catch {
             stopAfterFailure("speech onset lifecycle");
             return;
           }
         } else if (event.state === "rejected") {
+          video.settle(event.utteranceId);
           params.onActivity?.("listening");
           inputOnset.settle(event.utteranceId);
         }
@@ -557,12 +522,16 @@ export async function startSpeechSession(
         if (["transcribed", "empty", "failed", "cancelled"].includes(event.state)) {
           inputOnset.settle(event.utteranceId);
         }
+        if (["empty", "failed", "cancelled"].includes(event.state)) {
+          video.settle(event.utteranceId);
+        }
       },
       onTranscript: (text, context) => {
         const reservation = inputOnset.claim(context?.utteranceId);
         const onset = reservation?.value;
         const trimmed = text.trim();
         if (!trimmed || stopped) {
+          video.settle(context?.utteranceId);
           reservation?.release();
           return;
         }
@@ -609,6 +578,7 @@ export async function startSpeechSession(
           ),
         );
         if (assistantEcho) {
+          video.settle(context?.utteranceId);
           reservation?.release();
           params.logger.info(
             formatSpeechTranscriptSummaryLog(
@@ -619,11 +589,21 @@ export async function startSpeechSession(
           );
           return;
         }
+        const snapshot = video.capture(
+          onset?.startedAtMs ?? Date.now() - 2000,
+          Date.now(),
+          context?.utteranceId,
+        );
+        const enqueueInput = () => {
+          if (!harness.talkback?.enqueue(trimmed, snapshot)) {
+            snapshot?.release();
+          }
+        };
         // A late transcript must not steer a different run that happened to
         // start during STT. Only the exact onset owner may accept the addition.
         const consult = onset ? onset.consult : activeConsult;
         if (!consult || consult !== activeConsult) {
-          harness.talkback?.enqueue(trimmed);
+          enqueueInput();
           reservation?.release();
           return;
         }
@@ -635,15 +615,20 @@ export async function startSpeechSession(
               return;
             }
             if (consult.followupOnly) {
-              harness.talkback?.enqueue(trimmed);
+              enqueueInput();
               return;
             }
             // Release on queue acceptance, not transcript commit: commitment
             // needs the held native loop to resume. Decoder terminal callbacks
             // cannot release this claimed reservation before admission.
-            const outcome = reservation
-              ? await control?.(trimmed, reservation.release)
-              : await control?.(trimmed);
+            const frameInput = await video.prepare(snapshot);
+            if (stopped) {
+              return;
+            }
+            const inputText = frameInput.context ? `${trimmed}\n\n${frameInput.context}` : trimmed;
+            const outcome = await control?.(inputText, reservation?.release, {
+              images: frameInput.images,
+            });
             if (stopped) {
               return;
             }
@@ -652,10 +637,13 @@ export async function startSpeechSession(
               consult.adoptedGeneration = generation;
               consult.unconfirmed ||= !outcome.ok;
               consult.followupOnly ||= !outcome.ok;
+              if (snapshot) {
+                consult.releaseVideo.add(snapshot.release);
+              }
             } else {
               // Once B waits behind A, C must not overtake B by steering into A.
               consult.followupOnly = true;
-              harness.talkback?.enqueue(trimmed);
+              enqueueInput();
             }
           })
           .catch(() => {
@@ -663,6 +651,10 @@ export async function startSpeechSession(
             // write-capable input; report the uncertainty after the run settles.
             consult.unconfirmed = true;
             consult.followupOnly = true;
+            // An uncertain native adoption can still be processing this input.
+            if (snapshot) {
+              consult.releaseVideo.add(snapshot.release);
+            }
             params.logger.warn(
               `${params.surface.logScope} ${agentLogScope} input steering confirmation failed`,
             );
@@ -688,15 +680,19 @@ export async function startSpeechSession(
     });
     // Drain transport input while connect() is pending so the capture pipe never backpressures;
     // chunks before session.ready are dropped instead of arriving later as a stale burst.
-    await input.start((audio) => {
-      if (stopped || !realtimeReady || audio.byteLength === 0) {
-        return;
-      }
-      if (!harness.recordInputAudio(audio)) {
-        return;
-      }
-      sttSession?.sendAudio(sttAudioConverter.process(audio));
-    }, assertStarting);
+    await input.start(
+      (audio) => {
+        if (stopped || !realtimeReady || audio.byteLength === 0) {
+          return;
+        }
+        if (!harness.recordInputAudio(audio)) {
+          return;
+        }
+        sttSession?.sendAudio(sttAudioConverter.process(audio));
+      },
+      assertStarting,
+      () => video.start(params.transport, assertStarting),
+    );
 
     const session = sttSession;
     await racePromiseWithAbortSignal(() => session.connect(), params.signal);
@@ -733,7 +729,7 @@ export async function startSpeechSession(
       onStarted: () => {
         greetingPending = false;
       },
-      writeOutputAudio,
+      writeOutputAudio: speechOutput.writeOutputAudio,
     }).catch((error: unknown) => {
       if (!stopped) {
         params.logger.warn(

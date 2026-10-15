@@ -1,4 +1,7 @@
-import { crc32, deflateSync } from "node:zlib";
+import { promisify } from "node:util";
+import { crc32, deflate, deflateSync } from "node:zlib";
+
+const deflateAsync = promisify(deflate);
 
 /** Keep chunk parts separate so final assembly copies compressed data only once. */
 function pngChunkParts(type: string, data: Buffer): Buffer[] {
@@ -37,7 +40,17 @@ export function fillPixel(
   buf[idx + 3] = a;
 }
 
-function encodePng(buffer: Buffer, width: number, height: number, channels: 3 | 4): Buffer {
+function buildScanlines(buffer: Buffer, width: number, height: number, channels: 3 | 4): Buffer {
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    width > 25_000_000 / height ||
+    buffer.byteLength !== width * height * channels
+  ) {
+    throw new Error("PNG requires bounded, tightly packed RGB/RGBA pixels");
+  }
   const stride = width * channels;
   const raw = Buffer.alloc((stride + 1) * height);
   for (let row = 0; row < height; row += 1) {
@@ -46,8 +59,10 @@ function encodePng(buffer: Buffer, width: number, height: number, channels: 3 | 
     raw[rawOffset] = 0;
     buffer.copy(raw, rawOffset + 1, row * stride, row * stride + stride);
   }
-  const compressed = deflateSync(raw);
+  return raw;
+}
 
+function assemblePng(compressed: Buffer, width: number, height: number, channels: 3 | 4): Buffer {
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
@@ -68,10 +83,23 @@ function encodePng(buffer: Buffer, width: number, height: number, channels: 3 | 
 
 /** Encodes tightly packed RGB bytes (`width * height * 3`) as a PNG image. */
 export function encodePngRgb(buffer: Buffer, width: number, height: number): Buffer {
-  return encodePng(buffer, width, height, 3);
+  return assemblePng(deflateSync(buildScanlines(buffer, width, height, 3)), width, height, 3);
 }
 
 /** Encodes tightly packed RGBA bytes (`width * height * 4`) as a PNG image. */
 export function encodePngRgba(buffer: Buffer, width: number, height: number): Buffer {
-  return encodePng(buffer, width, height, 4);
+  return assemblePng(deflateSync(buildScanlines(buffer, width, height, 4)), width, height, 4);
+}
+
+/** Live capture compresses on libuv workers instead of blocking the audio event loop. */
+export async function encodePngRgbaAsync(
+  buffer: Buffer,
+  width: number,
+  height: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  signal?.throwIfAborted();
+  const compressed = await deflateAsync(buildScanlines(buffer, width, height, 4));
+  signal?.throwIfAborted();
+  return assemblePng(compressed, width, height, 4);
 }

@@ -343,6 +343,10 @@ export function installEmbeddedAttemptContextGuards(input: {
       agentWorkspaceDir: attempt.workspaceDir,
       model: attempt.model,
       maxBytes: MAX_IMAGE_BYTES,
+      mediaConfig: attempt.config?.tools?.media,
+      channelId: attempt.messageChannel ?? attempt.messageProvider,
+      chatType: attempt.chatType,
+      sessionKey: attempt.sessionKey,
       maxDimensionPx: resolveImageSanitizationLimits(attempt.config).maxDimensionPx,
       workspaceOnly: input.effectiveFsWorkspaceOnly,
       localRoots: input.effectiveFsWorkspaceOnly

@@ -194,6 +194,7 @@ describeLinux("workspace attachment adapter with the real remote-shell bridge", 
     });
     try {
       const provider = await materializeProviderContext({
+        model: { input: ["text", "image", "video"] },
         context: { systemPrompt: "system", messages: convertToLlm([message]), tools: [] },
         workspaceDir: f.gateway,
         sandbox: { root: f.harness, bridge: f.bridge },

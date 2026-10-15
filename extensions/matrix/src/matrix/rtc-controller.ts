@@ -10,6 +10,7 @@ import {
   createMeetingRealtimeEngineBindings,
   prepareMeetingAgentGreeting,
   prepareMeetingAgentRealtimeEngine,
+  resolveTalkSpeechAgentProfile,
   startMeetingAgentRealtimeEngine,
 } from "openclaw/plugin-sdk/meeting-runtime";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
@@ -260,6 +261,7 @@ export function registerMatrixRtcController(params: {
 
         const meetingSessionId = randomUUID();
         const agentProfile = resolveMatrixRtcAgentProfile(params.config, admission.agentId);
+        const speechProfile = resolveTalkSpeechAgentProfile(params.cfg, admission.agentId);
         const bindings = createMeetingRealtimeEngineBindings({
           platform: MATRIX_RTC_PLATFORM,
           senderId: remote.userId,
@@ -291,6 +293,7 @@ export function registerMatrixRtcController(params: {
               responseStreaming: params.config.responseStreaming,
               waitingAudio: params.config.waitingAudio,
               providers: params.config.providers,
+              video: speechProfile.video,
             },
           },
           fullConfig: params.cfg,
@@ -537,6 +540,7 @@ export function registerMatrixRtcController(params: {
           allowedRemoteIdentity: remote.rtcBackendIdentity,
           initialKeys,
           requireRemoteAudioReady: initialGreeting !== undefined,
+          video: speechProfile.video,
         });
         mediaTransportRef.current = mediaTransport;
         call.transport = mediaTransport;
@@ -561,6 +565,7 @@ export function registerMatrixRtcController(params: {
               responseStreaming: params.config.responseStreaming,
               waitingAudio: params.config.waitingAudio,
               providers: params.config.providers,
+              video: speechProfile.video,
             },
           },
           fullConfig: params.cfg,

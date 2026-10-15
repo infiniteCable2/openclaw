@@ -66,6 +66,7 @@ type RealtimeVoiceAgentControlDeps = {
       isInboundUserMessage?: boolean;
       taskSuggestionDeliveryMode?: undefined;
       toolAuthorityOverlay?: ReplyToolAuthorityOverlay;
+      images?: import("../llm/types.js").ImageContent[];
       userTurnTranscriptRecorder?: UserTurnTranscriptRecorder;
     },
   ) => Promise<EmbeddedAgentQueueMessageOutcome>;
@@ -91,6 +92,8 @@ export async function controlRealtimeVoiceAgentRun(
       isCurrent: (sessionId?: string) => boolean;
     } | null;
     text: string;
+    /** Trusted frame snapshot from this admitted ingress, never provider tool arguments. */
+    images?: import("../llm/types.js").ImageContent[];
     /** Confirm owner-bound transcript adoption, not merely queue admission. Opt-in for RTC. */
     waitForTranscriptCommit?: boolean;
     /** Native admission notification; releases input holds before transcript commitment. */
@@ -255,6 +258,7 @@ export async function controlRealtimeVoiceAgentRun(
       : {}),
     debounceMs: 0,
     isInboundUserMessage: true,
+    ...(params.images?.length ? { images: params.images } : {}),
     toolAuthorityOverlay,
     // Talk cannot present task suggestions, so spoken user input must not inherit
     // a capable TUI run's model-facing task tools.

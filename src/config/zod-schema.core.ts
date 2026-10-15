@@ -8,6 +8,7 @@ import { MODEL_APIS } from "./model-config-vocabulary.js";
 import { isBuiltInModelProviderOverlayId } from "./model-provider-overlay-ids.js";
 import { AgentRuntimePolicySchema } from "./zod-schema.agent-entry-base.js";
 import { createAllowDenyChannelRulesSchema } from "./zod-schema.allowdeny.js";
+import { VideoFrameExtractionSchema } from "./zod-schema.media-frames.js";
 import { DmConfigSchema } from "./zod-schema.messages.js";
 import { ModelCompatSchema } from "./zod-schema.model-compat.js";
 import { SecretInputSchema } from "./zod-schema.secret-input.js";
@@ -718,7 +719,9 @@ export const ToolsMediaSchema = z
     concurrency: z.number().int().positive().optional(),
     image: ToolsMediaCapabilitySchema.optional(),
     audio: ToolsMediaAudioSchema.optional(),
-    video: ToolsMediaCapabilitySchema.optional(),
+    video: ToolsMediaCapabilitySchema.unwrap()
+      .extend({ frames: VideoFrameExtractionSchema.optional() })
+      .optional(),
   })
   .optional();
 const LinkModelSchema = z.strictObject({

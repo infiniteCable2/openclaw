@@ -101,6 +101,7 @@ import { createTerminalTool } from "./tools/terminal-tool.js";
 import { createThemeTool } from "./tools/theme-tool.js";
 import { createTtsTool } from "./tools/tts-tool.js";
 import { createVideoGenerateTool } from "./tools/video-generate-tool.js";
+import { createVideoInspectTool } from "./tools/video-inspect-tool.js";
 import { createWebFetchTool, createWebSearchTool } from "./tools/web-tools.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
 
@@ -244,6 +245,12 @@ export function createOpenClawTools(
         })
       : null;
   options?.recordToolPrepStage?.("openclaw-tools:image-tool");
+  const videoInspectTool = createVideoInspectTool({
+    ...options,
+    config: availabilityConfig ?? options?.config,
+    workspaceDir,
+    sandbox,
+  });
   const mediaGenerationToolOptions = {
     ...options,
     agentSessionKey: mediaGenerationAgentSessionKey,
@@ -627,6 +634,7 @@ export function createOpenClawTools(
     webSearchTool,
     webFetchTool,
     imageTool,
+    videoInspectTool,
     pdfTool,
   ].filter((tool): tool is AnyAgentTool => tool !== null && tool !== undefined);
   options?.recordToolPrepStage?.("openclaw-tools:core-tool-list");

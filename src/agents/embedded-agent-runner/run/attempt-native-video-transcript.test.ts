@@ -38,7 +38,6 @@ describe("native video transcript replay", () => {
           contentType: "video/mp4",
           sizeBytes: MP4.length,
           url: "media://inbound/history.mp4",
-          hydrationSuppressed: true,
         },
       ],
     });
@@ -61,6 +60,7 @@ describe("native video transcript replay", () => {
 
       const reopened = SessionManager.open(target, stateDir).buildSessionContext();
       const provider = await materializeProviderContext({
+        model: { input: ["text", "image", "video"] },
         context: { systemPrompt: "system", messages: convertToLlm(reopened.messages), tools: [] },
         workspaceDir: stateDir,
       });

@@ -212,6 +212,7 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
   ]),
   ...coreTools("media", { profiles: ["coding"], includeInOpenClawGroup: true }, [
     ["view_image", "Image understanding"],
+    ["video_inspect", "Inspect video metadata and selected frames"],
     ["image_generate", "Image generation"],
     ["music_generate", "Music generation"],
     ["video_generate", "Video generation"],

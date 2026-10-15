@@ -42,7 +42,7 @@ export {
   isGifMedia,
 } from "@openclaw/media-core/mime";
 export { resolveOutboundAttachmentFromUrl } from "../media/outbound-attachment.js";
-export { encodePngRgba, fillPixel } from "../media/png-encode.ts";
+export { encodePngRgba, encodePngRgbaAsync, fillPixel } from "../media/png-encode.ts";
 export { renderQrPngBase64, renderQrPngDataUrl, writeQrPngTempFile } from "../media/qr-image.ts";
 export { renderQrTerminal } from "../media/qr-terminal.ts";
 

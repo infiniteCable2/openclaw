@@ -6,6 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { MeetingRealtimeAudioTransport } from "openclaw/plugin-sdk/meeting-runtime";
+import {
+  consumeMatrixRtcVideo,
+  resolveMatrixRtcVideoLimits,
+  type MatrixRtcVideoFrame,
+  type MatrixRtcVideoOptions,
+} from "./rtc-video.js";
 
 const CONTROL_LINE_LIMIT = 128 * 1024;
 const START_TIMEOUT_MS = 15_000;
@@ -23,7 +29,7 @@ export type MatrixRtcMediaKey = {
 };
 
 type ControlEvent =
-  | { type: "ready"; output_gate: boolean; remote_audio_ready?: boolean }
+  | { type: "ready"; output_gate: boolean; remote_audio_ready?: boolean; video_frames?: boolean }
   | { type: "connected" }
   | { type: "remote_audio_ready" }
   | { type: "output_cleared"; generation: number }
@@ -125,6 +131,10 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #control: net.Socket;
   readonly #tempDir: string;
+  readonly #videoSocket?: net.Socket;
+  readonly #videoOptions?: MatrixRtcVideoOptions;
+  #videoTask?: Promise<void>;
+  #videoStarted = false;
   #controlBuffer = Buffer.alloc(0);
   #events: ControlEvent[] = [];
   #eventWaiters: Array<{
@@ -145,10 +155,20 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     child: ChildProcessWithoutNullStreams;
     control: net.Socket;
     tempDir: string;
+    videoSocket?: net.Socket;
+    video?: MatrixRtcVideoOptions;
   }) {
     this.#child = params.child;
     this.#control = params.control;
     this.#tempDir = params.tempDir;
+    this.#videoSocket = params.videoSocket;
+    this.#videoOptions = params.video;
+    this.#videoSocket?.pause();
+    this.#videoSocket?.on("error", () => {
+      if (!this.#stopping && !this.#stopped) {
+        this.#markFatal();
+      }
+    });
     this.#child.stderr.on("data", () => {});
     this.#child.once("error", () => this.#markFatal());
     this.#child.once("exit", () => {
@@ -279,6 +299,26 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     this.#child.stdout.resume();
   }
 
+  startVideoInput(onFrame: (frame: MatrixRtcVideoFrame) => void): void {
+    if (!this.#videoSocket || this.#videoOptions?.enabled !== true) {
+      return;
+    }
+    if (this.#videoStarted) {
+      throw new Error("MatrixRTC video input already started");
+    }
+    this.#videoStarted = true;
+    this.#videoTask = consumeMatrixRtcVideo({
+      source: this.#videoSocket,
+      options: this.#videoOptions,
+      isCurrent: () => !this.#stopping && !this.#stopped && !this.#fatal,
+      onFrame,
+    }).catch(() => {
+      if (!this.#stopping && !this.#stopped) {
+        this.#markFatal();
+      }
+    });
+  }
+
   async writeOutput(audio: Buffer): Promise<void> {
     if (this.#fatal || this.#stopped || !this.#child.stdin.writable) {
       throw new Error("MatrixRTC media output is unavailable");
@@ -381,12 +421,15 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
         }
       }
     } finally {
+      this.#videoSocket?.destroy();
       this.#stopped = true;
       this.#stopping = false;
     }
   }
 
   async dispose(): Promise<void> {
+    this.#videoSocket?.destroy();
+    await this.#videoTask;
     this.#control.destroy();
     await rm(this.#tempDir, { recursive: true, force: true });
   }
@@ -399,28 +442,50 @@ export async function createMatrixRtcMediaTransport(params: {
   allowedRemoteIdentity: string;
   initialKeys: MatrixRtcMediaKey[];
   requireRemoteAudioReady?: boolean;
+  video?: MatrixRtcVideoOptions;
 }): Promise<NativeMatrixRtcAudioTransport> {
   await validateMediaBridgeCommand(params.command);
+  const video =
+    params.video?.enabled === true ? resolveMatrixRtcVideoLimits(params.video) : undefined;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-matrix-rtc-"));
   await chmod(tempDir, 0o700);
   const socketPath = path.join(tempDir, `${randomUUID().slice(0, 12)}.sock`);
+  const videoSocketPath = video ? path.join(tempDir, "video.sock") : undefined;
   const startup = new AbortController();
   const onChildError = () => startup.abort(new Error("MatrixRTC media bridge failed to start"));
   let child: ChildProcessWithoutNullStreams | undefined;
   let control: net.Socket | undefined;
+  let videoSocket: net.Socket | undefined;
   let transport: NativeMatrixRtcAudioTransport | undefined;
   try {
-    child = spawn(params.command, ["--control-socket", socketPath], {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    child = spawn(
+      params.command,
+      [
+        "--control-socket",
+        socketPath,
+        ...(videoSocketPath ? ["--video-socket", videoSocketPath] : []),
+      ],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
     // Spawn errors are asynchronous and can arrive before the socket exists.
     // Transfer error ownership only once the transport has installed its listener.
     child.on("error", onChildError);
     child.stdout.pause();
     control = await connectControlSocket(socketPath, child, startup.signal);
+    if (videoSocketPath) {
+      videoSocket = await connectControlSocket(videoSocketPath, child, startup.signal);
+      videoSocket.pause();
+    }
     startup.signal.throwIfAborted();
-    transport = new NativeMatrixRtcAudioTransport({ child, control, tempDir });
+    transport = new NativeMatrixRtcAudioTransport({
+      child,
+      control,
+      tempDir,
+      ...(videoSocket ? { videoSocket, video: params.video } : {}),
+    });
     child.off("error", onChildError);
     const ready = await transport.waitForControlEvent("ready");
     if (ready.type !== "ready" || !ready.output_gate) {
@@ -429,6 +494,9 @@ export async function createMatrixRtcMediaTransport(params: {
     if (params.requireRemoteAudioReady && ready.remote_audio_ready !== true) {
       throw new Error("MatrixRTC media bridge does not report remote audio readiness");
     }
+    if (video && ready.type === "ready" && ready.video_frames !== true) {
+      throw new Error("MatrixRTC media bridge does not support video frame input");
+    }
     transport.sendControl({
       type: "start",
       url: params.url,
@@ -436,6 +504,15 @@ export async function createMatrixRtcMediaTransport(params: {
       encrypted: true,
       allowed_remote_identities: [params.allowedRemoteIdentity],
       initial_keys: params.initialKeys.map(wireKey),
+      ...(video
+        ? {
+            video: {
+              interval_ms: video.intervalMs,
+              max_dimension: video.maxSourceDimension,
+              max_bytes: video.maxSourceBytes,
+            },
+          }
+        : {}),
     });
     await transport.waitForControlEvent("connected");
     return transport;
@@ -452,6 +529,7 @@ export async function createMatrixRtcMediaTransport(params: {
         await transport.dispose();
       } else {
         control?.destroy();
+        videoSocket?.destroy();
         await rm(tempDir, { recursive: true, force: true });
       }
     }

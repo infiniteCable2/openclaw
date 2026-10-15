@@ -19,8 +19,11 @@ export function bindHarnessContextMedia(params: {
     workspaceDir: attempt.sandbox?.enabled ? attempt.sandbox.workspaceDir : attempt.workspaceDir,
     agentWorkspaceDir: attempt.workspaceDir,
     modelInput,
+    signal: attempt.abortSignal,
     agentId: attempt.agentId,
     channelId: attempt.messageChannel ?? attempt.messageProvider,
+    sessionKey: attempt.sessionKey,
+    chatType: attempt.chatType,
     accountId: attempt.agentAccountId,
     ...(attempt.sandbox?.enabled && attempt.sandbox.fsBridge
       ? {

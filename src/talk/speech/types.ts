@@ -83,12 +83,14 @@ export type SpeechSessionConfig = {
   providers: Record<string, Record<string, unknown>>;
   responseStreaming?: "off" | "sentence";
   waitingAudio?: SpeechWaitingAudioConfig;
+  video?: import("../../config/zod-schema.media-frames.js").SpeechVideoConfig;
 };
 
 type SpeechAgentControlOptions = {
   mode?: RealtimeVoiceAgentControlMode;
   signal?: AbortSignal;
   assertCurrent?: () => void;
+  images?: import("../../llm/types.js").ImageContent[];
 };
 type SpeechAgentRunControl = (
   text: string,
@@ -96,10 +98,22 @@ type SpeechAgentRunControl = (
   options?: SpeechAgentControlOptions,
 ) => Promise<RealtimeVoiceAgentControlResult>;
 
+export type SpeechActiveConsult = {
+  control?: SpeechAgentRunControl;
+  admissions: Promise<void>;
+  adoptedGeneration: number;
+  unconfirmed: boolean;
+  followupOnly: boolean;
+  question: string;
+  releaseVideo: Set<() => void>;
+};
+
 export type SpeechAgentConsultParams = {
   sessionId: string;
   requesterSessionKey?: string;
   args: unknown;
+  images?: import("../../llm/types.js").ImageContent[];
+  toolBindings?: Readonly<Record<string, unknown>>;
   transcript: RealtimeVoiceAgentConsultTranscriptEntry[];
   abortSignal?: AbortSignal;
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;

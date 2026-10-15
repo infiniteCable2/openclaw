@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ALL_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import type { SpeechWaitingAudioConfig } from "../talk/speech/waiting-audio.js";
+import { SpeechVideoSchema } from "./zod-schema.media-frames.js";
 
 const TalkSpeechWaitingAudioSchema = z.strictObject({
   filePath: z.string().trim().min(1),
@@ -62,6 +63,7 @@ const TalkSpeechAgentProfileSchema = z
   .strictObject({
     responseStreaming: z.enum(["off", "sentence"]).optional(),
     speakCommentary: z.boolean().optional(),
+    video: SpeechVideoSchema.optional(),
     agentOverrides: TalkSpeechAgentOverridesSchema.optional(),
     expression: z
       .strictObject({

@@ -11,6 +11,7 @@ type MessageTransform = (
   model: Parameters<StreamFn>[0],
 ) => AgentMessage[];
 type ProviderContextMaterializer = (input: {
+  model: Parameters<StreamFn>[0];
   context: Parameters<StreamFn>[1];
   signal?: AbortSignal;
 }) => Promise<ProviderContext>;
@@ -44,6 +45,7 @@ export function wrapStreamFnWithMessageTransform(
       }
       options?.signal?.throwIfAborted();
       return await materializeProviderContext({
+        model,
         context: captured,
         signal: options?.signal,
       });

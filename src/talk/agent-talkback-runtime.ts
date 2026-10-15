@@ -18,7 +18,7 @@ export type RealtimeVoiceAgentTalkbackResult = {
 
 export type RealtimeVoiceAgentTalkbackQueue = {
   close(): void;
-  enqueue(question: string, metadata?: unknown): void;
+  enqueue(question: string, metadata?: unknown): boolean;
   isIdle(): boolean;
 };
 
@@ -30,6 +30,11 @@ export type RealtimeVoiceAgentTalkbackQueueParams = {
   logPrefix: string;
   responseStyle: string;
   fallbackText: string;
+  /** Release ingress-owned media that was queued but never admitted to a consult. */
+  onDiscardMetadata?: (metadata: unknown) => void;
+  /** A trusted ingress can preserve native text batching while combining its media snapshots. */
+  metadataMergeKey?: (metadata: unknown) => unknown;
+  mergeMetadata?: (current: unknown, next: unknown) => unknown;
   /** Delegates a batched question to OpenClaw and respects the abort signal. */
   consult: (args: {
     question: string;
@@ -66,7 +71,13 @@ export function createRealtimeVoiceAgentTalkbackQueue(
 
   const appendPendingQuestion = (next: PendingQuestion): boolean => {
     const current = pendingQuestions.at(-1);
-    const mergeWithCurrent = current !== undefined && Object.is(current.metadata, next.metadata);
+    const currentKey = current && params.metadataMergeKey?.(current.metadata);
+    const mergeMetadata =
+      currentKey !== undefined && Object.is(currentKey, params.metadataMergeKey?.(next.metadata));
+    const mergeWithCurrent =
+      current !== undefined &&
+      (Object.is(current.metadata, next.metadata) ||
+        (mergeMetadata && params.mergeMetadata !== undefined));
     const addedChars = next.question.length + (mergeWithCurrent ? 1 : 0);
     const exceedsQuestionLimit =
       !mergeWithCurrent && pendingQuestions.length >= MAX_PENDING_QUESTIONS;
@@ -84,6 +95,9 @@ export function createRealtimeVoiceAgentTalkbackQueue(
       // Metadata identity represents the caller/context lane; merge only when the
       // same lane produced adjacent fragments.
       current.question = `${current.question}\n${next.question}`;
+      if (mergeMetadata) {
+        current.metadata = params.mergeMetadata?.(current.metadata, next.metadata);
+      }
     } else {
       pendingQuestions.push(next);
     }
@@ -104,6 +118,9 @@ export function createRealtimeVoiceAgentTalkbackQueue(
   };
 
   const clearPendingQuestions = () => {
+    for (const pending of pendingQuestions) {
+      params.onDiscardMetadata?.(pending.metadata);
+    }
     pendingQuestions = [];
     pendingQuestionChars = 0;
     overflowWarned = false;
@@ -184,19 +201,20 @@ export function createRealtimeVoiceAgentTalkbackQueue(
     enqueue: (question, metadata) => {
       const trimmed = question.trim();
       if (!trimmed || shouldStop()) {
-        return;
+        return false;
       }
       if (active) {
-        if (appendPendingQuestion({ question: trimmed, metadata })) {
+        const accepted = appendPendingQuestion({ question: trimmed, metadata });
+        if (accepted) {
           params.logger.info(
             `${params.logPrefix} consult queued: chars=${trimmed.length} queued=${pendingQuestions.length}`,
           );
         }
         clearDebounceTimer();
-        return;
+        return accepted;
       }
       if (!appendPendingQuestion({ question: trimmed, metadata })) {
-        return;
+        return false;
       }
       clearDebounceTimer();
       // Debounce short transcript bursts so partial ASR fragments become a
@@ -209,6 +227,7 @@ export function createRealtimeVoiceAgentTalkbackQueue(
         }
       }, params.debounceMs);
       debounceTimer.unref?.();
+      return true;
     },
   };
 }

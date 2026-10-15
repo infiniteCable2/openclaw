@@ -219,6 +219,54 @@ realtime Talk. See [Talk realtime migration](/gateway/doctor/config-migrations#t
 
 ## Notes
 
+### Server-owned live video sampling
+
+An admitted agent can opt in to sampled video on supported server-owned speech
+transports with `talk.speech.agentProfiles.<agentId>.video`. Matrix RTC consumes
+this same profile; it has no independent video policy or agent loop.
+
+```json5
+{
+  talk: {
+    speech: {
+      agentProfiles: {
+        reader: {
+          video: {
+            enabled: true,
+            intervalMs: 1000,
+            retentionMs: 30000,
+            selectedRetentionMs: 900000,
+            maxBufferBytes: 33554432,
+            maxFramesPerTurn: 3,
+            preview: { profile: "preview", maxSide: 960, targetBytes: 150000 },
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+Capture cadence does not determine model traffic. At accepted speech input the
+session selects a bounded image set, including an early view reserved at speech
+onset, and sends genuine image parts with that exact native agent input. Follow-up
+speech carries its own snapshots through native steering; adjacent transcript
+fragments retain normal batching. Video and PCM use independent bounded transport
+queues so a slow image consumer cannot block audio capture.
+
+Unselected source frames expire from the rolling buffer. Selected sources remain
+pinned while their input is queued or processed, then have a bounded follow-up
+retention window. All retained sources share the session byte cap: pinned sources
+are not evicted to admit new frames. Unpinned sources can be evicted under byte
+pressure before their time limit; closing the session releases all sources.
+Retention is in-memory, session-local and not restart-durable. Expired frame
+identities are never substituted with newer pictures.
+
+This is sampled visual context, not continuous video understanding or recording.
+It does not change direct browser realtime-provider media behavior. The route
+planner supports separate source/target capabilities, but this server-owned live
+route still uses existing STT, the native agent loop and TTS.
+
 - Native speech recognition requires the platform's speech and microphone access. Standalone Watch realtime requires microphone access, not local speech recognition.
 - Native Talk uses the active Gateway session and only falls back to history polling when response events are unavailable.
 - The gateway resolves Talk playback through `talk.speak` using the active Talk provider. Android falls back to local system TTS only when that RPC is unavailable.

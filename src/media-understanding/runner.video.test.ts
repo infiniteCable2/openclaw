@@ -60,6 +60,21 @@ async function runVideo(
 }
 
 describe("runCapability video", () => {
+  it("defers opted-in frames to actual prepared-model hydration without a description call", async () => {
+    const describeVideo = vi.fn(async () => ({ text: "unused", model: "unused" }));
+    const cfg: OpenClawConfig = {
+      ...videoConfig(),
+      tools: { media: { video: { enabled: true, frames: { enabled: true, maxFrames: 3 } } } },
+    };
+    const result = await runVideo({ id: "moonshot", capabilities: ["video"], describeVideo }, cfg);
+    expect(describeVideo).not.toHaveBeenCalled();
+    expect(result.outputs).toEqual([]);
+    expect(result.decision).toMatchObject({
+      outcome: "skipped",
+      attachmentDispositions: { 0: { kind: "deferred-to-native-media" } },
+    });
+  });
+
   it("truncates provider output without splitting a boundary emoji", async () => {
     const prefix = "v".repeat(79);
     const result = await runVideo(

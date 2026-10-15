@@ -63,7 +63,6 @@ describe("direct provider context handoff", () => {
               contentType: "application/octet-stream",
               sizeBytes: MP4.length,
               url: "media://inbound/old.mp4",
-              hydrationSuppressed: true,
             },
             { kind: "image", contentType: "image/png" },
           ],
@@ -91,7 +90,6 @@ describe("direct provider context handoff", () => {
             contentType: "video/mp4",
             sizeBytes: MP4.length,
             url: "media://inbound/recent.mp4",
-            hydrationSuppressed: true,
           },
           { kind: "image", contentType: "image/png" },
         ],
@@ -144,7 +142,7 @@ describe("direct provider context handoff", () => {
         id: "canonical",
         provider: "direct",
         api: "test",
-        input: ["text", "image"],
+        input: ["text", "image", "video"],
       } as Parameters<StreamFn>[0];
 
       const firstCandidate = vi.fn<StreamFn>((_model, firstContext, options) => {
@@ -233,6 +231,7 @@ describe("direct provider context handoff", () => {
       },
     };
     const resolving = materializeProviderContext({
+      model: { input: ["text", "video"] },
       context: { systemPrompt: "system", messages: [current], tools: [] },
       signal: controller.signal,
       workspaceDir: "/workspace",
@@ -280,6 +279,7 @@ describe("direct provider context handoff", () => {
       },
     };
     const resolved = await materializeProviderContext({
+      model: { input: ["text", "video"] },
       context: { systemPrompt: "system", messages: [current], tools: [] },
       workspaceDir: "/workspace",
       sandbox: { root: "/workspace", bridge },
@@ -310,7 +310,7 @@ describe("direct provider context handoff", () => {
       },
     };
     const context = { systemPrompt: "system", messages: [historical], tools: [] };
-    const model = { id: "test", provider: "test", api: "test", input: ["text", "image"] };
+    const model = { id: "test", provider: "test", api: "test", input: ["text", "image", "video"] };
     const nonconsumer = vi.fn<StreamFn>(() => createAssistantMessageEventStream());
     void wrapStreamFnWithMessageTransform(nonconsumer, (messages) => messages)(
       model as Parameters<StreamFn>[0],

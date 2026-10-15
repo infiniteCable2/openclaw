@@ -220,6 +220,7 @@ describe("structured prompt media replay", () => {
 
     try {
       const result = await materializeProviderContext({
+        model: { input: ["text", "image"] },
         context: { messages: [message] },
         workspaceDir,
       });

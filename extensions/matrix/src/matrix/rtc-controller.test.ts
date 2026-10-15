@@ -36,11 +36,17 @@ const mocks = vi.hoisted(() => ({
     url: "wss://rtc.example.test",
     token: "test-token",
   })),
-  createMatrixRtcMediaTransport: vi.fn(async () => ({
-    sendKey: vi.fn(),
-    stop: vi.fn(async () => undefined),
-    dispose: vi.fn(async () => undefined),
-  })),
+  createMatrixRtcMediaTransport: vi.fn(
+    async (
+      _params: Parameters<
+        typeof import("./rtc-media-transport.js").createMatrixRtcMediaTransport
+      >[0],
+    ) => ({
+      sendKey: vi.fn(),
+      stop: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined),
+    }),
+  ),
 }));
 
 vi.mock("openclaw/plugin-sdk/meeting-runtime", async (importOriginal) => ({
@@ -84,6 +90,7 @@ function createHarness(
     remoteKeyMemberId?: string;
     greeting?: boolean;
     greetingOnFailure?: "continue" | "reject";
+    video?: boolean;
   } = {},
 ) {
   const emitter = new EventEmitter();
@@ -182,7 +189,14 @@ function createHarness(
       matrixRtc,
       dms: { isDm: vi.fn(() => true) },
     } as never,
-    cfg: {} as never,
+    cfg:
+      options.video === undefined
+        ? {}
+        : {
+            talk: {
+              speech: { agentProfiles: { example_owner: { video: { enabled: options.video } } } },
+            },
+          },
     accountConfig: {} as never,
     accountId: "default",
     config: {
@@ -284,6 +298,24 @@ describe("registerMatrixRtcController", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  it.each([undefined, false, true])(
+    "uses only the admitted agent's central video opt-in (%s)",
+    async (video) => {
+      const harness = createHarness("matrix_2_0", { video });
+      harness.setRoomKnown(true);
+      harness.session.memberships = [harness.remoteMembership];
+      harness.managerEmitter.emit("session_started", roomId, harness.session);
+      await flushPromises();
+      const transport = mocks.createMatrixRtcMediaTransport.mock.calls[0]?.[0];
+      const engine = mocks.startMeetingAgentRealtimeEngine.mock.calls[0]?.[0];
+      expect(transport).toBeDefined();
+      expect(engine).toBeDefined();
+      expect(transport?.video?.enabled === true).toBe(video === true);
+      expect(engine?.config.realtime.video).toEqual(transport?.video);
+      await harness.controller.stop();
+    },
+  );
 
   it("prepares an agent-authored greeting before joining and plays it in the same call session", async () => {
     const harness = createHarness("matrix_2_0", { greeting: true });

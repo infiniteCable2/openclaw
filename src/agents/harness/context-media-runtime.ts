@@ -4,8 +4,15 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ImageContent } from "../../llm/types.js";
 import { prepareFileContextFromMedia } from "../../media-understanding/file-context.js";
 import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
-import { isImageMediaFact, readPersistedMediaFacts } from "../../media/media-facts.js";
-import { detectAndLoadPromptImages } from "../embedded-agent-runner/run/images.js";
+import {
+  isImageMediaFact,
+  isVideoMediaFact,
+  readPersistedMediaFacts,
+} from "../../media/media-facts.js";
+import {
+  detectAndLoadPromptImages,
+  materializePromptVideoFrames,
+} from "../embedded-agent-runner/run/images.js";
 import {
   readPersistedImageBlockFactIndexes,
   readPersistedMediaImageLayout,
@@ -26,9 +33,12 @@ export async function prepareHarnessContextMedia(params: {
   modelInput: string[];
   agentId?: string;
   channelId?: string;
+  sessionKey?: string;
+  chatType?: string;
   accountId?: string;
   sandbox?: { root: string; bridge: SandboxFsBridge };
   assertCurrent: () => void;
+  signal?: AbortSignal;
 }): Promise<{ text?: string; images: ImageContent[] }> {
   params.assertCurrent();
   if (params.message.role !== "user" || params.maxChars <= 0) {
@@ -90,10 +100,47 @@ export async function prepareHarnessContextMedia(params: {
     ...limits,
   });
   params.assertCurrent();
-  const entries = rawImages.images.map((image, index) => ({
-    image,
-    sourceIndex: rawImages.imageFactIndexes[index] ?? media.length + index,
-  }));
+  // Previously hydrated video images belong to the frame converter below. Keep
+  // their source ownership rather than appending them and decoding the same fact again.
+  const entries = rawImages.images.flatMap((image, index) => {
+    const factIndex = rawImages.imageFactIndexes[index];
+    const fact = factIndex == null ? undefined : media[factIndex];
+    return fact && isVideoMediaFact(fact)
+      ? []
+      : [{ image, sourceIndex: factIndex ?? media.length + index }];
+  });
+  const videoFrames = await materializePromptVideoFrames({
+    media,
+    existingContent: Array.isArray(message.content) ? message.content : undefined,
+    existingImages: rawImages.images,
+    existingImageFactIndexes: rawImages.imageFactIndexes,
+    workspaceDir: params.workspaceDir,
+    agentWorkspaceDir: params.agentWorkspaceDir,
+    model: { input: params.modelInput },
+    mediaConfig: params.config?.tools?.media,
+    assertCurrent: params.assertCurrent,
+    signal: params.signal,
+    sessionKey: params.sessionKey,
+    channelId: params.channelId,
+    chatType: params.chatType,
+    workspaceOnly,
+    localRoots: workspaceOnly
+      ? undefined
+      : getAgentScopedMediaLocalRoots(params.config ?? {}, params.agentId, params.workspaceDir),
+    sandbox: params.sandbox,
+    ...limits,
+  });
+  params.assertCurrent();
+  text.push(...videoFrames.content.flatMap((block) => (block.type === "text" ? [block.text] : [])));
+  let videoImageIndex = 0;
+  for (const block of videoFrames.content) {
+    if (block.type === "image") {
+      entries.push({
+        image: block,
+        sourceIndex: videoFrames.imageFactIndexes[videoImageIndex++] ?? media.length,
+      });
+    }
+  }
   // The loader counts failed media facts; inline-only blocks have no fact to
   // charge, so include their sanitation drops in the visible disposition too.
   const unownedInlineCount = inlineImages.filter(

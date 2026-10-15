@@ -294,7 +294,7 @@ export function installHistoryImagePruneContextTransform(
     };
     const prunedInput = prune(messages);
     const hydratedInput = mediaOptions
-      ? await hydratePromptMediaMessages(prunedInput, mediaOptions)
+      ? await hydratePromptMediaMessages(prunedInput, { ...mediaOptions, signal })
       : prunedInput;
     const transformed = originalTransformContext
       ? await originalTransformContext.call(agent, hydratedInput, signal)

@@ -182,6 +182,8 @@ async function consultMeetingAgent(
       spawnedBy: requesterSessionKey,
       contextMode: "fork",
       args: params.args,
+      images: params.images,
+      toolBindings: params.toolBindings,
       transcript: params.transcript,
       surface: params.surface.surface,
       userLabel: params.surface.userLabel,
@@ -246,6 +248,7 @@ async function consultMeetingAgent(
                   "In your next answer, consolidate still-relevant results from the preceding request with this new input. " +
                   "Respect corrections or cancellations; do not repeat completed tool actions just to repeat their results.",
                 text,
+                images: options?.images,
                 getToolAuthorityOverlay: () => {
                   if (!isCurrent(sessionId)) {
                     throw new Error("The active meeting consult is no longer current");

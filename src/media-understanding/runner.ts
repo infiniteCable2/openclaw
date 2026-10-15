@@ -654,6 +654,20 @@ export async function runCapability(params: {
     };
   }
 
+  // Opted-in frame conversion belongs to the eventual prepared model's input
+  // hydration. Do not spend a second provider call describing the same video
+  // during preflight; fallback/auth selection may still change that model.
+  if (capability === "video" && cfg.tools?.media?.video?.frames?.enabled === true) {
+    return {
+      outputs: [],
+      decision: await buildDecision(
+        "skipped",
+        selection.selected.map((item) => ({ attachmentIndex: item.index, attempts: [] })),
+        buildDispositions({ kind: "deferred-to-native-media" }, { kind: "not-selected" }),
+      ),
+    };
+  }
+
   // Skip image understanding when the primary model supports vision natively.
   // The image will be injected directly into the model context instead.
   if (

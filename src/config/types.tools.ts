@@ -51,7 +51,9 @@ export type MediaToolsConfig = {
   concurrency?: number;
   image?: MediaUnderstandingCapabilityConfig;
   audio?: MediaUnderstandingCapabilityConfig;
-  video?: MediaUnderstandingCapabilityConfig;
+  video?: MediaUnderstandingCapabilityConfig & {
+    frames?: import("./zod-schema.media-frames.js").VideoFrameExtractionConfig;
+  };
 };
 
 export type ToolProfileId = NonNullable<SchemaToolsConfig["profile"]>;

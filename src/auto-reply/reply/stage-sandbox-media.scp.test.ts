@@ -274,6 +274,7 @@ describe("stageSandboxMedia SCP", () => {
             });
             const replay = await materializeProviderContext({
               ...options,
+              model: { input: ["text", "image", "video"] },
               context: { systemPrompt: "system", tools: [], messages: [persisted] },
             });
             expect(replay.messages[0]?.content).toEqual(

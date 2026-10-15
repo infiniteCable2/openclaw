@@ -4,11 +4,17 @@ import type { SpeechAudioTransport } from "./transport.js";
 export function createSpeechSessionInput(transport: SpeechAudioTransport) {
   let starting: Promise<void> | undefined;
   return {
-    async start(onAudio: (audio: Buffer) => void, assertCurrent: () => void) {
+    async start(
+      onAudio: (audio: Buffer) => void,
+      assertCurrent: () => void,
+      startOtherInput?: () => void | Promise<void>,
+    ) {
       assertCurrent();
-      const acquisition = Promise.resolve().then(() => {
+      const acquisition = Promise.resolve().then(async () => {
         assertCurrent();
-        return transport.startInput(onAudio);
+        await transport.startInput(onAudio);
+        assertCurrent();
+        await startOtherInput?.();
       });
       starting = acquisition;
       try {

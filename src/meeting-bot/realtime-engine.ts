@@ -27,6 +27,7 @@ export type MeetingRealtimeEngineConfig = {
     introMessage?: string;
     responseStreaming?: "off" | "sentence";
     waitingAudio?: MeetingWaitingAudioConfig;
+    video?: import("../config/zod-schema.media-frames.js").SpeechVideoConfig;
     toolPolicy?: RealtimeVoiceAgentConsultToolPolicy;
     providers: Record<string, Record<string, unknown>>;
   };

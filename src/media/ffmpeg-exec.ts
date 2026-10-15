@@ -53,10 +53,15 @@ export function resolveFfmpegBin(): string {
   return requireSystemBin("ffmpeg");
 }
 
+/** Resolves ffprobe through the same trusted system-binary policy as ffmpeg. */
+export function resolveFfprobeBin(): string {
+  return requireSystemBin("ffprobe");
+}
+
 /** Runs ffprobe with optional stdin input. */
 export async function runFfprobe(args: string[], options?: MediaExecOptions): Promise<string> {
   const { stdout } = await runExec(
-    requireSystemBin("ffprobe"),
+    resolveFfprobeBin(),
     args,
     resolveExecOptions(MEDIA_FFPROBE_TIMEOUT_MS, options),
   );

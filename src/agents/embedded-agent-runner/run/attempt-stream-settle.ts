@@ -454,6 +454,10 @@ export async function prepareEmbeddedAttemptTransport(input: {
           const prepared = await materializeProviderContext({
             ...provider,
             context,
+            mediaConfig: attempt.config?.tools?.media,
+            channelId: attempt.messageChannel ?? attempt.messageProvider,
+            chatType: attempt.chatType,
+            sessionKey: attempt.sessionKey,
             workspaceDir: input.workspaceDir,
             agentWorkspaceDir: attempt.workspaceDir,
             workspaceOnly: input.workspaceOnly,

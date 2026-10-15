@@ -247,6 +247,60 @@ CLI entries require explicit `capabilities`; entries without valid capability ta
 
 ## Attachment policy
 
+### Video frames for the selected model
+
+Opt in to `tools.media.video.frames` to inspect uploaded video with the selected
+image-capable agent model, without choosing a separate video-description model:
+
+```json5
+{
+  tools: {
+    media: {
+      video: {
+        frames: {
+          enabled: true,
+          maxFrames: 3,
+          profile: "preview",
+          maxSide: 960,
+          targetBytes: 150000,
+        },
+      },
+    },
+  },
+}
+```
+
+The actual prepared model and adapter select native video when supported,
+otherwise sampled images when supported. Unsupported input produces a visible
+omission; it does not select another model. Video understanding scope, explicit
+disablement, attachment suppression, and `recording`/`relay` purposes still apply.
+Frame extraction replaces automatic video descriptions when opted in, preventing
+two independent model analyses of the same attachment.
+
+Preview defaults to JPEG within 150,000 bytes and a 960-pixel longest edge;
+detail defaults to 500,000 bytes and 1,920 pixels. The source profile returns a
+lossless decoded PNG at the received video resolution, subject to image safety
+limits. It cannot restore quality absent from the source. Original uploaded
+videos are not overwritten, so a later inspection can re-extract a different
+timestamp or rendition from the same retained source. Sampled frames carry seek
+coordinates in seconds, not a guarantee of an exact decoded presentation timestamp.
+
+Trusted system FFmpeg and FFprobe are required. Extraction accepts bounded
+MP4/MOV, Matroska/WebM and AVI buffers; it does not follow playlists, nested
+network resources or arbitrary decoder flags. Automatic extraction has a shared
+per-request frame budget (default three, maximum twelve) and does not repeatedly
+decode historical videos. An unavailable or expired source remains unavailable;
+the runtime must not claim it inspected that source.
+
+When the active model supports images and frame extraction is enabled,
+`video_inspect` exposes `info`, `overview`, and `frames` with explicit
+`timestampsSeconds`. It accepts accessible local, `file://`, and `media://`
+references under the same native filesystem/sandbox policy as `view_image`;
+it does not fetch arbitrary HTTP URLs. Rendition overrides (`profile`,
+`maxSide`, `targetBytes`) apply only to that inspection. Results carry actual
+image parts, not base64 text. This tool does not perform semantic video search
+or transcribe the video's audio track.
+
 Per-capability `attachments` controls which attachments are processed:
 
 <ParamField path="mode" type='"first" | "all"' default="first">
