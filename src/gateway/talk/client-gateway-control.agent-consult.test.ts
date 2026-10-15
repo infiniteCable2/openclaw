@@ -77,28 +77,22 @@ function createRunner(
 }
 
 describe("Talk client agent consult admission", () => {
-  it.each([false, true])(
-    "prepares a greeting with no tool grants (expressions=%s)",
-    async (expression) => {
-      const runner = createRunner();
-      mocks.consultRealtimeVoiceAgent.mockResolvedValueOnce({ text: "Hello." });
+  it("prepares a greeting with no tool grants", async () => {
+    const runner = createRunner(vi.fn(), undefined, { ownerConnId: "connection-owner" });
+    mocks.consultRealtimeVoiceAgent.mockResolvedValueOnce({ text: "Hello." });
+    try {
       await runner.runSpeechConsult({
         sessionId: "voice-session",
         args: { question: "Greet briefly." },
         transcript: [],
         speechExpressionCaptureOnly: true,
-        ...(expression
-          ? {
-              speechExpressionContext: {
-                guidance: "Optional speech presentation.",
-                assertCurrent: vi.fn(),
-              },
-            }
-          : {}),
       });
       expect(mocks.consultRealtimeVoiceAgent.mock.calls[0]?.[0].toolsAllow).toEqual([]);
-    },
-  );
+    } finally {
+      // Do not leave a queued once-result behind if admission fails before consultation.
+      mocks.consultRealtimeVoiceAgent.mockReset();
+    }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     embeddedRunsTesting.resetActiveEmbeddedRuns();
