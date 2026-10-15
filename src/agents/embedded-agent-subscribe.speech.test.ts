@@ -27,9 +27,11 @@ describe("native block speech delivery", () => {
     text.text = "Changed by a later provider update.";
     expect(captured?.content[0]).toMatchObject({ text: "First." });
     expect(captured?.content[0]).not.toBe(text);
-    expect(captured?.content[0].type === "text" && captured.content[0].openclawDelivery).toBe(
-      text.openclawDelivery,
-    );
+    const capturedText = captured?.content[0];
+    if (!capturedText || capturedText.type !== "text") {
+      throw new Error("Expected the captured producer text block");
+    }
+    expect(capturedText.openclawDelivery).toBe(text.openclawDelivery);
   });
 
   it.each([undefined, "joyful"])(
