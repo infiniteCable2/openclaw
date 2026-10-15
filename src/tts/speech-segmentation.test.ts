@@ -12,6 +12,21 @@ const profile: SpeechSegmentationProfile = {
 };
 
 describe("native model-specific speech segmentation", () => {
+  it("does not turn emotion changes into extra generation boundaries", () => {
+    const text = "Ich bin hier. Es ist still. Jetzt geht es weiter.";
+    const kitten = { ...profile, minChars: 130 };
+    expect(
+      prepareSpeechSegments(text, kitten, {
+        emotion: "joyful",
+        parts: [
+          { text: "Ich bin hier. " },
+          { text: "Es ist still. ", emotion: "sad" },
+          { text: "Jetzt geht es weiter.", emotion: "joyful" },
+        ],
+      }),
+    ).toEqual(prepareSpeechSegments(text, kitten));
+  });
+
   it("preserves established paragraph units and pauses for a zero-minimum backend", () => {
     expect(prepareSpeechSegments("Hallo Welt.\n\nEin zweiter Absatz.", profile)).toEqual([
       { text: "Hallo Welt.", pauseMs: 320 },

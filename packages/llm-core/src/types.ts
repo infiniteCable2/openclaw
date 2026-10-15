@@ -492,7 +492,8 @@ export function setRuntimeContextRetention(
 /** Speech-only presentation; text parts project exactly to the authoritative plain speech text. */
 export type SpeechExpression = {
   emotion?: string;
-  parts: Array<{ text: string; emphasis?: boolean } | { event: string }>;
+  /** A text-part emotion takes effect there and persists until the next explicit change. */
+  parts: Array<{ text: string; emotion?: string; emphasis?: boolean } | { event: string }>;
 };
 
 export type AssistantDeliveryTtsFacts = {

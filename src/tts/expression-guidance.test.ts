@@ -25,6 +25,9 @@ describe("admitted speech expression guidance", () => {
     expect(guidance).toContain("Do not write Kitten tags");
     expect(guidance).toContain("Speech controls are optional");
     expect(guidance).toContain("plain utterances without expression controls");
+    expect(guidance).toContain("omitted emotion keeps the active value");
+    expect(guidance).toContain("repeats the active emotion for each sentence");
+    expect(guidance).not.toContain("Send successive utterances to change emotion");
     expect(guidance).not.toContain("Include a structured plan even for a neutral utterance");
     expect(capabilities).toEqual(original);
   });

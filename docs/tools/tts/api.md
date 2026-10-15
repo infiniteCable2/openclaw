@@ -75,6 +75,29 @@ Enabling expression support does not require an expression on every reply. Omit
 plain replies retain their configured automatic TTS behavior and clean text
 projection. Explicit expression requests still require valid, supported controls.
 
+The top-level `emotion` initializes the utterance. A text part can set its own
+`emotion`, changing the active emotion from that part onward until another part
+explicitly changes it. Omitting a part's emotion keeps the active value; it does
+not reset it. Group consecutive sentences with the same emotion in one part:
+
+```json
+{
+  "emotion": "joyful",
+  "parts": [
+    { "text": "You are here. We have time. " },
+    { "text": "Let us reflect. Take a moment. ", "emotion": "sad" },
+    { "text": "Now we can continue.", "emotion": "joyful" }
+  ]
+}
+```
+
+Place emotion changes at sentence boundaries. The speech adapter renders the
+active emotion at each sentence and generation-unit start using its backend's
+syntax. These are presentation annotations, not additional message sends or
+generation boundaries. The normal chunker, pauses, cancellation, and clean text
+projection retain their existing owners. Only declared provider emotion values
+are valid; omission does not invent a universal neutral/reset identifier.
+
 This structured-send contract does **not** by itself make automatic final answers,
 live commentary, or prepared greetings produce expressions. Those paths retain
 their existing plain-text behavior until their native producer supplies the same

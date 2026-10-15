@@ -43,12 +43,18 @@ export function parseSpeechExpression(value: unknown, plainText: string): Speech
       return { event: requireLabel(part.event) };
     }
     if (
-      Object.keys(part).some((key) => key !== "text" && key !== "emphasis") ||
+      Object.keys(part).some((key) => key !== "text" && key !== "emphasis" && key !== "emotion") ||
       typeof part.text !== "string" ||
       part.text.length === 0 ||
       (part.emphasis !== undefined && typeof part.emphasis !== "boolean")
     ) {
-      throw new Error("Speech text parts require nonempty text and optional boolean emphasis");
+      throw new Error(
+        "Speech text parts require nonempty text and optional emotion/boolean emphasis",
+      );
+    }
+    const partEmotion = part.emotion === undefined ? undefined : requireLabel(part.emotion);
+    if (partEmotion) {
+      controls += 1;
     }
     if (part.emphasis === true) {
       if (part.text.length > 80) {
@@ -57,7 +63,11 @@ export function parseSpeechExpression(value: unknown, plainText: string): Speech
       controls += 1;
     }
     projection += part.text;
-    return { text: part.text, ...(part.emphasis === undefined ? {} : { emphasis: part.emphasis }) };
+    return {
+      text: part.text,
+      ...(partEmotion ? { emotion: partEmotion } : {}),
+      ...(part.emphasis === undefined ? {} : { emphasis: part.emphasis }),
+    };
   });
   if (projection.length === 0 || projection.length > MAX_TEXT || controls > MAX_CONTROLS) {
     throw new Error("Speech expression exceeds its text or control budget");
@@ -104,6 +114,9 @@ export function assertSpeechExpressionSupported(
     throw new Error("Selected speech provider does not support the requested emotion");
   }
   for (const part of expression.parts) {
+    if ("text" in part && part.emotion && !capabilities.emotions.includes(part.emotion)) {
+      throw new Error("Selected speech provider does not support the requested emotion");
+    }
     if ("event" in part && !capabilities.vocalEvents.includes(part.event)) {
       throw new Error("Selected speech provider does not support the requested vocal event");
     }

@@ -49,6 +49,36 @@ describe("structured speech expression admission", () => {
     expect(() => parseSpeechExpression({ parts: [{ text: oversized }] }, oversized)).toThrow();
   });
 
+  it("admits supported emotion changes without changing the plain projection", () => {
+    const changing = {
+      emotion: "joyful",
+      parts: [
+        { text: "Hello. " },
+        { text: "A quiet moment. ", emotion: "tender" },
+        { text: "Still here." },
+      ],
+    };
+    const admitted = parseSpeechExpression(changing, "Hello. A quiet moment. Still here.");
+    expect(admitted).toEqual(changing);
+    expect(() => assertSpeechExpressionSupported(admitted, capabilities)).toThrow("emotion");
+    expect(() =>
+      assertSpeechExpressionSupported(admitted, {
+        ...capabilities,
+        emotions: ["joyful", "tender"],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      parseSpeechExpression({ parts: [{ text: "Hello.", emotion: "[joyful]" }] }, "Hello."),
+    ).toThrow();
+  });
+
+  it("counts part-level emotion declarations against the shared control budget", () => {
+    const parts = Array.from({ length: 65 }, () => ({ text: "Hi. ", emotion: "joyful" }));
+    expect(() => parseSpeechExpression({ parts }, parts.map((part) => part.text).join(""))).toThrow(
+      "budget",
+    );
+  });
+
   it.each([
     undefined,
     { ...capabilities, emotions: [] },

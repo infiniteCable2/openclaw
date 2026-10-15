@@ -155,6 +155,14 @@ export const MESSAGE_TOOL_SPEECH_PROPERTIES = {
             Type.Object(
               {
                 text: Type.String({ minLength: 1 }),
+                emotion: Type.Optional(
+                  Type.String({
+                    minLength: 1,
+                    maxLength: 64,
+                    description:
+                      "Changes the active speech emotion here until the next explicit change.",
+                  }),
+                ),
                 emphasis: Type.Optional(Type.Boolean()),
               },
               { additionalProperties: false },
