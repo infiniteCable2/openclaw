@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MediaToolsConfig } from "../../../config/types.tools.js";
-import type { ImageContent } from "../../../llm/types.js";
+import type { ImageContent, UserMessage } from "../../../llm/types.js";
 import type { MediaFact } from "../../../media/media-facts.js";
 import { prepareHarnessContextMedia } from "../../harness/context-media-runtime.js";
 import type { AgentMessage } from "../../runtime/index.js";
@@ -36,8 +36,18 @@ vi.mock("../../tool-images.js", () => ({
 
 const mediaConfig: MediaToolsConfig = { video: { frames: { enabled: true, maxFrames: 3 } } };
 const options = { workspaceDir: "/workspace", model: { input: ["text", "image"] }, mediaConfig };
-function message(media: MediaFact[], text = "inspect"): AgentMessage {
-  return { role: "user", content: text, timestamp: 1, __openclaw: { media } } as AgentMessage;
+function message(media: MediaFact[], text = "inspect"): UserMessage {
+  const user: UserMessage = { role: "user", content: text, timestamp: 1 };
+  return Object.assign(user, { __openclaw: { media } });
+}
+
+function userMessages(messages: AgentMessage[]): UserMessage[] {
+  return messages.map((entry) => {
+    if (entry.role !== "user") {
+      throw new Error("Video hydration must preserve the fixture's user-message role");
+    }
+    return entry;
+  });
 }
 const video: MediaFact = { kind: "video", contentType: "video/mp4", path: "/workspace/clip.mp4" };
 
@@ -65,7 +75,7 @@ describe("prepared-model video frame hydration", () => {
   it("uses true images with timestamps without rewriting the source and reuses them at provider handoff", async () => {
     const original = message([video]);
     const serialized = JSON.stringify(original);
-    const hydrated = await hydratePromptMediaMessages([original], options);
+    const hydrated = userMessages(await hydratePromptMediaMessages([original], options));
     const content = hydrated[0]?.content;
     expect(Array.isArray(content) && content.filter((part) => part.type === "image")).toHaveLength(
       3,
@@ -157,7 +167,7 @@ describe("prepared-model video frame hydration", () => {
       message([video], "old"),
       message([video, { ...video, path: "/workspace/second.mp4" }], "current"),
     ];
-    const result = await hydratePromptMediaMessages(messages, options);
+    const result = userMessages(await hydratePromptMediaMessages(messages, options));
     expect(JSON.stringify(result[0])).toContain("historical attachment");
     const content = result[1]?.content;
     expect(Array.isArray(content) && content.filter((part) => part.type === "image")).toHaveLength(

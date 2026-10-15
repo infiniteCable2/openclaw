@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { describe, expect, it } from "vitest";
 import { createVideoFrameBuffer } from "./video-frame-buffer.js";
 
@@ -27,7 +28,9 @@ describe("session video source custody", () => {
     const input = Buffer.from("abc");
     expect(buffer.add({ data: input, mimeType: "image/png", timestampMs: 1000 })).toBe(true);
     input.fill(0);
-    expect(buffer.capture(0).frames[0].data.toString()).toBe("abc");
+    expect(expectDefined(buffer.capture(0).frames[0], "captured frame").data.toString()).toBe(
+      "abc",
+    );
     expect(buffer.add({ data: input, mimeType: "image/png", timestampMs: 1001 })).toBe(false);
     advance(100);
     expect(buffer.add({ data: input, mimeType: "image/png", timestampMs: 1100 })).toBe(true);
@@ -41,11 +44,12 @@ describe("session video source custody", () => {
     advance(2000);
     expect(add("ghi")).toBe(false);
     expect(buffer.sizeBytes).toBe(6);
-    expect(buffer.read(snapshot.frames[0].id)?.data.toString()).toBe("abc");
+    const first = expectDefined(snapshot.frames[0], "pinned frame");
+    expect(buffer.read(first.id)?.data.toString()).toBe("abc");
     snapshot.release();
     snapshot.release();
     expect(buffer.sizeBytes).toBe(0);
-    expect(buffer.read(snapshot.frames[0].id)).toBeUndefined();
+    expect(buffer.read(first.id)).toBeUndefined();
     expect(add("ghi")).toBe(true);
   });
   it("rejects stale/future/oversized sources and releases sources on session close", () => {
@@ -56,7 +60,7 @@ describe("session video source custody", () => {
     add("abc");
     const snapshot = buffer.capture(0);
     buffer.close();
-    expect(buffer.read(snapshot.frames[0].id)).toBeUndefined();
+    expect(buffer.read(expectDefined(snapshot.frames[0], "closing frame").id)).toBeUndefined();
     expect(buffer.sizeBytes).toBe(0);
     expect(add("def")).toBe(false);
     snapshot.release();
