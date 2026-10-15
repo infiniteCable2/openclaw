@@ -74,7 +74,12 @@ describe("native speech presentation stream", () => {
       Object.freeze(partial);
       snapshots.push(partial);
       events.push(
-        Object.freeze({ type: "text_delta", contentIndex: 0, delta: envelope[index], partial }),
+        Object.freeze({
+          type: "text_delta",
+          contentIndex: 0,
+          delta: envelope.slice(index, index + 1),
+          partial,
+        }),
       );
     }
     const final = message(envelope);
@@ -180,7 +185,11 @@ describe("native speech presentation stream", () => {
     });
     expect(projected[1]).toMatchObject({ contentIndex: 2, toolCall: tool });
     expect(projected.slice(2)).toEqual(events.slice(2));
-    expect("partial" in projected[2] && projected[2].partial).toBe(final);
+    const textStart = projected[2];
+    if (!textStart || textStart.type !== "text_start") {
+      throw new Error("Expected the unchanged native text-start event");
+    }
+    expect(textStart.partial).toBe(final);
     expect(partial.content[1]).toMatchObject({ text: envelope.slice(0, 16) });
     expect(projected[1]).toHaveProperty("toolCall", tool);
   });
