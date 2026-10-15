@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { AssistantDeliveryTtsFacts } from "../../llm/types.js";
 import type { PluginRuntime, RuntimeLogger } from "../../plugins/runtime/types.js";
+import { createDeferredCore as createDeferred } from "../../shared/deferred.js";
 import { parseSpeechExpression } from "../../tts/expression.js";
 import type {
   RealtimeVoiceAgentConsultResult,
@@ -10,9 +11,9 @@ import type {
 } from "../agent-consult-runtime.js";
 import type { RealtimeVoiceSessionHarness } from "../realtime-session-harness.js";
 import type { RealtimeVoiceTranscriptEntry } from "../session-log-runtime.js";
-import { createSpeechTtsAudioStreamConverter } from "./audio-format.js";
+import { createSpeechAudioPreparation } from "./audio-preparation.js";
 import type { createSpeechCancellation } from "./cancellation.js";
-import { createSpeechStreamCleanup, type SpeechStreamCancellation } from "./stream-cleanup.js";
+import type { SpeechStreamCancellation } from "./stream-cleanup.js";
 import {
   formatSpeechTtsResultLog,
   formatSpeechTranscriptSummaryLog,
@@ -67,7 +68,12 @@ export function createSpeechOutput(params: {
     agentLogScope,
   } = params;
   let ttsQueue = Promise.resolve();
-  let nextTtsPreparationGate = Promise.resolve();
+  const preparation = createSpeechAudioPreparation({
+    audioFormat: params.config.audioFormat,
+    platformName: params.surface.displayName,
+    activeAborts: activeTtsAborts,
+    activeReaders: activeTtsReaders,
+  });
   let pendingChunks = 0;
   const failedReleases = new Map<() => Promise<void>, { error: unknown; reported: boolean }>();
 
@@ -151,58 +157,36 @@ export function createSpeechOutput(params: {
         normalized,
       ),
     );
-    let allowNextPreparationResolve: (() => void) | undefined;
-    const allowNextPreparationPromise = new Promise<void>((resolve) => {
-      allowNextPreparationResolve = resolve;
-    });
-    let nextPreparationAllowed = false;
-    const allowNextPreparation = () => {
-      if (nextPreparationAllowed) {
-        return;
-      }
-      nextPreparationAllowed = true;
-      allowNextPreparationResolve?.();
-    };
-    const preparationGate = nextTtsPreparationGate;
-    nextTtsPreparationGate = allowNextPreparationPromise;
-    const prepared = preparationGate.then(async () => {
-      if (!isCurrentSpeechUtterance(utterance)) {
-        return { skipped: true } as const;
-      }
-      const controller = new AbortController();
-      activeTtsAborts.add(controller);
-      try {
-        const result = await params.runtime.tts.streamTextToSpeechTelephony({
+    const playbackDone = createDeferred<void>();
+    const prepared = preparation.prepare({
+      isCurrent: () => isCurrentSpeechUtterance(utterance),
+      playbackDone: playbackDone.promise,
+      synthesize: (signal) =>
+        params.runtime.tts.streamTextToSpeechTelephony({
           text: normalized,
           ...(speech?.expression ? { overrides: { expression: speech.expression } } : {}),
           ...(localServiceAdmission ? { localServiceAdmission } : {}),
           ...(expectedSpeechSelection ? { expectedSpeechSelection } : {}),
           cfg: params.fullConfig,
-          signal: controller.signal,
+          signal,
           ...(ttsAgentId ? { agentId: ttsAgentId } : {}),
           ...(params.ttsContext?.channelId ? { channelId: params.ttsContext.channelId } : {}),
           ...(params.ttsContext?.accountId ? { accountId: params.ttsContext.accountId } : {}),
-        });
-        return { result, controller } as const;
-      } catch (error) {
-        return { error, controller } as const;
-      }
+        }),
     });
     ttsQueue = ttsQueue
       .then(async () => {
-        const preparation = await prepared;
-        if ("skipped" in preparation) {
-          allowNextPreparation();
+        const ready = await prepared;
+        if ("skipped" in ready) {
           return;
         }
-        const controller = preparation.controller;
-        if ("error" in preparation) {
+        const controller = ready.controller;
+        if ("error" in ready) {
           activeTtsAborts.delete(controller);
-          allowNextPreparation();
-          throw preparation.error;
+          throw ready.error;
         }
-        const result = preparation.result;
-        const resources = createSpeechStreamCleanup(result, activeTtsReaders);
+        const result = ready.result;
+        const { resources, audio } = ready;
         const release = () => resources.release();
         let cleanupFailure: { error: unknown } | undefined;
         try {
@@ -216,39 +200,32 @@ export function createSpeechOutput(params: {
             formatSpeechTtsResultLog(params.surface.logScope, agentLogScope, result),
           );
           harness.ensureTurn();
-          resources.open();
           let firstSegmentChunk = true;
           let firstUtteranceChunk = !utterance.playbackStarted;
           let bytesWritten = 0;
           const isCurrentPlayback = () =>
             isCurrentSpeechUtterance(utterance) && !controller.signal.aborted;
           try {
-            const converter = createSpeechTtsAudioStreamConverter(
-              result.sampleRate,
-              params.config.audioFormat,
-              result.outputFormat,
-              params.surface.displayName,
-            );
             for (;;) {
               if (!isCurrentPlayback()) {
                 break;
               }
-              const chunk = await resources.read();
+              const resumedAfterGap = !audio.hasBufferedAudio;
+              if (resumedAfterGap && utterance.waitingTurn !== undefined) {
+                waiting.onOutputIdle(utterance.waitingTurn);
+              }
+              const chunk = await audio.read();
               if (!isCurrentPlayback()) {
                 break;
               }
-              // Flush the filter only at natural EOF. Cancellation must never play
-              // its retained tail, and buffered samples are not playback yet.
-              const output = chunk.done
-                ? converter.flush()
-                : converter.process(Buffer.from(chunk.value));
+              const output = chunk.done ? Buffer.alloc(0) : Buffer.from(chunk.value);
               if (output.byteLength === 0) {
                 if (chunk.done) {
                   break;
                 }
                 continue;
               }
-              if (firstSegmentChunk) {
+              if (firstSegmentChunk || resumedAfterGap) {
                 // A candidate can start in a gap with no active playback gate.
                 // Hold every newly starting segment, including later commentary.
                 await params.waitForInput();
@@ -279,9 +256,6 @@ export function createSpeechOutput(params: {
               if (firstSegmentChunk) {
                 params.onActivity?.("speaking");
               }
-              if (firstSegmentChunk) {
-                allowNextPreparation();
-              }
               firstSegmentChunk = false;
               firstUtteranceChunk = false;
               bytesWritten += output.byteLength;
@@ -299,11 +273,10 @@ export function createSpeechOutput(params: {
             if (transcriptEntry.audioDelivery === "started") {
               transcriptEntry.audioDelivery = "interrupted";
             }
-            allowNextPreparation();
             params.onActivity?.(params.getWaitingTurn() === undefined ? "listening" : "processing");
           }
         } finally {
-          allowNextPreparation();
+          audio.close();
           try {
             await release();
             // A confirmed input blocked by TTS can resume waiting audio only
@@ -344,6 +317,7 @@ export function createSpeechOutput(params: {
       })
       .finally(() => {
         pendingChunks -= 1;
+        playbackDone.resolve();
       });
   };
 

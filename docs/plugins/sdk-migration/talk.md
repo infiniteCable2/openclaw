@@ -92,6 +92,23 @@ a second speech implementation. Native Talk still owns session admission,
 agent-run control, confirmation, and durable voice history. Batch channel media
 keeps its native media-understanding and awaited reply-delivery owners.
 
+Speech synthesis and paced audio delivery run independently. The shared speech
+owner starts playback with the first available audio, without waiting to fill a
+reserve. One serial producer reads ahead across provider results into a shared
+two-block reservoir. PCM transport blocks are at most six seconds, so queued
+audio is capped at twelve seconds; splitting those buffers does not change text
+segmentation, expression boundaries, synthesis settings, or joining pauses.
+There can also be one bounded provider frame being processed, and at most three
+unplayed provider results (current plus two successors). A successor is prepared
+only when its text is already available and reservoir capacity remains.
+
+This is bounded lookahead, not a second conversation scheduler or a guarantee
+of gapless playback under overload. Standalone services own compute admission;
+their single worker can rotate between ready requests at safe inference-unit
+boundaries. Output generation checks and cancellation discard prefetched audio,
+including audio whose source already reached EOF. Delivery receipts still mark
+the actual transport handoff, never precomputation.
+
 Legacy configs that place realtime selectors beside `talk.provider` /
 `talk.providers` should be repaired with `openclaw doctor --fix`; runtime Talk
 does not reinterpret speech/TTS provider config as realtime provider config.

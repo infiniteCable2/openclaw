@@ -109,7 +109,7 @@ export async function startSpeechSession(
     // Full-duplex sinks can resume music after estimated TTS playout; the longer
     // echo-suppression tail stays independent, and a paused gate adds a drain hold.
     canStart: () =>
-      activeTtsReaders.size === 0 &&
+      // A reader may be preparing a successor, not delivering audible output.
       bargeInGate.canResumeWaitingAudio() &&
       !(params.transport.supportsFullDuplexInput === true
         ? harness.isOutputPlaybackActive()
