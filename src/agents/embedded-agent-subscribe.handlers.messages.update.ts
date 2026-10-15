@@ -39,6 +39,7 @@ import type {
   EmbeddedAgentSubscribeState,
 } from "./embedded-agent-subscribe.handlers.types.js";
 import { appendRawStream } from "./embedded-agent-subscribe.raw-stream.js";
+import { captureNativeBlockSpeechSource } from "./embedded-agent-subscribe.speech.js";
 import {
   createAssistantVisibleStreamText,
   createThinkingTagStreamState,
@@ -526,6 +527,7 @@ export function handleMessageUpdate(
         next === cleanedText &&
         next === nextRawStreamText.trim();
       if (plainAppend) {
+        ctx.state.blockReplySpeechSource = captureNativeBlockSpeechSource(partialAssistant);
         ctx.blockChunker.append(chunk);
       } else {
         const previousBlock = extractAssistantStreamSnapshot(ctx, partialAssistant, {

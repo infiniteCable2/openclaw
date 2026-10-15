@@ -252,6 +252,7 @@ export function handleMessageEnd(
     ctx.state.streamBlockText = "";
     ctx.state.streamBlockFinal = false;
     ctx.state.blockReplyScopeStart = undefined;
+    ctx.state.blockReplySpeechSource = undefined;
     ctx.state.thinkingTagStream = createThinkingTagStreamState();
     ctx.state.deltaBufferIsCommentary = false;
     ctx.state.hasFlushedPartialText = false;

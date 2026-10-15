@@ -53,7 +53,7 @@ describe("native speech presentation admission", () => {
     'The object is {"type":"speech","text":"Example."}.',
     '`{"type":"speech","text":"Example."}`',
     '```json\n{"type":"speech","text":"Example."}\n```',
-    '\"{\\"type\\":\\"speech\\",\\"text\\":\\"Example.\\"}\"',
+    '"{\\"type\\":\\"speech\\",\\"text\\":\\"Example.\\"}"',
     '{"type":"speechless","text":"Example."}',
     '{"text":"Example.","type":"speech"}',
   ])("does not reserve ordinary prose or quoted JSON examples: %s", (text) => {
@@ -187,7 +187,7 @@ describe("speech expression slicing", () => {
     );
     expect(
       slices.flatMap((slice) => slice.parts).flatMap((part) => ("text" in part ? [part.text] : [])),
-    ).toEqual([...plain]);
+    ).toEqual(plain.split(""));
     expect(
       slices
         .flatMap((slice) => slice.parts)

@@ -131,11 +131,11 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
     }
     if (nativeSpeech) {
       // Per-block facts are authoritative for this phase; stale message-level speech cannot win.
-      const tts: AssistantDeliveryTtsFacts = { ...mergedFacts.tts, ...nativeSpeech };
+      const nativeTts: AssistantDeliveryTtsFacts = { ...mergedFacts.tts, ...nativeSpeech };
       if (!nativeSpeech.expression) {
-        delete tts.expression;
+        delete nativeTts.expression;
       }
-      mergedFacts.tts = tts;
+      mergedFacts.tts = nativeTts;
     }
     if (facts.replyToId) {
       delete mergedFacts.replyToCurrent;

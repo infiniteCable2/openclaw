@@ -49,9 +49,9 @@ function projectMessage(
 export function wrapStreamFnWithSpeechPresentation(
   streamFn: StreamFn,
   assertCurrent: () => void,
-  options: { expressionEnabled?: boolean } = {},
+  presentationOptions: { expressionEnabled?: boolean } = {},
 ): StreamFn {
-  const expressionEnabled = options.expressionEnabled !== false;
+  const expressionEnabled = presentationOptions.expressionEnabled !== false;
   return (model, context, options) => {
     assertCurrent();
     return mapAssistantMessageStream(streamFn(model, context, options), (source) => {

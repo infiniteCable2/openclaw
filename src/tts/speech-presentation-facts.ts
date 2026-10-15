@@ -98,7 +98,7 @@ export function sliceNativeSpeechPresentation(
   } else {
     start = source.indexOf(text);
     end = start + text.length;
-    if (start < 0 || source.indexOf(text, start + 1) >= 0) {
+    if (start < 0 || source.includes(text, start + 1)) {
       throw new Error("Native speech slice must have an unambiguous exact source projection");
     }
   }

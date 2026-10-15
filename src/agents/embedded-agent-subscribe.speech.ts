@@ -5,6 +5,19 @@ import {
   sliceNativeSpeechPresentation,
 } from "../tts/speech-presentation-facts.js";
 
+/** Bind buffered prose to its producer frame, not a later compact item snapshot. */
+export function captureNativeBlockSpeechSource(message: AssistantMessage) {
+  if (!message.content.some((block) => block.type === "text" && block.openclawDelivery?.tts)) {
+    return undefined;
+  }
+  // Parsed delivery facts are detached from the provider. Snapshot only the text
+  // coordinates; raw provider text blocks may still be reused on later updates.
+  return {
+    ...message,
+    content: message.content.map((block) => (block.type === "text" ? { ...block } : block)),
+  };
+}
+
 /** Translate the native chunker's scoped UTF-16 coordinates, never search repeated chunks. */
 export function projectNativeBlockSpeech(params: {
   message: AssistantMessage;

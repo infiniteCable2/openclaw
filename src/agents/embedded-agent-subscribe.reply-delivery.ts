@@ -442,13 +442,17 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
         blockSourceRange: options.blockSourceRange,
       });
     }
-    if (taggedPayload.text && !payload.isReasoning && state.lastAssistant) {
+    const speechSource =
+      options?.useBufferedSpeechSource && !payload.isCommentary
+        ? state.blockReplySpeechSource
+        : state.lastAssistant;
+    if (taggedPayload.text && !payload.isReasoning && speechSource) {
       const scope = state.blockReplyScopeStart;
       const anchor = scope
-        ? resolveAssistantStreamBlockIndex(state.lastAssistant, scope.contentIndex, scope.itemId)
+        ? resolveAssistantStreamBlockIndex(speechSource, scope.contentIndex, scope.itemId)
         : undefined;
       const speech = projectNativeBlockSpeech({
-        message: state.lastAssistant,
+        message: speechSource,
         text: taggedPayload.text,
         commentary: payload.isCommentary,
         sourceContentIndex: anchor === undefined ? undefined : anchor + (scope?.after ? 1 : 0),

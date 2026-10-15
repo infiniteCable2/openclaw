@@ -532,6 +532,7 @@ export function createStreamRendering({
         : undefined;
     emitBlockReply(payload, {
       assistantMessageIndex,
+      useBufferedSpeechSource: true,
       blockSourceText:
         chunk === text.trimEnd() &&
         cleanedText === chunk &&
@@ -691,6 +692,7 @@ export function createStreamRendering({
     state.streamBlockText = "";
     state.streamBlockFinal = false;
     state.blockReplyScopeStart = undefined;
+    state.blockReplySpeechSource = undefined;
     state.thinkingTagStream = createThinkingTagStreamState();
     state.deltaBufferIsCommentary = false;
     state.hasFlushedPartialText = false;

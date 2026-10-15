@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { SpeechExpression, TextContent } from "../llm/types.js";
 import { createSubscribedSessionHarness } from "./embedded-agent-subscribe.e2e-harness.js";
-import { projectNativeBlockSpeech } from "./embedded-agent-subscribe.speech.js";
+import {
+  captureNativeBlockSpeechSource,
+  projectNativeBlockSpeech,
+} from "./embedded-agent-subscribe.speech.js";
 import { makeAgentAssistantMessage } from "./test-helpers/agent-message-fixtures.js";
 
 function block(text: string, emotion: string, commentary = false): TextContent {
@@ -17,6 +20,84 @@ function block(text: string, emotion: string, commentary = false): TextContent {
 }
 
 describe("native block speech delivery", () => {
+  it("snapshots producer text while retaining canonical delivery facts", () => {
+    const text = block("First.", "joyful");
+    const message = makeAgentAssistantMessage({ content: [text] });
+    const captured = captureNativeBlockSpeechSource(message);
+    text.text = "Changed by a later provider update.";
+    expect(captured?.content[0]).toMatchObject({ text: "First." });
+    expect(captured?.content[0]).not.toBe(text);
+    expect(captured?.content[0].type === "text" && captured.content[0].openclawDelivery).toBe(
+      text.openclawDelivery,
+    );
+  });
+
+  it.each([undefined, "joyful"])(
+    "keeps compact message_end buffers bound to their producer (%s)",
+    async (firstEmotion) => {
+      const onBlockReply = vi.fn<(payload: ReplyPayload) => void>();
+      const h = createSubscribedSessionHarness({
+        runId: "compact-native-speech",
+        onBlockReply,
+        blockReplyBreak: "message_end",
+      });
+      const items = [
+        { id: "item-a", text: "Alpha.", emotion: firstEmotion },
+        { id: "item-b", text: "Beta.", emotion: "sad" },
+      ];
+      const content = items.map(({ id, text, emotion }): TextContent => ({
+        ...(emotion ? block(text, emotion) : { type: "text" as const, text }),
+        textSignature: JSON.stringify({ v: 1, id, phase: "final_answer" }),
+      }));
+      const base = makeAgentAssistantMessage({
+        api: "openai-responses",
+        provider: "openai",
+        content: [],
+      });
+      try {
+        h.emit({ type: "message_start", message: { ...base, content: [] } });
+        for (const [contentIndex, entry] of content.entries()) {
+          // Responses may carry just the current item while its index remains global.
+          const partial = { ...base, content: [entry] };
+          for (const type of ["text_delta", "text_end"] as const) {
+            h.emit({
+              type: "message_update",
+              message: partial,
+              assistantMessageEvent: {
+                type,
+                contentIndex,
+                ...(type === "text_delta" ? { delta: entry.text } : { content: entry.text }),
+                partial,
+              },
+            });
+          }
+          await h.subscription.waitForPendingEvents();
+          expect(onBlockReply.mock.calls.map(([payload]) => payload.text)).toEqual(
+            contentIndex === 0 ? [] : ["Alpha."],
+          );
+        }
+        h.emit({ type: "message_end", message: { ...base, content } });
+        await h.subscription.waitForPendingEvents();
+        expect(onBlockReply.mock.calls.map(([payload]) => payload.text)).toEqual([
+          "Alpha.",
+          "Beta.",
+        ]);
+        expect(
+          onBlockReply.mock.calls.map(
+            ([payload]) => getReplyPayloadMetadata(payload)?.tts?.expression?.emotion,
+          ),
+        ).toEqual([firstEmotion, "sad"]);
+        expect(
+          onBlockReply.mock.calls.map(
+            ([payload]) => getReplyPayloadMetadata(payload)?.assistantMessageStartIndex,
+          ),
+        ).toEqual([0, 0]);
+      } finally {
+        h.subscription.unsubscribe();
+      }
+    },
+  );
+
   it("keeps identical chunks tied to their exact native block and inherits scoped emotion", () => {
     const message = makeAgentAssistantMessage({
       content: [block("Yes.", "joyful"), block("Yes.", "sad")],

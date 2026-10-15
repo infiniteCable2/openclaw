@@ -136,7 +136,7 @@ describe("native expressive speech consult", () => {
     expect(runEmbeddedAgent).toHaveBeenCalledOnce();
     expect(captured?.sourceReplyDeliveryMode).toBeUndefined();
     expect(captured?.forceMessageTool).toBeUndefined();
-    expect(captured?.nativeSpeechPresentation?.assertCurrent).toBeTypeOf("function");
+    expect(captured?.nativeSpeechPresentation).toEqual({ assertCurrent: expect.any(Function) });
     expect(captured?.onBlockReply).toBeTypeOf("function");
     expect(result.text).toBe("First sentence. Second sentence.");
     expect(events.map((event) => (event.type === "abort" ? "abort" : event.text))).toEqual([

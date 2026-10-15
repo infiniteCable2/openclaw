@@ -11,6 +11,7 @@ import type {
   EmbeddedAgentSubscribeContext,
   EmbeddedAgentSubscribeState,
 } from "./embedded-agent-subscribe.handlers.types.js";
+import { captureNativeBlockSpeechSource } from "./embedded-agent-subscribe.speech.js";
 import {
   prepareAssistantVisibleText,
   sanitizeAssistantVisibleStreamText,
@@ -88,6 +89,7 @@ export function extractAssistantStreamSnapshot(
     parts,
     blockText: blockReply.text,
     message: observedMessage,
+    speechSourceMessage: message,
   };
 }
 
@@ -97,6 +99,7 @@ export function reconcileBlockReplySnapshot(
   previous: ReturnType<typeof extractAssistantStreamSnapshot>,
   next: ReturnType<typeof extractAssistantStreamSnapshot>,
 ) {
+  ctx.state.blockReplySpeechSource = captureNativeBlockSpeechSource(next.speechSourceMessage);
   const prefixAt = (snapshot: typeof next, index: number) => {
     if (index === 0) {
       return "";

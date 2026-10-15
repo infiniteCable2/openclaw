@@ -162,6 +162,7 @@ export type EmbeddedAgentSubscribeState = {
   streamBlockFinal: boolean;
   /** Native source boundary from which the prepared block chunker's frame begins. */
   blockReplyScopeStart: { contentIndex: number; itemId?: string; after?: boolean } | undefined;
+  blockReplySpeechSource?: AssistantMessage;
   /** Scanner state shares deltaBuffer's lifecycle so each provider byte is parsed once. */
   thinkingTagStream: ThinkingTagStreamState;
   /**
@@ -329,6 +330,7 @@ export type EmbeddedAgentSubscribeContext = {
       blockSourceText?: string;
       blockSourceRange?: readonly [start: number, end: number];
       blockSourceOffset?: number;
+      useBufferedSpeechSource?: boolean;
     },
   ) => void;
   flushAssistantStream: () => void;

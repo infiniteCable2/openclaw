@@ -78,19 +78,48 @@ function createRunner(
 
 describe("Talk client agent consult admission", () => {
   it("prepares a greeting with no tool grants", async () => {
+    const handle = createEmbeddedRunHandle({ runId: "run-talk" });
+    const operationalRunInstance = {
+      instanceId: "instance:greeting",
+      runId: "run-talk",
+    };
+    mocks.createOperationalRunInstanceRef.mockReturnValueOnce(operationalRunInstance);
+    mocks.runEmbeddedAgentCore.mockImplementationOnce(async () => {
+      const project = (_overlay: ReplyToolAuthorityOverlay) => "greeting-authority";
+      await withGatewayToolCallerIdentity(
+        {
+          agentId: "researcher",
+          sessionKey: "agent:researcher:talk",
+          operationalRunInstance,
+          embeddedRunToolAuthorityBinding: () => ({
+            source: "reply",
+            project,
+            projectAsync: async (overlay) => project(overlay),
+            assertActive: () => {},
+          }),
+        },
+        () => setActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk"),
+      );
+      clearActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk");
+      return { payloads: [] };
+    });
     const runner = createRunner(vi.fn(), undefined, { ownerConnId: "connection-owner" });
-    mocks.consultRealtimeVoiceAgent.mockResolvedValueOnce({ text: "Hello." });
     try {
-      await runner.runSpeechConsult({
-        sessionId: "voice-session",
-        args: { question: "Greet briefly." },
-        transcript: [],
-        speechExpressionCaptureOnly: true,
-      });
+      await expect(
+        runner.runSpeechConsult({
+          sessionId: "voice-session",
+          args: { question: "Greet briefly." },
+          transcript: [],
+          speechExpressionCaptureOnly: true,
+        }),
+      ).resolves.toEqual({ text: "done" });
       expect(mocks.consultRealtimeVoiceAgent.mock.calls[0]?.[0].toolsAllow).toEqual([]);
+      expect(mocks.runEmbeddedAgentCore).toHaveBeenCalledOnce();
+      expect(mocks.prepareAgentRunAdmission).toHaveBeenCalledWith(
+        expect.objectContaining({ operationalRunInstance }),
+      );
     } finally {
-      // Do not leave a queued once-result behind if admission fails before consultation.
-      mocks.consultRealtimeVoiceAgent.mockReset();
+      clearActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk");
     }
   });
   beforeEach(() => {

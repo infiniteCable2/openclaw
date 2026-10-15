@@ -109,7 +109,10 @@ describe("native speech presentation stream", () => {
     expect(terminal.message).toBe(final);
     expect(final.content[0]).toEqual({ type: "text", text: envelope });
     expect(snapshots.map((snapshot) => snapshot.content[0])).toEqual(
-      [...envelope].map((_, index) => ({ type: "text", text: envelope.slice(0, index + 1) })),
+      Array.from({ length: envelope.length }, (_, index) => ({
+        type: "text",
+        text: envelope.slice(0, index + 1),
+      })),
     );
   });
 
