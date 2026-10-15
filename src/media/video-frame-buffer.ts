@@ -10,7 +10,7 @@ export type BufferedVideoFrame = {
 type Entry = BufferedVideoFrame & { pins: number; selectedUntilMs?: number };
 export type VideoFrameSnapshot = {
   readonly frames: readonly BufferedVideoFrame[];
-  release(): void;
+  release(this: void): void;
 };
 
 /** Session-owned source bytes. Pins share the same budget; they cannot silently grow a second cache. */

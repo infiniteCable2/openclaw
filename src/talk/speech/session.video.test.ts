@@ -38,8 +38,8 @@ async function fixture(options: { pendingVideo?: boolean; runControl?: boolean }
   };
   const done = createDeferred<{ text: string; delivered?: boolean }>();
   const consultEntered = createDeferred<SpeechAgentConsultParams>();
-  const videoStarted = createDeferred<void>();
-  const videoAcquired = createDeferred<void>();
+  const videoStarted = createDeferred();
+  const videoAcquired = createDeferred();
   const owner = createDeferred<SpeechSessionHandle>();
   const control = vi.fn(async (_text: string, onAccepted?: (accepted: boolean) => void) => {
     onAccepted?.(true);

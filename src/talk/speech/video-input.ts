@@ -117,10 +117,10 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
     resolve(value: unknown) {
       return snapshots.get(value);
     },
-    mergeKey(value: unknown) {
+    mergeKey(this: void, value: unknown) {
       return buffer && (value === undefined || snapshots.has(value)) ? mergeKey : undefined;
     },
-    merge(left: unknown, right: unknown): VideoFrameSnapshot | undefined {
+    merge(this: void, left: unknown, right: unknown): VideoFrameSnapshot | undefined {
       const first = snapshots.get(left);
       const second = snapshots.get(right);
       if (left === undefined) {

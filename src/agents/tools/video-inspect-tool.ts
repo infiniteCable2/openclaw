@@ -176,7 +176,7 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
             );
           }
           frameSource.assertCurrent();
-          const frame = await frameSource.read(frameId);
+          const frame = frameSource.read(frameId);
           assertCurrent();
           frameSource.assertCurrent();
           if (!frame || frame.id !== frameId) {

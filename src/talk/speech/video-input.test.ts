@@ -20,7 +20,7 @@ function fixture(enabled = true, profile: "source" | "preview" = "source") {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2025-01-01T12:00:00Z"));
   let onFrame: ((frame: SpeechVideoFrame) => void) | undefined;
-  const startVideoInput = vi.fn((handler: (frame: SpeechVideoFrame) => void) => {
+  const startVideoInput = vi.fn<NonNullable<SpeechAudioTransport["startVideoInput"]>>((handler) => {
     onFrame = handler;
   });
   const transport: SpeechAudioTransport = {
@@ -59,7 +59,7 @@ describe("speech video input snapshot ownership", () => {
 
   it("requires the configured transport capability", async () => {
     const f = fixture();
-    const { startVideoInput: _, ...audioOnly } = f.transport;
+    const audioOnly = { ...f.transport, startVideoInput: undefined };
     await expect(f.input.start(audioOnly, vi.fn())).rejects.toThrow("does not support");
     f.input.close();
   });
@@ -104,7 +104,7 @@ describe("speech video input snapshot ownership", () => {
 
   it("rechecks admission after an asynchronous source acquisition", async () => {
     const f = fixture();
-    const acquisition = createDeferred<void>();
+    const acquisition = createDeferred();
     const assertCurrent = vi.fn();
     f.startVideoInput.mockImplementationOnce(() => acquisition.promise);
     const starting = f.input.start(f.transport, assertCurrent);
