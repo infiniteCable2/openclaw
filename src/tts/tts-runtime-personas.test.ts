@@ -956,7 +956,16 @@ describe("TTS runtime persona behavior", () => {
       await expect(
         maybeApplyTtsToPayload({
           payload,
-          cfg: { tts: { provider: "mock" } },
+          cfg: {
+            tts: { provider: "mock" },
+            talk: {
+              speech: {
+                agentProfiles: {
+                  reader: { expression: { channels: { matrix: { targets: ["voice-note"] } } } },
+                },
+              },
+            },
+          },
           channel: "matrix",
           agentId: "reader",
         }),
