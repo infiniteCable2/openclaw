@@ -43,7 +43,7 @@ export function describeToolBindings(bindings: ToolBindings): unknown {
   return bindings === undefined
     ? undefined
     : Object.keys(bindings)
-        .sort()
+        .toSorted()
         .map((key) => {
           const value = bindings[key];
           const id = hostIdentity(value);
