@@ -47,10 +47,11 @@ describe("native block speech delivery", () => {
         { id: "item-a", text: "Alpha.", emotion: firstEmotion },
         { id: "item-b", text: "Beta.", emotion: "sad" },
       ];
-      const content = items.map(({ id, text, emotion }): TextContent => ({
-        ...(emotion ? block(text, emotion) : { type: "text" as const, text }),
-        textSignature: JSON.stringify({ v: 1, id, phase: "final_answer" }),
-      }));
+      const content = items.map(({ id, text, emotion }): TextContent => {
+        const entry: TextContent = emotion ? block(text, emotion) : { type: "text", text };
+        entry.textSignature = JSON.stringify({ v: 1, id, phase: "final_answer" });
+        return entry;
+      });
       const base = makeAgentAssistantMessage({
         api: "openai-responses",
         provider: "openai",
