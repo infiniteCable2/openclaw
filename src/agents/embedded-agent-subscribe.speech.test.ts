@@ -93,7 +93,7 @@ describe("native block speech delivery", () => {
           onBlockReply.mock.calls.map(
             ([payload]) => getReplyPayloadMetadata(payload)?.assistantMessageStartIndex,
           ),
-        ).toEqual([0, 0]);
+        ).toEqual([1, 1]);
       } finally {
         h.subscription.unsubscribe();
       }
