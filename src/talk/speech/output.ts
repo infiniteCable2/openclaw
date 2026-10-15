@@ -158,7 +158,7 @@ export function createSpeechOutput(params: {
         normalized,
       ),
     );
-    const playbackDone = createDeferred<void>();
+    const playbackDone = createDeferred();
     const prepared = preparation.prepare({
       isCurrent: () => isCurrentSpeechUtterance(utterance),
       playbackDone: playbackDone.promise,

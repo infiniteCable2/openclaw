@@ -3,6 +3,32 @@ import { createDeferredCore as createDeferred } from "../../shared/deferred.js";
 import { createSpeechAudioPrefetch } from "./audio-prefetch.js";
 
 describe("speech audio prefetch reservoir", () => {
+  it("reserves shared capacity atomically when producers resume together", async () => {
+    const prefetch = createSpeechAudioPrefetch(2);
+    const channels = Array.from({ length: 3 }, () =>
+      prefetch.createChannel(new AbortController().signal),
+    );
+    const first = channels[0]!;
+    const second = channels[1]!;
+    const third = channels[2]!;
+    let thirdReady = false;
+    const pushes = [
+      first.push(Buffer.alloc(12, 1)),
+      second.push(Buffer.alloc(12, 2)),
+      third.push(Buffer.alloc(12, 3)).then(() => {
+        thirdReady = true;
+      }),
+    ];
+    await Promise.all(pushes.slice(0, 2));
+    expect(thirdReady).toBe(false);
+    expect(await first.read()).toEqual({ done: false, value: Buffer.alloc(12, 1) });
+    await Promise.all(pushes);
+    expect(thirdReady).toBe(true);
+    for (const channel of channels) {
+      channel.close();
+    }
+  });
+
   it("shares the two-block duration budget across streams and resumes a waiting producer", async () => {
     const prefetch = createSpeechAudioPrefetch(2);
     const first = prefetch.createChannel(new AbortController().signal);

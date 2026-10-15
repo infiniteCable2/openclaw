@@ -9,10 +9,11 @@ export function createSpeechAudioPrefetch(bytesPerSecond: number) {
   const blockBytes = bytesPerSecond * 6;
   let bufferedBlocks = 0;
   let bufferedBytes = 0;
-  let changed = createDeferred<void>();
+  let changed = createDeferred();
+  const hasCapacity = () => bufferedBlocks < 2 && bufferedBytes < blockBytes * 2;
   const notify = () => {
     const previous = changed;
-    changed = createDeferred<void>();
+    changed = createDeferred();
     previous.resolve();
   };
 
@@ -37,12 +38,15 @@ export function createSpeechAudioPrefetch(bytesPerSecond: number) {
       }
       return {
         async waitForCapacity() {
-          while (!closed && (bufferedBlocks >= 2 || bufferedBytes >= blockBytes * 2)) {
+          for (;;) {
+            signal.throwIfAborted();
+            if (closed) {
+              throw new Error("Speech prefetch channel is closed");
+            }
+            if (hasCapacity()) {
+              return;
+            }
             await changed.promise;
-          }
-          signal.throwIfAborted();
-          if (closed) {
-            throw new Error("Speech prefetch channel is closed");
           }
         },
         async push(audio: Buffer) {
@@ -50,12 +54,17 @@ export function createSpeechAudioPrefetch(bytesPerSecond: number) {
             throw new Error("Speech provider audio frame exceeds the prefetch limit");
           }
           for (let offset = 0; offset < audio.byteLength; offset += blockBytes) {
-            await this.waitForCapacity();
-            // Capacity can resolve synchronously, but awaiting it yields to a
-            // concurrent generation cancellation before the append resumes.
-            signal.throwIfAborted();
-            if (closed) {
-              throw new Error("Speech prefetch channel is closed");
+            for (;;) {
+              await this.waitForCapacity();
+              // Awaiting capacity yields to cancellation or another append.
+              // Revalidate immediately before consuming the available credit.
+              signal.throwIfAborted();
+              if (closed) {
+                throw new Error("Speech prefetch channel is closed");
+              }
+              if (hasCapacity()) {
+                break;
+              }
             }
             // Own only the admitted slice, not a view retaining a larger frame.
             const block = Buffer.from(audio.subarray(offset, offset + blockBytes));
