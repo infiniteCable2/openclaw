@@ -5,6 +5,7 @@ import { kindFromMime, mimeTypeFromFilePath } from "@openclaw/media-core/mime";
 import { hasHttpUrlPrefix } from "@openclaw/net-policy/url-protocol";
 import { resolveAgentDir, resolveDefaultAgentDir } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.js";
+import type { MediaUnderstandingCapabilityConfig } from "../config/types.tools.js";
 import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
 import {
   normalizeImageDescriptionInput,
@@ -147,7 +148,7 @@ async function runFile(
       },
     };
   }
-  const config = {
+  const config: MediaUnderstandingCapabilityConfig = {
     ...cfg.tools?.media?.[params.capability],
     ...(request.prompt ? { prompt: request.prompt } : {}),
     ...(request.language ? { language: request.language } : {}),

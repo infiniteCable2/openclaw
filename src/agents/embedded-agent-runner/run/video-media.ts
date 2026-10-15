@@ -139,7 +139,6 @@ async function materializeVideoFrames(
 async function materializeVideoFact(
   fact: MediaFact,
   budget: { remaining: number },
-  options: VideoMediaOptions,
   loadVideo: VideoMediaReader,
 ): Promise<ModelInputContent> {
   if ((fact.sizeBytes ?? 0) > budget.remaining) {
@@ -221,7 +220,7 @@ export async function projectOrderedPromptMedia(params: {
       } else if (route.kind === "ready" && !route.steps.includes("video-frames")) {
         projected.push(
           params.options.provider
-            ? await materializeVideoFact(fact, params.budget, params.options, params.loadVideo)
+            ? await materializeVideoFact(fact, params.budget, params.loadVideo)
             : { type: "text", text: VIDEO_OMISSION.unsupported },
         );
       } else if (route.kind === "ready" && route.steps.includes("video-frames")) {

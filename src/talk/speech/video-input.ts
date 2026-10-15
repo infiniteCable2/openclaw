@@ -97,7 +97,7 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
               ? candidates.length - 1
               : Math.round((index * (candidates.length - 1)) / (count - 1))
           ],
-      );
+      ).filter((frame): frame is (typeof candidates)[number] => frame !== undefined);
       if (!frames.length) {
         captured.release();
         anchor?.release();
@@ -147,7 +147,7 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
               ? candidates.length - 1
               : Math.round((index * (candidates.length - 1)) / (count - 1))
           ],
-      );
+      ).filter((frame): frame is (typeof candidates)[number] => frame !== undefined);
       const merged: VideoFrameSnapshot = {
         frames,
         release() {

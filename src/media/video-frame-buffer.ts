@@ -41,7 +41,11 @@ export function createVideoFrameBuffer(params: {
   const prune = (at: number) => {
     for (let index = entries.length - 1; index >= 0; index--) {
       const frame = entries[index];
-      if (!frame.pins && (frame.selectedUntilMs ?? frame.timestampMs + params.retentionMs) < at) {
+      if (
+        frame &&
+        !frame.pins &&
+        (frame.selectedUntilMs ?? frame.timestampMs + params.retentionMs) < at
+      ) {
         bytes -= frame.data.length;
         entries.splice(index, 1);
       }
@@ -52,8 +56,11 @@ export function createVideoFrameBuffer(params: {
     if (index < 0) {
       return false;
     }
-    bytes -= entries[index].data.length;
-    entries.splice(index, 1);
+    const [removed] = entries.splice(index, 1);
+    if (!removed) {
+      return false;
+    }
+    bytes -= removed.data.length;
     return true;
   };
   return {
@@ -99,7 +106,7 @@ export function createVideoFrameBuffer(params: {
               ? available.length - 1
               : Math.round((index * (available.length - 1)) / (count - 1))
           ],
-      );
+      ).filter((frame): frame is Entry => frame !== undefined);
       for (const frame of chosen) {
         frame.pins++;
         frame.selectedUntilMs = now() + (params.selectedRetentionMs ?? params.retentionMs);

@@ -37,6 +37,7 @@ async function fixture(options: { pendingVideo?: boolean; runControl?: boolean }
     },
   };
   const done = createDeferred<{ text: string; delivered?: boolean }>();
+  const consultEntered = createDeferred<SpeechAgentConsultParams>();
   const videoStarted = createDeferred<void>();
   const videoAcquired = createDeferred<void>();
   const owner = createDeferred<SpeechSessionHandle>();
@@ -48,6 +49,7 @@ async function fixture(options: { pendingVideo?: boolean; runControl?: boolean }
     if (options.runControl !== false) {
       params.onRunControl?.(control);
     }
+    consultEntered.resolve(params);
     try {
       return await done.promise;
     } finally {
@@ -97,6 +99,7 @@ async function fixture(options: { pendingVideo?: boolean; runControl?: boolean }
     starting,
     videoAcquired,
     done,
+    consultEntered: consultEntered.promise,
     control,
     consultAgent,
     stopTransport,
@@ -120,6 +123,9 @@ describe("speech session native video admission", () => {
       f.frame();
       f.say("What is visible?", "first");
       await f.drain();
+      // Timer advancement admits talkback; real lazy module loading can finish later.
+      // Observe the native consult boundary instead of assuming it is already warm.
+      await f.consultEntered;
       expect(f.consultAgent).toHaveBeenCalledOnce();
       expect(f.consultAgent.mock.calls[0]?.[0]).toMatchObject({
         args: { question: "What is visible?", context: expect.stringContaining("Video frames") },
@@ -138,6 +144,7 @@ describe("speech session native video admission", () => {
       f.frame();
       f.say("Look at this.", "first");
       await f.drain();
+      await f.consultEntered;
       await vi.advanceTimersByTimeAsync(1000);
       f.onset("next");
       f.frame();
@@ -162,6 +169,7 @@ describe("speech session native video admission", () => {
     try {
       f.say("First request.", "first");
       await f.drain();
+      await f.consultEntered;
       await vi.advanceTimersByTimeAsync(1000);
       f.onset("next");
       f.frame();
