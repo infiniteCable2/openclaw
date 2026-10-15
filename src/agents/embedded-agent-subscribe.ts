@@ -436,6 +436,10 @@ export function subscribeEmbeddedAgentSession(input: SubscribeEmbeddedAgentSessi
     hasSuccessfulModelResponse,
     getLastAssistantTextMessageIndex: () =>
       state.lastAssistantTextMessageIndex >= 0 ? state.lastAssistantTextMessageIndex : undefined,
+    getLastAssistantTextMessageStartIndex: () =>
+      state.lastAssistantTextMessageIndex >= state.assistantMessageStartIndex
+        ? state.assistantMessageStartIndex
+        : undefined,
     toolMetas,
     getAcceptedSessionSpawns: () => state.acceptedSessionSpawns.slice(),
     getLatestMcpAppChannelView: () =>

@@ -80,6 +80,8 @@ export type RunEmbeddedAgentParams = {
   currentSourceReplyTarget?: CurrentSourceReplyTarget;
   /** Prepared source speech, independent of ordinary native message routing. */
   messageSpeechAdmission?: MessageSpeechAdmission;
+  /** Optional native speech presentation, bound to the existing admitted output lifetime. */
+  nativeSpeechPresentation?: { assertCurrent(): void };
   sessionTtsAuto?: string;
   /** Raw peer observed by the inbound routing owner, before identity linking. */
   conversationRoutePeerId?: string;
@@ -320,6 +322,7 @@ export type EmbeddedForegroundPromptContext = Pick<
   | "toolBindings"
   | "currentSourceReplyTarget"
   | "messageSpeechAdmission"
+  | "nativeSpeechPresentation"
   | "sessionTtsAuto"
   | "trigger"
   | "messageTo"

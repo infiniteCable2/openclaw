@@ -64,6 +64,7 @@ import { selectCompactionTimeoutSnapshot } from "./compaction-timeout.js";
 import { materializeProviderContext } from "./images.js";
 import { wrapStreamFnWithMessageTransform } from "./message-transform-stream-wrapper.js";
 import { wrapStreamFnWithProviderReviewContinuation } from "./provider-review-continuation.js";
+import { wrapStreamFnWithSpeechPresentation } from "./speech-presentation-stream.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type EmbeddedAttemptSubscription = ReturnType<typeof subscribeEmbeddedAgentSession>;
@@ -642,6 +643,15 @@ export async function prepareEmbeddedAttemptTransport(input: {
         }),
     );
   }
+  const presentation = attempt.nativeSpeechPresentation;
+  session.agent.streamFn = wrapStreamFnWithSpeechPresentation(
+    session.agent.streamFn,
+    () => {
+      assertRunCurrent?.();
+      presentation?.assertCurrent();
+    },
+    { expressionEnabled: Boolean(presentation) },
+  );
   return {
     serverToolClearingEnabled,
     compactionReplayEnabled: resolveCompactionReplayEligibility(attempt.model, {

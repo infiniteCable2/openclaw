@@ -147,40 +147,13 @@ export const MESSAGE_TOOL_SPEECH_PROPERTIES = {
     Type.String({ description: "Text to synthesize; message remains visible." }),
   ),
   voiceExpression: Type.Optional(
-    Type.Object(
-      {
-        emotion: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-        parts: Type.Array(
-          Type.Union([
-            Type.Object(
-              {
-                text: Type.String({ minLength: 1 }),
-                emotion: Type.Optional(
-                  Type.String({
-                    minLength: 1,
-                    maxLength: 64,
-                    description:
-                      "Changes the active speech emotion here until the next explicit change.",
-                  }),
-                ),
-                emphasis: Type.Optional(Type.Boolean()),
-              },
-              { additionalProperties: false },
-            ),
-            Type.Object(
-              { event: Type.String({ minLength: 1, maxLength: 64 }) },
-              { additionalProperties: false },
-            ),
-          ]),
-          { minItems: 1, maxItems: 128 },
-        ),
-      },
-      {
-        additionalProperties: false,
-        description:
-          "Optional speech-only expression with voiceText. Concatenated text parts must exactly equal voiceText; message remains plain. Use only explicitly advertised provider declarations when enabled for this agent/channel.",
-      },
-    ),
+    // Exact agent/channel policy is resolved at execution, not by this shared
+    // wire schema. Canonical validation remains in the admitted speech owner;
+    // stale optional controls must not invalidate an otherwise plain send.
+    Type.Unknown({
+      description:
+        "Optional speech-only controls: {emotion?, parts: [{text, emotion?, emphasis?} | {event}]}. Text parts must concatenate exactly to voiceText; maximum 128 parts. A text part's emotion applies until changed. Use only advertised declarations. Disabled controls are ignored; enabled controls are strictly validated before synthesis. Keep message plain.",
+    }),
   ),
 };
 

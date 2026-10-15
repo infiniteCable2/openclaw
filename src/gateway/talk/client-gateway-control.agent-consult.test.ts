@@ -77,6 +77,28 @@ function createRunner(
 }
 
 describe("Talk client agent consult admission", () => {
+  it.each([false, true])(
+    "prepares a greeting with no tool grants (expressions=%s)",
+    async (expression) => {
+      const runner = createRunner();
+      mocks.consultRealtimeVoiceAgent.mockResolvedValueOnce({ text: "Hello." });
+      await runner.runSpeechConsult({
+        sessionId: "voice-session",
+        args: { question: "Greet briefly." },
+        transcript: [],
+        speechExpressionCaptureOnly: true,
+        ...(expression
+          ? {
+              speechExpressionContext: {
+                guidance: "Optional speech presentation.",
+                assertCurrent: vi.fn(),
+              },
+            }
+          : {}),
+      });
+      expect(mocks.consultRealtimeVoiceAgent.mock.calls[0]?.[0].toolsAllow).toEqual([]);
+    },
+  );
   beforeEach(() => {
     vi.clearAllMocks();
     embeddedRunsTesting.resetActiveEmbeddedRuns();

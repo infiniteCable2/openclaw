@@ -20,11 +20,18 @@ describe("admitted speech expression guidance", () => {
     expect(guidance).toContain('Emotion identifiers: ["joyful","tender"]');
     expect(guidance).toContain('Vocal event identifiers: ["laugh","sigh"]');
     expect(guidance).toContain("Emphasis: supported");
-    expect(guidance).toContain('replyPhase="commentary" and final=false');
+    expect(guidance).toContain("commentary uses replyPhase=commentary and final=false");
     expect(guidance).toContain("event parts contribute no visible text");
     expect(guidance).toContain("Do not write Kitten tags");
     expect(guidance).toContain("Speech controls are optional");
-    expect(guidance).toContain("plain utterances without expression controls");
+    expect(guidance).toContain("Plain utterances without expression controls");
+    expect(guidance).toContain("need no special format and no message tool");
+    expect(guidance).toContain('with type first: {"type":"speech","text"');
+    expect(guidance).toContain("host displays only text and passes expression separately to TTS");
+    expect(guidance).toContain(
+      "same presentation contract for native commentary and the final answer",
+    );
+    expect(guidance).toContain("does not send to another destination or grant tool permissions");
     expect(guidance).toContain("omitted emotion keeps the active value");
     expect(guidance).toContain("repeats the active emotion for each sentence");
     expect(guidance).not.toContain("Send successive utterances to change emotion");
@@ -39,12 +46,11 @@ describe("admitted speech expression guidance", () => {
       currentSourceSpeechTarget: true,
       commentaryEnabled: false,
     });
-    expect(guidance).toContain("final=false is still final_answer");
     expect(guidance).toContain("do not send commentary utterances");
-    expect(guidance).not.toContain('use replyPhase="commentary"');
+    expect(guidance).not.toContain("commentary uses replyPhase=commentary");
   });
 
-  it("does not advertise speech-target-only fields to an ordinary channel send", () => {
+  it("offers the same native presentation contract to a voice-note turn without granting message", () => {
     const guidance = buildSpeechExpressionGuidance({
       capabilities: { ...capabilities, emphasis: false },
       target: "voice-note",
@@ -56,6 +62,8 @@ describe("admitted speech expression guidance", () => {
     expect(guidance).toContain(
       "Ordinary assistant replies use the configured automatic speech delivery",
     );
-    expect(guidance).not.toContain("replyPhase");
+    expect(guidance).toContain("no message tool");
+    expect(guidance).toContain("Use message only when it is actually available");
+    expect(guidance).toContain('with type first: {"type":"speech","text"');
   });
 });

@@ -539,6 +539,7 @@ export function createStreamRendering({
           ? blockSourceText
           : undefined,
       blockSourceRange: emittedBlockSourceRange,
+      blockSourceOffset: options?.sourceOffset,
       consumePendingToolMedia:
         options?.finalReply !== undefined ||
         hasPendingAudioDirective ||
@@ -579,6 +580,7 @@ export function createStreamRendering({
             emitBlockChunk(pendingChunk.text, {
               sourceText: pendingChunk.sourceText,
               sourceGeneration: pendingChunk.sourceGeneration,
+              sourceOffset: pendingChunk.sourceOffset,
               reconciledSourceBreak: pendingChunk.reconciledSourceBreak,
               sourceStart: pendingChunk.sourceStart,
               sourceEnd: pendingChunk.sourceEnd,
@@ -601,6 +603,7 @@ export function createStreamRendering({
         final: options?.final === true,
         sourceText: pendingChunk?.sourceText,
         sourceGeneration: pendingChunk?.sourceGeneration,
+        sourceOffset: pendingChunk?.sourceOffset,
         reconciledSourceBreak: pendingChunk?.reconciledSourceBreak,
         sourceStart: pendingChunk?.sourceStart,
         sourceEnd: pendingChunk?.sourceEnd,

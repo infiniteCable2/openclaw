@@ -125,6 +125,10 @@ describe("automatic native voice expression admission", () => {
     const params = input();
     const result = await prepareAutomaticSpeechExpressionContext(params);
     expect(result?.messageSpeechAdmission.guidance).toBe(result?.guidance);
+    expect(result?.guidance).toContain("without requiring a message action");
+    expect(result?.guidance).toContain(
+      "Explicit message actions retain their existing routing and tool policy",
+    );
     expect(mocks.settings).toHaveBeenCalledWith(
       expect.objectContaining({
         preparedTtsPreferences: params.preparedTtsPreferences,
@@ -152,6 +156,8 @@ describe("automatic native voice expression admission", () => {
       voice: "fixture-voice",
     });
     result?.messageSpeechAdmission.assertCurrent();
+    expect(params.assertCurrent).toHaveBeenCalled();
+    expect(mocks.assertPrepared).toHaveBeenCalled();
     await result?.release();
     expect(mocks.release).toHaveBeenCalledOnce();
   });

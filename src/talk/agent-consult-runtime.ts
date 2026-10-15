@@ -6,7 +6,6 @@ import {
 } from "../agents/agent-run-terminal-outcome.js";
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import { withCommentaryGuidance } from "../agents/commentary-guidance.js";
-import { applyEmbeddedAttemptToolsAllow } from "../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
 import type { ProviderLocalServiceLease } from "../agents/provider-local-service-target.js";
@@ -575,15 +574,8 @@ export async function consultRealtimeVoiceAgent(params: {
 
       try {
         assertRealtimeVoiceConsultNotInterrupted(abortSignal);
-        if (currentSourceReplyTarget) {
+        if (params.speechExpressionContext) {
           assertExpressionCurrent();
-          if (
-            applyEmbeddedAttemptToolsAllow([{ name: "message" }], params.toolsAllow).length === 0
-          ) {
-            throw new Error(
-              "Enabled speech expression requires the message tool permitted by this run's native policy",
-            );
-          }
         }
         // Voice consults suppress verbose/reasoning presentation because the bridge needs a short,
         // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
@@ -626,15 +618,15 @@ export async function consultRealtimeVoiceAgent(params: {
           verboseLevel: "off",
           reasoningLevel: "off",
           toolResultFormat: "plain",
+          ...(params.speechExpressionContext
+            ? { nativeSpeechPresentation: { assertCurrent: assertExpressionCurrent } }
+            : {}),
           ...(currentSourceReplyTarget
             ? {
                 currentSourceReplyTarget,
-                forceMessageTool: true,
-                sourceReplyDeliveryMode: "message_tool_only" as const,
-                ...(params.speechExpressionCaptureOnly ? { toolExecutionAllow: ["message"] } : {}),
               }
             : {}),
-          ...(params.onSpeakableText && !currentSourceReplyTarget
+          ...(params.onSpeakableText
             ? {
                 deliverCommentaryBlocks: spokenCommentaryEnabled,
                 blockReplyBreak: "text_end" as const,
@@ -664,7 +656,7 @@ export async function consultRealtimeVoiceAgent(params: {
               .filter(Boolean)
               .join("\n\n"),
             spokenCommentaryEnabled,
-            currentSourceReplyTarget ? "structured-speech" : "text",
+            "text",
           ),
           agentDir,
           abortSignal,

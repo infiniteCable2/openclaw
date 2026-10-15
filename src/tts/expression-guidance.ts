@@ -11,29 +11,19 @@ export function buildSpeechExpressionGuidance(params: {
   const events = [...new Set(params.capabilities.vocalEvents)].toSorted();
   return [
     "Structured speech expression is enabled for this admitted output only.",
-    "Speech controls are optional. If no special emotion, emphasis, or vocal event is intended, omit voiceExpression; ordinary text is valid spoken content and needs no expression block.",
-    params.currentSourceSpeechTarget
-      ? "Use the existing message tool with action=send for each spoken utterance, including plain utterances without expression controls."
-      : "Ordinary assistant replies use the configured automatic speech delivery. Use the existing message tool with action=send for expressive utterances or separate progress updates.",
-    "For message sends to this source, omit channel, to, target, targets, and threadId unless the user explicitly requests a different destination.",
+    "Speech controls are optional. If no special emotion, emphasis, or vocal event is intended, omit expression (voiceExpression for explicit sends); ordinary text is valid spoken content and needs no expression block.",
+    "Ordinary assistant replies use the configured automatic speech delivery. Plain utterances without expression controls need no special format and no message tool.",
+    'For native expressive output, write exactly one JSON object per native text block, with type first: {"type":"speech","text":"the clean spoken words","expression":{"parts":[{"text":"the clean spoken words","emotion":"a supported identifier"}]}}. Do not use a Markdown fence or surrounding prose. The host displays only text and passes expression separately to TTS. Use this same presentation contract for native commentary and the final answer; it does not send to another destination or grant tool permissions.',
+    "Use message only when it is actually available and the task needs an explicit message action. For sends to this source, omit channel, to, target, targets, and threadId unless the user explicitly requests a different destination.",
     `The output target is ${params.target}. Use only the following admitted speech controls:`,
     `Emotion identifiers: ${JSON.stringify(emotions)}. Vocal event identifiers: ${JSON.stringify(events)}. Emphasis: ${params.capabilities.emphasis ? "supported" : "unsupported"}.`,
-    "Keep message as the clean visible answer. When adding speech controls, put the exact plain spoken words in voiceText and supply voiceExpression separately: {emotion?: identifier, parts: [{text: words, emotion?: identifier, emphasis?: boolean} | {event: identifier}]}. Concatenating all text parts must equal voiceText exactly; event parts contribute no visible text.",
+    "Native expression uses {emotion?: identifier, parts: [{text: words, emotion?: identifier, emphasis?: boolean} | {event: identifier}]}. Concatenating all text parts must equal the envelope text exactly; event parts contribute no visible text. For an explicit message action, keep message clean, put the plain spoken words in voiceText and the same expression in voiceExpression.",
     "The top-level emotion initializes this utterance. A text part's emotion changes the active emotion from that part onward until the next explicit change; omitted emotion keeps the active value. Group consecutive sentences with the same emotion in one text part. Change emotion at sentence boundaries, not inside words or emphasis. The speech adapter repeats the active emotion for each sentence; do not repeat tags or send separate messages just to change emotion. Place supported vocal events between words and emphasis on a short word or phrase; never fabricate an unsupported control.",
     "For low latency with message sends, send each complete short utterance when ready, normally one sentence and no more than 320 characters. Keep order. Set final=false until the last answer utterance, then final=true. A plain utterance needs no structured expression plan.",
-    ...(params.currentSourceSpeechTarget
-      ? [
-          'Set replyPhase="final_answer" for every answer utterance. A preceding answer sentence with final=false is still final_answer, not commentary.',
-          params.commentaryEnabled
-            ? 'For a brief progress update, use replyPhase="commentary" and final=false. It is separate from the final answer; do not repeat it as final-answer text.'
-            : "Commentary is disabled for this output; do not send commentary utterances.",
-        ]
-      : [
-          params.commentaryEnabled
-            ? "Send brief progress updates separately with final=false, then the answer with the appropriate final flag. Do not repeat already delivered progress in the final answer."
-            : "Progress commentary is disabled for this output; send only answer utterances.",
-        ]),
-    "Do not write Kitten tags, OpenClaw TTS directives, or JSON plans in ordinary assistant text, message, or voiceText. Only the speech adapter renders backend markup from voiceExpression. Do not produce an extra ordinary-text copy after native delivery.",
+    params.commentaryEnabled
+      ? "Keep native commentary separate from the final answer. Do not repeat already delivered progress. Native presentation does not change the phase or end the run; tool calls and reasoning remain separate. If an explicit current-source message action is available, commentary uses replyPhase=commentary and final=false."
+      : "Commentary is disabled for this output; do not send commentary utterances.",
+    "Do not write Kitten tags or OpenClaw TTS directives in the spoken text, message, or voiceText. Only the speech adapter renders backend markup from admitted expression facts. Do not produce an extra ordinary-text copy of a native presentation object.",
     "An expressive output is not a request to whisper. Use only the declared emotion and event identifiers; a provider capability flag alone does not define another identifier.",
   ].join("\n");
 }

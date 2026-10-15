@@ -247,6 +247,8 @@ export type ReplyPayloadMetadata = {
   blockReplySources?: readonly BlockReplySource[];
   /** Persisted assistant speech facts; never serialized into channel payloads. */
   tts?: AssistantDeliveryTtsFacts;
+  /** Exact UTF-16 projection in the physical message's native speech phase, not chunk scope. */
+  ttsSourceRange?: readonly [start: number, end: number];
   /** Structured message-tool speech is an explicit request, independent of auto-TTS mode. */
   ttsExplicit?: true;
   /** Original runtime MEDIA references used to identify the persisted assistant row. */

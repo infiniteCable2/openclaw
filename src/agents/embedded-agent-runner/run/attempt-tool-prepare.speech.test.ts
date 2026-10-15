@@ -25,6 +25,12 @@ describe("native speech presentation run ownership", () => {
     { kind: "empty executor", executionAllow: [], expectedFailure: true },
     { kind: "permitted executor", executionAllow: ["message"], expectedFailure: false },
     { kind: "retired audio owner", retired: true, expectedFailure: true },
+    {
+      kind: "native speech without message",
+      native: true,
+      executionAllow: [],
+      expectedFailure: false,
+    },
   ])("respects $kind before model execution", async (scenario) => {
     const config: OpenClawConfig = {
       tools: { codeMode: false, toolSearch: { enabled: false } },
@@ -46,15 +52,19 @@ describe("native speech presentation run ownership", () => {
       deliver: vi.fn(async () => {}),
     };
     try {
-      hoisted.createOpenClawCodingToolsMock.mockReturnValue([
-        {
-          name: "message",
-          label: "message",
-          description: "native source delivery",
-          parameters: Type.Object({}),
-          execute: vi.fn(async () => ({ content: [], details: {} })),
-        },
-      ]);
+      hoisted.createOpenClawCodingToolsMock.mockReturnValue(
+        scenario.native
+          ? []
+          : [
+              {
+                name: "message",
+                label: "message",
+                description: "native source delivery",
+                parameters: Type.Object({}),
+                execute: vi.fn(async () => ({ content: [], details: {} })),
+              },
+            ],
+      );
       // This fixture runs only native preparation; unrelated execution collaborators
       // belong to the shared embedded harness and no model or provider is invoked.
       const attempt = {
@@ -79,6 +89,11 @@ describe("native speech presentation run ownership", () => {
         sessionPersistence: scenario.detached ? "detached" : "durable",
         toolExecutionAllow: scenario.executionAllow,
         currentSourceReplyTarget: scenario.detached ? undefined : source,
+        sourceReplyDeliveryMode:
+          scenario.detached || scenario.native ? undefined : "message_tool_only",
+        ...(scenario.native
+          ? { nativeSpeechPresentation: { assertCurrent: source.assertCurrent } }
+          : {}),
       } as EmbeddedRunAttemptInternalParams;
       if (scenario.retired) {
         admission.close();
@@ -108,6 +123,11 @@ describe("native speech presentation run ownership", () => {
         result = await prepare();
         expect(attempt.messageSpeechAdmission).toBeUndefined();
         expect(attempt.extraSystemPrompt).toBe("Original foreground context.");
+        if (scenario.native) {
+          expect(result.forceDirectMessageTool).toBe(false);
+          expect(result.toolsRaw.some((tool) => tool.name === "message")).toBe(false);
+          expect(attempt.toolExecutionAllow).toEqual([]);
+        }
       }
       expect(source.deliver).not.toHaveBeenCalled();
     } finally {

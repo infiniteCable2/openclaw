@@ -369,6 +369,7 @@ export type EmbeddedRunAttemptResult = {
   latestMcpAppChannelView?: McpAppChannelView;
   latestMcpConnectAction?: McpConnectAction;
   lastAssistantTextMessageIndex?: number;
+  lastAssistantTextMessageStartIndex?: number;
   toolMetas: Array<{
     toolName: string;
     toolCallId?: string;

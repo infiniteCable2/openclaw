@@ -94,6 +94,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     );
     if (
       !attempt.messageSpeechAdmission &&
+      !attempt.nativeSpeechPresentation &&
       attempt.sessionPersistence !== "detached" &&
       attempt.config &&
       isSpeechExpressionEnabled({
@@ -137,17 +138,9 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         signal: params.runAbortController.signal,
       });
       if (automaticExpression) {
-        if (
-          applyEmbeddedAttemptToolsAllow([{ name: "message" }], attempt.toolsAllow).length === 0
-        ) {
-          throw new Error(
-            "Automatic speech expression requires message permitted by the native run policy",
-          );
-        }
         attempt.messageSpeechAdmission = automaticExpression.messageSpeechAdmission;
-        // Preserve the run's native delivery/steering mode. Only keep its already
-        // permitted speech presentation tool directly available for this attempt.
-        attempt.forceMessageTool = true;
+        // Native presentation is not a message action and grants no tool authority.
+        attempt.nativeSpeechPresentation = automaticExpression.messageSpeechAdmission;
       }
     }
     const completionCheck = attempt.completionCheck;
@@ -457,6 +450,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         ? constructedToolsRaw.filter((tool) => isAgentToolRestartSafe(tool, restartSafetyOptions))
         : constructedToolsRaw;
       if (
+        messageToolOwnsVisibleReply(attempt) &&
         (attempt.currentSourceReplyTarget?.speechUtteranceOnly || attempt.messageSpeechAdmission) &&
         (!toolsRaw.some((tool) => tool.name === "message") ||
           (attempt.toolExecutionAllow !== undefined &&

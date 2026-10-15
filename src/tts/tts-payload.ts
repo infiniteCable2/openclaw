@@ -11,6 +11,7 @@ import { hasReplyPayloadContent } from "../interactive/payload.js";
 import { truncateUtf16Safe } from "../utils.js";
 import { normalizeMessageChannel } from "../utils/message-channel-core.js";
 import { parseTtsDirectives, resolveTtsDirectiveFacts } from "./directives.js";
+import { isSpeechExpressionEnabled } from "./expression.js";
 import type { MessageSpeechAdmission } from "./message-speech-admission.js";
 import { canonicalizeSpeechProviderId, getSpeechProvider } from "./provider-registry.js";
 import type { SpeechVoiceOption } from "./provider-types.js";
@@ -33,7 +34,11 @@ import {
   resolveTtsSettingsSnapshot,
   type ResolvedTtsConfig,
 } from "./tts-settings.js";
-import { textToSpeechCore, type TtsAudioPersistence } from "./tts-synthesis.js";
+import {
+  resolveTtsSynthesisTarget,
+  textToSpeechCore,
+  type TtsAudioPersistence,
+} from "./tts-synthesis.js";
 
 let lastTtsAttempt: TtsStatusEntry | undefined;
 
@@ -129,8 +134,20 @@ export async function maybeApplyTtsToPayloadCore(
   persistTtsAudio: TtsAudioPersistence,
 ): Promise<ReplyPayload> {
   params.signal?.throwIfAborted();
+  const ttsMetadata = getReplyPayloadMetadata(params.payload);
+  const expressionEnabled =
+    Boolean(ttsMetadata?.tts?.expression) &&
+    isSpeechExpressionEnabled({
+      cfg: resolveTtsRuntimeConfig(params.cfg),
+      agentId: params.agentId,
+      channelId: params.channel,
+      target: resolveTtsSynthesisTarget(params.channel),
+    });
   if (!isSpeechRuntimeAvailable()) {
-    if (params.messageSpeechAdmission || getReplyPayloadMetadata(params.payload)?.tts?.expression) {
+    if (
+      params.messageSpeechAdmission ||
+      (expressionEnabled && getReplyPayloadMetadata(params.payload)?.tts?.expression)
+    ) {
       throw new Error("Native speech runtime is unavailable for the admitted expressive reply");
     }
     return applyExplicitSpeechVisibleFallback(params.payload, params.channel);
@@ -148,7 +165,6 @@ export async function maybeApplyTtsToPayloadCore(
     accountId: params.accountId,
   });
   params.signal?.throwIfAborted();
-  const ttsMetadata = getReplyPayloadMetadata(params.payload);
   const explicitTts = ttsMetadata?.ttsExplicit === true;
   params.messageSpeechAdmission?.assertCurrent();
   if (params.messageSpeechAdmission && autoMode !== "always" && autoMode !== "inbound") {
@@ -169,7 +185,11 @@ export async function maybeApplyTtsToPayloadCore(
   const directives = ttsMetadata?.tts
     ? {
         cleanedText: text,
-        ...resolveTtsDirectiveFacts(ttsMetadata.tts, config.modelOverrides, directiveOptions),
+        ...resolveTtsDirectiveFacts(
+          expressionEnabled ? ttsMetadata.tts : { ...ttsMetadata.tts, expression: undefined },
+          config.modelOverrides,
+          directiveOptions,
+        ),
       }
     : parseTtsDirectives(text, config.modelOverrides, directiveOptions);
   if (directives.warnings.length > 0) {

@@ -66,6 +66,7 @@ export function buildEmbeddedRunPayloads(params: {
   answerSegments?: EmbeddedAgentSubscribeState["answerSegments"];
   keptAnswer?: EmbeddedAgentSubscribeState["keptAnswer"];
   assistantMessageIndex?: number;
+  assistantMessageStartIndex?: number;
   assistantTranscriptOwned?: boolean;
   assistantTranscriptIdempotencyKey?: string;
   lastAssistant: AssistantMessage | undefined;
@@ -142,10 +143,16 @@ export function buildEmbeddedRunPayloads(params: {
     lastAssistant,
     currentAssistant,
     assistantMessageIndex: terminalMessageIndex,
+    assistantMessageStartIndex: terminalMessageStartIndex,
     keptAnswer,
   }: Pick<
     typeof params,
-    "assistantTexts" | "lastAssistant" | "currentAssistant" | "assistantMessageIndex" | "keptAnswer"
+    | "assistantTexts"
+    | "lastAssistant"
+    | "currentAssistant"
+    | "assistantMessageIndex"
+    | "assistantMessageStartIndex"
+    | "keptAnswer"
   >) => {
     // Silence belongs to this input's answer. An earlier steered input must not
     // hide a later input that actually failed without producing an answer.
@@ -159,6 +166,9 @@ export function buildEmbeddedRunPayloads(params: {
     // lane is restored; its reasoning was emitted at its own message_end.
     const assistantForPayload = keptAnswer?.assistant ?? terminalAssistant;
     const assistantMessageIndex = keptAnswer?.messageIndex ?? terminalMessageIndex;
+    const assistantMessageStartIndex = keptAnswer
+      ? keptAnswer.messageStartIndex
+      : terminalMessageStartIndex;
     // Pre-upgrade recovered messages have no stored facts, and recovery intentionally does not
     // reparse text; one in-flight reply can lose delivery or speech intent across this boundary.
     const storedDelivery = assistantForPayload?.openclawDelivery;
@@ -321,6 +331,9 @@ export function buildEmbeddedRunPayloads(params: {
         addReplyPayloadMediaFailures(replyPayload, mediaFailures);
         if (assistantMessageIndex !== undefined) {
           setReplyPayloadMetadata(replyPayload, { assistantMessageIndex });
+          if (assistantMessageStartIndex !== undefined) {
+            setReplyPayloadMetadata(replyPayload, { assistantMessageStartIndex });
+          }
         }
         replyItems.push(
           ttsFacts ? setReplyPayloadMetadata(replyPayload, { tts: ttsFacts }) : replyPayload,
@@ -337,6 +350,7 @@ export function buildEmbeddedRunPayloads(params: {
       lastAssistant: segment.lastAssistant,
       currentAssistant: segment.lastAssistant,
       assistantMessageIndex: segment.messageEnd,
+      assistantMessageStartIndex: segment.finalMessageStart,
       keptAnswer: segment.keptAnswer,
     });
     for (const reply of replyItems.slice(replyStart)) {

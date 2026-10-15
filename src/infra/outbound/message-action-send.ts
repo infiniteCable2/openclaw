@@ -12,6 +12,7 @@ import {
 } from "../../auto-reply/reply-payload.js";
 import { resolveResponsePrefixTemplate } from "../../auto-reply/reply/response-prefix-template.js";
 import { normalizeOutboundLocation } from "../../channels/location.js";
+import { resolveChannelTtsVoiceDelivery } from "../../channels/plugins/tts-capabilities.js";
 import type { ChannelId, ChannelMessageActionName } from "../../channels/plugins/types.public.js";
 import {
   hasLegacyInteractiveReplyBlocks,
@@ -29,7 +30,7 @@ import { dedupeByKey } from "../../shared/dedupe-by-key.js";
 import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citation-control-markers.js";
 import { findCodeRegions } from "../../shared/text/code-regions.js";
 import { stripFormattedReasoningMessage } from "../../shared/text/formatted-reasoning-message.js";
-import { parseSpeechExpression } from "../../tts/expression.js";
+import { isSpeechExpressionEnabled, parseSpeechExpression } from "../../tts/expression.js";
 import { parseInlineDirectives } from "../../utils/directive-tags.js";
 import { throwIfAborted } from "./abort.js";
 import {
@@ -118,8 +119,20 @@ export async function buildMessagePayload(params: {
   const voiceText = readToolStringParam(actionParams, "voiceText", { trim: false });
   const voiceProvider = readToolStringParam(actionParams, "voiceProvider");
   const voiceId = readToolStringParam(actionParams, "voiceId");
+  // A prepared source sink carries its host-owned expression admission. External
+  // sends resolve the actual channel/target policy; an optional stale control
+  // block must not prevent an otherwise valid plain message from being sent.
+  const speechExpressionEnabled =
+    actionParams.voiceExpression !== undefined &&
+    (input.currentSourceReplyTarget?.speechUtteranceOnly === true ||
+      isSpeechExpressionEnabled({
+        cfg: input.cfg,
+        agentId: params.agentId,
+        channelId: params.channel,
+        target: resolveChannelTtsVoiceDelivery(params.channel)?.synthesisTarget ?? "audio-file",
+      }));
   const voiceExpression =
-    actionParams.voiceExpression === undefined
+    !speechExpressionEnabled || actionParams.voiceExpression === undefined
       ? undefined
       : parseSpeechExpression(actionParams.voiceExpression, voiceText ?? "");
   let message =

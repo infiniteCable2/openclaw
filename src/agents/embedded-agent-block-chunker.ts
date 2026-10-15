@@ -56,6 +56,8 @@ type ParagraphBreak = {
 export type BlockChunkMetadata = {
   sourceText: string;
   sourceGeneration: number;
+  /** Origin already included in sourceStart/sourceEnd after snapshot reconciliation. */
+  sourceOffset?: number;
   reconciledSourceBreak?: true;
   sourceStart: number;
   sourceEnd: number;
@@ -271,6 +273,7 @@ export class EmbeddedBlockChunker {
           emit(chunk, {
             sourceText: chunk,
             sourceGeneration: this.#sourceGeneration,
+            sourceOffset: this.#sourceOffset,
             reconciledSourceBreak: reconciledSourceBreak || undefined,
             sourceStart: this.#sourceOffset + offset,
             sourceEnd: this.#sourceOffset + offset + chunk.length,
@@ -292,6 +295,7 @@ export class EmbeddedBlockChunker {
       emit(chunk, {
         sourceText: this.#buffer.slice(from, to),
         sourceGeneration: this.#sourceGeneration,
+        sourceOffset: this.#sourceOffset,
         reconciledSourceBreak: reconciledSourceBreak || undefined,
         sourceStart: this.#sourceOffset + this.#consumedLength + from,
         sourceEnd: this.#sourceOffset + this.#consumedLength + to,

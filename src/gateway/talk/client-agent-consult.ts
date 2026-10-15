@@ -194,9 +194,7 @@ export function createTalkClientAgentConsultRunner(params: {
           thinkLevel: talkConfig?.consultThinkingLevel,
           fastMode: talkConfig?.consultFastMode,
           ...authority,
-          ...(speech?.speechExpressionContext && speech.speechExpressionCaptureOnly
-            ? { toolsAllow: ["message"] }
-            : {}),
+          ...(speech?.speechExpressionCaptureOnly ? { toolsAllow: [] } : {}),
           abortSignal: signal,
           speechExpressionContext: speech?.speechExpressionContext,
           speechExpressionCaptureOnly: speech?.speechExpressionCaptureOnly,

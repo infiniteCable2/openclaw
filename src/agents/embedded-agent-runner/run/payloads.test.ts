@@ -17,6 +17,37 @@ import {
 import { mergeAttemptToolMediaPayloads } from "./tool-media-payloads.js";
 
 describe("buildEmbeddedRunPayloads tool-error warnings", () => {
+  it("publishes the native physical-message origin with the canonical final reply", () => {
+    const assistant = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "First.\nSecond." }],
+    });
+    const [payload] = buildPayloads({
+      assistantTexts: ["First.", "Second."],
+      lastAssistant: assistant,
+      currentAssistant: assistant,
+      assistantMessageIndex: 3,
+      assistantMessageStartIndex: 2,
+    });
+    expect(payload?.text).toBe("First.\nSecond.");
+    expect(getReplyPayloadMetadata(payload ?? {})).toMatchObject({
+      assistantMessageIndex: 3,
+      assistantMessageStartIndex: 2,
+    });
+  });
+
+  it("does not borrow a newer message origin for an older kept answer", () => {
+    const kept = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "Earlier answer." }],
+    });
+    const [payload] = buildPayloads({
+      assistantTexts: ["Earlier answer."],
+      keptAnswer: { assistant: kept, messageIndex: 1 },
+      assistantMessageIndex: 3,
+      assistantMessageStartIndex: 2,
+    });
+    expect(payload?.text).toBe("Earlier answer.");
+    expect(getReplyPayloadMetadata(payload ?? {})).not.toHaveProperty("assistantMessageStartIndex");
+  });
   function expectNoPayloads(params: Parameters<typeof buildPayloads>[0]) {
     // Many suppression cases should produce no channel reply at all; keep the
     // assertion explicit so accidental fallback text is obvious.

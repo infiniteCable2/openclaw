@@ -5,6 +5,7 @@ import { readAssistantTextBlocksForPhase } from "../../shared/chat-message-conte
 import { createTextPartCodeRegionResolver } from "../../shared/text/code-regions.js";
 import { trimTextPreservingCode } from "../../shared/text/text-projection.js";
 import { extractTtsDirectiveParts } from "../../tts/directive-facts.js";
+import { collectNativeSpeechPresentation } from "../../tts/speech-presentation-facts.js";
 import {
   parseInlineDirectiveParts,
   stripInlineDirectivePartsForDelivery,
@@ -59,11 +60,10 @@ function mergeTtsFacts(
   };
 }
 
-/** Strips final-answer directives in place so live state and persisted bytes stay identical. */
+/** Publish native speech facts and normalize legacy directives once at the transcript boundary. */
 // TRANSITIONAL(marker-retirement): once the visibleReplies default flips and the
-// model stops emitting inline markers, this projection parses nothing and the
-// whole applier (plus its parser imports) can be deleted; openclawDelivery facts
-// then come exclusively from structured message-tool sends and managed-media rewrites.
+// model stops emitting inline markers, the legacy parsing below can retire.
+// Native per-block speech publication remains the shared delivery-fact owner.
 export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMessage>(
   message: T,
   options?: { managedMediaUrls?: readonly string[] },
@@ -73,6 +73,8 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
   }
   const finalBlocks = readAssistantTextBlocksForPhase(message, "final_answer");
   const blocks = finalBlocks.length ? finalBlocks : readAssistantTextBlocksForPhase(message);
+  // Validate authored facts before legacy normalization can alter their exact text projection.
+  collectNativeSpeechPresentation(message);
   const original = blocks.map((block) => block.text);
   const parsed = parseInlineDirectiveParts(original);
   const stripped = stripInlineDirectivePartsForDelivery(parsed.map((part) => part.text));
@@ -81,6 +83,20 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
     blocks.length > 1
       ? createTextPartCodeRegionResolver(tts.map((part) => part.cleanedText))
       : undefined;
+  const normalizedTexts = tts.map((speech, index) =>
+    speech.facts
+      ? trimTextPreservingCode(speech.cleanedText, "both", codeRegions?.(index))
+      : speech.cleanedText,
+  );
+  for (const [index, block] of blocks.entries()) {
+    if (
+      isRecord(block.openclawDelivery) &&
+      block.openclawDelivery.tts !== undefined &&
+      normalizedTexts[index] !== block.text
+    ) {
+      throw new Error("Native speech text must not also contain legacy delivery directives");
+    }
+  }
   let facts: AssistantDeliveryFacts | undefined;
   for (const [index, block] of blocks.entries()) {
     const reply = expectDefined(parsed[index], "parsed assistant part");
@@ -89,9 +105,7 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
     if (speech.cleanedText === original[index] && !hasDeliveryFacts) {
       continue;
     }
-    block.text = speech.facts
-      ? trimTextPreservingCode(speech.cleanedText, "both", codeRegions?.(index))
-      : speech.cleanedText;
+    block.text = expectDefined(normalizedTexts[index], "normalized assistant text part");
     if (!hasDeliveryFacts) {
       continue;
     }
@@ -103,12 +117,25 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
       ...(speech.facts ? { tts: mergeTtsFacts(facts.tts, speech.facts) } : {}),
     });
   }
+  const nativeSpeech = collectNativeSpeechPresentation(message);
+  if (nativeSpeech) {
+    facts ??= {};
+    facts.tts ??= nativeSpeech;
+  }
   if (facts) {
     const currentFacts = isRecord(message.openclawDelivery) ? message.openclawDelivery : undefined;
     const mergedFacts = { ...currentFacts, ...facts };
     const currentTts = readAssistantDeliveryFacts(currentFacts)?.tts;
     if (currentTts && facts.tts) {
       mergedFacts.tts = mergeTtsFacts(currentTts, facts.tts);
+    }
+    if (nativeSpeech) {
+      // Per-block facts are authoritative for this phase; stale message-level speech cannot win.
+      const tts: AssistantDeliveryTtsFacts = { ...mergedFacts.tts, ...nativeSpeech };
+      if (!nativeSpeech.expression) {
+        delete tts.expression;
+      }
+      mergedFacts.tts = tts;
     }
     if (facts.replyToId) {
       delete mergedFacts.replyToCurrent;

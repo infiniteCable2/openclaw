@@ -46,8 +46,37 @@ Tool profiles do not affect [automatic TTS](/tools/tts/output#auto-tts-behavior)
 
 ## Structured speech expressions
 
-`message(action="send")` accepts optional `voiceExpression` alongside plain
-`voiceText`. The expression is a speech-only fact: its ordered text parts must
+Speech expressions are optional answer presentation facts, not a capability
+exclusive to the `message` tool. An admitted automatic voice-note turn, live
+answer, commentary block, or prepared greeting can carry the same clean text and
+expression. The agent receives the selected provider's supported vocabulary
+only when expression delivery is enabled for that output.
+
+For native output, the model can produce one explicit JSON presentation object
+per native text block, with `type` first and no Markdown fence or surrounding
+prose:
+
+```json
+{
+  "type": "speech",
+  "text": "Hello there.",
+  "expression": {
+    "emotion": "joyful",
+    "parts": [{ "text": "Hello " }, { "event": "laugh" }, { "text": "there.", "emphasis": true }]
+  }
+}
+```
+
+The native stream boundary validates the presentation before exposing its clean
+text. Incomplete envelope prefixes stay hidden; only complete validated
+expression facts reach speech delivery. Ordinary text remains valid and needs
+no envelope or `message` call. Native commentary retains its existing phase and
+opt-in; preparing a greeting neither plays audio nor grants tool execution.
+Speech presentation does not change routing, tool availability, subagent
+restrictions, or run lifetime.
+
+For an explicit send, `message(action="send")` accepts optional `voiceExpression`
+alongside plain `voiceText`. The expression is a speech-only fact: its ordered text parts must
 concatenate **exactly** to `voiceText`. Event parts have no visible text. Keep the
 complete, clean answer in `message`; do not place provider emotion markup there.
 
@@ -66,9 +95,12 @@ complete, clean answer in `message`; do not place provider emotion markup there.
 The shown declarations are illustrative, not universally supported. Expression
 delivery requires an explicit exact-agent/channel/synthesis-target opt-in under
 `talk.speech.agentProfiles.<agentId>.expression.channels.<channel>.targets` and
-the selected provider/model's admitted expression capabilities. Without either,
-the expression request fails before synthesis; it does not silently speak the
-markup or fall back to a neutral rendering. There is no new `[[tts:...]]` syntax.
+the selected provider/model's admitted expression capabilities. When expression
+support is disabled for the exact scope, optional controls are ignored and the
+clean plain text retains its normal delivery/TTS behavior. A stale model
+instruction cannot re-enable expression support. When enabled, unsupported or
+invalid controls still fail before synthesis. Control data is never spoken as
+literal markup. There is no new `[[tts:...]]` syntax.
 
 Enabling expression support does not require an expression on every reply. Omit
 `voiceExpression` when no special emotion, emphasis, or vocal event is intended;
@@ -98,11 +130,11 @@ generation boundaries. The normal chunker, pauses, cancellation, and clean text
 projection retain their existing owners. Only declared provider emotion values
 are valid; omission does not invent a universal neutral/reset identifier.
 
-This structured-send contract does **not** by itself make automatic final answers,
-live commentary, or prepared greetings produce expressions. Those paths retain
-their existing plain-text behavior until their native producer supplies the same
-structured facts. A provider's `whisper` capability alone does not imply a whisper
-emotion/event identifier; use only its declared vocabulary.
+Native answer blocks and explicit sends share expression validation, provider
+capability checks, segmentation, and clean-text projection. An explicit send
+still requires the existing `message` tool permission; enabling native speech
+presentation does not grant it. A provider's `whisper` capability alone does not
+imply a whisper emotion/event identifier; use only its declared vocabulary.
 
 ## Gateway RPC
 

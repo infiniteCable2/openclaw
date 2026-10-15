@@ -323,6 +323,7 @@ export function completeEmbeddedAttemptResult(
     latestMcpAppChannelView: subscription.getLatestMcpAppChannelView(),
     latestMcpConnectAction: subscription.getLatestMcpConnectAction(),
     lastAssistantTextMessageIndex: subscription.getLastAssistantTextMessageIndex(),
+    lastAssistantTextMessageStartIndex: subscription.getLastAssistantTextMessageStartIndex(),
     toolMetas: toolMetasNormalized,
     acceptedSessionSpawns,
     lastToolError,

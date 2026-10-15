@@ -1,5 +1,6 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import { finishCapabilityOperation } from "../plugins/capability-provider-acquisition.js";
+import { isSpeechExpressionEnabled } from "./expression.js";
 import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
 import { normalizeSpeechText } from "./speech-text.js";
 import type { TtsStreamResult, TtsSynthesisStreamResult } from "./tts-runtime-types.js";
@@ -31,12 +32,17 @@ export async function streamSpeech(
   try {
     const result = await acquired.run(() => {
       const target = resolveTtsSynthesisTarget(params.channel);
+      const expression = isSpeechExpressionEnabled({
+        cfg: acquired.setup.cfg,
+        ...acquired.setup.speechContext,
+        target,
+      })
+        ? params.overrides?.expression
+        : undefined;
       return executeTtsProviderAttempts({
         ...acquired.setup,
-        synthesisText: params.overrides?.expression
-          ? params.text
-          : normalizeSpeechText(params.text),
-        expression: params.overrides?.expression,
+        synthesisText: expression ? params.text : normalizeSpeechText(params.text),
+        expression,
         localServiceAdmission: params.localServiceAdmission,
         expectedSpeechSelection: params.expectedSpeechSelection,
         providerOverrides: params.overrides?.providerOverrides,

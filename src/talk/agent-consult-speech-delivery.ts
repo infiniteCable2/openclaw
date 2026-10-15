@@ -7,6 +7,7 @@ import { toErrorObject } from "../infra/errors.js";
 import type { CurrentSourceReplyTarget } from "../infra/outbound/message-action-contracts.js";
 import type { RuntimeLogger } from "../plugins/runtime/types-core.js";
 import { parseSpeechExpression } from "../tts/expression.js";
+import { sliceNativeSpeechPresentation } from "../tts/speech-presentation-facts.js";
 import type {
   RealtimeVoiceAgentConsultResult,
   RealtimeVoiceAgentConsultSpeechEvent,
@@ -59,12 +60,23 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
   > = [];
   let expressionComplete = false;
   let expressiveInput: object | undefined;
+  const queuedNativeSources: Array<{
+    assistantMessageIndex: number;
+    messageStart: number;
+    sourceText: string;
+    sourceRange: readonly [number, number];
+  }> = [];
   const acceptedExpressionCalls = new Map<
     string,
     { fingerprint: string; completion: Promise<void> }
   >();
   const emitSpeechEvent = (event: RealtimeVoiceAgentConsultSpeechEvent) => {
-    if (!params.onSpeakableText || speechDeliveryError || speechDeliveryAborted) {
+    if (
+      !params.onSpeakableText ||
+      params.speechExpressionCaptureOnly ||
+      speechDeliveryError ||
+      speechDeliveryAborted
+    ) {
       return undefined;
     }
     speechDelivery = speechDelivery
@@ -91,6 +103,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
             assertExpressionCurrent();
             expressiveInput = input;
             expressiveUtterances.length = 0;
+            queuedNativeSources.length = 0;
             expressionComplete = false;
           },
           speechUtteranceOnly: true,
@@ -188,6 +201,14 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
     isReasoning?: boolean;
     isCommentary?: boolean;
   }) => {
+    const speech = getReplyPayloadMetadata(payload)?.tts;
+    const event = (text: string): RealtimeVoiceAgentConsultSpeechEvent => ({
+      type: "chunk",
+      text,
+      ...(speech ? { speech } : {}),
+      localServiceAdmission: params.speechExpressionContext?.localServiceAdmission,
+      expectedSpeechSelection: params.speechExpressionContext?.expectedSpeechSelection,
+    });
     if (payload.isCommentary) {
       if (
         spokenCommentaryEnabled &&
@@ -197,7 +218,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
         payload.text.trim()
       ) {
         commentarySpeechQueued = true;
-        void emitSpeechEvent({ type: "chunk", text: payload.text.trim() });
+        void emitSpeechEvent(event(speech?.expression ? payload.text : payload.text.trim()));
       }
       return;
     }
@@ -206,7 +227,72 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
       return;
     }
     streamedChunks.push(text);
-    void emitSpeechEvent({ type: "chunk", text });
+    const queued = emitSpeechEvent(event(speech?.expression ? (speech.text ?? text) : text));
+    const metadata = getReplyPayloadMetadata(payload);
+    const sourceRange = metadata?.ttsSourceRange;
+    const index = metadata?.assistantMessageIndex;
+    const messageStart = metadata?.assistantMessageStartIndex;
+    if (queued && sourceRange && index !== undefined && messageStart !== undefined) {
+      queuedNativeSources.push({
+        assistantMessageIndex: index,
+        messageStart,
+        sourceText: speech?.text ?? payload.text ?? text,
+        sourceRange,
+      });
+    }
+  };
+
+  const remainingNativeUtterance = (
+    payload: ReplyPayload,
+    utterance: RealtimeVoiceSpeechUtterance,
+  ): RealtimeVoiceSpeechUtterance[] => {
+    const metadata = getReplyPayloadMetadata(payload);
+    const index = metadata?.assistantMessageIndex;
+    const messageStart = metadata?.assistantMessageStartIndex;
+    if (index === undefined || messageStart === undefined) {
+      return [utterance];
+    }
+    const receipts = queuedNativeSources.filter(
+      (source) =>
+        source.messageStart === messageStart &&
+        source.assistantMessageIndex >= messageStart &&
+        source.assistantMessageIndex <= index,
+    );
+    const source = utterance.speech?.text ?? payload.text ?? "";
+    let end = 0;
+    for (const receipt of receipts) {
+      const [start, nextEnd] = receipt.sourceRange;
+      if (
+        start < end ||
+        nextEnd <= start ||
+        nextEnd > source.length ||
+        source.slice(end, start).trim() ||
+        source.slice(start, nextEnd) !== receipt.sourceText
+      ) {
+        // Source identity alone does not prove that a revised answer retains its spoken prefix.
+        return [utterance];
+      }
+      end = nextEnd;
+    }
+    if (end === 0) {
+      return [utterance];
+    }
+    while (end < source.length && /\s/u.test(source[end]!)) {
+      end += 1;
+    }
+    if (end === source.length) {
+      return [];
+    }
+    const text = source.slice(end);
+    return [
+      {
+        ...utterance,
+        text,
+        speech: sliceNativeSpeechPresentation(utterance.speech, text, [end, source.length], {
+          retainWhitespaceEdgeEvents: true,
+        }),
+      },
+    ];
   };
 
   const finish = async ({
@@ -218,7 +304,13 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
     acknowledgment?: string;
     payloads: ReplyPayload[];
   }): Promise<RealtimeVoiceAgentConsultResult> => {
-    if (currentSourceReplyTarget) {
+    if (params.speechExpressionContext) {
+      assertExpressionCurrent();
+    }
+    if (
+      currentSourceReplyTarget &&
+      (expressionComplete || (yielded && expressiveUtterances.length > 0))
+    ) {
       assertExpressionCurrent();
       if (acknowledgment) {
         const answerParts = expressiveUtterances.filter((part) => part.phase === "final_answer");
@@ -248,7 +340,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
           assertExpressionCurrent();
         }
       }
-      if ((!expressionComplete && !yielded) || expressiveUtterances.length === 0) {
+      if (expressiveUtterances.length === 0) {
         throw new Error(
           "Enabled speech expression did not produce a completed native current-source reply",
         );
@@ -298,6 +390,39 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
     const currentInputPayloads = payloads.filter(
       (payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer !== true,
     );
+    const nativePayloads = currentInputPayloads.flatMap((payload) => {
+      const visible = collectRealtimeVoiceAgentConsultVisibleText([payload]);
+      return visible ? [{ payload, visible }] : [];
+    });
+    const nativeUtterances = nativePayloads.map(({ payload, visible }) => {
+      const speech = getReplyPayloadMetadata(payload)?.tts;
+      return {
+        text: speech?.text ?? visible,
+        speech,
+        localServiceAdmission: params.speechExpressionContext?.localServiceAdmission,
+        expectedSpeechSelection: params.speechExpressionContext?.expectedSpeechSelection,
+      };
+    });
+    const pendingNativeUtterances = nativePayloads.flatMap(({ payload }, index) =>
+      remainingNativeUtterance(payload, nativeUtterances[index]!),
+    );
+    const nativeSourcesKnown = nativePayloads.some(
+      ({ payload }) => getReplyPayloadMetadata(payload)?.assistantMessageIndex !== undefined,
+    );
+    if (
+      acknowledgment &&
+      !hasQueuedSpeechSuffix(
+        nativeUtterances.map((part) => part.text),
+        acknowledgment,
+      )
+    ) {
+      nativeUtterances.push({
+        text: acknowledgment,
+        speech: undefined,
+        localServiceAdmission: params.speechExpressionContext?.localServiceAdmission,
+        expectedSpeechSelection: params.speechExpressionContext?.expectedSpeechSelection,
+      });
+    }
     const text =
       yieldedSpeech ??
       collectRealtimeVoiceAgentConsultVisibleText(currentInputPayloads) ??
@@ -326,18 +451,33 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
       }
       return {
         text: fallbackText,
-        ...(params.onSpeakableText ? { delivered: true } : {}),
+        ...(params.onSpeakableText && !params.speechExpressionCaptureOnly
+          ? { delivered: true }
+          : {}),
       };
     }
-    if (
+    if (!yielded && streamedChunks.length === 0 && nativeUtterances.some((part) => part.speech)) {
+      for (const utterance of nativeUtterances) {
+        streamedChunks.push(utterance.text);
+        void emitSpeechEvent({ type: "chunk", ...utterance });
+      }
+    } else if (
       !yielded &&
       ((currentInputPayloads.length < payloads.length && streamedChunks.length > 0) ||
         (commentarySpeechQueued && streamedChunks.length === 0)) &&
-      !hasQueuedSpeechSuffix(streamedChunks, text)
+      (nativeSourcesKnown
+        ? pendingNativeUtterances.length > 0
+        : !hasQueuedSpeechSuffix(streamedChunks, text))
     ) {
       // Earlier-input speech may be all the sink has received. Done only
       // consolidates queued audio; append the current answer unless already queued.
-      void emitSpeechEvent({ type: "chunk", text });
+      if (nativeUtterances.length > 0) {
+        for (const utterance of nativeSourcesKnown ? pendingNativeUtterances : nativeUtterances) {
+          void emitSpeechEvent({ type: "chunk", ...utterance });
+        }
+      } else {
+        void emitSpeechEvent({ type: "chunk", text });
+      }
     }
     void emitSpeechEvent({ type: "done", text });
     await speechDelivery;
@@ -348,7 +488,10 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
     return {
       text,
       ...(yielded ? { yielded: true as const } : {}),
-      ...(params.onSpeakableText ? { delivered: true } : {}),
+      ...(params.speechExpressionContext && nativeUtterances.length > 0
+        ? { utterances: nativeUtterances }
+        : {}),
+      ...(params.onSpeakableText && !params.speechExpressionCaptureOnly ? { delivered: true } : {}),
     };
   };
 

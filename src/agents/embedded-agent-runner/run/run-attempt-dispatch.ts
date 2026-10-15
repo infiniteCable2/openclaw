@@ -419,6 +419,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     toolBindings: params.toolBindings,
     currentSourceReplyTarget: params.currentSourceReplyTarget,
     messageSpeechAdmission: params.messageSpeechAdmission,
+    nativeSpeechPresentation: params.nativeSpeechPresentation,
     sessionTtsAuto: params.sessionTtsAuto,
     chatType: params.chatType,
     agentAccountId: params.agentAccountId,

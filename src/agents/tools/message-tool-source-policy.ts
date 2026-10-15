@@ -48,6 +48,11 @@ const SOURCE_REPLY_ONLY_MESSAGE_SCHEMA = Type.Object({
   message: Type.Optional(
     Type.String({ description: "Text to send to the current source conversation." }),
   ),
+  // Tolerate stale optional presentation without granting speech generation or
+  // additional tool arguments. The disabled path discards it before dispatch.
+  voiceExpression: Type.Optional(
+    Type.Unknown({ description: "Ignored when speech expression is not enabled for this source." }),
+  ),
   replyTo: Type.Optional(Type.String()),
   threadId: Type.Optional(Type.String()),
 });
@@ -166,6 +171,9 @@ export function enforceSourceReplyOnlyMessageAction(params: {
     ) {
       throw sourceReplyPolicyError(`Completion source replies cannot use the "${name}" argument.`);
     }
+  }
+  if (!params.currentSourceReplyTarget?.speechUtteranceOnly && !params.messageSpeechAdmission) {
+    delete params.args.voiceExpression;
   }
   enforceSourceReplyOnlyTextDirectives(params.args);
   params.messageSpeechAdmission?.assertCurrent();

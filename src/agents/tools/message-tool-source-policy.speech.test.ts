@@ -1,6 +1,10 @@
+import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 import { MESSAGE_TOOL_SPEECH_PROPERTIES } from "./message-tool-schema.js";
-import { buildSourceReplyOnlyMessageSchema } from "./message-tool-source-policy.js";
+import {
+  buildSourceReplyOnlyMessageSchema,
+  enforceSourceReplyOnlyMessageAction,
+} from "./message-tool-source-policy.js";
 
 describe("native current-source speech schema", () => {
   it("takes exactly the canonical named speech fields without provider/voice grants", () => {
@@ -14,10 +18,31 @@ describe("native current-source speech schema", () => {
     expect(schema.properties).toHaveProperty("replyPhase");
   });
 
-  it("keeps the ordinary restricted surface free of speech controls", () => {
+  it("tolerates but discards optional disabled controls without granting speech text", () => {
     const schema = buildSourceReplyOnlyMessageSchema(false, false);
     expect(schema.properties).not.toHaveProperty("voiceText");
-    expect(schema.properties).not.toHaveProperty("voiceExpression");
     expect(schema.properties).not.toHaveProperty("replyPhase");
+    const args = {
+      action: "send",
+      message: "Plain current-source answer.",
+      voiceExpression: { emotion: "unsupported", parts: [{ text: "Mismatched words." }] },
+    };
+    expect(Value.Check(schema, args)).toBe(true);
+    enforceSourceReplyOnlyMessageAction({
+      action: "send",
+      args,
+      currentChannelProvider: "matrix",
+      currentChannelId: "room:example",
+    });
+    expect(args).not.toHaveProperty("voiceExpression");
+    expect(args.message).toBe("Plain current-source answer.");
+    expect(() =>
+      enforceSourceReplyOnlyMessageAction({
+        action: "send",
+        args: { ...args, voiceText: "Not granted." },
+        currentChannelProvider: "matrix",
+        currentChannelId: "room:example",
+      }),
+    ).toThrow('cannot use the "voiceText" argument');
   });
 });

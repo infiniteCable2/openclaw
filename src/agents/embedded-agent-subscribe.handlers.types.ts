@@ -96,7 +96,11 @@ export type StreamBlockState = {
 };
 
 /** A response-ending answer and the message index its reply payload belongs to. */
-export type CompletedAssistantAnswer = { assistant: AssistantMessage; messageIndex: number };
+export type CompletedAssistantAnswer = {
+  assistant: AssistantMessage;
+  messageIndex: number;
+  messageStartIndex?: number;
+};
 
 /** Mutable subscription state shared by embedded-agent event handlers. */
 export type EmbeddedAgentSubscribeState = {
@@ -324,6 +328,7 @@ export type EmbeddedAgentSubscribeContext = {
       consumePendingToolMedia?: boolean;
       blockSourceText?: string;
       blockSourceRange?: readonly [start: number, end: number];
+      blockSourceOffset?: number;
     },
   ) => void;
   flushAssistantStream: () => void;

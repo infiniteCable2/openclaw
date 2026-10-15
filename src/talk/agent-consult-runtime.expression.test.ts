@@ -36,7 +36,54 @@ describe("native expressive speech consult", () => {
       },
     );
 
-  it("streams native utterances once with different emotions and separate commentary", async () => {
+  it("retains the host yield acknowledgment for buffered native speech", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const acknowledgment = "I started that task.";
+    runEmbeddedAgent.mockResolvedValueOnce({
+      payloads: [utterance("Working.", "joyful")],
+      meta: { yielded: true, yieldAcknowledgment: acknowledgment },
+    });
+    const result = await consultRealtimeVoiceAgent({
+      ...base,
+      agentRuntime: runtime as never,
+      speechExpressionContext: { guidance: "Optional native speech.", assertCurrent: vi.fn() },
+    });
+    expect(result.text).toBe(acknowledgment);
+    expect(result.utterances?.map((part) => part.text)).toEqual(["Working.", acknowledgment]);
+    expect(result.delivered).toBeUndefined();
+  });
+
+  it("retains current native expression when a followup supersedes an already streamed answer", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const events: RealtimeVoiceAgentConsultSpeechEvent[] = [];
+    const old = setReplyPayloadMetadata(utterance("Old answer.", "sad"), {
+      precedingInputAnswer: true,
+    });
+    runEmbeddedAgent.mockImplementationOnce(async (params?: RunEmbeddedAgentParams) => {
+      await params?.onBlockReply?.(old);
+      return { payloads: [old, utterance("Corrected answer.", "joyful")], meta: {} };
+    });
+    const result = await consultRealtimeVoiceAgent({
+      ...base,
+      agentRuntime: runtime as never,
+      speechExpressionContext: { guidance: "Optional native speech.", assertCurrent: vi.fn() },
+      onSpeakableText: (event) => {
+        events.push(event);
+      },
+    });
+    expect(result.text).toBe("Corrected answer.");
+    expect(events.filter((event) => event.type === "chunk")).toEqual([
+      expect.objectContaining({ text: "Old answer." }),
+      expect.objectContaining({
+        text: "Corrected answer.",
+        speech: expect.objectContaining({
+          expression: expect.objectContaining({ emotion: "joyful" }),
+        }),
+      }),
+    ]);
+  });
+
+  it("preserves explicit message utterances without forcing the message tool or disabling native blocks", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
     const events: RealtimeVoiceAgentConsultSpeechEvent[] = [];
     const expectedSpeechSelection = {
@@ -87,8 +134,10 @@ describe("native expressive speech consult", () => {
       },
     });
     expect(runEmbeddedAgent).toHaveBeenCalledOnce();
-    expect(captured?.sourceReplyDeliveryMode).toBe("message_tool_only");
-    expect(captured?.onBlockReply).toBeUndefined();
+    expect(captured?.sourceReplyDeliveryMode).toBeUndefined();
+    expect(captured?.forceMessageTool).toBeUndefined();
+    expect(captured?.nativeSpeechPresentation?.assertCurrent).toBeTypeOf("function");
+    expect(captured?.onBlockReply).toBeTypeOf("function");
     expect(result.text).toBe("First sentence. Second sentence.");
     expect(events.map((event) => (event.type === "abort" ? "abort" : event.text))).toEqual([
       "Checking.",
@@ -115,27 +164,31 @@ describe("native expressive speech consult", () => {
     expect(() => captured?.currentSourceReplyTarget?.assertCurrent()).toThrow("no longer active");
   });
 
-  it("captures a greeting without speech callbacks and permits execution only through the source message tool", async () => {
+  it("captures native greeting expression facts without a message tool or any execution grant", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
     const sink = vi.fn();
     runEmbeddedAgent.mockImplementationOnce(async (params?: RunEmbeddedAgentParams) => {
-      expect(params?.toolExecutionAllow).toEqual(["message"]);
+      expect(params?.toolsAllow).toEqual([]);
+      expect(params?.toolExecutionAllow).toBeUndefined();
+      expect(params?.forceMessageTool).toBeUndefined();
+      expect(params?.sourceReplyDeliveryMode).toBeUndefined();
+      params?.nativeSpeechPresentation?.assertCurrent();
       expect(params?.currentSourceReplyTarget?.sourceOnly).toBe(true);
-      await params!.currentSourceReplyTarget!.deliver(utterance("Hello.", "joyful"), {
-        final: true,
-        phase: "final_answer",
-      });
-      return { payloads: [], meta: {} };
+      return { payloads: [utterance("Hello.", "joyful")], meta: {} };
     });
     const result = await consultRealtimeVoiceAgent({
       ...base,
       agentRuntime: runtime as never,
       speechExpressionContext: { guidance: "Use native structured sends.", assertCurrent: vi.fn() },
       speechExpressionCaptureOnly: true,
+      toolsAllow: [],
       onSpeakableText: sink,
     });
     expect(result.text).toBe("Hello.");
     expect(result.delivered).toBeUndefined();
+    expect(result.utterances).toMatchObject([
+      { text: "Hello.", speech: { expression: { emotion: "joyful" } } },
+    ]);
     expect(sink).not.toHaveBeenCalled();
   });
 
@@ -171,20 +224,93 @@ describe("native expressive speech consult", () => {
     expect(result.utterances).toHaveLength(1);
   });
 
-  it("fails enabled expression instead of speaking a plain terminal fallback", async () => {
+  it("accepts ordinary native final text when enabled expressions are not needed", async () => {
     const { runtime } = createAgentRuntime([{ text: "Plain fallback." }]);
     const sink = vi.fn();
+    const result = await consultRealtimeVoiceAgent({
+      ...base,
+      agentRuntime: runtime as never,
+      speechExpressionContext: {
+        guidance: "Use native structured sends.",
+        assertCurrent: vi.fn(),
+      },
+      onSpeakableText: sink,
+    });
+    expect(result.text).toBe("Plain fallback.");
+    expect(sink.mock.calls.map(([event]) => event.type)).toEqual(["done"]);
+  });
+
+  it("streams native commentary and final expression facts without message availability", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const events: RealtimeVoiceAgentConsultSpeechEvent[] = [];
+    const expectedSpeechSelection = {
+      provider: "example",
+      model: "prepared-model",
+      voice: "prepared-voice",
+    };
+    let captured: RunEmbeddedAgentParams | undefined;
+    runEmbeddedAgent.mockImplementationOnce(async (params?: RunEmbeddedAgentParams) => {
+      captured = params;
+      expect(params?.toolsAllow).toEqual(["read"]);
+      expect(params?.forceMessageTool).toBeUndefined();
+      params?.nativeSpeechPresentation?.assertCurrent();
+      await params!.onBlockReply!(
+        Object.assign(utterance("Checking.", "neutral"), { isCommentary: true }),
+      );
+      await params!.onBlockReply!(utterance("Found it.", "joyful"));
+      return { payloads: [utterance("Found it.", "joyful")], meta: {} };
+    });
+    const result = await consultRealtimeVoiceAgent({
+      ...base,
+      agentRuntime: runtime as never,
+      toolsAllow: ["read"],
+      speechExpressionContext: {
+        guidance: "Native presentation.",
+        assertCurrent: vi.fn(),
+        expectedSpeechSelection,
+      },
+      speakCommentary: true,
+      onSpeakableText: (event) => {
+        events.push(event);
+      },
+    });
+    expect(result.text).toBe("Found it.");
+    expect(events).toMatchObject([
+      {
+        type: "chunk",
+        text: "Checking.",
+        speech: { expression: { emotion: "neutral" } },
+        expectedSpeechSelection,
+      },
+      {
+        type: "chunk",
+        text: "Found it.",
+        speech: { expression: { emotion: "joyful" } },
+        expectedSpeechSelection,
+      },
+      { type: "done", text: "Found it." },
+    ]);
+    expect(() => captured?.nativeSpeechPresentation?.assertCurrent()).toThrow("no longer active");
+  });
+
+  it("does not deliver native speech after the caller cancels the run", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const controller = new AbortController();
+    const sink = vi.fn();
+    runEmbeddedAgent.mockImplementationOnce(async (params?: RunEmbeddedAgentParams) => {
+      controller.abort();
+      expect(() => params?.nativeSpeechPresentation?.assertCurrent()).toThrow();
+      return { payloads: [utterance("Must not play.", "joyful")], meta: {} };
+    });
     await expect(
       consultRealtimeVoiceAgent({
         ...base,
         agentRuntime: runtime as never,
-        speechExpressionContext: {
-          guidance: "Use native structured sends.",
-          assertCurrent: vi.fn(),
-        },
+        abortSignal: controller.signal,
+        speechExpressionContext: { guidance: "Native presentation.", assertCurrent: vi.fn() },
         onSpeakableText: sink,
       }),
-    ).rejects.toThrow("completed native current-source reply");
+    ).rejects.toThrow("cancelled");
     expect(sink.mock.calls.map(([event]) => event.type)).toEqual(["abort"]);
   });
 
@@ -337,17 +463,21 @@ describe("native expressive speech consult", () => {
 
   it("does not widen an explicit native tool allowlist for speech presentation", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
-    await expect(
-      consultRealtimeVoiceAgent({
-        ...base,
-        agentRuntime: runtime as never,
-        toolsAllow: ["read"],
-        speechExpressionContext: {
-          guidance: "Use native structured sends.",
-          assertCurrent: vi.fn(),
-        },
-      }),
-    ).rejects.toThrow("permitted by this run's native policy");
-    expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    const result = await consultRealtimeVoiceAgent({
+      ...base,
+      agentRuntime: runtime as never,
+      toolsAllow: ["read"],
+      speechExpressionContext: {
+        guidance: "Use native structured sends.",
+        assertCurrent: vi.fn(),
+      },
+    });
+    expect(result.text).toBe("Speak this.");
+    expect(runEmbeddedAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ toolsAllow: ["read"] }),
+    );
+    const params = runEmbeddedAgent.mock.calls[0]?.[0];
+    expect(params?.toolExecutionAllow).toBeUndefined();
+    expect(params?.forceMessageTool).toBeUndefined();
   });
 });

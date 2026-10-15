@@ -182,6 +182,7 @@ export function prepareEmbeddedRunTerminal(input: {
   const payloads = buildEmbeddedRunPayloads({
     ...attempt,
     assistantMessageIndex: attempt.lastAssistantTextMessageIndex,
+    assistantMessageStartIndex: attempt.lastAssistantTextMessageStartIndex,
     lastAssistant: payloadAssistant,
     currentAssistant: attempt.yieldDetected ? null : (payloadAssistant ?? null),
     // A clean yield is a handoff, not a terminal tool failure. Keep the error

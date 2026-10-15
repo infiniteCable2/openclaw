@@ -22,11 +22,13 @@ import {
   readPendingToolMediaReply,
   restorePendingToolMediaReply,
 } from "./embedded-agent-subscribe.handlers.messages.replies.js";
+import { resolveAssistantStreamBlockIndex } from "./embedded-agent-subscribe.handlers.messages.stream.js";
 import type {
   AssistantStreamData,
   EmbeddedAgentSubscribeContext,
 } from "./embedded-agent-subscribe.handlers.types.js";
 import type { EmbeddedAgentEvent } from "./embedded-agent-subscribe.shared-types.js";
+import { projectNativeBlockSpeech } from "./embedded-agent-subscribe.speech.js";
 import type { SubscribeEmbeddedAgentSessionParams } from "./embedded-agent-subscribe.types.js";
 import type { AgentMessage } from "./runtime/index.js";
 
@@ -439,6 +441,26 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
         blockSourceText: options.blockSourceText,
         blockSourceRange: options.blockSourceRange,
       });
+    }
+    if (taggedPayload.text && !payload.isReasoning && state.lastAssistant) {
+      const scope = state.blockReplyScopeStart;
+      const anchor = scope
+        ? resolveAssistantStreamBlockIndex(state.lastAssistant, scope.contentIndex, scope.itemId)
+        : undefined;
+      const speech = projectNativeBlockSpeech({
+        message: state.lastAssistant,
+        text: taggedPayload.text,
+        commentary: payload.isCommentary,
+        sourceContentIndex: anchor === undefined ? undefined : anchor + (scope?.after ? 1 : 0),
+        sourceRange: options?.blockSourceRange,
+        sourceOffset: options?.blockSourceOffset,
+      });
+      if (speech) {
+        setReplyPayloadMetadata(taggedPayload, {
+          tts: speech.tts,
+          ttsSourceRange: speech.sourceRange,
+        });
+      }
     }
     if (state.deferBlockReplyDelivery && payload.isCommentary !== true) {
       if (pendingToolMedia) {

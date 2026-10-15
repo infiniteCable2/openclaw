@@ -312,8 +312,15 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   buildSuccess: (params: TtsProviderSuccess<TSynthesis>) => TResult;
 }) {
   const { cfg, config, persona, providers } = params;
+  const expressionEnabled = isSpeechExpressionEnabled({
+    cfg,
+    ...params.speechContext,
+    target: params.target,
+  });
+  const expression = expressionEnabled ? params.expression : undefined;
   const prepareExpressionCapabilities =
-    params.expression !== undefined || params.prepareExpressionCapabilities === true;
+    expressionEnabled &&
+    (expression !== undefined || params.prepareExpressionCapabilities === true);
   const errors: string[] = [];
   const attemptedProviders: string[] = [];
   const attempts: TtsProviderAttempt[] = [];
@@ -378,16 +385,11 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
       ) {
         throw new Error("Selected speech provider changed after native expression admission");
       }
-      if (params.expression) {
-        if (!isSpeechExpressionEnabled({ cfg, ...params.speechContext, target: params.target })) {
-          throw new Error(
-            "Speech expressions are disabled for this exact agent, channel and target",
-          );
-        }
-        parseSpeechExpression(params.expression, params.synthesisText);
+      if (expression) {
+        parseSpeechExpression(expression, params.synthesisText);
         if (!resolvedProvider.provider.prepareExpressionCapabilities) {
           assertSpeechExpressionSupported(
-            params.expression,
+            expression,
             resolvedProvider.provider.getExpressionCapabilities?.({
               providerConfig: resolvedProvider.providerConfig,
               providerOverrides,
@@ -447,7 +449,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
                 cfg,
                 providerConfig: resolvedProvider.providerConfig,
                 providerOverrides,
-                ...(params.expression ? { expression: params.expression } : {}),
+                ...(expression ? { expression } : {}),
                 persona: resolvedProvider.synthesisPersona,
                 personaProviderConfig: resolvedProvider.personaProviderConfig,
                 target: params.target,
@@ -536,24 +538,20 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
           assertSpeechSegmentationProfile(segmentationProfile);
         }
         params.localServiceAdmission?.signal.throwIfAborted();
-        if (params.expression) {
+        if (expression) {
           // Provider preparation must not detach expression spans from their admitted plain text.
-          parseSpeechExpression(params.expression, prepared.text);
-          assertSpeechExpressionSupported(params.expression, expressionCapabilities);
+          parseSpeechExpression(expression, prepared.text);
+          assertSpeechExpressionSupported(expression, expressionCapabilities);
         }
         const synthesis = await operation.synthesize(
           {
             ...prepared,
             ...(segmentationProfile && prepared.text.trim()
               ? {
-                  segments: prepareSpeechSegments(
-                    prepared.text,
-                    segmentationProfile,
-                    params.expression,
-                  ),
+                  segments: prepareSpeechSegments(prepared.text, segmentationProfile, expression),
                 }
               : {}),
-            ...(params.expression ? { expression: params.expression } : {}),
+            ...(expression ? { expression } : {}),
             cfg,
             target: params.target,
             timeoutMs,

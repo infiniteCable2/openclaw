@@ -83,7 +83,7 @@ export async function prepareAutomaticSpeechExpressionContext(params: {
       throw new Error("Automatic speech readiness did not identify its selected provider/model");
     }
     const guidance = [
-      "For this admitted spoken turn, expression controls are optional. When using structured native message delivery, its source routing takes precedence over generic guidance about avoiding the message tool.",
+      "For this admitted spoken turn, expression controls are optional. Native assistant replies carry speech presentation without requiring a message action. Explicit message actions retain their existing routing and tool policy.",
       prepared.guidance,
       "Send requested attachments separately from spoken utterances; attachment sends retain their native non-TTS delivery.",
     ].join("\n\n");

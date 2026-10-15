@@ -1,3 +1,4 @@
+import { Value } from "typebox/value";
 // Covers core message-action send fallback, TTS application, and durable send
 // policy after plugin preparation is absent.
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,7 @@ import {
   GATEWAY_CLIENT_NAMES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { MessageToolSchema } from "../../agents/tools/message-tool-schema.js";
 import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -630,6 +632,13 @@ describe("runMessageAction core send routing", () => {
         tts: {
           auto: "off",
         },
+        talk: {
+          speech: {
+            agentProfiles: {
+              main: { expression: { channels: { testchat: { targets: ["audio-file"] } } } },
+            },
+          },
+        },
       } as OpenClawConfig,
       action: "send",
       params: {
@@ -682,6 +691,51 @@ describe("runMessageAction core send routing", () => {
     expect(mediaInput.mediaUrl).toBe("file:///tmp/openclaw-voice.ogg");
     expect(mediaInput.audioAsVoice).toBe(true);
   });
+
+  it.each(
+    [
+      null,
+      { unknown: "block" },
+      { emotion: "unsupported", parts: [{ text: "Mismatched words." }] },
+    ].flatMap((expression) => [true, false].map((voiceText) => ({ expression, voiceText }))),
+  )(
+    "discards disabled controls with plain voiceText=$voiceText and expression=$expression",
+    async ({ voiceText, expression }) => {
+      const sendText = vi
+        .fn()
+        .mockResolvedValue({ channel: "testchat", messageId: "m1", chatId: "c1" });
+      registerTestChatPlugin({ deliveryMode: "direct", sendText });
+      const params = {
+        channel: "testchat",
+        target: "channel:abc",
+        message: "Visible answer.",
+        ...(voiceText ? { voiceText: "Spoken answer." } : {}),
+        voiceExpression: expression,
+      };
+      expect(Value.Check(MessageToolSchema, { action: "send", ...params })).toBe(true);
+      await runMessageAction({
+        cfg: { channels: { testchat: { enabled: true } }, tts: { auto: "off" } } as OpenClawConfig,
+        action: "send",
+        params,
+        sessionKey: "agent:main:testchat:channel:abc",
+        dryRun: false,
+      });
+      expect(firstMockArg(sendText, "plain send").text).toBe("Visible answer.");
+      if (!voiceText) {
+        expect(ttsMocks.maybeApplyTtsToPayload).not.toHaveBeenCalled();
+        return;
+      }
+      const call = firstMockArg(ttsMocks.maybeApplyTtsToPayload, "plain speech send");
+      const payload = call.payload;
+      if (!payload || typeof payload !== "object") {
+        throw new Error("Expected a message payload");
+      }
+      expect(getReplyPayloadMetadata(payload)?.tts).toEqual({
+        tagged: true,
+        text: "Spoken answer.",
+      });
+    },
+  );
 
   it("forwards inbound audio context to message-tool TTS", async () => {
     const sendText = vi.fn().mockResolvedValue({

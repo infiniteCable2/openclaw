@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../config/types.js";
 import { logVerbose } from "../globals.js";
 import { transcodeAudioBuffer } from "../media/media-services.js";
 import { assertSecretOwnerAvailable } from "../secrets/runtime-degraded-state.js";
+import { isSpeechExpressionEnabled } from "./expression.js";
 import type { MessageSpeechAdmission } from "./message-speech-admission.js";
 import type { SpeechSynthesisRequest, TtsDirectiveOverrides } from "./provider-types.js";
 import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
@@ -261,12 +262,17 @@ async function synthesizeSpeechInternal(
       }
 
       const target = resolveTtsSynthesisTarget(params.channel);
+      const expression = isSpeechExpressionEnabled({
+        cfg: setup.cfg,
+        ...setup.speechContext,
+        target,
+      })
+        ? params.overrides?.expression
+        : undefined;
       return await executeTtsProviderAttempts({
         ...setup,
-        synthesisText: params.overrides?.expression
-          ? params.text
-          : normalizeSpeechText(params.text),
-        expression: params.overrides?.expression,
+        synthesisText: expression ? params.text : normalizeSpeechText(params.text),
+        expression,
         localServiceAdmission: params.localServiceAdmission,
         expectedSpeechSelection: params.expectedSpeechSelection,
         providerOverrides: params.overrides?.providerOverrides,

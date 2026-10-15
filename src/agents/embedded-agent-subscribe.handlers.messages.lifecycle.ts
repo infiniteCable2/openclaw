@@ -368,6 +368,7 @@ export function handleMessageEnd(
     ctx.state.inputAnswer = {
       assistant: applyAssistantDeliveryDirectives(structuredClone(assistantMessage)),
       messageIndex: ctx.state.lastAssistantTextMessageIndex,
+      messageStartIndex: ctx.state.assistantMessageStartIndex,
     };
   }
 

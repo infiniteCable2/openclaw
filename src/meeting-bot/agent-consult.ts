@@ -150,8 +150,7 @@ async function consultMeetingAgent(
     commentaryEnabled: params.speakCommentary === true && !params.speechExpressionCaptureOnly,
     signal: params.abortSignal,
   });
-  const admittedToolsAllow =
-    speechExpressionContext && params.speechExpressionCaptureOnly ? ["message"] : toolsAllow;
+  const admittedToolsAllow = params.speechExpressionCaptureOnly ? [] : toolsAllow;
   let releaseRunControl: (() => void) | undefined;
   let speechPreparation:
     | Awaited<ReturnType<PluginRuntime["tts"]["prepareTextToSpeechTelephony"]>>
