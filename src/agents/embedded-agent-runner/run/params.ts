@@ -57,6 +57,8 @@ export type ResolvedToolPromptFinalizer = (params: {
 }) => string;
 
 export type RunEmbeddedAgentParams = {
+  /** Trusted live-speech ingress; policy is resolved against the prepared model provider. */
+  modelRequestProfile?: { kind: "speech"; channelId: string };
   /**
    * Completion-only input acquisition barrier. Return synchronously when no
    * input is pending, or a bounded promise released on queue admission (not

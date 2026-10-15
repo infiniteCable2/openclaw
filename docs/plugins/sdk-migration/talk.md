@@ -31,6 +31,15 @@ managed-room handoff, voice-call realtime, voice-call streaming STT, Google
 Meet realtime, and native push-to-talk. Gateway advertises one live Talk event
 channel in `hello-ok.features.events`: `talk.event`.
 
+Live agent consults can forward the admitted ingress channel as `speechChannelId`.
+The shared run owner resolves the exact agent/channel/provider execution profile
+from `talk.speech.agentProfiles`, after selecting the actual model provider;
+adapters must not guess the provider or rewrite shared configuration. The optional
+`thinkingLevelExplicit` fact on provider stream-wrapper contexts distinguishes
+such an authoritative effort override from an implicit default `off`. Providers
+keep their existing capability and wire-format mapping; this fact is not a wire
+parameter, a tool grant, or a session-setting mutation.
+
 New code should not call `createTalkEventSequencer(...)` directly unless
 implementing a low-level adapter or test fixture. Use the shared controller so
 turn-scoped events cannot be emitted without a turn id, stale `turnEnd` /

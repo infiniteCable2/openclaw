@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ALL_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import type { SpeechWaitingAudioConfig } from "../talk/speech/waiting-audio.js";
 
@@ -9,10 +10,59 @@ const TalkSpeechWaitingAudioSchema = z.strictObject({
   volume: z.number().min(0).max(1),
 }) satisfies z.ZodType<SpeechWaitingAudioConfig>;
 
+const TalkSpeechScopeKeySchema = z
+  .string()
+  .min(1)
+  .refine((id) => id === id.trim() && !isBlockedObjectKey(id));
+
+function rejectBlockedScopeKeys<T>(value: T, ctx: z.RefinementCtx): T {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const key of Object.getOwnPropertyNames(value)) {
+      if (isBlockedObjectKey(key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "Speech override keys must not contain blocked object keys",
+        });
+        return z.NEVER;
+      }
+    }
+  }
+  return value;
+}
+
+const TalkSpeechProviderOverridesSchema = z.record(
+  TalkSpeechScopeKeySchema,
+  z.strictObject({
+    thinking: z.enum(ALL_THINKING_LEVELS).optional(),
+    fastMode: z.boolean().optional(),
+  }),
+);
+
+const TalkSpeechChannelOverridesSchema = z.record(
+  TalkSpeechScopeKeySchema,
+  z.strictObject({
+    providers: z.preprocess(
+      (value: z.input<typeof TalkSpeechProviderOverridesSchema>, ctx) =>
+        rejectBlockedScopeKeys(value, ctx),
+      TalkSpeechProviderOverridesSchema,
+    ),
+  }),
+);
+
+const TalkSpeechAgentOverridesSchema = z.strictObject({
+  channels: z.preprocess(
+    (value: z.input<typeof TalkSpeechChannelOverridesSchema>, ctx) =>
+      rejectBlockedScopeKeys(value, ctx),
+    TalkSpeechChannelOverridesSchema,
+  ),
+});
+
 const TalkSpeechAgentProfileSchema = z
   .strictObject({
     responseStreaming: z.enum(["off", "sentence"]).optional(),
     speakCommentary: z.boolean().optional(),
+    agentOverrides: TalkSpeechAgentOverridesSchema.optional(),
     expression: z
       .strictObject({
         channels: z.record(

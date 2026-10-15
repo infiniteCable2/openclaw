@@ -269,6 +269,8 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   toolAuthProfileStore?: AuthProfileStore;
   modelRegistry: ModelRegistry;
   thinkLevel: ThinkLevel;
+  /** Prepared request policy, unlike an implicit off default, overrides model effort. */
+  thinkingLevelExplicit?: boolean;
   fastMode?: EmbeddedRunFastModeParam;
   /** True when this attempt is running the auto fast-mode policy. */
   fastModeAuto?: boolean;

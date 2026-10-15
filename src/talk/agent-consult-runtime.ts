@@ -411,6 +411,8 @@ export async function consultRealtimeVoiceAgent(params: {
   model?: RunEmbeddedAgentParams["model"];
   thinkLevel?: RunEmbeddedAgentParams["thinkLevel"];
   fastMode?: RunEmbeddedAgentParams["fastMode"];
+  /** Authorized ingress channel of this live conversation, not its output transport. */
+  speechChannelId?: string;
   timeoutMs?: number;
   toolsAllow?: string[];
   toolBindings?: RunEmbeddedAgentParams["toolBindings"];
@@ -615,6 +617,11 @@ export async function consultRealtimeVoiceAgent(params: {
           model: params.model,
           thinkLevel: params.thinkLevel ?? "high",
           fastMode: params.fastMode,
+          ...(params.speechChannelId
+            ? {
+                modelRequestProfile: { kind: "speech" as const, channelId: params.speechChannelId },
+              }
+            : {}),
           verboseLevel: "off",
           reasoningLevel: "off",
           toolResultFormat: "plain",

@@ -69,8 +69,96 @@ async function readSentThink(model: ProviderRuntimeModel, streamFn: StreamFn): P
     {},
   );
   expect((await stream.result()).stopReason).toBe("stop");
-  return JSON.parse(fetchMock.mock.calls[0]?.[0].init.body).think;
+  const body = JSON.parse(fetchMock.mock.calls[0]?.[0].init.body);
+  expect(body).not.toHaveProperty("thinkingLevelExplicit");
+  return body.think;
 }
+
+describe("Ollama request-scoped thinking precedence", () => {
+  it.each<
+    FloorCase & {
+      level?: "off" | "low";
+      explicit?: boolean;
+    }
+  >([
+    {
+      name: "implicit off preserves model thinking",
+      provider: "ollama",
+      id: "test-reasoner",
+      level: "off",
+      params: { thinking: "medium" },
+      expected: "medium",
+    },
+    {
+      name: "non-explicit off preserves the native think alias",
+      provider: "ollama",
+      id: "test-reasoner",
+      level: "off",
+      explicit: false,
+      params: { think: "medium" },
+      expected: "medium",
+    },
+    {
+      name: "explicit off overrides model thinking",
+      provider: "ollama",
+      id: "test-reasoner",
+      level: "off",
+      explicit: true,
+      params: { thinking: "medium" },
+      expected: false,
+    },
+    {
+      name: "explicit off overrides native think on a non-reasoning model",
+      provider: "ollama",
+      id: "test-model",
+      level: "off",
+      explicit: true,
+      params: { think: "medium" },
+      reasoning: false,
+      expected: false,
+    },
+    {
+      name: "explicit low overrides model thinking",
+      provider: "ollama",
+      id: "test-reasoner",
+      level: "low",
+      explicit: true,
+      params: { think: "high" },
+      expected: "low",
+    },
+    {
+      name: "provenance without a level does not invent an override",
+      provider: "ollama",
+      id: "test-reasoner",
+      explicit: true,
+      params: { thinking: "medium" },
+      expected: "medium",
+    },
+    {
+      name: "explicit off retains the hosted model thinking floor",
+      provider: "ollama-cloud",
+      id: "glm-5.3",
+      level: "off",
+      explicit: true,
+      params: { think: "high" },
+      expected: "low",
+    },
+  ])("$name", async ({ level, explicit, ...testCase }) => {
+    const model = createModel(testCase);
+    const streamFn = expectDefined(
+      createConfiguredOllamaCompatStreamWrapper({
+        provider: testCase.provider,
+        modelId: testCase.id,
+        model,
+        thinkingLevel: level,
+        thinkingLevelExplicit: explicit,
+        streamFn: createConfiguredOllamaStreamFn({ model }),
+      }),
+      "wrapped stream",
+    );
+    expect(await readSentThink(model, streamFn)).toBe(testCase.expected);
+  });
+});
 
 describe("Ollama models that cannot disable thinking", () => {
   it.each<FloorCase & { level: "off" | "high" }>([

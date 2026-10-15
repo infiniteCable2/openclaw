@@ -188,6 +188,7 @@ async function consultMeetingAgent(
       assistantLabel: params.surface.assistantLabel,
       questionSourceLabel: params.surface.questionSourceLabel,
       thinkLevel,
+      speechChannelId: params.ttsContext?.channelId,
       speakCommentary: params.speakCommentary,
       toolsAllow: admittedToolsAllow,
       speechExpressionContext,

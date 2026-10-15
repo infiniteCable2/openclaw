@@ -299,6 +299,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
       expect(consult.speechExpressionContext?.guidance).toContain(
         'Emotion identifiers: ["joyful"]',
       );
+      expect(consult.speechChannelId).toBe("matrix");
       expect(consult.toolsAllow).toBeUndefined();
       consult.onRunStarted?.({
         runId: "control-cleanup",

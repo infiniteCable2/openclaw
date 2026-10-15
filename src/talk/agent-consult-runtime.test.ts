@@ -173,6 +173,7 @@ describe("realtime voice agent consult runtime", () => {
       model: "gpt-5.4",
       thinkLevel: "high",
       fastMode: true,
+      speechChannelId: "matrix",
       timeoutMs: 10_000,
     });
 
@@ -208,6 +209,7 @@ describe("realtime voice agent consult runtime", () => {
     expect(call.model).toBe("gpt-5.4");
     expect(call.thinkLevel).toBe("high");
     expect(call.fastMode).toBe(true);
+    expect(call.modelRequestProfile).toEqual({ kind: "speech", channelId: "matrix" });
     expect(call.timeoutMs).toBe(10_000);
     expect(call.enforceFinalTag).toBeUndefined();
     expect(call.onBlockReply).toBeUndefined();

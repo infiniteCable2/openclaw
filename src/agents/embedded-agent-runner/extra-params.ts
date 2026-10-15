@@ -532,6 +532,7 @@ export function applyExtraParamsToAgent(
   resolvedTransport?: AgentRuntimeTransport,
   options?: {
     preparedExtraParams?: Record<string, unknown>;
+    thinkingLevelExplicit?: boolean;
     auth?: ProviderPrepareExtraParamsContext["auth"];
     nativeWebSearchPolicyContext?: NativeWebSearchToolPolicyParams;
   },
@@ -580,6 +581,7 @@ export function applyExtraParamsToAgent(
       ...selectedModel,
       extraParams: effectiveExtraParams,
       thinkingLevel,
+      thinkingLevelExplicit: options?.thinkingLevelExplicit,
       model,
       streamFn: providerStreamBase,
     }) ?? undefined;

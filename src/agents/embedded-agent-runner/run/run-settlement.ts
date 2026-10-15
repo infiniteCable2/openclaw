@@ -21,7 +21,8 @@ export async function settleEmbeddedRun(input: {
   runtime: Pick<
     Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>,
     "admittedRunContext" | "stopRuntimeAuthRefreshTimer"
-  >;
+  > &
+    Partial<Pick<Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>, "speechAgentOverrides">>;
   compaction: {
     state: Pick<EmbeddedRunContextRecoveryState, "autoCompactionCount" | "currentContextSnapshot">;
     session: Pick<
@@ -96,7 +97,10 @@ export async function settleEmbeddedRun(input: {
       log.warn(`compaction accounting failed: ${formatErrorMessage(error)}`);
     }
   }
-  if (params.isFinalFallbackAttempt !== false) {
+  if (
+    params.isFinalFallbackAttempt !== false &&
+    runtime.speechAgentOverrides?.fastMode === undefined
+  ) {
     await runInput.progressController.maybeEmitFastModeAutoResetBestEffort();
   }
   if (ownedContextEngineLease) {

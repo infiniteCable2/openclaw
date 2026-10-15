@@ -193,6 +193,7 @@ export function createTalkClientAgentConsultRunner(params: {
           questionSourceLabel: "user",
           thinkLevel: talkConfig?.consultThinkingLevel,
           fastMode: talkConfig?.consultFastMode,
+          speechChannelId: "talk",
           ...authority,
           ...(speech?.speechExpressionCaptureOnly ? { toolsAllow: [] } : {}),
           abortSignal: signal,

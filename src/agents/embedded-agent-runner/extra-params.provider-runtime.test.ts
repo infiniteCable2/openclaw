@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLlmStreamSimpleMock } from "../../../test/helpers/agents/llm-stream-simple-mock.js";
 import { createKilocodeWrapper } from "../../llm/providers/stream-wrappers/proxy.js";
 import type { Context, Model, SimpleStreamOptions } from "../../llm/types.js";
+import type { ProviderWrapStreamFnContext } from "../../plugins/provider-transport.types.js";
 import { captureEnv } from "../../test-utils/env.js";
 import type { StreamFn } from "../runtime/index.js";
 import { attachToolAllowlistIntersection } from "../tool-policy.js";
@@ -28,6 +29,38 @@ afterEach(() => {
 });
 
 describe("extra-params: provider runtime handoff", () => {
+  it.each([undefined, true])(
+    "retains explicit thinking provenance %s at the provider hook",
+    (explicit) => {
+      const wrap = vi.fn(
+        ({ context }: { context: ProviderWrapStreamFnContext }) => context.streamFn,
+      );
+      extraParamsTesting.setProviderRuntimeDepsForTest({ wrapProviderStreamFn: wrap });
+      applyExtraParamsToAgent(
+        {},
+        undefined,
+        "fixture",
+        "fixture-model",
+        undefined,
+        "off",
+        "reader",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { thinkingLevelExplicit: explicit },
+      );
+      expect(wrap).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            thinkingLevel: "off",
+            thinkingLevelExplicit: explicit,
+          }),
+        }),
+      );
+    },
+  );
+
   it.each([
     { label: "default", runtimeToolAllowlist: undefined, expectedHostedSearch: true },
     {

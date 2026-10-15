@@ -248,6 +248,17 @@ transport properties.
         reader: {
           responseStreaming: "sentence",
           speakCommentary: true,
+          agentOverrides: {
+            channels: {
+              matrix: {
+                providers: {
+                  "ollama-anthropic": { thinking: "off" },
+                  ollama: { thinking: "off" },
+                  openai: { thinking: "low", fastMode: true },
+                },
+              },
+            },
+          },
           waitingAudio: {
             filePath: "/tmp/waiting.wav",
             startDelayMs: 0,
@@ -298,7 +309,31 @@ transport properties.
   capabilities. Automatic live replies/commentary/greetings stay plain until
   their native producer supplies speech-expression facts.
 
+`agentOverrides.channels.<channelId>.providers.<providerId>` optionally sets
+`thinking` and/or boolean `fastMode` for this agent's **live conversation** on
+that exact channel and actual selected model provider. For example, `matrix`
+means Matrix calls, not Matrix text messages or uploaded voice notes;
+`voiceassistant` and `talk` name the assistant and native Talk ingress respectively.
+Provider IDs are configured model-provider IDs, not TTS/STT provider IDs or API
+names. A custom provider such as `ollama-anthropic` needs its own entry.
+
+The run owner resolves these settings after model/provider selection. They
+override generic consult controls for that run only, including greetings and
+tool-backed turns. Chat/session defaults and other agents/channels/providers
+are not changed. Missing entries use normal native run settings; there are no
+wildcard, provider-alias, or cross-agent profile fallbacks. Provider capability
+mapping remains authoritative: `off` requests disabled thinking but cannot
+create support for a mode the actual model does not implement. Reasoning
+visibility and spoken commentary are separate settings.
+
+For reasoning-capable models on the Anthropic-compatible API, `off` uses the
+native `thinking: { type: "disabled" }` payload. The native Ollama API uses
+`think: false`, including when a model has a configured thinking default;
+existing model-specific minimum-effort rules still apply. No Ollama-specific
+fields are injected into Anthropic or OpenAI requests. Boolean `fastMode`
+uses the selected provider's normal native handling, not a universal speed guarantee.
+
 Missing profiles retain normal sentence speech delivery without commentary,
 waiting music, or greeting. Existing `talk.consultThinkingLevel` and
-`talk.consultFastMode` remain the native consult overrides; speech profiles do
-not add separate thinking or fast-mode settings.
+`talk.consultFastMode` remain native consult controls where no matching
+provider-bound live-speech setting is authored.

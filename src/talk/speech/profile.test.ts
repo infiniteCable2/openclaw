@@ -3,6 +3,28 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveTalkSpeechAgentProfile } from "./profile.js";
 
 describe("admitted-agent Talk speech policy", () => {
+  it("keeps provider execution overrides out of the presentation projection", () => {
+    expect(
+      resolveTalkSpeechAgentProfile(
+        {
+          talk: {
+            speech: {
+              agentProfiles: {
+                reader: {
+                  responseStreaming: "sentence",
+                  agentOverrides: {
+                    channels: { matrix: { providers: { fixture: { thinking: "off" } } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+        "reader",
+      ),
+    ).toEqual({ responseStreaming: "sentence", speakCommentary: false });
+  });
+
   const config: OpenClawConfig = {
     talk: {
       agentId: "writer",

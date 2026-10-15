@@ -559,6 +559,7 @@ export async function prepareEmbeddedAttemptTransport(input: {
     resolvedTransport,
     {
       preparedExtraParams: effectiveExtraParams,
+      thinkingLevelExplicit: attempt.thinkingLevelExplicit,
       auth,
       nativeWebSearchPolicyContext,
     },

@@ -24,6 +24,8 @@ export type ProviderCreateStreamFnContext = ProviderNormalizeResolvedModelContex
  * through the normal `shared model runtime` stream path.
  */
 export type ProviderWrapStreamFnContext = ProviderPrepareExtraParamsContext & {
+  /** An explicit current-request effort overrides configured model effort, including off. */
+  thinkingLevelExplicit?: boolean;
   /** Wire-format API before simple completion projects an internal transport alias. */
   sourceApi?: ProviderRuntimeModel["api"];
   streamFn?: StreamFn;

@@ -431,6 +431,7 @@ export async function createVoiceCallRuntime(params: {
             agentId,
             sessionKey,
             messageProvider: "voice",
+            speechChannelId: "voice-call",
             lane: "voice",
             runIdPrefix: `voice-realtime-consult:${callId}`,
             args,

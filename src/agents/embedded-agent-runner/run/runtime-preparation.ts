@@ -2,6 +2,7 @@ import { readSourceReplyDeliveryRuntime } from "../../../auto-reply/reply/source
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import { resolveProviderRuntimePluginHandle } from "../../../plugins/provider-hook-runtime.js";
 import { createStageTimingTracker } from "../../../shared/stage-timing.js";
+import { resolveTalkSpeechAgentOverrides } from "../../../talk/speech/agent-overrides.js";
 import { resolvePreparedRunAdmission } from "../../admitted-run-context.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
 import { resolvePreparedModelThinkingCompat } from "../../model-catalog-lookup.js";
@@ -189,8 +190,19 @@ export async function prepareEmbeddedRunRuntime(input: {
   const forwardedPluginHarnessProfileId = pluginHarnessOwnsTransport
     ? activePreparedAuthPlan.forwardedAuthProfileId
     : undefined;
+  // Resolve only after hooks/auth have selected the real provider. This fact is
+  // request-owned; it never changes the agent's or session's persisted defaults.
+  const speechAgentOverrides =
+    params.modelRequestProfile?.kind === "speech"
+      ? resolveTalkSpeechAgentOverrides({
+          config: params.config ?? {},
+          agentId: params.agentId ?? "",
+          channelId: params.modelRequestProfile.channelId,
+          provider,
+        })
+      : undefined;
   const requestedThinkLevel = resolveInitialThinkLevel({
-    requested: params.thinkLevel,
+    requested: speechAgentOverrides?.thinking ?? params.thinkLevel,
     config: params.config,
     agentId: params.agentId,
     provider,
@@ -466,6 +478,7 @@ export async function prepareEmbeddedRunRuntime(input: {
   }
   return {
     admittedRunContext,
+    speechAgentOverrides,
     provider,
     modelId,
     requestedModelId,

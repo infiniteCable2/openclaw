@@ -103,7 +103,9 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     runtimeAuthState: runtime.runtimeAuthState,
     pluginHarnessOwnsTransport: runtime.pluginHarnessOwnsTransport,
   });
-  const attemptFastMode = resolveAttemptFastModeParam();
+  const speechAgentOverrides = preparedRuntime.speechAgentOverrides;
+  const attemptFastMode = speechAgentOverrides?.fastMode ?? resolveAttemptFastModeParam();
+  const fastModeAuto = speechAgentOverrides?.fastMode === undefined && params.fastMode === "auto";
   const existingSessionTarget = sessionPromptState.sessionTarget;
   const selectedPromptTarget = { ...existingSessionTarget };
   const reusableSessionTarget =
@@ -549,14 +551,16 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     modelRegistry,
     agentId: workspaceResolution.agentId,
     thinkLevel: runtime.thinkLevel,
+    thinkingLevelExplicit: speechAgentOverrides?.thinking !== undefined,
     onToolOutcome: input.observeToolOutcome,
     isTurnTainted: input.isTurnTainted,
     allocateToolOutcomeOrdinal: input.allocateToolOutcomeOrdinal,
-    onToolStreamBoundary: maybeAnnounceFastModeAutoOff,
+    onToolStreamBoundary:
+      speechAgentOverrides?.fastMode === undefined ? maybeAnnounceFastModeAutoOff : undefined,
     onRunProgress: notifyRunProgress,
     fastMode: attemptFastMode,
-    fastModeAuto: params.fastMode === "auto",
-    ...(params.fastMode === "auto"
+    fastModeAuto,
+    ...(fastModeAuto
       ? {
           fastModeStartedAtMs,
           fastModeAutoOnSeconds,

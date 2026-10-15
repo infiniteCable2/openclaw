@@ -321,6 +321,7 @@ export function createFaceTimeConsultController(params: {
       senderIsOwner: params.senderIsOwner,
       contextMode: "fork",
       messageProvider: AGENT_CONSULT_MESSAGE_PROVIDER,
+      speechChannelId: "facetime",
       lane: `facetime:${params.normalizedCallUUID}`,
       runIdPrefix: `facetime:${params.normalizedCallUUID}`,
       args: event.args,

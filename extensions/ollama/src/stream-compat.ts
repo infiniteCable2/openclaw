@@ -241,10 +241,12 @@ export function createConfiguredOllamaCompatStreamWrapper(
   const runtimeThinkValue = isNativeOllamaTransport
     ? normalizeOllamaThinkValue(ctx.thinkingLevel, nativeMax)
     : undefined;
-  // "off" is also the implicit agent default. Preserve explicit native Ollama
-  // model config unless the active run requests a non-off thinking level.
+  // "off" is also the implicit agent default. Preserve native Ollama model config
+  // unless the active request explicitly overrides it or chooses a non-off level.
   const ollamaThinkValue =
-    runtimeThinkValue === false && configuredThinkValue !== undefined
+    runtimeThinkValue === false &&
+    configuredThinkValue !== undefined &&
+    ctx.thinkingLevelExplicit !== true
       ? undefined
       : runtimeThinkValue;
   if (ollamaThinkValue !== undefined && shouldForwardNativeOllamaThink(model, ollamaThinkValue)) {
