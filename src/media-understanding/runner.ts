@@ -40,6 +40,11 @@ import {
   resolveConfiguredMediaEntryCapabilities,
 } from "./entry-capabilities.js";
 import { inspectLocalAudioSelection } from "./local-audio.js";
+import {
+  createAttachmentDispositions,
+  hasFailedMediaAttempt,
+  rendersMediaAttachmentMarker,
+} from "./media-attachment-outcomes.js";
 import { resolveOpenAiAudioAuthModelApi } from "./openai-audio-api.js";
 import {
   resolveAutoMediaKeyProvidersFromRegistry,
@@ -528,19 +533,6 @@ async function resolveAutoProviderModelEntry(
   };
 }
 
-function hasFailedMediaAttempt(attachments: MediaUnderstandingDecision["attachments"]): boolean {
-  return attachments.some((attachment) =>
-    attachment.attempts.some((attempt) => attempt.outcome === "failed"),
-  );
-}
-
-function createAttachmentDispositions(
-  indexes: readonly number[],
-  disposition: MediaAttachmentDisposition,
-): Record<number, MediaAttachmentDisposition> {
-  return Object.fromEntries(indexes.map((index) => [index, disposition]));
-}
-
 export async function runCapability(params: {
   capability: MediaUnderstandingCapability;
   cfg: OpenClawConfig;
@@ -593,10 +585,6 @@ export async function runCapability(params: {
     ...createAttachmentDispositions(selectedAttachmentIndexes, selectedDisposition),
     ...createAttachmentDispositions(selection.droppedAttachmentIndexes, droppedDisposition),
   });
-  const rendersMarker = (dispositions: Record<number, MediaAttachmentDisposition>) =>
-    Object.values(dispositions).some(
-      (d) => d.kind !== "handled" && d.kind !== "handed-to-native-vision",
-    );
   const buildDecision = async (
     outcome: MediaUnderstandingDecision["outcome"],
     attachments: MediaUnderstandingDecision["attachments"],
@@ -606,7 +594,7 @@ export async function runCapability(params: {
     // (a marker could render); never fire the probe for marker-free decisions.
     const nativeVisionActive =
       capability === "image" &&
-      (nativeVisionProbe !== undefined || rendersMarker(attachmentDispositions))
+      (nativeVisionProbe !== undefined || rendersMediaAttachmentMarker(attachmentDispositions))
         ? await resolveNativeVisionFlag()
         : undefined;
     return {

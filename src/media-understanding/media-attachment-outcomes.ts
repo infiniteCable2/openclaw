@@ -1,6 +1,34 @@
-import type { MediaAttachmentDisposition, MediaUnderstandingCapability } from "./types.js";
+import type {
+  MediaAttachmentDisposition,
+  MediaUnderstandingCapability,
+  MediaUnderstandingDecision,
+} from "./types.js";
 
 const MAX_SKIPPED_FILE_MARKERS = 5;
+
+export function hasFailedMediaAttempt(
+  attachments: MediaUnderstandingDecision["attachments"],
+): boolean {
+  return attachments.some((attachment) =>
+    attachment.attempts.some((attempt) => attempt.outcome === "failed"),
+  );
+}
+
+export function createAttachmentDispositions(
+  indexes: readonly number[],
+  disposition: MediaAttachmentDisposition,
+): Record<number, MediaAttachmentDisposition> {
+  return Object.fromEntries(indexes.map((index) => [index, disposition]));
+}
+
+export function rendersMediaAttachmentMarker(
+  dispositions: Record<number, MediaAttachmentDisposition>,
+) {
+  return Object.values(dispositions).some(
+    (disposition) =>
+      disposition.kind !== "handled" && disposition.kind !== "handed-to-native-vision",
+  );
+}
 
 // Reason-neutral because the shared overflow can mix file and media outcomes.
 function renderSkippedFileOverflowSummary(count: number): string {
