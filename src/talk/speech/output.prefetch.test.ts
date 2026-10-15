@@ -57,8 +57,6 @@ function createFixture(
     } as unknown as OutputParams["speechCancellation"],
     activeTtsAborts,
     activeTtsReaders,
-    waitingStop,
-    waitingIdle,
     transport: {
       onFatal() {},
       startInput() {},
@@ -75,6 +73,8 @@ function createFixture(
     transcripts,
     activeTtsAborts,
     activeTtsReaders,
+    waitingStop,
+    waitingIdle,
     cancel() {
       generation += 1;
       for (const controller of activeTtsAborts) {

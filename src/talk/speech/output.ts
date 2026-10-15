@@ -75,6 +75,7 @@ export function createSpeechOutput(params: {
     activeReaders: activeTtsReaders,
   });
   let pendingChunks = 0;
+  let handoffPending = false;
   const failedReleases = new Map<() => Promise<void>, { error: unknown; reported: boolean }>();
 
   const writeOutputAudio = async (
@@ -225,27 +226,29 @@ export function createSpeechOutput(params: {
                 }
                 continue;
               }
-              if (firstSegmentChunk || resumedAfterGap) {
-                // A candidate can start in a gap with no active playback gate.
-                // Hold every newly starting segment, including later commentary.
-                await params.waitForInput();
-                if (!isCurrentPlayback()) {
+              // Music may resume during read-ahead, but never while its own
+              // drain is transitioning into the next speech handoff.
+              handoffPending = true;
+              try {
+                if (firstSegmentChunk || resumedAfterGap) {
+                  await params.waitForInput();
+                  if (!isCurrentPlayback()) {
+                    break;
+                  }
+                  await waiting.stop();
+                }
+                if (
+                  !(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback, () => {
+                    // Accepted output may be audible before a paced write drains.
+                    if (transcriptEntry.audioDelivery === "unplayed") {
+                      transcriptEntry.audioDelivery = "started";
+                    }
+                  }))
+                ) {
                   break;
                 }
-                // A stream handle is not audible output. Keep the waiting loop
-                // through synthesis and buffering, then drain before each segment resumes PCM.
-                await waiting.stop();
-              }
-              if (
-                !(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback, () => {
-                  // A pending sink write may already be audible. Echo suppression
-                  // must see the admitted handoff, not wait for the sink to drain.
-                  if (transcriptEntry.audioDelivery === "unplayed") {
-                    transcriptEntry.audioDelivery = "started";
-                  }
-                }))
-              ) {
-                break;
+              } finally {
+                handoffPending = false;
               }
               if (!isCurrentPlayback()) {
                 break;
@@ -399,6 +402,7 @@ export function createSpeechOutput(params: {
     enqueueSpeakText,
     finalizeSpeechUtterance,
     hasPendingOutput: () => pendingChunks > 0,
+    isHandoffPending: () => handoffPending,
     async drain() {
       await ttsQueue;
       const unreported = [...failedReleases.values()].filter((failure) => !failure.reported);

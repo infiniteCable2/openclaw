@@ -110,6 +110,7 @@ export async function startSpeechSession(
     // echo-suppression tail stays independent, and a paused gate adds a drain hold.
     canStart: () =>
       // A reader may be preparing a successor, not delivering audible output.
+      !speechOutput.isHandoffPending() &&
       bargeInGate.canResumeWaitingAudio() &&
       !(params.transport.supportsFullDuplexInput === true
         ? harness.isOutputPlaybackActive()

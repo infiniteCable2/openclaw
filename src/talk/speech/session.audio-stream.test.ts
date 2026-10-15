@@ -40,7 +40,10 @@ async function createAudioStreamFixture(params: {
   });
   const beginOutput = vi.fn();
   const dispose = vi.fn(async () => undefined);
-  const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
+  const firstWrite = createDeferred();
+  const writeOutput = vi.fn(async (_audio: Buffer) => {
+    firstWrite.resolve();
+  });
   const synthesisStarted = vi.fn();
   let speechStart: (() => void) | undefined;
   let speechProcessing: Parameters<
@@ -130,6 +133,7 @@ async function createAudioStreamFixture(params: {
     handle,
     controller,
     secondRead: secondRead.promise,
+    firstWrite: firstWrite.promise,
     release,
     released: released.promise,
     cancelled,
@@ -486,6 +490,7 @@ describe("meeting TTS stream conversion", () => {
       try {
         fixture.controller.enqueue(source);
         await fixture.secondRead;
+        await fixture.firstWrite;
         const output = Buffer.concat(fixture.writeOutput.mock.calls.map(([audio]) => audio));
         const complete = convertSpeechTtsAudio(source, 16_000, "pcm16-24khz", "pcm");
         expect(output.length).toBeGreaterThan(0);

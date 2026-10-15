@@ -367,6 +367,12 @@ describe("speech-confirmed waiting audio", () => {
     "reconsiders blocked speech confirmation after TTS drains only while %s",
     async (state) => {
       const f = await setup();
+      const writing = createDeferred();
+      const writeStarted = createDeferred();
+      f.writeOutput.mockImplementationOnce(async () => {
+        writeStarted.resolve();
+        await writing.promise;
+      });
       try {
         f.callbacks.onTranscript?.("First question.");
         await vi.advanceTimersByTimeAsync(0);
@@ -374,6 +380,7 @@ describe("speech-confirmed waiting audio", () => {
         await f.readerStarted.promise;
         f.audio().enqueue(Uint8Array.from([7, 0]));
         await vi.advanceTimersByTimeAsync(0);
+        await writeStarted.promise;
         expect(f.writeOutput).toHaveBeenCalledOnce();
         f.callbacks.onSpeechStart?.();
         f.process("2", "started");
@@ -385,10 +392,12 @@ describe("speech-confirmed waiting audio", () => {
           f.process("2", state);
         }
         f.audio().close();
+        writing.resolve();
         await vi.advanceTimersByTimeAsync(0);
         expect(f.playback.schedule).toHaveBeenCalledTimes(state === "pending" ? 1 : 0);
         expect(f.consultAgent).toHaveBeenCalledOnce();
       } finally {
+        writing.resolve();
         await f.close();
       }
     },
