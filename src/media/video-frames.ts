@@ -231,7 +231,6 @@ export function createVideoFrameExtractor(overrides: Partial<VideoFrameDependenc
     },
     deps,
   );
-  const { withSource } = processor;
 
   async function execute(
     source: MediaFileSource,
@@ -262,7 +261,7 @@ export function createVideoFrameExtractor(overrides: Partial<VideoFrameDependenc
   }
 
   return {
-    probeVideoBuffer: (params: VideoBufferParams) => withSource(params, probe),
+    probeVideoBuffer: (params: VideoBufferParams) => processor.withSource(params, probe),
     extractVideoFrames: async (
       params: ExtractVideoFramesParams,
     ): Promise<ExtractedVideoFrame[]> => {
@@ -271,7 +270,7 @@ export function createVideoFrameExtractor(overrides: Partial<VideoFrameDependenc
         throw new Error("Frame timestamps must be finite non-negative seconds");
       }
       const rendition = resolveRendition(params);
-      return await withSource(params, async (source) => {
+      return await processor.withSource(params, async (source) => {
         const metadata = await probe(source);
         if (params.timestampsSeconds.some((time) => time >= metadata.durationSeconds)) {
           throw new Error("Frame timestamp is outside the video duration");

@@ -69,13 +69,17 @@ function parseInfo(buffer: Buffer, container: MediaFileSource["container"]): Aud
       ) {
         throw new Error("Audio stream metadata is missing or exceeds channel/sample-rate limits");
       }
-      return {
+      const result: AudioStreamInfo = {
         index: stream.index,
         codec: typeof stream.codec_name === "string" ? stream.codec_name.slice(0, 64) : "unknown",
         channels,
         sampleRateHz,
-        ...(positive(stream.duration) ? { durationSeconds: positive(stream.duration) } : {}),
       };
+      const duration = positive(stream.duration);
+      if (duration !== undefined) {
+        result.durationSeconds = duration;
+      }
+      return result;
     });
   if (new Set(audioStreams.map((stream) => stream.index)).size !== audioStreams.length) {
     throw new Error("Duplicate audio stream indices");

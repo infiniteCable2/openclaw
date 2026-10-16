@@ -320,7 +320,9 @@ describe("media-understanding CLI audio entry", () => {
         runFfmpegMock.mockImplementationOnce(
           async (args: string[], options: { signal?: AbortSignal }) => {
             const outputPath = args.at(-1);
-            if (!outputPath) throw new Error("Expected conversion output path");
+            if (!outputPath) {
+              throw new Error("Expected conversion output path");
+            }
             scratchDir = path.dirname(outputPath);
             stagedPath = outputPath;
             await fs.writeFile(stagedPath, "owned conversion output");
@@ -350,7 +352,9 @@ describe("media-understanding CLI audio entry", () => {
         async (fixture) => {
           const remove = fs.rm.bind(fs);
           const removeSpy = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
-            if (args[0] === scratchDir) cleanupOrder.push("scratch-removed");
+            if (args[0] === scratchDir) {
+              cleanupOrder.push("scratch-removed");
+            }
             return await remove(...args);
           });
           const operation = runFixture(fixture, whisper, {
@@ -376,8 +380,11 @@ describe("media-understanding CLI audio entry", () => {
             await rejected;
             await expect(fs.stat(scratchDir)).rejects.toMatchObject({ code: "ENOENT" });
             expect(cleanupOrder).toEqual(["process-closed", "scratch-removed"]);
-            if (stage === "conversion") expect(runExecMock).not.toHaveBeenCalled();
-            else expect(runExecMock).toHaveBeenCalledOnce();
+            if (stage === "conversion") {
+              expect(runExecMock).not.toHaveBeenCalled();
+            } else {
+              expect(runExecMock).toHaveBeenCalledOnce();
+            }
           } finally {
             released.resolve();
             physicallyClosed.resolve();
