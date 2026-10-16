@@ -130,7 +130,7 @@ export function createConversationsListTool(options: ConversationToolOptions = {
     name: "conversations_list",
     displaySummary: "List exact external conversation addresses.",
     description:
-      "List external conversations as stable conversationRef values. Sessions hold local model context; conversationRef selects an exact external channel destination. contextRelation=current identifies this session's primary destination; parent identifies its exact parent session's current primary destination. Parent ancestry does not identify the caller or prove that a destination belongs to the same person. These snapshot labels neither prove that a connection is online nor grant delivery permission. Use conversations_send for text; use the channel's message tool for supported media actions.",
+      "List external conversations as stable conversationRef values. Sessions hold local model context; conversationRef selects an exact external channel destination. contextRelation=current identifies this session's primary destination; parent identifies its exact parent session's current primary destination. Parent ancestry does not identify the caller or prove that a destination belongs to the same person. These snapshot labels neither prove that a connection is online nor grant delivery permission. Deliver only through explicitly available tools; never use a session key as an external address.",
     parameters: ConversationsListSchema,
     outputSchema: ConversationListResultSchema,
     execute: async (_toolCallId, args) => {

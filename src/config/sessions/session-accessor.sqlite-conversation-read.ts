@@ -49,8 +49,8 @@ export function selectConversationRowsFromDatabase(
     // the current session binding after reset/rebind.
     .leftJoin("session_nodes as sn", "sn.session_key", "s.session_key")
     // The exact source and candidate bindings must come from one SQLite statement snapshot.
-    .$if(hasSource, (query) =>
-      query
+    .$if(hasSource, (sourceQuery) =>
+      sourceQuery
         .leftJoin("session_nodes as source", (join) =>
           join
             .on("source.session_key", "=", source?.sessionKey ?? "")
@@ -282,7 +282,10 @@ export function selectConversationRowsFromDatabase(
   }
   const values = [...unique.values()].map(({ record }) => {
     const contextRelation = contextRelations.get(record.conversationRef);
-    return contextRelation ? { ...record, contextRelation } : record;
+    if (contextRelation) {
+      record.contextRelation = contextRelation;
+    }
+    return record;
   });
   return options.limit === undefined ? values : values.slice(0, options.limit);
 }
