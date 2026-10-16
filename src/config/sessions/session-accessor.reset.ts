@@ -6,6 +6,7 @@ import {
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
+import { clearAllCliSessions } from "./cli-session-binding.js";
 import type { ConversationRouteContext } from "./conversation-route-context.js";
 import type { SessionLifecycleTimestamps } from "./lifecycle.types.js";
 import {
@@ -35,6 +36,7 @@ import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key
 import type { SessionColdArchive } from "./session-cold-storage-state.js";
 import { assertSessionEntryCohortScope } from "./session-entry-cohort-scope.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
+import type { PreparedInitialSessionContext } from "./session-initial-context.js";
 import {
   SessionEntryLifecycleUpsertConflictError,
   SessionMaintenancePreservationConflictError,
@@ -268,6 +270,8 @@ export async function commitReplySessionInitialization(params: {
     sessionEntry: SessionEntry;
   }) => Promise<void> | void;
   expectedRevision: string;
+  /** Native-prepared copied context, never an authority or parent/spawn relationship. */
+  initialContext?: PreparedInitialSessionContext;
   maintenanceConfig?: ResolvedSessionMaintenanceConfig;
   prepareSessionEntry?: (
     context: ReplySessionInitializationCommitContext,
@@ -283,6 +287,13 @@ export async function commitReplySessionInitialization(params: {
   snapshotEntry?: SessionEntry;
   storePath: string;
 }): Promise<ReplySessionInitializationCommitResult> {
+  const initialContext = params.initialContext ? structuredClone(params.initialContext) : undefined;
+  if (initialContext) {
+    if (!params.commitGuard) {
+      throw new Error("Initial conversation context requires retained source authority.");
+    }
+    params.commitGuard();
+  }
   assertSessionInitializationAgentScope(params.agentId, params.sessionKey);
   const storePath = resolveSessionStorePathForScope({
     sessionKey: params.sessionKey,
@@ -310,13 +321,34 @@ export async function commitReplySessionInitialization(params: {
     const entry = resolveSessionEntryFromStore({ store, sessionKey }).existing;
     return entry ? { ...entry } : undefined;
   };
-  const sessionEntry = params.prepareSessionEntry
+  if (
+    initialContext &&
+    (currentEntry || params.previousEntry || params.retiredEntry || params.resetBoundary)
+  ) {
+    throw new Error("Initial conversation context cannot replace an existing session.");
+  }
+  let sessionEntry = params.prepareSessionEntry
     ? await params.prepareSessionEntry({
         ...(currentEntry ? { currentEntry } : {}),
         readEntry,
         sessionEntry: params.sessionEntry,
       })
     : params.sessionEntry;
+  if (initialContext) {
+    sessionEntry = {
+      ...sessionEntry,
+      forkSource: {
+        sessionKey: normalizeStoreSessionKey(initialContext.sourceSessionKey),
+        sessionId: initialContext.sourceEntry.sessionId,
+      },
+      // A copied transcript is not the empty context computed by normal creation.
+      totalTokens: undefined,
+      totalTokensFresh: false,
+      totalTokensVersion: undefined,
+    };
+    // A backend checkpoint can contain more history than the accepted snapshot.
+    clearAllCliSessions(sessionEntry);
+  }
   let staleCommit: SessionEntry | null | undefined;
   let committedSessionEntry = sessionEntry;
   let beforeEntryMutationDone = false;
@@ -331,6 +363,7 @@ export async function commitReplySessionInitialization(params: {
   const upserts: SessionEntryLifecycleUpsert[] = [
     {
       sessionKey: resolved.normalizedKey,
+      ...(initialContext ? { initialContext } : {}),
       ...(params.routeContext !== undefined ? { routeContext: params.routeContext } : {}),
       ...(params.resetBoundary ? { resetBoundary: params.resetBoundary } : {}),
       buildEntry: async ({ currentEntry: commitEntry }) => {

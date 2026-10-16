@@ -535,6 +535,15 @@ export async function buildProjectedLifecycleUpserts(
       continue;
     }
     const expectedEntry = store[sessionKey] ? structuredClone(store[sessionKey]) : undefined;
+    if (
+      upsert.initialContext &&
+      (expectedEntry ||
+        upsert.resetBoundary ||
+        projectedRemovals.length > 0 ||
+        upserts.length !== 1)
+    ) {
+      throw new Error("Initial conversation context is only valid for one new session.");
+    }
     if (upsert.resetBoundary && !expectedEntry) {
       throw new Error(
         `Cannot append reset boundary without an existing session row: ${sessionKey}`,
@@ -557,6 +566,7 @@ export async function buildProjectedLifecycleUpserts(
       expectedEntry,
       sessionKey,
       entry: cloned,
+      ...(upsert.initialContext ? { initialContext: structuredClone(upsert.initialContext) } : {}),
       ...(upsert.routeContext !== undefined ? { routeContext: upsert.routeContext } : {}),
       ...(upsert.resetBoundary ? { resetBoundary: upsert.resetBoundary } : {}),
     });

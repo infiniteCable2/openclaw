@@ -28,6 +28,7 @@ import {
 } from "./session-accessor.sqlite-maintenance-store.js";
 import { appendSessionResetBoundary } from "./session-accessor.sqlite-reset-boundary.js";
 import type { ResolvedSqliteReadScope } from "./session-accessor.sqlite-scope.js";
+import { appendInitialSessionContextInTransaction } from "./session-initial-context.js";
 import { SessionEntryLifecycleUpsertConflictError } from "./session-mutation-conflict-error.js";
 import type { SessionEntry } from "./types.js";
 
@@ -118,6 +119,7 @@ export function commitProjectedSessionEntryLifecycleMutationInDatabase(
     expectedEntry,
     routeContext,
     resetBoundary,
+    initialContext,
   } of projected.upsertedEntries) {
     const sameKeyRemoval = validatedRemovals.find((removal) => removal.sessionKey === sessionKey);
     const currentEntry = sameKeyRemoval
@@ -137,6 +139,22 @@ export function commitProjectedSessionEntryLifecycleMutationInDatabase(
     }
     if (sameKeyRemoval && !shouldRemoveSessionEntry(currentEntry, sameKeyRemoval.removal)) {
       throw new Error(`SQLite session entry has stale lifecycle state for ${sessionKey}`);
+    }
+    if (initialContext) {
+      if (
+        currentEntry ||
+        expectedEntry ||
+        resetBoundary ||
+        projected.removals.length > 0 ||
+        projected.upsertedEntries.length !== 1
+      ) {
+        throw new Error("Initial conversation context is only valid for one new session.");
+      }
+      appendInitialSessionContextInTransaction(database, {
+        sessionKey,
+        entry,
+        context: initialContext,
+      });
     }
     if (resetBoundary && expectedEntry?.sessionId) {
       const boundaryScope = {

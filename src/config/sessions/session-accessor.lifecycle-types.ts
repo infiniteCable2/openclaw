@@ -5,6 +5,7 @@ import type { ConversationRouteContext } from "./conversation-route-context.js";
 import type { SessionStateDeleteSnapshot } from "./session-accessor.sqlite-delete-snapshot.types.js";
 import type { SqliteSessionGenerationClaim } from "./session-accessor.sqlite-generation.types.js";
 import type { SessionEntryCommitContext } from "./session-entry-commit-context.js";
+import type { PreparedInitialSessionContext } from "./session-initial-context.js";
 import type { SessionResetBoundaryRequest } from "./session-reset-boundary-event.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
@@ -169,6 +170,8 @@ export type SessionEntryLifecycleRemoval = SessionEntryLifecycleRemovalBase &
 
 export type SessionEntryLifecycleUpsert = {
   sessionKey: string;
+  /** Only a first creation may atomically adopt this host-admitted context snapshot. */
+  initialContext?: PreparedInitialSessionContext;
   /** Apply this upsert only when the named removal was projected in the same mutation. */
   requiresRemovalSessionKey?: string;
   /** Authoritative route observation for this write; omitted writes preserve valid evidence. */

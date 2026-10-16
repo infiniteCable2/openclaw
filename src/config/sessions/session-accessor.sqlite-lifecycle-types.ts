@@ -412,6 +412,7 @@ export type ProjectedLifecycleMutation = {
   }>;
   upsertedEntries: Array<{
     entry: SessionEntry;
+    initialContext?: import("./session-initial-context.js").PreparedInitialSessionContext;
     expectedEntry: SessionEntry | undefined;
     routeContext?: ConversationRouteContext | null;
     resetBoundary?: SessionResetBoundaryWrite;
