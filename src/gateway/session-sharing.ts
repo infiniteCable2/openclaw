@@ -389,7 +389,9 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
                 }),
           }
         : {}),
-      ...(bindsProgressLifecycle || bindsOwnProfile
+      // Existing Talk rows retain their original lifecycle across provider readiness.
+      // An absent row still belongs to the native guarded-creation contract.
+      ...(bindsProgressLifecycle || bindsOwnProfile || (talkSessionTarget && target)
         ? { lifecycleRevision: target?.entry.lifecycleRevision }
         : {}),
     });
@@ -486,7 +488,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
               current.storeKey === expectedResolved.storeKey &&
               isSameSessionSharingSource(current, expectedResolved) &&
               (current.entry.sessionId?.trim() || null) === expectedSessionId &&
-              (!(bindsProgressLifecycle || bindsOwnProfile || expected.created) ||
+              (!("lifecycleRevision" in expected) ||
                 current.entry.lifecycleRevision === expected.lifecycleRevision));
         if (!sameResolvedTarget) {
           throw targetChanged(targetRef.sessionKey);
