@@ -46,50 +46,46 @@ describe("voice consult concrete store ownership", () => {
     const storePath = agentRuntime.session.resolveStorePath(cfg.session?.store, {
       agentId: "main",
     });
-    const requesterKey = "agent:main:requester";
     const sourceKey = "agent:main:knowledge";
-    const requesterActor = {
-      type: "human" as const,
-      source: "profile" as const,
-      id: "requester-profile",
-    };
-    for (const [sessionKey, sessionId, actorId, to] of [
-      [requesterKey, "requester-session", requesterActor.id, "room:requester"],
-      [sourceKey, "source-session", "context-profile", "room:context"],
-    ]) {
-      await replaceSessionEntry(
-        { agentId: "main", sessionKey, storePath },
-        {
-          sessionId,
-          updatedAt: 1,
-          lifecycleRevision: sessionId + "-revision",
-          createdActor: { type: "human", source: "profile", id: actorId },
-          sandbox: "required",
-          delivery: normalizeSessionDeliveryState({ context: { channel: "matrix", to } }),
+    await replaceSessionEntry(
+      { agentId: "main", sessionKey: sourceKey, storePath },
+      {
+        sessionId: "source-session",
+        updatedAt: 1,
+        lifecycleRevision: "source-revision",
+        createdActor: { type: "human", source: "profile", id: "context-profile" },
+        sandbox: "required",
+        delivery: normalizeSessionDeliveryState({
+          context: { channel: "matrix", to: "room:context" },
+        }),
+      },
+    );
+    await appendTranscriptMessage(
+      {
+        agentId: "main",
+        sessionId: "source-session",
+        sessionKey: sourceKey,
+        storePath,
+      },
+      {
+        eventId: "completed-answer",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "source completed context" }],
         },
-      );
-      await appendTranscriptMessage(
-        { agentId: "main", sessionId, sessionKey, storePath },
-        {
-          eventId: "completed-answer",
-          message: {
-            role: "assistant",
-            stopReason: "stop",
-            content: [{ type: "text", text: sessionId + " completed context" }],
-          },
-        },
-      );
-    }
-    const sessionKey = "agent:main:subagent:voice:explicit-source";
+      },
+    );
+    const sessionKey = "agent:main:conversation:voice:explicit-source";
     await consultRealtimeVoiceAgent({
       cfg,
       agentRuntime,
       logger: { warn: vi.fn() },
       agentId: "main",
       sessionKey,
-      spawnedBy: requesterKey,
       contextSourceSessionKey: sourceKey,
       contextMode: "fork",
+      toolsAllow: ["read"],
       senderIsOwner: false,
       messageProvider: "voice",
       lane: "talk",
@@ -100,14 +96,13 @@ describe("voice consult concrete store ownership", () => {
       userLabel: "User",
     });
     const child = loadSessionEntry({ agentId: "main", sessionKey, storePath })!;
-    expect(child).toMatchObject({
-      spawnedBy: requesterKey,
-      spawnedBySessionId: "requester-session",
-      spawnedBySenderIsOwner: false,
-      createdActor: requesterActor,
-      sandbox: "required",
-      forkSource: { sessionKey: sourceKey, sessionId: "source-session" },
-    });
+    expect(child.forkSource).toEqual({ sessionKey: sourceKey, sessionId: "source-session" });
+    expect(child.createdActor).toBeUndefined();
+    expect(child.sandbox).toBeUndefined();
+    expect(child.spawnedBy).toBeUndefined();
+    expect(child.spawnedBySessionId).toBeUndefined();
+    expect(child.parentSessionKey).toBeUndefined();
+    expect(child.parentSessionLifecycleRevision).toBeUndefined();
     const transcript = JSON.stringify(
       await loadTranscriptEvents({
         agentId: "main",
@@ -116,16 +111,16 @@ describe("voice consult concrete store ownership", () => {
         storePath,
       }),
     );
-    expect(transcript).toContain("source-session completed context");
-    expect(transcript).not.toContain("requester-session completed context");
+    expect(transcript).toContain("source completed context");
     expect(agentRuntime.runEmbeddedAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        spawnedBy: requesterKey,
+        spawnedBy: undefined,
         senderIsOwner: false,
-        messageTo: "room:requester",
+        toolsAllow: ["read"],
+        messageProvider: "voice",
+        messageTo: undefined,
       }),
     );
-    expect(child.parentSessionKey).toBeUndefined();
   });
 
   it("keeps a regular admitted conversation independent from its context source", async () => {

@@ -106,6 +106,25 @@ describe("realtime voice agent consult runtime", () => {
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
   });
 
+  it("refuses a delegated task with a different snapshot source before reading or writing", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    await expect(
+      runConsult({
+        agentRuntime: runtime as never,
+        agentId: "main",
+        sessionKey: "agent:main:subagent:voice:task",
+        spawnedBy: "agent:main:requester",
+        contextSourceSessionKey: "agent:main:another-context",
+        contextMode: "fork",
+        runIdPrefix: "mixed-context",
+        args: { question: "Check" },
+      }),
+    ).rejects.toThrow("admitted requester");
+    expect(sessionForkMocks.withSessionEntryReadOnlyInWorker).not.toHaveBeenCalled();
+    expect(runtime.session.patchSessionEntry).not.toHaveBeenCalled();
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
+  });
+
   it("binds GPT-Live delegated runs to spoken confirmation until completion", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
     const started = createDeferred();
@@ -258,7 +277,7 @@ describe("realtime voice agent consult runtime", () => {
       ].join("\n\n"),
     );
     expect(call.extraSystemPrompt).toBe(
-      "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+      "You are the configured OpenClaw agent participating in a live voice conversation. Respond to the user, use available tools when appropriate, and return a brief speakable result.",
     );
   });
 
