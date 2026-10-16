@@ -1,6 +1,7 @@
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createSandboxFsBridgeFromResolver } from "../test-helpers/host-sandbox-fs-bridge.js";
 import { createAudioInspectTool } from "./audio-inspect-tool.js";
 
@@ -38,16 +39,22 @@ vi.mock("../../media-understanding/runtime.js", () => ({
   resolveAudioInputBudget: fixture.budget,
 }));
 const workspace = path.resolve("/fixture/workspace");
+let work: AsyncWorkScope;
 function tool(options: Parameters<typeof createAudioInspectTool>[0] = {}) {
   const result = createAudioInspectTool({ workspaceDir: workspace, ...options });
   if (!result) {
     throw new Error("Expected enabled audio inspection");
   }
-  return result;
+  return {
+    ...result,
+    execute: (...args: Parameters<typeof result.execute>) =>
+      work.run(() => result.execute(...args)),
+  };
 }
 
 describe("audio_inspect native adapter", () => {
   beforeEach(() => {
+    work = new AsyncWorkScope();
     vi.clearAllMocks();
     fixture.capture.mockResolvedValue({ release: fixture.release });
     fixture.load.mockResolvedValue({
@@ -89,6 +96,7 @@ describe("audio_inspect native adapter", () => {
         }),
     );
   });
+  afterEach(async () => await work.drain());
 
   it("offers metadata without vision or a transcription provider and reads under native roots", async () => {
     const result = await tool().execute("info", { path: "sound.wav" });
@@ -106,6 +114,7 @@ describe("audio_inspect native adapter", () => {
     );
     expect(fixture.transcribe).not.toHaveBeenCalled();
     expect(fixture.budget).not.toHaveBeenCalled();
+    await work.drain();
     expect(fixture.release).toHaveBeenCalledOnce();
   });
 
@@ -305,6 +314,7 @@ describe("audio_inspect native adapter", () => {
     expect(fixture.release).not.toHaveBeenCalled();
     finished.resolve({ text: "must not publish" });
     await rejected;
+    await work.drain();
     expect(fixture.release).toHaveBeenCalledOnce();
   });
 });
