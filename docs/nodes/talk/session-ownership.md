@@ -69,6 +69,18 @@ revision. This check also applies when an existing child would otherwise be
 reused. It does not provide live context synchronization or change session
 routing policy.
 
+The host can select `contextSourceSessionKey` separately from `spawnedBy` when
+starting a forked consultation. This is an already-admitted snapshot source,
+not a model-selected address or an access grant. The source must belong to the
+consulted agent and the same physical store. Its completed transcript may be
+copied, but its sender, creator, sandbox, delivery route, and task-spawn authority
+are not inferred from that copy. A delegated task still uses its requester for
+those policies and its context; an explicit source may confirm that same
+requester, not substitute another conversation. An existing regular conversation
+retains its own admitted metadata.
+This separation does not enable branch routing, identify a speaker, synchronize
+live context, or turn a device connection into private-owner authority.
+
 Managed-room handoffs do not yet supply current-speaker tool authority. Room
 attachment alone cannot authorize steering; status and cancellation remain available.
 

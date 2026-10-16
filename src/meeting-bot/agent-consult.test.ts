@@ -343,7 +343,6 @@ describe("createMeetingRealtimeEngineBindings", () => {
         agentId: "operator",
         sessionKey: "agent:operator:subagent:test-meeting:meeting-1",
         spawnedBy: "agent:operator:main",
-        contextSourceSessionKey: "agent:operator:main",
         thinkLevel: "low",
       }),
     );
