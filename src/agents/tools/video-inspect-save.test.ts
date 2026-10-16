@@ -35,7 +35,7 @@ describe("explicit video frame artifacts", () => {
     const bridge = createHostSandboxFsBridge(workspaceDir);
     const files = await saveInspectedVideoFrames({
       frames: [frame],
-      sandbox: { root: "/workspace", bridge },
+      sandbox: { root: workspaceDir, bridge },
       assertCurrent() {},
     });
     expect(files[0]!.path).toMatch(/^\/workspace\/media\/video-frames\//);
@@ -43,7 +43,7 @@ describe("explicit video frame artifacts", () => {
     await expect(
       saveInspectedVideoFrames({
         frames: [frame],
-        sandbox: { root: "/workspace", bridge: { ...bridge, createFileExclusive: undefined } },
+        sandbox: { root: workspaceDir, bridge: { ...bridge, createFileExclusive: undefined } },
         assertCurrent() {},
       }),
     ).rejects.toThrow("exclusively create");
@@ -56,7 +56,7 @@ describe("explicit video frame artifacts", () => {
     await expect(
       saveInspectedVideoFrames({
         frames: [frame],
-        sandbox: { root: "/workspace", bridge: { ...bridge, createFileExclusive: create } },
+        sandbox: { root: workspaceDir, bridge: { ...bridge, createFileExclusive: create } },
         assertCurrent() {},
       }),
     ).rejects.toThrow("no file was replaced");
@@ -64,7 +64,7 @@ describe("explicit video frame artifacts", () => {
     await expect(
       saveInspectedVideoFrames({
         frames: [frame],
-        sandbox: { root: "/workspace", bridge: { ...bridge, createFileExclusive: create } },
+        sandbox: { root: workspaceDir, bridge: { ...bridge, createFileExclusive: create } },
         assertCurrent() {},
       }),
     ).rejects.toThrow("read-only mount");
@@ -90,7 +90,7 @@ describe("explicit video frame artifacts", () => {
       saveInspectedVideoFrames({
         frames: [frame, frame],
         sandbox: {
-          root: "/workspace",
+          root: workspaceDir,
           bridge: {
             ...bridge,
             createFileExclusive: async (params) => {
