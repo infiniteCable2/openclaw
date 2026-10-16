@@ -147,7 +147,7 @@ describe("voice consult concrete store ownership", () => {
       chatType: "group",
       createdActor,
       sandbox: "required",
-      permissionMode: "default",
+      permissionMode: "workspace",
       delivery: normalizeSessionDeliveryState({
         context: { channel: "matrix", to: "room:caller" },
       }),
@@ -209,7 +209,7 @@ describe("voice consult concrete store ownership", () => {
         toolsAllow: ["read"],
         messageProvider: "matrix",
         messageTo: "room:caller",
-        permissionMode: "default",
+        permissionMode: "workspace",
       }),
     );
     const memory = await resolveMemoryAudienceFromEntry(

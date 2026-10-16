@@ -367,7 +367,8 @@ describe("meeting shutdown", () => {
         synthesis.resolve(spokenResult);
         await setImmediate();
         expect(fixture.writeOutput).toHaveBeenCalledOnce();
-        expect(conversion).toHaveBeenCalledExactlyOnceWith("process");
+        // Bounded preparation can reach natural EOF while the sink is pending.
+        expect(conversion.mock.calls).toEqual([["process"], ["flush"]]);
       }
       // Stop seals the turn immediately, but full closure awaits admitted work
       // and confirmed transport disposal.

@@ -26,7 +26,7 @@ export function resolveRealtimeVoiceContextSource(params: {
   contextSourceSessionKey?: string;
 }): string | undefined {
   if (params.contextSourceSessionKey === undefined) {
-    // A delegated task naturally copies its requester unless the host selects another source.
+    // A delegated task naturally copies its admitted requester.
     return params.spawnedBy?.trim() || undefined;
   }
   const sourceKey = params.contextSourceSessionKey.trim();
