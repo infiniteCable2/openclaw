@@ -152,6 +152,14 @@ describe("voice consult concrete store ownership", () => {
         context: { channel: "matrix", to: "room:caller" },
       }),
     });
+    const before = loadSessionEntry(scope)!;
+    const memoryScope = {
+      ...scope,
+      sessionId: before.sessionId,
+      senderIsOwner: false,
+    };
+    const previousMemory = await resolveMemoryAudienceFromEntry(memoryScope, before);
+    if (previousMemory.status === "granted") previousMemory.release();
     await replaceSessionEntry(
       { ...scope, sessionKey: sourceKey },
       {
@@ -214,8 +222,20 @@ describe("voice consult concrete store ownership", () => {
       },
       entry,
     );
-    expect(memory).toMatchObject({ status: "granted", audience: { kind: "conversation" } });
-    if (memory.status === "granted") memory.release();
+    try {
+      // The synthetic channel actor is not a profile grant. Context copying must
+      // preserve the native decision, not manufacture a private-memory audience.
+      if (previousMemory.status === "denied") {
+        expect(memory).toEqual(previousMemory);
+      } else {
+        expect(memory).toMatchObject({
+          status: "granted",
+          audience: { kind: previousMemory.audience.kind },
+        });
+      }
+    } finally {
+      if (memory.status === "granted") memory.release();
+    }
   });
 
   it.each([false, true])(
