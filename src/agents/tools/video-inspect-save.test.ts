@@ -85,7 +85,7 @@ describe("explicit video frame artifacts", () => {
     expect(await fs.readdir(workspaceDir)).toEqual([]);
     const bridge = createHostSandboxFsBridge(workspaceDir);
     let active = true;
-    const create = bridge.createFileExclusive!;
+    const create = bridge.createFileExclusive!.bind(bridge);
     await expect(
       saveInspectedVideoFrames({
         frames: [frame, frame],
