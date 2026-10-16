@@ -82,6 +82,35 @@ async function expectLoadedImage(tool: ReturnType<typeof createMediaTool>, image
 }
 
 describe("media references in task workspaces", () => {
+  it("registers audio inspection without vision or STT and preserves invocation revocation", async () => {
+    const assertInvocationCurrent = vi.fn();
+    const tool = createMediaTool("audio_inspect", {
+      workspaceDir: tempDirs.make("openclaw-audio-workspace-"),
+      modelHasVision: false,
+      assertInvocationCurrent,
+    });
+    expect(tool.catalogMode).toBe("direct-only");
+    assertInvocationCurrent.mockImplementation(() => {
+      throw new Error("audio inspection invocation retired");
+    });
+    await expect(
+      tool.execute("audio-info", { action: "info", path: "sample.wav" }),
+    ).rejects.toThrow("audio inspection invocation retired");
+    expect(assertInvocationCurrent).toHaveBeenCalled();
+  });
+
+  it.each([{ enabled: false }, { scope: { default: "deny" as const } }])(
+    "does not register audio inspection when its media policy denies it: %j",
+    (audio) => {
+      const tools = createOpenClawTools({
+        config: { plugins: { enabled: false }, tools: { media: { audio } } },
+        workspaceDir: tempDirs.make("openclaw-audio-disabled-"),
+        modelHasVision: false,
+      });
+      expect(tools.some((tool) => tool.name === "audio_inspect")).toBe(false);
+    },
+  );
+
   it("loads Gateway media with workspace-only access while rejecting outside files and symlinks", async () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-media-state-"));
     const workspaceDir = tempDirs.make("openclaw-media-worktree-");

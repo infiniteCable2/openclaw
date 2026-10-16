@@ -1,4 +1,5 @@
 import { normalizeMediaProviderId } from "../../packages/media-understanding-common/src/provider-id.js";
+import type { OpenClawConfig } from "../config/types.js";
 import type { MediaUnderstandingModelConfig } from "../config/types.tools.js";
 import type {
   MediaUnderstandingCapability,
@@ -47,4 +48,27 @@ export function matchesMediaEntryCapability(params: {
 }): boolean {
   const capabilities = resolveEffectiveMediaEntryCapabilities(params);
   return capabilities?.includes(params.capability) ?? false;
+}
+
+/** Explicit image opt-in must not eagerly discover providers for native vision turns. */
+export function hasExplicitImageUnderstandingConfig(params: {
+  cfg: OpenClawConfig;
+  providerRegistry:
+    | MediaUnderstandingCapabilityRegistry
+    | (() => MediaUnderstandingCapabilityRegistry);
+}): boolean {
+  return (params.cfg.tools?.media?.models ?? []).some((entry) => {
+    const configured = resolveConfiguredMediaEntryCapabilities(entry);
+    if (configured) {
+      return configured.includes("image");
+    }
+    return matchesMediaEntryCapability({
+      entry,
+      capability: "image",
+      providerRegistry:
+        typeof params.providerRegistry === "function"
+          ? params.providerRegistry()
+          : params.providerRegistry,
+    });
+  });
 }

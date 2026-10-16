@@ -19,6 +19,35 @@ function requireCoreToolProfilePolicy(profile: Parameters<typeof resolveCoreTool
 }
 
 describe("tool-catalog", () => {
+  it("exposes audio inspection in the media catalog and coding profile only", () => {
+    const media = listCoreToolSections().find((section) => section.id === "media");
+    expect(media?.tools.map((tool) => tool.id)).toContain("audio_inspect");
+    expect(resolveCoreToolProfiles("audio_inspect")).toEqual(["coding"]);
+    for (const profile of ["coding", "full"]) {
+      expect(
+        isToolAllowedByPolicies("audio_inspect", [resolveCoreToolProfilePolicy(profile)]),
+      ).toBe(true);
+    }
+    for (const profile of ["minimal", "messaging"]) {
+      expect(
+        isToolAllowedByPolicies("audio_inspect", [resolveCoreToolProfilePolicy(profile)]),
+      ).toBe(false);
+    }
+  });
+
+  it.each(["group:media", "group:openclaw"])(
+    "applies %s grants and denies to audio inspection",
+    (group) => {
+      expect(isToolAllowedByPolicyName("audio_inspect", { allow: [group] })).toBe(true);
+      expect(
+        isToolAllowedByPolicyName("audio_inspect", { allow: [group], deny: ["audio_inspect"] }),
+      ).toBe(false);
+      expect(
+        isToolAllowedByPolicyName("audio_inspect", { allow: ["audio_inspect"], deny: [group] }),
+      ).toBe(false);
+    },
+  );
+
   it.each([
     ["personal_instructions", { personalInstructionsEnabled: true }],
     ["agents_wait", { swarmEnabled: true }],

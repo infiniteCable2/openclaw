@@ -167,8 +167,11 @@ export class MediaAttachmentCache {
     attachmentIndex: number;
     maxBytes: number;
     timeoutMs: number;
+    signal?: AbortSignal;
   }): Promise<MediaBufferResult> {
+    params.signal?.throwIfAborted();
     const entry = await this.ensureEntry(params.attachmentIndex);
+    params.signal?.throwIfAborted();
     const url = remoteFetchUrl(entry.attachment.url);
     if (entry.bufferResult) {
       if (entry.bufferResult.size > params.maxBytes) {
@@ -178,6 +181,7 @@ export class MediaAttachmentCache {
     }
 
     const local = await this.withLocalFile(entry, () => this.readEntryLocalBuffer(entry, params));
+    params.signal?.throwIfAborted();
     if (local) {
       return local;
     }
@@ -199,7 +203,9 @@ export class MediaAttachmentCache {
         maxBytes: params.maxBytes,
         ssrfPolicy: this.ssrfPolicy,
         retry: REMOTE_MEDIA_FETCH_RETRY,
+        ...(params.signal ? { requestInit: { signal: params.signal } } : {}),
       });
+      params.signal?.throwIfAborted();
       const classification = await classifyAttachmentBytes({
         buffer: fetched.buffer,
         name: fetched.fileName ?? url,
@@ -208,6 +214,7 @@ export class MediaAttachmentCache {
         declaredMime: concreteMime(entry.attachment.mime),
         additionalMimeHints: [fetched.contentType],
       });
+      params.signal?.throwIfAborted();
       entry.bufferResult = {
         buffer: fetched.buffer,
         classification,
@@ -217,6 +224,7 @@ export class MediaAttachmentCache {
       };
       return entry.bufferResult;
     } catch (err) {
+      params.signal?.throwIfAborted();
       if (err instanceof MediaFetchError && err.code === "max_bytes") {
         throw maxBytesError(params);
       }
@@ -342,7 +350,9 @@ export class MediaAttachmentCache {
 
   /** Returns a local path for providers that cannot accept buffers, creating a temp file if needed. */
   async getPath(params: Parameters<MediaAttachmentCache["getBuffer"]>[0]): Promise<string> {
+    params.signal?.throwIfAborted();
     const entry = await this.ensureEntry(params.attachmentIndex);
+    params.signal?.throwIfAborted();
     const local = await this.withLocalFile(entry, async () => {
       await (await this.prepareLocalFile(entry))?.handle.close().catch(() => {});
       const size = entry.statSize;
@@ -354,6 +364,7 @@ export class MediaAttachmentCache {
       }
       return undefined;
     });
+    params.signal?.throwIfAborted();
     if (local) {
       return local;
     }
@@ -366,18 +377,22 @@ export class MediaAttachmentCache {
     }
 
     const bufferResult = await this.getBuffer(params);
+    params.signal?.throwIfAborted();
     const extension = path.extname(bufferResult.fileName || "") || "";
     const tmpPath = buildRandomTempFilePath({
       prefix: "openclaw-media",
       extension,
     });
     this.stagedPaths.add(tmpPath);
-    await fs.writeFile(tmpPath, bufferResult.buffer).catch(async (error: unknown) => {
-      // A failed attempt cannot remove another borrower's file; retain failed removals for cleanup.
-      await this.removeStagedPath(tmpPath);
-      throw error;
-    });
+    await fs
+      .writeFile(tmpPath, bufferResult.buffer, { signal: params.signal })
+      .catch(async (error: unknown) => {
+        // A failed attempt cannot remove another borrower's file; retain failed removals for cleanup.
+        await this.removeStagedPath(tmpPath);
+        throw error;
+      });
     entry.tempPath = tmpPath;
+    params.signal?.throwIfAborted();
     return tmpPath;
   }
 

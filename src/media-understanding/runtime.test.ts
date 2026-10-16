@@ -2,6 +2,7 @@
 // state, cleanup, remote references, and direct model-backed image calls.
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.js";
 import {
   describeVideoFile,
@@ -312,6 +313,79 @@ describe("media-understanding runtime", () => {
       agentDir: "/tmp/agent",
       workspaceDir: "/tmp/workspace",
     });
+  });
+
+  it("carries transcription scope and an exact request deadline through the native file runner", async () => {
+    const controller = new AbortController();
+    mocks.normalizeMediaAttachments.mockReturnValue([
+      { index: 0, path: "/tmp/sample.wav", mime: "audio/wav" },
+    ]);
+    mocks.runCapability.mockResolvedValue({
+      outputs: [],
+      decision: { capability: "audio", outcome: "skipped", attachments: [] },
+    });
+    await transcribeAudioFile({
+      filePath: "/tmp/sample.wav",
+      cfg: {},
+      scopeContext: { sessionKey: "agent:example:chat", channel: "matrix", chatType: "direct" },
+      timeoutMs: 1234,
+      signal: controller.signal,
+    });
+    expect(requireRunCapabilityRequest()).toMatchObject({
+      request: { timeoutMs: 1234 },
+      signal: expect.any(AbortSignal),
+      ctx: { SessionKey: "agent:example:chat", Surface: "matrix", ChatType: "direct" },
+    });
+    expect(mocks.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("rejects already cancelled transcription before resolving providers or a cache", async () => {
+    const controller = new AbortController();
+    const reason = new Error("Caller cancelled transcription");
+    controller.abort(reason);
+    await expect(
+      transcribeAudioFile({ filePath: "/tmp/sample.wav", cfg: {}, signal: controller.signal }),
+    ).rejects.toBe(reason);
+    expect(mocks.buildProviderRegistry).not.toHaveBeenCalled();
+    expect(mocks.createMediaAttachmentCache).not.toHaveBeenCalled();
+  });
+
+  it("aborts at the exact deadline but joins native work before cache cleanup", async () => {
+    vi.useFakeTimers();
+    const entered = createDeferred<AbortSignal>();
+    const settled = createDeferred();
+    mocks.normalizeMediaAttachments.mockReturnValue([
+      { index: 0, path: "/tmp/sample.wav", mime: "audio/wav" },
+    ]);
+    mocks.runCapability.mockImplementationOnce(async ({ signal }: { signal: AbortSignal }) => {
+      entered.resolve(signal);
+      await settled.promise;
+      signal.throwIfAborted();
+      throw new Error("Expected the file deadline to abort");
+    });
+    const operation = transcribeAudioFile({
+      filePath: "/tmp/sample.wav",
+      cfg: {},
+      timeoutMs: 1234,
+    });
+    const rejected = expect(operation).rejects.toMatchObject({ name: "TimeoutError" });
+    try {
+      const signal = await entered.promise;
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1233);
+      expect(signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signal.aborted).toBe(true);
+      expect(mocks.cleanup).not.toHaveBeenCalled();
+      settled.resolve();
+      await rejected;
+      expect(mocks.cleanup).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      settled.resolve();
+      await operation.catch(() => undefined);
+      vi.useRealTimers();
+    }
   });
 
   it("passes per-request image prompts into media understanding config", async () => {

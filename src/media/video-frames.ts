@@ -1,16 +1,17 @@
-import { withTempWorkspace } from "@openclaw/fs-safe/temp";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readImageProbeFromHeader } from "rastermill";
-import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import type { runCommandBuffered } from "../process/exec.js";
+import {
+  createMediaFileProcessor,
+  requireMediaInteger,
+  type MediaFileSource,
+} from "./file-processing.js";
 import { MAX_IMAGE_INPUT_PIXELS } from "./image-processor-config.js";
 
 export const MAX_VIDEO_FRAME_SOURCE_BYTES = 100 * 1024 * 1024;
 export const MAX_VIDEO_FRAME_COUNT = 12;
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_FRAME_RESULT_BYTES = 64 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 45_000;
-const MAX_TIMEOUT_MS = 180_000;
 const MAX_DURATION_SECONDS = 24 * 60 * 60;
 
 export type VideoFrameProfile = "preview" | "detail" | "source";
@@ -55,52 +56,6 @@ type VideoFrameDependencies = {
   encodePreview: (buffer: Buffer, options: PreviewOptions) => Promise<Buffer>;
 };
 
-function requireInteger(value: number, name: string, min: number, max: number): number {
-  if (!Number.isSafeInteger(value) || value < min || value > max) {
-    throw new Error(`${name} must be an integer between ${min} and ${max}`);
-  }
-  return value;
-}
-
-function detectContainer(buffer: Buffer): VideoContainer {
-  if (
-    !Buffer.isBuffer(buffer) ||
-    buffer.byteLength === 0 ||
-    buffer.byteLength > MAX_VIDEO_FRAME_SOURCE_BYTES
-  ) {
-    throw new Error(`Video input must contain 1..${MAX_VIDEO_FRAME_SOURCE_BYTES} bytes`);
-  }
-  const atom = buffer.toString("ascii", 4, 8);
-  if (["ftyp", "moov", "mdat", "wide", "free", "skip"].includes(atom)) {
-    return "mov";
-  }
-  if (buffer.length >= 4 && buffer.readUInt32BE(0) === 0x1a45dfa3) {
-    return "matroska";
-  }
-  if (buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "AVI ") {
-    return "avi";
-  }
-  throw new Error("Unsupported video container; use MP4/MOV, Matroska/WebM, or AVI");
-}
-
-function inputArgs(inputPath: string, container: VideoContainer): string[] {
-  return [
-    "-protocol_whitelist",
-    "file,pipe",
-    "-format_whitelist",
-    container,
-    "-f",
-    container,
-    "-max_pixels",
-    String(MAX_IMAGE_INPUT_PIXELS),
-    // Force a single-file demuxer. MOV external data references are never followed,
-    // even when a malicious uploaded container names a local file or URL.
-    ...(container === "mov" ? ["-enable_drefs", "0", "-use_absolute_path", "0"] : []),
-    "-i",
-    inputPath,
-  ];
-}
-
 function positiveNumber(value: unknown): number | undefined {
   if (typeof value !== "number" && typeof value !== "string") {
     return undefined;
@@ -109,7 +64,13 @@ function positiveNumber(value: unknown): number | undefined {
   return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
-function parseMetadata(buffer: Buffer, container: VideoContainer): VideoFrameMetadata {
+function parseMetadata(
+  buffer: Buffer,
+  container: MediaFileSource["container"],
+): VideoFrameMetadata {
+  if (container !== "mov" && container !== "matroska" && container !== "avi") {
+    throw new Error("Unsupported video container");
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(buffer.toString("utf8"));
@@ -178,13 +139,13 @@ function resolveRendition(params: VideoFrameRendition) {
   }
   return {
     profile,
-    maxSide: requireInteger(
+    maxSide: requireMediaInteger(
       params.maxSide ?? (profile === "detail" ? 1920 : 960),
       "Frame maxSide",
       64,
       8192,
     ),
-    targetBytes: requireInteger(
+    targetBytes: requireMediaInteger(
       params.targetBytes ?? (profile === "detail" ? 500_000 : 150_000),
       "Frame targetBytes",
       1024,
@@ -246,7 +207,7 @@ export function buildVideoOverviewTimestamps(durationSeconds: number, count = 4)
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
     throw new Error("Video overview requires a positive finite duration");
   }
-  requireInteger(count, "Frame count", 1, MAX_VIDEO_FRAME_COUNT);
+  requireMediaInteger(count, "Frame count", 1, MAX_VIDEO_FRAME_COUNT);
   return Array.from({ length: count }, (_, index) => (durationSeconds * (index + 0.5)) / count);
 }
 
@@ -261,87 +222,35 @@ export function createVideoFrameExtractor(overrides: Partial<VideoFrameDependenc
     ...overrides,
   };
 
-  async function withSource<T>(
-    params: VideoBufferParams,
-    run: (source: {
-      inputPath: string;
-      container: VideoContainer;
-      signal: AbortSignal;
-      remainingMs: () => number;
-    }) => Promise<T>,
-  ): Promise<T> {
-    params.signal?.throwIfAborted();
-    const container = detectContainer(params.buffer);
-    const timeoutMs = requireInteger(
-      params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      "Video timeoutMs",
-      1,
-      MAX_TIMEOUT_MS,
-    );
-    const signal = AbortSignal.any([
-      ...(params.signal ? [params.signal] : []),
-      AbortSignal.timeout(timeoutMs),
-    ]);
-    const deadline = Date.now() + timeoutMs;
-    const remainingMs = () => {
-      signal.throwIfAborted();
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        throw new Error("Video extraction timed out");
-      }
-      return remaining;
-    };
-    // A seekable private copy supports MP4 files whose metadata follows the media.
-    // The caller retains its original; this workspace owns no durable media state.
-    return await withTempWorkspace(
-      { rootDir: resolvePreferredOpenClawTmpDir(), prefix: "video-frames-" },
-      async (workspace) => {
-        const inputPath = await workspace.write("input.video", params.buffer);
-        remainingMs();
-        const result = await run({ inputPath, container, signal, remainingMs });
-        remainingMs();
-        return result;
-      },
-    );
-  }
+  const processor = createMediaFileProcessor(
+    {
+      label: "Video",
+      prefix: "video-frames-",
+      maxInputBytes: MAX_VIDEO_FRAME_SOURCE_BYTES,
+      containers: ["mov", "matroska", "avi"],
+    },
+    deps,
+  );
+  const { withSource } = processor;
 
   async function execute(
-    source: { signal: AbortSignal; remainingMs: () => number },
+    source: MediaFileSource,
     binary: string,
     args: string[],
     maxBytes: number,
   ): Promise<Buffer> {
-    const result = await deps.runCommand([binary, ...args], {
-      signal: source.signal,
-      timeoutMs: source.remainingMs(),
-      maxOutputBytes: { stdout: maxBytes, stderr: 16 * 1024 },
-      maxCombinedOutputBytes: maxBytes + 16 * 1024,
-      killProcessTree: true,
-    });
-    source.remainingMs();
-    if (result.termination !== "exit" || result.code !== 0) {
-      // Never expose FFmpeg diagnostics containing private paths or embedded metadata.
-      throw new Error(`Video processing failed (${result.termination})`);
-    }
-    if (result.stdout.byteLength > maxBytes) {
-      throw new Error("Video output exceeded its byte limit");
-    }
+    const result = await processor.execute(source, binary, args, maxBytes);
     return result.stdout;
   }
 
-  async function probe(source: {
-    inputPath: string;
-    container: VideoContainer;
-    signal: AbortSignal;
-    remainingMs: () => number;
-  }): Promise<VideoFrameMetadata> {
+  async function probe(source: MediaFileSource): Promise<VideoFrameMetadata> {
     const output = await execute(
       source,
       await deps.resolveFfprobe(),
       [
         "-v",
         "error",
-        ...inputArgs(source.inputPath, source.container),
+        ...source.inputArgs,
         "-show_entries",
         "format=duration:stream=codec_type,width,height,duration:stream_disposition=attached_pic",
         "-of",
@@ -357,7 +266,7 @@ export function createVideoFrameExtractor(overrides: Partial<VideoFrameDependenc
     extractVideoFrames: async (
       params: ExtractVideoFramesParams,
     ): Promise<ExtractedVideoFrame[]> => {
-      requireInteger(params.timestampsSeconds.length, "Frame count", 1, MAX_VIDEO_FRAME_COUNT);
+      requireMediaInteger(params.timestampsSeconds.length, "Frame count", 1, MAX_VIDEO_FRAME_COUNT);
       if (params.timestampsSeconds.some((time) => !Number.isFinite(time) || time < 0)) {
         throw new Error("Frame timestamps must be finite non-negative seconds");
       }
@@ -384,7 +293,7 @@ export function createVideoFrameExtractor(overrides: Partial<VideoFrameDependenc
               "1",
               "-ss",
               String(timestampSeconds),
-              ...inputArgs(source.inputPath, source.container),
+              ...source.inputArgs,
               "-map",
               "0:V:0",
               "-frames:v",

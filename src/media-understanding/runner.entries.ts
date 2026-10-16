@@ -5,10 +5,7 @@ import path from "node:path";
 import { findNormalizedProviderValue } from "@openclaw/model-catalog-core/provider-id";
 import { expectDefined } from "@openclaw/normalization-core";
 import { ok, type Result } from "@openclaw/normalization-core/result";
-import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeNullableString,
-} from "@openclaw/normalization-core/string-coerce";
+import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { MediaUnderstandingSkipError } from "../../packages/media-understanding-common/src/errors.js";
 import { extractGeminiResponse } from "../../packages/media-understanding-common/src/output-extract.js";
@@ -37,18 +34,20 @@ import type {
 } from "../config/types.tools.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { hasErrnoCode } from "../infra/errors.js";
-import { writeExternalFileWithinRoot } from "../infra/fs-safe.js";
 import { resolveProxyFetchFromEnv } from "../infra/net/proxy-fetch.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { ImageOptimizationLimitError } from "../media/image-optimization-error.js";
-import { runFfmpeg } from "../media/media-services.js";
 import {
   getOfficialExternalPluginCatalogManifest,
   listOfficialExternalProviderCatalogEntries,
 } from "../plugins/official-external-plugin-catalog.js";
 import { resolveOfficialExternalPluginRepairHint } from "../plugins/official-external-plugin-repair-hints.js";
+import { withCommandProcessScope } from "../process/exec-spawn.js";
 import { runExec } from "../process/exec.js";
-import { providerOperationRetryConfig } from "../provider-runtime/operation-retry.js";
+import {
+  providerOperationRetryConfig,
+  resolveTransientProviderRetryOptions,
+} from "../provider-runtime/operation-retry.js";
 import { assertSecretOwnerAvailable } from "../secrets/runtime-degraded-state.js";
 import { assertRuntimeMediaRequestSecretOwnerAvailable } from "../secrets/runtime-media-secret-owner.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
@@ -70,6 +69,7 @@ import {
   resolveEntryRunOptions,
   trimMediaUnderstandingOutput,
 } from "./resolve.js";
+import { resolveCliMediaPath } from "./runner.cli-support.js";
 import { isTranscriptArtifactText } from "./transcription-text.js";
 import type {
   AudioTranscriptionResult,
@@ -236,47 +236,6 @@ async function resolveCliOutput(params: {
   return params.stdout.trim();
 }
 
-async function resolveCliMediaPath(params: {
-  capability: MediaUnderstandingCapability;
-  command: string;
-  mediaPath: string;
-  outputDir: string;
-}): Promise<string> {
-  const commandId = commandBase(params.command);
-  if (params.capability !== "audio" || commandId !== "whisper-cli") {
-    return params.mediaPath;
-  }
-
-  const ext = normalizeLowercaseStringOrEmpty(path.extname(params.mediaPath));
-  if (ext === ".wav") {
-    return params.mediaPath;
-  }
-
-  const wavPath = path.join(params.outputDir, `${path.parse(params.mediaPath).name}.wav`);
-  await fs.mkdir(params.outputDir, { recursive: true });
-  await writeExternalFileWithinRoot({
-    rootDir: params.outputDir,
-    path: path.basename(wavPath),
-    write: async (outputPath) => {
-      await runFfmpeg([
-        "-y",
-        "-i",
-        params.mediaPath,
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-c:a",
-        "pcm_s16le",
-        "-f",
-        "wav",
-        outputPath,
-      ]);
-    },
-  });
-  return wavPath;
-}
-
 type ProviderQuery = Record<string, string | number | boolean>;
 
 function resolveProviderQuery(
@@ -345,7 +304,9 @@ export function buildModelDecision(params: {
   };
 }
 
-export type MediaRequestOverrides = Pick<AudioTranscriptionRequest, "prompt" | "language">;
+export type MediaRequestOverrides = Pick<AudioTranscriptionRequest, "prompt" | "language"> & {
+  timeoutMs?: number;
+};
 
 type ProviderExecutionAuth =
   | {
@@ -362,12 +323,15 @@ function executeProviderRequest<T>(
   provider: string,
   auth: ProviderExecutionAuth,
   execute: (auth: Pick<AudioTranscriptionRequest, "apiKey" | "auth">) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
+  signal?.throwIfAborted();
+  const retry = resolveTransientProviderRetryOptions(providerOperationRetryConfig("read"));
   return auth.kind === "api-key"
     ? executeWithApiKeyRotation({
         provider,
         apiKeys: auth.apiKeys,
-        transientRetry: providerOperationRetryConfig("read"),
+        transientRetry: retry ? { ...retry, signal } : undefined,
         execute: (apiKey) =>
           execute({
             apiKey,
@@ -584,7 +548,9 @@ export async function runProviderEntry(params: {
   config?: MediaUnderstandingConfig;
   secretOwnerId?: string;
   request?: MediaRequestOverrides;
+  signal?: AbortSignal;
 }): Promise<Result<MediaUnderstandingOutput | null, unknown>> {
+  params.signal?.throwIfAborted();
   const { entry, capability, cfg } = params;
   const providerIdRaw = entry.provider?.trim();
   if (!providerIdRaw) {
@@ -611,6 +577,7 @@ export async function runProviderEntry(params: {
       attachmentIndex: params.attachmentIndex,
       maxBytes,
       timeoutMs,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
     const normalizedMedia = await normalizeImageDescriptionInput({
       buffer: media.buffer,
@@ -648,6 +615,7 @@ export async function runProviderEntry(params: {
       provider: requestProviderId,
       prompt: params.request?.prompt ?? prompt,
       timeoutMs,
+      signal: params.signal,
       profile: entry.profile,
       preferredProfile: entry.preferredProfile,
       agentId: params.agentId,
@@ -656,7 +624,9 @@ export async function runProviderEntry(params: {
       cfg: params.cfg,
     };
     const describeImage = provider?.describeImage ?? describeImageWithModel;
+    params.signal?.throwIfAborted();
     const result = await describeImage(imageInput);
+    params.signal?.throwIfAborted();
     return ok({
       kind: "image.description",
       attachmentIndex: params.attachmentIndex,
@@ -685,6 +655,7 @@ export async function runProviderEntry(params: {
       attachmentIndex: params.attachmentIndex,
       maxBytes,
       timeoutMs,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
     assertMinAudioSize({ size: media.size, attachmentIndex: params.attachmentIndex });
     const audioLanguage = params.request?.language ?? entry.language ?? params.config?.language;
@@ -718,9 +689,11 @@ export async function runProviderEntry(params: {
       prompt: audioPrompt,
       query: providerQuery,
       timeoutMs,
+      signal: params.signal,
       fetchFn,
     };
     let result: AudioTranscriptionResult;
+    params.signal?.throwIfAborted();
     if (provider.transcribeAudioWithContext) {
       const attempt = await provider.transcribeAudioWithContext({
         ...input,
@@ -730,6 +703,7 @@ export async function runProviderEntry(params: {
         profile: entry.profile,
         preferredProfile: entry.preferredProfile,
       });
+      params.signal?.throwIfAborted();
       if (!attempt.ok) {
         return attempt;
       }
@@ -744,10 +718,14 @@ export async function runProviderEntry(params: {
         providerId,
         provider,
       });
-      result = await executeProviderRequest(providerId, auth, (requestAuth) =>
-        transcribeAudio({ ...input, ...requestAuth }),
+      result = await executeProviderRequest(
+        providerId,
+        auth,
+        (requestAuth) => transcribeAudio({ ...input, ...requestAuth }),
+        params.signal,
       );
     }
+    params.signal?.throwIfAborted();
     if (isTranscriptArtifactText(result.text)) {
       return ok(null);
     }
@@ -768,6 +746,7 @@ export async function runProviderEntry(params: {
     attachmentIndex: params.attachmentIndex,
     maxBytes,
     timeoutMs,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
   const estimatedBase64Bytes = estimateBase64Size(media.size);
   const maxBase64Bytes = resolveVideoMaxBase64Bytes(maxBytes);
@@ -796,21 +775,27 @@ export async function runProviderEntry(params: {
       providerRegistry: params.providerRegistry,
     }) ||
     entry.model;
-  const result = await executeProviderRequest(providerId, auth, (requestAuth) =>
-    describeVideo({
-      buffer: media.buffer,
-      fileName: media.fileName,
-      mime: media.mime,
-      ...requestAuth,
-      baseUrl,
-      headers,
-      request,
-      model,
-      prompt,
-      timeoutMs,
-      fetchFn,
-    }),
+  const result = await executeProviderRequest(
+    providerId,
+    auth,
+    (requestAuth) =>
+      describeVideo({
+        buffer: media.buffer,
+        fileName: media.fileName,
+        mime: media.mime,
+        ...requestAuth,
+        baseUrl,
+        headers,
+        request,
+        model,
+        prompt,
+        timeoutMs,
+        signal: params.signal,
+        fetchFn,
+      }),
+    params.signal,
   );
+  params.signal?.throwIfAborted();
   return ok({
     kind: "video.description",
     attachmentIndex: params.attachmentIndex,
@@ -823,9 +808,10 @@ export async function runProviderEntry(params: {
 export async function runCliEntry(
   params: Pick<
     Parameters<typeof runProviderEntry>[0],
-    "capability" | "entry" | "cfg" | "cache" | "config" | "request"
+    "capability" | "entry" | "cfg" | "cache" | "config" | "request" | "signal"
   > & { ctx: MsgContext; attachment: MediaAttachment },
 ): Promise<MediaUnderstandingOutput | null> {
+  params.signal?.throwIfAborted();
   const { entry, capability, ctx } = params;
   const attachmentIndex = params.attachment.index;
   const cli = resolveCliModelEntry(entry);
@@ -839,7 +825,9 @@ export async function runCliEntry(
     attachmentIndex,
     maxBytes,
     timeoutMs,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
+  params.signal?.throwIfAborted();
   if (capability === "audio") {
     const stat = await fs.stat(attachmentPath);
     assertMinAudioSize({ size: stat.size, attachmentIndex });
@@ -848,86 +836,94 @@ export async function runCliEntry(
     path.join(resolvePreferredOpenClawTmpDir(), "openclaw-media-cli-"),
   );
   try {
-    const mediaPath = await resolveCliMediaPath({
-      capability,
-      command,
-      mediaPath: attachmentPath,
-      outputDir,
-    });
-    const outputBase = path.join(outputDir, path.parse(mediaPath).name);
+    return await withCommandProcessScope(async () => {
+      const mediaPath = await resolveCliMediaPath({
+        capability,
+        command,
+        mediaPath: attachmentPath,
+        outputDir,
+        timeoutMs,
+        signal: params.signal,
+      });
+      params.signal?.throwIfAborted();
+      const outputBase = path.join(outputDir, path.parse(mediaPath).name);
 
-    const templCtx: TemplateContext & Record<string, unknown> = {
-      ...ctx,
-      AttachmentPath: mediaPath,
-      AttachmentUrl: params.attachment.url ?? params.attachment.path ?? mediaPath,
-      AttachmentContentType: params.attachment.mime,
-      AttachmentDir: path.dirname(mediaPath),
-      AttachmentIndex: params.attachment.index,
-      MediaPath: mediaPath,
-      MediaUrl: params.attachment.url ?? params.attachment.path ?? mediaPath,
-      MediaType: params.attachment.mime,
-      MediaDir: path.dirname(mediaPath),
-      OutputDir: outputDir,
-      OutputBase: outputBase,
-      Prompt: params.request?.prompt ?? prompt,
-      ...(capability === "audio" && language ? { Language: language } : {}),
-      MaxChars: maxChars,
-    };
-    for (const key of [
-      "MediaPaths",
-      "MediaUrls",
-      "MediaTypes",
-      "MediaWorkspaceDir",
-      "MediaTranscribedIndexes",
-      "MediaStaged",
-    ]) {
-      delete templCtx[key];
-    }
-    const argv = args.map((part) => applyTemplate(part, templCtx));
-    if (shouldLogVerbose()) {
-      logVerbose(`Media understanding via CLI: ${[command, ...argv].join(" ")}`);
-    }
-    const { stdout, stderr } = await runExec(command, argv, {
-      timeoutMs,
-      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
-      cwd: ["agy", "antigravity"].includes(commandBase(command))
-        ? path.dirname(mediaPath)
-        : undefined,
-    });
-    const requestedBackend =
-      capability === "audio"
-        ? resolveRequestedLocalAudioBackend({
-            command,
-            args: argv,
-          })
-        : undefined;
-    const observedBackend =
-      capability === "audio"
-        ? recordLocalAudioBackendObservation({
-            command,
-            args: argv,
-            output: `${stderr ?? ""}\n${stdout}`,
-          })
-        : undefined;
-    const resolved = await resolveCliOutput({
-      command,
-      args: argv,
-      stdout,
-      mediaPath,
-    });
-    const text = trimMediaUnderstandingOutput(resolved, maxChars);
-    if (!text || (capability === "audio" && isTranscriptArtifactText(resolved))) {
-      return null;
-    }
-    return {
-      kind: capability === "audio" ? "audio.transcription" : `${capability}.description`,
-      attachmentIndex,
-      text,
-      provider: capability === "audio" ? commandBase(command) : "cli",
-      model: command,
-      ...(requestedBackend ? { requestedBackend } : {}),
-      ...(observedBackend ? { observedBackend } : {}),
-    };
+      const templCtx: TemplateContext & Record<string, unknown> = {
+        ...ctx,
+        AttachmentPath: mediaPath,
+        AttachmentUrl: params.attachment.url ?? params.attachment.path ?? mediaPath,
+        AttachmentContentType: params.attachment.mime,
+        AttachmentDir: path.dirname(mediaPath),
+        AttachmentIndex: params.attachment.index,
+        MediaPath: mediaPath,
+        MediaUrl: params.attachment.url ?? params.attachment.path ?? mediaPath,
+        MediaType: params.attachment.mime,
+        MediaDir: path.dirname(mediaPath),
+        OutputDir: outputDir,
+        OutputBase: outputBase,
+        Prompt: params.request?.prompt ?? prompt,
+        ...(capability === "audio" && language ? { Language: language } : {}),
+        MaxChars: maxChars,
+      };
+      for (const key of [
+        "MediaPaths",
+        "MediaUrls",
+        "MediaTypes",
+        "MediaWorkspaceDir",
+        "MediaTranscribedIndexes",
+        "MediaStaged",
+      ]) {
+        delete templCtx[key];
+      }
+      const argv = args.map((part) => applyTemplate(part, templCtx));
+      if (shouldLogVerbose()) {
+        logVerbose(`Media understanding via CLI: ${[command, ...argv].join(" ")}`);
+      }
+      const { stdout, stderr } = await runExec(command, argv, {
+        timeoutMs,
+        ...(params.signal ? { signal: params.signal } : {}),
+        maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+        cwd: ["agy", "antigravity"].includes(commandBase(command))
+          ? path.dirname(mediaPath)
+          : undefined,
+      });
+      params.signal?.throwIfAborted();
+      const requestedBackend =
+        capability === "audio"
+          ? resolveRequestedLocalAudioBackend({
+              command,
+              args: argv,
+            })
+          : undefined;
+      const observedBackend =
+        capability === "audio"
+          ? recordLocalAudioBackendObservation({
+              command,
+              args: argv,
+              output: `${stderr ?? ""}\n${stdout}`,
+            })
+          : undefined;
+      const resolved = await resolveCliOutput({
+        command,
+        args: argv,
+        stdout,
+        mediaPath,
+      });
+      params.signal?.throwIfAborted();
+      const text = trimMediaUnderstandingOutput(resolved, maxChars);
+      if (!text || (capability === "audio" && isTranscriptArtifactText(resolved))) {
+        return null;
+      }
+      return {
+        kind: capability === "audio" ? "audio.transcription" : `${capability}.description`,
+        attachmentIndex,
+        text,
+        provider: capability === "audio" ? commandBase(command) : "cli",
+        model: command,
+        ...(requestedBackend ? { requestedBackend } : {}),
+        ...(observedBackend ? { observedBackend } : {}),
+      };
+    }, params.signal);
   } finally {
     await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
   }

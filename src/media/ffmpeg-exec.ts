@@ -13,6 +13,7 @@ type MediaExecOptions = {
   maxBufferBytes?: number;
   input?: Buffer | string;
   stdinFileDescriptor?: number;
+  signal?: AbortSignal;
 };
 
 function resolveExecOptions(
@@ -30,6 +31,7 @@ function resolveExecOptions(
     logOutput: false,
     maxBuffer: options?.maxBufferBytes ?? MEDIA_FFMPEG_MAX_BUFFER_BYTES,
     timeoutMs: options?.timeoutMs ?? defaultTimeoutMs,
+    ...(options?.signal ? { signal: options.signal } : {}),
   };
 }
 

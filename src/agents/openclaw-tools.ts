@@ -52,6 +52,7 @@ import {
 import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import { createAskUserTool } from "./tools/ask-user-tool.js";
+import { createAudioInspectTool } from "./tools/audio-inspect-tool.js";
 import type { AnyAgentTool } from "./tools/common.js";
 import { createComputerTool } from "./tools/computer-tool.js";
 import {
@@ -248,6 +249,13 @@ export function createOpenClawTools(
   const videoInspectTool = createVideoInspectTool({
     ...options,
     config: availabilityConfig ?? options?.config,
+    workspaceDir,
+    sandbox,
+  });
+  const audioInspectTool = createAudioInspectTool({
+    ...options,
+    config: availabilityConfig ?? options?.config,
+    agentId: sessionAgentId,
     workspaceDir,
     sandbox,
   });
@@ -635,6 +643,7 @@ export function createOpenClawTools(
     webFetchTool,
     imageTool,
     videoInspectTool,
+    audioInspectTool,
     pdfTool,
   ].filter((tool): tool is AnyAgentTool => tool !== null && tool !== undefined);
   options?.recordToolPrepStage?.("openclaw-tools:core-tool-list");

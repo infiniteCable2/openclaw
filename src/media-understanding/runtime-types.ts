@@ -22,6 +22,7 @@ export type RunMediaUnderstandingFileParams = {
   activeModel?: ActiveMediaModel;
   prompt?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
   scopeContext?: MediaUnderstandingScopeContext;
 };
 
@@ -43,7 +44,7 @@ export type DescribeImageFileParams = Omit<RunMediaUnderstandingFileParams, "cap
 
 export type DescribeImageFileWithModelParams = Omit<
   RunMediaUnderstandingFileParams,
-  "capability" | "activeModel" | "scopeContext" | "prompt"
+  "capability" | "activeModel" | "scopeContext" | "prompt" | "signal"
 > & {
   provider: string;
   model: string;
@@ -88,7 +89,10 @@ export type DescribeVideoFileParams = Omit<
   "mediaUrl" | "prompt" | "timeoutMs" | "scopeContext"
 >;
 
-export type TranscribeAudioFileParams = DescribeVideoFileParams & {
+export type TranscribeAudioFileParams = Omit<
+  RunMediaUnderstandingFileParams,
+  "capability" | "mediaUrl"
+> & {
   language?: string;
   prompt?: string;
 };

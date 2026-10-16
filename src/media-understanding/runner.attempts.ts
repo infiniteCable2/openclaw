@@ -30,12 +30,14 @@ export async function runAttachmentEntries(
   attempts: MediaUnderstandingModelDecision[];
   processing: MediaAttachmentProcessing;
 }> {
+  params.signal?.throwIfAborted();
   const { entries, capability } = params;
   const attachmentIndex = params.attachment.index;
   const speechFact = normalizeMediaFacts(params.ctx.media)[attachmentIndex];
   const attempts: MediaUnderstandingModelDecision[] = [];
   let processing: MediaAttachmentProcessing = "omitted";
   for await (const candidate of entries) {
+    params.signal?.throwIfAborted();
     const { entry } = candidate;
     const entryType = entry.type ?? (entry.command ? "cli" : "provider");
     try {
@@ -50,6 +52,7 @@ export async function runAttachmentEntries(
                 .speechInput,
               secretOwnerId: candidate.secretOwnerId,
             });
+      params.signal?.throwIfAborted();
       if (!attempt.ok) {
         if (
           !(params.automaticAudio && isProviderAuthError(attempt.error, "missing-provider-auth"))
@@ -87,6 +90,8 @@ export async function runAttachmentEntries(
         buildModelDecision({ entry, entryType, outcome: "skipped", reason: "empty output" }),
       );
     } catch (err) {
+      // Cancellation never grants another provider the same recording.
+      params.signal?.throwIfAborted();
       if (isMediaUnderstandingSkipError(err)) {
         attempts.push(
           buildModelDecision({

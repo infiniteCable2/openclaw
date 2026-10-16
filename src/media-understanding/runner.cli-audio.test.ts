@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { MediaUnderstandingModelConfig } from "../config/types.tools.js";
 import { logWarn } from "../logger.js";
+import { retainCommandProcessCleanup } from "../process/exec-spawn.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { CLI_OUTPUT_MAX_BUFFER } from "./defaults.constants.js";
 import { runCliEntry } from "./runner.entries.js";
@@ -25,7 +27,7 @@ vi.mock("../media/media-services.js", () => ({
 }));
 
 type Fixture = Parameters<Parameters<typeof withAudioFixture>[1]>[0];
-type Overrides = Pick<Parameters<typeof runCliEntry>[0], "config" | "request">;
+type Overrides = Pick<Parameters<typeof runCliEntry>[0], "config" | "request" | "signal">;
 
 function runFixture(
   { ctx, media, cache }: Fixture,
@@ -286,6 +288,106 @@ describe("media-understanding CLI audio entry", () => {
     expect(scratchDir).not.toBe("");
     await expect(fs.stat(scratchDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it.each(["conversion", "transcription"] as const)(
+    "joins cancelled %s before scratch cleanup without running another command",
+    async (stage) => {
+      const controller = new AbortController();
+      const entered = createDeferred();
+      const released = createDeferred();
+      const boundedResult = createDeferred();
+      const physicallyClosed = createDeferred();
+      const cleanupOrder: string[] = [];
+      const physicalCleanup = physicallyClosed.promise.then(() => {
+        cleanupOrder.push("process-closed");
+      });
+      const completed = vi.fn();
+      let scratchDir = "";
+      let stagedPath = "";
+      const pending = async (signal: AbortSignal | undefined) => {
+        expect(signal).toBe(controller.signal);
+        retainCommandProcessCleanup(physicalCleanup);
+        entered.resolve();
+        await released.promise;
+        try {
+          signal?.throwIfAborted();
+          throw new Error("Expected cancellation before command settlement");
+        } finally {
+          boundedResult.resolve();
+        }
+      };
+      if (stage === "conversion") {
+        runFfmpegMock.mockImplementationOnce(
+          async (args: string[], options: { signal?: AbortSignal }) => {
+            const outputPath = args.at(-1);
+            if (!outputPath) throw new Error("Expected conversion output path");
+            scratchDir = path.dirname(outputPath);
+            stagedPath = outputPath;
+            await fs.writeFile(stagedPath, "owned conversion output");
+            return await pending(options.signal);
+          },
+        );
+      } else {
+        runExecMock.mockImplementationOnce(
+          async (
+            _command: string,
+            args: string[],
+            options: { signal?: AbortSignal; timeoutMs?: number },
+          ) => {
+            scratchDir = path.dirname(args[2] ?? "");
+            expect(options.timeoutMs).toBe(1234);
+            return await pending(options.signal);
+          },
+        );
+      }
+      await withMediaFixture(
+        {
+          filePrefix: "openclaw-cli-cancel",
+          extension: stage === "conversion" ? "mp3" : "wav",
+          mediaType: "audio/wav",
+          fileContents: createSafeAudioFixtureBuffer(),
+        },
+        async (fixture) => {
+          const remove = fs.rm.bind(fs);
+          const removeSpy = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+            if (args[0] === scratchDir) cleanupOrder.push("scratch-removed");
+            return await remove(...args);
+          });
+          const operation = runFixture(fixture, whisper, {
+            signal: controller.signal,
+            request: { timeoutMs: 1234 },
+          }).finally(completed);
+          const reason = new Error("Caller cancelled the CLI");
+          const rejected = expect(operation).rejects.toBe(reason);
+          try {
+            await entered.promise;
+            controller.abort(reason);
+            expect(completed).not.toHaveBeenCalled();
+            released.resolve();
+            await boundedResult.promise;
+            await expect(fs.stat(scratchDir)).resolves.toBeDefined();
+            if (stage === "conversion") {
+              await expect(fs.readFile(stagedPath, "utf8")).resolves.toBe(
+                "owned conversion output",
+              );
+            }
+            expect(completed).not.toHaveBeenCalled();
+            physicallyClosed.resolve();
+            await rejected;
+            await expect(fs.stat(scratchDir)).rejects.toMatchObject({ code: "ENOENT" });
+            expect(cleanupOrder).toEqual(["process-closed", "scratch-removed"]);
+            if (stage === "conversion") expect(runExecMock).not.toHaveBeenCalled();
+            else expect(runExecMock).toHaveBeenCalledOnce();
+          } finally {
+            released.resolve();
+            physicallyClosed.resolve();
+            await operation.catch(() => undefined);
+            removeSpy.mockRestore();
+          }
+        },
+      );
+    },
+  );
 
   it.each([{ name: "default srt output", extra: [] }])(
     "preserves parakeet stdout for $name without a file contract",

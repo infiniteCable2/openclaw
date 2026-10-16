@@ -6,6 +6,7 @@ import { hasHttpUrlPrefix } from "@openclaw/net-policy/url-protocol";
 import { resolveAgentDir, resolveDefaultAgentDir } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { MediaUnderstandingCapabilityConfig } from "../config/types.tools.js";
+import { buildTimeoutAbortSignal } from "../utils/fetch-timeout.js";
 import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
 import {
   normalizeImageDescriptionInput,
@@ -121,13 +122,16 @@ async function runFile(
   params: RunMediaUnderstandingFileParams,
   request: MediaRequestOverrides,
 ): Promise<RunMediaUnderstandingFileResult> {
+  params.signal?.throwIfAborted();
   const { cfg } = params;
-  const requestTimeoutSeconds =
+  const requestTimeoutMs =
     typeof params.timeoutMs === "number" &&
     Number.isFinite(params.timeoutMs) &&
     params.timeoutMs > 0
-      ? Math.ceil(params.timeoutMs / 1000)
+      ? resolveMediaRuntimeTimeoutMs(params.timeoutMs)
       : undefined;
+  const requestTimeoutSeconds =
+    requestTimeoutMs === undefined ? undefined : Math.ceil(requestTimeoutMs / 1000);
   const ctx = buildFileContext(params);
   const attachments = normalizeMediaAttachments(ctx);
   const decisionBase = {
@@ -179,8 +183,14 @@ async function runFile(
     localPathRoots: params.mediaUrl ? undefined : resolveFileLocalRoots(params.filePath),
     ssrfPolicy: cfg.tools?.web?.fetch?.ssrfPolicy,
   });
+  const deadline = buildTimeoutAbortSignal({
+    timeoutMs: requestTimeoutMs,
+    signal: params.signal,
+    operation: "media file understanding",
+  });
 
   try {
+    deadline.signal?.throwIfAborted();
     const result = await runCapability({
       capability: params.capability,
       cfg,
@@ -193,8 +203,11 @@ async function runFile(
       providerRegistry,
       config,
       activeModel: params.activeModel,
-      request,
+      request:
+        requestTimeoutMs === undefined ? request : { ...request, timeoutMs: requestTimeoutMs },
+      ...(deadline.signal ? { signal: deadline.signal } : {}),
     });
+    deadline.signal?.throwIfAborted();
     if (result.outputs.length === 0 && result.decision.outcome === "failed") {
       throw new Error(
         normalizeDecisionReason(findDecisionReason(result.decision, "failed")) ??
@@ -213,6 +226,7 @@ async function runFile(
       decision: result.decision,
     };
   } finally {
+    deadline.cleanup();
     await cache.cleanup();
   }
 }

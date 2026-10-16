@@ -35,6 +35,41 @@ const PNG_1X1 = Buffer.from(
 const AMBIGUOUS_WEBM = Buffer.from("1a45dfa3874282847765626d", "hex");
 
 describe("media understanding attachment cache", () => {
+  it("keeps cancellation requester-local while another borrower completes and caches the same attachment", async () => {
+    const cancelled = new AbortController();
+    const active = new AbortController();
+    const entered = createDeferred();
+    const released = createDeferred();
+    const reason = new Error("Only this borrower cancelled");
+    readRemoteMediaBufferMock.mockImplementation(async (options: { requestInit?: RequestInit }) => {
+      if (options.requestInit?.signal === cancelled.signal) {
+        entered.resolve();
+        await released.promise;
+        cancelled.signal.throwIfAborted();
+      }
+      return { buffer: PNG_1X1, fileName: "sample.png", contentType: "image/png" };
+    });
+    const cache = new MediaAttachmentCache([
+      { index: 0, url: "https://example.invalid/sample.png" },
+    ]);
+    const request = { attachmentIndex: 0, maxBytes: 4096, timeoutMs: 1000 };
+    const operation = cache.getBuffer({ ...request, signal: cancelled.signal });
+    const rejected = expect(operation).rejects.toBe(reason);
+    try {
+      await entered.promise;
+      const successful = await cache.getBuffer({ ...request, signal: active.signal });
+      cancelled.abort(reason);
+      released.resolve();
+      await rejected;
+      expect(await cache.getBuffer({ ...request, signal: active.signal })).toBe(successful);
+      expect(readRemoteMediaBufferMock).toHaveBeenCalledTimes(2);
+    } finally {
+      released.resolve();
+      await operation.catch(() => undefined);
+      await cache.cleanup();
+      readRemoteMediaBufferMock.mockReset();
+    }
+  });
   it.each(["canonical", "directory alias"] as const)(
     "keeps session-scoped roots authoritative for %s attachment paths",
     async (spelling) => {
@@ -297,6 +332,7 @@ describe("media understanding attachment cache", () => {
         attachmentIndex: number;
         maxBytes: number;
         timeoutMs: number;
+        signal?: AbortSignal;
       }>();
       await withTestDir({ prefix: "openclaw-media-cache-path-limit-" }, async (base) => {
         const attachmentPath = path.join(base, "photo.png");

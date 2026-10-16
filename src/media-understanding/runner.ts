@@ -35,10 +35,7 @@ import { logWarn } from "../logger.js";
 import { classifyMediaReferenceSource } from "../media/media-reference.js";
 import { createLazyRuntimeModule, createLazyRuntimeNamedExport } from "../shared/lazy-runtime.js";
 import { MediaAttachmentCache, selectAttachments } from "./attachments.js";
-import {
-  matchesMediaEntryCapability,
-  resolveConfiguredMediaEntryCapabilities,
-} from "./entry-capabilities.js";
+import { hasExplicitImageUnderstandingConfig } from "./entry-capabilities.js";
 import { inspectLocalAudioSelection } from "./local-audio.js";
 import {
   createAttachmentDispositions,
@@ -82,6 +79,7 @@ type ProviderRegistry = Map<string, MediaUnderstandingProvider>;
 type AutoModelSelectionParams = Parameters<typeof resolveAutoImageModel>[0] & {
   providerRegistry: ProviderRegistry;
   capability: MediaUnderstandingCapability;
+  signal?: AbortSignal;
 };
 /**
  * A provider registry, or a memoized factory that builds one on first use.
@@ -353,23 +351,6 @@ function resolveImageModelFromAgentDefaults(params: {
   return entries;
 }
 
-function hasExplicitImageUnderstandingConfig(params: {
-  cfg: OpenClawConfig;
-  providerRegistry: LazyProviderRegistry;
-}): boolean {
-  return (params.cfg.tools?.media?.models ?? []).some((entry) => {
-    const configured = resolveConfiguredMediaEntryCapabilities(entry);
-    if (configured) {
-      return configured.includes("image");
-    }
-    return matchesMediaEntryCapability({
-      entry,
-      capability: "image",
-      providerRegistry: resolveProviderRegistry(params.providerRegistry),
-    });
-  });
-}
-
 async function activeModelSupportsNativeVision(
   params: Omit<AutoModelSelectionParams, "capability" | "providerRegistry">,
 ): Promise<boolean> {
@@ -412,12 +393,15 @@ async function* resolveAutoAudioEntries(
   // Advance lazily: unused providers must not refresh credentials, and an upload
   // failure must not silently disclose the same recording to another provider.
   for (const providerId of providers) {
+    params.signal?.throwIfAborted();
     const entry = await resolveAutoProviderModelEntry(params, providerId, () => undefined);
+    params.signal?.throwIfAborted();
     if (entry) {
       yield { entry };
     }
   }
   const localAudio = await inspectLocalAudioSelection();
+  params.signal?.throwIfAborted();
   for (const entry of localAudio.entries) {
     yield { entry };
   }
@@ -546,7 +530,9 @@ export async function runCapability(params: {
   config?: MediaUnderstandingConfig;
   activeModel?: ActiveMediaModel;
   request?: MediaRequestOverrides;
+  signal?: AbortSignal;
 }): Promise<RunCapabilityResult> {
+  params.signal?.throwIfAborted();
   const { capability, cfg, ctx } = params;
   const config: MediaUnderstandingConfig = params.config ?? cfg.tools?.media?.[capability] ?? {};
   const selection = selectAttachments({
@@ -757,6 +743,7 @@ export async function runCapability(params: {
       automaticAudio,
       config,
     });
+    params.signal?.throwIfAborted();
     if (output) {
       outputs.push(output);
     }

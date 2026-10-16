@@ -17,10 +17,11 @@ vi.mock("../infra/resolve-system-bin.js", () => ({
 let parseFfprobeCodecAndSampleRate: typeof import("./ffmpeg-exec.js").parseFfprobeCodecAndSampleRate;
 let resolveFfmpegBin: typeof import("./ffmpeg-exec.js").resolveFfmpegBin;
 let runFfprobe: typeof import("./ffmpeg-exec.js").runFfprobe;
+let runFfmpeg: typeof import("./ffmpeg-exec.js").runFfmpeg;
 
 beforeAll(async () => {
   vi.resetModules();
-  ({ parseFfprobeCodecAndSampleRate, resolveFfmpegBin, runFfprobe } =
+  ({ parseFfprobeCodecAndSampleRate, resolveFfmpegBin, runFfprobe, runFfmpeg } =
     await import("./ffmpeg-exec.js"));
 });
 
@@ -99,6 +100,17 @@ describe("parseFfprobeCodecAndSampleRate", () => {
 });
 
 describe("runFfprobe", () => {
+  it("passes ffmpeg cancellation to the existing child-process owner", async () => {
+    const controller = new AbortController();
+    resolveSystemBinMock.mockReturnValue("/usr/bin/ffmpeg");
+    runExecMock.mockResolvedValue({ stdout: "ok", stderr: "" });
+    await expect(runFfmpeg(["pipe:0"], { signal: controller.signal })).resolves.toBe("ok");
+    expect(runExecMock).toHaveBeenCalledWith(
+      "/usr/bin/ffmpeg",
+      ["pipe:0"],
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
   it("passes stdin and limits through the canonical exec wrapper", async () => {
     const input = Buffer.from("audio");
     runExecMock.mockResolvedValue({ stdout: "ok", stderr: "" });

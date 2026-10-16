@@ -301,6 +301,54 @@ it does not fetch arbitrary HTTP URLs. Rendition overrides (`profile`,
 image parts, not base64 text. This tool does not perform semantic video search
 or transcribe the video's audio track.
 
+### On-demand audio inspection
+
+`audio_inspect` exposes `info`, `analyze`, and `transcribe` for accessible local,
+`file://`, and `media://` audio or video references. It uses the same native
+filesystem/sandbox policy as image and video inspection, not arbitrary HTTP URLs.
+It does not need a vision model. The Media/Coding catalog and normal tool policy
+control availability; `tools.media.audio.enabled: false` or an audio scope denial
+also hides it. Metadata and signal measurements do not invoke a model.
+
+- `info` lists duration and audio streams, including their absolute `streamIndex`,
+  codec, channels, and sample rate. Without an explicit index, operations use the
+  first audio stream. A video with no audio can be inspected but not transcribed.
+- `analyze` measures the original decoded signal: sample peak/RMS in dBFS,
+  true peak in dBTP, integrated loudness in LUFS, and loudness range. Full-scale
+  sample contact indicates possible clipping; it is not a clipped-sample count.
+  Undefined logarithmic/silent measurements are `null`, never JSON infinities.
+  Integrated loudness requires at least 0.4 seconds; loudness range at least three.
+  Silence intervals use an explicit amplitude threshold (default -50 dBFS for
+  0.3 seconds), not speech recognition or VAD. No separated speech/noise reference
+  is available, so the result explicitly declines to claim an SNR measurement.
+  Silence interval positions are relative to the selected range's start.
+- `transcribe` extracts only the selected audio stream and range into private
+  mono 16-kHz PCM WAV, then calls the existing configured STT/provider path. It
+  neither selects another chat model nor enables speech enhancement. Current
+  native results expose text/provider/model; the tool does not invent word times,
+  speech probabilities, speakers, or semantic sound recognition.
+
+`startSeconds` and `endSeconds` select coordinates on the original file timeline.
+Analysis/transcription accept at most 20 minutes per operation; transcription's
+configured byte budget may require shorter intervals. Input is bounded to 100 MiB
+and a 24-hour metadata duration. `timeoutSeconds` bounds processing (default 120,
+maximum 180). Supported single-file containers include WAV, MP3, AAC, FLAC, Ogg,
+AIFF, AMR, MP4/MOV, Matroska/WebM, and AVI. Playlists and external MOV data references
+are not followed. Trusted FFmpeg/FFprobe are required; the implementation uses
+their [native audio measurement filters](https://ffmpeg.org/ffmpeg-filters.html).
+
+Source files stay unchanged. Temporary decode files remain private until the
+native provider has settled and are then removed, including after cancellation.
+The result contains no audio/base64 payload and does not send a message, start
+recording, or change a text-started task's reply mode. Transcripts are untrusted
+source data, not instructions. `maxTranscriptChars` bounds context output (default
+16,000, maximum 40,000), with explicit truncation reporting. Silence results retain
+at most 64 intervals and report when additional intervals were omitted.
+
+This is an on-demand tool, not automatic audio extraction from every inbound
+video or a live audio recording API. The shared extraction owner can serve those
+separately authorized paths without adding another transcoding tool.
+
 Per-capability `attachments` controls which attachments are processed:
 
 <ParamField path="mode" type='"first" | "all"' default="first">

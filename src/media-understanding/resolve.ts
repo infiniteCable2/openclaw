@@ -93,6 +93,7 @@ type MediaEntryRunParams = {
   entry: MediaUnderstandingModelConfig;
   cfg: OpenClawConfig;
   config?: MediaUnderstandingConfig;
+  request?: { timeoutMs?: number };
 };
 
 function resolveMaxChars(params: MediaEntryRunParams): number | undefined {
@@ -149,7 +150,10 @@ export function resolveEntryRunOptions(params: MediaEntryRunParams): {
   return {
     maxBytes,
     maxChars,
-    timeoutMs,
+    timeoutMs:
+      params.request?.timeoutMs === undefined
+        ? timeoutMs
+        : Math.min(timeoutMs, resolveMediaRuntimeTimeoutMs(params.request.timeoutMs)),
     prompt:
       maxChars && capability !== "audio"
         ? `${basePrompt} Respond in at most ${maxChars} characters.`
