@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import {
+  resetSessionEntryLifecycle,
+  upsertSessionEntryCore,
+} from "../config/sessions/session-accessor.js";
 import { addSessionMember } from "../config/sessions/session-sharing-store.native.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -60,6 +63,124 @@ function target(createdActor?: { type: "human"; id: string; label?: string }): S
 }
 
 describe("session sharing policy", () => {
+  it.each(
+    (["talk.client.create", "talk.session.create"] as const).flatMap((method) =>
+      [false, true].flatMap((admin) =>
+        [undefined, "before"].map((lifecycleRevision) => ({ method, admin, lifecycleRevision })),
+      ),
+    ),
+  )(
+    "binds $method to its admitted lifecycle (admin=$admin, revision=$lifecycleRevision)",
+    async ({ method, admin, lifecycleRevision }) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const cfg = rolePolicyConfig();
+        const owner = roleClient("view", "talk-lifecycle-owner");
+        if (admin) {
+          cfg.gateway!.roles!.definitions.view!.scopes.push("operator.admin");
+          owner.connect.scopes = ["operator.admin"];
+        }
+        const scope = { agentId: "main", sessionKey: "agent:main:talk-lifecycle" };
+        await upsertSessionEntryCore(scope, {
+          sessionId: "same-talk-session",
+          lifecycleRevision,
+          updatedAt: 1,
+          visibility: "draft",
+          createdActor: {
+            type: "human",
+            source: "profile",
+            id: owner.authenticatedUserProfile!.profileId,
+          },
+        });
+        const captured = resolveSessionMutationAuthorization({
+          client: owner,
+          method,
+          requestParams: { sessionKey: scope.sessionKey },
+          context: createDirectChatContext({ getRuntimeConfig: () => cfg }),
+        });
+        expect(captured.error).toBeNull();
+        if (!captured.authorization) {
+          throw new Error("expected captured Talk authorization");
+        }
+        const authorization = captured.authorization;
+        const assertCurrent = () => {
+          authorization.assertCurrent();
+          authorization.assertTargetCurrent(scope);
+        };
+        expect(assertCurrent).not.toThrow();
+        // Ordinary updates must not require a new voice request.
+        await upsertSessionEntryCore(scope, { label: "renamed", updatedAt: 2 });
+        expect(assertCurrent).not.toThrow();
+        const resolved = resolveSessionSharingTarget({ cfg, ...scope });
+        if (!resolved) {
+          throw new Error("expected persisted Talk session");
+        }
+        await resetSessionEntryLifecycle({
+          agentId: resolved.agentId,
+          storePath: resolved.storePath,
+          target: { canonicalKey: resolved.canonicalKey, storeKeys: resolved.storeKeys },
+          resetBoundary: { context: "clear", reason: "reset", cwd: "/workspace" },
+          buildNextEntry: ({ currentEntry }) => ({
+            ...currentEntry!,
+            lifecycleRevision: "after",
+            updatedAt: 3,
+          }),
+        });
+        expect(resolveSessionSharingTarget({ cfg, ...scope })?.entry.sessionId).toBe(
+          "same-talk-session",
+        );
+        expect(() => authorization.assertCurrent()).toThrow(
+          SessionMutationAuthorizationChangedError,
+        );
+        expect(() => authorization.assertTargetCurrent(scope)).toThrow(
+          SessionMutationAuthorizationChangedError,
+        );
+      });
+    },
+  );
+
+  it.each(["talk.client.create", "talk.session.create"] as const)(
+    "preserves guarded first materialization for $method",
+    async (method) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const cfg = rolePolicyConfig();
+        const owner = roleClient("view", "talk-create-owner");
+        const scope = { agentId: "main", sessionKey: "agent:main:new-talk" };
+        const captured = resolveSessionMutationAuthorization({
+          client: owner,
+          method,
+          requestParams: { sessionKey: scope.sessionKey },
+          context: createDirectChatContext({ getRuntimeConfig: () => cfg }),
+        });
+        expect(captured.error).toBeNull();
+        if (!captured.authorization) {
+          throw new Error("expected captured Talk authorization");
+        }
+        const authorization = captured.authorization;
+        expect(() => authorization.assertCurrent()).not.toThrow();
+        await upsertSessionEntryCore(scope, {
+          sessionId: "created-talk-session",
+          lifecycleRevision: "created",
+          updatedAt: 1,
+          visibility: "draft",
+          createdActor: {
+            type: "human",
+            source: "profile",
+            id: owner.authenticatedUserProfile!.profileId,
+          },
+        });
+        expect(() => authorization.assertTargetCurrent(scope)).toThrow(
+          SessionMutationAuthorizationChangedError,
+        );
+        expect(() =>
+          authorization.assertTargetCurrent({
+            ...scope,
+            ensuredSessionId: "created-talk-session",
+          }),
+        ).not.toThrow();
+      });
+    },
+  );
+
   it("keeps shared VIEW while limiting narrow writes to the caller's own rows", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg = rolePolicyConfig();
