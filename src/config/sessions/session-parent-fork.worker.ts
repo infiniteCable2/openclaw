@@ -17,6 +17,7 @@ import { loadTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read
 import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-state.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
 import { transferSessionEntryWorkerCandidate } from "./session-entry-patch.worker.js";
+import { assertCapturedSessionEntryReadSource } from "./session-entry-read-source.js";
 import type {
   ParentForkCandidate,
   ParentForkCommit,
@@ -31,6 +32,9 @@ export function prepareParentForkEntry(
   { open }: Pick<AgentWorkerOperationContext, "open">,
 ): ParentForkEntryPreparation {
   const database = open();
+  if (params.expectedParentSource) {
+    assertCapturedSessionEntryReadSource(params.expectedParentSource, database);
+  }
   const parentTarget = normalizeLifecycleTarget(params.parentTarget);
   const sessionTarget = normalizeLifecycleTarget(params.sessionTarget);
   return runSqlitePinnedReadSnapshotSync(database.db, () => {
@@ -121,6 +125,9 @@ function commitEntry(
   { status: "forked" | "skipped" | "missing-entry" | "missing-parent" | "failed" }
 > {
   const { params, prepared, patch } = input;
+  if (params.expectedParentSource) {
+    assertCapturedSessionEntryReadSource(params.expectedParentSource, database);
+  }
   const parentTarget = normalizeLifecycleTarget(params.parentTarget);
   const sessionTarget = normalizeLifecycleTarget(params.sessionTarget);
   if (

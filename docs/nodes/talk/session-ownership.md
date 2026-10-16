@@ -61,6 +61,14 @@ it again as steering; check the conversation before retrying.
 This applies to controls routed through pending-question input, not universal
 interception of spoken answers by every voice provider.
 
+When a voice adapter starts a forked agent consultation, the parent read retains
+its physical database owner through fork preparation and commit. The entry-fork
+operation currently copies within one store: a different consultation store is
+rejected even if it contains the same parent key, session ID, and lifecycle
+revision. This check also applies when an existing child would otherwise be
+reused. It does not provide live context synchronization or change session
+routing policy.
+
 Managed-room handoffs do not yet supply current-speaker tool authority. Room
 attachment alone cannot authorize steering; status and cancellation remain available.
 

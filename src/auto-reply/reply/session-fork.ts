@@ -41,7 +41,10 @@ type ForkSessionFromParentParams = ParentForkDecisionParams & {
 };
 
 type ForkSessionEntryFromParentParams = Omit<ForkSessionFromParentParams, "parentEntry"> &
-  Pick<ForkSessionEntryFromParentTargetParams, "fallbackEntry" | "expectedParent"> & {
+  Pick<
+    ForkSessionEntryFromParentTargetParams,
+    "fallbackEntry" | "expectedParent" | "expectedParentSource"
+  > & {
     entryPatch?: ParentForkEntryPatch;
     parentStoreKeys?: readonly string[];
     sessionStoreKeys?: readonly string[];
@@ -128,6 +131,7 @@ export async function forkSessionEntryFromParent(
       commitGuard: params.commitGuard,
       fallbackEntry: params.fallbackEntry,
       expectedParent: params.expectedParent,
+      expectedParentSource: params.expectedParentSource,
       forkFrom: params.forkFrom,
       maxTokens: params.maxTokens,
       parentTarget: normalizeForkTarget(params.parentSessionKey, params.parentStoreKeys),

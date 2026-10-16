@@ -709,6 +709,8 @@ export type ForkSessionEntryFromParentTargetParams = {
   commitGuard?: () => void;
   /** Ingress-selected parent incarnation; a later reset must not donate another context. */
   expectedParent?: Pick<SessionEntry, "sessionId" | "lifecycleRevision">;
+  /** Physical owner of the admitted parent read; matching row IDs in another store are not enough. */
+  expectedParentSource?: CapturedSessionEntryReadSource;
   /** Fork only settled parent context when an independent conversation starts mid-turn. */
   forkFrom?: "last-completed";
   /** Capacity of the child model, applied to the selected transcript boundary. */

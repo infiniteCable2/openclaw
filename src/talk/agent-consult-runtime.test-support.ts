@@ -11,9 +11,12 @@ type ForkSessionEntryFromParent =
   typeof import("../auto-reply/reply/session-fork.js").forkSessionEntryFromParent;
 export type ForkSessionEntryFromParentParams = Parameters<ForkSessionEntryFromParent>[0];
 export type ForkSessionEntryFromParentResult = Awaited<ReturnType<ForkSessionEntryFromParent>>;
+type ReadSessionEntry =
+  typeof import("../config/sessions/session-entry-read-runtime.js").withSessionEntryReadOnlyInWorker;
 
 const sessionForkMocks = vi.hoisted(() => ({
   forkSessionEntryFromParent: vi.fn<ForkSessionEntryFromParent>(),
+  withSessionEntryReadOnlyInWorker: vi.fn<ReadSessionEntry>(),
 }));
 
 export { sessionForkMocks };
@@ -23,6 +26,15 @@ vi.mock("../auto-reply/reply/session-fork.js", async (importOriginal) => {
   return {
     ...actual,
     forkSessionEntryFromParent: sessionForkMocks.forkSessionEntryFromParent,
+  };
+});
+
+vi.mock("../config/sessions/session-entry-read-runtime.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../config/sessions/session-entry-read-runtime.js")>();
+  return {
+    ...actual,
+    withSessionEntryReadOnlyInWorker: sessionForkMocks.withSessionEntryReadOnlyInWorker,
   };
 });
 
@@ -71,6 +83,15 @@ export function createAgentRuntime(payloads: unknown[] = [{ text: "Speak this." 
   );
   const getSessionEntry = vi.fn(
     (params: { sessionKey: string }) => sessionStore[params.sessionKey],
+  );
+  sessionForkMocks.withSessionEntryReadOnlyInWorker.mockImplementation(
+    async (scope, assertCurrent, consume) => {
+      assertCurrent();
+      return consume(
+        { ok: true, value: sessionStore[scope.sessionKey] as SessionEntry | undefined },
+        { kind: "native", assertCurrent },
+      );
+    },
   );
   const patchSessionEntry = vi.fn(
     async (params: {
@@ -143,6 +164,7 @@ export function useConsultRuntimeTestHooks() {
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
     afterEach(async () => {
       sessionForkMocks.forkSessionEntryFromParent.mockReset();
+      sessionForkMocks.withSessionEntryReadOnlyInWorker.mockReset();
       const tempDir = testTempDir;
       testTempDir = undefined;
       if (tempDir) {

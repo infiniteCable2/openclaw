@@ -16,6 +16,8 @@ import {
   buildSessionCreationStamp,
   inheritSessionCreationPolicy,
 } from "../config/sessions/session-entry-provenance.js";
+import { withSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
+import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { AssistantDeliveryTtsFacts } from "../llm/types.js";
@@ -257,7 +259,7 @@ export function prepareRealtimeVoiceAgentExecutionContext(params: {
   };
 }
 
-async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
+type RealtimeVoiceAgentConsultSessionParams = {
   agentId: string;
   cfg: OpenClawConfig;
   sessionKey: string;
@@ -268,21 +270,51 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
   storePath: string;
   agentRuntime: RealtimeVoiceAgentConsultRuntime;
   logger: Pick<RuntimeLogger, "warn">;
-}): Promise<{ entry: SessionEntry; parentContextNotice?: string }> {
+  assertCurrent: () => void;
+};
+
+async function resolveRealtimeVoiceAgentConsultSessionEntry(
+  params: RealtimeVoiceAgentConsultSessionParams,
+): Promise<{ entry: SessionEntry; parentContextNotice?: string }> {
+  const requesterSessionKey = params.spawnedBy?.trim();
+  const requesterAgentId = parseAgentSessionKey(requesterSessionKey)?.agentId;
+  if (!requesterSessionKey) {
+    return initializeRealtimeVoiceAgentConsultSession(params);
+  }
+  return withSessionEntryReadOnlyInWorker(
+    {
+      agentId: requesterAgentId ?? params.agentId,
+      storePath: params.agentRuntime.session.resolveStorePath(params.cfg.session?.store, {
+        agentId: requesterAgentId ?? params.agentId,
+      }),
+      sessionKey: requesterSessionKey,
+      readConsistency: "latest",
+    },
+    params.assertCurrent,
+    async (read, owner) => {
+      if (!read.ok) {
+        throw read.error;
+      }
+      return initializeRealtimeVoiceAgentConsultSession(
+        params,
+        read.value,
+        owner.source,
+        owner.assertCurrent,
+      );
+    },
+  );
+}
+
+async function initializeRealtimeVoiceAgentConsultSession(
+  params: RealtimeVoiceAgentConsultSessionParams,
+  requesterEntry?: SessionEntry,
+  requesterSource?: CapturedSessionEntryReadSource,
+  assertParentCurrent?: () => void,
+): Promise<{ entry: SessionEntry; parentContextNotice?: string }> {
   const now = Date.now();
   const deliveryFields = resolveDeliverySessionFields(params.deliveryContext);
   const requesterSessionKey = params.spawnedBy?.trim();
   const requesterAgentId = parseAgentSessionKey(requesterSessionKey)?.agentId;
-  const requesterEntry = requesterSessionKey
-    ? params.agentRuntime.session.getSessionEntry({
-        agentId: requesterAgentId ?? params.agentId,
-        storePath: params.agentRuntime.session.resolveStorePath(params.cfg.session?.store, {
-          agentId: requesterAgentId ?? params.agentId,
-        }),
-        sessionKey: requesterSessionKey,
-        readConsistency: "latest",
-      })
-    : undefined;
   const creationStamp = buildSessionCreationStamp({
     via: "talk",
     ...inheritSessionCreationPolicy(
@@ -320,6 +352,8 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
         sessionId: requesterEntry.sessionId,
         lifecycleRevision: requesterEntry.lifecycleRevision,
       },
+      expectedParentSource: requesterSource,
+      commitGuard: assertParentCurrent,
       fallbackEntry: {
         ...creationStamp,
         sessionId: "",
@@ -551,6 +585,12 @@ export async function consultRealtimeVoiceAgent(params: {
           storePath,
           agentRuntime: params.agentRuntime,
           logger: params.logger,
+          assertCurrent: () => {
+            lifecycleAbortController.signal.throwIfAborted();
+            if (!sessionWorkAdmission.isActive()) {
+              throw lifecycleInterruption;
+            }
+          },
         });
       const { deliveryContext: consultDeliveryContext, toolAuthorityOverlay } =
         prepareRealtimeVoiceAgentExecutionContext({ ...params, agentId, storePath, sessionEntry });

@@ -43,6 +43,7 @@ import {
 } from "./session-accessor.sqlite-scope.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
+import { assertCapturedSessionEntryReadSource } from "./session-entry-read-source.js";
 import {
   captureIncognitoSessionOperation,
   captureIncognitoSessionSource,
@@ -321,6 +322,9 @@ export async function forkSessionEntryFromParentTarget(
     resolved,
     async () => {
       const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+      if (params.expectedParentSource) {
+        assertCapturedSessionEntryReadSource(params.expectedParentSource, database);
+      }
       const parent = resolveLifecyclePrimaryEntry(database, parentTarget);
       if (!parent?.entry.sessionId) {
         return { status: "missing-parent" };
@@ -479,6 +483,9 @@ export function forkSessionEntryInTransaction(
   const sessionTarget = normalizeLifecycleTarget(params.sessionTarget);
   // Parent authority can close while this fork waits behind another writer.
   params.commitGuard?.();
+  if (params.expectedParentSource) {
+    assertCapturedSessionEntryReadSource(params.expectedParentSource, writeDatabase);
+  }
   const freshParent = resolveLifecyclePrimaryEntry(writeDatabase, parentTarget)?.entry;
   const freshExisting = resolveLifecyclePrimaryEntry(writeDatabase, sessionTarget);
   const freshBase = freshExisting?.entry ?? params.fallbackEntry;

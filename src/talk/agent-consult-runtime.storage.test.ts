@@ -27,6 +27,62 @@ afterEach(async () => {
 });
 
 describe("voice consult concrete store ownership", () => {
+  it.each([false, true])(
+    "refuses a foreign-store parent even when its row identity matches (existing child=%s)",
+    async (existingChild) => {
+      const cfg: OpenClawConfig = {
+        agents: { entries: { main: { workspace: state.workspaceDir } } },
+      };
+      const runEmbeddedAgent = vi.fn(async () => ({ payloads: [], meta: {} }));
+      const agentRuntime = { ...createRuntimeAgent(), runEmbeddedAgent };
+      const parentKey = "agent:main:parent";
+      const childKey = "agent:main:subagent:voice:child";
+      const parentStore = agentRuntime.session.resolveStorePath(cfg.session?.store, {
+        agentId: "main",
+      });
+      const childStore = state.statePath("separate", "sessions.sqlite");
+      const parent = { sessionId: "same-id", lifecycleRevision: "same-revision", updatedAt: 1 };
+      for (const storePath of [parentStore, childStore]) {
+        await replaceSessionEntry({ agentId: "main", sessionKey: parentKey, storePath }, parent);
+      }
+      const childScope = { agentId: "main", sessionKey: childKey, storePath: childStore };
+      if (existingChild) {
+        await replaceSessionEntry(childScope, {
+          sessionId: "existing-child",
+          updatedAt: 2,
+          delivery: normalizeSessionDeliveryState({
+            context: { channel: "discord", to: "channel:original" },
+          }),
+        });
+      }
+      const before = loadSessionEntry(childScope);
+      await expect(
+        consultRealtimeVoiceAgent({
+          cfg,
+          agentRuntime,
+          logger: { warn: vi.fn() },
+          agentId: "main",
+          sessionKey: childKey,
+          storePath: childStore,
+          spawnedBy: parentKey,
+          contextMode: "fork",
+          messageProvider: "webchat",
+          lane: "talk",
+          runIdPrefix: "test-parent-store",
+          args: { question: "Check this" },
+          transcript: [],
+          surface: "test voice",
+          userLabel: "User",
+        }),
+      ).rejects.toThrow("Captured session database changed");
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+      expect(loadSessionEntry(childScope)).toEqual(before);
+      expect(
+        loadSessionEntry({ agentId: "main", sessionKey: parentKey, storePath: parentStore }),
+      ).toEqual(parent);
+    },
+  );
+
   it("preserves live run identity through transcript storage and redaction", async () => {
     const runIdPrefix = "zoom-meetings:zoom_meeting_11111111-2222-4333-8444-123456789012";
     const cfg: OpenClawConfig = {
