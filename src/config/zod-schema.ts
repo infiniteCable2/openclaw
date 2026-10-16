@@ -6,6 +6,16 @@ import { OpenClawSchemaShape } from "./zod-schema.root-shape.js";
 
 export const OpenClawSchema = z.strictObject(OpenClawSchemaShape).superRefine((cfg, ctx) => {
   const agents = listAgentEntries(cfg as OpenClawConfig);
+  if (
+    cfg.session?.scope === "global" &&
+    agents.some((agent) => agent.conversationMode === "branches")
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["session", "scope"],
+      message: "Branch conversations require per-agent roots; session.scope cannot be global.",
+    });
+  }
   const agentIds = new Set(agents.map((agent) => agent.id));
   const effectiveAgentIds = new Set(agents.map((agent) => normalizeAgentId(agent.id)));
   if (agents.length === 0) {

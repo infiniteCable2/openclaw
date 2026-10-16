@@ -65,6 +65,8 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
     "Plugin-defined configuration payload interpreted by that plugin's own schema and validation rules. Use only documented fields from the plugin to prevent ignored or invalid settings.",
   "agents.entries.*.identity.avatar":
     "Agent avatar (workspace-relative path, http(s) URL, or data URI).",
+  "agents.entries.*.conversationMode":
+    'Conversation routing for this agent: "native" (or omitted) preserves existing OpenClaw session routing; "branches" uses one headless root for the agent with separate external conversation branches and cannot use global session scope. This setting does not grant identity, tool, delivery, or memory access.',
   "agents.defaults.model.primary": "Primary model (provider/model).",
   "agents.defaults.model.fallbacks":
     "Ordered fallback models (provider/model). Used when the primary model fails.",

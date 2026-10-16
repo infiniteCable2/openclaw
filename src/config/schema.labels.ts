@@ -79,6 +79,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "diagnostics.cacheTrace.enabled": "Cache Trace Enabled",
   "agents.entries.*.identity.avatar": "Identity Avatar",
   "agents.entries.*.skills": "Agent Skill Filter",
+  "agents.entries.*.conversationMode": "Agent Conversation Mode",
   "agents.entries.*.cwd": "Agent Working Directory",
   "agents.entries.*.runtime": "Agent Runtime",
   "agents.entries.*.runtime.type": "Agent Runtime Type",

@@ -10,6 +10,7 @@ import {
   normalizeMainKey,
   resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
+import { resolveAgentConversationModeContract } from "../agent-conversation-mode.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveCanonicalMainSessionKey } from "./main-session-key.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "./session-store-owner.js";
@@ -67,7 +68,13 @@ export function resolveSessionRoutingContract(cfg: OpenClawConfig): string {
         ? `retired:${persistedOwner.agentId}`
         : (tryResolveAmbientOwnerAgentId(cfg) ??
           (cfg.agents?.ownership === "explicit" ? "unowned" : (listAgentIds(cfg)[0] ?? "main")));
-  return [scope, normalizeMainKey(cfg?.session?.mainKey), routingOwner].join("|");
+  const nativeContract = [scope, normalizeMainKey(cfg?.session?.mainKey), routingOwner].join("|");
+  const conversationModes = resolveAgentConversationModeContract(cfg);
+  // Admission captured before a mode switch cannot retain the old routing
+  // contract. Preserve the native fingerprint when no agent opts into branches.
+  return conversationModes === "[]"
+    ? nativeContract
+    : `${nativeContract}|branches:${conversationModes}`;
 }
 
 export { resolveAgentIdFromSessionKey };

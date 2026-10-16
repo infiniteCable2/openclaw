@@ -7,12 +7,14 @@ import {
 } from "../agents/agent-scope.js";
 import type { ChatType } from "../channels/chat-type.js";
 import { normalizeChatType } from "../channels/chat-type.js";
+import { resolveAgentConversationModeContract } from "../config/agent-conversation-mode.js";
 import { listRouteBindings } from "../config/bindings.js";
 import type { DmScope, GroupScope } from "../config/types.base.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { shouldLogVerbose } from "../globals.js";
 import { logDebug } from "../logger.js";
 import { normalizeRouteBindingId, routeBindingScopeMatches } from "./binding-scope.js";
+import { resolveAgentConversationRoute } from "./conversation-mode.js";
 import { peerKindMatches } from "./peer-kind-match.js";
 import {
   getEvaluatedBindingsForChannelAccount,
@@ -195,6 +197,8 @@ const resolvedRouteCacheByCfg = new WeakMap<
     bindingsRef: OpenClawConfig["bindings"];
     agentsRef: OpenClawConfig["agents"];
     sessionRef: OpenClawConfig["session"];
+    conversationModes: string;
+    sessionScope: NonNullable<OpenClawConfig["session"]>["scope"];
     byKey: Map<string, ResolvedAgentRoute>;
   }
 >();
@@ -216,11 +220,14 @@ export function listExactDirectMessageBindingPeerIds(
 
 function resolveRouteCacheForConfig(cfg: OpenClawConfig): Map<string, ResolvedAgentRoute> {
   const existing = resolvedRouteCacheByCfg.get(cfg);
+  const conversationModes = resolveAgentConversationModeContract(cfg);
   if (
     existing &&
     existing.bindingsRef === cfg.bindings &&
     existing.agentsRef === cfg.agents &&
-    existing.sessionRef === cfg.session
+    existing.sessionRef === cfg.session &&
+    existing.conversationModes === conversationModes &&
+    existing.sessionScope === cfg.session?.scope
   ) {
     return existing.byKey;
   }
@@ -229,6 +236,8 @@ function resolveRouteCacheForConfig(cfg: OpenClawConfig): Map<string, ResolvedAg
     bindingsRef: cfg.bindings,
     agentsRef: cfg.agents,
     sessionRef: cfg.session,
+    conversationModes,
+    sessionScope: cfg.session?.scope,
     byKey,
   });
   return byKey;
@@ -316,28 +325,29 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
     sessionOverride?: { dmScope?: DmScope; groupScope?: GroupScope },
   ) => {
     const resolvedAgentId = pickFirstExistingAgentId(input.cfg, agentId);
-    const effectiveDmScope = sessionOverride?.dmScope ?? dmScope;
-    const effectiveGroupScope = sessionOverride?.groupScope ?? groupScope;
-    const sessionKey = buildAgentSessionKey({
+    const conversation = resolveAgentConversationRoute({
+      cfg: input.cfg,
       agentId: resolvedAgentId,
-      mainKey: input.cfg.session?.mainKey,
       channel,
       accountId,
       peer,
-      dmScope: effectiveDmScope,
-      groupScope: effectiveGroupScope,
-      identityLinks,
+      dmScope: sessionOverride?.dmScope ?? dmScope,
+      groupScope: sessionOverride?.groupScope ?? groupScope,
     });
-    const mainSessionKey = buildAgentMainSessionKey({
-      agentId: resolvedAgentId,
-      mainKey: input.cfg.session?.mainKey,
-    });
+    const { sessionKey } = conversation;
+    const mainSessionKey =
+      conversation.mode === "branches"
+        ? conversation.rootSessionKey
+        : buildAgentMainSessionKey({
+            agentId: resolvedAgentId,
+            mainKey: input.cfg.session?.mainKey,
+          });
     const route = {
       agentId: resolvedAgentId,
       channel,
       accountId,
-      dmScope: effectiveDmScope,
-      groupScope: effectiveGroupScope,
+      dmScope: conversation.dmScope,
+      groupScope: conversation.groupScope,
       sessionKey,
       mainSessionKey,
       lastRoutePolicy: deriveLastRoutePolicy({ sessionKey, mainSessionKey }),

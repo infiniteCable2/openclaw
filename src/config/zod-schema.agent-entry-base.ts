@@ -82,6 +82,8 @@ export const AgentEntryBaseSchema = z.strictObject({
   id: z.string(),
   name: z.string().optional(),
   description: z.string().optional(),
+  /** External conversation routing; omitted preserves native session scoping. */
+  conversationMode: z.enum(["native", "branches"]).optional(),
   workspace: z.string().optional(),
   cwd: z.string().optional(),
   agentDir: z.string().optional(),

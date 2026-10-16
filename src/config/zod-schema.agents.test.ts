@@ -2,6 +2,72 @@ import { describe, expect, it } from "vitest";
 import { AgentsSchema } from "./zod-schema.agents.js";
 import { OpenClawSchema } from "./zod-schema.js";
 
+describe("agent conversation mode", () => {
+  it("keeps native global scope but rejects branch roots in a shared global session", () => {
+    expect(
+      OpenClawSchema.safeParse({
+        session: { scope: "global" },
+        agents: { entries: { researcher: {} } },
+      }).success,
+    ).toBe(true);
+    const result = OpenClawSchema.safeParse({
+      session: { scope: "global" },
+      agents: {
+        ownership: "explicit",
+        entries: {
+          researcher: { conversationMode: "branches" },
+          writer: { conversationMode: "branches" },
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({ path: ["session", "scope"] }),
+      );
+    }
+  });
+  it.each([undefined, "native", "branches"] as const)(
+    "preserves the optional per-agent mode without adding a default (%s)",
+    (conversationMode) => {
+      const entry = conversationMode === undefined ? {} : { conversationMode };
+      const result = AgentsSchema.parse({ entries: { researcher: entry } });
+      expect(result?.entries?.researcher).toEqual(entry);
+    },
+  );
+
+  it.each(["hybrid", "main", "unknown", "", true, 1, null])(
+    "rejects unsupported conversation mode %j at the agent entry",
+    (conversationMode) => {
+      const result = AgentsSchema.safeParse({ entries: { researcher: { conversationMode } } });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toContainEqual(
+          expect.objectContaining({ path: ["entries", "researcher", "conversationMode"] }),
+        );
+      }
+    },
+  );
+
+  it("keeps the mode local to each agent instead of inheriting from defaults", () => {
+    const result = AgentsSchema.parse({
+      ownership: "explicit",
+      entries: { researcher: { conversationMode: "branches" }, writer: {} },
+    });
+    expect(result?.entries?.researcher?.conversationMode).toBe("branches");
+    expect(result?.entries?.writer).not.toHaveProperty("conversationMode");
+    expect(
+      AgentsSchema.safeParse({
+        defaults: { conversationMode: "branches" },
+        entries: { researcher: {} },
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentsSchema.safeParse({ conversationMode: "branches", entries: { researcher: {} } }).success,
+    ).toBe(false);
+  });
+});
+
 describe("agent roster ownership", () => {
   it("rejects an empty roster after load-time migration", () => {
     expect(AgentsSchema.safeParse({ entries: {} }).success).toBe(false);
