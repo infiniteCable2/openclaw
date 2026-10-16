@@ -1,5 +1,5 @@
 import path from "node:path";
-import { afterAll, afterEach, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import {
@@ -17,7 +17,17 @@ import { readCodexSessionContext } from "../../plugin-sdk/codex-session-transcri
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { forkSessionEntryFromParent } from "./session-fork.js";
 
+vi.mock("../../plugins/text-transforms.runtime.js", () => ({
+  resolveRuntimeTextTransforms: () => [],
+}));
+
 const dirs = useSessionStoreTempDirs(afterAll, "openclaw-fork-completed-boundary-");
+beforeEach(() =>
+  cliBackendsTesting.setDepsForTest({
+    resolveRuntimeCliBackends: () => [],
+    resolvePluginSetupCliBackend: () => undefined,
+  }),
+);
 afterEach(() => cliBackendsTesting.resetDepsForTest());
 
 async function seedParent(options: { pending?: boolean; totalTokens?: number } = {}) {
@@ -184,6 +194,53 @@ it("budgets the selected completed snapshot rather than the growing parent total
     maxTokens: 1_000,
   });
   expect(result).toMatchObject({ status: "forked", decision: { maxTokens: 1_000 } });
+});
+
+it.each(["current", "reset-id", "reset-revision"] as const)(
+  "keeps the ingress-selected parent incarnation at commit (%s)",
+  async (change) => {
+    const fixture = await seedParent();
+    await replaceSessionEntry(fixture.parentScope, {
+      ...fixture.parent,
+      lifecycleRevision: "selected-revision",
+    });
+    const selected = loadSessionEntry(fixture.parentScope)!;
+    if (change !== "current") {
+      await replaceSessionEntry(fixture.parentScope, {
+        ...selected,
+        ...(change === "reset-id"
+          ? { sessionId: "replacement-parent" }
+          : { lifecycleRevision: "replacement-revision" }),
+      });
+    }
+    const result = await forkSessionEntryFromParent({
+      ...forkParams(fixture),
+      forkFrom: "last-completed",
+      expectedParent: {
+        sessionId: selected.sessionId,
+        lifecycleRevision: selected.lifecycleRevision,
+      },
+    });
+    expect(result.status).toBe(change === "current" ? "forked" : "failed");
+    if (change !== "current") {
+      expect(
+        loadSessionEntry({ ...fixture.parentScope, sessionKey: fixture.childKey }),
+      ).toBeUndefined();
+    }
+  },
+);
+
+it("explicitly starts with empty context when an admitted parent has no transcript yet", async () => {
+  const fixture = await seedParent();
+  await replaceTranscriptEvents(
+    { ...fixture.parentScope, sessionId: fixture.parent.sessionId },
+    [],
+  );
+  const result = await forkSessionEntryFromParent({
+    ...forkParams(fixture),
+    forkFrom: "last-completed",
+  });
+  expect(result).toMatchObject({ status: "forked", fork: { contextStatus: "no-completed-turn" } });
 });
 
 it("preserves the child capacity limit instead of silently using the default cap", async () => {

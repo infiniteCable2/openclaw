@@ -221,7 +221,7 @@ export function resolveParentForkSourceTranscript(
   fileEntries: readonly TranscriptEvent[],
   forkFrom?: "last-completed",
 ): ParentForkSourceTranscript | null {
-  if (fileEntries.length === 0) {
+  if (fileEntries.length === 0 && forkFrom !== "last-completed") {
     return null;
   }
   const header = findSessionTranscriptHeader(fileEntries);

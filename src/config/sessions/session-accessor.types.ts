@@ -707,6 +707,8 @@ export type ForkSessionEntryFromParentTargetResult =
 export type ForkSessionEntryFromParentTargetParams = {
   agentId?: string;
   commitGuard?: () => void;
+  /** Ingress-selected parent incarnation; a later reset must not donate another context. */
+  expectedParent?: Pick<SessionEntry, "sessionId" | "lifecycleRevision">;
   /** Fork only settled parent context when an independent conversation starts mid-turn. */
   forkFrom?: "last-completed";
   /** Capacity of the child model, applied to the selected transcript boundary. */

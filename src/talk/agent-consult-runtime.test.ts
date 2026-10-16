@@ -639,6 +639,32 @@ describe("realtime voice agent consult runtime", () => {
     expect(call.spawnedBy).toBe("agent:main:main");
   });
 
+  it.each(["failed", "missing-parent"] as const)(
+    "refuses a changed parent instead of creating an unrelated child (%s)",
+    async (status) => {
+      const { runtime, runEmbeddedAgent, sessionStore } = createAgentRuntime();
+      sessionStore["agent:main:main"] = { sessionId: "selected-parent", updatedAt: 1 };
+      sessionForkMocks.forkSessionEntryFromParent.mockResolvedValue({ status });
+      await expect(
+        runConsult({
+          agentRuntime: runtime as never,
+          sessionKey: "agent:main:subagent:voice:child",
+          spawnedBy: "agent:main:main",
+          contextMode: "fork",
+          runIdPrefix: "voice-test",
+          args: { question: "Start a new conversation" },
+        }),
+      ).rejects.toThrow("could not be safely forked");
+      expect(sessionForkMocks.forkSessionEntryFromParent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedParent: { sessionId: "selected-parent", lifecycleRevision: undefined },
+        }),
+      );
+      expect(runtime.session.patchSessionEntry).not.toHaveBeenCalled();
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    },
+  );
+
   it("reuses the call session delivery context when requester metadata is absent", async () => {
     const { runtime, runEmbeddedAgent, sessionStore } = createAgentRuntime();
     sessionStore["voice:google-meet:meet-1"] = {

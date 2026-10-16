@@ -301,6 +301,7 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
   const shouldFork =
     params.contextMode === "fork" &&
     requesterSessionKey &&
+    requesterEntry?.sessionId &&
     (!requesterAgentId || requesterAgentId === params.agentId);
   let forkDecisionWarning: string | undefined;
   let parentContextNotice: string | undefined;
@@ -315,6 +316,10 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
       config: params.cfg,
       sessionKey: params.sessionKey,
       forkFrom: "last-completed",
+      expectedParent: {
+        sessionId: requesterEntry.sessionId,
+        lifecycleRevision: requesterEntry.lifecycleRevision,
+      },
       fallbackEntry: {
         ...creationStamp,
         sessionId: "",
@@ -326,6 +331,11 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
         forked: { ...deliveryFields, ...spawnLineage, updatedAt: now },
       },
     });
+    if (forked.status === "failed" || forked.status === "missing-parent") {
+      throw new Error(
+        "The parent conversation changed or could not be safely forked. Retry the conversation.",
+      );
+    }
     if (forked.status === "forked" || forked.status === "skipped") {
       if (forked.status === "forked" && forked.fork.contextStatus === "no-completed-turn") {
         parentContextNotice =

@@ -484,6 +484,9 @@ export function forkSessionEntryInTransaction(
   const freshBase = freshExisting?.entry ?? params.fallbackEntry;
   if (
     !freshParent ||
+    (params.expectedParent &&
+      (freshParent.sessionId !== params.expectedParent.sessionId ||
+        freshParent.lifecycleRevision !== params.expectedParent.lifecycleRevision)) ||
     !freshBase ||
     !sqliteSessionEntriesEqual(freshParent, prepared.parentEntry) ||
     !sqliteSessionEntriesEqual(freshBase, prepared.base)
