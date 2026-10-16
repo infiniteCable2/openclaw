@@ -16,7 +16,6 @@ import {
   buildSessionCreationStamp,
   inheritSessionCreationPolicy,
 } from "../config/sessions/session-entry-provenance.js";
-import { withSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -281,6 +280,8 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(
   if (!requesterSessionKey) {
     return initializeRealtimeVoiceAgentConsultSession(params);
   }
+  const { withSessionEntryReadOnlyInWorker } =
+    await import("../config/sessions/session-entry-read-runtime.js");
   return withSessionEntryReadOnlyInWorker(
     {
       agentId: requesterAgentId ?? params.agentId,
