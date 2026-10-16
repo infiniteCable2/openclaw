@@ -45,6 +45,8 @@ describe("voice consult concrete store ownership", () => {
       for (const storePath of [parentStore, childStore]) {
         await replaceSessionEntry({ agentId: "main", sessionKey: parentKey, storePath }, parent);
       }
+      const parentScope = { agentId: "main", sessionKey: parentKey, storePath: parentStore };
+      const parentBefore = loadSessionEntry(parentScope);
       const childScope = { agentId: "main", sessionKey: childKey, storePath: childStore };
       if (existingChild) {
         await replaceSessionEntry(childScope, {
@@ -77,9 +79,7 @@ describe("voice consult concrete store ownership", () => {
       ).rejects.toThrow("Captured session database changed");
       expect(runEmbeddedAgent).not.toHaveBeenCalled();
       expect(loadSessionEntry(childScope)).toEqual(before);
-      expect(
-        loadSessionEntry({ agentId: "main", sessionKey: parentKey, storePath: parentStore }),
-      ).toEqual(parent);
+      expect(loadSessionEntry(parentScope)).toEqual(parentBefore);
     },
   );
 
