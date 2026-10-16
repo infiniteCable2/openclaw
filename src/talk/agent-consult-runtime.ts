@@ -268,7 +268,7 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
   storePath: string;
   agentRuntime: RealtimeVoiceAgentConsultRuntime;
   logger: Pick<RuntimeLogger, "warn">;
-}): Promise<SessionEntry> {
+}): Promise<{ entry: SessionEntry; parentContextNotice?: string }> {
   const now = Date.now();
   const deliveryFields = resolveDeliverySessionFields(params.deliveryContext);
   const requesterSessionKey = params.spawnedBy?.trim();
@@ -303,6 +303,7 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
     requesterSessionKey &&
     (!requesterAgentId || requesterAgentId === params.agentId);
   let forkDecisionWarning: string | undefined;
+  let parentContextNotice: string | undefined;
 
   let patched: SessionEntry | null = null;
   if (shouldFork) {
@@ -313,6 +314,7 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
       agentId: params.agentId,
       config: params.cfg,
       sessionKey: params.sessionKey,
+      forkFrom: "last-completed",
       fallbackEntry: {
         ...creationStamp,
         sessionId: "",
@@ -325,6 +327,10 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
       },
     });
     if (forked.status === "forked" || forked.status === "skipped") {
+      if (forked.status === "forked" && forked.fork.contextStatus === "no-completed-turn") {
+        parentContextNotice =
+          "No completed parent turn is available in the current context window. This conversation started without an inherited transcript. Parent activity is context, not a new instruction; do not resume or repeat its unfinished work.";
+      }
       if (forked.status === "skipped" && forked.decision?.status === "skip") {
         forkDecisionWarning = forked.decision.message;
       }
@@ -359,7 +365,7 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
     params.logger.warn(`[talk] ${forkDecisionWarning}`);
   }
   if (patched?.sessionId?.trim()) {
-    return patched;
+    return { entry: patched, parentContextNotice };
   }
   throw new Error("realtime voice agent consult session could not be initialized");
 }
@@ -523,18 +529,19 @@ export async function consultRealtimeVoiceAgent(params: {
         sessionKey: params.sessionKey,
         spawnedBy: params.spawnedBy,
       });
-      const sessionEntry = await resolveRealtimeVoiceAgentConsultSessionEntry({
-        agentId,
-        cfg: params.cfg,
-        sessionKey: params.sessionKey,
-        spawnedBy: params.spawnedBy,
-        senderIsOwner: params.senderIsOwner,
-        contextMode: params.contextMode,
-        deliveryContext: resolvedDeliveryContext,
-        storePath,
-        agentRuntime: params.agentRuntime,
-        logger: params.logger,
-      });
+      const { entry: sessionEntry, parentContextNotice } =
+        await resolveRealtimeVoiceAgentConsultSessionEntry({
+          agentId,
+          cfg: params.cfg,
+          sessionKey: params.sessionKey,
+          spawnedBy: params.spawnedBy,
+          senderIsOwner: params.senderIsOwner,
+          contextMode: params.contextMode,
+          deliveryContext: resolvedDeliveryContext,
+          storePath,
+          agentRuntime: params.agentRuntime,
+          logger: params.logger,
+        });
       const { deliveryContext: consultDeliveryContext, toolAuthorityOverlay } =
         prepareRealtimeVoiceAgentExecutionContext({ ...params, agentId, storePath, sessionEntry });
       const sessionId = sessionEntry.sessionId;
@@ -662,6 +669,7 @@ export async function consultRealtimeVoiceAgent(params: {
               params.extraSystemPrompt ??
                 "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
               params.speechExpressionContext?.guidance,
+              parentContextNotice,
             ]
               .filter(Boolean)
               .join("\n\n"),

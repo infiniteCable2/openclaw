@@ -3,6 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { iterateSessionContextEntries } from "../../../packages/agent-core/src/harness/session/session.js";
 import { stripCompactionReplayCheckpoint } from "../../../packages/ai/src/transports/provider-compaction-checkpoint.js";
 import { derivePromptTokens, normalizeUsage } from "../../agents/usage.js";
+import { resolveAssistantMessagePhase } from "../../shared/chat-message-content.js";
 import { projectModelContextMessages } from "../../shared/model-context-message.js";
 import type {
   SessionParentForkDecision,
@@ -22,6 +23,7 @@ import { resolveFreshSessionTotalTokens } from "./types.js";
 import { MIN_READABLE_SESSION_VERSION } from "./version.js";
 
 export type ParentForkSourceTranscript = {
+  contextStatus?: "no-completed-turn";
   appendMode?: "side";
   appendParentId: string | null;
   branchEntries: TranscriptEvent[];
@@ -242,9 +244,16 @@ export function resolveParentForkSourceTranscript(
     }),
     tree.nodes,
   );
+  const lastCompleted = findLastCompletedAssistantIndex(visibleBranchEntries);
+  const lastWindowBoundary = visibleBranchEntries.findLastIndex(
+    (entry) => isRecord(entry) && (entry.type === "reset" || entry.type === "compaction"),
+  );
+  // A reset/compaction may include an unfinished split turn. Never drop its privacy/window
+  // boundary to recover an older final, or treat its retained pending work as completed.
+  const completedEnd = lastCompleted >= lastWindowBoundary ? lastCompleted + 1 : 0;
   const branchEntries =
     forkFrom === "last-completed"
-      ? visibleBranchEntries.slice(0, findLastCompletedAssistantIndex(visibleBranchEntries) + 1)
+      ? visibleBranchEntries.slice(0, completedEnd)
       : visibleBranchEntries;
   const pathEntryIds = new Set(
     branchEntries.flatMap((entry) =>
@@ -256,6 +265,9 @@ export function resolveParentForkSourceTranscript(
   const lastBranchEntryId =
     isRecord(lastBranchEntry) && typeof lastBranchEntry.id === "string" ? lastBranchEntry.id : null;
   return {
+    ...(forkFrom === "last-completed" && completedEnd === 0
+      ? { contextStatus: "no-completed-turn" as const }
+      : {}),
     appendParentId: forkFrom === "last-completed" ? lastBranchEntryId : mergedPath.appendParentId,
     ...(forkFrom !== "last-completed" && lastLeafUpdateNode?.appendMode
       ? { appendMode: lastLeafUpdateNode.appendMode }
@@ -284,9 +296,19 @@ export function resolveParentForkSourceTranscript(
 function findLastCompletedAssistantIndex(entries: readonly TranscriptEvent[]): number {
   return entries.findLastIndex((entry) => {
     const message = isRecord(entry) && isRecord(entry.message) ? entry.message : undefined;
-    // Tool-use assistant messages are mid-turn checkpoints. Any other persisted
-    // assistant message is a stable boundary, including legacy rows without a reason.
-    return message?.role === "assistant" && message.stopReason !== "toolUse";
+    // Progress, interrupted/error output, and tool calls do not settle the parent turn.
+    // Legacy assistant rows without a reason remain valid completed boundaries.
+    return (
+      message?.role === "assistant" &&
+      resolveAssistantMessagePhase(message) !== "commentary" &&
+      (message.stopReason === undefined ||
+        message.stopReason === "stop" ||
+        message.stopReason === "length") &&
+      !(
+        Array.isArray(message.content) &&
+        message.content.some((part) => isRecord(part) && part.type === "toolCall")
+      )
+    );
   });
 }
 

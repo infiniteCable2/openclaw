@@ -114,7 +114,9 @@ function normalizeForkTarget(
 
 /**
  * Forks the parent transcript and persists the child session entry through one
- * storage boundary operation.
+ * storage boundary operation. `last-completed` preserves the current context
+ * window; if it contains no completed turn, the result explicitly reports an
+ * empty inherited transcript rather than reviving older or unfinished work.
  */
 export async function forkSessionEntryFromParent(
   params: ForkSessionEntryFromParentParams,
@@ -125,6 +127,8 @@ export async function forkSessionEntryFromParent(
       agentId: params.agentId,
       commitGuard: params.commitGuard,
       fallbackEntry: params.fallbackEntry,
+      forkFrom: params.forkFrom,
+      maxTokens: params.maxTokens,
       parentTarget: normalizeForkTarget(params.parentSessionKey, params.parentStoreKeys),
       sessionTarget: normalizeForkTarget(params.sessionKey, params.sessionStoreKeys),
       storePath,

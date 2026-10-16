@@ -649,6 +649,8 @@ export type SessionParentForkDecision =
 export type ParentForkedSessionTranscript = {
   sessionFile: string;
   sessionId: string;
+  /** Bounded inheritance found no settled turn in the current reset/compaction window. */
+  contextStatus?: "no-completed-turn";
 };
 
 export type ForkSessionFromParentTranscriptResult =
@@ -705,6 +707,10 @@ export type ForkSessionEntryFromParentTargetResult =
 export type ForkSessionEntryFromParentTargetParams = {
   agentId?: string;
   commitGuard?: () => void;
+  /** Fork only settled parent context when an independent conversation starts mid-turn. */
+  forkFrom?: "last-completed";
+  /** Capacity of the child model, applied to the selected transcript boundary. */
+  maxTokens?: number;
   decisionSkipPatch?: (params: {
     decision: Extract<SessionParentForkDecision, { status: "skip" }>;
     entry: SessionEntry;

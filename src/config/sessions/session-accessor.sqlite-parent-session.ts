@@ -152,6 +152,7 @@ export async function prepareSessionForkTranscript(
     transcript: {
       sessionId,
       sessionFile: params.sessionKey,
+      ...(source.contextStatus ? { contextStatus: source.contextStatus } : {}),
     },
     events: buildForkedChildTranscriptEvents({
       parentSessionFile: formatLegacySqliteSessionMarkerForScope({ ...resolved, ...sourceScope }),
@@ -279,7 +280,14 @@ export async function forkSessionTranscriptFromParent(
         toDatabaseOptions(target),
         { operationLabel: "session.parent-fork.copy-transcript" },
       );
-      return { status: "created", transcript: { sessionFile: targetScope.sessionKey, sessionId } };
+      return {
+        status: "created",
+        transcript: {
+          sessionFile: targetScope.sessionKey,
+          sessionId,
+          ...(source.contextStatus ? { contextStatus: source.contextStatus } : {}),
+        },
+      };
     },
     "session.parent.fork-transcript",
   );
@@ -362,11 +370,14 @@ export async function forkSessionEntryFromParentTarget(
   });
   // Backend normalization may load plugins. Prepare before BEGIN; the commit
   // below rejects this plan if either authoritative session row changed.
-  const { cliBackendSupportsSessionFork } = await import("../../agents/cli-backends.js");
-  const cliSessionBindings = forkCliSessionBindings(
-    prepared.parentEntry,
-    cliBackendSupportsSessionFork,
-  );
+  let cliSessionBindings: SessionEntry["cliSessionBindings"];
+  if (params.forkFrom !== "last-completed") {
+    const { cliBackendSupportsSessionFork } = await import("../../agents/cli-backends.js");
+    cliSessionBindings = forkCliSessionBindings(
+      prepared.parentEntry,
+      cliBackendSupportsSessionFork,
+    );
+  }
   return await runExclusiveSqliteSessionWrite<ForkSessionEntryFromParentTargetResult>(
     resolved,
     async () => {
@@ -482,8 +493,12 @@ export function forkSessionEntryInTransaction(
   assertModelSelectionUnlocked(freshParent, MODEL_SELECTION_LOCKED_PARENT_FORK_MESSAGE);
   const source = resolveParentForkSourceTranscript(
     loadTranscriptEventsFromDatabase(writeDatabase, freshParent.sessionId),
+    params.forkFrom,
   );
-  const decision = planParentForkDecision(freshParent, estimateParentForkPromptTokens(source));
+  const decision = planParentForkDecision(freshParent, estimateParentForkPromptTokens(source), {
+    maxTokens: params.maxTokens,
+    preferTranscriptEstimate: params.forkFrom === "last-completed",
+  });
   if (decision.status === "skip") {
     return { skip: { decision, base: freshBase, parentEntry: freshParent } };
   }
@@ -518,7 +533,9 @@ export function forkSessionEntryInTransaction(
     totalTokens: undefined,
     totalTokensFresh: false,
     totalTokensVersion: undefined,
-    cliSessionBindings,
+    // A provider checkpoint may contain the pending parent turn that this snapshot excludes.
+    // Resume from the copied transcript instead of inheriting that wider native context.
+    cliSessionBindings: params.forkFrom === "last-completed" ? undefined : cliSessionBindings,
     cliSessionIds: undefined,
     claudeCliSessionId: undefined,
   };
@@ -674,6 +691,7 @@ export function forkSqliteParentTranscriptInTransaction(
     transcript: {
       sessionFile: targetScope.sessionKey,
       sessionId,
+      ...(source.contextStatus ? { contextStatus: source.contextStatus } : {}),
     },
   };
 }

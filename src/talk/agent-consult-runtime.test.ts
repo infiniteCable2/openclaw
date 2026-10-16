@@ -468,108 +468,119 @@ describe("realtime voice agent consult runtime", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("forks requester context and inherits its required creator isolation", async () => {
-    const { runtime, runEmbeddedAgent, sessionStore } = createAgentRuntime();
-    sessionStore["agent:main:main"] = {
-      sessionId: "parent-session",
-      totalTokens: 100,
-      createdActor: { type: "human", source: "profile", id: "profile-required" },
-      sandbox: "required",
-      updatedAt: 1,
-    };
-    const forkSessionEntryFromParent = sessionForkMocks.forkSessionEntryFromParent;
-    forkSessionEntryFromParent.mockImplementation(
-      async (
-        params: ForkSessionEntryFromParentParams,
-      ): Promise<ForkSessionEntryFromParentResult> => {
-        const fork = {
-          sessionId: "forked-session",
-          sessionFile: testTempPath("forked.jsonl"),
-        };
-        const parentEntry = sessionStore["agent:main:main"];
-        if (!parentEntry?.sessionId) {
-          return { status: "missing-parent" };
-        }
-        const typedParentEntry: SessionEntry = {
-          ...parentEntry,
-          sessionId: parentEntry.sessionId,
-          updatedAt: parentEntry.updatedAt ?? Date.now(),
-        };
-        const decision = {
-          status: "fork" as const,
-          maxTokens: 100_000,
-        };
-        const entry = params.fallbackEntry ?? { sessionId: "", updatedAt: Date.now() };
-        const sessionEntry: SessionEntry = {
-          ...entry,
-          ...params.entryPatch?.forked,
-          sessionId: fork.sessionId,
-          forkedFromParent: true,
-        };
-        sessionStore[params.sessionKey] = sessionEntry;
-        return {
-          status: "forked" as const,
-          fork,
-          parentEntry: typedParentEntry,
-          sessionEntry,
-          decision,
-        };
-      },
-    );
+  it.each([undefined, "no-completed-turn"] as const)(
+    "forks requester context with its creator isolation (%s)",
+    async (contextStatus) => {
+      const { runtime, runEmbeddedAgent, sessionStore } = createAgentRuntime();
+      sessionStore["agent:main:main"] = {
+        sessionId: "parent-session",
+        totalTokens: 100,
+        createdActor: { type: "human", source: "profile", id: "profile-required" },
+        sandbox: "required",
+        updatedAt: 1,
+      };
+      const forkSessionEntryFromParent = sessionForkMocks.forkSessionEntryFromParent;
+      forkSessionEntryFromParent.mockImplementation(
+        async (
+          params: ForkSessionEntryFromParentParams,
+        ): Promise<ForkSessionEntryFromParentResult> => {
+          const fork = {
+            sessionId: "forked-session",
+            sessionFile: testTempPath("forked.jsonl"),
+            ...(contextStatus ? { contextStatus } : {}),
+          };
+          const parentEntry = sessionStore["agent:main:main"];
+          if (!parentEntry?.sessionId) {
+            return { status: "missing-parent" };
+          }
+          const typedParentEntry: SessionEntry = {
+            ...parentEntry,
+            sessionId: parentEntry.sessionId,
+            updatedAt: parentEntry.updatedAt ?? Date.now(),
+          };
+          const decision = {
+            status: "fork" as const,
+            maxTokens: 100_000,
+          };
+          const entry = params.fallbackEntry ?? { sessionId: "", updatedAt: Date.now() };
+          const sessionEntry: SessionEntry = {
+            ...entry,
+            ...params.entryPatch?.forked,
+            sessionId: fork.sessionId,
+            forkedFromParent: true,
+          };
+          sessionStore[params.sessionKey] = sessionEntry;
+          return {
+            status: "forked" as const,
+            fork,
+            parentEntry: typedParentEntry,
+            sessionEntry,
+            decision,
+          };
+        },
+      );
 
-    await runConsult({
-      agentRuntime: runtime as never,
-      agentId: "main",
-      sessionKey: "agent:main:subagent:google-meet:meet-1",
-      spawnedBy: "agent:main:main",
-      contextMode: "fork",
-      messageProvider: "google-meet",
-      lane: "google-meet",
-      runIdPrefix: "google-meet:meet-1",
-      args: { question: "What should I say?" },
-      surface: "a private Google Meet",
-      userLabel: "Participant",
-    });
-
-    expect(forkSessionEntryFromParent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parentSessionKey: "agent:main:main",
+      await runConsult({
+        agentRuntime: runtime as never,
         agentId: "main",
-        config: {},
         sessionKey: "agent:main:subagent:google-meet:meet-1",
-      }),
-    );
-    expect(runtime.session.patchSessionEntry).not.toHaveBeenCalled();
-    const forkedEntry = sessionStore["agent:main:subagent:google-meet:meet-1"];
-    if (!forkedEntry) {
-      throw new Error("Expected forked consult session entry");
-    }
-    expect(forkedEntry).toStrictEqual({
-      sessionId: "forked-session",
-      spawnedBy: "agent:main:main",
-      // The consult child's lineage receipt; the fixture parent has no lifecycle revision.
-      spawnedBySessionId: "parent-session",
-      parentSessionLifecycleRevision: undefined,
-      spawnedBySenderIsOwner: false,
-      forkedFromParent: true,
-      createdVia: "talk",
-      createdActor: { type: "human", source: "profile", id: "profile-required" },
-      sandbox: "required",
-      createdAt: forkedEntry.createdAt,
-      updatedAt: forkedEntry.updatedAt,
-    });
-    expectPositiveTimestamp(forkedEntry.updatedAt);
-    const call = requireEmbeddedAgentCall(runEmbeddedAgent);
-    expect(call.sessionId).toBe("forked-session");
-    expect(call.sessionFile).toBeUndefined();
-    expect(call.sessionTarget).toMatchObject({
-      agentId: "main",
-      sessionId: "forked-session",
-      sessionKey: "agent:main:subagent:google-meet:meet-1",
-      storePath: testTempPath("sessions.json"),
-    });
-    expect(call.spawnedBy).toBe("agent:main:main");
-  });
+        spawnedBy: "agent:main:main",
+        contextMode: "fork",
+        messageProvider: "google-meet",
+        lane: "google-meet",
+        runIdPrefix: "google-meet:meet-1",
+        args: { question: "What should I say?" },
+        surface: "a private Google Meet",
+        userLabel: "Participant",
+      });
+
+      expect(forkSessionEntryFromParent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parentSessionKey: "agent:main:main",
+          agentId: "main",
+          config: {},
+          sessionKey: "agent:main:subagent:google-meet:meet-1",
+          forkFrom: "last-completed",
+        }),
+      );
+      expect(runtime.session.patchSessionEntry).not.toHaveBeenCalled();
+      const forkedEntry = sessionStore["agent:main:subagent:google-meet:meet-1"];
+      if (!forkedEntry) {
+        throw new Error("Expected forked consult session entry");
+      }
+      expect(forkedEntry).toStrictEqual({
+        sessionId: "forked-session",
+        spawnedBy: "agent:main:main",
+        // The consult child's lineage receipt; the fixture parent has no lifecycle revision.
+        spawnedBySessionId: "parent-session",
+        parentSessionLifecycleRevision: undefined,
+        spawnedBySenderIsOwner: false,
+        forkedFromParent: true,
+        createdVia: "talk",
+        createdActor: { type: "human", source: "profile", id: "profile-required" },
+        sandbox: "required",
+        createdAt: forkedEntry.createdAt,
+        updatedAt: forkedEntry.updatedAt,
+      });
+      expectPositiveTimestamp(forkedEntry.updatedAt);
+      const call = requireEmbeddedAgentCall(runEmbeddedAgent);
+      expect(call.sessionId).toBe("forked-session");
+      expect(call.sessionFile).toBeUndefined();
+      expect(call.sessionTarget).toMatchObject({
+        agentId: "main",
+        sessionId: "forked-session",
+        sessionKey: "agent:main:subagent:google-meet:meet-1",
+        storePath: testTempPath("sessions.json"),
+      });
+      expect(call.spawnedBy).toBe("agent:main:main");
+      if (contextStatus) {
+        expect(call.extraSystemPrompt).toContain("without an inherited transcript");
+        expect(call.extraSystemPrompt).toContain("do not resume or repeat its unfinished work");
+      } else {
+        expect(call.extraSystemPrompt).not.toContain("without an inherited transcript");
+      }
+    },
+  );
 
   it("falls back to a fresh isolated consult session when requester context is too large", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();

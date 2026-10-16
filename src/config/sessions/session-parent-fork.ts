@@ -331,12 +331,14 @@ export async function forkParentEntryInWorker(
       let cliSessionBindings;
       if (!skipExisting) {
         await owner.restore(prepared.parentEntry.sessionId);
-        const { cliBackendSupportsSessionFork } = await import("../../agents/cli-backends.js");
-        owner.assertCurrent();
-        cliSessionBindings = forkCliSessionBindings(
-          prepared.parentEntry,
-          cliBackendSupportsSessionFork,
-        );
+        if (planned.forkFrom !== "last-completed") {
+          const { cliBackendSupportsSessionFork } = await import("../../agents/cli-backends.js");
+          owner.assertCurrent();
+          cliSessionBindings = forkCliSessionBindings(
+            prepared.parentEntry,
+            cliBackendSupportsSessionFork,
+          );
+        }
       }
       const result = await owner.commit({
         kind: "entry",
