@@ -68,7 +68,8 @@ export function parseAudioMeasurements(
     }
     silenceStart = undefined;
   };
-  for (const line of text.split(/\r?\n/)) {
+  // FFmpeg progress updates use bare CR and can directly precede filter messages.
+  for (const line of text.split(/[\r\n]+/)) {
     const match = line.match(
       /^\[(?:Parsed_)?silencedetect(?:_\d+)? @ [^\]\r\n]+\] silence_(start|end): (-?[\d.e+-]+)/,
     );

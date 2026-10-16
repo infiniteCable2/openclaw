@@ -161,6 +161,18 @@ describe("final FFmpeg audio measurements", () => {
     expect(result.silence.totalSeconds).toBeCloseTo(1.6);
   });
 
+  it("reads silence messages following FFmpeg carriage-return progress updates", () => {
+    const text = [
+      "size=0kB time=00:00:00.00 speed=0x\r[silencedetect @ 0x03] silence_start: 2",
+      "size=N/A time=00:00:03.90 speed=57x\r\n",
+      "[silencedetect @ 0x03] silence_end: 4 | silence_duration: 2",
+      finalMeasurements(),
+    ].join("\n");
+    const result = parseAudioMeasurements(text, 48_000, -50, 0.3);
+    expect(result.silence.intervals).toEqual([{ startSeconds: 2, endSeconds: 4 }]);
+    expect(result.silence.totalSeconds).toBe(2);
+  });
+
   it("returns unavailable optional summaries as null without inferring speech or noise", () => {
     const text = finalMeasurements().split("[Parsed_ebur128_2")[0] ?? "";
     const result = parseAudioMeasurements(text, 48_000, -50, 0.3);
