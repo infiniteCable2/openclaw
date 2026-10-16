@@ -40,7 +40,7 @@ async function seedParent(options: { pending?: boolean; totalTokens?: number } =
     updatedAt: 1,
     totalTokens: options.totalTokens ?? 10,
     totalTokensFresh: true,
-    totalTokensVersion: 1,
+    totalTokensVersion: 1 as const,
     cliSessionBindings: {
       "claude-cli": { sessionId: "provider-parent", resumeCheckpointId: "pending-checkpoint" },
     },
