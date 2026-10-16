@@ -13,11 +13,14 @@ import {
   resolveCurrentSessionPrimaryConversation,
 } from "../config/sessions/conversation-registry.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
+import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope.js";
 import {
   historyLane,
   targetDiscoveryLane,
 } from "../config/sessions/session-transcript-worker-resources.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
@@ -395,6 +398,280 @@ describe("worker conversation reads", () => {
   afterEach(() => vi.restoreAllMocks());
   afterAll(async () => state.cleanup());
 
+  function createBranchFixture(name: string, patch: Partial<SessionEntry> = {}) {
+    const parentKey = `agent:main:reef:direct:parent-${name}`;
+    const parentId = `parent-${name}`;
+    const childKey = `agent:main:subagent:call:${name}`;
+    const childId = `child-${name}`;
+    replaceSessionEntrySync(
+      { agentId: "main", storePath, sessionKey: parentKey },
+      {
+        sessionId: parentId,
+        lifecycleRevision: "parent-generation-7",
+        updatedAt: 100,
+        delivery: {
+          kind: "external",
+          route: {
+            channel: "reef",
+            accountId: "default",
+            target: { to: `reef:parent-${name}`, chatType: "direct" },
+          },
+          context: { channel: "reef", accountId: "default", to: `reef:parent-${name}` },
+          origin: { provider: "reef", accountId: "default" },
+        },
+      },
+    );
+    replaceSessionEntrySync(
+      { agentId: "main", storePath, sessionKey: childKey },
+      {
+        sessionId: childId,
+        updatedAt: 100,
+        spawnedBy: parentKey,
+        spawnedBySessionId: parentId,
+        parentSessionLifecycleRevision: "parent-generation-7",
+        ...patch,
+      },
+    );
+    return { parentKey, parentId, childKey, childId };
+  }
+
+  it("identifies the main context's exact destination without exposing session identity", async () => {
+    const result = await runGatewayConversationList({
+      config: config(),
+      agentId: "main",
+      sourceSessionKey: sessionKey,
+      sourceSessionId: sessionId,
+      limit: 100,
+    });
+    const current = result.conversations.filter((row) => row.contextRelation);
+    expect(current).toEqual([
+      expect.objectContaining({ target: "reef:room", contextRelation: "current" }),
+    ]);
+    expect(current[0]).not.toHaveProperty("sessionKey");
+    expect(current[0]).not.toHaveProperty("sessionId");
+  });
+
+  it("resolves a speech branch's exact origin in the worker with no caller-thread SQLite", async () => {
+    const { childKey, childId } = createBranchFixture("origin");
+    const observer = observeParentSqlite();
+    try {
+      const result = await runGatewayConversationList({
+        config: config(),
+        agentId: "main",
+        sourceSessionKey: childKey,
+        sourceSessionId: childId,
+        limit: 100,
+      });
+      expect(result.conversations.filter((row) => row.contextRelation)).toEqual([
+        expect.objectContaining({ target: "reef:parent-origin", contextRelation: "parent" }),
+      ]);
+      expect(observer.counts).toEqual(emptySqliteCounts());
+    } finally {
+      observer.restore();
+    }
+  });
+
+  it.each([
+    ["missing-receipt", { spawnedBySessionId: undefined }],
+    ["old-parent", { spawnedBySessionId: "previous-parent-incarnation" }],
+    ["old-lifecycle", { parentSessionLifecycleRevision: "parent-generation-6" }],
+    ["other-agent", { spawnedBy: "agent:other:main" }],
+    ["conflicting-key", { parentSessionKey: "agent:main:main" }],
+    ["conflicting-id", { parentSessionId: "different-parent-id" }],
+  ] as const)("does not infer an origin from %s", async (name, patch) => {
+    const { childKey, childId } = createBranchFixture(name, patch);
+    const result = await runGatewayConversationList({
+      config: config(),
+      agentId: "main",
+      sourceSessionKey: childKey,
+      sourceSessionId: childId,
+      limit: 100,
+    });
+    expect(result.conversations.some((row) => row.contextRelation)).toBe(false);
+  });
+
+  it("does not borrow a reset source session's new destination", async () => {
+    const { childKey } = createBranchFixture("source-reset");
+    const result = await runGatewayConversationList({
+      config: config(),
+      agentId: "main",
+      sourceSessionKey: childKey,
+      sourceSessionId: "expired-source-id",
+      limit: 100,
+    });
+    expect(result.conversations.some((row) => row.contextRelation)).toBe(false);
+  });
+
+  it("does not follow a parent key into a new incarnation after reset", async () => {
+    const { parentKey, childKey, childId } = createBranchFixture("parent-reset");
+    replaceSessionEntrySync(
+      { agentId: "main", storePath, sessionKey: parentKey },
+      {
+        sessionId: "replacement-parent",
+        lifecycleRevision: "parent-generation-8",
+        updatedAt: 300,
+        delivery: {
+          kind: "external",
+          route: {
+            channel: "reef",
+            accountId: "default",
+            target: { to: "reef:replacement-parent", chatType: "direct" },
+          },
+          context: { channel: "reef", accountId: "default", to: "reef:replacement-parent" },
+          origin: { provider: "reef", accountId: "default" },
+        },
+      },
+    );
+    const result = await runGatewayConversationList({
+      config: config(),
+      agentId: "main",
+      sourceSessionKey: childKey,
+      sourceSessionId: childId,
+      limit: 100,
+    });
+    expect(result.conversations.some((row) => row.contextRelation)).toBe(false);
+  });
+
+  it("does not label a historical primary address after its parent moves", async () => {
+    const { parentKey, parentId, childKey, childId } = createBranchFixture("moved");
+    replaceSessionEntrySync(
+      { agentId: "main", storePath, sessionKey: parentKey },
+      {
+        sessionId: parentId,
+        lifecycleRevision: "parent-generation-7",
+        updatedAt: 200,
+        delivery: {
+          kind: "external",
+          route: {
+            channel: "reef",
+            accountId: "default",
+            target: { to: "reef:new-parent-destination", chatType: "direct" },
+          },
+          context: { channel: "reef", accountId: "default", to: "reef:new-parent-destination" },
+          origin: { provider: "reef", accountId: "default" },
+        },
+      },
+    );
+    const result = await runGatewayConversationList({
+      config: config(),
+      agentId: "main",
+      sourceSessionKey: childKey,
+      sourceSessionId: childId,
+      limit: 100,
+    });
+    expect(result.conversations.filter((row) => row.contextRelation)).toEqual([
+      expect.objectContaining({ target: "reef:new-parent-destination", contextRelation: "parent" }),
+    ]);
+    expect(
+      result.conversations.find((row) => row.target === "reef:parent-moved"),
+    ).not.toHaveProperty("contextRelation");
+  });
+
+  it.each(["historical", "current"] as const)(
+    "keeps the parent label when a newer %s association shares the address",
+    async (kind) => {
+      const name = `dedupe-${kind}`;
+      const { parentId, childKey, childId } = createBranchFixture(name);
+      const otherKey = `agent:main:reef:direct:other-${name}`;
+      const otherId = `other-${name}`;
+      replaceSessionEntrySync(
+        { agentId: "main", storePath, sessionKey: otherKey },
+        {
+          sessionId: otherId,
+          updatedAt: 300,
+          delivery: {
+            kind: "external",
+            route: {
+              channel: "reef",
+              accountId: "default",
+              target: { to: `reef:parent-${name}`, chatType: "direct" },
+            },
+            context: { channel: "reef", accountId: "default", to: `reef:parent-${name}` },
+            origin: { provider: "reef", accountId: "default" },
+          },
+        },
+      );
+      const database = openOpenClawAgentDatabase({ agentId: "physical-owner", path: storePath });
+      const db = getSessionKysely(database.db);
+      executeSqliteQuerySync(
+        database.db,
+        db
+          .updateTable("session_conversations")
+          .set({ last_seen_at: 100 })
+          .where("session_id", "=", parentId),
+      );
+      executeSqliteQuerySync(
+        database.db,
+        db
+          .updateTable("session_conversations")
+          .set({ last_seen_at: 1000 })
+          .where("session_id", "=", otherId),
+      );
+      if (kind === "historical") {
+        executeSqliteQuerySync(
+          database.db,
+          db.deleteFrom("session_nodes").where("session_key", "=", otherKey),
+        );
+      }
+      const result = await runGatewayConversationList({
+        config: config(),
+        agentId: "main",
+        sourceSessionKey: childKey,
+        sourceSessionId: childId,
+        limit: 100,
+      });
+      expect(result.conversations.filter((row) => row.contextRelation)).toEqual([
+        expect.objectContaining({ target: `reef:parent-${name}`, contextRelation: "parent" }),
+      ]);
+    },
+  );
+
+  it("does not label a parseable but unadmitted parent entry", async () => {
+    const { parentKey, childKey, childId } = createBranchFixture("invalid-parent");
+    const database = openOpenClawAgentDatabase({ agentId: "physical-owner", path: storePath });
+    executeSqliteQuerySync(
+      database.db,
+      getSessionKysely(database.db)
+        .updateTable("session_nodes")
+        .set({ entry_valid: 0 })
+        .where("session_key", "=", parentKey),
+    );
+    const result = await runGatewayConversationList({
+      config: config(),
+      agentId: "main",
+      sourceSessionKey: childKey,
+      sourceSessionId: childId,
+      limit: 100,
+    });
+    expect(result.conversations.some((row) => row.contextRelation)).toBe(false);
+  });
+
+  it("prefers current when source and parent share the same primary address", async () => {
+    const name = "same-address";
+    const { childKey, childId } = createBranchFixture(name, {
+      delivery: {
+        kind: "external",
+        route: {
+          channel: "reef",
+          accountId: "default",
+          target: { to: `reef:parent-${name}`, chatType: "direct" },
+        },
+        context: { channel: "reef", accountId: "default", to: `reef:parent-${name}` },
+        origin: { provider: "reef", accountId: "default" },
+      },
+    });
+    const result = await runGatewayConversationList({
+      config: config(),
+      agentId: "main",
+      sourceSessionKey: childKey,
+      sourceSessionId: childId,
+      limit: 100,
+    });
+    expect(result.conversations.filter((row) => row.contextRelation)).toEqual([
+      expect.objectContaining({ target: `reef:parent-${name}`, contextRelation: "current" }),
+    ]);
+  });
+
   it("reads a shared store's list, exact address and primary binding without caller-thread SQLite", async () => {
     const observer = observeParentSqlite();
     try {
@@ -403,10 +680,10 @@ describe("worker conversation reads", () => {
         agentId: "main",
         limit: 10,
       });
-      expect(result.conversations).toEqual([
-        expect.objectContaining({ channel: "reef", target: "reef:room" }),
-      ]);
-      const ref = result.conversations[0]!.conversationRef;
+      expect(result.conversations).toEqual(
+        expect.arrayContaining([expect.objectContaining({ channel: "reef", target: "reef:room" })]),
+      );
+      const ref = result.conversations.find((row) => row.target === "reef:room")!.conversationRef;
       const exact = await readConversation(scope(), ref);
       expect(exact).toMatchObject({ conversationRef: ref, sessionId, sessionKey, role: "primary" });
       expect(await resolveCurrentSessionPrimaryConversation(scope())).toEqual(exact);
@@ -442,6 +719,8 @@ describe("worker conversation reads", () => {
       config: current,
       readCurrentConfig: () => current,
       agentId: "main",
+      sourceSessionKey: sessionKey,
+      sourceSessionId: sessionId,
       limit: 10,
     });
     const outcome = pending.catch((error: unknown) => error);

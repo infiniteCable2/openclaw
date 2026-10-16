@@ -13,6 +13,8 @@ export type ConversationRecord = {
   nativeChannelId?: string;
   nativeDirectUserId?: string;
   label?: string;
+  /** Descriptive only; does not authorize a read, send or session transition. */
+  contextRelation?: "current" | "parent";
   sessionId?: string;
   sessionKey?: string;
   role?: "participant" | "primary" | "related";
@@ -27,6 +29,7 @@ export type ConversationRecord = {
 };
 
 export type ConversationReadQuery = {
+  sourceSession?: { agentId: string; sessionKey: string; sessionId: string };
   channel?: string;
   conversationRef?: string;
   conversationRefs?: readonly string[];

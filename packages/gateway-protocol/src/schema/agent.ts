@@ -165,6 +165,9 @@ export const SendParamsSchema = closedObject({
 /** Gateway-owned request that lists persisted and channel-directory addresses. */
 export const ConversationListParamsSchema = closedObject({
   agentId: NonEmptyString,
+  /** Host-provided source incarnation; never selected by model tool arguments. */
+  sourceSessionKey: Type.Optional(NonEmptyString),
+  sourceSessionId: Type.Optional(NonEmptyString),
   channel: Type.Optional(NonEmptyString),
   query: Type.Optional(NonEmptyString),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
@@ -178,6 +181,8 @@ export const ConversationListItemSchema = closedObject({
   target: NonEmptyString,
   threadId: Type.Optional(NonEmptyString),
   label: Type.Optional(NonEmptyString),
+  /** Informational relationship, not delivery permission or connection status. */
+  contextRelation: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("parent")])),
   firstSeenAt: Type.Integer({ minimum: 0 }),
   lastSeenAt: Type.Integer({ minimum: 0 }),
 });

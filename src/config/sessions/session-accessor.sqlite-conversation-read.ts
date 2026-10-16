@@ -4,6 +4,7 @@ import {
   getNodeSqliteKysely,
   sqliteStringSet,
 } from "../../infra/kysely-sync.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { ConversationReadQuery, ConversationRecord } from "./conversation-registry.types.js";
@@ -29,6 +30,11 @@ export function selectConversationRowsFromDatabase(
   database: Pick<OpenClawAgentDatabase, "db">,
   options: ConversationReadQuery = {},
 ): ConversationRecord[] {
+  const source = options.sourceSession;
+  const sourceAgent = source && parseAgentSessionKey(source.sessionKey)?.agentId;
+  const hasSource = Boolean(
+    source && sourceAgent && normalizeAgentId(sourceAgent) === normalizeAgentId(source.agentId),
+  );
   const db = getNodeSqliteKysely<
     Pick<
       OpenClawAgentKyselyDatabase,
@@ -42,6 +48,17 @@ export function selectConversationRowsFromDatabase(
     // Historical windows retain address activity, while session_nodes owns
     // the current session binding after reset/rebind.
     .leftJoin("session_nodes as sn", "sn.session_key", "s.session_key")
+    // The exact source and candidate bindings must come from one SQLite statement snapshot.
+    .$if(hasSource, (query) =>
+      query
+        .leftJoin("session_nodes as source", (join) =>
+          join
+            .on("source.session_key", "=", source?.sessionKey ?? "")
+            .on("source.current_session_id", "=", source?.sessionId ?? "")
+            .on("source.entry_valid", "=", 1),
+        )
+        .select("source.entry_json as source_entry_json"),
+    )
     .select([
       "c.conversation_id",
       "c.channel",
@@ -61,7 +78,9 @@ export function selectConversationRowsFromDatabase(
       "sc.first_seen_at",
       "sc.last_seen_at",
       "s.session_id as associated_session_id",
+      "s.primary_conversation_id",
       "sn.current_session_id as current_session_id",
+      "sn.entry_valid as current_entry_valid",
       "sn.entry_json as current_entry_json",
       "sn.session_key as current_session_key",
     ]);
@@ -122,6 +141,29 @@ export function selectConversationRowsFromDatabase(
       .orderBy((eb) => eb.fn.coalesce("sc.last_seen_at", "c.updated_at"), "desc")
       .orderBy("sn.updated_at", "desc"),
   ).rows;
+  const sourceJson = rows[0]?.source_entry_json;
+  const sourceEntry = sourceJson ? parseSessionEntryJson({ entry_json: sourceJson }) : undefined;
+  const currentSource = sourceEntry?.sessionId === source?.sessionId ? source : undefined;
+  const parentKey = sourceEntry?.spawnedBy ?? sourceEntry?.parentSessionKey;
+  const parentId = sourceEntry?.spawnedBySessionId ?? sourceEntry?.parentSessionId;
+  const parentAgent = parseAgentSessionKey(parentKey)?.agentId;
+  // forkSource proves a historical copy, not a live parent. Conflicting receipts fail closed.
+  const hasParent = Boolean(
+    currentSource &&
+    parentAgent &&
+    parentId &&
+    normalizeAgentId(parentAgent) === normalizeAgentId(currentSource.agentId) &&
+    !(
+      sourceEntry?.spawnedBy &&
+      sourceEntry.parentSessionKey &&
+      sourceEntry.spawnedBy !== sourceEntry.parentSessionKey
+    ) &&
+    !(
+      sourceEntry?.spawnedBySessionId &&
+      sourceEntry.parentSessionId &&
+      sourceEntry.spawnedBySessionId !== sourceEntry.parentSessionId
+    ),
+  );
   const mapConversationRow = (row: (typeof rows)[number]): MappedConversationRow | null => {
     if (row.kind !== "direct" && row.kind !== "group" && row.kind !== "channel") {
       return null;
@@ -136,6 +178,21 @@ export function selectConversationRowsFromDatabase(
     const hasCurrentBinding = currentEntry?.sessionId === row.current_session_id;
     const associationIsCurrent =
       hasCurrentBinding && row.associated_session_id === row.current_session_id;
+    const contextRelation =
+      associationIsCurrent &&
+      row.current_entry_valid === 1 &&
+      role === "primary" &&
+      row.primary_conversation_id === row.conversation_id
+        ? currentSource?.sessionId === row.current_session_id &&
+          currentSource.sessionKey === row.current_session_key
+          ? "current"
+          : hasParent &&
+              parentId === row.current_session_id &&
+              parentKey === row.current_session_key &&
+              currentEntry?.lifecycleRevision === sourceEntry?.parentSessionLifecycleRevision
+            ? "parent"
+            : undefined
+        : undefined;
     const routeContext = parseStoredConversationRouteContext(
       row.route_context_json,
       row.last_seen_at,
@@ -156,6 +213,7 @@ export function selectConversationRowsFromDatabase(
         ...(row.native_channel_id ? { nativeChannelId: row.native_channel_id } : {}),
         ...(row.native_direct_user_id ? { nativeDirectUserId: row.native_direct_user_id } : {}),
         ...(row.label ? { label: row.label } : {}),
+        ...(contextRelation ? { contextRelation } : {}),
         // Only the current session_nodes row can bind an address. The joined
         // window row may be historical after reset, rebind, or deletion.
         ...(role && hasCurrentBinding && row.current_session_id && row.current_session_key
@@ -174,13 +232,22 @@ export function selectConversationRowsFromDatabase(
     };
   };
   const unique = new Map<string, MappedConversationRow>();
+  const contextRelations = new Map<string, NonNullable<ConversationRecord["contextRelation"]>>();
   for (const row of rows) {
     const existing = unique.get(row.conversation_id);
-    if (existing?.associationIsCurrent) {
+    if (existing?.associationIsCurrent && !hasSource) {
       continue;
     }
     const mapped = mapConversationRow(row);
     if (!mapped) {
+      continue;
+    }
+    // Address recency/representative bindings must not hide another exact source association.
+    const relation = mapped.record.contextRelation;
+    if (relation && contextRelations.get(row.conversation_id) !== "current") {
+      contextRelations.set(row.conversation_id, relation);
+    }
+    if (existing?.associationIsCurrent) {
       continue;
     }
     if (!existing) {
@@ -213,7 +280,10 @@ export function selectConversationRowsFromDatabase(
       });
     }
   }
-  const values = [...unique.values()].map(({ record }) => record);
+  const values = [...unique.values()].map(({ record }) => {
+    const contextRelation = contextRelations.get(record.conversationRef);
+    return contextRelation ? { ...record, contextRelation } : record;
+  });
   return options.limit === undefined ? values : values.slice(0, options.limit);
 }
 

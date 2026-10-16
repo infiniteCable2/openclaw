@@ -349,7 +349,7 @@ export async function withConversationAuthority<T>(
 /** Lists stable external addresses for one agent, newest activity first. */
 export function listConversations(
   scope: ConversationRegistryScope,
-  options: { channel?: string; limit?: number } = {},
+  options: Pick<ConversationReadQuery, "channel" | "limit" | "sourceSession"> = {},
 ): Promise<ConversationRecord[]> {
   return selectConversationRowsInWorker(scope, options);
 }

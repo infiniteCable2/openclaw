@@ -174,12 +174,41 @@ export const conversationHandlers: GatewayRequestHandlers = {
     validateConversationListParams,
     async ({ params: request, respond, context }) => {
       const readCurrentConfig = () => context.getRuntimeConfig();
+      const config = readCurrentConfig();
+      if (Boolean(request.sourceSessionKey) !== Boolean(request.sourceSessionId)) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            "Source session key and id must be supplied together",
+          ),
+        );
+        return;
+      }
+      if (request.sourceSessionKey) {
+        const owner = resolveRequestedSessionAgentId(
+          config,
+          request.sourceSessionKey,
+          request.agentId,
+        );
+        if (!owner.ok) {
+          respond(false, undefined, owner.error);
+          return;
+        }
+      }
       respond(
         true,
         await runGatewayConversationList({
-          config: readCurrentConfig(),
+          config,
           readCurrentConfig,
           agentId: request.agentId,
+          ...(request.sourceSessionKey && request.sourceSessionId
+            ? {
+                sourceSessionKey: request.sourceSessionKey,
+                sourceSessionId: request.sourceSessionId,
+              }
+            : {}),
           ...(request.channel ? { channel: request.channel } : {}),
           ...(request.query ? { query: request.query } : {}),
           limit: request.limit ?? 50,

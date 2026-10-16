@@ -95,7 +95,7 @@ describe("conversation tools", () => {
     expect(Value.Check(send.outputSchema!, sendResult.details)).toBe(true);
     expect(Value.Check(turn.outputSchema!, turnResult.details)).toBe(true);
     expect(compactToolOutputHint(list.outputSchema)).toBe(
-      '{ conversations: Array<{ accountId: string; channel: string; conversationRef: string; firstSeenAt: number; kind: "direct" | "group" | "channel"; lastSeenAt: number; target: string; label?: string; threadId?: string }> }',
+      '{ conversations: Array<{ accountId: string; channel: string; conversationRef: string; firstSeenAt: number; kind: "direct" | "group" | "channel"; lastSeenAt: number; target: string; contextRelation?: "current" | "parent"; label?: string; threadId?: string }> }',
     );
     expect(compactToolOutputHint(send.outputSchema)).toBe(
       '{ channel: string; conversationRef: string; status: "sent" | "queued" | "suppressed" | "unknown"; messageId?: string; queueId?: string }',
@@ -128,6 +128,38 @@ describe("conversation tools", () => {
           lastSeenAt: 200,
         },
       ],
+    });
+  });
+
+  it("binds list context to the host session, not model-supplied arguments", async () => {
+    const callGateway = mockGateway();
+    const tool = createConversationsListTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:subagent:call:test",
+      agentSessionId: "call-incarnation",
+    });
+    await tool.execute("list-origin", {
+      sourceSessionKey: "agent:other:main",
+      sourceSessionId: "forged",
+    });
+    expect(callGateway).toHaveBeenCalledWith({
+      method: "conversations.list",
+      params: {
+        agentId: "main",
+        limit: 50,
+        sourceSessionKey: "agent:main:subagent:call:test",
+        sourceSessionId: "call-incarnation",
+      },
+    });
+    expect(Value.Check(tool.parameters, { sourceSessionKey: "agent:other:main" })).toBe(false);
+  });
+
+  it("does not guess a source incarnation when the host only supplies a key", async () => {
+    const callGateway = mockGateway();
+    await createConversationsListTool({ agentSessionKey: "agent:main:main" }).execute("list", {});
+    expect(callGateway).toHaveBeenCalledWith({
+      method: "conversations.list",
+      params: { agentId: "main", limit: 50 },
     });
   });
 

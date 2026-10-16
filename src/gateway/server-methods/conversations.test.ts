@@ -172,6 +172,49 @@ describe("conversations.list Gateway handler", () => {
       expect.objectContaining({ code: "INVALID_REQUEST" }),
     );
   });
+
+  it("passes an exact source incarnation to native discovery", async () => {
+    vi.mocked(runGatewayConversationList).mockResolvedValue({ conversations: [] });
+    const respond = vi.fn<RespondFn>();
+    await invokeList({
+      handler: conversationHandlers["conversations.list"]!,
+      context: context(),
+      respond,
+      request: {
+        agentId: "main",
+        sourceSessionKey: "agent:main:main",
+        sourceSessionId: "source-id",
+      },
+    });
+    expect(runGatewayConversationList).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceSessionKey: "agent:main:main",
+        sourceSessionId: "source-id",
+      }),
+    );
+    expect(respond).toHaveBeenCalledWith(true, { conversations: [] }, undefined);
+  });
+
+  it.each([
+    { sourceSessionKey: "agent:other:main", sourceSessionId: "other-id" },
+    { sourceSessionKey: "agent:main:main" },
+    { sourceSessionId: "missing-key" },
+    { sourceSessionKey: "agent:", sourceSessionId: "malformed-key" },
+  ])("rejects mismatched or incomplete source context before discovery: %j", async (source) => {
+    const respond = vi.fn<RespondFn>();
+    await invokeList({
+      handler: conversationHandlers["conversations.list"]!,
+      context: context(),
+      respond,
+      request: { agentId: "main", ...source },
+    });
+    expect(runGatewayConversationList).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+  });
 });
 
 describe("conversations.send Gateway handler", () => {

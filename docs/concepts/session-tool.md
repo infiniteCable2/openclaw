@@ -167,6 +167,15 @@ A **session** is local model context. A **conversation** is an exact external ad
 
 Use the shared `message` tool when you already have an explicit raw channel target or need a channel-specific action. Conversation references are scoped to the active agent and should be obtained through `conversations_list`, not constructed from session keys.
 
+When the tool host supplies its exact source session key and ID, list results can
+include `contextRelation`: `current` marks the source session's primary address;
+`parent` marks its recorded parent's current primary address. These are snapshot
+relationships, not presence indicators or grants. Parent ancestry does not prove
+that two addresses belong to the same person. Missing, reset, cross-agent or
+conflicting parent identities produce no parent label. Historical associations
+and transcript fork ancestry alone cannot supply this relationship. Delivery
+still checks current route ownership independently.
+
 In Code Mode, the conversation tools reuse their exact Gateway output contracts. A single `exec` cell can list addresses, select a returned `conversationRef`, and call `conversations_send` or `conversations_turn`; normal tool policy and approvals still apply to the nested calls.
 
 ## Sending cross-session messages

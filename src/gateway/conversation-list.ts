@@ -27,6 +27,8 @@ export async function runGatewayConversationList(
     config: OpenClawConfig;
     readCurrentConfig?: () => OpenClawConfig;
     agentId: string;
+    sourceSessionKey?: string;
+    sourceSessionId?: string;
     channel?: string;
     query?: string;
     limit: number;
@@ -39,6 +41,14 @@ export async function runGatewayConversationList(
   },
 ): Promise<ConversationListResult> {
   const scope = await prepareConversationRegistryScope(params);
+  const sourceSession =
+    params.sourceSessionKey && params.sourceSessionId
+      ? {
+          agentId: params.agentId,
+          sessionKey: params.sourceSessionKey,
+          sessionId: params.sourceSessionId,
+        }
+      : undefined;
   const query = params.query?.trim() || undefined;
   let discoveryChannel: string | undefined;
   let registeredConversations: ConversationRecord[] | undefined;
@@ -168,7 +178,7 @@ export async function runGatewayConversationList(
           }
           return eligibility.map((value) => value === "eligible");
         },
-        { channel: discoveryChannel },
+        { channel: discoveryChannel, ...(sourceSession ? { sourceSession } : {}) },
       );
       for (const identity of discoveredIdentities) {
         discoveredConversationRefs.add(identity.conversationRef);
@@ -177,10 +187,10 @@ export async function runGatewayConversationList(
   }
   const conversations =
     registeredConversations ??
-    (await deps.listConversations(
-      scope,
-      discoveryChannel !== undefined ? { channel: discoveryChannel } : {},
-    ));
+    (await deps.listConversations(scope, {
+      ...(discoveryChannel !== undefined ? { channel: discoveryChannel } : {}),
+      ...(sourceSession ? { sourceSession } : {}),
+    }));
   const currentConfig = params.readCurrentConfig?.() ?? params.config;
   const normalizedQuery = query?.toLowerCase() ?? "";
   const searchQuery =
@@ -223,6 +233,9 @@ export async function runGatewayConversationList(
       }
       if (conversation.label) {
         row.label = conversation.label;
+      }
+      if (conversation.contextRelation) {
+        row.contextRelation = conversation.contextRelation;
       }
       return Object.assign(row, {
         firstSeenAt: conversation.firstSeenAt,
