@@ -583,7 +583,8 @@ describe("realtime voice agent consult runtime", () => {
   );
 
   it("falls back to a fresh isolated consult session when requester context is too large", async () => {
-    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const { runtime, runEmbeddedAgent, sessionStore } = createAgentRuntime();
+    sessionStore["agent:main:main"] = { sessionId: "large-parent", updatedAt: 1 };
     const warn = vi.fn();
     const forkSessionEntryFromParent = sessionForkMocks.forkSessionEntryFromParent;
     forkSessionEntryFromParent.mockImplementation(
