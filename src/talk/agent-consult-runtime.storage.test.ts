@@ -33,7 +33,7 @@ describe("voice consult concrete store ownership", () => {
       const cfg: OpenClawConfig = {
         agents: { entries: { main: { workspace: state.workspaceDir } } },
       };
-      const runEmbeddedAgent = vi.fn(async () => ({ payloads: [], meta: {} }));
+      const runEmbeddedAgent = vi.fn(async () => ({ payloads: [], meta: { durationMs: 0 } }));
       const agentRuntime = { ...createRuntimeAgent(), runEmbeddedAgent };
       const parentKey = "agent:main:parent";
       const childKey = "agent:main:subagent:voice:child";
