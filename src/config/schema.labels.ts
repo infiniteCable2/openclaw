@@ -1,6 +1,7 @@
 import { MEDIA_AUDIO_FIELD_LABELS } from "./media-audio-field-metadata.js";
 import { GATEWAY_FIELD_LABELS } from "./schema.gateway-labels.js";
 import { AGENT_MODEL_FIELD_LABELS } from "./schema.labels.agent-models.js";
+import { AGENT_FIELD_LABELS } from "./schema.labels.agents.js";
 import { APPROVAL_FIELD_LABELS } from "./schema.labels.approvals.js";
 import { BROWSER_FIELD_LABELS } from "./schema.labels.browser.js";
 import { GITHUB_TOOL_FIELD_LABELS } from "./schema.labels.github.js";
@@ -77,38 +78,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "diagnostics.otel.flushIntervalMs": "OpenTelemetry Flush Interval (ms)",
   "diagnostics.otel.captureContent": "OpenTelemetry Content Capture",
   "diagnostics.cacheTrace.enabled": "Cache Trace Enabled",
-  "agents.entries.*.identity.avatar": "Identity Avatar",
-  "agents.entries.*.skills": "Agent Skill Filter",
-  "agents.entries.*.conversationMode": "Agent Conversation Mode",
-  "agents.entries.*.cwd": "Agent Working Directory",
-  "agents.entries.*.runtime": "Agent Runtime",
-  "agents.entries.*.runtime.type": "Agent Runtime Type",
-  "agents.entries.*.runtime.acp": "Agent ACP Runtime",
-  "agents.entries.*.runtime.acp.agent": "Agent ACP Harness Agent",
-  "agents.entries.*.runtime.acp.backend": "Agent ACP Backend",
-  "agents.entries.*.runtime.acp.mode": "Agent ACP Mode",
-  "agents.entries.*.runtime.acp.cwd": "Agent ACP Working Directory",
-  "agents.entries.*.thinkingDefault": "Agent Thinking Default",
-  "agents.entries.*.reasoningDefault": "Agent Reasoning Default",
-  "agents.entries.*.fastModeDefault": "Agent Fast Mode Default",
-  "agents.defaults.fastModeDefault": "Default Agent Fast Mode",
-  "agents.entries.*.contextInjection": "Agent Context Injection",
-  "agents.entries.*.bootstrapMaxChars": "Agent Bootstrap Max Chars",
-  "agents.entries.*.bootstrapTotalMaxChars": "Agent Bootstrap Total Max Chars",
-  "agents.entries.*.experimental": "Agent Experimental Flags",
-  "agents.entries.*.experimental.localModelLean": "Agent Lean Local Model Mode",
-  agents: "Agents",
-  "agents.ownership": "Agent Ownership Generation",
-  "agents.defaults": "Agent Defaults",
-  "agents.defaults.contextLimits": "Default Context Limits",
-  "agents.defaults.contextLimits.memoryGetMaxChars": "Default memory_get Max Chars",
-  "agents.defaults.contextLimits.postCompactionMaxChars": "Default Post-compaction Max Chars",
-  "agents.entries": "Agent List",
-  "agents.entries.*.skillsLimits": "Agent Skills Limits",
-  "agents.entries.*.skillsLimits.maxSkillsPromptChars": "Agent Skills Prompt Max Chars",
-  "agents.entries.*.contextLimits": "Agent Context Limits",
-  "agents.entries.*.contextLimits.memoryGetMaxChars": "Agent memory_get Max Chars",
-  "agents.entries.*.contextLimits.postCompactionMaxChars": "Agent Post-compaction Max Chars",
+  ...AGENT_FIELD_LABELS,
   cloudWorkers: "Cloud Workers",
   ...CLOUD_WORKER_FIELD_LABELS,
   ...STORAGE_FIELD_LABELS,
