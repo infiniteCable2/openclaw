@@ -159,7 +159,9 @@ describe("voice consult concrete store ownership", () => {
       senderIsOwner: false,
     };
     const previousMemory = await resolveMemoryAudienceFromEntry(memoryScope, before);
-    if (previousMemory.status === "granted") previousMemory.release();
+    if (previousMemory.status === "granted") {
+      previousMemory.release();
+    }
     await replaceSessionEntry(
       { ...scope, sessionKey: sourceKey },
       {
@@ -234,7 +236,9 @@ describe("voice consult concrete store ownership", () => {
         });
       }
     } finally {
-      if (memory.status === "granted") memory.release();
+      if (memory.status === "granted") {
+        memory.release();
+      }
     }
   });
 
