@@ -6,6 +6,13 @@ export type BufferedVideoFrame = {
   mimeType: "image/jpeg" | "image/png";
   timestampMs: number;
   sourceId?: string;
+  retention?: {
+    checkedAtMs: number;
+    pinned: boolean;
+    expiresAtMs: number | null;
+    remainingMs: number | null;
+    afterReleaseMs: number;
+  };
 };
 type Entry = BufferedVideoFrame & { pins: number; selectedUntilMs?: number };
 export type VideoFrameSnapshot = {
@@ -38,6 +45,26 @@ export function createVideoFrameBuffer(params: {
   const entries: Entry[] = [];
   let bytes = 0;
   let closed = false;
+  const describe = (frame: Entry): BufferedVideoFrame => {
+    const at = now();
+    const expiresAtMs = frame.pins
+      ? null
+      : (frame.selectedUntilMs ?? frame.timestampMs + params.retentionMs);
+    return {
+      id: frame.id,
+      data: frame.data,
+      mimeType: frame.mimeType,
+      timestampMs: frame.timestampMs,
+      sourceId: frame.sourceId,
+      retention: {
+        checkedAtMs: at,
+        pinned: frame.pins > 0,
+        expiresAtMs,
+        remainingMs: expiresAtMs === null ? null : Math.max(0, expiresAtMs - at),
+        afterReleaseMs: params.selectedRetentionMs ?? 0,
+      },
+    };
+  };
   const prune = (at: number) => {
     for (let index = entries.length - 1; index >= 0; index--) {
       const frame = entries[index];
@@ -113,7 +140,7 @@ export function createVideoFrameBuffer(params: {
       }
       let released = false;
       return {
-        frames: chosen,
+        frames: chosen.map(describe),
         release() {
           if (released) {
             return;
@@ -133,7 +160,7 @@ export function createVideoFrameBuffer(params: {
     read(id: string): BufferedVideoFrame | undefined {
       prune(now());
       const entry = closed ? undefined : entries.find((frame) => frame.id === id);
-      return entry ? { ...entry, data: Buffer.from(entry.data) } : undefined;
+      return entry ? { ...describe(entry), data: Buffer.from(entry.data) } : undefined;
     },
     close() {
       closed = true;

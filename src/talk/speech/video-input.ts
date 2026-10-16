@@ -210,14 +210,17 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
         context:
           "Video frames captured during this user utterance, in attachment order: " +
           snapshot.frames
-            .map((frame) => `${frame.id} at ${new Date(frame.timestampMs).toISOString()}`)
+            .map(
+              (frame) =>
+                `${frame.id} at ${new Date(frame.timestampMs).toISOString()} (pinned for this request; retention after release: ${frame.retention?.afterReleaseMs ?? 0}ms)`,
+            )
             .join("; ") +
           ". These are sampled views, not continuous video coverage. " +
           `Attached image order: ${deliveredIds.join(", ") || "none"}. ` +
           (unavailable
             ? `${unavailable} frame preview(s) unavailable. Do not claim inspection of missing previews. `
             : "") +
-          "If video_inspect is available, request frameId with profile detail or source to revisit that exact retained source; expired frames are unavailable.",
+          "Retention is not guaranteed: unpinned frames may be evicted sooner under memory pressure and all live frames disappear when the session closes. If video_inspect is available, request frameId with info for current retention, frames with profile detail/source to revisit it, or save to keep a workspace image independent of the live buffer. Expired frames are unavailable.",
       };
     },
     close() {

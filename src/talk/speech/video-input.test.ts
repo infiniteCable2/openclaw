@@ -78,6 +78,8 @@ describe("speech video input snapshot ownership", () => {
       ]);
       expect(prepared.context).toContain(snapshot.frames[0]!.id);
       expect(prepared.context).toContain("2025-01-01T12:00:00.000Z");
+      expect(prepared.context).toContain("retention after release: 900000ms");
+      expect(prepared.context).toContain("Retention is not guaranteed");
       snapshot.release();
       snapshot.release();
       expect(f.input.resolve(snapshot)).toBeUndefined();

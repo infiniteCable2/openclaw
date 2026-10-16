@@ -1,5 +1,7 @@
+import fs from "node:fs/promises";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createVideoFrameSource } from "../../media/video-frame-source.js";
 import { createSandboxFsBridgeFromResolver } from "../test-helpers/host-sandbox-fs-bridge.js";
@@ -46,6 +48,7 @@ const config: OpenClawConfig = {
   tools: { media: { video: { frames: { enabled: true, maxFrames: 3, profile: "preview" } } } },
 };
 const options = { config, modelHasVision: true, workspaceDir: path.resolve("/fixture/workspace") };
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function tool(overrides: Partial<Parameters<typeof createVideoInspectTool>[0]> = {}) {
   const created = createVideoInspectTool({ ...options, ...overrides });
@@ -263,5 +266,54 @@ describe("native video_inspect", () => {
     expect(read).toHaveBeenLastCalledWith("gone");
     expect(assertCurrent).toHaveBeenCalled();
     await expect(live.execute("file", { path: "clip.mp4" })).rejects.toThrow("not enabled");
+  });
+
+  it("saves selected source-quality file frames without adding images or base64 to context", async () => {
+    const workspaceDir = tempDirs.make("openclaw-inspect-save-");
+    const result = await tool({ workspaceDir }).execute("save", {
+      action: "save",
+      path: "clip.mp4",
+      timestampsSeconds: [1],
+    });
+    expect(fixture.extract).toHaveBeenCalledWith(
+      expect.objectContaining({ profile: "source", timestampsSeconds: [1] }),
+    );
+    expect(result.content.every((part) => part.type === "text")).toBe(true);
+    const details = result.details as { files: Array<{ path: string }> };
+    expect(await fs.readFile(details.files[0]!.path)).toEqual(fixture.png);
+    expect(result.details).toMatchObject({
+      storage: "workspace",
+      automaticExpiry: false,
+      media: { outbound: false },
+    });
+  });
+
+  it("exposes live retention and saves only the exact still-available frame", async () => {
+    const workspaceDir = tempDirs.make("openclaw-inspect-live-save-");
+    const retention = {
+      checkedAtMs: 2000,
+      expiresAtMs: 5000,
+      remainingMs: 3000,
+      pinned: false,
+      afterReleaseMs: 3000,
+    };
+    const read = vi.fn((id: string) =>
+      id === "retained"
+        ? { id, timestampMs: 1000, data: fixture.png, mimeType: "image/png" as const, retention }
+        : undefined,
+    );
+    const live = tool({
+      workspaceDir,
+      toolBindings: { video_inspect: createVideoFrameSource(read, () => {}) },
+    });
+    const info = await live.execute("info", { action: "info", frameId: "retained" });
+    expect(info.details).toMatchObject({ retention });
+    const result = await live.execute("save", { action: "save", frameId: "retained" });
+    expect(fixture.render).toHaveBeenCalledWith(expect.objectContaining({ profile: "source" }));
+    expect(result.details).toMatchObject({ frameId: "retained", automaticExpiry: false });
+    await expect(live.execute("gone", { action: "save", frameId: "gone" })).rejects.toThrow(
+      "unavailable or expired",
+    );
+    expect(await fs.readdir(path.join(workspaceDir, "media/video-frames"))).toHaveLength(1);
   });
 });

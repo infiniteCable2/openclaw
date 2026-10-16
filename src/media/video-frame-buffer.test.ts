@@ -82,4 +82,40 @@ describe("session video source custody", () => {
     expect(selected.frames.map((frame) => frame.timestampMs)).toEqual([1200, 1500, 1800]);
     selected.release();
   });
+
+  it("reports pinning and current expiry from the same retention owner", () => {
+    let time = 1000;
+    const buffer = createVideoFrameBuffer({
+      intervalMs: 1,
+      retentionMs: 1000,
+      selectedRetentionMs: 5000,
+      maxBytes: 6,
+      maxFrameBytes: 3,
+      maxFramesPerTurn: 1,
+      now: () => time,
+    });
+    buffer.add({ data: Buffer.from("abc"), mimeType: "image/png", timestampMs: time });
+    const snapshot = buffer.capture(0);
+    const frame = snapshot.frames[0]!;
+    expect(frame.retention).toEqual({
+      checkedAtMs: 1000,
+      pinned: true,
+      expiresAtMs: null,
+      remainingMs: null,
+      afterReleaseMs: 5000,
+    });
+    time = 2000;
+    snapshot.release();
+    expect(buffer.read(frame.id)?.retention).toEqual({
+      checkedAtMs: 2000,
+      pinned: false,
+      expiresAtMs: 7000,
+      remainingMs: 5000,
+      afterReleaseMs: 5000,
+    });
+    time = 3000;
+    expect(buffer.read(frame.id)?.retention?.remainingMs).toBe(4000);
+    time = 7001;
+    expect(buffer.read(frame.id)).toBeUndefined();
+  });
 });

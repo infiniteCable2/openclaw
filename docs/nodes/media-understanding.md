@@ -301,6 +301,24 @@ it does not fetch arbitrary HTTP URLs. Rendition overrides (`profile`,
 image parts, not base64 text. This tool does not perform semantic video search
 or transcribe the video's audio track.
 
+Use `action: "save"` with a retained `frameId`, or a video path plus exact
+`timestampsSeconds`, to keep selected frames as files in the assigned workspace's
+`media/video-frames/` directory. Saving defaults to `profile: "source"`; an explicit
+preview/detail profile and its size limits remain available. The result lists
+paths, MIME types, sizes, and requested times without attaching or sending images.
+These explicit workspace artifacts do not expire with the live-frame buffer.
+They remain until explicitly removed through ordinary workspace management.
+Saving never changes the original video or overwrites an existing destination.
+
+Live frame metadata reports the current retention state: `checkedAtMs`, `pinned`,
+`expiresAtMs`, `remainingMs`, and `afterReleaseMs`. A pinned frame has no fixed
+expiry until its active request releases it (`expiresAtMs`/`remainingMs` are
+`null`). After release, the configured selected-frame retention applies. Expiry
+is an upper-bound estimate, not a promise: memory pressure may evict unpinned
+frames earlier, and session close discards the entire live buffer. Use `info` to
+check a reference again or `save` while it is still available; an expired frame
+is never silently replaced by a newer one.
+
 ### On-demand audio inspection
 
 `audio_inspect` exposes `info`, `analyze`, and `transcribe` for accessible local,

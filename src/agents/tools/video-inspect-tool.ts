@@ -8,7 +8,7 @@ import {
   normalizeMediaReferenceSource,
 } from "../../media/media-reference.js";
 import { isVideoFrameSource } from "../../media/video-frame-source.js";
-import type { VideoFrameProfile } from "../../media/video-frames.js";
+import type { RenderedVideoFrame, VideoFrameProfile } from "../../media/video-frames.js";
 import { runWithAsyncWorkResources } from "../../shared/async-work-resources.js";
 import { createSandboxBridgeReadFile } from "../sandbox-media-paths.js";
 import { optionalPositiveIntegerSchema, optionalStringEnum } from "../schema/typebox.js";
@@ -80,9 +80,9 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
     label: "Inspect Video",
     catalogMode: "direct-only",
     description:
-      "Inspect a local/media:// video without another model call: info returns duration/resolution/audio presence; overview samples bounded representative frames; frames inspects exact requested times. Higher-quality detail or source re-extracts the same original (source means decoded quality, not recovery of lost detail). A supplied frameId revisits a retained live frame; expired references are not substituted. Images enter private model context, not the user chat. This is not semantic video search; use timestamps to narrow a time range.",
+      "Inspect a local/media:// video without another model call: info returns metadata; overview samples frames; frames inspects exact times. save writes the selected frames to workspace media/video-frames independently of the live buffer, returning file paths without sending images. save defaults to source quality; other actions default to configured preview. detail/source revisit the original, not recovery of lost detail. A frameId revisits an exact retained live frame; expired references are not substituted. Retention metadata is a current estimate: unpinned frames may be evicted earlier under memory pressure or session close. Inspection images enter private model context, not user chat. This is not semantic video search.",
     parameters: Type.Object({
-      action: optionalStringEnum(["info", "overview", "frames"]),
+      action: optionalStringEnum(["info", "overview", "frames", "save"]),
       path: Type.Optional(
         Type.String({
           description:
@@ -91,7 +91,8 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
       ),
       frameId: Type.Optional(
         Type.String({
-          description: "Exact retained live-frame reference, instead of path. info or frames only.",
+          description:
+            "Exact retained live-frame reference, instead of path. info, frames, or save.",
         }),
       ),
       timestampsSeconds: Type.Optional(
@@ -99,7 +100,7 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
           minItems: 1,
           maxItems: 12,
           description:
-            "Required for frames with path. Times are seconds from the video start; less than duration.",
+            "Required for frames/save with path. Seconds from video start; less than duration.",
         }),
       ),
       count: optionalPositiveIntegerSchema({
@@ -149,10 +150,39 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
           throw new ToolInputError("Provide exactly one path or frameId");
         }
         const action = readToolStringParam(record, "action") ?? (frameId ? "frames" : "info");
-        if (action !== "info" && action !== "overview" && action !== "frames") {
-          throw new ToolInputError("action must be info, overview, or frames");
+        if (
+          action !== "info" &&
+          action !== "overview" &&
+          action !== "frames" &&
+          action !== "save"
+        ) {
+          throw new ToolInputError("action must be info, overview, frames, or save");
         }
-        const profile = readProfile(record.profile, config?.frames?.profile);
+        const profile = readProfile(
+          record.profile,
+          action === "save" ? "source" : config?.frames?.profile,
+        );
+        const saveFrames = async (
+          frames: readonly RenderedVideoFrame[],
+          assertSourceCurrent = assertCurrent,
+        ) => {
+          const { saveInspectedVideoFrames } = await import("./video-inspect-save.js");
+          assertCurrent();
+          const files = await saveInspectedVideoFrames({
+            frames,
+            workspaceDir: options.fsPolicy?.root ?? options.workspaceDir ?? options.cwd,
+            sandbox: options.sandbox,
+            signal,
+            assertCurrent: assertSourceCurrent,
+          });
+          assertCurrent();
+          return {
+            files,
+            storage: "workspace",
+            automaticExpiry: false,
+            media: { outbound: false },
+          };
+        };
         const maxSide =
           readPositiveIntegerParam(record, "maxSide", { max: 8192 }) ?? config?.frames?.maxSide;
         const targetBytes =
@@ -172,7 +202,7 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
           }
           if (action === "overview" || record.timestampsSeconds !== undefined) {
             throw new ToolInputError(
-              "A live frameId supports info or frames without timestampsSeconds",
+              "A live frameId supports info, frames, or save without timestampsSeconds",
             );
           }
           frameSource.assertCurrent();
@@ -189,6 +219,7 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
               frameId: frame.id,
               timestampMs: frame.timestampMs,
               mimeType: frame.mimeType,
+              retention: frame.retention,
               media: { outbound: false },
             });
           }
@@ -203,6 +234,17 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
           });
           assertCurrent();
           frameSource.assertCurrent();
+          if (action === "save") {
+            return jsonResult({
+              ...(await saveFrames([rendered], () => {
+                assertCurrent();
+                frameSource.assertCurrent();
+              })),
+              frameId: frame.id,
+              timestampMs: frame.timestampMs,
+              profile,
+            });
+          }
           const result = await buildNativeImageToolResult(
             [{ buffer: rendered.buffer, mimeType: rendered.mimeType, resolvedInput: frame.id }],
             options.config,
@@ -211,9 +253,17 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
           frameSource.assertCurrent();
           return {
             ...result,
+            content: [
+              {
+                type: "text",
+                text: `Frame ${frame.id}. Retention: ${JSON.stringify(frame.retention ?? null)}. Unpinned frames may be evicted earlier under memory pressure; session close removes all live frames. Use save to keep a workspace copy.`,
+              },
+              ...result.content,
+            ],
             details: {
               frameId: frame.id,
               timestampMs: frame.timestampMs,
+              retention: frame.retention,
               profile,
               transport: "native",
               media: { outbound: false },
@@ -311,6 +361,14 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
           signal,
         });
         assertCurrent();
+        if (action === "save") {
+          return jsonResult({
+            ...(await saveFrames(frames)),
+            source: input,
+            profile,
+            timestampsSeconds: frames.map((frame) => frame.timestampSeconds),
+          });
+        }
         const result = await buildNativeImageToolResult(
           frames.map((frame) => ({
             buffer: frame.buffer,
