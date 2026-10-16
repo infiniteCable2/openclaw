@@ -6,7 +6,12 @@ import { resolveAgentRunSessionTarget } from "../agents/run-session-target.js";
 import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
 import { SessionManager } from "../agents/sessions/index.js";
 import { makeAgentAssistantMessage } from "../agents/test-helpers/agent-message-fixtures.js";
-import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import {
+  appendTranscriptMessage,
+  loadSessionEntry,
+  loadTranscriptEvents,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveMemoryAudienceFromEntry } from "../plugins/memory-audience.js";
 import { createRuntimeAgent } from "../plugins/runtime/runtime-agent.js";
@@ -27,6 +32,197 @@ afterEach(async () => {
 });
 
 describe("voice consult concrete store ownership", () => {
+  it("copies the explicit source without borrowing its delegation or delivery policy", async () => {
+    const cfg: OpenClawConfig = {
+      agents: { entries: { main: { workspace: state.workspaceDir } } },
+    };
+    const agentRuntime = {
+      ...createRuntimeAgent(),
+      runEmbeddedAgent: vi.fn(async () => ({
+        payloads: [{ text: "Checked" }],
+        meta: { durationMs: 0 },
+      })),
+    };
+    const storePath = agentRuntime.session.resolveStorePath(cfg.session?.store, {
+      agentId: "main",
+    });
+    const requesterKey = "agent:main:requester";
+    const sourceKey = "agent:main:knowledge";
+    const requesterActor = {
+      type: "human" as const,
+      source: "profile" as const,
+      id: "requester-profile",
+    };
+    for (const [sessionKey, sessionId, actorId, to] of [
+      [requesterKey, "requester-session", requesterActor.id, "room:requester"],
+      [sourceKey, "source-session", "context-profile", "room:context"],
+    ]) {
+      await replaceSessionEntry(
+        { agentId: "main", sessionKey, storePath },
+        {
+          sessionId,
+          updatedAt: 1,
+          lifecycleRevision: sessionId + "-revision",
+          createdActor: { type: "human", source: "profile", id: actorId },
+          sandbox: "required",
+          delivery: normalizeSessionDeliveryState({ context: { channel: "matrix", to } }),
+        },
+      );
+      await appendTranscriptMessage(
+        { agentId: "main", sessionId, sessionKey, storePath },
+        {
+          eventId: "completed-answer",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: sessionId + " completed context" }],
+          },
+        },
+      );
+    }
+    const sessionKey = "agent:main:subagent:voice:explicit-source";
+    await consultRealtimeVoiceAgent({
+      cfg,
+      agentRuntime,
+      logger: { warn: vi.fn() },
+      agentId: "main",
+      sessionKey,
+      spawnedBy: requesterKey,
+      contextSourceSessionKey: sourceKey,
+      contextMode: "fork",
+      senderIsOwner: false,
+      messageProvider: "voice",
+      lane: "talk",
+      runIdPrefix: "test-context",
+      args: { question: "Check" },
+      transcript: [],
+      surface: "test voice",
+      userLabel: "User",
+    });
+    const child = loadSessionEntry({ agentId: "main", sessionKey, storePath })!;
+    expect(child).toMatchObject({
+      spawnedBy: requesterKey,
+      spawnedBySessionId: "requester-session",
+      spawnedBySenderIsOwner: false,
+      createdActor: requesterActor,
+      sandbox: "required",
+      forkSource: { sessionKey: sourceKey, sessionId: "source-session" },
+    });
+    const transcript = JSON.stringify(
+      await loadTranscriptEvents({
+        agentId: "main",
+        sessionId: child.sessionId,
+        sessionKey,
+        storePath,
+      }),
+    );
+    expect(transcript).toContain("source-session completed context");
+    expect(transcript).not.toContain("requester-session completed context");
+    expect(agentRuntime.runEmbeddedAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spawnedBy: requesterKey,
+        senderIsOwner: false,
+        messageTo: "room:requester",
+      }),
+    );
+    expect(child.parentSessionKey).toBeUndefined();
+  });
+
+  it("keeps a regular admitted conversation independent from its context source", async () => {
+    const cfg: OpenClawConfig = {
+      agents: { entries: { main: { workspace: state.workspaceDir } } },
+    };
+    const agentRuntime = {
+      ...createRuntimeAgent(),
+      runEmbeddedAgent: vi.fn(async () => ({
+        payloads: [{ text: "Checked" }],
+        meta: { durationMs: 0 },
+      })),
+    };
+    const storePath = agentRuntime.session.resolveStorePath(cfg.session?.store, {
+      agentId: "main",
+    });
+    const sessionKey = "agent:main:conversation:voice:caller";
+    const sourceKey = "agent:main:context";
+    const scope = { agentId: "main", sessionKey, storePath };
+    const createdActor = { type: "human" as const, source: "channel" as const, id: "caller-id" };
+    await replaceSessionEntry(scope, {
+      sessionId: "admitted-conversation",
+      updatedAt: 1,
+      chatType: "group",
+      createdActor,
+      sandbox: "required",
+      permissionMode: "default",
+      delivery: normalizeSessionDeliveryState({
+        context: { channel: "matrix", to: "room:caller" },
+      }),
+    });
+    await replaceSessionEntry(
+      { ...scope, sessionKey: sourceKey },
+      {
+        sessionId: "context-session",
+        updatedAt: 1,
+        chatType: "direct",
+        createdActor: { type: "human", source: "profile", id: "private-owner" },
+        delivery: normalizeSessionDeliveryState({
+          context: { channel: "matrix", to: "room:private" },
+        }),
+      },
+    );
+    await consultRealtimeVoiceAgent({
+      cfg,
+      agentRuntime,
+      logger: { warn: vi.fn() },
+      agentId: "main",
+      sessionKey,
+      contextSourceSessionKey: sourceKey,
+      contextMode: "fork",
+      senderId: "caller-id",
+      senderIsOwner: false,
+      toolsAllow: ["read"],
+      messageProvider: "voice",
+      lane: "talk",
+      runIdPrefix: "test-regular-context",
+      args: { question: "Check" },
+      transcript: [],
+      surface: "test voice",
+      userLabel: "User",
+    });
+    const entry = loadSessionEntry(scope)!;
+    expect(entry).toMatchObject({
+      sessionId: "admitted-conversation",
+      chatType: "group",
+      createdActor,
+      sandbox: "required",
+    });
+    expect(entry.spawnedBy).toBeUndefined();
+    expect(entry.parentSessionKey).toBeUndefined();
+    expect(entry.forkSource).toBeUndefined();
+    expect(agentRuntime.runEmbeddedAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spawnedBy: undefined,
+        senderIsOwner: false,
+        senderId: "caller-id",
+        toolsAllow: ["read"],
+        messageProvider: "matrix",
+        messageTo: "room:caller",
+        permissionMode: "default",
+      }),
+    );
+    const memory = await resolveMemoryAudienceFromEntry(
+      {
+        agentId: "main",
+        sessionKey,
+        sessionId: entry.sessionId,
+        senderIsOwner: false,
+        storePath,
+      },
+      entry,
+    );
+    expect(memory).toMatchObject({ status: "granted", audience: { kind: "conversation" } });
+    if (memory.status === "granted") memory.release();
+  });
+
   it.each([false, true])(
     "refuses a foreign-store parent even when its row identity matches (existing child=%s)",
     async (existingChild) => {

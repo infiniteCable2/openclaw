@@ -59,6 +59,34 @@ function expectNonEmptyString(value: unknown) {
 describe("realtime voice agent consult runtime", () => {
   useConsultRuntimeTestHooks();
 
+  it.each([
+    { source: " ", message: "different conversation" },
+    { source: "agent:main:voice-context", message: "different conversation" },
+    { source: "agent:other:main", message: "admitted agent" },
+    { source: "agent:main:missing", message: "context source is unavailable" },
+    { source: "agent:main:locked", message: MODEL_SELECTION_LOCKED_MESSAGE },
+  ])("refuses an invalid explicit context source: $source", async ({ source, message }) => {
+    const { runtime, runEmbeddedAgent, sessionStore } = createAgentRuntime();
+    sessionStore["agent:main:locked"] = {
+      sessionId: "locked-context",
+      updatedAt: 1,
+      modelSelectionLocked: true,
+    };
+    await expect(
+      runConsult({
+        agentRuntime: runtime as never,
+        agentId: "main",
+        sessionKey: "agent:main:voice-context",
+        contextSourceSessionKey: source,
+        contextMode: "fork",
+        runIdPrefix: "voice-context",
+        args: { question: "Continue" },
+      }),
+    ).rejects.toThrow(message);
+    expect(runtime.session.patchSessionEntry).not.toHaveBeenCalled();
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
+  });
+
   it("does not start a consult after its caller has closed", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
     const controller = new AbortController();
