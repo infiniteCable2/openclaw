@@ -12,7 +12,7 @@ class SpeechInputMetadata {
 }
 
 /** Carry accepted input identity through the existing queue and its video custody. */
-export function createSpeechInputMetadata(video: SpeechVideoInput) {
+export function createSpeechInputMetadata(video: SpeechVideoInput, sessionId: string) {
   const audioMergeKey = Symbol("speech-input");
   const read = (value: unknown): SpeechInputMetadata => {
     if (!(value instanceof SpeechInputMetadata)) {
@@ -23,7 +23,9 @@ export function createSpeechInputMetadata(video: SpeechVideoInput) {
   return {
     capture(startedAtMs: number | undefined, utteranceId: string | undefined) {
       return new SpeechInputMetadata(
-        utteranceId || randomUUID(),
+        // Provider utterance IDs are only session-local. Native message dedupe
+        // spans calls, so retain the actual host connection in the input ID.
+        JSON.stringify(["speech", sessionId, utteranceId || randomUUID()]),
         video.capture(startedAtMs ?? Date.now() - 2000, Date.now(), utteranceId),
       );
     },

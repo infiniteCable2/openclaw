@@ -62,7 +62,7 @@ function fixture() {
       sessionId: "connection-a",
       config: { audioFormat: "pcm16-24khz", providers: {}, responseStreaming: "sentence" },
     },
-    inputs: createSpeechInputMetadata(video),
+    inputs: createSpeechInputMetadata(video, "connection-a"),
     video,
     output,
     isStopped: () => stopped,

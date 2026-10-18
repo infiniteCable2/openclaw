@@ -46,7 +46,7 @@ export async function startSpeechSession(
   params.signal?.throwIfAborted();
   let stopped = false;
   const video = createSpeechVideoInput(params.config.video);
-  const inputs = createSpeechInputMetadata(video);
+  const inputs = createSpeechInputMetadata(video, params.sessionId);
   let sttSession: RealtimeTranscriptionSession | null = null;
   let realtimeReady = false;
   let releaseConnectionPresentation: (() => void) | undefined;
