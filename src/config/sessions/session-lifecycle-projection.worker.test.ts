@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
@@ -16,6 +17,7 @@ import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-store.
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { applySessionEntryLifecycleMutation } from "./session-accessor.sqlite-projection.js";
 import * as reclamation from "./session-accessor.sqlite-reclamation-commit.js";
+import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
 import {
   SessionEntryLifecycleUpsertConflictError,
   SessionMaintenancePreservationConflictError,
@@ -145,6 +147,119 @@ function maintenanceFixture() {
     },
   };
 }
+
+function captureLifecycleSource(f: ReturnType<typeof fixture>, sessionKey: string) {
+  const refused = new Error("lifecycle original source changed");
+  // This storage fixture captures the actual source reader/predicates, not a
+  // Gateway permission. Its caller lifetime is exercised separately below.
+  const source = captureSessionEntrySourceAssertion({
+    scope: { ...f.scope, sessionKey },
+    expected: f.read(sessionKey),
+    fields: ["sessionId", "lifecycleRevision", "visibility"],
+    assertCurrent() {},
+    refuse: (): never => {
+      throw refused;
+    },
+  });
+  return { source, refused };
+}
+
+it("retains transaction-validated absence through its own admitted creation", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const createdKey = "agent:main:lifecycle-source-created";
+    const { source } = captureLifecycleSource(f, createdKey);
+    const committed = vi.fn();
+    const before = f.read();
+    await expect(
+      applySessionEntryLifecycleMutation({
+        ...f.scope,
+        source,
+        skipMaintenance: true,
+        upserts: [{ sessionKey: createdKey, entry: { sessionId: "created-source", updatedAt: 2 } }],
+        onLifecycleCommitted: committed,
+      }),
+    ).resolves.toMatchObject({ beforeCount: 1, afterCount: 2 });
+    expect(f.read(createdKey)).toMatchObject({ sessionId: "created-source" });
+    expect(f.read()).toEqual(before);
+    expect(committed).toHaveBeenCalledOnce();
+  });
+});
+
+it("refuses a foreign source change between preparation and BEGIN without creating its target", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const createdKey = "agent:main:lifecycle-source-refused";
+    const { source, refused } = captureLifecycleSource(f, f.scope.sessionKey);
+    const changed = vi.fn();
+    const committed = vi.fn();
+    delivery.beforeCommand = async (type) => {
+      if (type !== "session.lifecycle.project") return;
+      // Bypass host publication exactly as an independent process can. Only
+      // the authoritative SQL predicate in the new writer snapshot sees this.
+      const foreign = new DatabaseSync(f.scope.storePath);
+      try {
+        foreign
+          .prepare(
+            "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.visibility', 'shared') WHERE session_key = ?",
+          )
+          .run(f.scope.sessionKey);
+        changed();
+      } finally {
+        foreign.close();
+      }
+    };
+    await expect(
+      applySessionEntryLifecycleMutation({
+        ...f.scope,
+        source,
+        skipMaintenance: true,
+        upserts: [{ sessionKey: createdKey, entry: { sessionId: "refused-target", updatedAt: 2 } }],
+        onLifecycleCommitted: committed,
+      }),
+    ).rejects.toBe(refused);
+    expect(changed).toHaveBeenCalledOnce();
+    expect(f.read()).toMatchObject({ sessionId: f.initial.sessionId, visibility: "shared" });
+    expect(f.read(createdKey)).toBeUndefined();
+    expect(committed).not.toHaveBeenCalled();
+  });
+});
+
+it("rolls back its validated-source creation when the original caller revokes at commit", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const createdKey = "agent:main:lifecycle-caller-refused";
+    const { source } = captureLifecycleSource(f, createdKey);
+    const refusal = new Error("lifecycle original caller revoked");
+    const committed = vi.fn();
+    const revoked = vi.fn();
+    const before = f.read();
+    let current = true;
+    probe.admission(admission, (request, grant, callback) => {
+      if (delivery.currentCommand === "session.lifecycle.project" && request.stage === "commit") {
+        current = false;
+        revoked();
+      }
+      callback(request, grant);
+    });
+    await expect(
+      applySessionEntryLifecycleMutation({
+        ...f.scope,
+        source,
+        skipMaintenance: true,
+        upserts: [{ sessionKey: createdKey, entry: { sessionId: "revoked-target", updatedAt: 2 } }],
+        commitGuard: () => {
+          if (!current) throw refusal;
+        },
+        onLifecycleCommitted: committed,
+      }),
+    ).rejects.toBe(refusal);
+    expect(revoked).toHaveBeenCalledOnce();
+    expect(f.read(createdKey)).toBeUndefined();
+    expect(f.read()).toEqual(before);
+    expect(committed).not.toHaveBeenCalled();
+  });
+});
 
 async function runMaintenanceDrift(
   f: ReturnType<typeof maintenanceFixture>,

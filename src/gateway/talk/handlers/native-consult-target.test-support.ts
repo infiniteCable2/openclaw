@@ -45,8 +45,16 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
+import { captureGatewayDeviceRevocation } from "../../device-revocation.js";
 import { handleGatewayRequest } from "../../server-methods.js";
+import {
+  bindWebSocketRequestMutationAuthority,
+  readGatewayRequestMutationAuthority,
+} from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
+import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
+import { createOperatorWsClient } from "../../server/ws-connection/authenticated-request-dispatch.test-support.js";
+import type { GatewayWsClient } from "../../server/ws-types.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
 import { drainingRelaySessions } from "../relay/state.js";
@@ -103,7 +111,9 @@ vi.mock("../../../plugin-sdk/tts-runtime.js", async (importOriginal) => ({
 
 let state: OpenClawTestState;
 let config: OpenClawConfig;
-let client: ReturnType<typeof sharingPolicyClient> & { connId: string };
+let client: GatewayWsClient;
+let connection: AbortController;
+let generation: SharedGatewaySessionGenerationState;
 let callback: RealtimeVoiceAgentConsultRunner | undefined;
 let providerInstructions: string | undefined;
 const browserVoiceSessionIds = new Set<string>();
@@ -142,14 +152,32 @@ async function dispatch(
   handlers: GatewayRequestHandlers = {},
 ) {
   const respond = vi.fn();
-  await handleGatewayRequest({
-    req: { type: "req", id: "native-consult", method, params },
-    client,
+  const requestClient = client;
+  const authority = captureGatewayDeviceRevocation(
     context,
-    isWebchatConnect: () => false,
-    respond,
-    extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
-  });
+    { deviceId: requestClient.connect.device?.id, role: requestClient.connect.role },
+    () => !requestClient.invalidated,
+    requestClient.connectionSignal,
+  );
+  try {
+    const request = bindWebSocketRequestMutationAuthority(
+      {
+        req: { type: "req" as const, id: "native-consult", method, params },
+        client: requestClient,
+        context,
+        isWebchatConnect: () => false,
+        respond,
+        hasCurrentClientAuthority: authority.isCurrent,
+        extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
+      },
+      requestClient,
+      generation.reader,
+    );
+    expect(readGatewayRequestMutationAuthority(request).family).toBe("worker");
+    await handleGatewayRequest(request);
+  } finally {
+    authority.release();
+  }
   const payload = respond.mock.calls.at(-1)?.[1];
   if (
     method === "talk.client.create" &&
@@ -206,9 +234,23 @@ beforeEach(async () => {
     },
     talk: { agentId: "voice" },
   });
+  connection = new AbortController();
+  generation = new SharedGatewaySessionGenerationState({ current: undefined, required: null });
+  const identity = sharingPolicyClient({
+    user: ensureProfileForEmail("native-listener@example.test").id,
+    deviceId: "native-consult-device",
+  });
   client = {
-    ...sharingPolicyClient({ user: ensureProfileForEmail("native-listener@example.test").id }),
-    connId: "native-consult-client",
+    ...createOperatorWsClient({ connId: "native-consult-client" }),
+    ...identity,
+    usesSharedGatewayAuth: false,
+    authenticatedUserProfile: identity.authenticatedUserProfile
+      ? {
+          ...identity.authenticatedUserProfile,
+          avatarRevision: identity.authenticatedUserProfile.avatarRevision ?? "",
+        }
+      : undefined,
+    connectionSignal: connection.signal,
   };
   callback = undefined;
   providerInstructions = undefined;
@@ -299,6 +341,7 @@ afterEach(async () => {
       ),
     );
   } finally {
+    connection.abort();
     clientVoiceSessionTesting.reset();
     embeddedRunTesting.resetActiveEmbeddedRuns();
     setActivePluginRegistry(createEmptyPluginRegistry());
@@ -553,7 +596,7 @@ export const testState = {
   get client() {
     return client;
   },
-  set client(value: ReturnType<typeof sharingPolicyClient> & { connId: string }) {
+  set client(value: GatewayWsClient) {
     client = value;
   },
 };

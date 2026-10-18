@@ -19,8 +19,19 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
+import {
+  captureGatewayDeviceRevocation,
+  invalidateGatewayDeviceRevocation,
+} from "../../device-revocation.js";
 import { handleGatewayRequest } from "../../server-methods.js";
+import {
+  bindWebSocketRequestMutationAuthority,
+  readGatewayRequestMutationAuthority,
+} from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
+import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
+import { createOperatorWsClient } from "../../server/ws-connection/authenticated-request-dispatch.test-support.js";
+import type { GatewayWsClient } from "../../server/ws-types.js";
 import { sessionMutationTargetChanged } from "../../session-sharing-authorization.js";
 import { hiddenSessionNotFound } from "../../session-sharing-policy.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
@@ -88,7 +99,9 @@ const browserSession = {
 
 let state: OpenClawTestState;
 let config: OpenClawConfig;
-let client: ReturnType<typeof sharingPolicyClient> & { connId: string };
+let client: GatewayWsClient;
+let connection: AbortController;
+let generation: SharedGatewaySessionGenerationState;
 const createBrowserSession = vi.fn<
   NonNullable<RealtimeVoiceProviderPlugin["createBrowserSession"]>
 >(async () => browserSession);
@@ -108,14 +121,32 @@ async function dispatch(
   handlers: GatewayRequestHandlers = {},
 ) {
   const respond = vi.fn();
-  await handleGatewayRequest({
-    req: { type: "req", id: "talk-request", method, params },
-    client,
+  const requestClient = client;
+  const authority = captureGatewayDeviceRevocation(
     context,
-    isWebchatConnect: () => false,
-    respond,
-    extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
-  });
+    { deviceId: requestClient.connect.device?.id, role: requestClient.connect.role },
+    () => !requestClient.invalidated,
+    requestClient.connectionSignal,
+  );
+  try {
+    const request = bindWebSocketRequestMutationAuthority(
+      {
+        req: { type: "req" as const, id: "talk-request", method, params },
+        client: requestClient,
+        context,
+        isWebchatConnect: () => false,
+        respond,
+        hasCurrentClientAuthority: authority.isCurrent,
+        extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
+      },
+      requestClient,
+      generation.reader,
+    );
+    expect(readGatewayRequestMutationAuthority(request).family).toBe("worker");
+    await handleGatewayRequest(request);
+  } finally {
+    authority.release();
+  }
   if (method === "talk.client.create" && respond.mock.calls[0]?.[0] === true) {
     const { voiceSessionId } = respond.mock.calls[0][1] as { voiceSessionId: string };
     const record = ["voice", "primary"]
@@ -130,9 +161,23 @@ async function dispatch(
 
 beforeEach(async () => {
   state = await createOpenClawTestState({ label: "talk-target" });
+  connection = new AbortController();
+  generation = new SharedGatewaySessionGenerationState({ current: undefined, required: null });
+  const identity = sharingPolicyClient({
+    user: ensureProfileForEmail("listener@example.test").id,
+    deviceId: "talk-target-device",
+  });
   client = {
-    ...sharingPolicyClient({ user: ensureProfileForEmail("listener@example.test").id }),
-    connId: "talk-target-test",
+    ...createOperatorWsClient({ connId: "talk-target-test" }),
+    ...identity,
+    usesSharedGatewayAuth: false,
+    authenticatedUserProfile: identity.authenticatedUserProfile
+      ? {
+          ...identity.authenticatedUserProfile,
+          avatarRevision: identity.authenticatedUserProfile.avatarRevision ?? "",
+        }
+      : undefined,
+    connectionSignal: connection.signal,
   };
   config = {
     agents: { ownership: "explicit", entries: { primary: {}, voice: {} } },
@@ -165,6 +210,7 @@ afterEach(async () => {
     }
     cleanupTalkConnection(client.connId, context.logGateway);
   } finally {
+    connection.abort();
     vi.restoreAllMocks();
     clientVoiceSessionTesting.reset();
     setActivePluginRegistry(createEmptyPluginRegistry());
@@ -173,6 +219,32 @@ afterEach(async () => {
 });
 
 describe("Talk target preparation through Gateway authorization", () => {
+  it("retains the original WebSocket device revocation while provider context is awaited", async () => {
+    const gate = createDeferredCore();
+    const started = createDeferredCore();
+    mocks.bootstrap.mockImplementationOnce(async () => {
+      started.resolve();
+      await gate.promise;
+      return "Agent context fixture.";
+    });
+    const pending = dispatch("talk.client.create", createParams);
+    try {
+      await started.promise;
+      invalidateGatewayDeviceRevocation(context, "talk-target-device", "operator");
+    } finally {
+      gate.resolve();
+    }
+    expect(await pending).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("Gateway requester authority changed"),
+      }),
+    );
+    expect(createBrowserSession).not.toHaveBeenCalled();
+    expect(loadSessionEntry({ agentId: "voice", sessionKey: "agent:voice:main" })).toBeUndefined();
+  });
+
   it("rechecks native routing after empty provider-context preparation yields", async () => {
     const prepare = conversationContext.prepareTalkProviderConversationContext;
     vi.spyOn(conversationContext, "prepareTalkProviderConversationContext").mockImplementationOnce(

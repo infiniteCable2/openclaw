@@ -51,8 +51,8 @@ export function commitSessionLifecycleProjection(
       }
       return readSessionSourceValidation(database, input.sources);
     };
-    if (input.sources) {
-      const sourceValidation = validateSources();
+    const sourceValidation = input.sources ? validateSources() : undefined;
+    if (sourceValidation) {
       admit("transaction", { kind: "session-lifecycle-source-validated", sourceValidation });
       if (sourceValidation.refusedSource) {
         throw new Error("Lifecycle source refusal was not rejected");
@@ -82,7 +82,10 @@ export function commitSessionLifecycleProjection(
       },
     );
     const candidate: SessionLifecycleProjectionCommitted = {
-      ...(input.sources ? { sourceValidation: validateSources() } : {}),
+      // These are this transaction's pre-mutation authority facts. An admitted
+      // creation may itself change a source's absence; foreign writers cannot
+      // interleave while this BEGIN IMMEDIATE remains held.
+      ...(sourceValidation ? { sourceValidation } : {}),
       kind: "session-lifecycle-projection",
       result,
       progressCardResetKeys,
