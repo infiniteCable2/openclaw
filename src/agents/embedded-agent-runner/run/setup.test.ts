@@ -32,6 +32,44 @@ describe("agent harness run admission", () => {
     updatedAt: 1,
   };
 
+  it.each([undefined, "openclaw", "codex"])(
+    "refuses model work on a persisted root before selecting harness %s",
+    (agentHarnessId) => {
+      expect(
+        resolveAgentHarnessRunAdmissionError({
+          agentHarnessId,
+          entry: {
+            sessionId: "root-session",
+            updatedAt: 1,
+            conversationTopology: { version: 1, role: "root" },
+          },
+          sessionId: "root-session",
+          sessionKey: "agent:example:main",
+        }),
+      ).toContain("cannot run model work");
+    },
+  );
+
+  it("keeps a conversation branch on the ordinary model path", () => {
+    expect(
+      resolveAgentHarnessRunAdmissionError({
+        entry: {
+          sessionId: "branch-session",
+          updatedAt: 1,
+          conversationTopology: {
+            version: 1,
+            role: "branch",
+            rootSessionKey: "agent:example:main",
+            rootSessionId: "root-session",
+            rootSessionLifecycleRevision: "root-generation",
+          },
+        },
+        sessionId: "branch-session",
+        sessionKey: "agent:example:matrix:direct:peer",
+      }),
+    ).toBeUndefined();
+  });
+
   it("accepts only the matching requested and durable harness lock", () => {
     expect(
       resolveAgentHarnessRunAdmissionError({

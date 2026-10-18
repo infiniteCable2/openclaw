@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
+import type { InternalSessionEntry } from "../../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import { normalizeEmbeddedRunAttempt } from "./attempt-normalization.js";
 import { applyEmbeddedAttemptSessionIdentity } from "./attempt-session-identity.js";
@@ -278,6 +279,56 @@ describe("fixed-store session bootstrap", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("rejects a stored consolidating root at harness admission while preserving ordinary branch admission", async () => {
+    const params: Parameters<typeof assertAgentHarnessRunAdmission>[0] = {
+      config,
+      sessionId: "ops-session",
+      sessionKey: "global",
+      prompt: "Continue the conversation",
+      runId: "conversation-role-admission",
+      timeoutMs: 1_000,
+      workspaceDir: "/tmp",
+    };
+    const root: InternalSessionEntry = {
+      sessionId: "ops-session",
+      lifecycleRevision: "root-generation",
+      updatedAt: 1,
+      createdVia: "internal",
+      createdActor: { type: "system", id: "conversation-root" },
+      visibility: "draft",
+      delivery: { kind: "none" },
+      conversationTopology: { version: 1, role: "root" },
+    };
+    sessionReaderMocks.readSessionEntryInWorker.mockResolvedValueOnce(root);
+    await expect(assertAgentHarnessRunAdmission(params)).rejects.toThrow(
+      "A consolidating conversation root cannot run model work",
+    );
+    expect(sessionAccessorMocks.patchSessionEntryCore).not.toHaveBeenCalled();
+    expect(sessionAccessorMocks.updateSessionEntry).not.toHaveBeenCalled();
+
+    const branch: InternalSessionEntry = {
+      sessionId: "ops-session",
+      updatedAt: 1,
+      conversationTopology: {
+        version: 1,
+        role: "branch",
+        rootSessionKey: "agent:ops:root",
+        rootSessionId: "consolidation-root",
+        rootSessionLifecycleRevision: "root-generation",
+      },
+    };
+    sessionReaderMocks.readSessionEntryInWorker.mockResolvedValueOnce(branch);
+    const admitted = await assertAgentHarnessRunAdmission(params);
+    expect(admitted).toMatchObject({
+      agentId: "ops",
+      sessionKey: "global",
+      storePath: "/tmp/shared-sessions.json",
+    });
+    expect(admitted?.entry).toBe(branch);
+    expect(sessionAccessorMocks.patchSessionEntryCore).not.toHaveBeenCalled();
+    expect(sessionAccessorMocks.updateSessionEntry).not.toHaveBeenCalled();
   });
 
   it("carries the resolved owner into quota-maintenance reads", async () => {

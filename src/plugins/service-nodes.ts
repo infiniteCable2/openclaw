@@ -24,6 +24,9 @@ export function createPluginServiceNodeInvoker(options: {
   | {
       invoke: NonNullable<OpenClawPluginServiceContext["invokeNode"]>;
       openDuplex: NonNullable<OpenClawPluginServiceContext["openNodeDuplex"]>;
+      prepareConversationInput: NonNullable<
+        OpenClawPluginServiceContext["prepareNodeConversationInput"]
+      >;
       stop: () => void;
     }
   | undefined {
@@ -47,18 +50,19 @@ export function createPluginServiceNodeInvoker(options: {
   });
   type Request = Parameters<NonNullable<OpenClawPluginServiceContext["invokeNode"]>>[0];
   const prepare = (request: Request, duplex = false) => {
+    const command = request.command;
     const signal = AbortSignal.any(request.signal ? [...signals, request.signal] : signals);
-    const assertCurrent = () => {
-      signal.throwIfAborted();
+    const assertOwnerCurrent = () => {
+      for (const sourceSignal of signals) sourceSignal.throwIfAborted();
       lease.assertActive("node access");
       if (options.isStopping() || !isPluginRecordActive(registry, record)) {
         throw new Error("Plugin service node access is no longer active");
       }
       const commands = getPluginRecordRegistry(registry, record).nodeHostCommands.filter(
-        (entry) => entry.command.command === request.command,
+        (entry) => entry.command.command === command,
       );
       if (commands.length !== 1 || commands[0]?.pluginId !== record.id) {
-        throw new Error(`Plugin service cannot invoke unowned node command: ${request.command}`);
+        throw new Error(`Plugin service cannot invoke unowned node command: ${command}`);
       }
       if (
         duplex &&
@@ -66,12 +70,16 @@ export function createPluginServiceNodeInvoker(options: {
         commands[0].command.duplex !== "optional"
       ) {
         throw new Error(
-          `Plugin service node command must declare duplex: true or "optional": ${request.command}`,
+          `Plugin service node command must declare duplex: true or "optional": ${command}`,
         );
       }
     };
+    const assertCurrent = () => {
+      signal.throwIfAborted();
+      assertOwnerCurrent();
+    };
     assertCurrent();
-    return { signal, assertCurrent };
+    return { signal, assertCurrent, assertOwnerCurrent };
   };
   const invoke = async (
     request: Request,
@@ -132,6 +140,37 @@ export function createPluginServiceNodeInvoker(options: {
   };
   return {
     stop,
+    async prepareConversationInput(request) {
+      const authority = prepare(request);
+      const context = resolver();
+      if (!context?.nodeRegistry) {
+        throw new Error("Plugin service Gateway node registry is unavailable");
+      }
+      const { preparePluginServiceNodeConversationInput } =
+        await import("./service-node-conversation.js");
+      const { bindHostConversationContextGatewayResolver } =
+        await import("../channels/message-access/admission-evidence.js");
+      authority.assertCurrent();
+      return await preparePluginServiceNodeConversationInput({
+        request,
+        pluginId: record.id,
+        context,
+        bindContext(target, assertCurrent) {
+          bindHostConversationContextGatewayResolver({
+            context: target,
+            resolveGatewayContext: resolver,
+            assertCurrent,
+          });
+        },
+        assertServiceCurrent() {
+          // A closed bridge fences new inputs, not already accepted native work.
+          authority.assertOwnerCurrent();
+          if (resolver() !== context) {
+            throw new Error("Plugin service node conversation is no longer active");
+          }
+        },
+      });
+    },
     async invoke(request) {
       return await invoke(request, prepare(request));
     },

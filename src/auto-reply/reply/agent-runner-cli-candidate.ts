@@ -51,6 +51,7 @@ export async function runCliFallbackCandidate(
   const turn = params.turn;
   const onPreparedBlockReply = turn.opts?.onPreparedBlockReply;
   const onNativeBlockReply: NonNullable<typeof turn.opts>["onBlockReply"] =
+    turn.speechPresentationRun?.onBlockReply ??
     turn.opts?.onBlockReply ??
     (onPreparedBlockReply
       ? (payload, context) => deliverPreparedBlockReply({ onPreparedBlockReply }, payload, context)
@@ -147,7 +148,8 @@ export async function runCliFallbackCandidate(
     Boolean(turn.opts?.onItemEvent) && shouldBridgeCliPreambleEvents(turn.opts);
   const bridgeCliDurableCommentary =
     Boolean(params.presentation.blockReplyHandler) &&
-    (turn.blockStreamingEnabled || turn.opts?.commentaryPayloadsEnabled === true);
+    (turn.followupRun.speechPresentation?.speakCommentary ??
+      (turn.blockStreamingEnabled || turn.opts?.commentaryPayloadsEnabled === true));
   const toolAuthorityRoute = { provider: params.provider, model: params.model };
   const toolAuthorityFingerprint =
     await turn.replyOperation?.bindToolAuthorityRouteAsync(toolAuthorityRoute);
@@ -326,7 +328,7 @@ export async function runCliFallbackCandidate(
                     // Block mode treats completed CLI text as an ordinary answer block so
                     // the existing pipeline owns coalescing and final-payload dedupe.
                     const reply = prepareCliReplyPayload(payload.text, cliCurrentMessageId);
-                    if (!turn.blockStreamingEnabled) {
+                    if (turn.speechPresentationRun || !turn.blockStreamingEnabled) {
                       reply.isCommentary = true;
                     }
                     deliveries.push(params.presentation.blockReplyHandler?.(reply));

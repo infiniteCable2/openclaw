@@ -100,7 +100,12 @@ export async function resolveRunModelHasVision(params: {
 /** Project prepared turn facts shared by the CLI and embedded runtime adapters. */
 export function buildFallbackCandidateTurnParams(params: AgentFallbackCandidateCommonParams) {
   const { turn } = params;
+  const speech = turn.followupRun.speechPresentation;
   return {
+    currentSourceReplyTarget: turn.speechPresentationRun?.currentSourceReplyTarget,
+    nativeSpeechPresentation: turn.speechPresentationRun?.nativeSpeechPresentation,
+    modelRequestProfile: speech?.modelRequestProfile,
+    waitForPendingInput: speech?.waitForPendingInput,
     preparedTtsPreferences: turn.opts?.preparedTtsPreferences,
     sessionTtsAuto: turn.getActiveSessionEntry()?.ttsAuto,
     preparedRunAdmission: params.preparedRunAdmission,
@@ -118,9 +123,12 @@ export function buildFallbackCandidateTurnParams(params: AgentFallbackCandidateC
     onContextEngineTurnCandidate: params.onContextEngineTurnCandidate,
     currentInboundEventKind: turn.followupRun.currentInboundEventKind,
     currentInboundContext: turn.followupRun.currentInboundContext,
+    runtimeContextFragments: turn.runtimeContextFragments,
     extraSystemPrompt: withCommentaryGuidance(
-      turn.followupRun.run.extraSystemPrompt,
-      turn.opts?.commentaryPayloadsEnabled === true,
+      [turn.followupRun.run.extraSystemPrompt, speech?.guidance].filter(Boolean).join("\n\n") ||
+        undefined,
+      speech?.speakCommentary ?? turn.opts?.commentaryPayloadsEnabled === true,
+      speech ? "text" : undefined,
     ),
     sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
     // Omit false so heartbeat routes require explicit recipients without changing subagent defaults.

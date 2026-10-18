@@ -33,7 +33,9 @@ type DirectOperatorAuthorityParams = {
 };
 
 /** Classifies a direct operator connection without granting any capability. */
-export function isDirectGatewayUserClient(client: GatewayClient | null | undefined): boolean {
+export function isDirectGatewayUserClient(
+  client: Pick<GatewayClient, "internal"> | null | undefined,
+): boolean {
   const internal = client?.internal;
   return (
     client != null &&

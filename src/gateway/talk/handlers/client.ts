@@ -32,6 +32,7 @@ import {
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import type { GatewayRequestHandlers } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
+import { resolveGatewayInputParticipant } from "../../session-input-participant.js";
 import { formatForLog } from "../../ws-log.js";
 import { startTalkRealtimeAgentConsult } from "../agent-consult.js";
 import { prepareTalkClientControlAuthority } from "../client-agent-consult.js";
@@ -123,9 +124,13 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           });
         if (relaySessionId && connId) {
           await ensureClientVoiceAgentSessionEntry({
+            chatType: "direct",
             agentId,
-            sessionKey: params.sessionKey,
+            cfg: config,
+            sessionKey: target.canonicalKey,
+            storePath: target.storePath,
             creation: resolveSandboxedSessionCreation(request.client, config),
+            assertCommitAllowed: request.sessionMutationCommitGuard,
           });
           ensureTalkRealtimeRelayVoiceSession({
             relaySessionId,
@@ -200,12 +205,12 @@ export const talkClientHandlers: GatewayRequestHandlers = {
   "talk.client.transcript": defineValidatedGatewayHandler(
     "talk.client.transcript",
     validateTalkClientTranscriptParams,
-    async ({ params, respond, context, sessionMutationAuthorization }) => {
+    async ({ params, respond, context, client, sessionMutationAuthorization }) => {
       try {
         const config = context.getRuntimeConfig();
         const target =
           sessionMutationAuthorization?.talkSessionTarget ??
-          prepareTalkSessionTarget(config, params.sessionKey);
+          prepareTalkSessionTarget(config, params.sessionKey, "settlement");
         sessionMutationAuthorization?.assertCurrent();
         await appendClientVoiceTranscript({
           agentId: target.agentId,
@@ -215,6 +220,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           entryId: params.entryId,
           role: params.role,
           text: params.text,
+          participant: params.role === "user" ? resolveGatewayInputParticipant(client) : undefined,
           ...(params.timestamp !== undefined ? { timestamp: params.timestamp } : {}),
           config,
         });
@@ -242,7 +248,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         const config = context.getRuntimeConfig();
         const { agentId } =
           sessionMutationAuthorization?.talkSessionTarget ??
-          prepareTalkSessionTarget(config, params.sessionKey);
+          prepareTalkSessionTarget(config, params.sessionKey, "settlement");
         sessionMutationAuthorization?.assertCurrent();
         const origin = resolveClientVoiceSessionOrigin({
           agentId,

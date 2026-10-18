@@ -38,12 +38,15 @@ import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import type { GatewayRequestHandler } from "../../server-methods/types.js";
 import { assertValidParams } from "../../server-methods/validation.js";
 import { resolveOperatorSessionCreation } from "../../session-creation-provenance.js";
+import { resolveGatewayInputParticipant } from "../../session-input-participant.js";
 import { formatForLog } from "../../ws-log.js";
 import { createTalkClientAgentConsultRunner } from "../client-agent-consult.js";
 import {
   createTalkClientGatewayControlOwner,
   resolveTalkAgentConsultAuthority,
 } from "../client-gateway-control.js";
+import { prepareTalkProviderConversationContext } from "../conversation-context.js";
+import { createTalkOperatorRunSource } from "../operator-run-source.js";
 import { talkRequestError } from "../request-error.js";
 import {
   buildRealtimeInstructions,
@@ -78,6 +81,9 @@ export const createTalkClient: GatewayRequestHandler = async ({
   }
   const rejectRequest = (code: Parameters<typeof errorShape>[0], message: string): void =>
     respond(false, undefined, errorShape(code, message));
+  let conversationContext:
+    | Awaited<ReturnType<typeof prepareTalkProviderConversationContext>>
+    | undefined;
   try {
     sessionMutationAuthorization?.assertCurrent();
     if (params.voiceChangeId && params.voiceSessionId) {
@@ -100,6 +106,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         }
       : params;
     const runtimeConfig = context.getRuntimeConfig();
+    const inputParticipant = resolveGatewayInputParticipant(client);
     const realtimeConfig = buildTalkRealtimeConfig(
       runtimeConfig,
       requested.provider,
@@ -185,13 +192,22 @@ export const createTalkClient: GatewayRequestHandler = async ({
         `Realtime provider ${resolution.provider.id} does not support browser video frames`,
       );
     }
-    const providerInstructions = await resolveTalkRealtimeProviderInstructions({
-      config: runtimeConfig,
-      agentId,
-      configuredInstructions: realtimeConfig.instructions,
-      sessionKey: target.canonicalKey,
-      warn: (message) => context.logGateway.warn(`talk realtime context: ${message}`),
+    conversationContext = await prepareTalkProviderConversationContext({
+      target,
+      assertCurrent: assertTargetCurrent,
+      getRuntimeConfig: context.getRuntimeConfig,
+      captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+      participant: inputParticipant,
     });
+    const providerInstructions =
+      (await resolveTalkRealtimeProviderInstructions({
+        config: runtimeConfig,
+        agentId,
+        configuredInstructions: realtimeConfig.instructions,
+        sessionKey: target.canonicalKey,
+        warn: (message) => context.logGateway.warn(`talk realtime context: ${message}`),
+      })) ?? "";
+    const contextualProviderInstructions = providerInstructions + conversationContext.instructions;
     assertTargetCurrent();
     if (resolution.provider.createBrowserSession) {
       const initialItems = await readTalkRealtimeInitialItems(target, assertTargetCurrent);
@@ -207,8 +223,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
       }
       const instructions =
         controlSource === "delegation"
-          ? normalizeOptionalString(providerInstructions)
-          : buildRealtimeInstructions(providerInstructions);
+          ? normalizeOptionalString(contextualProviderInstructions)
+          : buildRealtimeInstructions(contextualProviderInstructions);
       const requestedVoiceSessionId = normalizeOptionalString(params.voiceSessionId);
       const ownsProvider =
         wantsGatewayControl || providerCapabilities?.handlesAgentConsult === true;
@@ -258,6 +274,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
         sessionTarget: target,
         ...(ownerConnId ? { ownerConnId } : {}),
         authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
+        captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+        participant: inputParticipant,
         getVoiceSessionId: () => activeVoiceSessionId,
         initialItems,
       });
@@ -296,6 +314,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
                       entryId,
                       role,
                       text,
+                      participant: role === "user" ? inputParticipant : undefined,
                       confirmation,
                       config: runtimeConfig,
                     },
@@ -388,6 +407,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
       let delivered = false;
       try {
         assertCommitAllowed();
+        conversationContext.assertCurrent();
         session = await resolution.provider.createBrowserSession(browserSessionRequest);
         const createdSession = session;
         await gatewayControlOwner?.adoptProvider(() =>
@@ -398,6 +418,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
           }),
         );
         assertCommitAllowed();
+        conversationContext.assertCurrent();
         // Client-owned voice records are minted only for client-owned transports;
         // relay sessions are created via talk.session.create and keyed by relaySessionId.
         // Widening this guard would hand relay calls a mismatched voiceSessionId.
@@ -421,7 +442,9 @@ export const createTalkClient: GatewayRequestHandler = async ({
           // usable client transport. The write boundary rechecks the credential
           // deadline so queued storage work cannot leave a phantom chat.
           const ensuredSessionId = await ensureClientVoiceAgentSessionEntry({
+            chatType: "direct",
             ...sessionTarget,
+            cfg: runtimeConfig,
             creation:
               resolveSandboxedSessionCreation(client, runtimeConfig) ??
               resolveOperatorSessionCreation(client),
@@ -432,6 +455,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
           sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
           replacement?.assertCurrent(target);
           gatewayControlOwner?.assertOpen();
+          conversationContext.assertCurrent();
           // Recovering 6h-abandoned calls (and retrying their digests) is not on the
           // start path; running it inline would delay use of time-sensitive provider
           // credentials behind slow channel sends. Fire it off the response path.
@@ -556,5 +580,11 @@ export const createTalkClient: GatewayRequestHandler = async ({
     );
   } catch (err) {
     respond(false, undefined, talkRequestError(err));
+  } finally {
+    try {
+      await conversationContext?.release();
+    } catch (error) {
+      context.logGateway.warn(`talk context snapshot cleanup failed: ${formatForLog(error)}`);
+    }
   }
 };

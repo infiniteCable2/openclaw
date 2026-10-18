@@ -45,6 +45,95 @@ Stopping with `/stop`, deleting, resetting, or archiving a session cancels only 
 the selected conversation. Another agent's active turn and queued messages are
 preserved even when the agents use the same session key.
 
+## Conversation branches
+
+`agents.entries.<agentId>.conversationMode` selects conversation organization:
+
+- `native` (default) keeps the normal channel routing and session-scope settings.
+- `branches` reserves the agent's main session as a headless consolidation root.
+  Direct conversations use separate account/channel/peer branches; groups remain
+  separate. A direct audio connection is a conversation branch, not a task
+  sub-agent, and does not acquire sub-agent tool restrictions or a parent read grant.
+
+```json5
+{
+  agents: {
+    entries: {
+      researcher: { conversationMode: "branches" },
+    },
+  },
+}
+```
+
+The root cannot accept external input, run a model, or serve as a reply address.
+The mode cannot use `session.scope: "global"`. Enabling it does not silently
+convert existing history: an existing unmarked main session or conversation
+requires explicit migration/admission. Disabling the setting does not turn a
+persisted headless root back into a user conversation.
+
+Branches remain independent native session lanes. Concurrent inputs to one branch
+use the existing queue/steering policy; separate branches may work concurrently.
+Stopping audio cancels playback, not an already accepted agent task. Subsequent
+spoken input is persisted through native reply admission; a late transcript
+cannot steer a replacement backend merely because its session key matches.
+
+After a successful native user turn, the root records a bounded, text-free receipt
+pointing to the exact committed source occurrence. At the next turn, an eligible
+private branch can receive bounded, quoted differences from readable sibling
+branches. A completed-turn receipt quotes only its validated exchange; earlier
+interrupted work is not promoted into completed knowledge. Provider-owned realtime
+voice uses a distinct `utterance-observation` reference to the exact committed
+native transcript anchor. These observations quote persisted spoken dialogue,
+not consultation prompts or tool work, and never imply that a task completed.
+The two reference kinds use separate progress frontiers and deduplicate within
+their actual source incarnation and transcript generation. The root stores
+neither dialogue text nor fabricated model turns.
+
+Original live read permissions, source incarnation, and target audience
+must all remain valid. Root membership is not authorization. Shared, unidentified,
+or group audiences do not automatically receive private context. In particular,
+a paired room device authenticates the device, not the person speaking nearby.
+Automatic private context also requires the same verified native participant
+identity in the actual incoming request and both conversations. In `branches`
+mode, a narrow personal permission can read bounded differences between that
+person's private branches under the same agent and consolidation root; it does
+not require an operator history scope. This permission does not authorize
+`chat.history`, `sessions_history`, another agent, or a shared/group audience.
+The original input source and native audience facts remain live throughout the
+read and its consuming turn. Explicit operator-authorized history reads keep their own
+scope, sharing policy, and lifetime. An administrator's ability to inspect another person's history does
+not make that person's dialogue part of the current speaker's context. Missing
+identity or an applicable read permission is reported as unavailable, not replaced by system
+access or inferred from a matching device, agent, or display name.
+Automatic difference context never substitutes operator scope for a missing
+original participant, even when the caller is an administrator.
+
+A new provider-owned voice branch has no recorded participant at startup, so it
+does not receive a private sibling snapshot merely because the connection is
+authenticated. Its first genuine user utterance records the native participant;
+later startup snapshots and actual agent consultations can then use the narrow
+personal read. Startup does not manufacture an initial user turn or contribution.
+The central native Reply path joins its already accepted participant recording
+before preparing difference context for the first real turn. Provider-owned
+voice receives a startup snapshot and refreshes on actual consultations, not
+continuous synchronization of an external provider's conversation.
+
+This is not a live transcript merge: updates do not rewrite past messages, become
+new user instructions, cancel running work, or repeat completed tools. Native
+session history/search tools remain the explicit way to inspect permitted live
+work or additional source detail. Tool-backed delegated jobs and scheduled work
+retain their native task and delivery owners.
+
+Provider-native realtime dialogue receives a separately authorized startup snapshot
+and fresh related context during an actual agent consult. It does not have an
+automatic continuous cross-branch provider-context update port. These observations
+are not injected as new user messages or model work.
+
+Use [conversation tools](/concepts/session-tool#sessions-versus-conversations) to discover
+durable delivery addresses and authorized active connections. A context session,
+an external chat address, and a temporary audio connection are different things;
+none is a substitute for the others.
+
 ## DM isolation
 
 By default, all DMs share one session for continuity, which is fine for

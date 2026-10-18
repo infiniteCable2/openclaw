@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { appendReplyMediaFailures } from "../reply-payload.js";
+import { appendReplyMediaFailures, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import { createAgentTurnPresentation } from "./agent-runner-presentation.js";
@@ -25,6 +25,7 @@ function createPresentation(
       AgentTurnParams,
       "opts" | "typingSignals" | "blockStreamingEnabled" | "blockReplyPipeline" | "applyReplyToMode"
     >;
+    speechPresentationRun?: AgentTurnParams["speechPresentationRun"];
   } = {},
 ) {
   const turn = {
@@ -38,6 +39,7 @@ function createPresentation(
       isHeartbeat: options.isHeartbeat === true,
     }),
     replyOperation: options.replyOperation,
+    speechPresentationRun: options.speechPresentationRun,
     ...options.delivery,
   } as unknown as AgentTurnParams;
   return createAgentTurnPresentation({
@@ -51,6 +53,40 @@ function createPresentation(
 }
 
 describe("agent runner streaming presentation", () => {
+  it("sends native speech blocks unchanged to their turn owner, never through channel defaults", async () => {
+    const speech = vi.fn();
+    const channel = vi.fn();
+    const normalize = vi.fn(async (payload: ReplyPayload) => payload);
+    const payload = setReplyPayloadMetadata(
+      { text: "A sentence." },
+      {
+        tts: {
+          tagged: true,
+          text: "A sentence.",
+          expression: { parts: [{ text: "A sentence.", emotion: "tender" }] },
+        },
+        ttsSourceRange: [0, 11],
+        assistantMessageIndex: 4,
+        assistantMessageStartIndex: 4,
+      },
+    );
+    const presentation = createPresentation({
+      normalizeMediaPaths: normalize,
+      onPartialReply: channel,
+      speechPresentationRun: {
+        onBlockReply: speech,
+        finish: async () => {},
+        abort: async () => {},
+        close() {},
+      },
+    });
+    await presentation.blockReplyHandler?.(payload);
+    expect(speech).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(speech.mock.calls[0]?.[0]).toBe(payload);
+    expect(channel).not.toHaveBeenCalled();
+    expect(normalize).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: "cleaned silent token", caption: "NO_REPLY", silent: true },
     { name: "cleaned silent envelope", caption: '{"action":"NO_REPLY"}', silent: true },

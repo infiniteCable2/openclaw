@@ -29,6 +29,7 @@ export type RelayVoiceSessionOwner = Pick<
   | "sessionTarget"
   | "provider"
   | "voiceConfig"
+  | "participant"
   | "context"
   | "voiceSessionCreated"
   | "voiceTranscriptSeq"
@@ -125,6 +126,7 @@ export function enqueueRelayVoiceTranscript(
                   entryId,
                   role,
                   text: normalizedText,
+                  participant: role === "user" ? session.participant : undefined,
                   confirmation: observed?.confirmation ?? null,
                   ...(session.voiceConfig ? { config: session.voiceConfig } : {}),
                 },

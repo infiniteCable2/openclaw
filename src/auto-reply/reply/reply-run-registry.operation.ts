@@ -108,6 +108,8 @@ export function createReplyOperation(params: {
   let terminalRecovery = false;
   let acceptedSteeredInboundAudio = false;
   let sourceReplyDelivered = false;
+  let speechOutputOwner: object | undefined;
+  let speechOutputOwnerBound = false;
   const toolAuthority = createReplyOperationToolAuthority({
     isOpen: () => result === null,
     ownsRunSlot: () => replyRunState.activeRunsByKey.get(currentSessionKey) === operation,
@@ -297,6 +299,23 @@ export function createReplyOperation(params: {
   };
 
   const operation: ReplyOperation = {
+    get speechOutputOwner() {
+      return speechOutputOwner;
+    },
+    bindSpeechOutputOwner(owner) {
+      if (
+        result ||
+        stateCleared ||
+        controller.signal.aborted ||
+        replyRunState.activeRunsByKey.get(currentSessionKey) !== operation ||
+        getAgentEventLifecycleGeneration() !== lifecycleGeneration ||
+        (speechOutputOwnerBound && speechOutputOwner !== owner)
+      ) {
+        throw new Error("Reply operation speech output owner is unavailable or changed");
+      }
+      speechOutputOwner = owner;
+      speechOutputOwnerBound = true;
+    },
     get key() {
       return currentSessionKey;
     },

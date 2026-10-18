@@ -94,6 +94,7 @@ type ReplacementProjectionParams<T, TReplacement> = ReplacementProjectionOptions
 type CreationProjection = {
   scope: ResolvedSqliteScope & { path: string; env: NodeJS.ProcessEnv };
   sessionKey: string;
+  requireAbsent?: boolean;
   initializeTranscript?: { sessionKey: string; sessionId: string; cwd?: string };
   onWriterAdmitted?: () => void;
 };
@@ -222,6 +223,11 @@ async function applySqliteSessionEntryReplacementProjection<T, TReplacement>(
             )
           : await readNative();
       const { entries, expectedRows, labelOwnerKeys } = snapshot;
+      // The same missing-row snapshot becomes the worker's transaction CAS below.
+      // Do not adopt a winner that appeared after the earlier creation callback read.
+      if (creation?.requireAbsent && expectedRows.size > 0) {
+        throw new Error("Absent-only session creation lost its unclaimed conversation");
+      }
       const selectedKeys = snapshot.selectedSessionKeys
         ? new Set(snapshot.selectedSessionKeys)
         : undefined;

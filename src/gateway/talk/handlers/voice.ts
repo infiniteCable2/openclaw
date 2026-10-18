@@ -117,7 +117,7 @@ function resolveVoiceCaller(options: GatewayRequestHandlerOptions, target: TalkV
     throw new Error("The agent may only select the voice of its own call");
   }
   // Resolve the server-owned call before capturing session participation authority.
-  assertTalkSessionStorageTarget(context.getRuntimeConfig(), session.sessionTarget);
+  assertTalkSessionStorageTarget(context.getRuntimeConfig(), session.sessionTarget, "settlement");
   const authorization = authorizeSession(
     session.sessionTarget.agentId,
     session.sessionTarget.canonicalKey,
@@ -128,7 +128,11 @@ function resolveVoiceCaller(options: GatewayRequestHandlerOptions, target: TalkV
     connId,
     assertCurrent: () => {
       assertBrowserBindingCurrent();
-      assertTalkSessionStorageTarget(context.getRuntimeConfig(), session.sessionTarget);
+      assertTalkSessionStorageTarget(
+        context.getRuntimeConfig(),
+        session.sessionTarget,
+        "settlement",
+      );
       authorization?.assertCurrent();
     },
   };

@@ -117,6 +117,21 @@ export function recordCommittedSessionMetadataPublication(
   entry?: SessionEntry,
 ): void {
   for (const read of retainedSharingReads(database, sessionKey) ?? []) {
+    if (change?.kind === "participants") {
+      // Participant display stays separate, but its count is now a retained audience fact.
+      // An acquiring snapshot cannot establish which side of this commit it observed.
+      if (read.acquisition) read.acquisition.invalidated = true;
+      if (read.facts?.entry) {
+        read.facts = {
+          ...read.facts,
+          entry: {
+            ...read.facts.entry,
+            participants: structuredClone(change.projection.participants),
+            participantCount: change.projection.participantCount,
+          },
+        };
+      }
+    }
     const postimage =
       entry ??
       (read.predicate && change

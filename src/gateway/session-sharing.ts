@@ -8,11 +8,7 @@ import type { SessionPendingInputAuthorityFacts } from "../config/sessions/sessi
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { resolveSessionMethodScope } from "../shared/session-method-scopes-base.js";
-import {
-  authorizeGatewaySessionCreation,
-  operatorSessionCap,
-  resolveGatewayOperatorRoleActor,
-} from "./operator-role-policy.js";
+import { operatorSessionCap, resolveGatewayOperatorRoleActor } from "./operator-role-policy.js";
 import {
   authenticatedProfileUnavailableError,
   gatewayClientSessionCreator,
@@ -61,11 +57,11 @@ import {
   createSessionSharingConsumption,
 } from "./session-sharing-read.js";
 import {
-  captureSessionSharingTalkAuthority,
   isSameSessionSharingSource,
   resolveSessionSharingMembership,
   withPreparedSessionSharingSource,
 } from "./session-sharing-source.js";
+import { prepareSessionSharingTalkAdmission } from "./session-sharing-talk.js";
 import {
   readSessionSharingStringParam,
   resolveChatSendAuthorizationParams,
@@ -73,7 +69,6 @@ import {
   resolveDirectIncognitoTargets,
   resolveDirectSessionTargets,
   resolveSessionMutationTargets,
-  resolveTalkSessionTargetInput,
   type SessionMutationTarget,
 } from "./session-sharing-target-input.js";
 import {
@@ -82,8 +77,6 @@ import {
 } from "./session-sharing-target-read.js";
 import { prepareSessionSharingWorkerGrant } from "./session-sharing-worker-grant.js";
 import { resolveGatewaySessionStoreTarget } from "./session-utils-store-lookup.js";
-import { prepareTalkSessionTarget, assertTalkSessionStorageTarget } from "./talk/session-target.js";
-import type { PreparedTalkSessionTarget } from "./talk/session-target.types.js";
 
 export { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 export { invalidateSessionSharingSnapshot } from "./session-sharing-snapshot-cache.js";
@@ -212,20 +205,9 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
           targetCount,
           lookupCaches: () => (lookupCaches ??= createSessionSharingLookupCaches()),
         });
-  let talkInput: ReturnType<typeof resolveTalkSessionTargetInput>;
-  let talkSessionTarget: PreparedTalkSessionTarget | undefined;
+  let talkAdmission: ReturnType<typeof prepareSessionSharingTalkAdmission>;
   try {
-    talkInput = resolveTalkSessionTargetInput(
-      params.method,
-      params.requestParams,
-      params.client?.connId,
-    );
-    if (talkInput?.kind === "relay") {
-      assertTalkSessionStorageTarget(getCfg(), talkInput.target);
-      talkSessionTarget = talkInput.target;
-    } else {
-      talkSessionTarget = talkInput && prepareTalkSessionTarget(getCfg(), talkInput.sessionKey);
-    }
+    talkAdmission = prepareSessionSharingTalkAdmission(params, getCfg);
   } catch (error) {
     return {
       error: errorShape(
@@ -234,6 +216,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
       ),
     };
   }
+  const { input: talkInput, target: talkSessionTarget } = talkAdmission;
   const talkTargets = talkSessionTarget
     ? [{ sessionKey: talkSessionTarget.canonicalKey, agentId: talkSessionTarget.agentId }]
     : undefined;
@@ -309,15 +292,9 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
     }
     return { error: null };
   }
-  if (talkSessionTarget && authorizesAgentRun) {
-    const error = authorizeGatewaySessionCreation({
-      cfg: getCfg(),
-      client: params.client,
-      agentId: talkSessionTarget.agentId,
-    });
-    if (error) {
-      return { error };
-    }
+  const talkCreationError = talkSessionTarget ? talkAdmission.authorizeCreation(getCfg()) : null;
+  if (talkCreationError) {
+    return { error: talkCreationError };
   }
   const authorizedTargets: AuthorizedSessionMutationTarget[] = [];
   for (const targetRef of targetRefs) {
@@ -361,7 +338,8 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         (sessionCap(getPolicyConfig()) ?? "write") === "write"
       )
         ? authorizeTargetAccess(getPolicyConfig(), target, resolved.projection)
-        : null);
+        : null) ??
+      talkAdmission.authorizeInputTarget(getCfg(), target?.entry);
     if (error) {
       return { error };
     }
@@ -402,12 +380,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
       consuming.sharing = undefined;
       const targetChanged = (sessionKey: string) =>
         sessionMutationTargetChanged(params.method, sessionKey);
-      const assertTalkTargetCurrent = captureSessionSharingTalkAuthority({
-        request: params,
-        input: talkInput,
-        target: talkSessionTarget,
-        authorizesAgentRun,
-      });
+      const assertTalkTargetCurrent = talkAdmission.assertCurrent;
       const assertTargetCurrent = (
         targetRef: SessionMutationTarget,
         expected: AuthorizedSessionMutationTarget | undefined,
@@ -505,6 +478,9 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
           throw new SessionMutationAuthorizationChangedError(ownershipError);
         }
         if (!current) {
+          if (talkAdmission.authorizeInputTarget(currentCfg)) {
+            throw targetChanged(targetRef.sessionKey);
+          }
           return;
         }
         const policyConfig = params.context.getCommittedRuntimeConfig?.() ?? currentCfg;
@@ -537,6 +513,9 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
               ));
         if (error) {
           throw new SessionMutationAuthorizationChangedError(error);
+        }
+        if (talkAdmission.authorizeInputTarget(currentCfg, current.entry)) {
+          throw targetChanged(targetRef.sessionKey);
         }
       };
       let createdSessionRecorded = false;

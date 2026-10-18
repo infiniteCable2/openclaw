@@ -13,12 +13,17 @@ import type {
   RealtimeVoiceAgentControlMode,
   RealtimeVoiceAgentControlResult,
 } from "../agent-run-control-shared.js";
+import type { ConversationInputScopeV1 } from "../conversation-input.types.js";
+import type { ConversationReplyParams, ConversationReplyResult } from "../conversation-reply.js";
 import type { RealtimeVoiceToolCallEvent } from "../provider-types.js";
 import type { RealtimeVoiceSessionHarness } from "../realtime-session-harness.js";
+import type { TalkConnectionPresentation } from "../session-registry.js";
 import type { RealtimeVoiceBridgeSession } from "../session-runtime.js";
 import type { TalkEvent, TalkEventInput } from "../talk-events.js";
 import type { SpeechAudioFormat, SpeechInputAudioFormat } from "./audio-format.js";
 import type { PreparedSpeechGreeting } from "./greeting.js";
+import type { SpeechPlaybackObservation } from "./playback-observation.js";
+export type { SpeechPlaybackObservation } from "./playback-observation.js";
 import type { SpeechAudioTransport, SpeechAudioTransportHealth } from "./transport.js";
 import type { SpeechWaitingAudioConfig } from "./waiting-audio.js";
 
@@ -31,7 +36,10 @@ export type SpeechRealtimeSessionConfig = SpeechSessionConfig & {
   introMessage?: string;
   toolPolicy?: RealtimeVoiceAgentConsultToolPolicy;
 };
-export type SpeechRealtimeToolCallParams = {
+/** Host input identity only; these fields do not themselves grant admission. */
+export type SpeechInputIdentity = Pick<ConversationInputScopeV1, "inputId" | "purpose">;
+
+export type SpeechRealtimeToolCallParams = Partial<SpeechInputIdentity> & {
   strategy: string;
   session: RealtimeVoiceBridgeSession;
   event: RealtimeVoiceToolCallEvent;
@@ -65,6 +73,10 @@ export type SpeechSessionStartParams = {
   providers?: RealtimeTranscriptionProviderPlugin[];
   signal?: AbortSignal;
   consultAgent: (params: SpeechAgentConsultParams) => Promise<RealtimeVoiceAgentConsultResult>;
+  /** V2 hosts dispatch each original input through the native reply/queue owner. */
+  nativeInput?: (params: SpeechNativeInputParams) => Promise<ConversationReplyResult>;
+  /** Host-only presentation of this exact connection; never input or send authority. */
+  connectionPresentation?: Omit<TalkConnectionPresentation, "state">;
   initialGreeting?: PreparedSpeechGreeting;
   /** Optional device presentation hint; never changes turn or media ownership. */
   onTalkEvent?: (event: TalkEvent) => void;
@@ -86,7 +98,7 @@ export type SpeechSessionConfig = {
   video?: import("../../config/zod-schema.media-frames.js").SpeechVideoConfig;
 };
 
-type SpeechAgentControlOptions = {
+type SpeechAgentControlOptions = Partial<SpeechInputIdentity> & {
   mode?: RealtimeVoiceAgentControlMode;
   signal?: AbortSignal;
   assertCurrent?: () => void;
@@ -108,7 +120,7 @@ export type SpeechActiveConsult = {
   releaseVideo: Set<() => void>;
 };
 
-export type SpeechAgentConsultParams = {
+export type SpeechAgentConsultParams = Partial<SpeechInputIdentity> & {
   sessionId: string;
   requesterSessionKey?: string;
   args: unknown;
@@ -120,9 +132,26 @@ export type SpeechAgentConsultParams = {
   speechExpressionCaptureOnly?: true;
   speechSegmentationProfile?: import("../../tts/provider-types.js").SpeechSegmentationProfile;
   waitForPendingInput?: (signal?: AbortSignal) => void | Promise<void>;
+  /** Host-owned native run observer, never a transport/model-supplied authority. */
+  onRunStarted?: ConversationReplyParams["onRunStarted"];
+  /** Receipt from the existing native recorder for this exact original input. */
+  onOriginalInputCommitted?: ConversationReplyParams["onOriginalInputCommitted"];
+  /** Additional host failure fence; never authority or playback lifetime. */
+  assertWorkCurrent?: ConversationReplyParams["assertWorkCurrent"];
   /** Exact active native owner; undefined revokes admission. Never replay a queued input. */
   onRunControl?: (control: SpeechAgentRunControl | undefined) => void;
 };
+
+export type SpeechNativeInputParams = SpeechAgentConsultParams &
+  SpeechInputIdentity & {
+    /** Original connection-owned playback/onset data; never a user request or work outcome. */
+    playbackObservation?: SpeechPlaybackObservation;
+    bufferReply: boolean;
+    queueMode: "steer" | "followup";
+    onNativeRunBound: ConversationReplyParams["onNativeRunBound"];
+    onInputDisposition: ConversationReplyParams["onInputDisposition"];
+    onQueueAccepted: () => void;
+  };
 
 export type SpeechSessionHealth = ReturnType<RealtimeVoiceSessionHarness["getHealth"]> &
   SpeechAudioTransportHealth & { lastClearAt?: string; clearCount?: number; bridgeClosed: boolean };

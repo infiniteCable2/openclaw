@@ -53,11 +53,17 @@ import {
   toDatabaseOptions,
   withSqliteSessionDatabase,
 } from "./session-accessor.sqlite-scope.js";
+import { assertInitialSessionContextReadSource } from "./session-initial-context.js";
 import {
   commitSessionLifecycleProjectionInWorker,
   projectSessionEntryLifecycleMutationInWorker,
   readSessionEntryLifecycleCountInWorker,
 } from "./session-lifecycle-projection.js";
+import {
+  prepareSessionSourceAuthority,
+  releaseSessionSourceAuthorities,
+  type PreparedSessionSourceAuthority,
+} from "./session-source-authority.js";
 import { assertMaintenancePreservationCompatible } from "./store-maintenance-preserve-snapshot.js";
 import {
   prepareSessionMaintenancePreservation,
@@ -84,6 +90,10 @@ export async function applySessionEntryLifecycleMutation(
 ): Promise<SessionEntryLifecycleMutationResult> {
   const removals = [...(params.removals ?? [])];
   const upserts = [...(params.upserts ?? [])];
+  const hasConversationAdmission = upserts.some((upsert) => upsert.conversationBranchAdmission);
+  if (upserts.some((upsert) => upsert.initialContext) && !params.source) {
+    throw new Error("Initial conversation context requires retained source authority.");
+  }
   const databaseOptions = toDatabaseOptions(resolved);
   const useWorker =
     isMainThread &&
@@ -93,13 +103,30 @@ export async function applySessionEntryLifecycleMutation(
     !params.beforeCommitInTransaction &&
     !params.afterCommitted &&
     supportsOpenClawAgentDatabaseExecution(databaseOptions);
+  if (
+    (params.source || hasConversationAdmission) &&
+    (!useWorker || upserts.length === 0 || removals.length > 0)
+  ) {
+    throw new Error("Composed lifecycle sources require a durable worker upsert");
+  }
   const reclamationOptions = useWorker
     ? resolveSessionReclamationDatabaseOptions(databaseOptions)
     : undefined;
   const execution = reclamationOptions
     ? captureOpenClawAgentDatabaseExecution(reclamationOptions)
     : undefined;
+  let preparedSource: PreparedSessionSourceAuthority | undefined;
+  const failures: unknown[] = [];
   try {
+    if (params.source) {
+      if (!params.source.prepareSessionSource) {
+        throw new Error("Composed lifecycle sources require worker-prepared authority");
+      }
+      preparedSource = await prepareSessionSourceAuthority(params.source);
+      if (preparedSource.nativeSource || preparedSource.hasOpaqueCheck) {
+        throw new Error("Composed lifecycle sources require worker-prepared authority");
+      }
+    }
     let artifactCleanupError: unknown;
     const captureArtifactCleanupError = (error: unknown): void => {
       if (params.captureArtifactCleanupError === true) {
@@ -138,6 +165,14 @@ export async function applySessionEntryLifecycleMutation(
             ...projectionInput,
             upserts,
           });
+        }
+        for (const upsert of projected.upsertedEntries) {
+          if (upsert.initialContext) {
+            assertInitialSessionContextReadSource(
+              upsert.initialContext,
+              preparedSource?.checks.map((check) => check.predicate),
+            );
+          }
         }
         const deletedOwners = projected.removals.flatMap(({ sessionKey, expectedEntry: entry }) => {
           return entry &&
@@ -204,6 +239,7 @@ export async function applySessionEntryLifecycleMutation(
                   : null;
                 const assertCurrent = () => {
                   execution?.assertCurrent();
+                  (preparedSource?.assertPreparedCurrent ?? preparedSource?.assertCurrent)?.();
                   params.commitGuard?.();
                   assertSourceCurrent?.();
                 };
@@ -223,6 +259,7 @@ export async function applySessionEntryLifecycleMutation(
                     await commitSessionLifecycleProjectionInWorker({
                       database: reclamationOptions,
                       execution,
+                      preparedSource,
                       assertCurrent,
                       assertPrepared: () => {
                         preparedPreservation?.capture();
@@ -242,6 +279,9 @@ export async function applySessionEntryLifecycleMutation(
                       },
                     }),
                   );
+                }
+                if (preparedSource || hasConversationAdmission) {
+                  throw new Error("Composed lifecycle sources require a durable worker upsert");
                 }
                 const result = await runSqliteSessionReclamation({
                   forceInProcess: false,
@@ -275,6 +315,9 @@ export async function applySessionEntryLifecycleMutation(
                   );
                 }
                 return withArchivePublication(result.value);
+              }
+              if (preparedSource || hasConversationAdmission) {
+                throw new Error("Composed lifecycle sources require a durable worker upsert");
               }
               return await withSqliteSessionDatabase(toDatabaseOptions(resolved), (database) =>
                 withNativeSessionCommitContext(
@@ -435,7 +478,17 @@ export async function applySessionEntryLifecycleMutation(
       afterCount,
       artifactCleanupError,
     };
+  } catch (error) {
+    failures.push(error);
+    throw error;
   } finally {
-    await execution?.release();
+    if (preparedSource) {
+      await releaseSessionSourceAuthorities(
+        [preparedSource, { release: () => execution?.release() }],
+        failures,
+      );
+    } else {
+      await execution?.release();
+    }
   }
 }

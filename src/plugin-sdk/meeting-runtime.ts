@@ -4,6 +4,11 @@
 export { resolveTalkSpeechAgentProfile } from "../talk/speech/profile.js";
 export type { SpeechVideoFrame } from "../talk/speech/transport.js";
 export type { SpeechVideoConfig } from "../config/zod-schema.media-frames.js";
+export type {
+  ConversationInputAdmissionV1,
+  ConversationInputScopeV1,
+  ConversationInputSourceV1,
+} from "../talk/conversation-input.types.js";
 
 export {
   startMeetingRealtimeEngine,
@@ -86,6 +91,10 @@ export type {
 } from "../meeting-bot/platform-adapter.js";
 export { MeetingPlatformAdapter } from "../meeting-bot/platform-adapter.js";
 export { createMeetingRealtimeEngineBindings } from "../meeting-bot/agent-consult.js";
+export {
+  createMeetingRealtimeEngineBindingsV2,
+  type MeetingRealtimeBindingsV2Params,
+} from "../meeting-bot/conversation-bindings.js";
 export {
   createMeetingVoiceCallGateway,
   endMeetingVoiceCallGatewayCall,

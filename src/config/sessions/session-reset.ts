@@ -10,6 +10,7 @@ import type {
 } from "./session-accessor.lifecycle-types.js";
 import { bindPreparedSessionEntryPublication } from "./session-accessor.sqlite-entry-cache-publication.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
+import { preserveSessionConversationTopology } from "./session-conversation-topology.js";
 import { runSessionEntryWorkerOperation } from "./session-entry-patch.js";
 import type { SessionResetCommitted } from "./session-reset.types.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
@@ -70,10 +71,12 @@ export function resetSessionEntryInWorker(
           input: { kind: "target", target: params.target },
         }));
       params.commitGuard?.();
-      const nextEntry = await params.buildNextEntry({
+      const conversationTopology = preserveSessionConversationTopology(prepared[0]?.entry);
+      const builtEntry = await params.buildNextEntry({
         currentEntry: prepared[0] ? structuredClone(prepared[0].entry) : undefined,
         primaryKey: params.target.canonicalKey,
       });
+      const nextEntry = { ...builtEntry, ...conversationTopology };
       params.commitGuard?.();
       return commit(() =>
         worker.execute({

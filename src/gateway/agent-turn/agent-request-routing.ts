@@ -7,6 +7,7 @@ import { resolveExplicitAgentSessionKey } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import { resolveAgentExplicitRecipientSession } from "../../infra/outbound/agent-delivery.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { classifySessionKeyShape, normalizeAgentId } from "../../routing/session-key.js";
 import {
   isDeliverableMessageChannel,
@@ -33,6 +34,8 @@ export async function prepareAgentRequestRouting(params: {
   cfg: OpenClawConfig;
   expectedSession?: ExpectedExistingSessionConstraint;
   isRawModelRun: boolean;
+  /** Host classification of the original principal, never a request payload flag. */
+  conversationInput?: true;
   execApprovalFollowupApprovalId?: string;
   runId: string;
   agentDedupeKeys: string[];
@@ -241,6 +244,20 @@ export async function prepareAgentRequestRouting(params: {
       })
     : undefined;
   if (loaded) {
+    if (params.conversationInput) {
+      try {
+        assertExternalConversationTarget({
+          cfg: loaded.cfg,
+          agentId: loaded.agentId,
+          sessionKey: loaded.canonicalKey,
+          entry: loaded.entry,
+          isSystemEvent: false,
+        });
+      } catch (error) {
+        params.clearDedupe();
+        return rejectInvalidRequest(formatForLog(error));
+      }
+    }
     params.bindDedupeSessionTarget({
       sessionKey: loaded.canonicalKey,
       agentId,

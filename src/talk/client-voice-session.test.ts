@@ -33,6 +33,7 @@ import {
   resolveOpenClientVoiceSessionId,
 } from "./client-voice-session.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
+import * as voiceKnowledge from "./voice-conversation-knowledge.js";
 import { VOICE_TRANSCRIPT_MAX_UNRESOLVED } from "./voice-transcript.js";
 
 type AppendTranscriptMessage =
@@ -82,6 +83,53 @@ describe("client voice session", () => {
     await cleanupSessionStateForTest({ stateDir: tempDir });
     envSnapshot.restore();
     await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("publishes the original committed voice anchor without fabricating a completed run", async () => {
+    await seedSession("agent:main:branch");
+    const observe = vi
+      .spyOn(voiceKnowledge, "recordVoiceConversationObservation")
+      .mockResolvedValue();
+    try {
+      const voiceSessionId = createOrResumeClientVoiceSession({
+        agentId: "main",
+        sessionKey: "main",
+        origin: "client",
+      });
+      const input = {
+        agentId: "main",
+        sessionKey: "main",
+        sessionTarget: { sessionKey: "agent:main:branch" },
+        voiceSessionId,
+        entryId: "utterance-a",
+        role: "user" as const,
+        text: "Actual spoken instruction.",
+        participant: { type: "profile" as const, id: "example-person" },
+        config: { agents: { entries: { main: { conversationMode: "branches" as const } } } },
+      };
+      await appendClientVoiceTranscript(input);
+      expect(observe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          anchor: expect.objectContaining({
+            agentId: "main",
+            sessionKey: "agent:main:branch",
+            entryId: `voice:${voiceSessionId}:utterance-a`,
+          }),
+          role: "user",
+          participant: input.participant,
+          fresh: true,
+          assertCurrent: expect.any(Function),
+        }),
+      );
+      expect(observe.mock.calls[0]?.[0]).not.toHaveProperty("runId");
+      await appendClientVoiceTranscript(input);
+      expect(observe.mock.calls[1]?.[0]).toMatchObject({
+        anchor: observe.mock.calls[0]?.[0].anchor,
+        fresh: false,
+      });
+    } finally {
+      observe.mockRestore();
+    }
   });
 
   it("creates, resumes, and enforces ownership and open state", async () => {

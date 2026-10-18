@@ -360,6 +360,35 @@ export type OpenClawPluginServiceHealth = {
   clearFailure: () => void;
 };
 
+/** Plugin policy selects an assigned device, never the identity of a person speaking nearby. */
+export type PluginNodeConversationInputRequestV1 = {
+  nodeId: string;
+  command: string;
+  agentId: string;
+  conversationId: string;
+  label: string;
+  signal?: AbortSignal;
+  assertAssigned(config: OpenClawConfig): void;
+  /** Exact plugin-owned bridge lifetime, separate from retained accepted work. */
+  assertInputCurrent(): void;
+};
+
+export type PluginNodeConversationInputV1 = {
+  inputSource: import("../talk/conversation-input.types.js").ConversationInputSourceV1;
+  agentId: string;
+  conversationId: string;
+  /** Host-derived metadata, not permission to read or dispatch to this key. */
+  sessionKey: string;
+  assertCurrent(): void;
+  assertInputCurrent(): void;
+  connectionPresentation: Omit<
+    import("../talk/session-registry.js").TalkConnectionPresentation,
+    "state"
+  >;
+  /** Fence new device input; accepted work keeps its original authorization. */
+  release(): void;
+};
+
 export type OpenClawPluginServiceContext = {
   config: OpenClawConfig;
   workspaceDir?: string;
@@ -392,6 +421,10 @@ export type OpenClawPluginServiceContext = {
       "scopes"
     > & { assertCurrent?: () => void },
   ) => ReturnType<import("./runtime/types.js").PluginRuntime["nodes"]["openDuplex"]>;
+  /** Native paired-device conversation admission, owned by this service and its node command. */
+  prepareNodeConversationInput?: (
+    params: PluginNodeConversationInputRequestV1,
+  ) => Promise<PluginNodeConversationInputV1>;
   gatewayEvents?: import("./gateway-events.js").OpenClawPluginGatewayEvents;
   startupTrace?: {
     detail?: (name: string, metrics: ReadonlyArray<readonly [string, number | string]>) => void;

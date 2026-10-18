@@ -13,6 +13,28 @@ import { persistSessionTranscriptTurn } from "./session-accessor.transcript-turn
 
 afterEach(() => closeOpenClawAgentDatabasesForTest());
 
+it("refuses original user credit after the native session incarnation changes", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const scope = { agentId: "example", env: state.env, sessionKey: "agent:example:voice" };
+    const original = await upsertSessionEntryCore(scope, { sessionId: "original", updatedAt: 1 });
+    expect(original?.lifecycleRevision).toBeTruthy();
+    const expectedSession = {
+      sessionId: original!.sessionId,
+      lifecycleRevision: original!.lifecycleRevision!,
+    };
+    await upsertSessionEntryCore(scope, { sessionId: "replacement", updatedAt: 2 });
+    expect(() =>
+      recordSessionParticipant(scope, {
+        identity: { type: "profile", id: "original-person" },
+        expectedSession,
+      }),
+    ).toThrow("Original participant input session changed before commit");
+    expect(
+      listSessionEntriesCore({ ...scope, projection: "list" })[0]?.entry.participantCount ?? 0,
+    ).toBe(0);
+  });
+});
+
 it("reuses current participants across transcript appends and publishes new actors", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const scope = {

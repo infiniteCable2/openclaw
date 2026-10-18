@@ -29,13 +29,25 @@ export type CustomMessageReportAppend = {
   display: boolean;
   details?: unknown;
 };
+/** Exact producer-owned receipt metadata; this selector grants no source access. */
+export type TranscriptReportReceiptSelection = {
+  field: string;
+  value: string;
+};
 export type TranscriptReport =
   | { kind: "assistant"; message: AssistantMessage & { responseId: string } }
   | {
       kind: "custom";
       customTypes: readonly string[];
+      /** Select a source's receipt from existing details without changing stored envelopes. */
+      receipt?: TranscriptReportReceiptSelection;
       suppressWhenAssistantRun?: string;
-      /** Pure selection; a definite concurrent transcript change may repeat it. */
+      /**
+       * Pure selection; a definite concurrent transcript change may repeat it.
+       * Selection sees receipts on the current transcript path, not global history.
+       * Producers compare their monotonic accepted endpoint here and skip
+       * older/equal ranges; naming a receipt alone does not deduplicate history.
+       */
       selectReport: (
         latest: CustomMessageReport | undefined,
       ) => CustomMessageReportAppend | undefined;
@@ -49,7 +61,7 @@ export type TranscriptReportSelection =
   | { kind: "assistant"; responseId: string }
   | Pick<
       Extract<TranscriptReport, { kind: "custom" }>,
-      "kind" | "customTypes" | "suppressWhenAssistantRun"
+      "kind" | "customTypes" | "receipt" | "suppressWhenAssistantRun"
     >;
 
 export type PreparedTranscriptReport = {

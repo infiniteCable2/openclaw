@@ -133,6 +133,26 @@ const request = {
 };
 
 describe("service-owned node invocation", () => {
+  it("refuses conversation input for unowned commands and absent native node authority", async () => {
+    const { serviceContext } = await startFixture();
+    const prepareInput = serviceContext.prepareNodeConversationInput;
+    expect(prepareInput).toBeTypeOf("function");
+    const conversation = {
+      nodeId: "paired-node",
+      command: "unowned.audio",
+      agentId: "example",
+      conversationId: "bridge",
+      label: "Shared room",
+      assertAssigned: () => {},
+      assertInputCurrent: () => {},
+    };
+    await expect(prepareInput!(conversation)).rejects.toThrow("unowned node command");
+    // Matching IDs and an owned outbound command cannot fabricate a live paired input.
+    await expect(prepareInput!({ ...conversation, command: request.command })).rejects.toThrow(
+      "node registry is unavailable",
+    );
+  });
+
   it("releases retiring callers while stopped node capabilities remain reachable", async () => {
     type NodeInvoker = NonNullable<ReturnType<typeof createPluginServiceNodeInvoker>>;
     class RetiringCaller {

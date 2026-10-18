@@ -8,6 +8,8 @@ import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.
 import { getActiveRuntimeWebToolsMetadataFromState } from "../secrets/runtime-web-tools-state.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import { resolveSkillWorkshopToolConstructionBlock } from "../skills/workshop/tool-availability.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
+import { isDeliverableMessageChannel } from "../utils/message-channel-normalize.js";
 import {
   hasConfiguredWebSearchProvider,
   prepareWebSearchConfiguration,
@@ -442,6 +444,10 @@ export function createOpenClawTools(
             agentId: sessionAgentId,
             agentAccountId: gatewayCallerAccountId,
             currentDeliveryContext: deliveryContext,
+            requireExplicitDeliveryTarget:
+              Boolean(options?.agentChannel) &&
+              options?.agentChannel !== INTERNAL_MESSAGE_CHANNEL &&
+              !isDeliverableMessageChannel(options?.agentChannel ?? ""),
             creatorToolAllowlist: options?.cronCreatorToolAllowlist,
             creatorToolAllowlistCaptureRef: options?.cronCreatorToolAllowlistCaptureRef,
             resolveCreatorToolAuthority: options?.resolveCronCreatorToolAuthority,

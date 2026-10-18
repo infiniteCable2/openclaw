@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { emitSessionLifecycleEvent } from "../../sessions/session-lifecycle-events.js";
@@ -18,6 +19,11 @@ import type {
   SessionLifecycleProjectionCommitted,
 } from "./session-lifecycle-projection.types.js";
 import type { SessionLifecyclePlanningOperations } from "./session-lifecycle-projection.worker.js";
+import {
+  acceptSessionSourceValidation,
+  type PreparedSessionSourceAuthority,
+  type SessionSourceValidation,
+} from "./session-source-authority.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 
 type SessionLifecyclePlanningOwner = {
@@ -98,6 +104,7 @@ export function commitSessionLifecycleProjectionInWorker(params: {
   database: ReclamationDatabaseOptions;
   input: SessionLifecycleProjectionCommit;
   execution: OpenClawAgentDatabaseExecution;
+  preparedSource?: PreparedSessionSourceAuthority;
   assertCurrent: () => void;
   assertPrepared: () => void;
   assertCandidate: (candidate: SessionLifecycleProjectionCommitted) => void;
@@ -110,12 +117,47 @@ export function commitSessionLifecycleProjectionInWorker(params: {
     database: params.database,
     agentId: params.input.agentId,
     assertCurrent: params.assertCurrent,
-    assertPrepared: params.assertPrepared,
-    assertCandidate: params.assertCandidate,
+    assertPrepared: () => {
+      params.assertPrepared();
+      (params.preparedSource?.assertPreparedCurrent ?? params.preparedSource?.assertCurrent)?.();
+    },
+    onTransactionFacts(facts) {
+      if (!isRecord(facts) || facts.kind !== "session-lifecycle-source-validated") {
+        return false;
+      }
+      if (!params.preparedSource || !isRecord(facts.sourceValidation)) {
+        throw new Error("Lifecycle source validation has no prepared authority");
+      }
+      // SAFETY: The paired lifecycle worker supplies validation from this transaction.
+      acceptSessionSourceValidation(
+        params.preparedSource,
+        facts.sourceValidation as SessionSourceValidation,
+      );
+      (params.preparedSource.assertPreparedCurrent ?? params.preparedSource.assertCurrent)();
+      return true;
+    },
+    assertCandidate: (candidate) => {
+      if (params.preparedSource) {
+        if (!candidate.sourceValidation) {
+          throw new Error("Lifecycle commit omitted its prepared source validation");
+        }
+        acceptSessionSourceValidation(params.preparedSource, candidate.sourceValidation);
+        (params.preparedSource.assertPreparedCurrent ?? params.preparedSource.assertCurrent)();
+      }
+      params.assertCandidate(candidate);
+    },
     retainedExecution: params.execution,
     candidateKind: "session-lifecycle-projection",
     run: (worker, commit) =>
-      commit(() => worker.execute({ type: "session.lifecycle.project", input: params.input })),
+      commit(() =>
+        worker.execute({
+          type: "session.lifecycle.project",
+          input: {
+            ...params.input,
+            sources: params.preparedSource?.checks.map((check) => check.predicate),
+          },
+        }),
+      ),
     onAcknowledged(candidate) {
       params.onLifecycleCommitted?.();
       for (const sessionId of candidate.projectionReconcileSessionIds) {

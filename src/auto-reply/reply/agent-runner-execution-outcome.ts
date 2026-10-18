@@ -5,11 +5,53 @@ import { recordMessageToolRunOutcome } from "../../infra/message-tool-run-outcom
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { VisibleWorkSession } from "../get-reply-options.types.js";
 import { resolveAgentTurnExecutionStatus } from "./agent-runner-execution-status.js";
-import type { AgentTurnExecutionResult, AgentTurnParams } from "./agent-runner-execution.types.js";
+import type {
+  AgentTurnCompaction,
+  AgentTurnExecutionResult,
+  AgentTurnInternalResult,
+  AgentTurnParams,
+} from "./agent-runner-execution.types.js";
 import type { SessionEventExecution } from "./session-event-contract.js";
 import { getReplySystemEventContext } from "./system-event-session-key.js";
 
 const messageToolOutcomeLog = createSubsystemLogger("auto-reply/message-tool-outcome");
+
+/** Close the internal result vocabulary without losing committed compaction accounting. */
+export function buildAgentTurnExecutionResult(
+  runId: string,
+  internal: AgentTurnInternalResult,
+  compaction: AgentTurnCompaction,
+): AgentTurnExecutionResult {
+  const outcome: AgentTurnExecutionResult["outcome"] =
+    internal.kind === "final"
+      ? {
+          kind: "rejected",
+          payload: internal.payload,
+          resolved: internal.resolved,
+          ...(internal.postCompactionModelFailure
+            ? { postCompactionModelFailure: internal.postCompactionModelFailure }
+            : {}),
+        }
+      : internal;
+  return {
+    runId,
+    outcome: {
+      ...outcome,
+      ...(compaction.count > 0
+        ? { compaction: { count: compaction.count, durable: [...compaction.durable] } }
+        : {}),
+    },
+  };
+}
+
+/** Cancellation changes the exposed outcome, never the already committed accounting. */
+export function buildAbortedAgentTurnExecutionResult(
+  runId: string,
+  reason: Extract<AgentTurnInternalResult, { kind: "aborted" }>["reason"],
+  compaction: AgentTurnCompaction,
+): AgentTurnExecutionResult {
+  return buildAgentTurnExecutionResult(runId, { kind: "aborted", reason }, compaction);
+}
 
 async function recordAgentTurnExecutionOutcome(
   params: AgentTurnParams,

@@ -28,7 +28,10 @@ import { sessionPersonalProfileId } from "../../config/sessions/session-entry-pr
 import { getGatewayLocalUserIngress } from "../../gateway/local-user-ingress.js";
 import { normalizeMediaFacts } from "../../media/media-facts.js";
 import { normalizeAccountId } from "../../routing/account-id.js";
-import { isSessionPersonalBootstrapTurn } from "../../sessions/session-participant-input.js";
+import {
+  isSessionPersonalBootstrapTurn,
+  readSessionConversationParticipant,
+} from "../../sessions/session-participant-input.js";
 import { MEDIA_ONLY_USER_TEXT } from "../../sessions/user-turn-media.js";
 import {
   createUserTurnTranscriptRecorder,
@@ -148,6 +151,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     elevatedEnabled,
     elevatedAllowed,
   } = params;
+  opts?.assertSourceCurrent?.();
 
   const runModelOverrideSource = preparedSessionState.sessionEntry?.modelOverrideSource;
   const runHasSessionModelOverride =
@@ -216,6 +220,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       extractedFileImages: opts?.extractedFileImages,
     }),
   );
+  opts?.assertSourceCurrent?.();
   const sourceMessageId =
     normalizeOptionalString(sessionCtx.MessageSidFull) ??
     normalizeOptionalString(sessionCtx.MessageSid);
@@ -342,6 +347,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
           }),
           errorContext: "reply user turn transcript",
           beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
+          onOriginalInputCommitted: opts?.onOriginalInputCommitted,
           onMessagePersisted: isRoomEvent
             ? async () =>
                 await updateRoomEventAmbientTranscriptWatermark({
@@ -366,11 +372,13 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   const admittedSessionSettings =
     opts?.admittedSessionSettings ?? preparedSessionState.sessionEntry;
   const groupTurn = getGroupThreadTurn();
-  const personalBootstrapEligible = isSessionPersonalBootstrapTurn({
+  const originalParticipantContext = {
     ...ctx,
     InternalTurnSource: ctx.InternalTurnSource ?? sessionCtx.InternalTurnSource,
     InputProvenance: inputProvenance,
-  });
+  };
+  const personalBootstrapEligible = isSessionPersonalBootstrapTurn(originalParticipantContext);
+  const conversationParticipant = readSessionConversationParticipant(originalParticipantContext);
   const followupRun = {
     prompt: queuedBody,
     sourceTurnId: resolveReplySourceTurnId({
@@ -380,7 +388,10 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       entry: preparedSessionState.sessionEntry,
     }),
     personalBootstrapEligible,
+    conversationParticipant,
     operatorAuthority: opts?.operatorAuthority,
+    assertSourceCurrent: opts?.assertSourceCurrent,
+    speechPresentation: opts?.speechPresentation,
     transcriptPrompt: transcriptCommandBody,
     ...(userTurnTranscriptRecorder ? { userTurnTranscriptRecorder } : {}),
     currentInboundEventKind: inboundEventKind,

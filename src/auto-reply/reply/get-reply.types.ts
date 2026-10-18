@@ -5,6 +5,7 @@ import {
 } from "../../agents/admitted-run-context.js";
 import type { CronCreatorAuthorityCapability } from "../../agents/cron-creator-authority-context.js";
 import type { ReplyDeliveryObserver } from "../../agents/reply-completion.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { PrepareAssistantTranscriptMessage } from "../../config/sessions/transcript-assistant-delivery.js";
 import type { SessionEntry, SessionToolOverrides } from "../../config/sessions/types.js";
 // Shared get-reply type contracts for command, directive, and runtime layers.
@@ -12,6 +13,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { DashboardMessageReadAdmission } from "../../gateway/message-action-turn-capability.js";
 import type { ExtractedFileImage } from "../../media-understanding/extracted-file-images.js";
 import type { PluginCommandReplyOptions } from "../../plugins/plugin-command-dispatch-contract.js";
+import type { CreateUserTurnTranscriptRecorderParams } from "../../sessions/user-turn-transcript.types.js";
 import type { PreparedTtsPreferences } from "../../tts/tts-preferences.js";
 import { getCommandOwnerAuthority } from "../command-owner-authority.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
@@ -24,7 +26,12 @@ import type { FollowupQueueDisposition, QueuedFollowupReplyDelivery } from "./qu
 import type { ReplyOptionsWithAdmissionTicket } from "./reply-admission-ticket.js";
 import type { ReplyOptionsWithOperationRunState } from "./reply-operation-run-state.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
+import type { ReplySpeechPresentationSource } from "./reply-speech-presentation.js";
 import type { SessionEventExecution } from "./session-event-contract.js";
+import {
+  captureReplyInitialSessionContext,
+  type ReplyInitialSessionContext,
+} from "./session-initial-context.js";
 
 export type ReplySessionBinding = {
   sessionKey?: string;
@@ -43,6 +50,16 @@ export type ReplyRunVerbosity = {
 };
 
 type InternalReplySessionOptions = {
+  /** Original admitted input, including non-owners; independent of audio transport lifetime. */
+  assertSourceCurrent?: SessionSourceAssertion;
+  /** Original host input pins its native target before initialization or utility side effects. */
+  assertConversationTarget?: (target: { agentId: string; sessionKey: string | undefined }) => void;
+  /** Observe this recorder's fresh original native append; never a separate user writer. */
+  onOriginalInputCommitted?: CreateUserTurnTranscriptRecorderParams["onOriginalInputCommitted"];
+  /** Original live-speech output; queued turns must not borrow the drainer's sink. */
+  speechPresentation?: ReplySpeechPresentationSource;
+  /** Host-admitted copied context, never a model/tool argument or parent/spawn access link. */
+  initialSessionContext?: ReplyInitialSessionContext;
   /** Producer callbacks follow this occurrence through queueing and delivery. */
   internalEventExecution?: SessionEventExecution;
   /** Source-owned cancellation retained when dispatch borrows an active lane for queued followups. */
@@ -117,12 +134,24 @@ export function prepareInternalGetReplyOptions(
   if (!opts && !channelAuthority) {
     return undefined;
   }
-  const { operatorAuthority = channelAuthority, ...options }: InternalGetReplyOptions = opts ?? {};
+  const {
+    operatorAuthority = channelAuthority,
+    assertSourceCurrent,
+    ...options
+  }: InternalGetReplyOptions = opts ?? {};
+  assertSourceCurrent?.();
   if (operatorAuthority !== undefined) {
     assertAdmittedRunOperatorAuthority(operatorAuthority);
     operatorAuthority.assertCurrent();
   }
-  return { ...options, operatorAuthority };
+  return {
+    ...options,
+    operatorAuthority,
+    assertSourceCurrent,
+    ...(options.initialSessionContext
+      ? { initialSessionContext: captureReplyInitialSessionContext(options.initialSessionContext) }
+      : {}),
+  };
 }
 
 export function withExtractedFileImages(

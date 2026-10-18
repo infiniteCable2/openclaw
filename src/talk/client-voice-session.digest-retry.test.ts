@@ -9,7 +9,9 @@ import {
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import { ensureAgentConversationRoot } from "../config/sessions/session-conversation-root.js";
 import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -585,6 +587,78 @@ describe("client voice session lifecycle", () => {
     });
   });
   describe("startup", () => {
+    it("creates Talk as an admitted conversation branch through the real native writer", async () => {
+      const cfg: OpenClawConfig = {
+        agents: { entries: { main: { conversationMode: "branches" } } },
+      };
+      const root = await ensureAgentConversationRoot({ cfg, agentId: "main" });
+      const target = { cfg, agentId: "main", sessionKey: "agent:main:browser-talk:example-call" };
+      const sessionId = await ensureClientVoiceAgentSessionEntry(target);
+      const entry = loadSessionEntry(target);
+      expect(entry).toMatchObject({
+        sessionId,
+        createdVia: "talk",
+        conversationTopology: {
+          version: 1,
+          role: "branch",
+          rootSessionKey: root.sessionKey,
+          rootSessionId: root.entry.sessionId,
+          rootSessionLifecycleRevision: root.entry.lifecycleRevision,
+        },
+      });
+      expect(entry?.parentSessionKey).toBeUndefined();
+      expect(entry?.spawnedBy).toBeUndefined();
+      await expect(ensureClientVoiceAgentSessionEntry(target)).resolves.toBe(sessionId);
+      expect(loadSessionEntry(target)).toEqual(entry);
+    });
+
+    it("never silently enrolls an old Talk transcript when branches are enabled", async () => {
+      const cfg: OpenClawConfig = {
+        agents: { entries: { main: { conversationMode: "branches" } } },
+      };
+      await ensureAgentConversationRoot({ cfg, agentId: "main" });
+      const target = { cfg, agentId: "main", sessionKey: "agent:main:browser-talk:legacy-call" };
+      await replaceSessionEntry(target, { sessionId: "legacy-original", updatedAt: 1 });
+      const before = loadSessionEntry(target);
+      await expect(ensureClientVoiceAgentSessionEntry(target)).rejects.toThrow(
+        "explicit branch admission",
+      );
+      expect(loadSessionEntry(target)).toEqual(before);
+    });
+
+    it("keeps prepared startup authority through the native branch commit", async () => {
+      const cfg: OpenClawConfig = {
+        agents: { entries: { main: { conversationMode: "branches" } } },
+      };
+      await ensureAgentConversationRoot({ cfg, agentId: "main" });
+      const entered = createDeferred();
+      const release = createDeferred();
+      const blocker = patchSessionEntryCore(
+        { agentId: "main", sessionKey: "agent:main:branch-write-blocker" },
+        async () => {
+          entered.resolve();
+          await release.promise;
+          return null;
+        },
+        { fallbackEntry: { sessionId: "write-blocker", updatedAt: 1 } },
+      );
+      await entered.promise;
+      const target = { cfg, agentId: "main", sessionKey: "agent:main:browser-talk:cancelled" };
+      const controller = new AbortController();
+      const creating = ensureClientVoiceAgentSessionEntry({
+        ...target,
+        assertCommitAllowed: composeSessionSourceAssertion([], () =>
+          controller.signal.throwIfAborted(),
+        ),
+      });
+      controller.abort(new Error("browser disconnected"));
+      const rejected = expect(creating).rejects.toThrow("browser disconnected");
+      release.resolve();
+      await blocker;
+      await rejected;
+      expect(loadSessionEntry(target)).toBeUndefined();
+    });
+
     it("stamps required Talk creation once", async () => {
       const target = { agentId: "main", sessionKey: "agent:main:talk:new" };
       const actor = { type: "human" as const, source: "profile" as const, id: "profile-required" };

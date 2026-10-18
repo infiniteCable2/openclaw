@@ -38,6 +38,7 @@ import type {
   SessionEntryCreateWithTranscriptOptions,
 } from "./session-accessor.types.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
+import type { SessionSourceAssertion } from "./session-source-authority.js";
 import type { SessionMaintenancePreservationSnapshot } from "./store-maintenance-preserve-snapshot.types.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
@@ -133,6 +134,8 @@ export type ProjectedLifecycleCommitInput = {
 };
 
 export type SessionEntryLifecycleMutationParams = {
+  /** Original worker-preparable source authority; ordinary callback guards cannot replace it. */
+  source?: SessionSourceAssertion;
   /** Internal durable comparison paired with the caller's live descendant guard. */
   descendantRunBasis?: SubagentRunsDurableBasis;
   agentId?: string;
@@ -411,6 +414,10 @@ export type ProjectedLifecycleMutation = {
     sessionKey: string;
   }>;
   upsertedEntries: Array<{
+    conversationBranchAdmission?: Extract<
+      import("./session-conversation-topology.js").SessionConversationTopology,
+      { role: "branch" }
+    >;
     entry: SessionEntry;
     initialContext?: import("./session-initial-context.js").PreparedInitialSessionContext;
     expectedEntry: SessionEntry | undefined;

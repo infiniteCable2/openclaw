@@ -7,6 +7,7 @@ import { formatErrorMessage as formatError } from "../../infra/errors.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 import type { RealtimeTranscriptionProviderConfig } from "../../realtime-transcription/provider-types.js";
 import { recordTalkObservabilityEvent } from "../../talk/observability.js";
+import { forgetUnifiedTalkSession } from "../../talk/session-registry.js";
 import {
   type TalkEvent,
   type TalkEventInput,
@@ -20,7 +21,7 @@ import {
   closeTalkRelaySessionsForConnection,
   requireActiveTalkRelaySession,
 } from "./relay-session-lifecycle.js";
-import { forgetUnifiedTalkSession, registerTalkConnectionCleanup } from "./session-registry.js";
+import { registerTalkConnectionCleanup } from "./session-registry.js";
 
 const TRANSCRIPTION_SESSION_TTL_MS = 30 * 60 * 1000;
 // Realtime transcription websocket owners retain provider sockets for this

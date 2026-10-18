@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SessionEntry, SessionOrigin } from "../../config/sessions/types.js";
+import type {
+  InternalSessionEntry as SessionEntry,
+  SessionOrigin,
+} from "../../config/sessions/types.js";
 import { normalizeLegacySessionEntryDelivery } from "../../infra/state-migrations.legacy-session-store.js";
 import { projectSessionDeliveryFields } from "../../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
@@ -106,6 +109,47 @@ function expectNoDelivery(entry: ReturnType<typeof resolveWithStoredEntry>["sess
 }
 
 describe("resolveCronSession", () => {
+  it("never copies source membership into a different run target", () => {
+    const targets: Array<SessionEntry | undefined> = [
+      undefined,
+      { sessionId: "unmarked-target", updatedAt: NOW_MS },
+      {
+        sessionId: "branch-target",
+        updatedAt: NOW_MS,
+        conversationTopology: {
+          version: 1,
+          role: "branch",
+          rootSessionKey: "agent:main:main",
+          rootSessionId: "target-root",
+          rootSessionLifecycleRevision: "target-root-revision",
+        },
+      },
+    ];
+    for (const targetEntry of targets) {
+      const result = resolveWithStoredEntry({
+        sessionKey: "agent:main:cron:separate-run",
+        sourceSessionKey: "agent:main:main",
+        entry: {
+          sessionId: "source-root",
+          updatedAt: NOW_MS,
+          conversationTopology: { version: 1, role: "root" },
+        },
+        targetEntry,
+      });
+      expect(result.sessionEntry.conversationTopology).toEqual(targetEntry?.conversationTopology);
+    }
+  });
+
+  it("retains the same target's topology across its native stale rollover", () => {
+    const topology = { version: 1, role: "root" } as const;
+    const result = resolveWithStoredEntry({
+      sessionKey: "agent:main:main",
+      fresh: false,
+      entry: { sessionId: "root", updatedAt: NOW_MS - 1_000, conversationTopology: topology },
+    });
+    expect(result.sessionEntry.conversationTopology).toEqual(topology);
+  });
+
   // Spawned children and memory-audience leases bind to the parent's exact
   // revision, so a run that reuses an incarnation in place must not rotate it.
   it.each([

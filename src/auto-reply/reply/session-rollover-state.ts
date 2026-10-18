@@ -1,13 +1,14 @@
 import { resolveResetPreservedSelection } from "../../config/sessions/reset-preserved-selection.js";
+import { preserveSessionConversationTopology } from "../../config/sessions/session-conversation-topology.js";
 import { preserveSessionInheritedToolPolicy } from "../../config/sessions/session-entry-lineage.js";
 import { preserveCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { selectSessionModelOverride } from "../../config/sessions/session-entry-selection.js";
-import type { InternalSessionEntry, SessionEntry } from "../../config/sessions/types.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { isAcpSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
 
 /** Builds the durable session fields retained across a reply-session rollover. */
 export function resolveReplySessionRolloverState(
-  entry: SessionEntry,
+  entry: InternalSessionEntry,
   sessionKey: string,
 ): Partial<InternalSessionEntry> {
   const preservedSelection = resolveResetPreservedSelection({ entry });
@@ -18,6 +19,7 @@ export function resolveReplySessionRolloverState(
     isSubagentSessionKey(sessionKey) ||
     isAcpSessionKey(sessionKey);
   return {
+    ...preserveSessionConversationTopology(entry),
     thinkingLevel: entry.thinkingLevel,
     verboseLevel: entry.verboseLevel,
     traceLevel: entry.traceLevel,

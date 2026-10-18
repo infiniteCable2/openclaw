@@ -8,24 +8,20 @@ import {
   resolveAgentWorkspaceDir,
   resolveAgentSkillsFilter,
 } from "../../agents/agent-scope.js";
-import { resolveConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
-import { projectConversationToolNames } from "../../agents/conversation-tool-policy-pipeline.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { publishedModelCatalogOwnerMatchesAgent } from "../../agents/prepared-model-catalog-owner.js";
-import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../../agents/spawned-context.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
-import { resolveEffectiveToolFsRootExpansionAllowed } from "../../agents/tool-fs-policy.js";
 import {
   WorkspaceAliasRepointedError,
   WorkspaceVanishedError,
 } from "../../agents/workspace-state-identity.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
+import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
-import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { logVerbose } from "../../globals.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
@@ -41,6 +37,7 @@ import {
   isModelSelectionLocked,
   ModelSelectionLockedError,
 } from "../../sessions/model-overrides.js";
+import { readSessionConversationParticipant } from "../../sessions/session-participant-input.js";
 import { resolveStoredModelOverride } from "../../sessions/stored-model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
@@ -85,7 +82,6 @@ import {
 } from "./inbound-media.js";
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
 import { createModelSelectionState } from "./model-selection.js";
-import { resolveOriginMessageProvider } from "./origin-routing.js";
 import {
   classifyHeartbeatPendingFinalDelivery,
   PENDING_FINAL_DELIVERY_CLEAR_PATCH,
@@ -94,12 +90,16 @@ import {
 import { getPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
 import { attachProgressNarratorToReplyOptions } from "./progress-narrator.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
+import { enableReplyLocalPathSelfServe } from "./reply-local-path-self-serve.js";
 import { createReplyProbeModelLevelResolver } from "./reply-model-levels.js";
 import {
   recordReplyPreRunRejection,
   resolveReplyOperationRunState,
 } from "./reply-operation-run-state.js";
-import { assertReplyPreprocessingActive } from "./reply-preprocessing-abort.js";
+import {
+  assertReplyPreprocessingActive,
+  withReplySourceCurrent,
+} from "./reply-preprocessing-abort.js";
 import { createReplyTimingTracker, isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { prepareReplyWorkspace } from "./reply-workspace.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
@@ -164,7 +164,7 @@ export async function getReplyFromConfig(
   const initialAgentScope = await resolverTiming.measure("reply.resolve_agent_scope", () =>
     resolveReplyAgentScope({ cfg, ctx: finalized }),
   );
-  assertReplyPreprocessingActive(opts?.abortSignal);
+  assertReplyPreprocessingActive(opts);
   opts?.operatorAuthority?.assertCurrent();
   opts?.internalEventExecution?.assertCurrent?.();
   const refusal = readAgentDatabaseAdmissionRefusal(initialAgentScope.agentId);
@@ -173,6 +173,7 @@ export async function getReplyFromConfig(
   }
   const agentSessionKey = initialAgentScope.agentSessionKey;
   const agentId = initialAgentScope.agentId;
+  opts?.assertConversationTarget?.({ agentId, sessionKey: agentSessionKey });
   if (
     preparedReplyDispatchRuntime &&
     !publishedModelCatalogOwnerMatchesAgent(preparedReplyDispatchRuntime, agentId)
@@ -210,11 +211,13 @@ export async function getReplyFromConfig(
     });
   const traceGetReplyPhase = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
     resolverTiming.measure(name, () =>
-      measureDiagnosticsTimelineSpan(name, run, {
-        phase: "agent-turn",
-        config: cfg,
-        attributes: traceAttributes,
-      }),
+      withReplySourceCurrent(opts?.assertSourceCurrent, () =>
+        measureDiagnosticsTimelineSpan(name, run, {
+          phase: "agent-turn",
+          config: cfg,
+          attributes: traceAttributes,
+        }),
+      ),
     );
   const mergedSkillFilter = resolverTiming.measureSync("reply.resolve_skill_filter", () =>
     mergeSkillFilters(opts?.skillFilter, resolveAgentSkillsFilter(cfg, agentId)),
@@ -348,8 +351,12 @@ export async function getReplyFromConfig(
     ? await traceGetReplyPhase("reply.resolve_acp_workspace_provisioning", async () => {
         // Implicit ACP agents need the live session's ACP meta (per-session cwd
         // from /acp spawn --cwd or /acp cwd) before workspace scaffolding runs.
-        const state = await resolveReplySessionPreprocessingState({ ctx: finalized, cfg });
-        assertReplyPreprocessingActive(optsWithSkillFilter?.abortSignal);
+        const state = await resolveReplySessionPreprocessingState({
+          ctx: finalized,
+          cfg,
+          assertConversationTarget: optsWithSkillFilter?.assertConversationTarget,
+        });
+        assertReplyPreprocessingActive(optsWithSkillFilter);
         return {
           cfg,
           agentId,
@@ -370,6 +377,7 @@ export async function getReplyFromConfig(
         provisioningInput: acpWorkspaceProvisioningInput,
         abortSignal: optsWithSkillFilter?.abortSignal,
         operatorAuthority: optsWithSkillFilter?.operatorAuthority,
+        assertSourceCurrent: optsWithSkillFilter?.assertSourceCurrent,
       }),
     );
   } catch (error) {
@@ -399,7 +407,11 @@ export async function getReplyFromConfig(
     normalizeOptionalString(finalized.MediaRemoteHost) &&
     hasInboundMedia(finalized);
   const remoteMediaSessionState = remoteMediaNeedsStaging
-    ? await resolveReplySessionPreprocessingState({ ctx: finalized, cfg })
+    ? await resolveReplySessionPreprocessingState({
+        ctx: finalized,
+        cfg,
+        assertConversationTarget: optsWithSkillFilter?.assertConversationTarget,
+      })
     : undefined;
   if (remoteMediaSessionState) {
     const entry = remoteMediaSessionState.sessionEntry;
@@ -423,7 +435,7 @@ export async function getReplyFromConfig(
           })
         ).snapshot
       : undefined;
-    assertReplyPreprocessingActive(optsWithSkillFilter?.abortSignal);
+    assertReplyPreprocessingActive(optsWithSkillFilter);
     await traceGetReplyPhase("reply.stage_remote_media_pre_understanding", () =>
       stageRemoteInboundMediaIfNeeded({
         ctx: finalized,
@@ -443,10 +455,14 @@ export async function getReplyFromConfig(
     mediaUnderstandingRequested || linkUnderstandingRequested
       ? (remoteMediaSessionState ??
         (await traceGetReplyPhase("reply.resolve_session_preprocessing_state", () =>
-          resolveReplySessionPreprocessingState({ ctx: finalized, cfg }),
+          resolveReplySessionPreprocessingState({
+            ctx: finalized,
+            cfg,
+            assertConversationTarget: optsWithSkillFilter?.assertConversationTarget,
+          }),
         )))
       : undefined;
-  assertReplyPreprocessingActive(optsWithSkillFilter?.abortSignal);
+  assertReplyPreprocessingActive(optsWithSkillFilter);
   const utilityModelSelectionLocked = isModelSelectionLocked(preprocessingState?.sessionEntry);
 
   if (mediaUnderstandingRequested) {
@@ -488,7 +504,7 @@ export async function getReplyFromConfig(
     );
   }
   // Cleanup may resolve after cancellation; hooks must stay inside the reply lifetime.
-  assertReplyPreprocessingActive(optsWithSkillFilter?.abortSignal);
+  assertReplyPreprocessingActive(optsWithSkillFilter);
   emitPreAgentMessageHooks({
     ctx: finalized,
     cfg,
@@ -519,6 +535,23 @@ export async function getReplyFromConfig(
       return rejectSessionPreparation(error);
     }
     throw error;
+  }
+  if (
+    !useFastTestBootstrap &&
+    resolveAgentConversationMode(cfg, agentId) === "branches" &&
+    readSessionConversationParticipant(finalized)
+  ) {
+    // Initialization has released its writer/lifecycle holds. Join the native
+    // accepted-input credit before private branch knowledge snapshots its audience.
+    assertReplyPreprocessingActive(optsWithSkillFilter);
+    const { waitForSessionParticipantRecording } =
+      await import("../../sessions/session-participant-recording.js");
+    await waitForSessionParticipantRecording({
+      agentId,
+      sessionKey: sessionState.sessionKey,
+      storePath: sessionState.storePath,
+    });
+    assertReplyPreprocessingActive(optsWithSkillFilter);
   }
   if (!useFastTestBootstrap) {
     try {
@@ -840,14 +873,14 @@ export async function getReplyFromConfig(
     command.commandBodyNormalized.trim() === "/status";
   const statusThinkingCatalog = shouldPrepareStatusThinkingCatalog
     ? await traceGetReplyPhase("reply.prepare_status_thinking_catalog", () => {
-        assertReplyPreprocessingActive(resolvedOpts?.abortSignal);
+        assertReplyPreprocessingActive(resolvedOpts);
         return racePromiseWithAbortSignal(
           modelState.resolveThinkingCatalog(),
           resolvedOpts?.abortSignal,
         );
       })
     : undefined;
-  assertReplyPreprocessingActive(resolvedOpts?.abortSignal);
+  assertReplyPreprocessingActive(resolvedOpts);
 
   const inlineActionResult = await traceGetReplyPhase("reply.handle_inline_actions", () =>
     handleInlineActions({
@@ -948,6 +981,7 @@ export async function getReplyFromConfig(
     resolveRunModelLevels = await createReplyProbeModelLevelResolver({
       modelState: runModelState,
       abortSignal: resolvedOpts?.abortSignal,
+      assertSourceCurrent: resolvedOpts?.assertSourceCurrent,
       previous: resolveModelLevels,
       directives,
       sessionEntry,
@@ -1020,61 +1054,21 @@ export async function getReplyFromConfig(
   }
 
   if (enableLocalPathSelfServe && resolvedOpts?.disableTools !== true) {
-    const policySessionKey = resolveRuntimePolicySessionKey({
+    enableReplyLocalPathSelfServe({
       cfg,
       agentId,
-      ctx: sessionCtx,
+      sessionCtx,
       sessionKey,
+      sessionEntry,
+      workspaceDir,
+      senderIsOwner: command.senderIsOwner,
+      modelProvider: runProvider,
+      modelId: runModel,
+      toolsAllow: resolvedOpts?.toolsAllow,
+      stagedAttachmentPaths,
+      contexts: [finalized, sessionCtx],
+      enable: enableLocalPathSelfServe,
     });
-    const sandboxed = resolveSandboxRuntimeStatus({
-      cfg,
-      agentId,
-      sessionKey,
-      classificationSessionKey: policySessionKey,
-    }).sandboxed;
-    if (
-      (sandboxed && stagedAttachmentPaths.size > 0) ||
-      (!sandboxed && resolveEffectiveToolFsRootExpansionAllowed({ cfg, agentId }))
-    ) {
-      const capabilityProfile = resolveConversationCapabilityProfile({
-        config: cfg,
-        sessionKey: policySessionKey,
-        runSessionKey: policySessionKey === sessionKey ? undefined : sessionKey,
-        agentId,
-        agentAccountId: sessionCtx.AccountId,
-        messageProvider: resolveOriginMessageProvider({
-          originatingChannel: sessionCtx.OriginatingChannel,
-          provider: sessionCtx.Provider ?? sessionCtx.Surface,
-        }),
-        conversationToolPolicy: sessionCtx.ConversationToolPolicy,
-        groupId: resolveGroupSessionKey(sessionCtx)?.id,
-        groupChannel:
-          normalizeOptionalString(sessionCtx.GroupChannel) ??
-          normalizeOptionalString(sessionCtx.GroupSubject),
-        groupSpace: normalizeOptionalString(sessionCtx.GroupSpace),
-        spawnedBy: normalizeOptionalString(sessionEntry.spawnedBy),
-        senderId: normalizeOptionalString(sessionCtx.SenderId),
-        senderName: normalizeOptionalString(sessionCtx.SenderName),
-        senderUsername: normalizeOptionalString(sessionCtx.SenderUsername),
-        senderE164: normalizeOptionalString(sessionCtx.SenderE164),
-        senderIsOwner: command.senderIsOwner,
-        modelProvider: runProvider,
-        modelId: runModel,
-        workspaceDir,
-        runtimeToolAllowlist: resolvedOpts?.toolsAllow,
-        inheritRuntimeToolAllowlist: true,
-        inputProvenance: sessionCtx.InputProvenance,
-      });
-      if (
-        projectConversationToolNames({ capabilityProfile, toolNames: ["read"], warn: () => {} })
-          .length === 1
-      ) {
-        enableLocalPathSelfServe(
-          [finalized, sessionCtx],
-          stagedAttachmentPaths.size > 0 ? stagedAttachmentPaths : undefined,
-        );
-      }
-    }
   }
 
   logResolverTiming("milestone", "before_run_prepared_reply");

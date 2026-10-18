@@ -191,6 +191,7 @@ type ResolvedRouteGateFacts = Omit<RouteGateFacts, "senderAllowFrom" | "senderAl
 export type ChannelIngressEventInput = {
   kind:
     | "message"
+    | "conversation"
     | "reaction"
     | "button"
     | "postback"

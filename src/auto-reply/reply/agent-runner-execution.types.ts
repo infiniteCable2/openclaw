@@ -1,6 +1,7 @@
 import type { CompactionAccountingFact } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import type { runEmbeddedAgent } from "../../agents/embedded-agent.js";
 import type { FailoverReason } from "../../agents/failover/signal.js";
+import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
 import type { CompactionRequestBudget } from "../../agents/sessions/compaction/request-budget.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { TemplateContext } from "../templating.js";
@@ -14,6 +15,7 @@ import type { FollowupRun } from "./queue.js";
 import type { DirectBlockDelivery } from "./reply-delivery.js";
 import type { ReplyMediaContext } from "./reply-media-paths.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
+import type { ReplySpeechPresentationRun } from "./reply-speech-presentation.js";
 import type { TypingSignaler } from "./typing-mode.js";
 
 export type InternalFollowupRun = FollowupRun & {
@@ -125,6 +127,10 @@ export type ReplyAgentTurnContext = {
 
 /** Inputs shared by direct and queued agent-turn execution. */
 export type AgentTurnParams = ReplyAgentTurnContext & {
+  /** Bounded native observations prepared by this executing turn, never queued as user input. */
+  runtimeContextFragments?: RuntimeContextFragment[];
+  /** Opened once by the actual execution owner, never an ingress or queue-drain default. */
+  speechPresentationRun?: ReplySpeechPresentationRun;
   /** The admitted queued delivery owner settles every terminal outcome. */
   completionSource?: "reply-dispatch";
   replyThreading?: TemplateContext["ReplyThreading"];

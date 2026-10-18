@@ -32,6 +32,10 @@ import type {
   PendingFinalDeliveryState,
 } from "./pending-final-delivery-types.js";
 import type { SessionRestartRecoveryState } from "./restart-recovery-types.js";
+import {
+  mergeSessionConversationTopology,
+  type SessionConversationTopology,
+} from "./session-conversation-topology.js";
 import type {
   SessionCreatedActor,
   SessionActor,
@@ -624,6 +628,8 @@ export type SessionProfileInvolvement = {
 };
 
 export type InternalSessionEntryCore = SessionEntryCore & {
+  /** Host-admitted conversation membership; never an access, delivery, or task-parent grant. */
+  conversationTopology?: SessionConversationTopology;
   /** Personal discovery state, never participation, attribution, or sharing authority. */
   profileInvolvement?: { key: string; profiles: Record<string, SessionProfileInvolvement> };
   /** Transcript-wide account provenance; native binding replacement must not replace it. */
@@ -754,16 +760,17 @@ function normalizeMergedUpdatedAt(value: number | undefined, now: number): numbe
 }
 
 function mergeSessionEntryWithPolicy(
-  existing: SessionEntry | undefined,
-  patch: Partial<SessionEntry>,
+  existing: InternalSessionEntry | undefined,
+  patch: Partial<InternalSessionEntry>,
   preserveActivity = false,
-): SessionEntry {
+): InternalSessionEntry {
   const sessionId = patch.sessionId ?? existing?.sessionId ?? crypto.randomUUID();
   const updatedAt = resolveMergedUpdatedAt(existing, patch, preserveActivity);
   if (!existing) {
     return stripRetiredSessionEntryLocators(
       normalizeSessionRuntimeModelFields({
         ...patch,
+        ...mergeSessionConversationTopology(undefined, patch),
         sessionId,
         updatedAt,
         sessionStartedAt: patch.sessionStartedAt ?? updatedAt,
@@ -773,6 +780,7 @@ function mergeSessionEntryWithPolicy(
   const next = {
     ...existing,
     ...patch,
+    ...mergeSessionConversationTopology(existing, patch),
     sessionId,
     updatedAt,
     sessionStartedAt:

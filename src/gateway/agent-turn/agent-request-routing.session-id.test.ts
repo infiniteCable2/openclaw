@@ -17,7 +17,13 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
+import * as resetPhase from "../server-methods/agent-reset-phase.js";
+import * as contentPhase from "./agent-content-phase.js";
+import { prepareAgentRequestPreflight } from "./agent-request-preflight.js";
 import { prepareAgentRequestRouting } from "./agent-request-routing.js";
+import { createAgentTurnService } from "./agent-turn-service.js";
+import type { AgentTurnPrincipal } from "./types.js";
 
 it.each([
   { caller: "Gateway", sessionKey: "global" },
@@ -130,3 +136,227 @@ it.each([
     });
   },
 );
+
+function directConversationClient(): AgentTurnPrincipal {
+  return {
+    connect: {
+      minProtocol: 1,
+      maxProtocol: 1,
+      client: {
+        id: "openclaw-control-ui",
+        version: "test",
+        platform: "test",
+        mode: "backend",
+      },
+      role: "operator",
+      scopes: ["operator.admin"],
+    },
+  };
+}
+
+it("refuses direct root input before content, reset, or execution despite internal-looking payloads", async () => {
+  await withOpenClawTestState({ label: "agent-conversation-root-input" }, async (state) => {
+    const storePath = state.statePath("sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: { entries: { main: { conversationMode: "branches" } } },
+      session: { store: storePath, mainKey: "consolidation" },
+      plugins: { enabled: false },
+    };
+    await state.writeConfig(cfg);
+    setRuntimeConfigSnapshot(cfg);
+    const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+    const execution = vi.spyOn(context, "trackExecution");
+    const content = vi.spyOn(contentPhase, "prepareAgentContentPhase").mockResolvedValue(undefined);
+    const reset = vi.spyOn(resetPhase, "runAgentResetPhase");
+    const principal = directConversationClient();
+    const service = createAgentTurnService({ context, isWebchatConnect: () => false });
+    const payloads: Partial<AgentRunRequest>[] = [
+      {},
+      { sessionKey: "main" },
+      { sessionKey: "agent:main:consolidation", message: "/reset continue" },
+      { sessionKey: "main", lane: "subagent" },
+      {
+        sessionKey: "main",
+        internalEvents: [
+          {
+            type: "task_completion",
+            source: "subagent",
+            childSessionKey: "agent:main:subagent:fixture",
+            announceType: "task",
+            taskLabel: "Fixture completion",
+            status: "ok",
+            statusLabel: "completed",
+            result: "Synthetic result",
+            replyInstruction: "Summarize this result.",
+          },
+        ],
+      },
+      {
+        sessionKey: "main",
+        bootstrapContextMode: "lightweight",
+        bootstrapContextRunKind: "heartbeat",
+        sessionEffects: "internal",
+        suppressPromptPersistence: true,
+      },
+    ];
+    const invoke = async (patch: Partial<AgentRunRequest>, id: string) => {
+      const io = { emitAcceptance: vi.fn(), emitFinal: vi.fn() };
+      const request: AgentRunRequest = {
+        message: "Do not route user input to the consolidating root",
+        idempotencyKey: id,
+        ...patch,
+      };
+      const preflight = prepareAgentRequestPreflight({ request, context, client: principal, io });
+      if (!preflight) {
+        throw new Error("Fixture must reach conversation routing through native preflight");
+      }
+      await service.startTurn({ preflight, principal, io });
+      return io;
+    };
+    try {
+      for (const [index, payload] of payloads.entries()) {
+        const io = await invoke(payload, `root-input-${index}`);
+        expect(io.emitAcceptance).toHaveBeenCalledExactlyOnceWith(
+          [
+            false,
+            undefined,
+            expect.objectContaining({
+              code: "INVALID_REQUEST",
+              message: expect.stringContaining("reserves main for consolidation"),
+            }),
+          ],
+          undefined,
+        );
+        expect(io.emitFinal).not.toHaveBeenCalled();
+      }
+      await sessionAccessor.replaceSessionEntry(
+        { agentId: "main", storePath, sessionKey: "agent:main:consolidation" },
+        {
+          sessionId: "persisted-conversation-root",
+          lifecycleRevision: "root-generation",
+          updatedAt: 1,
+          createdVia: "internal",
+          createdActor: { type: "system", id: "conversation-root" },
+          visibility: "draft",
+          delivery: { kind: "none" },
+          conversationTopology: { version: 1, role: "root" },
+        },
+      );
+      cfg.agents = { entries: { main: { conversationMode: "native" } } };
+      await state.writeConfig(cfg);
+      setRuntimeConfigSnapshot(cfg);
+      for (const [index, target] of [
+        { sessionKey: "main" },
+        { sessionId: "persisted-conversation-root" },
+      ].entries()) {
+        const optedOut = await invoke(target, `persisted-root-opt-out-${index}`);
+        expect(optedOut.emitAcceptance).toHaveBeenCalledExactlyOnceWith(
+          [
+            false,
+            undefined,
+            expect.objectContaining({
+              code: "INVALID_REQUEST",
+              message: expect.stringContaining(
+                "Explicitly migrate it before changing conversation mode",
+              ),
+            }),
+          ],
+          undefined,
+        );
+      }
+      expect(content).not.toHaveBeenCalled();
+      expect(reset).not.toHaveBeenCalled();
+      expect(execution).not.toHaveBeenCalled();
+      expect(context.dedupe.size).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+      clearRuntimeConfigSnapshot();
+    }
+  });
+});
+
+it("keeps normal branches, native conversations, and host-owned task input routable", async () => {
+  await withOpenClawTestState({ label: "agent-conversation-input-origin" }, async (state) => {
+    const cfg: OpenClawConfig = {
+      agents: { entries: { main: { conversationMode: "branches" } } },
+      session: { store: state.statePath("sessions.json") },
+      plugins: { enabled: false },
+    };
+    await state.writeConfig(cfg);
+    const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+    const execution = vi.spyOn(context, "trackExecution");
+    // Stop at the next real phase: this regression needs routing, not a model or a Gateway boot.
+    const content = vi.spyOn(contentPhase, "prepareAgentContentPhase").mockResolvedValue(undefined);
+    const service = createAgentTurnService({ context, isWebchatConnect: () => false });
+    const direct = directConversationClient();
+    const internal: AgentTurnPrincipal = {
+      ...direct,
+      internal: { syntheticClient: true, agentRunTracking: "native_subagent" },
+    };
+    const cases: Array<{
+      mode: "branches" | "native";
+      sessionKey: string;
+      principal: AgentTurnPrincipal;
+      input: true | undefined;
+    }> = [
+      { mode: "branches", sessionKey: "agent:main:matrix:room", principal: direct, input: true },
+      { mode: "native", sessionKey: "main", principal: direct, input: true },
+      { mode: "branches", sessionKey: "main", principal: internal, input: undefined },
+    ];
+    try {
+      for (const [index, entry] of cases.entries()) {
+        cfg.agents = { entries: { main: { conversationMode: entry.mode } } };
+        await state.writeConfig(cfg);
+        setRuntimeConfigSnapshot(cfg);
+        if (entry.principal === internal) {
+          await sessionAccessor.replaceSessionEntry(
+            {
+              agentId: "main",
+              storePath: state.statePath("sessions.json"),
+              sessionKey: "agent:main:main",
+            },
+            {
+              sessionId: "internal-task-root",
+              lifecycleRevision: "root-generation",
+              updatedAt: 1,
+              createdVia: "internal",
+              createdActor: { type: "system", id: "conversation-root" },
+              visibility: "draft",
+              delivery: { kind: "none" },
+              conversationTopology: { version: 1, role: "root" },
+            },
+          );
+        }
+        const io = { emitAcceptance: vi.fn(), emitFinal: vi.fn() };
+        const request: AgentRunRequest = {
+          message: "Continue the admitted input",
+          idempotencyKey: `conversation-origin-${index}`,
+          sessionKey: entry.sessionKey,
+        };
+        const preflight = prepareAgentRequestPreflight({
+          request,
+          context,
+          client: entry.principal,
+          io,
+        });
+        if (!preflight) {
+          throw new Error("Fixture must pass native preflight");
+        }
+        await service.startTurn({ preflight, principal: entry.principal, io });
+        expect(io.emitAcceptance).not.toHaveBeenCalled();
+        expect(content).toHaveBeenCalledTimes(index + 1);
+        expect(content).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            conversationInput: entry.input,
+            requestedSessionKey: entry.sessionKey,
+          }),
+        );
+        expect(context.dedupe.size).toBe(0);
+      }
+      expect(execution).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      clearRuntimeConfigSnapshot();
+    }
+  });
+});

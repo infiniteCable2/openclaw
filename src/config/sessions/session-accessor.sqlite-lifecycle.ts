@@ -18,7 +18,6 @@ import {
 import { retainAgentDatabase } from "../../state/openclaw-agent-db-lifecycle.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
-  deferOpenClawAgentPostCommitPublication,
   getOpenClawAgentDatabaseIfOpen,
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
@@ -72,47 +71,19 @@ import {
   toDatabaseOptions,
   type ResolvedSqliteScope,
 } from "./session-accessor.sqlite-scope.js";
-import { kickSessionHistoryDiskBudgetMaintenance } from "./session-history-eviction.js";
+import { preserveSessionConversationTopology } from "./session-conversation-topology.js";
 import {
   captureIncognitoSessionOperation,
   captureIncognitoSessionSource,
 } from "./session-incognito-binding.js";
 import { deleteIncognitoSessionLifecycle } from "./session-incognito-lifecycle-operations.js";
+import { withCommittedHistoryMaintenance } from "./session-lifecycle-history-maintenance.js";
 import { resetSessionEntryInWorker } from "./session-reset.js";
 import { applySessionResetInDatabase } from "./session-reset.kernel.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 // Single-target lifecycle owner: reset, guarded delete, and trusted rollback.
-
-async function withCommittedHistoryMaintenance<T>(
-  { agentId, env, storePath }: { agentId?: string; env?: NodeJS.ProcessEnv; storePath: string },
-  run: (
-    recordCommit: (database: OpenClawAgentDatabase) => void,
-    markCommitted: () => void,
-  ) => Promise<T>,
-  options: { scheduleNext?: boolean } = {},
-): Promise<T> {
-  let committed = false;
-  try {
-    return await run(
-      (database) => {
-        deferOpenClawAgentPostCommitPublication(database, () => {
-          committed = true;
-        });
-      },
-      () => {
-        committed = true;
-      },
-    );
-  } finally {
-    // A partial commit still needs maintenance, but only after archive publication and
-    // lifecycle-owner cleanup finish. Rejected preparation or rollback creates no pressure.
-    if (committed && options.scheduleNext !== false) {
-      kickSessionHistoryDiskBudgetMaintenance({ agentId, env, storePath, force: true });
-    }
-  }
-}
 
 export async function resetSessionEntryLifecycle(
   params: ResetSessionEntryLifecycleParams,
@@ -156,10 +127,15 @@ export async function resetSessionEntryLifecycle(
           const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
           const targetSnapshot = readLifecycleTargetSnapshot(database, params.target);
           const current = targetSnapshot[0];
-          const nextEntry = await params.buildNextEntry({
+          const conversationTopology = preserveSessionConversationTopology(current?.entry);
+          const builtEntry = await params.buildNextEntry({
             currentEntry: current ? structuredClone(current.entry) : undefined,
             primaryKey: params.target.canonicalKey,
           });
+          const nextEntry = {
+            ...builtEntry,
+            ...conversationTopology,
+          };
           const mutation: ResetSessionEntryLifecycleMutation = {
             nextEntry: structuredClone(nextEntry),
             ...(current ? { previousEntry: structuredClone(current.entry) } : {}),

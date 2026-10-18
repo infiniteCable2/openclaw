@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
+import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import { resolveActiveTalkProviderConfig } from "../../config/talk.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { createMeetingRealtimeEngineBindingsV2 } from "../../meeting-bot/conversation-bindings.js";
 import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 import type { RealtimeTranscriptionProviderConfig } from "../../realtime-transcription/provider-types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createClientVoiceConfirmationReadiness } from "../../talk/client-voice-confirmation-readiness.js";
+import { forgetUnifiedTalkSession, getUnifiedTalkSession } from "../../talk/session-registry.js";
 import { prepareSpeechGreeting } from "../../talk/speech/greeting.js";
 import { prepareSpeechSession } from "../../talk/speech/preparation.js";
 import { resolveTalkSpeechAgentProfile } from "../../talk/speech/profile.js";
@@ -16,22 +19,19 @@ import type { SpeechSessionHandle } from "../../talk/speech/types.js";
 import type { TalkEvent } from "../../talk/talk-session-controller.js";
 import { VOICE_TRANSCRIPT_QUEUE_POLICY } from "../../talk/voice-transcript.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
-import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
+import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
 import type { TalkAgentConsultAuthority } from "./client-gateway-control.js";
+import { createGatewayTalkConversationInputSource } from "./conversation-input-source.js";
 import { decodeTalkRelayAudioBase64 } from "./relay-audio-base64.js";
 import {
   closeRelayVoiceSession,
-  enqueueRelayVoiceTranscript,
   ensureRelayVoiceSession,
   type RelayVoiceSessionOwner,
 } from "./relay/voice.js";
-import {
-  forgetUnifiedTalkSession,
-  getUnifiedTalkSession,
-  rememberTalkSpeechRelaySession,
-} from "./session-registry.js";
+import { rememberTalkSpeechRelaySession } from "./session-registry.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 import { buildTalkTtsConfig } from "./speech-config.js";
+import { createNativeSpeechConfirmation } from "./speech-confirmation.js";
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const PLAYBACK_READY_TIMEOUT_MS = 30_000;
@@ -57,7 +57,9 @@ export async function createTalkSpeechRelaySession(params: {
   cfg: OpenClawConfig;
   sessionTarget: PreparedTalkSessionTarget;
   authority: TalkAgentConsultAuthority;
+  captureOperatorAuthority?: TalkOperatorRunSource;
   callerId?: string;
+  participant?: SessionParticipantIdentity;
   provider: RealtimeTranscriptionProviderPlugin;
   providerConfig: RealtimeTranscriptionProviderConfig;
   capabilities?: readonly ("voice-selection" | "isolated-input" | "output-gate")[];
@@ -156,9 +158,8 @@ export async function createTalkSpeechRelaySession(params: {
       typeof payload.text === "string"
     ) {
       const role = talkEvent.type === "transcript.done" ? "user" : "assistant";
-      if (!enqueueRelayVoiceTranscript(voice, role, payload.text)) {
-        throw new Error("Talk speech transcript could not be admitted");
-      }
+      // Native getReply is the one ordinary user/assistant transcript writer.
+      // Harness captions are presentation, not proof of a committed user input.
       broadcast({ type: "transcript", role, text: payload.text, final: true, talkEvent });
     } else {
       broadcast({ type: talkEvent.type === "session.ready" ? "ready" : "event", talkEvent });
@@ -336,19 +337,59 @@ export async function createTalkSpeechRelaySession(params: {
       );
   }, SESSION_TTL_MS);
   expiryTimer.unref?.();
-  const createRunner = (authority: TalkAgentConsultAuthority) =>
-    createTalkClientAgentConsultRunner({
-      config: params.cfg,
-      speechTts: { config: speechConfig, channelId: "talk" },
-      context: params.context,
-      sessionTarget: params.sessionTarget,
-      ownerConnId: params.connId,
-      authority,
-      getVoiceSessionId: () => (lifetime.signal.aborted ? undefined : id),
-      initialItems: [],
-      surface: "a server-processed Talk speech session",
-    });
-  const runner = createRunner(params.authority);
+  const bindings = createMeetingRealtimeEngineBindingsV2({
+    platform: {
+      id: "talk",
+      displayName: "Talk",
+      logScope: "talk",
+      agentConsult: {
+        surface: "a server-processed Talk speech session",
+        userLabel: "User",
+        assistantLabel: "Assistant",
+        questionSourceLabel: "user",
+        workingResponseLabel: "the request",
+        extraSystemPrompt: "Respond naturally for a live spoken conversation.",
+      },
+      session: { idPrefix: "talk", participantIdentity: () => "gateway-caller" },
+    },
+    inputSource: createGatewayTalkConversationInputSource({
+      target: params.sessionTarget,
+      conversationId: id,
+      getRuntimeConfig: params.context.getRuntimeConfig,
+      captureOperatorAuthority: params.captureOperatorAuthority ?? (async () => undefined),
+      authority: params.authority,
+      participant: params.participant,
+      assertInputCurrent: assertActive,
+      resolveGatewayContext: () => params.context,
+    }),
+    agentId: params.sessionTarget.agentId,
+    conversationId: id,
+    assertOutputCurrent: assertActive,
+    ttsContext: { agentId: params.sessionTarget.agentId, channelId: "talk" },
+    config: {
+      realtime: {
+        agentId: params.sessionTarget.agentId,
+        toolPolicy: params.authority.toolsAllow ? "safe-read-only" : "inherit",
+        speakCommentary: profile.speakCommentary,
+      },
+    },
+    fullConfig: speechConfig,
+    runtime: createPluginRuntime(),
+    logger: params.context.logGateway,
+    connectionPresentation: {
+      kind: "browser",
+      channel: "talk",
+      label: "Browser speech conversation",
+      readTarget: {
+        agentId: params.sessionTarget.agentId,
+        sessionKey: params.sessionTarget.canonicalKey,
+      },
+      input: { audio: true },
+      output: { audio: true },
+      operations: ["current-turn-reply", "cancel-output"],
+      assertCurrent: assertActive,
+    },
+  });
   const config = {
     audioFormat: "pcm16-24khz" as const,
     inputAudioFormat: "pcm16-16khz" as const,
@@ -358,6 +399,16 @@ export async function createTalkSpeechRelaySession(params: {
     responseStreaming: profile.responseStreaming,
     ...(profile.waitingAudio ? { waitingAudio: profile.waitingAudio } : {}),
   };
+  const nativeInput = createNativeSpeechConfirmation({
+    agentId: params.sessionTarget.agentId,
+    sessionKey: params.sessionTarget.sessionKey,
+    canonicalSessionKey: params.sessionTarget.canonicalKey,
+    voiceSessionId: id,
+    config: params.cfg,
+    dispatch: bindings.nativeInput,
+    onOutputFailure: (error) =>
+      params.context.logGateway.warn(`Talk speech confirmation output failed: ${String(error)}`),
+  });
   construction = (async () => {
     const runtime = createPluginRuntime();
     assertActive();
@@ -380,12 +431,12 @@ export async function createTalkSpeechRelaySession(params: {
       }
       const greeting = profile.greeting;
       // Preparing an opening sentence is not permission to execute user tools.
-      const greetingRunner = createRunner({ ...params.authority, toolsAllow: [] });
       try {
         initialGreeting = await prepareSpeechGreeting({
           cfg: speechConfig,
           runtime,
-          consultAgent: (consult) => greetingRunner.runSpeechConsult(consult, assertActive),
+          consultAgent: ({ sessionId, ...consult }) =>
+            bindings.consultAgent({ ...consult, meetingSessionId: sessionId }),
           sessionId: id,
           requesterSessionKey: params.sessionTarget.canonicalKey,
           callerId:
@@ -434,13 +485,16 @@ export async function createTalkSpeechRelaySession(params: {
       providers: [params.provider],
       consultAgent: async (consult) => {
         assertActive();
-        await voice.confirmationReadiness.wait(consult.abortSignal);
-        assertActive();
-        return runner.runSpeechConsult(
-          { ...consult, speakCommentary: profile.speakCommentary },
-          assertActive,
-        );
+        return bindings.consultAgent({ ...consult, meetingSessionId: consult.sessionId });
       },
+      nativeInput: async (consult) => {
+        assertActive();
+        if (!ensureRelayVoiceSession(voice)) {
+          throw new Error("Talk speech input requires its recorded voice session");
+        }
+        return nativeInput(consult);
+      },
+      connectionPresentation: bindings.connectionPresentation,
       onTalkEvent: publishEvent,
     });
     assertActive();

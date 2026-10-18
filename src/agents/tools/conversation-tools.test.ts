@@ -95,7 +95,7 @@ describe("conversation tools", () => {
     expect(Value.Check(send.outputSchema!, sendResult.details)).toBe(true);
     expect(Value.Check(turn.outputSchema!, turnResult.details)).toBe(true);
     expect(compactToolOutputHint(list.outputSchema)).toBe(
-      '{ conversations: Array<{ accountId: string; channel: string; conversationRef: string; firstSeenAt: number; kind: "direct" | "group" | "channel"; lastSeenAt: number; target: string; contextRelation?: "current" | "parent"; label?: string; threadId?: string }> }',
+      '{ conversations: Array<{ accountId: string; channel: string; conversationRef: string; firstSeenAt: number; kind: "direct" | "group" | "channel"; lastSeenAt: number; target: string; channelCapabilities?: { media?: boolean; voiceOutput?: "audio-file" | "voice-note" }; channelLabel?: string; contextRelation?: "current" | "parent"; label?: string; threadId?: string }>; activeConnections?: Array<{ channel: string; connectionRef: string; input: { audio: boolean; text?: boolean; video?: boolean }; kind: "call" | "assistant" | "browser"; label: string; operations: Array<"current-turn-reply" | "steer" | "cancel-output">; output: { audio: boolean }; state: "preparing" | "ready" }> }',
     );
     expect(compactToolOutputHint(send.outputSchema)).toBe(
       '{ channel: string; conversationRef: string; status: "sent" | "queued" | "suppressed" | "unknown"; messageId?: string; queueId?: string }',

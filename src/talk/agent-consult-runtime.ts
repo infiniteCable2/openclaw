@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   buildAgentRunTerminalOutcomeFromLifecycleEvent,
   classifyAgentRunTerminalOutcome,
@@ -25,7 +24,10 @@ import {
   resolveRealtimeVoiceContextSource,
   type RealtimeVoiceAgentConsultContextMode,
 } from "./agent-consult-session.js";
-import { createRealtimeVoiceConsultSpeechDelivery } from "./agent-consult-speech-delivery.js";
+import {
+  createRealtimeVoiceConsultSpeechDelivery,
+  resolveRealtimeVoiceYieldAcknowledgment,
+} from "./agent-consult-speech-delivery.js";
 import {
   buildRealtimeVoiceAgentConsultPrompt,
   type RealtimeVoiceAgentConsultTranscriptEntry,
@@ -62,10 +64,6 @@ export type RealtimeVoiceAgentConsultSpeechEvent =
   | ({ type: "chunk" } & RealtimeVoiceSpeechUtterance)
   | { type: "done"; text: string }
   | { type: "abort" };
-
-const REALTIME_VOICE_YIELD_ACK_MAX_CHARS = 500;
-const REALTIME_VOICE_YIELD_ACK_FALLBACK =
-  "I started that work and will share the result when it is ready.";
 
 /**
  * Sender-auth contract revision for official realtime voice plugins.
@@ -565,14 +563,7 @@ export async function consultRealtimeVoiceAgent(params: {
         const result = await runPromise;
         assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
         const yielded = result.meta?.yielded === true;
-        const acknowledgment = yielded
-          ? (typeof result.meta.yieldAcknowledgment === "string"
-              ? truncateUtf16Safe(
-                  result.meta.yieldAcknowledgment.replaceAll(/\s+/g, " ").trim(),
-                  REALTIME_VOICE_YIELD_ACK_MAX_CHARS,
-                )
-              : "") || REALTIME_VOICE_YIELD_ACK_FALLBACK
-          : undefined;
+        const acknowledgment = resolveRealtimeVoiceYieldAcknowledgment(result.meta);
         return await speechDelivery.finish({
           yielded,
           acknowledgment,

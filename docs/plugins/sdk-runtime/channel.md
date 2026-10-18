@@ -11,6 +11,43 @@ Channel-specific runtime helpers, available when a channel plugin is loaded. Par
 
 ## Channel namespaces
 
+### Text-free conversation input admission
+
+A registered channel runtime may expose
+`channel.inbound.ingress.conversation.version === 1`. Its `admitInput` operation
+consumes an original host-bound ingress result without constructing a synthetic
+chat message. Policy-only runtimes cannot issue this admission.
+
+Resolve policy separately for each logical input, including spoken additions
+and greeting preparation. Use the `conversation` event kind with inbound
+authorization and `mayPair: false`; a call must not initiate pairing as a side
+effect. Bind the result to the original channel, account, principal,
+conversation, route and input ID, then pass it to `admitInput` with the exact
+agent, conversation ID, input ID and purpose (`user`, `steering` or `greeting`).
+The original resolver's `contextBinding.messageId` must equal that input ID;
+missing or mismatched identities are refused before consuming the handoff.
+Supply `context` with the original canonical channel, sender, conversation,
+route, reply and access-policy facts. It contains no transcript, message body,
+arbitrary context overrides, or history-read grant. The resolver's
+`contextBinding.sessionKey` is the final dispatch target, which may differ from
+the source chat's `routeSessionKey`. Preserve the native route object's binding
+observation when deriving that target; do not manufacture a binding from IDs.
+The transport supplies a live assertion and optional abort signal for input
+acceptance.
+
+The returned `ConversationInputAdmissionV1` is an opaque, single-use host
+capability. Copies or serialized metadata do not preserve it. The host checks
+input liveness before acceptance and retains original authorization separately
+for accepted work; closing audio is not itself an instruction to cancel that
+work. This capability is not a session-history read grant, an owner grant, a
+task-spawn relationship or a replacement for the native model-run admission.
+After consumption, the host projects actual recognized speech into the native
+reply context exactly once. It reuses the original participant, requester,
+command-owner and admission-evidence bindings, without resolving or consuming
+the original ingress a second time.
+The existing sender-auth revision and ordinary message-context APIs remain
+unchanged.
+
 <AccordionGroup>
   <Accordion title="api.runtime.channel">
     Channel-specific runtime helpers (available when a channel plugin is loaded). Grouped by concern:

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
@@ -8,6 +9,7 @@ import type { SpeechAudioFormat } from "./audio-format.js";
 import type { SpeechSessionPreparation } from "./preparation.js";
 import { normalizeSpeechPromptText } from "./support.js";
 import type { SpeechAudioTransport } from "./transport.js";
+import type { SpeechInputIdentity } from "./types.js";
 
 const MAX_GREETING_CHARS = 300;
 const MAX_GREETING_AUDIO_BYTES = 24_000 * 2 * 15;
@@ -71,14 +73,16 @@ export async function playSpeechGreeting(params: {
 export async function prepareSpeechGreeting(params: {
   cfg: OpenClawConfig;
   runtime: PluginRuntime;
-  consultAgent: (params: {
-    sessionId: string;
-    requesterSessionKey?: string;
-    args: unknown;
-    transcript: Array<{ role: "user" | "assistant"; text: string }>;
-    abortSignal?: AbortSignal;
-    speechExpressionCaptureOnly?: true;
-  }) => Promise<RealtimeVoiceAgentConsultResult>;
+  consultAgent: (
+    params: Partial<SpeechInputIdentity> & {
+      sessionId: string;
+      requesterSessionKey?: string;
+      args: unknown;
+      transcript: Array<{ role: "user" | "assistant"; text: string }>;
+      abortSignal?: AbortSignal;
+      speechExpressionCaptureOnly?: true;
+    },
+  ) => Promise<RealtimeVoiceAgentConsultResult>;
   sessionId: string;
   requesterSessionKey?: string;
   callerId: string;
@@ -104,6 +108,8 @@ export async function prepareSpeechGreeting(params: {
   const result = await racePromiseWithAbortSignal(
     params.consultAgent({
       sessionId: params.sessionId,
+      inputId: randomUUID(),
+      purpose: "greeting",
       requesterSessionKey: params.requesterSessionKey,
       args: {
         question: [

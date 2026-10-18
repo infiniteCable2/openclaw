@@ -1,3 +1,4 @@
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { createLazyPromise } from "../../shared/lazy-promise.js";
@@ -26,6 +27,7 @@ export type ReplyModelLevelResolver = () => Promise<ReplyModelLevels>;
 export function createReplyModelLevelResolver(params: {
   selection: ReplyModelLevelSelection;
   abortSignal?: AbortSignal;
+  assertSourceCurrent?: SessionSourceAssertion;
   modelState: Pick<
     Awaited<ReturnType<typeof createModelSelectionState>>,
     "resolveDefaultThinkingLevel" | "resolveDefaultReasoningLevel"
@@ -34,7 +36,7 @@ export function createReplyModelLevelResolver(params: {
   const { selection, modelState, abortSignal } = params;
   const resolveLevels = createLazyPromise(
     async () => {
-      assertReplyPreprocessingActive(abortSignal);
+      assertReplyPreprocessingActive(params);
       const { provider, model, agentRuntime } = selection;
       const resolvedThinkLevel =
         selection.thinkLevel ??
@@ -43,7 +45,7 @@ export function createReplyModelLevelResolver(params: {
           abortSignal,
         ));
       // Shared catalog discovery may continue, but the canceled reply cannot use it.
-      assertReplyPreprocessingActive(abortSignal);
+      assertReplyPreprocessingActive(params);
       const resolvedReasoningLevel =
         !selection.reasoningExplicit &&
         selection.reasoningLevel === "off" &&
@@ -59,9 +61,9 @@ export function createReplyModelLevelResolver(params: {
     { cacheRejections: true },
   );
   return async () => {
-    assertReplyPreprocessingActive(abortSignal);
+    assertReplyPreprocessingActive(params);
     const levels = await resolveLevels();
-    assertReplyPreprocessingActive(abortSignal);
+    assertReplyPreprocessingActive(params);
     return levels;
   };
 }
@@ -70,6 +72,7 @@ export function createReplyModelLevelResolver(params: {
 export async function createReplyProbeModelLevelResolver(params: {
   modelState: Awaited<ReturnType<typeof createModelSelectionState>>;
   abortSignal?: AbortSignal;
+  assertSourceCurrent?: SessionSourceAssertion;
   previous: ReplyModelLevelResolver;
   directives: Pick<InlineDirectives, "thinkLevel" | "clearThinkLevel" | "reasoningLevel">;
   sessionEntry: Pick<SessionEntry, "thinkingLevel" | "reasoningLevel">;
@@ -77,7 +80,7 @@ export async function createReplyProbeModelLevelResolver(params: {
   configuredThinkingDefault?: ThinkLevel;
   hasConfiguredReasoningDefault: boolean;
 }): Promise<ReplyModelLevelResolver> {
-  assertReplyPreprocessingActive(params.abortSignal);
+  assertReplyPreprocessingActive(params);
   const hasTurnOrSessionThinkLevel =
     normalizeThinkLevel(params.thinkingLevelOverride) !== undefined ||
     params.directives.thinkLevel !== undefined ||
@@ -92,10 +95,11 @@ export async function createReplyProbeModelLevelResolver(params: {
     params.hasConfiguredReasoningDefault;
   const previous =
     hasTurnOrSessionThinkLevel || hasExplicitReasoningLevel ? await params.previous() : undefined;
-  assertReplyPreprocessingActive(params.abortSignal);
+  assertReplyPreprocessingActive(params);
   return createReplyModelLevelResolver({
     modelState: params.modelState,
     abortSignal: params.abortSignal,
+    assertSourceCurrent: params.assertSourceCurrent,
     selection: {
       provider: params.modelState.provider,
       model: params.modelState.model,

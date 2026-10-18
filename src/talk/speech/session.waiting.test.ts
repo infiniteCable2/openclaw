@@ -4,7 +4,7 @@ import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 import type { RealtimeTranscriptionSessionCreateRequest } from "../../realtime-transcription/provider-types.js";
 import { startSpeechSession } from "./session.js";
-import type { SpeechAgentConsultParams } from "./types.js";
+import type { SpeechAgentConsultParams, SpeechNativeInputParams } from "./types.js";
 import { createSpeechWaitingAudioPlayback } from "./waiting-audio.js";
 
 vi.mock("./waiting-audio.js", async (importOriginal) => ({
@@ -20,6 +20,9 @@ async function setup(options?: {
   initialGreeting?: { text: string; audio: Buffer };
   remoteReady?: Promise<void>;
   fullDuplexEchoWindow?: boolean;
+  nativeInput?: (
+    input: SpeechNativeInputParams,
+  ) => Promise<import("../conversation-reply.js").ConversationReplyResult>;
 }) {
   let callbacks!: RealtimeTranscriptionSessionCreateRequest;
   let consult!: SpeechAgentConsultParams;
@@ -88,6 +91,7 @@ async function setup(options?: {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     providers: [provider],
     consultAgent,
+    nativeInput: options?.nativeInput,
   });
   const playback = vi.mocked(createSpeechWaitingAudioPlayback).mock.results.at(-1)!.value;
   return {
@@ -127,6 +131,44 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("speech-confirmed waiting audio", () => {
+  it("routes real STT input through the native owner and shares its existing synthesis queue", async () => {
+    const admitted = createDeferred<SpeechNativeInputParams>();
+    const completed = createDeferred<import("../conversation-reply.js").ConversationReplyResult>();
+    const nativeInput = vi.fn((input: SpeechNativeInputParams) => {
+      input.onNativeRunBound?.({
+        runId: "native-model-run",
+        sessionId: "native-session",
+        abortSignal: new AbortController().signal,
+        assertCurrent() {},
+      });
+      admitted.resolve(input);
+      return completed.promise;
+    });
+    const f = await setup({ nativeInput });
+    try {
+      f.callbacks.onTranscript("A real caller request.", { utteranceId: "caller-input" });
+      const input = await admitted.promise;
+      expect(f.consultAgent).not.toHaveBeenCalled();
+      expect(input).toMatchObject({ purpose: "user", queueMode: "followup", transcript: [] });
+      await input.onSpeakableText?.({ type: "chunk", text: "Native spoken answer." });
+      await f.readerStarted.promise;
+      f.audio().enqueue(Uint8Array.from([1, 0, 2, 0]));
+      f.audio().close();
+      await input.onSpeakableText?.({ type: "done", text: "Native spoken answer." });
+      completed.resolve({
+        kind: "reply",
+        reply: { text: "Native spoken answer.", delivered: true },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.synthesis).toHaveBeenCalledOnce();
+      expect(f.writeOutput).toHaveBeenCalled();
+      expect(nativeInput).toHaveBeenCalledOnce();
+    } finally {
+      completed.resolve({ kind: "reply", reply: { text: "" } });
+      await f.close();
+    }
+  });
+
   it("does not schedule greeting playback after stop settles remote readiness", async () => {
     const remoteReady = createDeferred();
     const f = await setup({

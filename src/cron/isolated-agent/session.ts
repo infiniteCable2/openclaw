@@ -16,13 +16,14 @@ import {
   type SessionFreshness,
 } from "../../config/sessions/reset-policy.js";
 import { readSessionEntriesFromStoreInWorker } from "../../config/sessions/session-accessor.js";
+import { preserveSessionConversationTopology } from "../../config/sessions/session-conversation-topology.js";
 import {
   preserveSessionInheritedToolPolicy,
   preserveSqliteSameKeySessionRolloverLineage,
 } from "../../config/sessions/session-entry-lineage.js";
 import { preserveCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-runtime.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
 const FRESH_CRON_CARRIED_PREFERENCE_FIELDS = [
@@ -287,6 +288,8 @@ export function resolveCronSession(
     // Fresh cron sessions keep user preference/auth overrides but drop resume
     // handles and auto-fallback model overrides that belong to the old run.
     ...baseEntry,
+    // A different source contributes preferences, never its conversation membership.
+    ...preserveSessionConversationTopology(targetEntry),
     skillLibrarySelections: structuredClone(
       targetEntry?.skillLibrarySelections ??
         params.skillLibrarySelections ??

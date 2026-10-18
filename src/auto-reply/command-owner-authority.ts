@@ -40,9 +40,13 @@ export function getCommandOwnerAuthority(context: object): CommandOwnerAuthority
 /** Fence a turn that admitted owner tools against later identity or role revocation. */
 export function captureCommandOwnerAssertion(context: object): CommandOwnerAssertion | undefined {
   const authority = getCommandOwnerAuthority(context);
-  if (!authority) {
-    return undefined;
-  }
+  return authority && prepareCommandOwnerAssertion(authority);
+}
+
+/** Text and media ingress keep the same owner-revocation and recovery contract. */
+export function prepareCommandOwnerAssertion(
+  authority: CommandOwnerAuthority,
+): CommandOwnerAssertion {
   return Object.assign(
     () => {
       if (!authority.isCurrent()) {

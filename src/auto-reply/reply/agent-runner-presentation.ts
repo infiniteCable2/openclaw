@@ -181,7 +181,8 @@ export function createAgentTurnPresentation(params: {
   const blockReplyPipeline = params.turn.blockReplyPipeline;
   // One handler owns threading and direct-send dedupe for this fallback cycle.
   const blockReplyHandler =
-    params.turn.opts?.onPreparedBlockReply || params.turn.opts?.onBlockReply
+    params.turn.speechPresentationRun?.onBlockReply ??
+    (params.turn.opts?.onPreparedBlockReply || params.turn.opts?.onBlockReply
       ? createBlockReplyDeliveryHandler({
           onBlockReply: (payload, context) =>
             deliverPreparedBlockReply(params.turn.opts, payload, context),
@@ -198,7 +199,7 @@ export function createAgentTurnPresentation(params: {
           blockReplyPipeline,
           directBlockDeliveries: params.directBlockDeliveries,
         })
-      : undefined;
+      : undefined);
 
   return {
     presentPartialReply,

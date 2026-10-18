@@ -51,7 +51,11 @@ import {
   applyMcpAppModelContext,
   type AppContextTurnParams,
 } from "./agent-runner-execution-mcp-context.js";
-import { runAgentTurnWithOutcome } from "./agent-runner-execution-outcome.js";
+import {
+  buildAbortedAgentTurnExecutionResult,
+  buildAgentTurnExecutionResult,
+  runAgentTurnWithOutcome,
+} from "./agent-runner-execution-outcome.js";
 import type {
   AgentTurnCompaction,
   AgentTurnExecutionResult,
@@ -90,6 +94,10 @@ import {
   markReplyOperationExecutionStarted,
   retainReplyOperationUntilComplete,
 } from "./reply-run-registry.js";
+import {
+  resolveReplySpeechOutputOwner,
+  withReplySpeechPresentation,
+} from "./reply-speech-presentation.js";
 import { isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { resolveReplyRunTrigger } from "./reply-turn-kind.js";
 
@@ -530,6 +538,10 @@ async function executeAgentTurnOutcome(
   executionParams: AppContextTurnParams,
   runId: string,
 ): Promise<AgentTurnExecutionResult> {
+  executionParams.followupRun.assertSourceCurrent?.();
+  executionParams.replyOperation?.bindSpeechOutputOwner(
+    resolveReplySpeechOutputOwner(executionParams.followupRun.speechPresentation),
+  );
   const requester = executionParams.followupRun.operatorAuthority;
   if (requester) {
     assertAdmittedRunOperatorAuthority(requester);
@@ -537,6 +549,7 @@ async function executeAgentTurnOutcome(
   }
   let modelContextLease: AppContextTurnParams["mcpAppContextLease"];
   const prepareMcpAppModelContext = async () => {
+    executionParams.followupRun.assertSourceCurrent?.();
     requester?.assertCurrent();
     modelContextLease = executionParams.isHeartbeat
       ? undefined
@@ -547,14 +560,11 @@ async function executeAgentTurnOutcome(
           requesterId: requester?.profileId,
         });
     requester?.assertCurrent();
+    executionParams.followupRun.assertSourceCurrent?.();
     return modelContextLease;
   };
   // Keep committed facts outside cleanup so a restart cannot erase them.
   const compaction: AgentTurnCompaction = { count: 0, durable: [] };
-  const completedCompaction = () =>
-    compaction.count > 0
-      ? { compaction: { count: compaction.count, durable: [...compaction.durable] } }
-      : {};
   let terminalOutcomeCommitted = false;
   // Settlement freezes cancellation once, including failure exits through finally.
   const commitTerminalOutcome = () => {
@@ -572,6 +582,23 @@ async function executeAgentTurnOutcome(
         const gatewayContextResolver =
           readChannelContextGatewayContextResolver(executionParams.sessionCtx) ??
           getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
+        const originalSource = composeSessionSourceAssertion([
+          executionParams.followupRun.assertSourceCurrent,
+          executionParams.followupRun.run.senderIsOwner === true
+            ? captureCommandOwnerAssertion(executionParams.followupRun.run)
+            : undefined,
+          executionParams.followupRun.run.internalEventExecution?.assertCurrent,
+        ]);
+        const conversationKnowledge =
+          resolveReplyRunTrigger(executionParams) === "user"
+            ? (await import("./conversation-knowledge.js")).createReplyConversationKnowledgeTurn({
+                turn: executionParams,
+                originalSource,
+                getRuntimeConfig: () =>
+                  resolveQueuedReplyRuntimeConfig(executionParams.followupRun.run.config),
+              })
+            : undefined;
+        const runSource = conversationKnowledge?.assertCurrent ?? originalSource;
         const preparedRunAdmission = prepareChannelRunAdmission({
           sourceContext: executionParams.followupRun.run,
           cfg: resolveQueuedReplyRuntimeConfig(executionParams.followupRun.run.config),
@@ -582,12 +609,7 @@ async function executeAgentTurnOutcome(
           operatorAuthority: executionParams.followupRun.operatorAuthority,
           evidence: executionParams.followupRun.channelAdmissionEvidence,
           gatewayLocalUserIngress: executionParams.followupRun.gatewayLocalUserIngress,
-          assertSourceCurrent: composeSessionSourceAssertion([
-            executionParams.followupRun.run.senderIsOwner === true
-              ? captureCommandOwnerAssertion(executionParams.followupRun.run)
-              : undefined,
-            executionParams.followupRun.run.internalEventExecution?.assertCurrent,
-          ]),
+          assertSourceCurrent: runSource,
           onAdmitted: (context) => {
             bindGatewayContextResolver(context, gatewayContextResolver);
             admittedRunContext.current = context;
@@ -607,22 +629,50 @@ async function executeAgentTurnOutcome(
           }),
         });
         try {
-          return await executeAgentTurnInternalLoop(
-            executionParams,
-            runId,
-            commitTerminalOutcome,
-            prepareMcpAppModelContext,
-            preparedRunAdmission,
-            admittedRunContext,
-            deferredLifecycle,
-            compaction,
+          await conversationKnowledge?.prepare(preparedRunAdmission, deferredLifecycle.signal);
+          preparedRunAdmission.assertSourceCurrent();
+          return await withReplySpeechPresentation(
+            executionParams.followupRun.speechPresentation,
+            {
+              runId,
+              sessionId: executionParams.followupRun.run.sessionId,
+              abortSignal: deferredLifecycle.signal,
+              assertCurrent: preparedRunAdmission.assertSourceCurrent,
+            },
+            async (speechPresentationRun) => {
+              const result = await executeAgentTurnInternalLoop(
+                {
+                  ...executionParams,
+                  speechPresentationRun,
+                  runtimeContextFragments: [
+                    ...(executionParams.runtimeContextFragments ?? []),
+                    ...(conversationKnowledge?.fragments ?? []),
+                  ],
+                },
+                runId,
+                commitTerminalOutcome,
+                prepareMcpAppModelContext,
+                preparedRunAdmission,
+                admittedRunContext,
+                deferredLifecycle,
+                compaction,
+              );
+              await conversationKnowledge?.record(result);
+              return result;
+            },
           );
         } finally {
           try {
             await deferredLifecycle.complete();
           } finally {
             await drainAgentRunTerminalWrites(preparedRunAdmission.operationalRunInstance).finally(
-              preparedRunAdmission.close,
+              () => {
+                try {
+                  conversationKnowledge?.release();
+                } finally {
+                  preparedRunAdmission.close();
+                }
+              },
             );
           }
         }
@@ -635,27 +685,13 @@ async function executeAgentTurnOutcome(
       internal.kind !== "aborted" &&
       resolveReplyOperationAbortReason(executionParams.replyOperation);
     if (abortReason) {
-      return { runId, outcome: { kind: "aborted", reason: abortReason, ...completedCompaction() } };
+      return buildAbortedAgentTurnExecutionResult(runId, abortReason, compaction);
     }
-    const outcome: AgentTurnExecutionResult["outcome"] =
-      internal.kind === "final"
-        ? {
-            kind: "rejected",
-            payload: internal.payload,
-            resolved: internal.resolved,
-            ...(internal.postCompactionModelFailure
-              ? { postCompactionModelFailure: internal.postCompactionModelFailure }
-              : {}),
-          }
-        : internal;
-    return {
-      runId,
-      outcome: { ...outcome, ...completedCompaction() },
-    };
+    return buildAgentTurnExecutionResult(runId, internal, compaction);
   } catch (error) {
     const abortReason = resolveReplyOperationAbortReason(executionParams.replyOperation, error);
     if (abortReason) {
-      return { runId, outcome: { kind: "aborted", reason: abortReason, ...completedCompaction() } };
+      return buildAbortedAgentTurnExecutionResult(runId, abortReason, compaction);
     }
     throw error;
   }

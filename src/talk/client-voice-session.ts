@@ -4,12 +4,9 @@ import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import {
   appendTranscriptMessage,
   loadSessionEntryReadOnly,
-  patchSessionEntryCore,
   publishTranscriptUpdate,
 } from "../config/sessions/session-accessor.js";
-import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
-import { sessionEntryCommitGuardOptions } from "../config/sessions/session-source-authority.js";
-import { mergeSessionEntry } from "../config/sessions/types.js";
+import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   onTrustedInternalDiagnosticEvent,
@@ -55,6 +52,7 @@ import {
   VOICE_SESSION_STALE_AFTER_MS as STALE_AFTER_MS,
   writeVoiceSessionRecordInTransaction as writeRecordInTransaction,
 } from "./client-voice-session-store.js";
+import { recordVoiceConversationObservation } from "./voice-conversation-knowledge.js";
 import {
   buildPersistedVoiceMessage,
   VoiceTranscriptOperationRegistry,
@@ -62,6 +60,8 @@ import {
   VOICE_TRANSCRIPT_MAX_UNRESOLVED,
   voiceTranscriptEventId,
 } from "./voice-transcript.js";
+
+export { ensureClientVoiceAgentSessionEntry } from "./client-voice-session-initialization.js";
 
 type ClientVoiceRun = {
   binding: ClientVoiceRunBinding;
@@ -240,51 +240,6 @@ export function resolveClientVoiceAgentSessionId(params: {
   return loadSessionEntryReadOnly(params)?.sessionId?.trim() || undefined;
 }
 
-/** Ensure Talk has the same canonical agent-session row that chat turns append to. */
-export async function ensureClientVoiceAgentSessionEntry(params: {
-  agentId: string;
-  sessionKey: string;
-  storePath?: string;
-  deadlineAt?: number;
-  assertCommitAllowed?: () => void;
-  creation?: Pick<Parameters<typeof buildSessionCreationStamp>[0], "actor" | "sandbox">;
-}): Promise<string> {
-  const commitGuard = sessionEntryCommitGuardOptions(params.assertCommitAllowed);
-  const created = await patchSessionEntryCore(
-    params,
-    (_entry, context) => {
-      if (context.existingEntry?.sessionId) {
-        return null;
-      }
-      if (context.existingEntry) {
-        return { sessionId: randomUUID() };
-      }
-      return buildSessionCreationStamp({
-        via: "talk",
-        actor: params.creation?.actor ?? { type: "human", source: "unknown" },
-        sandbox: params.creation?.sandbox,
-      });
-    },
-    {
-      fallbackEntry: mergeSessionEntry(undefined, {}),
-      ...commitGuard,
-      workerGuard: {
-        ...commitGuard.workerGuard,
-        assertCurrent: () => {
-          // Provider startup can end while this write is queued or being prepared.
-          if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {
-            throw new Error("Realtime browser session expired during startup; try again");
-          }
-        },
-      },
-    },
-  );
-  if (!created?.sessionId) {
-    throw new Error(`agent session could not be initialized (${params.sessionKey})`);
-  }
-  return created.sessionId;
-}
-
 export function registerClientVoiceConsultRun(params: {
   agentId: string;
   sessionKey: string;
@@ -402,6 +357,8 @@ function appendVoiceTranscript(
     text: string;
     timestamp?: number;
     config?: OpenClawConfig;
+    /** Captured by the actual native ingress, not reconstructed from device or session IDs. */
+    participant?: SessionParticipantIdentity;
     confirmation?: ClientVoiceConfirmationUtteranceContext | null;
   },
   retainedSource?: ClientVoiceSessionSource,
@@ -504,6 +461,19 @@ function appendVoiceTranscript(
             { ...sessionTarget, sessionId: sessionEntry.sessionId },
             { message: appended.message, messageId: appended.messageId },
           );
+        }
+        if (appended.anchor && sessionEntry.lifecycleRevision && normalized.config) {
+          await recordVoiceConversationObservation({
+            anchor: appended.anchor,
+            lifecycleRevision: sessionEntry.lifecycleRevision,
+            role: normalized.role,
+            participant: normalized.participant,
+            fresh: appended.appended,
+            timestamp,
+            config: normalized.config,
+            env: source.options.env,
+            assertCurrent: source.assertCurrent,
+          });
         }
         source.assertCurrent();
         runOpenClawAgentWriteTransaction(

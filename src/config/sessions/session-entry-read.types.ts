@@ -16,6 +16,7 @@ import type { CanonicalSessionReaderContinuation } from "./session-canonical-key
 import type { SessionColdArchive } from "./session-cold-storage-state.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type { SessionEntrySnapshotField } from "./session-entry-snapshots.js";
+import type { InitialSessionContextRead } from "./session-initial-context-read.types.js";
 import type { SessionMember } from "./session-sharing-store.kernel.js";
 import type {
   SessionSourcePredicate,
@@ -113,6 +114,12 @@ export type SessionEntryCohortRequest = Pick<
   includeAuthProfileSource?: boolean;
   runtimeTarget?: Pick<SessionTranscriptRuntimeTarget, "agentId" | "sessionId" | "sessionKey">;
   includeColdMetadata?: boolean;
+  /** Completed copied context and its source row are selected in this same worker snapshot. */
+  initialContext?: {
+    sessionKey: string;
+    targetSessionId: string;
+    maxTokens?: number;
+  };
   expected?: {
     /** Native incarnation returned by this cohort, independent of the host execution claim. */
     incarnation: string;
@@ -162,6 +169,7 @@ export type SessionExactEntriesWorkerResult = {
 };
 
 export type SessionEntryCohortResult = SessionExactEntriesWorkerResult & {
+  initialContext?: InitialSessionContextRead;
   runtimeTarget?: SessionTranscriptRuntimeTarget;
   coldArchives?: Array<Omit<SessionColdArchive, "archive_blob">>;
   source: NonNullable<SessionExactEntriesWorkerResult["source"]>;

@@ -34,6 +34,7 @@ import type {
 } from "./session-accessor.types.js";
 import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
 import type { SessionColdArchive } from "./session-cold-storage-state.js";
+import { admitSessionConversationBranch } from "./session-conversation-admission.js";
 import { assertSessionEntryCohortScope } from "./session-entry-cohort-scope.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import type { PreparedInitialSessionContext } from "./session-initial-context.js";
@@ -43,11 +44,12 @@ import {
 } from "./session-mutation-conflict-error.js";
 import { resolveReplySessionInitializationUpserts } from "./session-reset-entry.js";
 import type { ReplySessionInitializationUpsertDescriptor } from "./session-reset.types.js";
+import type { SessionSourceAssertion } from "./session-source-authority.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type SessionEntryRetirement = {
   entry: SessionEntry;
@@ -263,6 +265,10 @@ function createStaleReplySessionInitializationResult(
 export async function commitReplySessionInitialization(params: {
   bindCreation?: (operation: SessionEntryCreationOperation) => () => void;
   commitGuard?: () => void;
+  /** Source read authorization retains its prepared worker predicates separately from live guards. */
+  contextSourceAuthority?: SessionSourceAssertion;
+  /** Host-selected canonical headless root; never supplied by a model or transport payload. */
+  branchRootSessionKey?: string;
   activeSessionKey: string;
   agentId: string;
   beforeEntryMutation?: (context: {
@@ -287,12 +293,13 @@ export async function commitReplySessionInitialization(params: {
   snapshotEntry?: SessionEntry;
   storePath: string;
 }): Promise<ReplySessionInitializationCommitResult> {
+  const branchRootSessionKey = params.branchRootSessionKey;
   const initialContext = params.initialContext ? structuredClone(params.initialContext) : undefined;
   if (initialContext) {
-    if (!params.commitGuard) {
+    if (!params.contextSourceAuthority?.prepareSessionSource) {
       throw new Error("Initial conversation context requires retained source authority.");
     }
-    params.commitGuard();
+    params.contextSourceAuthority();
   }
   assertSessionInitializationAgentScope(params.agentId, params.sessionKey);
   const storePath = resolveSessionStorePathForScope({
@@ -305,7 +312,14 @@ export async function commitReplySessionInitialization(params: {
       storePath,
     });
   const store = await loadReplySessionInitializationEntriesAsync(
-    { ...params, storePath },
+    {
+      ...params,
+      storePath,
+      relatedSessionKeys: [
+        ...(params.relatedSessionKeys ?? []),
+        ...(branchRootSessionKey ? [branchRootSessionKey] : []),
+      ],
+    },
     database,
     source,
   );
@@ -321,6 +335,21 @@ export async function commitReplySessionInitialization(params: {
     const entry = resolveSessionEntryFromStore({ store, sessionKey }).existing;
     return entry ? { ...entry } : undefined;
   };
+  const rootKey = branchRootSessionKey;
+  const topology = rootKey
+    ? admitSessionConversationBranch({
+        agentId: params.agentId,
+        sessionKey: resolved.normalizedKey,
+        currentEntry,
+        rootSessionKey: rootKey,
+        rootEntry: readEntry(rootKey),
+      })
+    : undefined;
+  if (topology) {
+    if (!source?.key.startsWith("file:")) {
+      throw new Error("Conversation membership requires an admitted durable root source.");
+    }
+  }
   if (
     initialContext &&
     (currentEntry || params.previousEntry || params.retiredEntry || params.resetBoundary)
@@ -334,12 +363,16 @@ export async function commitReplySessionInitialization(params: {
         sessionEntry: params.sessionEntry,
       })
     : params.sessionEntry;
+  if (topology) {
+    sessionEntry = { ...sessionEntry, conversationTopology: topology };
+  }
   if (initialContext) {
     sessionEntry = {
       ...sessionEntry,
       forkSource: {
         sessionKey: normalizeStoreSessionKey(initialContext.sourceSessionKey),
         sessionId: initialContext.sourceEntry.sessionId,
+        ...(initialContext.sourceThrough ? { entryId: initialContext.sourceThrough.entryId } : {}),
       },
       // A copied transcript is not the empty context computed by normal creation.
       totalTokens: undefined,
@@ -363,6 +396,7 @@ export async function commitReplySessionInitialization(params: {
   const upserts: SessionEntryLifecycleUpsert[] = [
     {
       sessionKey: resolved.normalizedKey,
+      ...(topology ? { conversationBranchAdmission: topology } : {}),
       ...(initialContext ? { initialContext } : {}),
       ...(params.routeContext !== undefined ? { routeContext: params.routeContext } : {}),
       ...(params.resetBoundary ? { resetBoundary: params.resetBoundary } : {}),
@@ -400,6 +434,7 @@ export async function commitReplySessionInitialization(params: {
       maintenanceOverride: params.maintenanceConfig,
       storePath,
       upserts,
+      ...(params.contextSourceAuthority ? { source: params.contextSourceAuthority } : {}),
       commitGuard: () => {
         assertSourceCurrent(true);
         params.commitGuard?.();

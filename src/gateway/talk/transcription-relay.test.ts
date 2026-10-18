@@ -6,16 +6,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 import type { RealtimeTranscriptionSessionCreateRequest } from "../../realtime-transcription/provider-types.js";
+import { getUnifiedTalkSession, rememberUnifiedTalkSession } from "../../talk/session-registry.js";
 import { createGatewayBroadcaster } from "../server-broadcast.js";
 import { MAX_BUFFERED_BYTES, WEBSOCKET_CLOSE_GRACE_MS } from "../server-constants.js";
 import { GatewayClientRegistry } from "../server/client-registry.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
 import { expectRecordFields, isRecord, requireGatewayRecord } from "../test-helpers.assertions.js";
-import {
-  cleanupTalkConnection,
-  getUnifiedTalkSession,
-  rememberUnifiedTalkSession,
-} from "./session-registry.js";
+import { cleanupTalkConnection } from "./session-registry.js";
 import {
   createTalkTranscriptionRelaySession,
   sendTalkTranscriptionRelayAudio,

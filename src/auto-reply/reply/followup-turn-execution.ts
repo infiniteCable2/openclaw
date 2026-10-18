@@ -86,6 +86,7 @@ export async function executeFollowupTurn(params: {
   onCompactionNoticePayload: (payload: ReplyPayload) => Promise<void>;
 }): Promise<FollowupExecutionResult> {
   const { turn, defaults } = params;
+  turn.queued.assertSourceCurrent?.();
   const sourceOpts = defaults.opts;
   const terminalReplyExpectation = resolveFollowupReplyExpectation(turn.queued, turn.config);
   turn.queued.run.terminalReplyExpectation = terminalReplyExpectation;
@@ -161,6 +162,7 @@ export async function executeFollowupTurn(params: {
       resolveVerboseProgressVisibilityAsync: async () => {
         const assertCurrent = () => {
           turn.operation.abortSignal.throwIfAborted();
+          turn.queued.assertSourceCurrent?.();
           turn.queued.operatorAuthority?.assertCurrent();
           if (turn.operation.result) {
             throw new Error("Follow-up progress owner has settled");
@@ -215,6 +217,7 @@ export async function executeFollowupTurn(params: {
       },
     });
   turn.operation.abortSignal.throwIfAborted();
+  turn.queued.assertSourceCurrent?.();
   turn.queued.operatorAuthority?.assertCurrent();
   let progressChain: Promise<void> = Promise.resolve();
   let visibleReplyDelivered = false;
@@ -291,6 +294,8 @@ export async function executeFollowupTurn(params: {
     internalEventExecution: turn.queued.run.internalEventExecution,
     // A refreshed runner owns presentation defaults, never another source's authority or callbacks.
     operatorAuthority: turn.queued.operatorAuthority,
+    assertSourceCurrent: turn.queued.assertSourceCurrent,
+    speechPresentation: turn.queued.speechPresentation,
     abortSignal: turn.operation.abortSignal,
     toolsAllow: turn.queued.toolsAllow,
     disableTools: turn.queued.disableTools,
@@ -467,6 +472,7 @@ export async function executeFollowupTurn(params: {
       // Queued execution outlives its ingress scope. Re-enter the exact source
       // custody after lazy collection binds it, so runtime appends consume all sources.
       await recorder?.resolveMessage();
+      turn.queued.assertSourceCurrent?.();
       turn.operation.abortSignal.throwIfAborted();
       const sourceTurnId = resolveReplySourceTurnId({
         sourceTurnId: turn.queued.sourceTurnId,

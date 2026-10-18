@@ -77,6 +77,8 @@ export type SessionParticipantRecordInput = {
   identity: SessionParticipantIdentity;
   promptedAt?: number;
   sessionAgentId?: string;
+  /** Original committed input row; a replacement must not inherit its participant. */
+  expectedSession?: { sessionId: string; lifecycleRevision: string };
 };
 export type RecordSessionParticipantResult = "inserted" | "updated" | "capped";
 export type MembershipPublication = { facts?: Extract<SessionRowFacts, { kind: "member" }> };

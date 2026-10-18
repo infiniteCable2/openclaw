@@ -10,6 +10,9 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { cancelPendingConversationTurn } from "../../sessions/conversation-turns.js";
+import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
+import { selectTalkConnectionPresentations } from "../../talk/session-registry.js";
+import type { prepareConversationActiveConnections } from "../conversation-active-connections.js";
 import {
   ConversationInputError,
   ConversationOperationConflictError,
@@ -28,6 +31,11 @@ import {
 } from "./inflight.js";
 import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { defineValidatedGatewayMethod } from "./validation.js";
+
+const loadActiveConnections = createLazyRuntimeModule(async () => ({
+  ...(await import("../conversation-active-connections.js")),
+  ...(await import("../operator-run-authority.js")),
+}));
 
 async function handleConversationWrite(
   {
@@ -172,7 +180,7 @@ export const conversationHandlers: GatewayRequestHandlers = {
   "conversations.list": defineValidatedGatewayMethod(
     "conversations.list",
     validateConversationListParams,
-    async ({ params: request, respond, context }) => {
+    async ({ params: request, respond, context, client, hasCurrentClientAuthority }) => {
       const readCurrentConfig = () => context.getRuntimeConfig();
       const config = readCurrentConfig();
       if (Boolean(request.sourceSessionKey) !== Boolean(request.sourceSessionId)) {
@@ -197,9 +205,25 @@ export const conversationHandlers: GatewayRequestHandlers = {
           return;
         }
       }
-      respond(
-        true,
-        await runGatewayConversationList({
+      const activeOwner = selectTalkConnectionPresentations().length
+        ? await loadActiveConnections()
+        : undefined;
+      const captured = await activeOwner?.captureGatewayOperatorRunAuthority({
+        client,
+        context,
+        hasCurrentClientAuthority,
+      });
+      let connections: Awaited<ReturnType<typeof prepareConversationActiveConnections>> | undefined;
+      try {
+        connections = await activeOwner?.prepareConversationActiveConnections({
+          authority: captured?.authority,
+          getRuntimeConfig: readCurrentConfig,
+          agentId: request.agentId,
+          channel: request.channel,
+          query: request.query,
+          limit: request.limit ?? 50,
+        });
+        const payload = await runGatewayConversationList({
           config,
           readCurrentConfig,
           agentId: request.agentId,
@@ -212,9 +236,17 @@ export const conversationHandlers: GatewayRequestHandlers = {
           ...(request.channel ? { channel: request.channel } : {}),
           ...(request.query ? { query: request.query } : {}),
           limit: request.limit ?? 50,
-        }),
-        undefined,
-      );
+          presentActiveConnections: connections?.present,
+        });
+        captured?.authority.assertCurrent();
+        respond(true, payload, undefined);
+      } finally {
+        try {
+          connections?.release();
+        } finally {
+          captured?.release();
+        }
+      }
     },
     (cause) =>
       errorShape(ErrorCodes.UNAVAILABLE, cause instanceof Error ? cause.message : String(cause)),

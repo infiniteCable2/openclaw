@@ -1,15 +1,13 @@
 import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
-import { formatErrorMessage } from "../../infra/errors.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
-import { createSqliteLifecycleAggregateError } from "../../infra/sqlite-lifecycle-errors.js";
 import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../../infra/sqlite-worker-identity.js";
 import type { SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { isIncognitoSessionKey, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { attachSessionTranscriptRunId } from "../../sessions/transcript-events.js";
 import {
@@ -65,6 +63,13 @@ import { captureIncognitoSessionOperation } from "./session-incognito-binding.js
 import type { IncognitoSessionAuthority } from "./session-incognito-contract.js";
 import type { IncognitoTranscriptOperations } from "./session-incognito-transcript-contract.js";
 import {
+  acceptSessionSourceValidation,
+  prepareSessionSourceAuthority,
+  type PreparedSessionSourceAuthority,
+  type SessionSourceAssertion,
+  type SessionSourceValidation,
+} from "./session-source-authority.js";
+import {
   assertSessionStoreReadCandidate,
   captureSessionStoreCandidateIdentities,
 } from "./session-store-read-candidates.js";
@@ -73,6 +78,7 @@ import {
   reconcileSessionTranscriptIndexes,
   startSessionTranscriptIndexReconcile,
 } from "./session-transcript-reconcile.js";
+import { settleReportOperation } from "./session-transcript-report-settlement.js";
 import { applyAssistantDeliveryDirectives } from "./transcript-assistant-delivery.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 import {
@@ -81,8 +87,6 @@ import {
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWriterFence,
 } from "./transcript-write-context.js";
-
-const log = createSubsystemLogger("sessions/transcript-reports");
 
 export type IncognitoTranscriptReportBinding = {
   actor: IncognitoSessionActor;
@@ -207,38 +211,6 @@ async function withIncognitoReportWorker<T>(
   return settled;
 }
 
-async function settleReportOperation<T>(
-  operation: () => Promise<T>,
-  cleanup: () => Promise<void>,
-): Promise<T> {
-  let result: Result<T, unknown>;
-  try {
-    result = ok(await operation());
-  } catch (error) {
-    result = err(error);
-  }
-  try {
-    await cleanup();
-  } catch (error) {
-    if (!result.ok) {
-      throw createSqliteLifecycleAggregateError(
-        [result.error, error],
-        "Transcript report and cleanup failed",
-        result.error,
-      );
-    }
-    try {
-      log.warn(`Transcript report completed before cleanup failed: ${formatErrorMessage(error)}`);
-    } catch {
-      // Diagnostics cannot replace a committed result with a replayable failure.
-    }
-  }
-  if (!result.ok) {
-    throw result.error;
-  }
-  return result.value;
-}
-
 async function withNativeCurrentTranscript<T>(
   scope: SessionTranscriptWriteScope,
   run: (database: OpenClawAgentDatabase, resolved: ResolvedTranscriptScope) => T,
@@ -295,8 +267,12 @@ async function withReportWorker<T>(
   ) => Promise<Result<T, TranscriptAppendRefusal>>,
   sessionEntryCurrent?: SessionEntryCurrentCheck,
   incognito?: IncognitoTranscriptReportBinding,
+  sourceAssertion?: SessionSourceAssertion,
 ): Promise<Result<T, TranscriptAppendRefusal>> {
   if (incognito) {
+    if (sourceAssertion) {
+      throw new Error("Composed report sources require a durable native transcript target");
+    }
     if (sessionEntryCurrent) {
       throw new Error("A file session source cannot authorize an incognito transcript report");
     }
@@ -338,6 +314,7 @@ async function withReportWorker<T>(
   assertSourceCurrent();
   const targetScope = { ...fenced, storePath };
   const admission = resolveSqliteWriteAdmissionScope(targetScope);
+  let composedSource: PreparedSessionSourceAuthority | undefined;
   const prepare = async () => {
     const resolved = captureLifecycleDatabaseScope({
       ...(await prepareSqliteScope(targetScope)),
@@ -368,6 +345,7 @@ async function withReportWorker<T>(
         assertExistingDatabaseIdentity(options.path, identity.key, identity.birthtime);
       }
       assertOwned();
+      (composedSource?.assertPreparedCurrent ?? composedSource?.assertCurrent)?.();
     };
     assertTargetCurrent();
     const operate = async () => {
@@ -398,6 +376,13 @@ async function withReportWorker<T>(
       const target: TranscriptReportWorkerTarget = {
         resolved: workerResolved,
         sessionEntryCurrentSource: sessionEntryCurrent?.source,
+        ...(composedSource
+          ? {
+              sourcePredicates: structuredClone(
+                composedSource.checks.map(({ predicate }) => predicate),
+              ),
+            }
+          : {}),
         ...(cliWriter
           ? {
               cliWriter: {
@@ -430,10 +415,30 @@ async function withReportWorker<T>(
                     runtimeProcessEntrypoints.sessionTranscriptReports,
                   ),
                   input: target,
-                  assertAdmission: (request) =>
-                    request.stage === "transaction" || request.stage === "commit"
-                      ? assertSessionEntryCurrentAdmission(request, sessionEntryCurrent)
-                      : request,
+                  assertAdmission: (request) => {
+                    if (request.stage !== "transaction" && request.stage !== "commit") {
+                      return request;
+                    }
+                    const admitted = assertSessionEntryCurrentAdmission(
+                      request,
+                      sessionEntryCurrent,
+                    );
+                    if (composedSource) {
+                      if (
+                        !isRecord(admitted.facts) ||
+                        !isRecord(admitted.facts.reportSourceValidation)
+                      ) {
+                        throw new Error("Transcript report omitted its composed source validation");
+                      }
+                      // SAFETY: The paired report worker supplies these transaction source facts.
+                      acceptSessionSourceValidation(
+                        composedSource,
+                        admitted.facts.reportSourceValidation as SessionSourceValidation,
+                      );
+                      composedSource.assertCurrent();
+                    }
+                    return admitted;
+                  },
                 },
               );
             return settleReportOperation(
@@ -479,9 +484,25 @@ async function withReportWorker<T>(
       ? operate()
       : runExclusiveSqliteSessionWrite(resolved, operate, "session.transcript.report");
   };
-  return admission
-    ? runExclusiveSqliteSessionWrite(admission, prepare, "session.transcript.report")
-    : prepare();
+  return settleReportOperation(
+    async () => {
+      if (sourceAssertion) {
+        if (!sourceAssertion.prepareSessionSource) {
+          throw new Error("Composed report sources require worker-prepared authority");
+        }
+        composedSource = await prepareSessionSourceAuthority(sourceAssertion);
+        if (composedSource.nativeSource || composedSource.hasOpaqueCheck) {
+          throw new Error("Composed report sources require worker-prepared authority");
+        }
+      }
+      return admission
+        ? runExclusiveSqliteSessionWrite(admission, prepare, "session.transcript.report")
+        : prepare();
+    },
+    async () => {
+      await composedSource?.release?.();
+    },
+  );
 }
 
 function isProcessHeldTranscript(scope: SessionTranscriptWriteScope): boolean {
@@ -606,10 +627,18 @@ export async function appendSessionTranscriptReport(
   options?: {
     sessionEntryCurrent?: SessionEntryCurrentCheck;
     incognito?: IncognitoTranscriptReportBinding;
+    /**
+     * Worker-prepared source/recipient predicates in this same physical store.
+     * Caller admission still owns source-history and recipient authority.
+     */
+    source?: SessionSourceAssertion;
   },
 ): Promise<Result<void, TranscriptAppendRefusal>> {
   const incognito = options?.incognito ?? captureIncognitoSessionOperation(scope);
   if (!incognito && isProcessHeldTranscript(scope)) {
+    if (options?.source) {
+      throw new Error("Composed report sources require a durable native transcript target");
+    }
     if (options?.sessionEntryCurrent) {
       throw new Error("A file session source cannot authorize a process-held transcript report");
     }
@@ -638,11 +667,13 @@ export async function appendSessionTranscriptReport(
       },
       options?.sessionEntryCurrent,
       incognito,
+      options?.source,
     );
   }
   const selection = {
     kind: report.kind,
     customTypes: [...report.customTypes],
+    ...(report.receipt ? { receipt: { ...report.receipt } } : {}),
     suppressWhenAssistantRun: report.suppressWhenAssistantRun,
   };
   const selectReport = report.selectReport;
@@ -664,7 +695,11 @@ export async function appendSessionTranscriptReport(
         if (!selected) {
           return ok(undefined);
         }
-        const input = prepareCustomTranscriptReport(selected, prepared.value.appendParentId);
+        const input = prepareCustomTranscriptReport(
+          selected,
+          prepared.value.appendParentId,
+          selection,
+        );
         assertCurrent();
         const result = await operation.execute({ type: "append", input });
         if (!result.ok) {
@@ -680,5 +715,6 @@ export async function appendSessionTranscriptReport(
     },
     options?.sessionEntryCurrent,
     incognito,
+    options?.source,
   );
 }

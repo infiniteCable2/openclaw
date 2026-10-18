@@ -1,13 +1,14 @@
 import type { EmbeddedRunCompletionRegistration } from "../../agents/embedded-agent-runner/run-state.js";
 import { prepareEmbeddedAgentRunCompletionClaim } from "../../agents/embedded-agent-runner/runs.js";
 import { registerRequesterFinalAttachment } from "../../agents/subagents/requester-final-attachment.js";
+import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import { normalizeTalkSection } from "../../config/talk.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
 } from "../../infra/agent-events.js";
-import { createPluginRuntime } from "../../plugins/runtime/index.js";
+import type { createPluginRuntime } from "../../plugins/runtime/index.js";
 import {
   GatewayDrainingError,
   runOutsideGatewayRootWorkAdmission,
@@ -29,11 +30,6 @@ import {
   assertClientVoiceSessionOpen,
   registerClientVoiceConsultRun,
 } from "../../talk/client-voice-session.js";
-import type { SpeechAgentConsultParams } from "../../talk/speech/types.js";
-import {
-  prepareSpeechExpressionContext,
-  type PreparedSpeechExpressionContext,
-} from "../../tts/expression-preparation.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
 import {
@@ -46,7 +42,10 @@ import type {
   TalkAgentConsultSource,
   TalkRequesterFinalBinding,
 } from "./client-agent-consult.types.js";
-import { createTalkClientAgentRuntime } from "./client-agent-runtime.js";
+import {
+  createTalkClientAgentRuntime,
+  type TalkOperatorRunSource,
+} from "./client-agent-runtime.js";
 import {
   resolveTalkAgentConsultAuthority,
   type TalkAgentConsultAuthority,
@@ -54,21 +53,18 @@ import {
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 type TalkRequesterFinalRegistration = ReturnType<typeof registerRequesterFinalAttachment>;
-type TalkSpeechConsultParams = SpeechAgentConsultParams & {
-  speakCommentary?: boolean;
-  speechExpressionContext?: PreparedSpeechExpressionContext;
-};
 
 export { prepareTalkClientControlAuthority } from "./client-agent-consult-control.js";
 
 export function createTalkClientAgentConsultRunner(params: {
   config: OpenClawConfig;
-  /** Host-selected TTS scope, only for server-owned audio; never RPC input. */
-  speechTts?: { config: OpenClawConfig; channelId: string };
-  context: Pick<GatewayRequestContext, "chatAbortControllers" | "logGateway">;
+  context: Pick<GatewayRequestContext, "chatAbortControllers" | "logGateway"> &
+    Partial<Pick<GatewayRequestContext, "getRuntimeConfig">>;
   sessionTarget: PreparedTalkSessionTarget;
   ownerConnId?: string;
   authority?: TalkAgentConsultAuthority;
+  captureOperatorAuthority?: TalkOperatorRunSource;
+  participant?: SessionParticipantIdentity;
   getVoiceSessionId: () => string | undefined;
   initialItems: Array<{ role: "user" | "assistant"; text: string }>;
   runIdPrefix?: string;
@@ -82,6 +78,9 @@ export function createTalkClientAgentConsultRunner(params: {
   const getAgentRuntime = () =>
     (agentRuntime ??= createTalkClientAgentRuntime({
       config: params.config,
+      getRuntimeConfig: params.context.getRuntimeConfig,
+      captureOperatorAuthority: params.captureOperatorAuthority,
+      participant: params.participant,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
     }));
   const getControlAuthority = (source?: "reply" | "attempt", currentAuthority = authority) =>
@@ -101,6 +100,9 @@ export function createTalkClientAgentConsultRunner(params: {
   ) =>
     createTalkClientAgentRuntime({
       config: params.config,
+      getRuntimeConfig: params.context.getRuntimeConfig,
+      captureOperatorAuthority: params.captureOperatorAuthority,
+      participant: params.participant,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
       assertCurrent,
       getAdditionalSystemPrompt,
@@ -124,7 +126,6 @@ export function createTalkClientAgentConsultRunner(params: {
     ready?: () => Promise<void>,
     assertCurrent?: () => void,
     source: TalkAgentConsultSource = "tool-call",
-    speech?: TalkSpeechConsultParams,
   ) => {
     const parsedArgs = parseRealtimeVoiceAgentConsultArgs(args);
     const voiceSessionId = params.getVoiceSessionId();
@@ -160,6 +161,9 @@ export function createTalkClientAgentConsultRunner(params: {
       : assertCurrent || source === "native-delegation" || confirmationGrant
         ? createTalkClientAgentRuntime({
             config: params.config,
+            getRuntimeConfig: params.context.getRuntimeConfig,
+            captureOperatorAuthority: params.captureOperatorAuthority,
+            participant: params.participant,
             ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
             assertCurrent,
             getAdditionalSystemPrompt,
@@ -187,7 +191,7 @@ export function createTalkClientAgentConsultRunner(params: {
           lane: "talk",
           runIdPrefix: params.runIdPrefix ?? "talk-realtime-consult",
           args: parsedArgs,
-          transcript: speech?.transcript ?? params.initialItems,
+          transcript: params.initialItems,
           surface: params.surface ?? "a browser Talk session",
           userLabel: "User",
           questionSourceLabel: "user",
@@ -195,26 +199,7 @@ export function createTalkClientAgentConsultRunner(params: {
           fastMode: talkConfig?.consultFastMode,
           speechChannelId: "talk",
           ...authority,
-          ...(speech?.speechExpressionCaptureOnly ? { toolsAllow: [] } : {}),
           abortSignal: signal,
-          speechExpressionContext: speech?.speechExpressionContext,
-          speechExpressionCaptureOnly: speech?.speechExpressionCaptureOnly,
-          speechSegmentationProfile: speech?.speechSegmentationProfile,
-          onSpeakableText: speech?.onSpeakableText
-            ? (event) => {
-                if (event.type !== "abort") {
-                  assertCurrent?.();
-                  // A blocked action's challenge belongs to the host, not model narration.
-                  // The canonical reply is delivered after consultation settles.
-                  if (confirmationObservation?.readReply()) {
-                    return;
-                  }
-                }
-                return speech.onSpeakableText?.(event);
-              }
-            : undefined,
-          waitForPendingInput: speech?.waitForPendingInput,
-          speakCommentary: speech?.speakCommentary,
           onRunStarted: ({ runId, sessionId, timeoutMs }) => {
             if (owner) {
               if (
@@ -302,25 +287,6 @@ export function createTalkClientAgentConsultRunner(params: {
                     isAgentEventLifecycleGenerationCurrent(generation))) &&
                 (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
                 (params.isRunCurrent?.(runId) ?? true);
-              if (speech?.onRunControl) {
-                speech.onRunControl((text, onQueueAccepted, options) =>
-                  controlTalkClientAgentConsult({
-                    owner,
-                    config: params.config,
-                    sessionTarget: params.sessionTarget,
-                    isCurrent: (candidateSessionId) => isOwnerCurrent(owner, candidateSessionId),
-                    assertCurrent: () => {
-                      assertCurrent?.();
-                      options?.assertCurrent?.();
-                    },
-                    getToolAuthorityOverlay: getControlAuthority,
-                    text,
-                    signal: options?.signal,
-                    mode: options?.mode ?? "followup",
-                    onQueueAccepted,
-                  }),
-                );
-              }
             }
             return registration
               ? {
@@ -340,25 +306,9 @@ export function createTalkClientAgentConsultRunner(params: {
           ? {
               ...result,
               text: confirmationReply,
-              // Host confirmation replaces model narration in both buffered speech
-              // and adopted-input recovery; no old model utterance may survive it.
-              ...(speech?.speechExpressionContext
-                ? {
-                    utterances: [
-                      {
-                        text: confirmationReply,
-                        speech: {
-                          tagged: true,
-                          text: confirmationReply,
-                          expression: { parts: [{ text: confirmationReply }] },
-                        },
-                        localServiceAdmission: speech.speechExpressionContext.localServiceAdmission,
-                        expectedSpeechSelection:
-                          speech.speechExpressionContext.expectedSpeechSelection,
-                      },
-                    ],
-                  }
-                : { utterances: undefined }),
+              // The provider-owned browser receives the host's authoritative
+              // confirmation, not a model's superseded challenge or narration.
+              utterances: undefined,
               ...(result.delivered ? { delivered: false } : {}),
             }
           : result;
@@ -464,7 +414,6 @@ export function createTalkClientAgentConsultRunner(params: {
     assertCurrent?: () => void,
     requesterFinal?: TalkRequesterFinalBinding,
     source: TalkAgentConsultSource = "tool-call",
-    speech?: TalkSpeechConsultParams,
   ) => {
     if (promptOwner) {
       throw new Error("A Talk consult is already active");
@@ -484,7 +433,7 @@ export function createTalkClientAgentConsultRunner(params: {
     promptOwner = owner;
     signal?.addEventListener("abort", revokeRegistrationOnAbort, { once: true });
     try {
-      return await runArgs(args, signal, owner, ready, assertCurrent, source, speech);
+      return await runArgs(args, signal, owner, ready, assertCurrent, source);
     } catch (error) {
       resolveRegistration(undefined);
       throw error;
@@ -538,103 +487,5 @@ export function createTalkClientAgentConsultRunner(params: {
     ) => runArgs(args, signal, undefined, undefined, assertCurrent, source),
     runOwnedArgs: lifecycleBoundRunArgs,
     runPrompt,
-    runSpeechConsult: async (
-      speech: SpeechAgentConsultParams & { speakCommentary?: boolean },
-      assertCurrent?: () => void,
-    ): Promise<RealtimeVoiceAgentConsultResult> => {
-      if (!params.ownerConnId) {
-        throw new Error("Speech consultation requires its current Gateway connection");
-      }
-      // The prepared target, not caller-provided keys, owns consultation and steering.
-      if (
-        speech.sessionId !== params.getVoiceSessionId() ||
-        (speech.requesterSessionKey !== undefined && speech.requesterSessionKey !== canonicalKey)
-      ) {
-        throw new Error("Speech consultation does not match its prepared Talk target");
-      }
-      if (promptOwner) {
-        throw new Error("A Talk consult is already active");
-      }
-      assertCurrent?.();
-      const revokeControl = () => speech.onRunControl?.(undefined);
-      speech.abortSignal?.addEventListener("abort", revokeControl, { once: true });
-      let speechOwner: PromptOwner | undefined;
-      let expressionContext: PreparedSpeechExpressionContext | undefined;
-      let speechPreparation:
-        | Awaited<
-            ReturnType<
-              ReturnType<typeof createPluginRuntime>["tts"]["prepareTextToSpeechTelephony"]
-            >
-          >
-        | undefined;
-      const scopedSpeech: TalkSpeechConsultParams = { ...speech };
-      try {
-        const run = runOwnedArgs(
-          speech.args,
-          speech.abortSignal,
-          async () => {
-            // runOwnedArgs reserves the native prompt owner before readiness can yield.
-            assertCurrent?.();
-            expressionContext = await prepareSpeechExpressionContext({
-              cfg: params.speechTts?.config ?? params.config,
-              tts: createPluginRuntime().tts,
-              agentId,
-              channelId: params.speechTts?.channelId,
-              target: "telephony",
-              currentSourceSpeechTarget: true,
-              commentaryEnabled:
-                speech.speakCommentary === true && !speech.speechExpressionCaptureOnly,
-              signal: speech.abortSignal,
-            });
-            assertCurrent?.();
-            expressionContext?.assertCurrent();
-            scopedSpeech.speechExpressionContext = expressionContext;
-            if (speech.onSpeakableText && !expressionContext) {
-              speechPreparation = await createPluginRuntime().tts.prepareTextToSpeechTelephony({
-                cfg: params.speechTts?.config ?? params.config,
-                agentId,
-                channelId: params.speechTts?.channelId,
-                signal: speech.abortSignal,
-              });
-              assertCurrent?.();
-              if (!speechPreparation.success) {
-                throw new Error(
-                  speechPreparation.error ?? "Speech segmentation preparation failed",
-                );
-              }
-            }
-            scopedSpeech.speechSegmentationProfile =
-              expressionContext?.segmentationProfile ?? speechPreparation?.segmentationProfile;
-          },
-          assertCurrent,
-          undefined,
-          "native-delegation",
-          scopedSpeech,
-        );
-        speechOwner = promptOwner;
-        const result = await run;
-        assertCurrent?.();
-        if (promptOwner !== speechOwner || !claimAppend()) {
-          throw new Error("Speech consultation completion custody is no longer current");
-        }
-        return result;
-      } catch (error) {
-        if (promptOwner === speechOwner) {
-          claimFailureAppend();
-        }
-        throw error;
-      } finally {
-        speech.abortSignal?.removeEventListener("abort", revokeControl);
-        try {
-          revokeControl();
-        } finally {
-          try {
-            await speechPreparation?.release?.();
-          } finally {
-            await expressionContext?.release();
-          }
-        }
-      }
-    },
   };
 }

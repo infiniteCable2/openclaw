@@ -1,5 +1,6 @@
 import { MAIN_SESSION_RECOVERY_CLEAR_PATCH } from "../agents/main-session-recovery/main-session-recovery-clear.js";
 import type { SessionAccessScope } from "../config/sessions/session-accessor.js";
+import { preserveSessionConversationTopology } from "../config/sessions/session-conversation-topology.js";
 import {
   projectPublicSessionEntry,
   SESSION_ENTRY_PRIVATE_CLEAR_PATCH,
@@ -54,6 +55,9 @@ export function generationValidPrivateFieldsForSameSession(
     return undefined;
   }
   const state: Partial<InternalSessionEntry> = {
+    ...(existingEntry.conversationTopology !== undefined
+      ? preserveSessionConversationTopology(existingEntry)
+      : {}),
     ...(existingEntry.cliHistoryBoundary
       ? { cliHistoryBoundary: existingEntry.cliHistoryBoundary }
       : {}),

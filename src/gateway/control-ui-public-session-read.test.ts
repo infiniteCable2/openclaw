@@ -9,6 +9,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { resolveSessionPublicShare } from "../config/sessions/session-public-share.js";
 import * as historyReaders from "../config/sessions/session-transcript-worker-readers.js";
+import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
@@ -61,12 +62,26 @@ async function withPublicTestState(run: () => Promise<void>) {
   });
 }
 
-async function seed(messages: string[], target = locator) {
+async function seed(
+  messages: string[],
+  target = locator,
+  conversationTopology?: InternalSessionEntry["conversationTopology"],
+) {
   await upsertSessionEntryCore(target, {
     sessionId: target.sessionId,
     updatedAt: 1,
     label: "Public example",
     publicShare: { id: target.shareId, sessionId: target.sessionId, createdAt: 1 },
+    ...(conversationTopology ? { conversationTopology } : {}),
+    ...(conversationTopology?.role === "root"
+      ? {
+          createdVia: "internal" as const,
+          createdActor: { type: "system" as const, id: "conversation-root" },
+          lifecycleRevision: "root-lifecycle",
+          visibility: "draft" as const,
+          delivery: { kind: "none" as const },
+        }
+      : {}),
   });
   await replaceTranscriptEvents(target, [
     { type: "session", version: 3, id: target.sessionId },
@@ -82,6 +97,26 @@ async function seed(messages: string[], target = locator) {
 }
 
 describe("anonymous published session reader", () => {
+  it("refuses a persisted root grant before anonymous history access", async () => {
+    await withPublicTestState(async () => {
+      await seed(["Private consolidating history"], locator, { version: 1, role: "root" });
+      const sharing = currentProjection().sharingTargetState({
+        key: locator.sessionKey,
+        agentId: locator.agentId,
+      });
+      expect(sharing.status).toBe("ready");
+      if (sharing.status !== "ready") {
+        throw new Error("Root sharing fixture did not reach native projection readiness");
+      }
+      expect(sharing.target.entry.conversationTopology).toEqual({ version: 1, role: "root" });
+      expect(sharing.target.entry.publicShare?.id).toBe(locator.shareId);
+      const history = vi.spyOn(transcriptReaders, "readSessionMessagesPageWithStatsAsync");
+      expect(isPublicSessionShareActive(cfg, locator)).toBe(false);
+      expect(await readPublicSessionShare(cfg, locator)).toBeNull();
+      expect(history).not.toHaveBeenCalled();
+    });
+  });
+
   it("checks twenty warm publication readers without Gateway-thread SQLite", async () => {
     await withPublicTestState(async () => {
       await seed(["Public text"]);

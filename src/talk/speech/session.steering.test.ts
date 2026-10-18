@@ -154,12 +154,14 @@ describe("meeting native input steering", () => {
   it("uses the exact native control callback for explicit steering and awaits its settlement", async () => {
     const f = await createFixture("off");
     try {
-      f.say("Check the light.");
+      f.say("Check the light.", "initial-input");
       await f.drain();
+      expect(f.consult).toMatchObject({ inputId: "initial-input", purpose: "user" });
       const assertCurrent = vi.fn();
       const signal = new AbortController().signal;
       const steering = f.handle.steer({
         text: "Also check the printer.",
+        inputId: "explicit-steering-input",
         mode: "followup",
         signal,
         assertCurrent,
@@ -168,7 +170,13 @@ describe("meeting native input steering", () => {
       expect(f.control).toHaveBeenCalledWith(
         "Also check the printer.",
         undefined,
-        expect.objectContaining({ mode: "followup", signal, assertCurrent }),
+        expect.objectContaining({
+          inputId: "explicit-steering-input",
+          purpose: "steering",
+          mode: "followup",
+          signal,
+          assertCurrent,
+        }),
       );
       f.done.resolve({ text: "Both are ready." });
       await f.drain();
@@ -426,6 +434,7 @@ describe("meeting native input steering", () => {
       f.say("C", "c");
       await f.drain();
       expect(next?.args).toMatchObject({ question: "B\nC" });
+      expect(next).toMatchObject({ inputId: "b", purpose: "user" });
       expect(f.control).not.toHaveBeenCalled();
       expect(f.tts).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ text: "Results A, B and C" }),
@@ -447,6 +456,7 @@ describe("meeting native input steering", () => {
       expect(f.control).toHaveBeenCalledExactlyOnceWith(
         "Also check the printer.",
         expect.any(Function),
+        { inputId: "b", purpose: "steering", images: [] },
       );
       expect(f.consult.abortSignal?.aborted).toBe(false);
       f.admitted.resolve(accepted);
@@ -512,7 +522,11 @@ describe("meeting native input steering", () => {
         expect(f.consult.waitForPendingInput?.()).toBeUndefined();
         f.say("Also check the printer.");
         await f.drain();
-        expect(f.control).toHaveBeenCalledExactlyOnceWith("Also check the printer.");
+        expect(f.control).toHaveBeenCalledExactlyOnceWith("Also check the printer.", undefined, {
+          inputId: expect.any(String),
+          purpose: "steering",
+          images: [],
+        });
         expect(f.consult.abortSignal?.aborted).toBe(false);
         await f.consult.onSpeakableText?.({ type: "chunk", text: "Old buffered speech." });
         const text = "The light is on. The printer is ready.";
@@ -539,11 +553,15 @@ describe("meeting native input steering", () => {
     try {
       f.say("Check the light.");
       await f.drain();
-      f.say("Check the printer.");
-      f.say("Also check the paper.");
+      f.say("Check the printer.", "rejected-input");
+      f.say("Also check the paper.", "later-input");
       f.admitted.resolve({ ...accepted, ok: false, queued: false, reason: "no_active_run" });
       await f.drain();
-      expect(f.control).toHaveBeenCalledExactlyOnceWith("Check the printer.");
+      expect(f.control).toHaveBeenCalledExactlyOnceWith("Check the printer.", undefined, {
+        inputId: "rejected-input",
+        purpose: "steering",
+        images: [],
+      });
       let next: SpeechAgentConsultParams | undefined;
       f.consultAgent.mockImplementationOnce(async (params) => {
         next = params;
@@ -553,6 +571,7 @@ describe("meeting native input steering", () => {
       await f.drain();
       expect(f.consultAgent).toHaveBeenCalledTimes(2);
       expect(next?.args).toMatchObject({ question: "Check the printer.\nAlso check the paper." });
+      expect(next).toMatchObject({ inputId: "rejected-input", purpose: "user" });
       expect(next?.transcript).toContainEqual(
         expect.objectContaining({
           role: "assistant",

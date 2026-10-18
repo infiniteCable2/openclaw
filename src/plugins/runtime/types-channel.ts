@@ -161,6 +161,8 @@ export type PluginRuntimeChannel = {
   inbound: {
     /** Ingress policy and identity handoff bound to this channel's host instance. */
     ingress: {
+      /** Available only on a live host-bound channel; policy-only runtimes cannot mint inputs. */
+      conversation?: import("../../channels/message-access/conversation-input.types.js").ChannelConversationInputRuntimeV1;
       createResolver: typeof import("../../channels/message-access/runtime.js").createChannelIngressPolicyResolver;
       resolve: typeof import("../../channels/message-access/runtime.js").resolveChannelIngressPolicy;
       resolveStable: typeof import("../../channels/message-access/runtime.js").resolveStableChannelIngressPolicy;

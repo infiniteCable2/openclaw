@@ -50,6 +50,8 @@ export type ReplyOperationRunState = {
   /** The Gateway accepted this question answer or rejected its values before commitment. */
   questionInputHandled?: true;
   messageInjectionAborted?: true;
+  /** Exact backend that committed this invocation's steering, never a routing grant. */
+  steeredRunId?: string;
   agentTurn?: ReturnType<typeof resolveAgentTurnExecutionStatus>;
   agentTurnOwner?: ReplyOperation;
   messagingToolSentTargets?: MessagingToolSend[];

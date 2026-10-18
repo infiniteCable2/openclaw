@@ -48,6 +48,7 @@ type AgentResetPhaseResult = {
 export async function runAgentResetPhase(params: {
   assertAdmissionCurrent?: () => void;
   request: AgentRunRequest;
+  conversationInput?: true;
   cfg: OpenClawConfig;
   requestedSessionKey?: string;
   resolvedSessionId?: string;
@@ -106,6 +107,7 @@ export async function runAgentResetPhase(params: {
       ...(params.agentId ? { agentId: params.agentId } : {}),
       reason: resetReason,
       commandSource: "gateway:agent",
+      conversationInput: params.conversationInput,
       armSessionDiffBaselineCapture: true,
       creation,
       ...(params.client?.authenticatedUserProfile?.profileId

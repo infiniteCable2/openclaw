@@ -6,20 +6,20 @@ import {
 } from "./admission-decision-receipt.js";
 import {
   finalizedContextScopeKey,
-  INVALID_SCOPE_VALUE,
   ownDataValue,
-  publicResultScopeKey,
   scopedParticipantRef,
-  snapshotContextBinding,
-  normalizeScopeId,
-  contextHandoffMatches,
-  type ChannelIngressResolutionScope,
+  snapshotIngressAdmissionScope,
+  contextAdmissionScope,
+  type ChannelIngressAdmissionScope,
 } from "./admission-evidence-scope-key.js";
+import { consumeHostIngressHandoffs, takeChannelParticipantInput } from "./admission-handoff.js";
 import type { ChannelIngressHostOwner, ChannelParticipantInput } from "./ingress-host-owner.js";
-import type {
-  ChannelIngressContextBinding,
-  ResolvedChannelMessageIngress,
-} from "./runtime-types.js";
+import type { ResolvedChannelMessageIngress } from "./runtime-types.js";
+
+export {
+  recordChannelIngressResolution,
+  takeChannelParticipantInput,
+} from "./admission-handoff.js";
 
 export type ChannelAdmissionEvidence = Readonly<{
   kind: "channel-admission-evidence";
@@ -55,20 +55,6 @@ type ConsumedChannelAdmissionEvidence = Readonly<{
   assuranceRef?: string;
   decisionCoverage?: "enforced" | "attribution-only" | "unknown" | "unsupported";
   identifierAuthentication?: "affected" | "evaluated" | "not-evaluated" | "unknown";
-}>;
-
-type ChannelIngressResolutionBinding = Readonly<{
-  channelId: string;
-  accountId?: string;
-  rawPrincipalRef: string | number | null | undefined;
-  participantOutcomeAffecting: boolean;
-  identifierAuthentication: "affected" | "evaluated" | "not-evaluated";
-  owner?: ChannelIngressHostOwner;
-  gatewayContext?: ReturnType<GatewayContextResolver>;
-  scope?: ChannelIngressResolutionScope;
-  contextBinding?: Readonly<ChannelIngressContextBinding>;
-  publicScopeKey?: string;
-  handoff: { consumed: boolean; accepted?: boolean };
 }>;
 
 const CHANNEL_ADMISSION_EVIDENCE_MAX_CONTRIBUTIONS = 16;
@@ -217,34 +203,6 @@ function writeContextAdmission(context: object, value: ContextAdmissionValue): v
   });
 }
 
-class HostIngressResolution {
-  #binding: ChannelIngressResolutionBinding;
-  #participant: ChannelParticipantInput | undefined;
-  constructor(binding: ChannelIngressResolutionBinding, participant?: ChannelParticipantInput) {
-    this.#binding = binding;
-    this.#participant = participant;
-    Object.setPrototypeOf(this, null);
-  }
-  static read(value: object): ChannelIngressResolutionBinding | undefined {
-    return value !== null && typeof value === "object" && #binding in value
-      ? value.#binding
-      : undefined;
-  }
-  static takeParticipant(value: object): ChannelParticipantInput | undefined {
-    if (value === null || typeof value !== "object" || !(#binding in value)) {
-      return undefined;
-    }
-    const participant = value.#binding.handoff.accepted ? value.#participant : undefined;
-    value.#participant = undefined;
-    return participant;
-  }
-}
-export function takeChannelParticipantInput(
-  result: ResolvedChannelMessageIngress,
-): ChannelParticipantInput | undefined {
-  return HostIngressResolution.takeParticipant(result);
-}
-
 function mintChannelAdmissionEvidence(
   audit: ChannelAdmissionAudit | undefined,
   payload:
@@ -282,37 +240,6 @@ function participantContribution(params: {
   );
 }
 
-export function recordChannelIngressResolution(params: {
-  result: ResolvedChannelMessageIngress;
-  owner?: ChannelIngressHostOwner;
-  participantInput?: ChannelParticipantInput;
-  channelId: string;
-  accountId?: string;
-  rawPrincipalRef: string | number | null | undefined;
-  participantOutcomeAffecting: boolean;
-  identifierAuthentication: "affected" | "evaluated" | "not-evaluated";
-  scope: ChannelIngressResolutionScope;
-}): ResolvedChannelMessageIngress {
-  const owner = params.owner;
-  if (!owner || owner.channelId !== params.channelId || !owner.isLive()) {
-    return params.result;
-  }
-  const binding = Object.freeze({
-    channelId: params.channelId,
-    accountId: params.accountId,
-    rawPrincipalRef: params.rawPrincipalRef,
-    participantOutcomeAffecting: params.participantOutcomeAffecting,
-    identifierAuthentication: params.identifierAuthentication,
-    owner,
-    gatewayContext: owner.resolveGatewayContext?.(),
-    scope: Object.freeze({ conversation: Object.freeze({ ...params.scope.conversation }) }),
-    contextBinding: snapshotContextBinding(params.scope.contextBinding),
-    publicScopeKey: publicResultScopeKey(params.result),
-    handoff: { consumed: false },
-  });
-  return Object.assign(new HostIngressResolution(binding, params.participantInput), params.result);
-}
-
 function unknownChannelAdmissionEvidence(
   audit: ChannelAdmissionAudit | undefined,
 ): ChannelAdmissionEvidence | undefined {
@@ -320,6 +247,58 @@ function unknownChannelAdmissionEvidence(
     kind: "leaf",
     contribution: Object.freeze({ participant: { state: "unknown" as const } }),
   });
+}
+
+function handoffEvidence(
+  audit: ChannelAdmissionAudit | undefined,
+  handoff: ReturnType<typeof consumeHostIngressHandoffs>,
+): ChannelAdmissionEvidence | undefined {
+  if (!handoff.accepted) {
+    return unknownChannelAdmissionEvidence(audit);
+  }
+  return combineChannelAdmissionEvidence(
+    handoff.bindings.map((binding) => {
+      const contribution = participantContribution(binding);
+      return mintChannelAdmissionEvidence(audit, {
+        kind: "leaf",
+        contribution: Object.freeze({
+          ...contribution,
+          decision: Object.freeze({
+            participantAware: contribution.participant.state === "present",
+            outcomeAffecting: binding.participantOutcomeAffecting,
+            identifierAuthentication: binding.identifierAuthentication,
+          }),
+        }),
+      });
+    }),
+  );
+}
+
+/** Consume one exact host resolver handoff without manufacturing a text context. */
+export function consumeHostChannelIngressAdmission(params: {
+  owner: ChannelIngressHostOwner;
+  ingress: ResolvedChannelMessageIngress;
+  scope: ChannelIngressAdmissionScope;
+}): {
+  accepted: boolean;
+  evidence?: ChannelAdmissionEvidence;
+  resolver?: GatewayContextResolver;
+  participantInput?: ChannelParticipantInput;
+} {
+  const audit = params.owner.resolveGatewayContext?.()?.channelAdmissionAudit;
+  const scope = snapshotIngressAdmissionScope(params.scope);
+  const handoff = consumeHostIngressHandoffs({
+    owner: params.owner,
+    results: [params.ingress],
+    maxContributions: 1,
+    scopeForBinding: () => scope,
+  });
+  return {
+    accepted: handoff.accepted,
+    evidence: handoffEvidence(audit, handoff),
+    resolver: handoff.accepted ? params.owner.resolveGatewayContext : undefined,
+    participantInput: handoff.accepted ? takeChannelParticipantInput(params.ingress) : undefined,
+  };
 }
 
 /** Consume and validate the exact resolver-to-context handoff before context construction. */
@@ -348,76 +327,30 @@ export function prepareHostChannelContextAdmissionEvidence(params: {
       : Array.isArray(params.ingress)
         ? params.ingress
         : [params.ingress as ResolvedChannelMessageIngress];
-  const seen = new Set<object>();
-  const validBindings: ChannelIngressResolutionBinding[] = [];
-  let valid = results.length > 0 && results.length <= CHANNEL_ADMISSION_EVIDENCE_MAX_CONTRIBUTIONS;
-  for (const [index, result] of results.entries()) {
-    const binding = HostIngressResolution.read(result);
-    const firstUse = binding !== undefined && !binding.handoff.consumed && !seen.has(result);
-    if (binding && !binding.handoff.consumed) {
-      // Consume before validation and before the ordinary context builder runs.
-      binding.handoff.consumed = true;
-    }
-    seen.add(result);
-    const ownerMatches =
-      params.owner !== undefined &&
-      binding?.owner === params.owner &&
-      binding.gatewayContext === params.owner.resolveGatewayContext?.() &&
-      params.owner.isLive();
-    const resultIngress = ownDataValue(result, "ingress");
-    const resultMatches =
-      binding?.publicScopeKey !== undefined &&
-      publicResultScopeKey(result) === binding.publicScopeKey &&
-      resultIngress !== null &&
-      typeof resultIngress === "object" &&
-      ownDataValue(resultIngress, "admission") === "dispatch";
-    const contextMatches =
-      binding !== undefined &&
-      contextHandoffMatches({
+  const handoff = consumeHostIngressHandoffs({
+    owner: params.owner,
+    results,
+    maxContributions: CHANNEL_ADMISSION_EVIDENCE_MAX_CONTRIBUTIONS,
+    contextCompatibility: true,
+    scopeForBinding: (binding, index) => {
+      const scope = contextAdmissionScope({
         ...params,
-        binding,
         // A batch exposes the final sender; earlier sources retain their own exact identities.
         rawPrincipalRef:
           index === results.length - 1 ? params.rawPrincipalRef : binding.rawPrincipalRef,
       });
-    if (!firstUse || !ownerMatches || !resultMatches || !contextMatches || !binding) {
-      valid = false;
-    } else {
-      validBindings.push(binding);
-    }
-  }
-  const contextMessageId = normalizeScopeId(ownDataValue(params.contextParams, "messageId"));
-  const finalMessageId = validBindings.at(-1)?.contextBinding?.messageId;
-  if (
-    contextMessageId === INVALID_SCOPE_VALUE ||
-    (finalMessageId !== undefined && contextMessageId !== finalMessageId)
-  ) {
-    valid = false;
-  }
-  if (valid) {
-    for (const binding of validBindings) {
-      binding.handoff.accepted = true;
-    }
-  }
-  const sources = valid
-    ? validBindings.map((binding) => {
-        const contribution = participantContribution(binding);
-        return mintChannelAdmissionEvidence(audit, {
-          kind: "leaf",
-          contribution: Object.freeze({
-            ...contribution,
-            decision: Object.freeze({
-              participantAware: contribution.participant.state === "present",
-              outcomeAffecting: binding.participantOutcomeAffecting,
-              identifierAuthentication: binding.identifierAuthentication,
-            }),
-          }),
-        });
-      })
-    : [];
+      if (scope && index !== results.length - 1) {
+        return {
+          ...scope,
+          binding: { ...scope.binding, messageId: binding.contextBinding?.messageId },
+        };
+      }
+      return scope;
+    },
+  });
   return new PreparedChannelAdmissionEvidence(
-    valid ? combineChannelAdmissionEvidence(sources) : unknownChannelAdmissionEvidence(audit),
-    valid ? params.owner?.resolveGatewayContext : undefined,
+    handoffEvidence(audit, handoff),
+    handoff.accepted ? params.owner?.resolveGatewayContext : undefined,
     params.owner,
   );
 }
@@ -436,6 +369,41 @@ export function bindHostChannelContextAdmissionEvidence(params: {
     resolver: scope !== undefined ? prepared?.resolver : undefined,
   });
 }
+
+/** Bind already consumed host ingress; never resolve or consume it again for STT projection. */
+export function bindConsumedHostChannelContextAdmissionEvidence(params: {
+  context: import("../../auto-reply/templating.js").MsgContext;
+  owner: ChannelIngressHostOwner;
+  scope: ChannelIngressAdmissionScope;
+  evidence: ChannelAdmissionEvidence | undefined;
+  resolver: GatewayContextResolver | undefined;
+}): void {
+  const { context, scope } = params;
+  const current = params.owner.isLive() && params.owner.resolveGatewayContext === params.resolver;
+  const key = finalizedContextScopeKey(context);
+  if (
+    !current ||
+    key === undefined ||
+    context.OriginatingChannel !== scope.channelId ||
+    (context.AccountId || "default") !== (scope.accountId || "default") ||
+    context.SenderId !==
+      (scope.rawPrincipalRef == null ? undefined : String(scope.rawPrincipalRef)) ||
+    context.ChatType !== scope.conversation.kind ||
+    context.ChatId !== scope.conversation.id ||
+    context.AgentId !== scope.binding.agentId ||
+    context.SessionKey !== scope.binding.sessionKey ||
+    context.MessageSid !== scope.binding.messageId ||
+    context.NativeChannelId !== scope.binding.nativeChannelId ||
+    context.InboundEventKind !== scope.binding.inboundEventKind
+  ) {
+    throw new Error("Consumed channel input does not match its finalized context");
+  }
+  writeContextAdmission(context, {
+    scope: key,
+    evidence: params.evidence,
+    resolver: params.resolver,
+  });
+}
 export function readChannelContextAdmissionEvidence(
   context: object,
 ): ChannelAdmissionEvidence | undefined {
@@ -445,6 +413,35 @@ export function readChannelContextGatewayContextResolver(
   context: object,
 ): GatewayContextResolver | undefined {
   return readContextAdmission(context)?.resolver;
+}
+
+/** Core-only non-channel host routing; this neither upgrades evidence nor grants person access. */
+export function bindHostConversationContextGatewayResolver(params: {
+  context: object;
+  resolveGatewayContext: GatewayContextResolver;
+  assertCurrent(): void;
+}): void {
+  const { context, resolveGatewayContext, assertCurrent } = params;
+  assertCurrent();
+  const original = readContextAdmission(context);
+  const scope = finalizedContextScopeKey(context);
+  if (!original || scope === undefined || original.scope !== scope || original.resolver) {
+    throw new Error(
+      "Conversation host context is unavailable, changed or already has a routing owner",
+    );
+  }
+  const gateway = resolveGatewayContext();
+  if (!gateway) throw new Error("Conversation host Gateway is unavailable");
+  const resolveOriginal = () => {
+    assertCurrent();
+    if (finalizedContextScopeKey(context) !== scope || resolveGatewayContext() !== gateway) {
+      throw new Error("Conversation host source or Gateway changed");
+    }
+    assertCurrent();
+    return gateway;
+  };
+  resolveOriginal();
+  writeContextAdmission(context, { ...original, resolver: resolveOriginal });
 }
 
 /** Preserve private evidence only when its owner explicitly replaces an unchanged context. */

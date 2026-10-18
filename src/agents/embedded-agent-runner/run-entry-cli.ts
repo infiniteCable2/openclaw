@@ -1,10 +1,11 @@
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.js";
+import { resolveConversationModelRunError } from "../../config/sessions/session-conversation-topology.js";
 import {
   readSessionEntryInWorker,
   readSessionEntryReadOnlyInWorker,
 } from "../../config/sessions/session-entry-read-runtime.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { persistCliSessionBindingResult } from "../cli-session-store.js";
 import { getCliSessionBinding } from "../cli-session.js";
 import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
@@ -57,6 +58,10 @@ export function withAdmittedCliCandidate(
           sessionEntry.lifecycleRevision !== params.expectedLifecycleRevision)
       ) {
         throw createAgentRunSupersededAbortError();
+      }
+      const modelRunError = resolveConversationModelRunError(sessionEntry);
+      if (modelRunError) {
+        throw new Error(modelRunError);
       }
       return run({
         sessionEntry,

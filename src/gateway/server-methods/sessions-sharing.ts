@@ -463,7 +463,10 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
                 shareId: publicShareGrant.id,
               });
             }
-            changed = publicShareGrant?.id !== previous?.id;
+            // Invalid retained grants are unreadable but still need explicit removal.
+            changed = params.enabled
+              ? publicShareGrant?.id !== previous?.id
+              : entry.publicShare !== undefined;
             return changed ? { publicShare: publicShareGrant } : null;
           },
           {
@@ -557,6 +560,9 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
           (entry) => {
             inspected = true;
             access.assertEntryManageable(entry);
+            if (entry.conversationTopology?.role === "root" && visibility !== "draft") {
+              throw new Error("A consolidating conversation root must remain draft.");
+            }
             if (resolveSessionVisibility(entry) === visibility) {
               return null;
             }

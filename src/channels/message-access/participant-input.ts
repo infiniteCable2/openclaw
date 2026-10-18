@@ -10,30 +10,28 @@ import { DEFAULT_ACCOUNT_ID } from "../../routing/account-id.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import { takeChannelParticipantInput } from "./admission-evidence.js";
 import { bindChildSessionPublication } from "./child-session-publication.js";
-import type { ChannelIngressHostOwner } from "./ingress-host-owner.js";
+import type { ChannelIngressHostOwner, ChannelParticipantInput } from "./ingress-host-owner.js";
 import type {
   ChannelIngressContextBinding,
   ResolvedChannelMessageIngress,
 } from "./runtime-types.js";
 
-export function bindChannelParticipantInput(params: {
-  context: MsgContext;
+type ParticipantBinding = {
   channelId: string;
-  ingress:
-    | ResolvedChannelMessageIngress
-    | readonly ResolvedChannelMessageIngress[]
-    | "unsupported"
-    | undefined;
   binding: ChannelIngressContextBinding;
   owner: ChannelIngressHostOwner;
-}): void {
-  if (!params.ingress || params.ingress === "unsupported") {
-    return;
-  }
-  const resolutions = Array.isArray(params.ingress) ? params.ingress : [params.ingress];
-  const batch = resolutions.map(takeChannelParticipantInput);
+};
+
+/** Both context-backed and text-free inputs consume only their exact native participant facts. */
+export function selectBoundChannelParticipantInputs(
+  params: ParticipantBinding & {
+    inputs: readonly (ChannelParticipantInput | undefined)[];
+  },
+): ChannelParticipantInput[] | undefined {
+  const batch = params.inputs;
   // Batched ingress uses the final transport message id; every source keeps its own accepted time.
   if (
+    batch.length === 0 ||
     batch.at(-1)?.binding.messageId !== params.binding.messageId ||
     !params.owner.isLive() ||
     batch.some(
@@ -48,6 +46,43 @@ export function bindChannelParticipantInput(params: {
         input.binding.inboundEventKind !== params.binding.inboundEventKind,
     )
   ) {
+    return;
+  }
+  return batch.filter((input) => input !== undefined);
+}
+
+export function bindChannelParticipantInput(
+  params: ParticipantBinding & {
+    context: MsgContext;
+    ingress:
+      | ResolvedChannelMessageIngress
+      | readonly ResolvedChannelMessageIngress[]
+      | "unsupported"
+      | undefined;
+  },
+): void {
+  if (!params.ingress || params.ingress === "unsupported") {
+    return;
+  }
+  const resolutions = Array.isArray(params.ingress) ? params.ingress : [params.ingress];
+  bindPreparedChannelParticipantInputs({
+    ...params,
+    inputs: resolutions.map(takeChannelParticipantInput),
+  });
+}
+
+/** Reuse original consumed participant facts when real STT becomes a native message. */
+export function bindPreparedChannelParticipantInputs(
+  params: ParticipantBinding & {
+    context: MsgContext;
+    inputs: readonly (ChannelParticipantInput | undefined)[];
+  },
+): void {
+  const batch = selectBoundChannelParticipantInputs({
+    ...params,
+    inputs: params.inputs,
+  });
+  if (!batch) {
     return;
   }
   for (const input of batch) {

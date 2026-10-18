@@ -128,9 +128,9 @@ export function createConversationsListTool(options: ConversationToolOptions = {
   return {
     label: "Conversations",
     name: "conversations_list",
-    displaySummary: "List exact external conversation addresses.",
+    displaySummary: "List chat destinations and authorized active connections.",
     description:
-      "List external conversations as stable conversationRef values. Sessions hold local model context; conversationRef selects an exact external channel destination. contextRelation=current identifies this session's primary destination; parent identifies its exact parent session's current primary destination. Parent ancestry does not identify the caller or prove that a destination belongs to the same person. These snapshot labels neither prove that a connection is online nor grant delivery permission. Deliver only through explicitly available tools; never use a session key as an external address.",
+      "List durable external chat destinations as stable conversationRef values, with channelLabel and declared channelCapabilities when known, plus authorized activeConnections when their native owner publishes them. Channel capabilities describe formats, not live connectivity or tool grants; omitted capabilities are unknown. Ephemeral connectionRef values identify preparing/ready call, Assistant or browser connections, not chat addresses. Their operations describe existing native behavior: current-turn-reply uses that connection's current response, steer adds agent instructions, and cancel-output stops playback. They do not promise literal-text/file sending or grant cross-connection control. Use only explicitly available native tools; never substitute shell/CLI RPCs. Sessions hold local model context; conversationRef selects an exact external channel destination. contextRelation=current identifies this session's primary destination; parent identifies its exact parent session's current primary destination. Parent ancestry does not identify the caller or prove that a destination belongs to the same person. These snapshot labels grant no delivery permission; never use a session key or connectionRef as a message address.",
     parameters: ConversationsListSchema,
     outputSchema: ConversationListResultSchema,
     execute: async (_toolCallId, args) => {

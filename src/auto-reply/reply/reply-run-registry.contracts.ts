@@ -363,6 +363,10 @@ type ReplyOperationResult =
   | { kind: "aborted"; code: ReplyOperationAbortCode };
 
 export type ReplyOperation = {
+  /** Output connection retained by the actual executing turn, independent from tool authority. */
+  readonly speechOutputOwner?: object;
+  /** Bind once, including an ordinary non-speech turn's undefined owner. */
+  bindSpeechOutputOwner(owner: object | undefined): void;
   readonly personalToolParticipants?: ReplyTurnParticipants;
   readonly key: string;
   readonly sessionId: string;

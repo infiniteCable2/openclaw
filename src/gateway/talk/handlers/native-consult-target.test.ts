@@ -24,15 +24,15 @@ import {
 } from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import type { RealtimeVoiceBridgeCreateRequest } from "../../../talk/provider-types.js";
+import {
+  getUnifiedTalkSession,
+  rememberUnifiedTalkSession,
+} from "../../../talk/session-registry.js";
 import { makeBridge } from "../../../talk/session-runtime.test-support.js";
 import { registerChatAbortController } from "../../chat-abort.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { resolveOwnedActiveTalkRunTarget } from "../run-ownership.js";
-import {
-  cleanupTalkConnection,
-  getUnifiedTalkSession,
-  rememberUnifiedTalkSession,
-} from "../session-registry.js";
+import { cleanupTalkConnection } from "../session-registry.js";
 import { prepareTalkSessionTarget } from "../session-target.js";
 import {
   completeTalkVoiceChange,

@@ -79,7 +79,11 @@ describe("speech session controls", () => {
       images: [{ type: "image" as const, data: "test", mimeType: "image/png" }],
     };
     await f.controls.steer(request);
-    expect(control).toHaveBeenCalledWith(request.text, undefined, request);
+    expect(control).toHaveBeenCalledWith(request.text, undefined, {
+      ...request,
+      inputId: expect.any(String),
+      purpose: "steering",
+    });
     expect(current.adoptedGeneration).toBe(2);
   });
   it("does not inject after the owner closes while an earlier admission settles", async () => {

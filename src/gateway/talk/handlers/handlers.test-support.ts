@@ -227,6 +227,12 @@ vi.mock("../relay/session-create.js", async (importOriginal) => ({
   createTalkRealtimeRelaySession: mocks.createTalkRealtimeRelaySession,
 }));
 
+// The handler fixture replaces actual relay creation; real registry/lifecycle proof owns publication.
+vi.mock("../relay/presentation.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../relay/presentation.js")>()),
+  publishTalkRealtimeRelayPresentation: vi.fn(),
+}));
+
 vi.mock("../relay/operations.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../relay/operations.js")>()),
   acknowledgeTalkRealtimeRelayMark: mocks.acknowledgeTalkRealtimeRelayMark,

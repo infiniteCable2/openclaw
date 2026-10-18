@@ -484,6 +484,7 @@ export function removeSessionMemberInWorker(
 export function recordSessionParticipantInWorker(
   scope: SessionCollaborationScope,
   params: Parameters<typeof recordSessionParticipant>[1],
+  assertCurrent?: () => void,
 ): Promise<ReturnType<typeof recordSessionParticipant>> {
   if (
     !params.identity.id ||
@@ -530,5 +531,6 @@ export function recordSessionParticipantInWorker(
       }
       return result.value;
     },
+    assertCurrent,
   );
 }

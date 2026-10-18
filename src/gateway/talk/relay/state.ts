@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { TalkClientCreateResult } from "../../../../packages/gateway-protocol/src/schema/channels.js";
+import type { SessionParticipantIdentity } from "../../../config/sessions/session-participant-identity.js";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import type { BoundedSerialQueue } from "../../../shared/bounded-serial-queue.js";
@@ -20,6 +21,7 @@ import type { RealtimeVoiceBridgeSession } from "../../../talk/session-runtime.j
 import type { TalkEvent } from "../../../talk/talk-session-controller.js";
 import { abortChatRunById } from "../../chat-abort.js";
 import type { GatewayRequestContext } from "../../server-methods/shared-types.js";
+import type { TalkOperatorRunSource } from "../client-agent-runtime.js";
 import type { TalkAgentConsultAuthority } from "../client-gateway-control.js";
 import type { PreparedTalkSessionTarget } from "../session-target.types.js";
 import type { RelayToolCallLedger } from "./tool-call-ledger.js";
@@ -246,6 +248,8 @@ export class TalkRealtimeRelayOutputOwnership {
 }
 
 export type RelaySession = {
+  /** Provider readiness owned by the creating relay, independent of retained cleanup records. */
+  presentationState?: () => "preparing" | "ready";
   getToolAuthorityOverlay?: (
     authority?: TalkAgentConsultAuthority,
     source?: "reply" | "attempt",
@@ -277,6 +281,7 @@ export type RelaySession = {
   // Turn cancellation invalidates async acceptance callbacks from the prior turn.
   toolResultEpoch: number;
   voiceConfig?: OpenClawConfig;
+  participant?: SessionParticipantIdentity;
   voiceSessionCreated: boolean;
   voiceTranscriptSeq: number;
   voiceTranscriptQueue: BoundedSerialQueue;
@@ -295,6 +300,10 @@ export type CreateTalkRealtimeRelaySessionParams = {
   connId: string;
   cfg?: OpenClawConfig;
   consultAuthority?: TalkAgentConsultAuthority;
+  captureOperatorAuthority?: TalkOperatorRunSource;
+  participant?: SessionParticipantIdentity;
+  /** Original authorized snapshot stays held until asynchronous provider connection accepts it. */
+  startupContext?: { assertCurrent(): void; release(): Promise<void> };
   provider: RealtimeVoiceProviderPlugin;
   providerConfig: RealtimeVoiceProviderConfig;
   controlSource: "delegation" | "transcript";

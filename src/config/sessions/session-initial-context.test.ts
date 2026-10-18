@@ -13,6 +13,7 @@ import {
   loadSessionEntry,
   loadTranscriptEvents,
   upsertSessionEntryCore,
+  replaceTranscriptEvents,
 } from "./session-accessor.js";
 import {
   commitReplySessionInitialization,
@@ -24,11 +25,17 @@ import {
 } from "./session-accessor.sqlite-parent-fork.js";
 import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import type { PreparedInitialSessionContext } from "./session-initial-context.js";
+import type {
+  PreparedSessionSourceAuthority,
+  SessionSourceAssertion,
+} from "./session-source-authority.js";
+import { readSessionTranscriptAnchorsAsync } from "./session-transcript-anchor-read.js";
 import {
   readPreparedSessionTranscriptChange,
   type SessionTranscriptAuthority,
 } from "./session-transcript-authority.js";
 import { prepareSessionTranscriptHydration } from "./session-transcript-hydration.js";
+import type { InternalSessionEntry } from "./types.js";
 
 let state: OpenClawTestState;
 let nextId = 0;
@@ -119,6 +126,12 @@ async function withContext(
       if (!selected) {
         throw new Error("Synthetic completed context is unavailable");
       }
+      const sourceThrough = (
+        await readSessionTranscriptAnchorsAsync(source, { entryIds: [`answer-${id}`] })
+      ).anchors[0];
+      if (!sourceThrough) {
+        throw new Error("Synthetic completed source anchor is unavailable");
+      }
       const context: PreparedInitialSessionContext = {
         source: { ...owner.source, databaseIdentity: owner.source.databaseIdentity },
         sourceSessionKey: source.sessionKey,
@@ -127,6 +140,7 @@ async function withContext(
           lifecycleRevision: read.value.lifecycleRevision,
         },
         sourceVersion: hydration.snapshot.version,
+        sourceThrough,
         targetSessionId: target.sessionId,
         events: buildForkedChildTranscriptEvents({
           parentSessionFile: source.sessionKey,
@@ -134,6 +148,36 @@ async function withContext(
           targetSessionId: target.sessionId,
         }),
       };
+      // This storage fixture owns a synthetic read witness. Gateway tests separately
+      // exercise the real operator/profile read grant through this same writer.
+      const contextSourceAuthority: SessionSourceAssertion = Object.assign(
+        () => owner.assertCurrent(),
+        {
+          prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
+            assertCurrent: owner.assertCurrent,
+            checks: [
+              {
+                predicate: {
+                  source: context.source,
+                  sessionKey: source.sessionKey,
+                  fields: [
+                    "sessionId",
+                    "lifecycleRevision",
+                    "createdActor",
+                    "visibility",
+                    "incognito",
+                  ],
+                  expected: read.value,
+                  members: [],
+                },
+                refuse: (): never => {
+                  throw new Error("Synthetic source read witness changed");
+                },
+              },
+            ],
+          }),
+        },
+      );
       await run({
         source,
         target,
@@ -144,6 +188,7 @@ async function withContext(
             activeSessionKey: target.sessionKey,
             expectedRevision: snapshot.revision,
             commitGuard: owner.assertCurrent,
+            contextSourceAuthority,
             initialContext: context,
             sessionEntry: {
               sessionId: target.sessionId,
@@ -171,6 +216,62 @@ async function withContext(
 }
 
 describe("native reply initial context", () => {
+  it.each(["unchanged", "archived", "published", "replaced"] as const)(
+    "binds membership to the separately admitted root at the actual writer (%s)",
+    async (change) => {
+      await withContext(async ({ source, target, commit }) => {
+        const root = {
+          ...source,
+          sessionKey: `agent:main:root-${++nextId}`,
+          sessionId: `root-${nextId}`,
+        };
+        const entry: InternalSessionEntry = {
+          sessionId: root.sessionId,
+          lifecycleRevision: "root-first",
+          updatedAt: 1,
+          createdVia: "internal",
+          createdActor: { type: "system", id: "conversation-root" },
+          visibility: "draft",
+          delivery: { kind: "none" },
+          conversationTopology: { version: 1, role: "root" },
+        };
+        await upsertSessionEntryCore(root, entry);
+        const operation = commit({
+          branchRootSessionKey: root.sessionKey,
+          beforeEntryMutation: async () => {
+            if (change !== "unchanged") {
+              await upsertSessionEntryCore(root, {
+                ...entry,
+                ...(change === "archived" ? { archivedAt: 2 } : {}),
+                ...(change === "published" ? { visibility: "shared" as const } : {}),
+                ...(change === "replaced" ? { lifecycleRevision: "root-replacement" } : {}),
+              });
+            }
+          },
+        });
+        if (change === "unchanged") {
+          await expect(operation).resolves.toMatchObject({ ok: true });
+          expect(loadSessionEntry(target)).toMatchObject({
+            conversationTopology: {
+              version: 1,
+              role: "branch",
+              rootSessionKey: root.sessionKey,
+              rootSessionId: root.sessionId,
+              rootSessionLifecycleRevision: "root-first",
+            },
+            forkSource: { sessionKey: source.sessionKey, sessionId: source.sessionId },
+          });
+        } else {
+          await expect(operation).rejects.toThrow(
+            "Conversation root changed before branch admission",
+          );
+          expect(loadSessionEntry(target)).toBeUndefined();
+          expect(await loadTranscriptEvents(target)).toEqual([]);
+        }
+        expect(loadSessionEntry(root)?.sessionId).toBe(root.sessionId);
+      });
+    },
+  );
   it("commits copied events with the real ingress row without borrowing its source's rights", async () => {
     await withContext(async ({ source, target, commit }) => {
       const sql = observeHostDataSql();
@@ -191,7 +292,11 @@ describe("native reply initial context", () => {
         sandbox: "required",
         permissionMode: "workspace",
         createdActor: { type: "human", source: "channel", id: "target-caller" },
-        forkSource: { sessionKey: source.sessionKey, sessionId: source.sessionId },
+        forkSource: {
+          sessionKey: source.sessionKey,
+          sessionId: source.sessionId,
+          entryId: expect.any(String),
+        },
         totalTokensFresh: false,
         delivery: normalizeSessionDeliveryState({
           context: { channel: "matrix", to: "room:synthetic" },
@@ -227,20 +332,48 @@ describe("native reply initial context", () => {
             lifecycleRevision: "replacement",
           });
         } else {
-          await appendTranscriptMessage(source, {
-            message: { role: "user", content: "A later input" },
-          });
+          await replaceTranscriptEvents(source, [
+            { type: "session", id: source.sessionId, version: 3 },
+          ]);
         }
         await expect(commit()).rejects.toThrow(
           change === "incarnation"
-            ? "context source changed before creation"
-            : "context snapshot changed before creation",
+            ? "Synthetic source read witness changed"
+            : "Session transcript changed during context read",
         );
         expect(loadSessionEntry(target)).toBeUndefined();
         expect(await loadTranscriptEvents(target)).toEqual([]);
       });
     },
   );
+
+  it("accepts later append-only source work without copying its new pending instruction", async () => {
+    await withContext(async ({ source, target, commit }) => {
+      await appendTranscriptMessage(source, {
+        message: { role: "user", content: "A later pending instruction" },
+      });
+      expect((await commit()).ok).toBe(true);
+      const events = JSON.stringify(await loadTranscriptEvents(target));
+      expect(events).toContain("Completed context");
+      expect(events).not.toContain("A later pending instruction");
+    });
+  });
+
+  it("rejects source path navigation even when its generation and original bytes survive", async () => {
+    await withContext(async ({ source, target, commit }) => {
+      await appendTranscriptEvent(source, {
+        type: "leaf",
+        id: "new-path",
+        parentId: null,
+        targetId: null,
+        appendParentId: null,
+        timestamp: new Date(0).toISOString(),
+      });
+      await expect(commit()).rejects.toThrow("Session transcript changed during context read");
+      expect(loadSessionEntry(target)).toBeUndefined();
+      expect(await loadTranscriptEvents(target)).toEqual([]);
+    });
+  });
 
   it("preserves a competing target instead of appending context twice", async () => {
     await withContext(async ({ target, commit }) => {
@@ -255,6 +388,24 @@ describe("native reply initial context", () => {
       });
       expect(result).toMatchObject({ ok: false, reason: "stale-snapshot" });
       expect(loadSessionEntry(target)?.sessionId).toBe("competing-session");
+      expect(await loadTranscriptEvents(target)).toEqual([]);
+    });
+  });
+
+  it("refuses a substituted completed endpoint even when the source version is unchanged", async () => {
+    await withContext(async ({ target, context, commit }) => {
+      if (!context.sourceThrough) {
+        throw new Error("Synthetic source anchor was not prepared");
+      }
+      await expect(
+        commit({
+          initialContext: {
+            ...context,
+            sourceThrough: { ...context.sourceThrough, rawSeq: context.sourceThrough.rawSeq + 1 },
+          },
+        }),
+      ).rejects.toThrow("Completed-turn transcript anchor changed");
+      expect(loadSessionEntry(target)).toBeUndefined();
       expect(await loadTranscriptEvents(target)).toEqual([]);
     });
   });
@@ -322,7 +473,7 @@ describe("native reply initial context", () => {
                     source: { ...owner.source, databaseIdentity: owner.source.databaseIdentity },
                   },
                 }),
-              ).rejects.toThrow("Captured session database changed");
+              ).rejects.toThrow("matching prepared donor read authority");
             },
           );
         }
@@ -332,9 +483,14 @@ describe("native reply initial context", () => {
     },
   );
 
-  it("requires the live host guard rather than treating snapshot data as authority", async () => {
+  it("requires prepared source authority rather than treating snapshot data as authority", async () => {
     await withContext(async ({ target, commit }) => {
-      await expect(commit({ commitGuard: undefined })).rejects.toThrow("retained source authority");
+      await expect(commit({ contextSourceAuthority: undefined })).rejects.toThrow(
+        "retained source authority",
+      );
+      await expect(commit({ contextSourceAuthority: () => {} })).rejects.toThrow(
+        "retained source authority",
+      );
       expect(loadSessionEntry(target)).toBeUndefined();
     });
   });

@@ -26,7 +26,7 @@ session access rules.
 | `sessions_search`    | Search visible session transcripts and return matching excerpts                         |
 | `sessions_history`   | Read the transcript of a specific session                                               |
 | `sessions_send`      | Run another session on the same Gateway and optionally wait                             |
-| `conversations_list` | List stable external conversation addresses                                             |
+| `conversations_list` | List stable chat addresses and authorized active communication connections              |
 | `conversations_send` | Send to one exact external conversation without running a local session                 |
 | `conversations_turn` | Send to one exact external conversation and wait for its correlated reply               |
 | `sessions_spawn`     | Spawn an isolated sub-agent session for background work                                 |
@@ -175,6 +175,41 @@ that two addresses belong to the same person. Missing, reset, cross-agent or
 conflicting parent identities produce no parent label. Historical associations
 and transcript fork ancestry alone cannot supply this relationship. Delivery
 still checks current route ownership independently.
+
+Results include `channelLabel` when the selected, already loaded channel plugin
+provides one. Optional `channelCapabilities` reports only declared channel
+formats: `media` is generic attachment support, and `voiceOutput` is the native
+TTS delivery format (`audio-file` or `voice-note`). Missing declarations mean
+unknown, not unsupported. These are channel-level descriptions, not account
+readiness, delivery guarantees, MIME-type support, or grants to use another tool.
+Use the returned `channel`, `accountId`, `target`, and optional `threadId` with an
+explicitly available `message` tool for its supported media/actions; the
+conversation send/turn tools currently accept text only.
+
+The `conversations` array contains durable chat addresses, not a roster of
+connected people. `firstSeenAt` and `lastSeenAt` describe the address record, not
+transport presence.
+
+Optional `activeConnections` projects active calls, Assistant connections and
+browser Talk sessions published by their native lifecycle owner. These rows have
+a temporary `connectionRef`, label, input/output capabilities, and `preparing` or
+`ready` state. Closing or replacing the original connection removes its
+availability even while failed resource cleanup retains custody. Discovery does
+not start a provider, open a connection, or create a model session.
+
+Active metadata requires the original operator's native read scope and current
+session-sharing permission for the exact existing conversation. Missing,
+unmaterialized, private, revoked or replaced sources reveal no row. Agent IDs,
+parent ancestry and device assignments are not read grants or proof of who is
+speaking. A shared room device cannot thereby reveal a private human dialog.
+
+The `operations` array describes existing native behavior, not additional tool
+grants. `current-turn-reply` uses that connection's normal response path; `steer`
+adds instructions to an agent run, and `cancel-output` stops playback through its
+native connection owner when exposed. Steering or requesting speech does not
+guarantee literal playback of supplied text or files. A `connectionRef` is not a
+`conversationRef`, message target or authorization token. Use only actually
+available native tools; never substitute shell or CLI RPCs for missing grants.
 
 In Code Mode, the conversation tools reuse their exact Gateway output contracts. A single `exec` cell can list addresses, select a returned `conversationRef`, and call `conversations_send` or `conversations_turn`; normal tool policy and approvals still apply to the nested calls.
 

@@ -4,6 +4,7 @@ import {
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
+import { ensureAgentConversationRoot } from "../../../config/sessions/session-conversation-root.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../../plugins/runtime.js";
@@ -20,9 +21,12 @@ import {
 } from "../../../test-utils/openclaw-test-state.js";
 import { handleGatewayRequest } from "../../server-methods.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
+import { sessionMutationTargetChanged } from "../../session-sharing-authorization.js";
+import { hiddenSessionNotFound } from "../../session-sharing-policy.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
 import { cleanupTalkConnection } from "../session-registry.js";
+import { assertTalkSessionStorageTarget, prepareTalkSessionTarget } from "../session-target.js";
 import { createTalkClient } from "./client-create.js";
 import { talkClientHandlers } from "./client.js";
 import { talkSessionHandlers } from "./session.js";
@@ -49,6 +53,11 @@ vi.mock("../../../agents/realtime-bootstrap-context.js", () => ({
 vi.mock("../relay/session-create.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../relay/session-create.js")>()),
   createTalkRealtimeRelaySession: mocks.createRelay,
+}));
+// Relay construction is synthetic here; the actual lifecycle publisher has its own proof.
+vi.mock("../relay/presentation.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../relay/presentation.js")>()),
+  publishTalkRealtimeRelayPresentation: vi.fn(),
 }));
 vi.mock("../transcription-relay.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../transcription-relay.js")>()),
@@ -161,6 +170,214 @@ afterEach(async () => {
 });
 
 describe("Talk target preparation through Gateway authorization", () => {
+  it.each(["native", "branches"] as const)(
+    "keeps a foreign root hidden before applying the %s conversation fence",
+    async (conversationMode) => {
+      config.agents!.entries!.voice = { conversationMode };
+      config.gateway = {
+        roles: {
+          default: "limited",
+          definitions: {
+            limited: {
+              agents: ["voice"],
+              sessions: { others: "none" },
+              scopes: ["operator.read", "operator.write"],
+            },
+          },
+        },
+      };
+      const sessionKey = "agent:voice:foreign-root";
+      await replaceSessionEntry(
+        { agentId: "voice", sessionKey },
+        {
+          sessionId: "foreign-root",
+          updatedAt: 1,
+          createdActor: { type: "human", source: "profile", id: "another-person" },
+          conversationTopology: { version: 1, role: "root" },
+        },
+      );
+      for (const method of ["talk.client.create", "talk.session.create"]) {
+        expect(
+          await dispatch(method, {
+            ...createParams,
+            sessionKey,
+            transport: method === "talk.client.create" ? "webrtc" : "gateway-relay",
+          }),
+        ).toHaveBeenCalledWith(false, undefined, hiddenSessionNotFound(sessionKey));
+      }
+      expect(mocks.bootstrap).not.toHaveBeenCalled();
+      expect(createBrowserSession).not.toHaveBeenCalled();
+      expect(mocks.createRelay).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["talk.client.create", "talk.session.create"])(
+    "routes branch-mode main aliases to the original connection before %s prepares a provider",
+    async (method) => {
+      config.agents!.entries!.voice = { conversationMode: "branches" };
+      await ensureAgentConversationRoot({ cfg: config, agentId: "voice" });
+      for (const sessionKey of [undefined, "main", "agent:voice:main"]) {
+        const respond = await dispatch(method, {
+          ...createParams,
+          transport: method === "talk.client.create" ? "webrtc" : "gateway-relay",
+          ...(sessionKey ? { sessionKey } : {}),
+        });
+        expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
+        const target = prepareTalkSessionTarget(
+          config,
+          sessionKey,
+          "conversation-input",
+          client.connId,
+        );
+        expect(target.canonicalKey).not.toBe("agent:voice:main");
+        expect(
+          loadSessionEntry({ agentId: "voice", sessionKey: target.canonicalKey }),
+        ).toMatchObject({
+          conversationTopology: { role: "branch", rootSessionKey: "agent:voice:main" },
+        });
+        expect(mocks.bootstrap).toHaveBeenLastCalledWith(
+          expect.objectContaining({ sessionKey: target.canonicalKey }),
+        );
+        if (method === "talk.client.create") {
+          const { voiceSessionId } = respond.mock.calls[0]![1] as { voiceSessionId: string };
+          expect(
+            await dispatch("talk.client.transcript", {
+              sessionKey: target.sessionKey,
+              voiceSessionId,
+              entryId: `speech-${sessionKey}`,
+              role: "user",
+              text: "Connection-owned speech.",
+            }),
+          ).toHaveBeenCalledWith(true, { ok: true }, undefined);
+          const stored = loadSessionEntry({ agentId: "voice", sessionKey: target.canonicalKey });
+          expect(
+            readSessionTranscriptMessageEvents({
+              agentId: "voice",
+              sessionKey: target.canonicalKey,
+              sessionId: stored!.sessionId,
+            }),
+          ).toHaveLength(createdCalls.length);
+        }
+      }
+      expect(
+        loadSessionEntry({ agentId: "voice", sessionKey: "agent:voice:main" })
+          ?.conversationTopology,
+      ).toMatchObject({ role: "root" });
+    },
+  );
+
+  it("rejects a persisted headless root even after branch mode is disabled", async () => {
+    const sessionKey = "agent:voice:selected";
+    await replaceSessionEntry(
+      { agentId: "voice", sessionKey },
+      {
+        sessionId: "headless-root",
+        updatedAt: 1,
+        conversationTopology: { version: 1, role: "root" },
+      },
+    );
+    const respond = await dispatch("talk.client.create", { ...createParams, sessionKey });
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "INVALID_REQUEST",
+        message: expect.stringContaining("Explicitly migrate"),
+      }),
+    );
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(createBrowserSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicitly selected non-root Talk conversation available in branch mode", async () => {
+    config.agents!.entries!.voice = { conversationMode: "branches" };
+    await ensureAgentConversationRoot({ cfg: config, agentId: "voice" });
+    const sessionKey = "agent:voice:conversation";
+    const respond = await dispatch("talk.client.create", { ...createParams, sessionKey });
+    expect(respond).toHaveBeenCalledWith(true, expect.objectContaining(browserSession), undefined);
+    expect(mocks.bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "voice", sessionKey }),
+    );
+  });
+
+  it("rechecks the actual stored root role for a retained Talk target", async () => {
+    const sessionKey = "agent:voice:selected";
+    const target = prepareTalkSessionTarget(config, sessionKey);
+    await replaceSessionEntry(
+      { agentId: "voice", sessionKey },
+      {
+        sessionId: "headless-root",
+        updatedAt: 1,
+        conversationTopology: { version: 1, role: "root" },
+      },
+    );
+    expect(() => assertTalkSessionStorageTarget(config, target)).toThrow("Explicitly migrate");
+    expect(() => assertTalkSessionStorageTarget(config, target, "settlement")).not.toThrow();
+  });
+
+  it("reports root drift during a deferred admitted call as a generic target change", async () => {
+    const sessionKey = "agent:voice:selected";
+    const entry = {
+      sessionId: "admitted-conversation",
+      lifecycleRevision: "admitted-lifecycle",
+      updatedAt: 1,
+      createdActor: {
+        type: "human" as const,
+        source: "profile" as const,
+        id: client.authenticatedUserProfile!.profileId,
+      },
+    };
+    await replaceSessionEntry({ agentId: "voice", sessionKey }, entry);
+    const gate = createDeferredCore();
+    const started = createDeferredCore();
+    const pending = dispatch(
+      "talk.client.create",
+      { ...createParams, sessionKey },
+      {
+        "talk.client.create": async (request) => {
+          started.resolve();
+          await gate.promise;
+          return createTalkClient(request);
+        },
+      },
+    );
+    await started.promise;
+    await replaceSessionEntry(
+      { agentId: "voice", sessionKey },
+      { ...entry, conversationTopology: { version: 1, role: "root" } },
+    );
+    gate.resolve();
+    const respond = await pending;
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      sessionMutationTargetChanged("talk.client.create", sessionKey).error,
+    );
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(createBrowserSession).not.toHaveBeenCalled();
+  });
+
+  it("settles accepted transcripts and closes an old main call after enabling branch mode", async () => {
+    const sessionKey = "agent:voice:main";
+    const created = await dispatch("talk.client.create", { ...createParams, sessionKey });
+    expect(created).toHaveBeenCalledWith(true, expect.objectContaining(browserSession), undefined);
+    const { voiceSessionId } = created.mock.calls[0]![1] as { voiceSessionId: string };
+    config.agents!.entries!.voice = { conversationMode: "branches" };
+    expect(
+      await dispatch("talk.client.transcript", {
+        sessionKey,
+        voiceSessionId,
+        entryId: "accepted-before-mode-change",
+        role: "assistant",
+        text: "Accepted speech result.",
+      }),
+    ).toHaveBeenCalledWith(true, { ok: true }, undefined);
+    expect(
+      await dispatch("talk.client.close", { sessionKey, voiceSessionId }),
+    ).toHaveBeenCalledWith(true, { ok: true }, undefined);
+    expect(clientVoiceSessionTesting.readRecord("voice", voiceSessionId)?.status).toBe("closed");
+  });
+
   it.each(["main", undefined])("uses the configured Talk owner for %s", async (sessionKey) => {
     const respond = await dispatch("talk.client.create", {
       ...createParams,

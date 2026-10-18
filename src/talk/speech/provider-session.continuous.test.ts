@@ -230,16 +230,37 @@ describe("meeting native continuous voice", () => {
           expect(fixture.consultAgent).toHaveBeenCalledWith(
             expect.objectContaining({
               sessionId: "meeting-1",
+              inputId: expect.any(String),
+              purpose: "user",
               requesterSessionKey: "agent:main:requester",
               args: { question: "Check the project" },
             }),
           );
+          const firstInputId = fixture.consultAgent.mock.calls[0]?.[0].inputId;
+          await consult({ prompt: "Check the project" });
+          expect(fixture.consultAgent.mock.calls[1]?.[0].inputId).not.toBe(firstInputId);
         }
       } finally {
         await fixture.handle.stop();
       }
     },
   );
+
+  it.each([
+    ["native-call", "native-item", "native-call"],
+    ["", "native-item", "native-item"],
+  ])("keeps provider tool input identity (%s, %s)", async (callId, itemId, inputId) => {
+    const fixture = await createLiveFixture();
+    const event = { callId, itemId, name: "openclaw_agent_consult", args: { question: "Check" } };
+    try {
+      await fixture.callbacks.onToolCall?.(event);
+      expect(fixture.handleToolCall).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ event, inputId, purpose: "user", sessionId: "meeting-1" }),
+      );
+    } finally {
+      await fixture.handle.stop();
+    }
+  });
 
   it("projects rich host consult results to the provider's text-only callback contract", async () => {
     const rich: RealtimeVoiceAgentConsultResult = {

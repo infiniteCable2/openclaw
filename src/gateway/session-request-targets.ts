@@ -37,7 +37,7 @@ export function resolveSessionRequestTargets(params: {
     return undefined;
   }
   const talk = resolveTalkSessionTargetInput(params.method, params.requestParams, params.connId);
-  if (talk?.kind === "relay") {
+  if (talk && talk.kind !== "request") {
     return [{ sessionKey: talk.target.canonicalKey, agentId: talk.target.agentId }];
   }
   if (isDirectSessionReadMethod(params.method)) {

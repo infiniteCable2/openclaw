@@ -132,7 +132,9 @@ export function activateGatewayAgentDatabaseStartup(params: {
             cfg: params.getConfig(),
             env,
             agentIds: new Set([agentId]),
+            getConfig: params.getConfig,
             assertCurrent: assertMigrationCurrent,
+            signal,
             log: params.log,
           });
           await runGatewaySessionStartupMaintenance({

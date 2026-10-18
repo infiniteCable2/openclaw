@@ -1,3 +1,5 @@
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
 import {
   getReplyPayloadMetadata,
   setReplyPayloadMetadata,
@@ -15,6 +17,21 @@ import type {
   RealtimeVoiceSpeechUtterance,
 } from "./agent-consult-runtime.js";
 import { collectRealtimeVoiceAgentConsultVisibleText } from "./agent-consult-tool.js";
+
+/** Yield is native task custody, not completion; both reply adapters speak the same bounded ack. */
+export function resolveRealtimeVoiceYieldAcknowledgment(
+  meta: Pick<EmbeddedAgentRunMeta, "yielded" | "yieldAcknowledgment"> | undefined,
+): string | undefined {
+  if (meta?.yielded !== true) return undefined;
+  return (
+    truncateUtf16Safe(
+      typeof meta.yieldAcknowledgment === "string"
+        ? meta.yieldAcknowledgment.replaceAll(/\s+/g, " ").trim()
+        : "",
+      500,
+    ) || "I started that work and will share the result when it is ready."
+  );
+}
 
 function hasQueuedSpeechSuffix(chunks: readonly string[], text: string): boolean {
   let remaining = text.replaceAll(/\s+/g, " ").trim();
@@ -37,6 +54,8 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
   sessionId: string;
   abortSignal: AbortSignal;
   assertExpressionCurrent(): void;
+  /** Native input adoption can remain valid after the audio output disconnects. */
+  assertInputCurrent?: () => void;
   assertNotInterrupted(): void;
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
   speakCommentary?: boolean;
@@ -100,7 +119,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
           sessionId,
           assertCurrent: assertExpressionCurrent,
           beginInput(input) {
-            assertExpressionCurrent();
+            (params.assertInputCurrent ?? assertExpressionCurrent)();
             expressiveInput = input;
             expressiveUtterances.length = 0;
             queuedNativeSources.length = 0;

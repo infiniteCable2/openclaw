@@ -8,8 +8,13 @@ import type {
   ProjectedLifecycleCommitInput,
   ProjectedLifecycleCommitResult,
 } from "./session-accessor.sqlite-lifecycle-types.js";
+import type {
+  SessionSourcePredicate,
+  SessionSourceValidation,
+} from "./session-source-authority.js";
 
 export type SessionLifecycleProjectionCommit = ProjectedLifecycleCommitInput & {
+  sources?: SessionSourcePredicate[];
   agentId: string;
   removalPlans: MaterializedSessionStateDeletePlan[];
   descendantRunBasis?: SubagentRunsDurableBasis;
@@ -17,6 +22,7 @@ export type SessionLifecycleProjectionCommit = ProjectedLifecycleCommitInput & {
 };
 
 export type SessionLifecycleProjectionCommitted = {
+  sourceValidation?: SessionSourceValidation;
   kind: "session-lifecycle-projection";
   result: ProjectedLifecycleCommitResult;
   progressCardResetKeys: string[];

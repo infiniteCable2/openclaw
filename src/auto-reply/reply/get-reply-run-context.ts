@@ -92,6 +92,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     sessionEntryHandle,
     sessionStore,
   } = params;
+  opts?.assertSourceCurrent?.();
   const runtimePolicySessionKey = resolveRuntimePolicySessionKey({ agentId, cfg, ctx, sessionKey });
   const { resolvedElevatedLevel, execOverrides, abortedLastRun, sessionEntry } = params;
   const isHeartbeat = opts?.isHeartbeat === true;
@@ -105,11 +106,20 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
     queueMode: effectiveQueueMode ?? "configured",
   };
   const traceRunPhase = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
-    measureDiagnosticsTimelineSpan(name, run, {
-      phase: "agent-turn",
-      config: cfg,
-      attributes: traceAttributes,
-    });
+    measureDiagnosticsTimelineSpan(
+      name,
+      async () => {
+        opts?.assertSourceCurrent?.();
+        const result = await run();
+        opts?.assertSourceCurrent?.();
+        return result;
+      },
+      {
+        phase: "agent-turn",
+        config: cfg,
+        attributes: traceAttributes,
+      },
+    );
   const promptSessionCtx = { ...sessionCtx, ...conversation.fields };
   copyChannelParticipantAdmissionEvidence(ctx, promptSessionCtx);
   if (sessionCtx !== ctx) {

@@ -18,6 +18,7 @@ import { createCronContinuationController } from "../server-methods/agent-cron-c
 import { runAgentResetPhase } from "../server-methods/agent-reset-phase.js";
 import { buildAgentSessionPatch } from "../server-methods/agent-session-patch.js";
 import { prepareAgentSession } from "../server-methods/agent-session-prepare.js";
+import { isDirectGatewayUserClient } from "../server-methods/cron-creator-authority-admission.js";
 import type { GatewayRequestHandlerOptions, RespondFn } from "../server-methods/shared-types.js";
 import { resolveAgentRunSessionCreation } from "../session-creation-provenance.js";
 import { authorizeResolvedSessionMutation } from "../session-sharing.js";
@@ -65,6 +66,9 @@ export function createAgentTurnService(
     onRunObserved,
   }: AgentTurnStartRequest): Promise<void> => {
     const promptedAt = Date.now();
+    const conversationInput: true | undefined = isDirectGatewayUserClient(principal)
+      ? true
+      : undefined;
     assertAdmissionCurrent?.();
     if (replayAgentTurnIfCached({ preflight, context, io, acceptedOnly: privateCompletion })) {
       return;
@@ -106,6 +110,7 @@ export function createAgentTurnService(
     });
     const routing = await prepareAgentRequestRouting({
       ...preflight,
+      conversationInput,
       context,
       respond,
       reserveDedupe: dedupeLifecycle.reserve,
@@ -150,6 +155,7 @@ export function createAgentTurnService(
       const content = await prepareAgentContentPhase({
         ...preflight,
         ...routing,
+        conversationInput,
         assertAdmissionCurrent: assertRequestCurrent,
         context,
         respond,
@@ -226,6 +232,7 @@ export function createAgentTurnService(
         return admissionController.respondToOutcome();
       };
       const resetPhase = await runAgentResetPhase({
+        conversationInput,
         assertAdmissionCurrent: assertRequestCurrent,
         request,
         cfg,
@@ -257,6 +264,7 @@ export function createAgentTurnService(
 
       if (requestedSessionKey) {
         const preparedSession = await prepareAgentSession({
+          conversationInput,
           cfg,
           requestedSessionKey,
           requestedSessionId,
@@ -363,6 +371,7 @@ export function createAgentTurnService(
           return;
         }
         const persistedSession = await persistAgentSessionPhase({
+          conversationInput,
           onSessionCommitted: (committedEntry) =>
             dedupeLifecycle.bindSessionTarget({
               sessionKey: canonicalSessionKey,

@@ -40,6 +40,7 @@ import {
   persistCompactionBoundaryWithSessionEntryAsync,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import {
   SQLITE_USAGE_TAIL_MAX_EVENTS,
@@ -52,7 +53,6 @@ import {
   refreshTranscriptByteCompactionLatch,
 } from "../../context-engine/transcript-byte-limit.js";
 import { logVerbose } from "../../globals.js";
-import { isAbortError } from "../../infra/abort-signal.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -78,8 +78,8 @@ import type { CompactionNoticePhase } from "./compaction-notice.js";
 import {
   buildVisibleMemoryFlushFailure,
   resolveVisibleMemoryFlushErrorPayloads,
-  truncateMemoryFlushErrorMessage,
 } from "./memory-flush-errors.js";
+import { recordMemoryFlushFailure } from "./memory-flush-failure.js";
 import {
   isToolsMemoryFlushPlan,
   memoryFlushResultIsSilent,
@@ -104,7 +104,6 @@ import type { ReplyOperation } from "./reply-run-registry.js";
 import { acknowledgeReplySessionTransition } from "./reply-run-registry.state.js";
 import { incrementCompactionCount } from "./session-updates.js";
 
-const MAX_FLUSH_FAILURES = 3;
 const preflightCompactionLog = createSubsystemLogger("auto-reply/preflight-compaction");
 const memoryFlushLog = createSubsystemLogger("auto-reply/memory-flush");
 
@@ -343,13 +342,17 @@ export async function runSessionCompactionIfNeeded(params: {
   onCompactionNotice?: (phase: CompactionNoticePhase, text?: string) => Promise<void> | void;
 }): Promise<SessionEntry | undefined> {
   const operatorAuthority = params.followupRun.operatorAuthority;
-  const assertActive = () => {
-    params.abortSignal?.throwIfAborted();
-    operatorAuthority?.assertCurrent();
-    if (params.authorize?.() === false) {
-      throw new Error("Session compaction maintenance is no longer active");
-    }
-  };
+  const assertActive = composeSessionSourceAssertion(
+    [params.followupRun.assertSourceCurrent],
+    (assertSource) => {
+      params.abortSignal?.throwIfAborted();
+      assertSource();
+      operatorAuthority?.assertCurrent();
+      if (params.authorize?.() === false) {
+        throw new Error("Session compaction maintenance is no longer active");
+      }
+    },
+  );
   if (!params.sessionKey) {
     return params.sessionEntry;
   }
@@ -834,8 +837,6 @@ type MemoryFlushResult = {
   outcome: MemoryFlushOutcome;
 };
 
-type MemoryFlushRunParams = Parameters<typeof runMemoryFlushIfNeeded>[0];
-
 /** Runs pre-compaction memory flush when transcript state warrants it. */
 export async function runMemoryFlushIfNeeded(params: {
   /** Supplied only by required preflight, while this admitted input is unprocessed. */
@@ -859,10 +860,15 @@ export async function runMemoryFlushIfNeeded(params: {
     abortSignal: params.replyOperation?.abortSignal ?? params.abortSignal,
     operatorAuthority: params.followupRun.operatorAuthority,
   });
-  const assertMemoryFlushCurrent = () => {
-    abortSignal?.throwIfAborted();
-    params.followupRun.operatorAuthority?.assertCurrent();
-  };
+  const assertMemoryFlushCurrent = composeSessionSourceAssertion(
+    [params.followupRun.assertSourceCurrent],
+    (assertSource) => {
+      abortSignal?.throwIfAborted();
+      assertSource();
+      params.followupRun.operatorAuthority?.assertCurrent();
+    },
+  );
+  assertMemoryFlushCurrent();
   const memoryFlushWritable =
     !params.sessionKey ||
     (await withSandboxRuntimeStatusInWorker(
@@ -1305,72 +1311,4 @@ export async function runMemoryFlushIfNeeded(params: {
   }
 }
 
-async function recordMemoryFlushFailure(
-  error: unknown,
-  run: MemoryFlushRunParams,
-  initialSessionEntry?: SessionEntry,
-): Promise<MemoryFlushResult> {
-  let sessionEntry = initialSessionEntry;
-  let outcome: MemoryFlushOutcome = "failed";
-  // Caller cancellation may use any reason, not only an AbortError instance.
-  if ((run.replyOperation?.abortSignal ?? run.abortSignal)?.aborted) {
-    logVerbose("memory flush cancelled by its owner");
-    return { sessionEntry, outcome };
-  }
-  const truncatedError = truncateMemoryFlushErrorMessage(error);
-  const { sessionKey, storePath } = run;
-  if (!isAbortError(error) && storePath && sessionKey) {
-    try {
-      const adoptEntry = (entry: SessionEntry | null) => {
-        if (entry) {
-          sessionEntry = entry;
-          if (run.sessionStore) {
-            run.sessionStore[sessionKey] = entry;
-          }
-        }
-      };
-      const updateEntry = (update: Parameters<typeof updateSessionEntry>[1]) =>
-        updateSessionEntry({ storePath, sessionKey }, update, {
-          skipMaintenance: true,
-          takeCacheOwnership: true,
-        });
-      const failedEntry = await updateEntry(async (currentEntry) => ({
-        memoryFlush: {
-          kind: "failed",
-          ...(currentEntry.memoryFlush?.compactionCount !== undefined
-            ? { compactionCount: currentEntry.memoryFlush.compactionCount }
-            : {}),
-          failureCount:
-            (currentEntry.memoryFlush?.kind === "failed"
-              ? currentEntry.memoryFlush.failureCount
-              : 0) + 1,
-        },
-      }));
-      adoptEntry(failedEntry);
-      const failureCount =
-        failedEntry?.memoryFlush?.kind === "failed" ? failedEntry.memoryFlush.failureCount : 0;
-      logVerbose(
-        `memory flush failed (attempt ${failureCount}/${MAX_FLUSH_FAILURES}): ${truncatedError}`,
-      );
-      if (failedEntry && failureCount >= MAX_FLUSH_FAILURES) {
-        outcome = "exhausted";
-        logVerbose(
-          `memory flush exhausted: skipping flush for this compaction cycle after ${failureCount} consecutive failures`,
-        );
-        const exhaustedEntry = await updateEntry(async (currentEntry) => ({
-          memoryFlush: {
-            kind: "succeeded",
-            compactionCount: currentEntry.compactionCount ?? 0,
-          },
-        }));
-        adoptEntry(exhaustedEntry);
-      }
-    } catch (persistError) {
-      logVerbose(`failed to persist memory flush failure metadata: ${String(persistError)}`);
-    }
-  } else {
-    logVerbose(`memory flush run failed: ${String(error)}`);
-  }
-  return { sessionEntry, outcome };
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

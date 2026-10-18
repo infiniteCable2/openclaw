@@ -169,6 +169,11 @@ export type SessionEntryLifecycleRemoval = SessionEntryLifecycleRemovalBase &
   );
 
 export type SessionEntryLifecycleUpsert = {
+  /** Explicit host-owned conversation enrollment, never a source-history read grant. */
+  conversationBranchAdmission?: Extract<
+    import("./session-conversation-topology.js").SessionConversationTopology,
+    { role: "branch" }
+  >;
   sessionKey: string;
   /** Only a first creation may atomically adopt this host-admitted context snapshot. */
   initialContext?: PreparedInitialSessionContext;

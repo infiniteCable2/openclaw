@@ -16,6 +16,7 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { parseCronRunScopeSuffix } from "../../sessions/session-key-utils.js";
 import {
@@ -43,6 +44,7 @@ type PrepareAgentSessionParams = {
   recipientChannel?: string;
   request: AgentRunRequest;
   canUseCronRunContinuation: boolean;
+  conversationInput?: true;
   lifecycleGeneration: string;
   effectiveBootstrapContextRunKind?: "default" | "heartbeat" | "cron";
   preAttachmentSession?: { canonicalKey: string; sessionId?: string };
@@ -106,6 +108,15 @@ async function prepareAdmittedAgentSession(
 ) {
   const { cfg, storePath, entry, canonicalKey, legacyKey, storeKeys } = selected;
   const canonicalSessionAgentId = parseAgentSessionKey(canonicalKey)?.agentId ?? requestedAgentId;
+  if (params.conversationInput) {
+    assertExternalConversationTarget({
+      cfg,
+      agentId: canonicalSessionAgentId,
+      sessionKey: canonicalKey,
+      entry,
+      isSystemEvent: false,
+    });
+  }
   if (params.expectedExistingSessionId && entry?.sessionId !== params.expectedExistingSessionId) {
     params.respond(
       false,

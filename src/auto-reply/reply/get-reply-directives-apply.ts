@@ -2,6 +2,7 @@ import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import { modelKey } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
 import { resolveStickyModelSelectionScope } from "../../agents/sticky-model-selection.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { SessionEntry, SessionScope } from "../../config/sessions/types.js";
 import type { AgentConfig } from "../../config/types.agents.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -91,6 +92,7 @@ type ApplyDirectiveResult =
 export async function applyInlineDirectiveOverrides(params: {
   ctx: MsgContext;
   abortSignal?: AbortSignal;
+  assertSourceCurrent?: SessionSourceAssertion;
   cfg: OpenClawConfig;
   agentId: string;
   agentDir: string;
@@ -123,6 +125,7 @@ export async function applyInlineDirectiveOverrides(params: {
   effectiveModelDirective?: string;
   typing: TypingController;
 }): Promise<ApplyDirectiveResult> {
+  assertReplyPreprocessingActive(params);
   const directiveParams = { ...params };
   const {
     ctx,
@@ -280,7 +283,7 @@ export async function applyInlineDirectiveOverrides(params: {
     persistenceState?: NonNullable<HandleDirectiveOnlyParams["persistenceState"]>,
   ) => {
     let rejected = false;
-    assertReplyPreprocessingActive(params.abortSignal);
+    assertReplyPreprocessingActive(params);
     const currentLevels = await (
       await directiveLevelsLoader.load()
     ).resolveCurrentDirectiveLevels({
@@ -290,7 +293,7 @@ export async function applyInlineDirectiveOverrides(params: {
       resolveDefaultThinkingLevel:
         !persistenceState || directives.hasThinkDirective
           ? () => {
-              assertReplyPreprocessingActive(params.abortSignal);
+              assertReplyPreprocessingActive(params);
               return racePromiseWithAbortSignal(
                 modelState.resolveDefaultThinkingLevel(),
                 params.abortSignal,
@@ -298,15 +301,15 @@ export async function applyInlineDirectiveOverrides(params: {
             }
           : async () => undefined,
     });
-    assertReplyPreprocessingActive(params.abortSignal);
+    assertReplyPreprocessingActive(params);
     const thinkingCatalog = await racePromiseWithAbortSignal(
       modelState.resolveThinkingCatalog(),
       params.abortSignal,
     );
-    assertReplyPreprocessingActive(params.abortSignal);
-    const reply = await (
-      await directiveImplLoader.load()
-    ).handleDirectiveOnly({
+    assertReplyPreprocessingActive(params);
+    const directiveRuntime = await directiveImplLoader.load();
+    assertReplyPreprocessingActive(params);
+    const reply = await directiveRuntime.handleDirectiveOnly({
       ...directiveParams,
       directives,
       modelPolicy: modelState.modelPolicy,
@@ -361,9 +364,9 @@ export async function applyInlineDirectiveOverrides(params: {
         if (runtime.kind === "invalid") {
           return directiveRejection("model-runtime-invalid", runtime.errorText);
         }
-        const applied = await (
-          await directivePersistLoader.load()
-        ).applySessionModelSelectionInternal({
+        const persistenceRuntime = await directivePersistLoader.load();
+        assertReplyPreprocessingActive(params);
+        const applied = await persistenceRuntime.applySessionModelSelectionInternal({
           cfg,
           agentId,
           sessionKey,

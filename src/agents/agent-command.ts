@@ -5,6 +5,7 @@ import {
   resolveSessionWorkStartError,
 } from "../config/sessions/lifecycle.js";
 import type { RestartRecoveryTerminalDeliveryEvidenceResult } from "../config/sessions/restart-recovery-types.js";
+import { resolveConversationModelRunError } from "../config/sessions/session-conversation-topology.js";
 import {
   assertAgentRunLifecycleGenerationCurrent,
   captureAgentRunLifecycleGeneration,
@@ -213,6 +214,10 @@ async function agentCommandInternal(
           throw new Error(archivedSessionError);
         }
         operatorSession?.assertAuthorized(currentEntry);
+        const conversationError = resolveConversationModelRunError(currentEntry);
+        if (conversationError) {
+          throw new Error(conversationError);
+        }
         sessionEntry = currentEntry;
         if (sessionStore && sessionKey) {
           if (currentEntry) {

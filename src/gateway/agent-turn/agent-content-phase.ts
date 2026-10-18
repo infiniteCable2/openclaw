@@ -14,6 +14,7 @@ import {
 } from "../../infra/voicewake-routing.js";
 import type { MediaFact } from "../../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { classifySessionKeyShape, isAcpSessionKey } from "../../routing/session-key.js";
 import {
   annotateInterSessionPromptText,
@@ -59,6 +60,8 @@ export async function prepareAgentContentPhase(params: {
   context: AgentTurnContext;
   respond: GatewayRequestHandlerOptions["respond"];
   isRawModelRun: boolean;
+  /** Host classification retained across voice-wake target selection. */
+  conversationInput?: true;
   inputProvenance?: InputProvenance;
   normalizedAttachments: ChatAttachment[];
   requestedSessionKeyRaw?: string;
@@ -217,6 +220,32 @@ export async function prepareAgentContentPhase(params: {
     } catch (err) {
       params.context.logGateway.warn(`voicewake routing load failed: ${formatForLog(err)}`);
     }
+  }
+
+  if (
+    params.conversationInput &&
+    requestedSessionKey &&
+    (requestedSessionKey !== params.requestedSessionKey || agentId !== params.agentId)
+  ) {
+    // A changed voice-wake target was not checked by the original routing read.
+    // Keep this additional exact read on the existing Worker owner, not host SQLite.
+    const { loadGatewaySessionEntryReadOnlyInWorker } =
+      await import("../session-utils-store-worker.js");
+    const selected = await loadGatewaySessionEntryReadOnlyInWorker({
+      cfg: params.cfg,
+      key: requestedSessionKey,
+      agentId,
+      projection: "list",
+      assertActive: params.assertAdmissionCurrent,
+    });
+    params.assertAdmissionCurrent?.();
+    assertExternalConversationTarget({
+      cfg: params.cfg,
+      agentId: selected.agentId,
+      sessionKey: selected.canonicalKey,
+      entry: selected.entry,
+      isSystemEvent: false,
+    });
   }
 
   if (params.normalizedAttachments.length > 0) {

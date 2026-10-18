@@ -1,11 +1,6 @@
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { ok } from "@openclaw/normalization-core/result";
-import { listAgentIds, tryResolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
-import {
-  resolveSessionStoreCompatibilityAgentId,
-  tryResolveLegacyCompatibilityAgentId,
-} from "../config/legacy.default-agent-owner.js";
 import { readPreparedSessionSharingChange } from "../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
 import {
   assertSessionEntryCreationPublication,
@@ -53,6 +48,7 @@ import {
   SessionMutationFactsUnavailableError,
 } from "./session-sharing-incognito.js";
 import type { PreparedSessionMutationFacts } from "./session-sharing-policy.js";
+import { readSessionSharingRoutingFacts } from "./session-sharing-routing.js";
 import { resolveSessionStoreIdentity } from "./session-store-key.js";
 import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
 import { prepareGatewaySessionStoreTargetReadOnly } from "./session-utils-store-lookup.js";
@@ -71,25 +67,13 @@ type ExistingSessionMutationFacts = PreparedSessionSourceFacts & {
 
 export { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
 
-function routeFacts(cfg: OpenClawConfig) {
-  return {
-    agents: listAgentIds(cfg),
-    storeOwner: resolveSessionStoreCompatibilityAgentId(cfg),
-    compatibilityOwner: tryResolveLegacyCompatibilityAgentId(cfg),
-    systemOwner: tryResolveAmbientOwnerAgentId(cfg),
-    store: cfg.session?.store,
-    mainKey: cfg.session?.mainKey,
-    scope: cfg.session?.scope,
-  };
-}
-
 export function captureSessionMutationRouting(
   cfg: OpenClawConfig,
   changed: () => Error = () => new SessionMutationFactsUnavailableError(),
 ) {
-  const route = routeFacts(cfg);
+  const route = readSessionSharingRoutingFacts(cfg);
   return (current: OpenClawConfig) => {
-    if (!isDeepStrictEqual(routeFacts(current), route)) {
+    if (!isDeepStrictEqual(readSessionSharingRoutingFacts(current), route)) {
       throw changed();
     }
   };
@@ -424,6 +408,7 @@ export async function prepareSessionMutationFacts(
         agentId: string;
         path: string;
         identity: string;
+        readIdentity: string;
         birthtime: string;
       }> = [];
       const inventoryRead = prepareSessionStoreTargetInventoryRead(
@@ -526,6 +511,7 @@ export async function prepareSessionMutationFacts(
                 preparedSources.push({
                   ...loaded.sharing.source,
                   identity: loaded.sharing.databaseIdentity,
+                  readIdentity: source.identity,
                   birthtime: source.birthtime,
                 });
                 read.readSource = loaded.sharing.source;
@@ -617,10 +603,20 @@ export async function prepareSessionMutationFacts(
         if (!sharing) {
           throw new SessionMutationFactsUnavailableError();
         }
+        const source = preparedSources.find((candidate) => candidate.path === sharing.source.path);
+        if (!source) {
+          throw new SessionMutationFactsUnavailableError();
+        }
         const target = {
           agentId: selected.agentId,
           canonicalKey: selected.canonicalKey,
           storePath: selected.storePath,
+          readSource: {
+            agentId: source.agentId,
+            path: source.path,
+            databaseIdentity: source.readIdentity,
+            databaseBirthtime: source.birthtime,
+          },
           storeKeys: selected.storeKeys,
           entry: projectSessionSharingEntry(match.entry),
           storeKey: match.key,

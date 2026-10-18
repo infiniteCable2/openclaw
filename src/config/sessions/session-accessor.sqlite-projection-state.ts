@@ -28,9 +28,10 @@ import {
 } from "./session-accessor.sqlite-maintenance-store.js";
 import { appendSessionResetBoundary } from "./session-accessor.sqlite-reset-boundary.js";
 import type { ResolvedSqliteReadScope } from "./session-accessor.sqlite-scope.js";
+import { assertSessionConversationBranchInTransaction } from "./session-conversation-admission.worker.js";
 import { appendInitialSessionContextInTransaction } from "./session-initial-context.js";
 import { SessionEntryLifecycleUpsertConflictError } from "./session-mutation-conflict-error.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type ProjectedLifecycleCommitOptions = Omit<ProjectedLifecycleCommitInput, "maintenance"> & {
   removalPlans: MaterializedSessionStateDeletePlan[];
@@ -120,6 +121,7 @@ export function commitProjectedSessionEntryLifecycleMutationInDatabase(
     routeContext,
     resetBoundary,
     initialContext,
+    conversationBranchAdmission,
   } of projected.upsertedEntries) {
     const sameKeyRemoval = validatedRemovals.find((removal) => removal.sessionKey === sessionKey);
     const currentEntry = sameKeyRemoval
@@ -139,6 +141,16 @@ export function commitProjectedSessionEntryLifecycleMutationInDatabase(
     }
     if (sameKeyRemoval && !shouldRemoveSessionEntry(currentEntry, sameKeyRemoval.removal)) {
       throw new Error(`SQLite session entry has stale lifecycle state for ${sessionKey}`);
+    }
+    if (conversationBranchAdmission) {
+      if (projected.upsertedEntries.length !== 1 || projected.removals.length !== 0) {
+        throw new Error("Conversation branch admission requires one exact target upsert.");
+      }
+      assertSessionConversationBranchInTransaction(database, {
+        sessionKey,
+        entry,
+        admission: conversationBranchAdmission,
+      });
     }
     if (initialContext) {
       if (
@@ -241,10 +253,21 @@ export function commitProjectedSessionEntryLifecycleMutationInDatabase(
     }
     removedSessionKeys.push(removal.sessionKey);
   }
+  const maintenancePlans = [options.applyMaintenance(database)];
+  // Maintenance shares this commit and must not retire a root just admitted above.
+  for (const upsert of projected.upsertedEntries) {
+    if (upsert.conversationBranchAdmission) {
+      assertSessionConversationBranchInTransaction(database, {
+        sessionKey: upsert.sessionKey,
+        entry: upsert.entry,
+        admission: upsert.conversationBranchAdmission,
+      });
+    }
+  }
   return {
     archivedTranscripts,
     beforeCount,
-    maintenancePlans: [options.applyMaintenance(database)],
+    maintenancePlans,
     removedSessionKeys,
     pendingArchives,
   };

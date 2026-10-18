@@ -5,7 +5,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
-import { prepareUserProfileRoleAuthority } from "../state/user-channel-identity-operations.js";
 import type { UserProfileIdentity } from "../state/user-profiles.types.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import {
@@ -17,7 +16,7 @@ import {
 } from "./operator-role-policy.js";
 import { authenticatedProfileUnavailableError } from "./server-methods/gateway-client-identity.js";
 import type { GatewayClient, SessionMutationAuthorization } from "./server-methods/types.js";
-import { isSessionCreatorProfile, prepareSessionCreatorProfile } from "./session-creator.js";
+import { prepareSessionCreatorProfile } from "./session-creator.js";
 import {
   SessionMutationAuthorizationChangedError,
   SessionSharingProfileFactsChangedError,
@@ -38,11 +37,15 @@ import {
   type SessionSharingTarget,
   type withSessionSharingTarget,
 } from "./session-sharing-policy.js";
+import { prepareSessionSharingProfileAuthority } from "./session-sharing-profile-authority.js";
+import { createSessionReadEntryFilter } from "./session-sharing-read-policy.js";
 import {
   loadCachedSessionSharingSnapshot,
   type SessionSharingSnapshot,
 } from "./session-sharing-snapshot-cache.js";
 import type { GatewaySessionStoreSelection } from "./session-utils-store-retained.js";
+
+export { createProfileSessionEntryFilter } from "./session-sharing-read-policy.js";
 
 function sharingSnapshot(
   target: SessionSharingTarget | null,
@@ -282,18 +285,7 @@ export async function prepareSessionSharingProfiles(
         return current;
       };
     }
-    const prepared = await prepareUserProfileRoleAuthority(profileId, options);
-    const profile = prepared && { ...prepared, aliases: new Set(prepared.aliases) };
-    return () => {
-      if (prepared && !prepared.isCurrent()) {
-        prepared.readSource();
-        throw new SessionSharingProfileFactsChangedError(
-          authenticatedProfileUnavailableError(),
-          prepared.readSource,
-        );
-      }
-      return profile;
-    };
+    return prepareSessionSharingProfileAuthority(profileId, options);
   };
   const readProfile = await prepare(identityId);
   const readRoleProfile = roleProfileId === identityId ? readProfile : await prepare(roleProfileId);
@@ -446,30 +438,19 @@ export function createSessionListEntryFilter(
   | undefined {
   const operatorActor = resolveGatewayOperatorRoleActor(params.client);
   const identity = sharingIdentity(params.client, operatorActor);
-  if (isGatewayAdmin(params.client) || (!identity && operatorActor?.kind === "system")) {
-    return undefined;
-  }
-  if (!identity) {
-    return params.cfg?.gateway?.roles ? () => false : undefined;
-  }
-  const sessionCap = prepared
-    ? prepared.sessionCap
-    : params.cfg && operatorSessionCap(params.client, params.cfg);
-  return createProfileSessionEntryFilter({ profileId: identity.id, sessionCap }, isCreator);
-}
-
-export function createProfileSessionEntryFilter(
-  params: { profileId: string; sessionCap?: ReturnType<typeof operatorSessionCap> },
-  isCreator?: ReturnType<typeof prepareSessionCreatorProfile>,
-) {
-  // Unprepared filters (notably preview) may survive yields and must read current aliases.
-  const creatorMatches = isCreator ?? ((actor) => isSessionCreatorProfile(actor, params.profileId));
-  return (
-    sessionKey: string | undefined,
-    entry: Pick<SessionEntry, "createdActor" | "visibility" | "incognito">,
-  ) =>
-    entry.incognito !== true &&
-    !isIncognitoSessionKey(sessionKey) &&
-    (creatorMatches(entry.createdActor) ||
-      (params.sessionCap !== "none" && resolveSessionVisibility(entry) !== "draft"));
+  return createSessionReadEntryFilter(
+    {
+      profileId: identity?.id,
+      admin: isGatewayAdmin(params.client),
+      system: operatorActor?.kind === "system",
+      rolesConfigured: Boolean(params.cfg?.gateway?.roles),
+      sessionCap:
+        identity && !isGatewayAdmin(params.client)
+          ? prepared
+            ? prepared.sessionCap
+            : params.cfg && operatorSessionCap(params.client, params.cfg)
+          : undefined,
+    },
+    isCreator,
+  );
 }

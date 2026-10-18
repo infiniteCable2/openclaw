@@ -29,6 +29,7 @@ import type {
   PreparedTranscriptReport,
   SelectedTranscriptReport,
   TranscriptReportSelection,
+  TranscriptReportReceiptSelection,
   TranscriptReport,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
@@ -157,6 +158,7 @@ function latestCustomReport(
   sessionId: string,
   branch: ReturnType<typeof readReportBranch>,
   customTypes: readonly string[],
+  receipt?: TranscriptReportReceiptSelection,
 ): CustomMessageReport | undefined {
   for (const entry of branch.path.toReversed()) {
     if (
@@ -167,11 +169,22 @@ function latestCustomReport(
       continue;
     }
     const record = readReportEvent(database, sessionId, entry.seq);
-    if (record) {
+    if (record && (!receipt || matchesReportReceipt(record.details, receipt))) {
       return { customType: entry.customType, content: record.content, details: record.details };
     }
   }
   return undefined;
+}
+
+/** Receipt fields are quoted producer data, never authority or conversation enrollment. */
+function matchesReportReceipt(
+  details: unknown,
+  receipt: TranscriptReportReceiptSelection,
+): boolean {
+  const record = asOptionalRecord(details);
+  return Boolean(
+    record && Object.hasOwn(record, receipt.field) && record[receipt.field] === receipt.value,
+  );
 }
 
 export function prepareTranscriptReportSelection(
@@ -197,7 +210,13 @@ export function prepareTranscriptReportSelection(
     suppressed,
     latest:
       selection.kind === "custom" && !suppressed
-        ? latestCustomReport(database, resolved.sessionId, branch, selection.customTypes)
+        ? latestCustomReport(
+            database,
+            resolved.sessionId,
+            branch,
+            selection.customTypes,
+            selection.receipt,
+          )
         : undefined,
   };
 }
@@ -228,7 +247,7 @@ export function appendSessionTranscriptReportInTransaction(
       database,
       resolved,
       facts.appendParentId,
-      prepareCustomTranscriptReport(selected, facts.appendParentId),
+      prepareCustomTranscriptReport(selected, facts.appendParentId, report),
     );
   }
 }
@@ -321,16 +340,33 @@ export function appendAbortedSessionTranscriptPartialInTransaction(
 export function prepareCustomTranscriptReport(
   selected: CustomMessageReportAppend,
   appendParentId: string | null,
+  selection?: Extract<TranscriptReportSelection, { kind: "custom" }>,
 ): Extract<SelectedTranscriptReport, { kind: "custom" }> {
+  const eventId = randomUUID();
   const eventJson = JSON.stringify({
     type: "custom_message",
     ...selected,
-    id: randomUUID(),
+    id: eventId,
     parentId: appendParentId,
     timestamp: new Date().toISOString(),
   });
   if (eventJson === undefined) {
     throw new Error("Session transcript report serialization did not produce an event");
+  }
+  // Compare the actual bytes, including producer-owned toJSON conversions.
+  if (selection?.receipt) {
+    const record = asOptionalRecord(JSON.parse(eventJson));
+    if (
+      !record ||
+      record.type !== "custom_message" ||
+      record.id !== eventId ||
+      record.parentId !== appendParentId ||
+      typeof record.customType !== "string" ||
+      !selection.customTypes.includes(record.customType) ||
+      !matchesReportReceipt(record.details, selection.receipt)
+    ) {
+      throw new Error("Transcript report does not match its selected receipt.");
+    }
   }
   return { kind: "custom", eventJson };
 }

@@ -18,6 +18,7 @@ import type {
   RealtimeVoiceToolResultOptions,
 } from "../../../talk/provider-types.js";
 import { resolveRealtimeVoiceBargeIn } from "../../../talk/realtime-session-policy.js";
+import { forgetUnifiedTalkSession } from "../../../talk/session-registry.js";
 import { abortChatRunById } from "../../chat-abort.js";
 import { decodeTalkRelayAudioBase64 } from "../relay-audio-base64.js";
 import {
@@ -25,7 +26,7 @@ import {
   requireActiveTalkRelaySession,
 } from "../relay-session-lifecycle.js";
 import { resolveOwnedActiveTalkRunTarget } from "../run-ownership.js";
-import { forgetUnifiedTalkSession, registerTalkConnectionCleanup } from "../session-registry.js";
+import { registerTalkConnectionCleanup } from "../session-registry.js";
 import {
   cancelTalkVoiceSessionChange,
   isTalkVoiceSessionReplacing,

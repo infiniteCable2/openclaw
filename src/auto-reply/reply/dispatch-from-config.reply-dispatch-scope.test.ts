@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginHookReplyDispatchContext } from "../../plugins/hook-types.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { ReplyDispatchRun } from "../get-reply-options.types.js";
@@ -25,6 +26,125 @@ describe("dispatchReplyFromConfig reply hook scope", () => {
     describe0BeforeEach0();
     setNoAbort();
   });
+
+  it.each([
+    {
+      name: "canonical main",
+      sessionKey: "agent:test:main",
+      marked: false,
+      mode: "branches",
+      bound: false,
+    },
+    { name: "main alias", sessionKey: "main", marked: false, mode: "branches", bound: false },
+    {
+      name: "persisted root after opt-out",
+      sessionKey: "agent:test:acp:root",
+      marked: true,
+      mode: "native",
+      bound: false,
+    },
+    {
+      name: "bound persisted root",
+      sessionKey: "agent:test:acp:bound-root",
+      marked: true,
+      mode: "branches",
+      bound: true,
+    },
+  ] as const)(
+    "refuses external ACP takeover into $name before harness dispatch",
+    async (scenario) => {
+      const entry = {
+        sessionId: "root-session",
+        updatedAt: 1,
+        acp: { backend: "acpx" },
+        ...(scenario.marked ? { conversationTopology: { version: 1, role: "root" } } : {}),
+      };
+      sessionStoreMocks.loadSessionStoreEntry.mockReturnValue(entry);
+      sessionStoreMocks.loadSessionEntry.mockReturnValue(entry);
+      if (scenario.bound) {
+        sessionBindingMocks.resolveByConversation.mockReturnValue({
+          bindingId: "root-dispatch-binding",
+          targetSessionKey: scenario.sessionKey,
+          targetKind: "session",
+          status: "active",
+          boundAt: 1,
+          conversation: { channel: "discord", accountId: "default", conversationId: "C1" },
+        });
+      }
+      hookMocks.runner.hasHooks.mockReturnValue(true);
+      const replyResolver = vi.fn<InternalGetReplyFromConfig>();
+      const cfg: OpenClawConfig = {
+        agents: { ownership: "explicit", entries: { test: { conversationMode: scenario.mode } } },
+      };
+      await expect(
+        dispatchReplyFromConfig({
+          ctx: buildTestCtx({
+            Body: "hello",
+            SessionKey: scenario.bound ? "agent:test:discord:channel:C1" : scenario.sessionKey,
+            AgentId: "test",
+            Provider: "discord",
+            Surface: "discord",
+            To: "C1",
+            AccountId: "default",
+          }),
+          cfg,
+          dispatcher: createDispatcher(),
+          replyResolver,
+        }),
+      ).rejects.toThrow(scenario.marked ? "Explicitly migrate" : "reserves main for consolidation");
+      expect(hookMocks.runner.runReplyDispatch).not.toHaveBeenCalled();
+      expect(replyResolver).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["native", "branch", "task", "system"] as const)(
+    "preserves ordinary %s ACP dispatch without a new root authority",
+    async (kind) => {
+      const sessionKey = kind === "branch" ? "agent:test:acp:conversation" : "agent:test:main";
+      const entry = {
+        sessionId: "target-session",
+        updatedAt: 1,
+        acp: { backend: "acpx" },
+        ...(kind === "task" || kind === "system"
+          ? { conversationTopology: { version: 1, role: "root" } }
+          : {}),
+      };
+      sessionStoreMocks.loadSessionStoreEntry.mockReturnValue(entry);
+      sessionStoreMocks.loadSessionEntry.mockReturnValue(entry);
+      hookMocks.runner.hasHooks.mockImplementation((name) => name === "reply_dispatch");
+      hookMocks.runner.runReplyDispatch.mockResolvedValue({
+        handled: true,
+        queuedFinal: true,
+        counts: { tool: 0, block: 0, final: 1 },
+      });
+      const result = await dispatchReplyFromConfig({
+        ctx: buildTestCtx({
+          Body: "hello",
+          SessionKey: sessionKey,
+          AgentId: "test",
+          ...(kind === "task"
+            ? {
+                InputProvenance: {
+                  kind: "inter_session",
+                  sourceSessionKey: "agent:test:task",
+                } as const,
+              }
+            : {}),
+          ...(kind === "system" ? { InternalTurnSource: "event" as const } : {}),
+        }),
+        cfg: {
+          agents: {
+            ownership: "explicit",
+            entries: { test: { conversationMode: kind === "native" ? "native" : "branches" } },
+          },
+        },
+        dispatcher: createDispatcher(),
+        replyResolver: vi.fn<InternalGetReplyFromConfig>(),
+      });
+      expect(hookMocks.runner.runReplyDispatch).toHaveBeenCalledOnce();
+      expect(result.queuedFinal).toBe(true);
+    },
+  );
 
   it.each<{
     name: string;

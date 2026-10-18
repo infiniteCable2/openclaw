@@ -1,9 +1,13 @@
 import { expect, it, vi } from "vitest";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
-import { runSessionCompactionIfNeeded } from "./agent-runner-memory.js";
+import { runMemoryFlushIfNeeded, runSessionCompactionIfNeeded } from "./agent-runner-memory.js";
 import { createTestFollowupRun } from "./agent-runner.test-fixtures.js";
 
-const { compact, account } = vi.hoisted(() => ({ compact: vi.fn(), account: vi.fn() }));
+const { compact, account, readSnapshot } = vi.hoisted(() => ({
+  compact: vi.fn(),
+  account: vi.fn(),
+  readSnapshot: vi.fn(),
+}));
 
 // mock-isolation: Exercise preflight admission without starting a model runtime.
 vi.mock("../../agents/embedded-agent.js", () => ({ compactEmbeddedAgentSession: compact }));
@@ -11,7 +15,7 @@ vi.mock("../../agents/embedded-agent.js", () => ({ compactEmbeddedAgentSession: 
 vi.mock("../../agents/embedded-agent-runner/run-entry.js", () => ({}));
 // mock-isolation: Supply admitted transcript pressure without starting database workers.
 vi.mock("./agent-runner-memory-transcript-context.js", () => ({
-  readSessionLogSnapshot: async () => ({ byteSize: 102_400 }),
+  readSessionLogSnapshot: readSnapshot,
 }));
 // mock-isolation: Observe admission accounting without starting database workers.
 vi.mock("./session-updates.js", () => ({ incrementCompactionCount: account }));
@@ -25,6 +29,7 @@ it.each([
 ])(
   "continues byte preflight with bounded context after $runtime compaction (ok=$ok, compacted=$compacted)",
   async ({ runtime, ok, compacted, reason = "fixture declines compaction" }) => {
+    readSnapshot.mockReset().mockResolvedValue({ byteSize: 102_400 });
     compact.mockReset().mockResolvedValue({ ok, compacted, reason });
     account
       .mockReset()
@@ -85,3 +90,66 @@ it.each([
     expect(notice.mock.calls.map(([phase]) => phase)).toContain("context_bounded");
   },
 );
+
+it.each(["before-preflight", "during-transcript-read"] as const)(
+  "refuses an unavailable guest source %s before compaction model or accounting",
+  async (refusalPoint) => {
+    compact.mockReset();
+    account.mockReset();
+    let available = refusalPoint !== "before-preflight";
+    readSnapshot.mockReset().mockImplementation(async () => {
+      available = false;
+      return { byteSize: 102_400 };
+    });
+    const followupRun = createTestFollowupRun({ provider: "openai", model: "gpt-5.5" });
+    followupRun.assertSourceCurrent = () => {
+      if (!available) throw new Error("guest source unavailable");
+    };
+    const sessionEntry: InternalSessionEntry = {
+      sessionId: "session",
+      updatedAt: 1,
+      totalTokens: 100,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+    };
+    await expect(
+      runSessionCompactionIfNeeded({
+        cfg: { agents: { defaults: { compaction: { maxActiveTranscriptBytes: "32kb" } } } },
+        followupRun,
+        defaultModel: "gpt-5.5",
+        sessionKey: "main",
+        sessionEntry,
+        agentHarnessId: "openclaw",
+        isHeartbeat: false,
+      }),
+    ).rejects.toThrow("guest source unavailable");
+    expect(readSnapshot).toHaveBeenCalledTimes(refusalPoint === "before-preflight" ? 0 : 1);
+    expect(compact).not.toHaveBeenCalled();
+    expect(account).not.toHaveBeenCalled();
+    expect(sessionEntry).toEqual({
+      sessionId: "session",
+      updatedAt: 1,
+      totalTokens: 100,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+    });
+  },
+);
+
+it("refuses an unavailable guest before memory-flush preparation", async () => {
+  readSnapshot.mockReset();
+  const followupRun = createTestFollowupRun();
+  followupRun.assertSourceCurrent = () => {
+    throw new Error("guest source unavailable");
+  };
+  await expect(
+    runMemoryFlushIfNeeded({
+      cfg: {},
+      followupRun,
+      defaultModel: "gpt-test",
+      resolvedVerboseLevel: "off",
+      isHeartbeat: false,
+    }),
+  ).rejects.toThrow("guest source unavailable");
+  expect(readSnapshot).not.toHaveBeenCalled();
+});

@@ -53,8 +53,9 @@ import {
   assertSessionTranscriptHot,
   readSessionColdTranscript,
 } from "./session-cold-storage-state.js";
+import { preserveSessionConversationTopology } from "./session-conversation-topology.js";
 import { deleteSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 // Transcript-state reclamation owner. Planning stays async-free; transactions revalidate before delete.
 
@@ -559,13 +560,20 @@ export async function buildProjectedLifecycleUpserts(
     if (!entry) {
       continue;
     }
-    const cloned = structuredClone(entry);
+    const cloned = structuredClone(
+      upsert.resetBoundary
+        ? { ...entry, ...preserveSessionConversationTopology(expectedEntry) }
+        : entry,
+    );
     store[sessionKey] = cloned;
     changedSessionKeys.add(sessionKey);
     upsertedEntries.push({
       expectedEntry,
       sessionKey,
       entry: cloned,
+      ...(upsert.conversationBranchAdmission
+        ? { conversationBranchAdmission: structuredClone(upsert.conversationBranchAdmission) }
+        : {}),
       ...(upsert.initialContext ? { initialContext: structuredClone(upsert.initialContext) } : {}),
       ...(upsert.routeContext !== undefined ? { routeContext: upsert.routeContext } : {}),
       ...(upsert.resetBoundary ? { resetBoundary: upsert.resetBoundary } : {}),

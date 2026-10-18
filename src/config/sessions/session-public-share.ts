@@ -11,6 +11,7 @@ export function resolveSessionPublicShare(
   if (
     !entry ||
     entry.incognito === true ||
+    entry.conversationTopology?.role === "root" ||
     !isRecord(share) ||
     share.sessionId !== entry.sessionId ||
     typeof share.id !== "string" ||

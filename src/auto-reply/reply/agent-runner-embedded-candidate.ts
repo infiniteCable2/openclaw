@@ -188,9 +188,12 @@ export async function runEmbeddedFallbackCandidate(
             markReplyOperationGlobalLaneWaitProgress(replyOperation);
           }
         },
-        blockReplyBreak: turn.resolvedBlockStreamingBreak,
-        blockReplyChunking: turn.blockReplyChunking,
-        deliverCommentaryBlocks: turn.opts?.commentaryPayloadsEnabled === true,
+        blockReplyBreak: turn.speechPresentationRun ? "text_end" : turn.resolvedBlockStreamingBreak,
+        blockReplyChunking:
+          turn.followupRun.speechPresentation?.blockReplyChunking ?? turn.blockReplyChunking,
+        deliverCommentaryBlocks:
+          turn.followupRun.speechPresentation?.speakCommentary ??
+          turn.opts?.commentaryPayloadsEnabled === true,
         // Subscriber callbacks are detached. Stage channel presentation before typing I/O.
         onPartialReply: (payload) => params.presentation.presentPartialReply(payload, "embedded"),
         onAssistantMessageStart: async () => {

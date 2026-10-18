@@ -25,7 +25,23 @@ export function createMockReplyOperation(
   let toolAuthorityFingerprint = overrides.toolAuthorityFingerprint;
   let toolAuthoritySnapshot: Parameters<ReplyOperation["bindToolAuthoritySnapshot"]>[0] | undefined;
   let toolAuthorityRoute: ReplyOperation["toolAuthorityRoute"];
+  let speechOutputOwner: object | undefined;
+  let speechOutputOwnerBound = false;
   const replyOperation: ReplyOperation = {
+    get speechOutputOwner() {
+      return speechOutputOwner;
+    },
+    bindSpeechOutputOwner: vi.fn((owner) => {
+      if (
+        replyOperation.result ||
+        replyOperation.abortSignal.aborted ||
+        (speechOutputOwnerBound && speechOutputOwner !== owner)
+      ) {
+        throw new Error("Reply operation speech output owner is unavailable or changed");
+      }
+      speechOutputOwner = owner;
+      speechOutputOwnerBound = true;
+    }),
     key: overrides.key ?? "main",
     get sessionId() {
       return sessionId;

@@ -86,14 +86,20 @@ export function createSpeechSessionLifecycle(params: {
       }
     }
   };
+  const stopAfterFailure = (source: string) => {
+    void stop().catch((error: unknown) => {
+      params.logger.warn(
+        `${params.logScope} ${source} cleanup failed: ${formatErrorMessage(error)}`,
+      );
+    });
+  };
   return {
     stop,
-    stopAfterFailure(source: string) {
-      void stop().catch((error: unknown) => {
-        params.logger.warn(
-          `${params.logScope} ${source} cleanup failed: ${formatErrorMessage(error)}`,
-        );
-      });
+    stopAfterFailure,
+    fail(source: string, error: unknown) {
+      if (fenced) return;
+      params.logger.warn(`${params.logScope} ${source} failed: ${formatErrorMessage(error)}`);
+      stopAfterFailure(source);
     },
     isTranscriptionClosed: () => !pending.has(resources.closeTranscription),
   };

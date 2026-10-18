@@ -97,6 +97,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     sessionEntryHandle,
     sessionStore,
   } = params;
+  opts?.assertSourceCurrent?.();
   let { sessionEntry, prefixedBodyBase } = context;
   let { resolvedThinkLevel } = params;
   let thinkLevelOverride =
@@ -210,7 +211,11 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
           skillFilter: opts?.skillFilter,
           skillOverrides: opts?.skillOverrides,
           assertCurrent: composeSessionSourceAssertion(
-            [opts?.operatorAuthority?.assertCurrent, opts?.internalEventExecution?.assertCurrent],
+            [
+              opts?.assertSourceCurrent,
+              opts?.operatorAuthority?.assertCurrent,
+              opts?.internalEventExecution?.assertCurrent,
+            ],
             (assertSourceCurrent) => {
               opts?.abortSignal?.throwIfAborted();
               opts?.replyOperation?.abortSignal.throwIfAborted();
@@ -396,7 +401,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
           keys: [sessionKey],
           agentId,
           sessionKey,
-          assertCurrent: () => {},
+          assertCurrent: opts?.assertSourceCurrent ?? (() => {}),
         })
       : clearCommandLane(sessionLaneKey);
     logVerbose(`Cleared ${cleared} queued command(s) before interrupting ${sessionLaneKey}`);
@@ -581,6 +586,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       activeSessionId: activeSessionId ?? resolveActiveQueueSessionId(),
       queueMode: activeRunQueueMode,
       interruptActiveRun: async () => {
+        opts?.assertSourceCurrent?.();
         if (activeRunInterruptTarget) {
           return (
             await interruptReplyRunTarget(
@@ -603,6 +609,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
           : (embeddedAgentRuntime?.waitForEmbeddedAgentRunEnd(activeRunSessionId) ??
             Promise.resolve(undefined)),
       refreshPreparedState: async () => {
+        opts?.assertSourceCurrent?.();
         preparedSessionState = resolvePreparedSessionState();
         ({ authProfileId, authProfileIdSource } = await resolveRuntimeAuthProfile());
         preparedSessionState = resolvePreparedSessionState();

@@ -17,6 +17,7 @@ import { resolveCronSessionTargetSessionKey } from "../../cron/session-target.js
 import { cronJobUsesToolRuntime } from "../../cron/tools-allow.js";
 import type { CronJob, CronJobCreate, CronJobPatch } from "../../cron/types.js";
 import { resolveTargetPrefixedChannel } from "../../infra/outbound/channel-target-prefix.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
   AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE,
@@ -114,7 +115,7 @@ export async function assertValidCronUpdatePatch(params: {
     "sessionTarget" in params.patch ||
     "sessionKey" in params.patch
   ) {
-    assertCronDoesNotTargetAgentHarness(nextJob);
+    assertCronDoesNotTargetAgentHarness(nextJob, params.cfg);
   }
   // Clearing a concrete channel (channel: null) while keeping a bare announce `to`
   // intentionally falls back to "last" in multi-channel configs. Use the same
@@ -169,14 +170,21 @@ export async function assertValidCronUpdatePatch(params: {
   return nextJob;
 }
 
-export function assertCronDoesNotTargetAgentHarness(input: {
-  agentId?: string | null;
-  sessionTarget?: string | null;
-  sessionKey?: string | null;
-}): void {
+export function assertCronDoesNotTargetAgentHarness(
+  input: {
+    agentId?: string | null;
+    sessionTarget?: string | null;
+    sessionKey?: string | null;
+  },
+  cfg?: OpenClawConfig,
+): void {
   const targetSessionKey =
     resolveCronSessionTargetSessionKey(input.sessionTarget) ??
-    (input.sessionTarget === "current" ? input.sessionKey?.trim() : undefined);
+    (input.sessionTarget === "current" || input.sessionTarget === "isolated"
+      ? input.sessionKey?.trim()
+      : input.sessionTarget === "main"
+        ? "main"
+        : undefined);
   if (!targetSessionKey) {
     return;
   }
@@ -184,7 +192,20 @@ export function assertCronDoesNotTargetAgentHarness(input: {
   const loaded = loadGatewaySessionEntryReadOnly(
     targetSessionKey,
     input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
+    cfg,
   );
+  assertExternalConversationTarget({
+    cfg: cfg ?? loaded.cfg,
+    agentId: loaded.agentId,
+    sessionKey: loaded.canonicalKey,
+    entry: loaded.entry,
+    isSystemEvent: false,
+  });
+  // Isolated jobs borrow only creator/completion identity, not the source's
+  // locked harness. Keep the existing harness-target contract unchanged.
+  if (input.sessionTarget === "isolated" || input.sessionTarget === "main") {
+    return;
+  }
   const reservedKey =
     isAgentHarnessSessionKey(targetSessionKey) || isAgentHarnessSessionKey(loaded.canonicalKey);
   if (loaded.entry?.modelSelectionLocked === true) {

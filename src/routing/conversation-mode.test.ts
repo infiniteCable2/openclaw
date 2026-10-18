@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { resolveSessionRoutingContract } from "../config/sessions/main-session.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveAgentConversationRoute } from "./conversation-mode.js";
+import {
+  assertExternalConversationTarget,
+  resolveAgentConversationRoute,
+  resolveAgentSpeechConversationRoute,
+} from "./conversation-mode.js";
 import { resolveAgentRoute, resolveInboundLastRouteSessionKey } from "./resolve-route.js";
 
 function config(conversationMode?: "native" | "branches"): OpenClawConfig {
@@ -21,6 +25,94 @@ function route(cfg: OpenClawConfig, peerId = "person-a", accountId = "default") 
 }
 
 describe("agent conversation routing", () => {
+  it("uses a direct non-task audio branch while preserving native source routing", () => {
+    const input = {
+      agentId: "researcher",
+      channel: "matrix",
+      accountId: "primary",
+      sourceSessionKey: "agent:researcher:matrix:room:source",
+      conversationId: "call-one",
+    };
+    expect(
+      resolveAgentSpeechConversationRoute({ ...input, cfg: config("native") }).sessionKey,
+    ).toBe(input.sourceSessionKey);
+    const branch = resolveAgentSpeechConversationRoute({ ...input, cfg: config("branches") });
+    expect(branch.sessionKey).not.toContain(":subagent:");
+    expect(branch.sessionKey).not.toBe(branch.rootSessionKey);
+    expect(branch.sessionKey).not.toBe(input.sourceSessionKey);
+    expect(
+      resolveAgentSpeechConversationRoute({
+        ...input,
+        cfg: config("branches"),
+        conversationId: "call-two",
+      }).sessionKey,
+    ).not.toBe(branch.sessionKey);
+    expect(() =>
+      resolveAgentSpeechConversationRoute({
+        ...input,
+        cfg: config("branches"),
+        conversationId: " ",
+      }),
+    ).toThrow("connection identity");
+  });
+  it.each([undefined, "native", "branches"] as const)(
+    "does not recycle a persisted headless root as external conversation after mode %s",
+    (mode) => {
+      const target = {
+        cfg: config(mode),
+        agentId: "researcher",
+        sessionKey: "agent:researcher:retained-root",
+        isSystemEvent: false,
+        entry: {
+          sessionId: "root",
+          updatedAt: 1,
+          conversationTopology: { version: 1, role: "root" } as const,
+        },
+      };
+      expect(() => assertExternalConversationTarget(target)).toThrow("Explicitly migrate");
+      expect(() =>
+        assertExternalConversationTarget({ ...target, isSystemEvent: true }),
+      ).not.toThrow();
+    },
+  );
+  it("rejects external root overrides at final admission while preserving native and internal targets", () => {
+    const cfg = config("branches");
+    const target = {
+      cfg,
+      agentId: "researcher",
+      sessionKey: "agent:researcher:main",
+      isSystemEvent: false,
+    };
+    expect(() => assertExternalConversationTarget(target)).toThrow(
+      "reserves main for consolidation",
+    );
+    expect(() =>
+      assertExternalConversationTarget({
+        ...target,
+        sessionKey: "agent:researcher:matrix:default:direct:peer",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertExternalConversationTarget({ ...target, cfg: config("native") }),
+    ).not.toThrow();
+    expect(() =>
+      assertExternalConversationTarget({ ...target, isSystemEvent: true }),
+    ).not.toThrow();
+    expect(() =>
+      assertExternalConversationTarget({
+        ...target,
+        cfg: { ...cfg, session: { mainKey: "consolidation" } },
+        sessionKey: "agent:researcher:consolidation",
+      }),
+    ).toThrow("reserves main for consolidation");
+    expect(() =>
+      assertExternalConversationTarget({
+        ...target,
+        cfg: { ...cfg, session: { scope: "global" } },
+        sessionKey: "global",
+      }),
+    ).toThrow("cannot be global");
+  });
   it.each([undefined, "native"] as const)("preserves native routing for %s", (mode) => {
     expect(route(config(mode))).toMatchObject({
       agentId: "researcher",

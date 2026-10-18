@@ -28,6 +28,7 @@ import {
   restoreCronPinnedExecGrant,
 } from "../../cron/scheduled-tool-policy.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { recordSessionCreated } from "../../sessions/session-created.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
@@ -84,6 +85,7 @@ export async function persistAgentSessionPhase(params: {
   assertAdmissionCurrent?: () => void;
   onSessionCommitted?: (entry: SessionEntry) => void;
   request: AgentRunRequest;
+  conversationInput?: true;
   cfg: OpenClawConfig;
   storePath: string;
   storeKeys?: string[];
@@ -185,6 +187,15 @@ export async function persistAgentSessionPhase(params: {
           async (_currentEntry, patchContext) => {
             assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
             const freshEntry = patchContext.existingEntry;
+            if (params.conversationInput) {
+              assertExternalConversationTarget({
+                cfg: params.cfg,
+                agentId: params.sessionAgentId,
+                sessionKey: params.canonicalSessionKey,
+                entry: freshEntry,
+                isSystemEvent: false,
+              });
+            }
             assertExpectedExistingSession({
               constraint: params.expectedSession,
               entry: freshEntry,

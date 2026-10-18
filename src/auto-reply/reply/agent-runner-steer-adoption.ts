@@ -35,6 +35,7 @@ import {
 } from "./reply-run-registry.js";
 import { waitForReplyOperationBackend } from "./reply-run-registry.state.js";
 import { refreshReplyOperationTyping } from "./reply-run-typing.js";
+import { resolveReplySpeechOutputOwner } from "./reply-speech-presentation.js";
 import {
   resolveFollowupRunToolAuthorityFingerprint,
   resolveFollowupRunToolAuthorityFingerprintAsync,
@@ -47,6 +48,7 @@ type ActiveReplySteerFallbackReason =
   | ReplyMessageInjectionRejectionReason
   | "admission-changed"
   | "reply-owner-ended"
+  | "speech-output-mismatch"
   | "model-fallback-changed";
 
 type ActiveReplySteerParams = {
@@ -118,6 +120,7 @@ export async function runActiveReplySteer(
     resolveFollowupAbortSignal(followupRun)?.throwIfAborted();
     params.opts?.abortSignal?.throwIfAborted();
     followupRun.operatorAuthority?.assertCurrent();
+    followupRun.assertSourceCurrent?.();
   };
   let steerSessionId = activeReplyOperation?.sessionId ?? followupRun.run.sessionId;
   const parked = parkSteerCandidate(queueKey, followupRun, resolvedQueue, runFollowup);
@@ -188,6 +191,10 @@ export async function runActiveReplySteer(
       return await fallback("reply-owner-ended");
     }
     steerSessionId = activeReplyOperation.sessionId;
+    const speechOutputOwner = resolveReplySpeechOutputOwner(followupRun.speechPresentation);
+    if (activeReplyOperation.speechOutputOwner !== speechOutputOwner) {
+      return await fallback("speech-output-mismatch");
+    }
     // Policy preparation must not retarget input to a replacement backend.
     const injectionTarget = replyRunRegistry.resolveCurrentMessageInjectionTarget(activeReplyKey);
     if (!injectionTarget) {
@@ -228,6 +235,9 @@ export async function runActiveReplySteer(
     }
     const assertSourceCurrent = () => {
       assertReadCurrent();
+      if (activeReplyOperation.speechOutputOwner !== speechOutputOwner) {
+        throw new Error("Speech output changed during steering admission");
+      }
       if (!isCurrentFallback()) {
         throw new Error("Automatic model fallback changed during steering admission");
       }
@@ -243,6 +253,7 @@ export async function runActiveReplySteer(
       assertPolicy(resolveFollowupRunToolAuthorityFingerprint(followupRun, automaticFallbackRoute));
     const sourceBound = Boolean(
       automaticFallbackRoute ||
+      followupRun.assertSourceCurrent ||
       followupRun.operatorAuthority ||
       followupRun.abortSignal ||
       params.opts?.abortSignal,
@@ -307,6 +318,9 @@ export async function runActiveReplySteer(
       inboundAudio: followupRun.currentInboundAudio === true,
       onOutcome: (outcome) => {
         if (replyOperationRunState) {
+          if (outcome !== "indeterminate") {
+            replyOperationRunState.steeredRunId = injectionAttempt.targetRunId;
+          }
           replyOperationRunState.admission =
             outcome === "indeterminate"
               ? { status: "skipped", reason: "question-response-indeterminate" }

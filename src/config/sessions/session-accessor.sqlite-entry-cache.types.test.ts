@@ -1,6 +1,15 @@
 import { expect, it } from "vitest";
-import { resolveSessionWorkStartError } from "./lifecycle.js";
-import { projectSessionSharingEntry } from "./session-accessor.sqlite-entry-cache.types.js";
+import {
+  recordCommittedSessionMetadataPublication,
+  retainPreparedSessionSharingFacts,
+} from "./session-accessor.sqlite-entry-cache-publication-state.js";
+import {
+  projectSessionSharingEntry,
+  sessionSharingEntriesEqual,
+} from "./session-accessor.sqlite-entry-cache.types.js";
+import type { SessionConversationTopology } from "./session-conversation-topology.js";
+import { projectPublicSessionEntry } from "./session-entry-projection.js";
+import { resolveSessionWorkStartError } from "./session-work-start.js";
 import type { InternalSessionEntry } from "./types.js";
 
 const sessionId = "sharing-lifecycle";
@@ -114,4 +123,118 @@ it("retains independent nested lifecycle records after the source entry changes"
   expect(retained.providerReview).toEqual(expected.providerReview);
   expect(retained.mainRestartRecovery).toEqual(expected.mainRestartRecovery);
   expect(retained.pendingWorktree).toEqual(expected.pendingWorktree);
+});
+
+it.each<SessionConversationTopology>([
+  { version: 1, role: "root" },
+  {
+    version: 1,
+    role: "branch",
+    rootSessionKey: "agent:example:main",
+    rootSessionId: "root-original",
+    rootSessionLifecycleRevision: "root-original-lifecycle",
+  },
+])("retains private $role topology for authorized admission without publishing it", (topology) => {
+  const entry: InternalSessionEntry = {
+    sessionId,
+    updatedAt: 1,
+    conversationTopology: topology,
+  };
+  const retained = projectSessionSharingEntry(entry);
+  expect(retained.conversationTopology).toEqual(topology);
+  expect(retained.conversationTopology).not.toBe(topology);
+  expect(sessionSharingEntriesEqual(entry, { ...entry, updatedAt: 2 })).toBe(true);
+  expect(sessionSharingEntriesEqual(entry, { sessionId, updatedAt: 1 })).toBe(false);
+  expect(projectPublicSessionEntry(retained)).not.toHaveProperty("conversationTopology");
+});
+
+it("retains native audience facts independently and publishes changes to their held owners", () => {
+  const entry: InternalSessionEntry = {
+    sessionId,
+    updatedAt: 1,
+    chatType: "direct",
+    participantCount: 1,
+    publicShare: { id: "example-share", sessionId, createdAt: 1 },
+    participants: [{ identity: { type: "profile", id: "example-person" } }],
+  };
+  const retained = projectSessionSharingEntry(entry);
+  expect(retained.chatType).toBe("direct");
+  expect(retained.participantCount).toBe(1);
+  expect(retained.publicShare).toEqual(entry.publicShare);
+  expect(retained.publicShare).not.toBe(entry.publicShare);
+  expect(retained.participants).toEqual(entry.participants);
+  expect(retained.participants).not.toBe(entry.participants);
+  expect(sessionSharingEntriesEqual(entry, { ...entry, updatedAt: 2 })).toBe(true);
+  for (const change of [
+    { chatType: "channel" as const },
+    { participantCount: 2 },
+    { publicShare: undefined },
+    { participants: undefined },
+  ]) {
+    expect(sessionSharingEntriesEqual(entry, { ...entry, ...change })).toBe(false);
+  }
+});
+
+it("updates held audience counts through the native participant publication owner", () => {
+  const key = "agent:example:audience-publication";
+  const retained = retainPreparedSessionSharingFacts({
+    databaseIdentity: "file:synthetic-audience-source",
+    sessionKey: key,
+    entry: projectSessionSharingEntry({
+      sessionId,
+      updatedAt: 1,
+      chatType: "direct",
+      participantCount: 1,
+    }),
+    membership: new Set(),
+  });
+  try {
+    recordCommittedSessionMetadataPublication("synthetic-audience-source", key, {
+      kind: "participants",
+      projection: {
+        participants: [
+          { identity: { type: "agent", id: "example-a" } },
+          { identity: { type: "agent", id: "example-b" } },
+        ],
+        participantCount: 2,
+      },
+    });
+    expect(retained.readCurrent()?.entry?.participantCount).toBe(2);
+    expect(retained.readCurrent()?.entry?.participants).toEqual([
+      { identity: { type: "agent", id: "example-a" } },
+      { identity: { type: "agent", id: "example-b" } },
+    ]);
+    expect(retained.readCurrent()?.entry?.sessionId).toBe(sessionId);
+  } finally {
+    retained.release();
+  }
+});
+
+it("rejects an acquiring audience snapshot that crosses a participant publication", () => {
+  const key = "agent:example:audience-acquisition";
+  const retained = retainPreparedSessionSharingFacts({
+    databaseIdentity: "file:synthetic-audience-acquisition-source",
+    sessionKey: key,
+    acquiring: true,
+  });
+  try {
+    recordCommittedSessionMetadataPublication("synthetic-audience-acquisition-source", key, {
+      kind: "participants",
+      projection: {
+        participants: [
+          { identity: { type: "agent", id: "example-a" } },
+          { identity: { type: "agent", id: "example-b" } },
+        ],
+        participantCount: 2,
+      },
+    });
+    expect(() =>
+      retained.initialize({
+        entry: projectSessionSharingEntry({ sessionId, updatedAt: 1, participantCount: 1 }),
+        membership: new Set(),
+      }),
+    ).toThrow("acquisition is no longer current");
+  } finally {
+    retained.release();
+  }
 });

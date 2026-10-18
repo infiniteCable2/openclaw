@@ -6,6 +6,8 @@ import { prepareCommandOwnerAuthority } from "../../auto-reply/command-auth.js";
 import { DEFAULT_ACCOUNT_ID } from "../../routing/account-id.js";
 import { prepareUserChannelIdentityAuthority } from "../../state/user-channel-identity-operations.js";
 import { recordChannelIngressResolution } from "./admission-evidence.js";
+import { admitChannelConversationInput } from "./conversation-input.js";
+import type { AdmitChannelConversationInputV1 } from "./conversation-input.types.js";
 import { decideChannelIngress } from "./decision.js";
 import { resolveChannelIngressEffectiveAllowFromLists } from "./effective-allow-from.js";
 import type { ChannelIngressHostOwner, ChannelParticipantInput } from "./ingress-host-owner.js";
@@ -136,6 +138,11 @@ export function createChannelIngressPolicyResolver(
 /** One trusted registry generation supplies the private owner to all ingress operations. */
 export function createHostChannelIngressRuntime(owner: ChannelIngressHostOwner) {
   return Object.freeze({
+    conversation: Object.freeze({
+      version: 1 as const,
+      admitInput: (params: AdmitChannelConversationInputV1) =>
+        admitChannelConversationInput(owner, params),
+    }),
     createResolver: (base: CreateChannelIngressResolverParams) =>
       createChannelIngressResolverForOwner(base, owner),
     resolve: (params: ResolveChannelMessageIngressParams) =>

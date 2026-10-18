@@ -4,14 +4,14 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js";
-import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { clearBootstrapSnapshotOnSessionBoundary } from "../../agents/bootstrap-cache.js";
 import { clearAllCliSessions } from "../../agents/cli-session.js";
 import { resetRegisteredAgentHarnessSessions } from "../../agents/harness/registry.js";
 import { cleanupBrowserSessionsForLifecycleEnd } from "../../browser-lifecycle-cleanup.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
-import { readConversationBindingRouteFacts } from "../../channels/conversation-binding-route-facts.js";
 import { resolveSessionParentSessionKey } from "../../channels/plugins/session-conversation.js";
+import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { conversationRouteContextFromMsgContext } from "../../config/sessions/conversation-route-context.js";
 import { hasProviderOwnedSession } from "../../config/sessions/entry-freshness.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
@@ -21,9 +21,7 @@ import {
   isRestartRecoveryTombstone,
   resolveSessionWorkStartError,
 } from "../../config/sessions/lifecycle.js";
-import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { deriveSessionMetaPatch } from "../../config/sessions/metadata.js";
-import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
   evaluateSessionFreshness,
   resolveChannelResetConfig,
@@ -39,8 +37,6 @@ import {
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
 import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { selectSessionModelOverride } from "../../config/sessions/session-entry-selection.js";
-import { resolveSessionKey } from "../../config/sessions/session-key.js";
-import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import {
@@ -65,11 +61,12 @@ import { emitSessionAutoResetHook } from "../../hooks/session-auto-reset.js";
 import { isDiagnosticFlagEnabled } from "../../infra/diagnostic-flags.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { isPluginOwnedSessionBindingRecord } from "../../plugins/conversation-binding-metadata.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import {
   buildAgentMainSessionKey,
+  isIncognitoSessionKey,
   isAcpSessionKey,
   normalizeMainKey,
   toAgentStoreSessionKey,
@@ -105,14 +102,12 @@ import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { FinalizedTemplateContext as TemplateContext } from "../templating.js";
 import { resolveEffectiveResetTargetSessionKey } from "./acp-reset-target.js";
 import { readBeforeResetMessages } from "./commands-reset-hooks.js";
-import { shouldBypassAcpDispatchForCommand } from "./dispatch-acp-command-bypass.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { replyRunRegistry } from "./reply-run-registry.js";
 import { acknowledgeReplySessionTransition } from "./reply-run-registry.state.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
 import {
   resolveSessionDefaultAccountId,
-  resolveSessionConversationBinding,
   resolveBoundAcpSessionForCommandReset,
 } from "./session-conversation-binding.js";
 import {
@@ -133,7 +128,9 @@ import {
 import type { SessionInitResult } from "./session-init.types.js";
 import {
   prepareReplySessionInitialization,
+  resolveInitializationContextSeed,
   resolveInitializationSessionReader,
+  resolveInitSessionStateAttemptContext,
   type InitSessionStateParams,
   type InitSessionStateAttemptContext,
 } from "./session-initialization-admission.js";
@@ -163,65 +160,6 @@ type InitSessionStateAttemptOutcome =
   | { kind: "complete"; result: SessionInitResult }
   | InitSessionLifecycleMutation;
 
-async function resolveInitSessionStateAttemptContext(
-  params: Pick<InitSessionStateParams, "cfg" | "ctx">,
-  mode: "preprocessing" | "initialization",
-): Promise<InitSessionStateAttemptContext> {
-  const { cfg, ctx } = params;
-  const {
-    isSystemEvent,
-    conversationBindingContext,
-    commandTargetSessionKey,
-    conversationBinding,
-  } = await resolveSessionConversationBinding({ cfg, ctx, mode });
-  // Escaped ACP commands run under the source model owner. Their handlers resolve
-  // the bound target separately; initialization must not mix that key with the source owner.
-  const boundSessionKey =
-    conversationBinding &&
-    !isPluginOwnedSessionBindingRecord(conversationBinding) &&
-    !(
-      isAcpSessionKey(conversationBinding.targetSessionKey) &&
-      shouldBypassAcpDispatchForCommand(ctx, cfg)
-    )
-      ? readConversationBindingRouteFacts(ctx)?.kind === "agent"
-        ? ctx.SessionKey
-        : conversationBinding.targetSessionKey
-      : undefined;
-  const targetSessionKey = commandTargetSessionKey ?? boundSessionKey;
-  const sessionCtxForState =
-    targetSessionKey && targetSessionKey !== ctx.SessionKey
-      ? { ...ctx, SessionKey: targetSessionKey }
-      : ctx;
-  const agentId = resolveSessionAgentId({
-    sessionKey: sessionCtxForState.SessionKey,
-    config: cfg,
-    fallbackAgentId: sessionCtxForState.AgentId,
-  });
-  return {
-    agentId,
-    conversationBinding,
-    conversationBindingContext,
-    isSystemEvent,
-    retargetedSession: sessionCtxForState !== ctx,
-    sessionKey: canonicalizeMainSessionAlias({
-      cfg,
-      agentId,
-      sessionKey: resolveSessionKey(
-        cfg.session?.scope ?? "per-sender",
-        sessionCtxForState,
-        normalizeMainKey(cfg.session?.mainKey),
-        agentId,
-      ),
-    }),
-    sessionCtxForState,
-    storePath: resolveSessionStorePathForScope({
-      agentId,
-      sessionKey: sessionCtxForState.SessionKey,
-      storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId }),
-    }),
-  };
-}
-
 type ReplySessionPreprocessingState = {
   sessionEntry?: SessionEntry;
   sessionKey: string;
@@ -230,7 +168,7 @@ type ReplySessionPreprocessingState = {
 
 /** Resolves durable ownership before utility preprocessing can invoke another model. */
 export async function resolveReplySessionPreprocessingState(
-  params: Pick<InitSessionStateParams, "cfg" | "ctx">,
+  params: Pick<InitSessionStateParams, "cfg" | "ctx" | "assertConversationTarget">,
 ): Promise<ReplySessionPreprocessingState> {
   const attemptContext = await resolveInitSessionStateAttemptContext(params, "preprocessing");
   const { sessionKey } = attemptContext;
@@ -238,6 +176,13 @@ export async function resolveReplySessionPreprocessingState(
     agentId: attemptContext.agentId,
     storePath: attemptContext.storePath,
     sessionKey,
+  });
+  assertExternalConversationTarget({
+    cfg: params.cfg,
+    agentId: attemptContext.agentId,
+    sessionKey,
+    isSystemEvent: attemptContext.isSystemEvent,
+    entry: sessionEntry,
   });
   const contextError = resolveAgentHarnessSessionContextError(sessionKey, sessionEntry);
   if (contextError) {
@@ -251,6 +196,7 @@ export async function resolveReplySessionPreprocessingState(
 }
 
 export async function initSessionState(params: InitSessionStateParams): Promise<SessionInitResult> {
+  params.assertSourceCurrent?.();
   prepareChannelParticipantObservation(params.ctx);
   return await runWithSessionInitConflictRetry(async () => await initSessionStateAttempt(params), {
     signal: params.signal,
@@ -258,8 +204,11 @@ export async function initSessionState(params: InitSessionStateParams): Promise<
 }
 
 async function initSessionStateAttempt(params: InitSessionStateParams): Promise<SessionInitResult> {
+  params.assertSourceCurrent?.();
   const attemptContext = await resolveInitSessionStateAttemptContext(params, "initialization");
+  params.assertSourceCurrent?.();
   params.signal?.throwIfAborted();
+  resolveInitializationContextSeed(params, attemptContext);
   const binding = attemptContext.conversationBinding;
   if (binding) {
     const { bindingId, boundAt, targetSessionKey, targetKind } = binding;
@@ -363,7 +312,10 @@ async function initSessionStateAttempt(params: InitSessionStateParams): Promise<
               sessionKey: candidate.sessionKey,
               storePath: attemptContext.storePath,
               expectedSession: afterDrain,
-              assertCurrent: () => params.signal?.throwIfAborted(),
+              assertCurrent: () => {
+                params.assertSourceCurrent?.();
+                params.signal?.throwIfAborted();
+              },
             }),
           });
         }
@@ -387,6 +339,7 @@ async function initSessionStateAttemptLocked(
   staleSnapshotRetried: boolean,
   lifecycleMutationIdentity: InitSessionLifecycleMutation | undefined,
 ): Promise<InitSessionStateAttemptOutcome> {
+  params.assertSourceCurrent?.();
   const { ctx, cfg, commandAuthorized } = params;
   const {
     agentId,
@@ -466,7 +419,10 @@ async function initSessionStateAttemptLocked(
     {
       reader: resolveInitializationSessionReader(params, attemptContext),
       includeLifecycle: true,
-      assertCurrent: () => params.signal?.throwIfAborted(),
+      assertCurrent: () => {
+        params.assertSourceCurrent?.();
+        params.signal?.throwIfAborted();
+      },
     },
   );
   if (ingressTimingEnabled) {
@@ -485,6 +441,11 @@ async function initSessionStateAttemptLocked(
     ctx,
   });
   const entry = initializationSnapshot.currentEntry;
+  const initialContext = resolveInitializationContextSeed(params, attemptContext, {
+    entry,
+    // A bound ACP handler can own the reset while source rollover is suppressed.
+    resetTriggered: resetCommand.matchedResetTriggerLower !== undefined,
+  });
   if (
     attemptContext.storeWriterIdentity &&
     (!entry || params.newlyCreatedSessionId === entry.sessionId)
@@ -660,6 +621,7 @@ async function initSessionStateAttemptLocked(
   // Durable resets retain their transcript identity for cursor continuity; ACP
   // resets still rotate the local session id that owns provider conversation state.
   let sessionId =
+    initialContext?.targetSessionId ??
     baseEntry?.sessionId ??
     (isAcpSessionKey(sessionKey) || restartTombstoneParentFork
       ? crypto.randomUUID()
@@ -825,17 +787,30 @@ async function initSessionStateAttemptLocked(
   const committed = await commitReplySessionInitialization({
     bindCreation: params.bindSessionCreation,
     ...sessionTarget,
-    commitGuard: !entry
-      ? () => {
-          params.signal?.throwIfAborted();
-          assertPreparedSkillLibrarySelection(ctx.SessionCreation?.skillLibrarySelections);
-        }
-      : undefined,
+    commitGuard:
+      !entry || params.assertSourceCurrent
+        ? () => {
+            params.assertSourceCurrent?.();
+            if (!entry) {
+              params.signal?.throwIfAborted();
+              assertPreparedSkillLibrarySelection(ctx.SessionCreation?.skillLibrarySelections);
+            }
+          }
+        : undefined,
     activeSessionKey: sessionKey,
+    ...(!isSystemEvent &&
+    !isIncognitoSessionKey(sessionKey) &&
+    resolveAgentConversationMode(cfg, agentId) === "branches"
+      ? { branchRootSessionKey: mainSessionKey }
+      : {}),
     expectedRevision: initializationSnapshot.revision,
+    ...(initialContext
+      ? { initialContext, contextSourceAuthority: params.initialSessionContext?.assertCurrent }
+      : {}),
     relatedSessionKeys,
     maintenanceConfig,
     prepareSessionEntry: async ({ readEntry, sessionEntry: entryToCommit }) => {
+      params.assertSourceCurrent?.();
       if (params.signal?.aborted === true) {
         throw new Error("reply session initialization aborted");
       }

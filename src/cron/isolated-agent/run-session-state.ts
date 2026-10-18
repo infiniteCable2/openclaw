@@ -9,6 +9,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import { resolveSessionWorkStartError } from "../../config/sessions/lifecycle.js";
 import type { SessionResetBoundaryWrite } from "../../config/sessions/session-accessor.lifecycle-types.js";
+import { resolveConversationModelRunError } from "../../config/sessions/session-conversation-topology.js";
 import {
   buildSessionCreationStamp,
   inheritSessionCreationPolicy,
@@ -201,9 +202,11 @@ export async function beginCronSessionWorkAdmission(params: {
       if (changed) {
         throw new CronSessionLifecycleClaimError(agentSessionKey);
       }
-      const archivedSessionError = resolveSessionWorkStartError(agentSessionKey, currentEntry);
-      if (archivedSessionError) {
-        throw new CronSessionLifecycleClaimError(agentSessionKey, archivedSessionError);
+      const modelRunError =
+        resolveConversationModelRunError(currentEntry) ??
+        resolveSessionWorkStartError(agentSessionKey, currentEntry);
+      if (modelRunError) {
+        throw new CronSessionLifecycleClaimError(agentSessionKey, modelRunError);
       }
     },
   });

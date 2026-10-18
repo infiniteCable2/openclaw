@@ -6,7 +6,12 @@ import {
   prepareClientVoiceSessionClose,
   withClientVoiceSessionSettlement,
 } from "../../talk/client-voice-session-lifecycle.js";
-import type { PreparedTalkSessionTarget } from "./session-target.types.js";
+import {
+  findUnifiedTalkSession,
+  listUnifiedTalkSessions,
+  rememberUnifiedTalkSession,
+  type UnifiedTalkSessionRecord,
+} from "../../talk/session-registry.js";
 import type { TalkSpeechRelaySession } from "./speech-relay.js";
 
 type TalkConnectionCleanupKind =
@@ -16,29 +21,6 @@ type TalkConnectionCleanupKind =
   | "speech-relay"
   | "voice-selection";
 
-type UnifiedTalkSessionRecord =
-  | {
-      kind: "realtime-relay";
-      connId: string;
-      relaySessionId: string;
-      sessionTarget: PreparedTalkSessionTarget;
-    }
-  | {
-      kind: "transcription-relay";
-      connId: string;
-      transcriptionSessionId: string;
-    }
-  | {
-      kind: "managed-room";
-      handoffId: string;
-      roomId: string;
-    }
-  | TalkSpeechRelaySession;
-
-const unifiedTalkSessions = resolveGlobalMap<string, UnifiedTalkSessionRecord>(
-  Symbol.for("openclaw.unifiedTalkSessions"),
-  "close-and-restart",
-);
 type TalkConnectionCleanup = {
   run: () => void | Promise<void>;
   nextRun?: () => void | Promise<void>;
@@ -233,18 +215,9 @@ async function closeTalkConnections(connIds: Iterable<string>): Promise<void> {
   }
 }
 
-export function rememberUnifiedTalkSession(
-  sessionId: string,
-  session: UnifiedTalkSessionRecord,
-): void {
-  unifiedTalkSessions.set(sessionId, session);
-}
-
 /** Admission and cleanup use the native Talk registry, including sessions still preparing. */
 export function rememberTalkSpeechRelaySession(session: TalkSpeechRelaySession): void {
-  const sessions = [...unifiedTalkSessions.values()].filter(
-    (entry) => entry.kind === "speech-relay",
-  );
+  const sessions = listUnifiedTalkSessions().filter((entry) => entry.kind === "speech-relay");
   if (
     sessions.length >= 64 ||
     sessions.filter((entry) => entry.connId === session.connId).length >= 2
@@ -253,7 +226,7 @@ export function rememberTalkSpeechRelaySession(session: TalkSpeechRelaySession):
   }
   rememberUnifiedTalkSession(session.id, session);
   registerTalkConnectionCleanup(session.connId, "speech-relay", async () => {
-    const owned = [...unifiedTalkSessions.values()].filter(
+    const owned = listUnifiedTalkSessions().filter(
       (entry): entry is TalkSpeechRelaySession =>
         entry.kind === "speech-relay" && entry.connId === session.connId,
     );
@@ -267,17 +240,9 @@ export function rememberTalkSpeechRelaySession(session: TalkSpeechRelaySession):
   });
 }
 
-export function getUnifiedTalkSession(sessionId: string): UnifiedTalkSessionRecord {
-  const session = unifiedTalkSessions.get(sessionId);
-  if (!session) {
-    throw new Error("Unknown Talk session");
-  }
-  return session;
-}
-
 /** Retains the relay's admitted target without reinterpreting current defaults. */
 export function resolveUnifiedTalkSessionTarget(sessionId: string, connId: string | undefined) {
-  const session = unifiedTalkSessions.get(sessionId);
+  const session = findUnifiedTalkSession(sessionId);
   if (session?.kind !== "realtime-relay" && session?.kind !== "speech-relay") {
     return undefined;
   }
@@ -286,14 +251,10 @@ export function resolveUnifiedTalkSessionTarget(sessionId: string, connId: strin
   return {
     target,
     isCurrent: () =>
-      unifiedTalkSessions.get(sessionId) === session &&
+      findUnifiedTalkSession(sessionId) === session &&
       session.connId === connId &&
       session.sessionTarget === target,
   };
-}
-
-export function forgetUnifiedTalkSession(sessionId: string): void {
-  unifiedTalkSessions.delete(sessionId);
 }
 
 export function requireUnifiedTalkSessionConn(

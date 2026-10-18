@@ -4,8 +4,10 @@ import { withSandboxRuntimeStatusesInWorker } from "../../../agents/sandbox/runt
 import { readToolAllowlistIntersection } from "../../../agents/tool-policy.js";
 import { normalizeChatType } from "../../../channels/chat-type.js";
 import { combineChannelAdmissionEvidence } from "../../../channels/message-access/admission-evidence.js";
+import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { combineGatewayLocalUserIngress } from "../../../gateway/local-user-ingress.js";
 import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
+import { captureConsistentConversationParticipant } from "../../../sessions/session-participant-input.js";
 import { resolveGlobalSingleton } from "../../../shared/global-singleton.js";
 import { describeToolBindings } from "../../../shared/host-tool-bindings.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
@@ -31,6 +33,7 @@ export function hasPreparedCurrentTurnImages(run: FollowupRun): boolean {
 const QUEUED_ADMISSION_OWNER_STATE_KEY = Symbol.for("openclaw.queuedAdmissionOwnerState");
 const queuedAdmissionOwnerState = resolveGlobalSingleton(QUEUED_ADMISSION_OWNER_STATE_KEY, () => ({
   keys: new WeakMap<NonNullable<FollowupRun["turnAdoptionLifecycle"]>, string>(),
+  speechKeys: new WeakMap<NonNullable<FollowupRun["speechPresentation"]>, string>(),
   nextId: 1,
 }));
 
@@ -85,6 +88,7 @@ export function resolveFollowupAuthorizationKey(run: FollowupRun): string {
   const execution = run.run;
   return JSON.stringify([
     resolveReplyOperatorAuthorityKey(run.operatorAuthority),
+    stableStringify(run.conversationParticipant ?? null),
     execution.senderId ?? "",
     JSON.stringify(execution.channelContext ?? null),
     stableStringify(execution.conversationToolPolicy ?? null),
@@ -106,6 +110,14 @@ export function resolveFollowupAuthorizationKey(run: FollowupRun): string {
 export function resolveFollowupDeliveryStorageKey(run: FollowupRun): string {
   const execution = run.run;
   const provenance = execution.inputProvenance;
+  let speechKey = "";
+  if (run.speechPresentation) {
+    speechKey = queuedAdmissionOwnerState.speechKeys.get(run.speechPresentation) ?? "";
+    if (!speechKey) {
+      speechKey = `speech:${queuedAdmissionOwnerState.nextId++}`;
+      queuedAdmissionOwnerState.speechKeys.set(run.speechPresentation, speechKey);
+    }
+  }
   return JSON.stringify([
     channelRouteDedupeKey({
       channel: run.originatingChannel,
@@ -114,6 +126,7 @@ export function resolveFollowupDeliveryStorageKey(run: FollowupRun): string {
       threadId: run.originatingThreadId,
     }),
     hasPreparedCurrentTurnImages(run),
+    speechKey,
     // Approved sources skip the write hook; never carry unstaged input past it.
     Boolean(run.userTurnTranscriptRecorder?.getPendingInputMessage?.()),
     run.originatingChatId ?? "",
@@ -199,11 +212,14 @@ export async function prepareNextDeliveryGroup(
     config: item.run.config,
     lifecycle: item.turnAdoptionLifecycle,
     operator: item.operatorAuthority,
+    assertSourceCurrent: item.assertSourceCurrent,
+    speechPresentation: item.speechPresentation,
     key: sourceKey(item),
   }));
   const assertCurrent = () => {
     assertDrainCurrent();
     for (const source of sources) {
+      source.assertSourceCurrent?.();
       source.item.operatorAuthority?.assertCurrent();
     }
     const current = readItems();
@@ -216,6 +232,8 @@ export async function prepareNextDeliveryGroup(
         item.run.config !== source.config ||
         item.turnAdoptionLifecycle !== source.lifecycle ||
         item.operatorAuthority !== source.operator ||
+        item.assertSourceCurrent !== source.assertSourceCurrent ||
+        item.speechPresentation !== source.speechPresentation ||
         sourceKey(item) !== source.key
       ) {
         throw new FollowupRunDeferredError("Queued delivery source changed during preparation");
@@ -289,7 +307,10 @@ type FollowupRuntimeMetadata = Pick<
   FollowupRun,
   | "sourceTurnId"
   | "operatorAuthority"
+  | "assertSourceCurrent"
+  | "speechPresentation"
   | "personalBootstrapEligible"
+  | "conversationParticipant"
   | "currentInboundEventKind"
   | "currentInboundAudio"
   | "currentInboundContext"
@@ -392,6 +413,7 @@ export function collectRuntimeMetadata(
   // Delivery-key equality proves every source has the same turn authority.
   // Preserve the exact carrier (including hidden intersections); never derive it from identity evidence.
   const authoritySource = items.at(-1);
+  const sourceAssertions = items.flatMap((item) => item.assertSourceCurrent ?? []);
   const deliveryCorrelations = items.flatMap((item) => item.deliveryCorrelations ?? []);
   const explicitSkillSelections = [
     ...new Map(
@@ -403,6 +425,12 @@ export function collectRuntimeMetadata(
   return {
     sourceTurnId: authoritySource?.sourceTurnId,
     operatorAuthority: authoritySource?.operatorAuthority,
+    conversationParticipant: captureConsistentConversationParticipant(
+      items.map((item) => item.conversationParticipant),
+    ),
+    assertSourceCurrent:
+      sourceAssertions.length > 0 ? composeSessionSourceAssertion(sourceAssertions) : undefined,
+    speechPresentation: authoritySource?.speechPresentation,
     ...(items.length > 0 && items.every((item) => item.personalBootstrapEligible === true)
       ? { personalBootstrapEligible: true }
       : {}),
@@ -457,7 +485,10 @@ export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupR
     sourceTurnId: source.sourceTurnId,
     admissionSessionId: source.admissionSessionId,
     operatorAuthority: source.operatorAuthority,
+    assertSourceCurrent: source.assertSourceCurrent,
+    speechPresentation: source.speechPresentation,
     personalBootstrapEligible: source.personalBootstrapEligible,
+    conversationParticipant: source.conversationParticipant,
     queueAbortSignal: source.queueAbortSignal,
     transcriptPrompt: source.transcriptPrompt,
     userTurnTranscriptRecorder: source.userTurnTranscriptRecorder,

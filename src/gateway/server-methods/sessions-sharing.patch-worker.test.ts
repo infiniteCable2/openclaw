@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import * as entryPatch from "../../config/sessions/session-entry-patch.js";
 import { readSessionMembersInWorker } from "../../config/sessions/session-sharing-store.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
 import * as lifecycle from "../../sessions/session-lifecycle-admission.js";
 import {
@@ -33,16 +34,34 @@ function readRawEntry(database: DatabaseSync, sessionKey: string): unknown {
   return row ? JSON.parse(String(row.entry_json)) : undefined;
 }
 
-async function fixture() {
-  const scope = { agentId: "main", sessionKey: "agent:main:sharing-patch-worker" };
-  const sessionId = "sharing-patch-worker";
+async function fixture(
+  conversationTopology?: InternalSessionEntry["conversationTopology"],
+  retainedPublicShare = false,
+) {
+  const sessionId = `sharing-patch-worker${conversationTopology ? `-${conversationTopology.role}` : ""}`;
+  const scope = { agentId: "main", sessionKey: `agent:main:${sessionId}` };
   await upsertSessionEntryCore(scope, {
     sessionId,
     updatedAt: 1,
-    createdActor: { type: "human", source: "profile", id: "owner" },
+    ...(conversationTopology?.role === "root"
+      ? {
+          createdVia: "internal" as const,
+          createdActor: { type: "system" as const, id: "conversation-root" },
+          lifecycleRevision: "root-lifecycle",
+          visibility: "draft" as const,
+          delivery: { kind: "none" as const },
+        }
+      : { createdActor: { type: "human" as const, source: "profile" as const, id: "owner" } }),
+    ...(conversationTopology ? { conversationTopology } : {}),
+    ...(retainedPublicShare
+      ? { publicShare: { id: "c".repeat(48), sessionId, createdAt: 1 } }
+      : {}),
   });
   await closeOpenClawAgentDatabasesAsync();
   const client = identifiedClient("owner");
+  if (conversationTopology?.role === "root") {
+    client.connect.scopes = ["operator.admin"];
+  }
   const context = sessionSharingTestContext(vi.fn());
   await initializeSessionReadContext(context);
   const codec = await loadPublicSessionShareTokenCodec();
@@ -79,6 +98,73 @@ async function fixture() {
     },
   };
 }
+
+it("keeps consolidating roots draft at the native writer without limiting ordinary branches", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const root = await fixture({ version: 1, role: "root" });
+    const before = await readSessionMembersInWorker(root.scope);
+    for (const visibility of ["shared", "read-only", "suggest"]) {
+      const respond = vi.fn<RespondFn>();
+      await expect(root.call("session.visibility.set", { visibility }, respond)).rejects.toThrow(
+        "A consolidating conversation root must remain draft.",
+      );
+      expect(respond).not.toHaveBeenCalled();
+      expect(await readSessionMembersInWorker(root.scope)).toEqual(before);
+    }
+    expect(root.context.broadcast).not.toHaveBeenCalled();
+    const unchanged = await root.call("session.visibility.set", { visibility: "draft" });
+    expect(unchanged).toHaveBeenCalledWith(
+      true,
+      { ok: true, sessionKey: root.scope.sessionKey, visibility: "draft" },
+      undefined,
+    );
+    expect(await readSessionMembersInWorker(root.scope)).toEqual(before);
+    expect(root.context.broadcast).not.toHaveBeenCalled();
+
+    const branch = await fixture({
+      version: 1,
+      role: "branch",
+      rootSessionKey: root.scope.sessionKey,
+      rootSessionId: root.sessionId,
+      rootSessionLifecycleRevision: "root-lifecycle",
+    });
+    const response = await branch.call("session.visibility.set", { visibility: "read-only" });
+    expect(response).toHaveBeenCalledWith(
+      true,
+      { ok: true, sessionKey: branch.scope.sessionKey, visibility: "read-only" },
+      undefined,
+    );
+    expect((await readSessionMembersInWorker(branch.scope)).entry).toMatchObject({
+      visibility: "read-only",
+      conversationTopology: { role: "branch" },
+    });
+  });
+});
+
+it("revokes a retained root publication through the authorized native patch owner", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const root = await fixture({ version: 1, role: "root" }, true);
+    const before = await readSessionMembersInWorker(root.scope);
+    expect(before.entry?.publicShare?.id).toBe("c".repeat(48));
+    await expect(root.call("session.publicShare.set", { enabled: true })).rejects.toThrow(
+      "root cannot be published",
+    );
+    expect(await readSessionMembersInWorker(root.scope)).toEqual(before);
+    const response = await root.call("session.publicShare.set", { enabled: false });
+    expect(response).toHaveBeenCalledWith(
+      true,
+      { ok: true, sessionKey: root.scope.sessionKey },
+      undefined,
+    );
+    const cleared = await readSessionMembersInWorker(root.scope);
+    expect(cleared.entry).not.toHaveProperty("publicShare");
+    expect(cleared.entry).toMatchObject({
+      sessionId: root.sessionId,
+      visibility: "draft",
+      conversationTopology: { version: 1, role: "root" },
+    });
+  });
+});
 
 it("limits sharing caller-thread SQLite to the final stored-authority read", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {

@@ -6,7 +6,7 @@ import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { isPluginOwnedSessionBindingRecord } from "../../plugins/conversation-binding-metadata.js";

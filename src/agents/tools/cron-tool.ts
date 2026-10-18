@@ -248,7 +248,10 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
         : 'Inspect or remove only the current automation. Actions: status; list [includeDisabled]; get/runs/remove jobId; next_check in:"15m" for this paced run. Use the current job ID. To stop a finished job, remove it; creating/updating/running jobs and waking sessions are unavailable. Return the task result; the scheduler owns delivery.'
       : managementAuthority?.managementOnly
         ? 'Manage any existing automation on this Gateway with the admitted automation management authority. Actions: list [includeDisabled,limit,offset] (compact summaries with timing; follow nextOffset); get jobId (full schedule, payload, and delivery details); update jobId job (partial patch, null clears); run jobId (runMode:"force" runs now; waits up to timeoutMs, default 60s, and returns the finished run, or its runId if still running); remove jobId (operator removal requests cancellation of an active run; the result reports activeRunCancellationRequested:true). Creator attribution and scheduled execution policy stay intact. Use the Automations page for other actions.'
-        : buildCronToolDescription({ triggersEnabled }),
+        : buildCronToolDescription({ triggersEnabled }) +
+          (opts?.requireExplicitDeliveryTarget
+            ? "\nThis source has no durable future reply surface. Before adding an audible/visible reminder, ask where future results should go and use an agentTurn with explicit delivery.to/channel. A silent job requires explicit delivery.mode=none."
+            : ""),
     outputSchema: CronToolOutputSchema,
     parameters: createCronToolSchema({
       agentSessionKey: opts?.agentSessionKey,
@@ -456,6 +459,18 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
               normalizeCronJobCreate(canonicalJob, {
                 sessionContext: { sessionKey: opts?.agentSessionKey },
               }) ?? canonicalJob;
+            if (opts?.requireExplicitDeliveryTarget) {
+              const delivery = isRecord(job.delivery) ? job.delivery : undefined;
+              const mode = normalizeLowercaseStringOrEmpty(delivery?.mode);
+              if (
+                (mode === "" || mode === "announce") &&
+                !(typeof delivery?.to === "string" && delivery.to.trim())
+              ) {
+                throw new Error(
+                  "This live source has no durable reply destination. Ask the user where future results should go and set delivery.to (and delivery.channel when needed), or explicitly choose delivery.mode=none for a silent job. Do not use a call, device, connection reference or consolidating session as a delivery address.",
+                );
+              }
+            }
             if (
               typeof job.declarationKey === "string" &&
               job.declarationKey.length > 0 &&

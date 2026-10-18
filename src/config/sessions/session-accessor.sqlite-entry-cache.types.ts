@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { SessionRowFacts } from "../../sessions/session-row-changes.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import type { SessionEntryMaintenanceAgeChange } from "./session-accessor.sqlite-maintenance-age.js";
+import { captureSessionConversationTopology } from "./session-conversation-topology.js";
 import type { SessionMembershipFact } from "./session-membership-facts.types.js";
 import type { SessionTranscriptWatermark } from "./session-transcript-context-version.types.js";
 import type { InternalSessionEntry, SessionEntry } from "./types.js";
@@ -43,6 +44,7 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
     pendingProjectGitUrl: entry.pendingProjectGitUrl,
     pendingWorktree: entry.pendingWorktree ? structuredClone(entry.pendingWorktree) : undefined,
     lifecycleRevision: entry.lifecycleRevision,
+    conversationTopology: captureSessionConversationTopology(entry.conversationTopology),
     lifecycleRunId: entry.lifecycleRunId,
     activeWriterRunId: entry.activeWriterRunId,
     ...(entry.subagentRecovery
@@ -60,6 +62,11 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
       : { repositoryWorkspaceId: entry.repositoryWorkspaceId }),
     visibility: entry.visibility,
     incognito: entry.incognito,
+    // Audience facts remain data, not an automatic cross-conversation read/disclosure grant.
+    chatType: entry.chatType,
+    publicShare: entry.publicShare ? { ...entry.publicShare } : undefined,
+    participantCount: entry.participantCount,
+    participants: entry.participants ? structuredClone(entry.participants) : undefined,
     createdActor: entry.createdActor ? { ...entry.createdActor } : undefined,
     owner: entry.owner
       ? {

@@ -1,9 +1,22 @@
+import type { CallMembership } from "matrix-js-sdk/lib/matrixrtc/CallMembership.js";
 import { RTC_SLOT_ENCRYPTION_PER_MEMBER } from "matrix-js-sdk/lib/matrixrtc/types.js";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 
 type MatrixRtcMembershipLike = {
   userId: string;
 };
+
+/** SDK renewal timestamps are not the identity of an admitted caller. */
+export function matrixRtcMembershipIdentity(
+  membership: Pick<CallMembership, "userId" | "deviceId" | "memberId" | "rtcBackendIdentity">,
+): string {
+  return JSON.stringify([
+    membership.userId,
+    membership.deviceId,
+    membership.memberId,
+    membership.rtcBackendIdentity,
+  ]);
+}
 
 export function assertMatrixRtcCallAdmission<T extends MatrixRtcMembershipLike>(params: {
   isDirectRoom: boolean;

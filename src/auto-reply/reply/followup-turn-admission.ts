@@ -101,7 +101,10 @@ export async function admitFollowupTurn(params: {
   defaults: FollowupRunnerParams;
   onCompactionNoticePayload?: (payload: ReplyPayload, turn: AdmittedFollowupTurn) => Promise<void>;
 }): Promise<FollowupAdmissionResult> {
-  const assertOperatorCurrent = () => params.queued.operatorAuthority?.assertCurrent();
+  const assertOperatorCurrent = () => {
+    params.queued.assertSourceCurrent?.();
+    params.queued.operatorAuthority?.assertCurrent();
+  };
   assertOperatorCurrent();
   const resolvedConfig = await resolveQueuedReplyExecutionConfig(params.queued.run.config, {
     originatingChannel: params.queued.originatingChannel,

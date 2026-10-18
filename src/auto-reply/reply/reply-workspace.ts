@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { ensureAgentWorkspace } from "../../agents/workspace.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { assertReplyPreprocessingActive } from "./reply-preprocessing-abort.js";
 
 type ProvisioningInput = Parameters<
@@ -15,8 +16,9 @@ export async function prepareReplyWorkspace(params: {
   provisioningInput: ProvisioningInput;
   abortSignal?: AbortSignal;
   operatorAuthority?: AdmittedRunOperatorAuthority;
+  assertSourceCurrent?: SessionSourceAssertion;
 }): Promise<Awaited<ReturnType<typeof ensureAgentWorkspace>>> {
-  const { abortSignal, operatorAuthority } = params;
+  const { operatorAuthority } = params;
   const options = {
     dir: params.dir,
     ensureBootstrapFiles: params.ensureBootstrapFiles,
@@ -25,7 +27,7 @@ export async function prepareReplyWorkspace(params: {
     ],
   };
   const assertCurrent = () => {
-    assertReplyPreprocessingActive(abortSignal);
+    assertReplyPreprocessingActive(params);
     operatorAuthority?.assertCurrent();
   };
   assertCurrent();

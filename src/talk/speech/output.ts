@@ -393,6 +393,34 @@ export function createSpeechOutput(params: {
     finalizeSpeechUtterance(utterance, text);
   };
 
+  const drain = async () => {
+    await ttsQueue;
+    const unreported = [...failedReleases.values()].filter((failure) => !failure.reported);
+    if (unreported.length > 0) {
+      for (const failure of unreported) {
+        failure.reported = true;
+      }
+      // Playback/synthesis errors are handled above; resource-release errors
+      // must remain visible even when cancellation made that output stale.
+      throw new AggregateError(
+        unreported.map(({ error }) => error),
+        "Speech stream cleanup failed",
+      );
+    }
+    const failures: unknown[] = [];
+    for (const [release, previous] of failedReleases) {
+      try {
+        await release();
+        failedReleases.delete(release);
+      } catch (error) {
+        previous.error = error;
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Speech stream cleanup failed");
+    }
+  };
   return {
     writeOutputAudio,
     createSpeechUtterance,
@@ -403,32 +431,16 @@ export function createSpeechOutput(params: {
     finalizeSpeechUtterance,
     hasPendingOutput: () => pendingChunks > 0,
     isHandoffPending: () => handoffPending,
-    async drain() {
-      await ttsQueue;
-      const unreported = [...failedReleases.values()].filter((failure) => !failure.reported);
-      if (unreported.length > 0) {
-        for (const failure of unreported) {
-          failure.reported = true;
-        }
-        // Playback/synthesis errors are handled above; resource-release errors
-        // must remain visible even when cancellation made that output stale.
-        throw new AggregateError(
-          unreported.map(({ error }) => error),
-          "Speech stream cleanup failed",
-        );
-      }
-      const failures: unknown[] = [];
-      for (const [release, previous] of failedReleases) {
-        try {
-          await release();
-          failedReleases.delete(release);
-        } catch (error) {
-          previous.error = error;
-          failures.push(error);
-        }
-      }
+    drain,
+    async stopAndDrain(greetingPlayback?: Promise<void>) {
+      await Promise.allSettled([...activeTtsReaders].map((reader) => reader.cancel()));
+      const drained = await Promise.allSettled([drain(), greetingPlayback]);
+      const failures = drained.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        throw new AggregateError(failures, "Speech stream cleanup failed");
+        throw new AggregateError(
+          failures.map((failure) => failure.reason),
+          "Speech output did not drain",
+        );
       }
     },
   };

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import {
   assertTransactionUsable,
@@ -41,12 +42,16 @@ import { readTranscriptContextVersionInTransaction } from "./session-accessor.sq
 import { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transcript-write-guard.js";
 import { requestSessionEntryCurrentAdmission } from "./session-entry-current-admission.worker.js";
 import type { SessionEntryCurrentSource } from "./session-entry-current.types.js";
+import { assertCapturedSessionEntryReadSource } from "./session-entry-read-source.js";
+import type { SessionSourcePredicate } from "./session-source-authority.js";
+import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 import { SessionTranscriptWriterClaimReboundError } from "./transcript-write-context.js";
 
 export type TranscriptReportWorkerTarget = {
   resolved: Omit<ResolvedTranscriptScope, "env">;
   cliWriter?: CliHistoryWriterFacts;
   sessionEntryCurrentSource?: SessionEntryCurrentSource;
+  sourcePredicates?: SessionSourcePredicate[];
   fence: Pick<SessionTranscriptWriteScope, "expectedLifecycleRevision" | "expectedWriterRunId">;
 };
 
@@ -79,15 +84,33 @@ export function bindSqliteWorkerBackend(
   if (!database || database.db !== context.database || database.path !== context.databasePath) {
     throw new Error("Transcript report lost its canonical database owner");
   }
-  const admit = (stage: "transaction" | "commit") =>
-    context.admit(stage, (request, dispatch) =>
+  const admit = (stage: "transaction" | "commit") => {
+    const predicates = target.sourcePredicates;
+    for (const predicate of predicates ?? []) {
+      // Native source predicates are atomic only inside this same physical store.
+      assertCapturedSessionEntryReadSource(predicate.source, database);
+    }
+    const validation = predicates && readSessionSourceValidation(database, predicates);
+    context.admit(stage, (request, dispatch) => {
+      if (validation && !isRecord(request.facts)) {
+        throw new Error("Transcript report admission omitted its database facts");
+      }
       requestSessionEntryCurrentAdmission(
         target.sessionEntryCurrentSource,
-        request,
+        validation
+          ? {
+              ...request,
+              facts: {
+                ...(isRecord(request.facts) ? request.facts : {}),
+                reportSourceValidation: validation,
+              },
+            }
+          : request,
         { database },
         dispatch,
-      ),
-    );
+      );
+    });
+  };
   let closed = false;
   const assertOpen = () => {
     if (closed || !database.db.isOpen) {
@@ -115,6 +138,9 @@ export function bindSqliteWorkerBackend(
           Result<PreparedTranscriptReport, TranscriptAppendRefusal>
         >(database.db, () => {
           prepared = undefined;
+          if (target.sourcePredicates) {
+            admit("transaction");
+          }
           const refusal = readRefusal();
           if (refusal) {
             return err(refusal);

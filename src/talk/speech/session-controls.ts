@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { RealtimeVoiceAgentControlResult } from "../agent-run-control-shared.js";
 import type { RealtimeVoiceSessionHarness } from "../realtime-session-harness.js";
 import type { createSpeechCancellation } from "./cancellation.js";
@@ -48,6 +49,7 @@ export function createSpeechSessionControls(params: {
         return Promise.reject(new Error("No active native speech consult accepts steering"));
       }
       const generation = params.getOutputGeneration();
+      const inputId = request.inputId ?? randomUUID();
       const admission = consult.admissions.then(
         async (): Promise<RealtimeVoiceAgentControlResult> => {
           request.signal?.throwIfAborted();
@@ -59,7 +61,11 @@ export function createSpeechSessionControls(params: {
           ) {
             throw new Error("The native speech consult owner changed before steering");
           }
-          const outcome = await control(request.text, undefined, request);
+          const outcome = await control(request.text, undefined, {
+            ...request,
+            inputId,
+            purpose: "steering",
+          });
           if (outcome.queued) {
             consult.adoptedGeneration = generation;
             consult.unconfirmed ||= !outcome.ok;

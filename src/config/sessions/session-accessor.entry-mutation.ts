@@ -17,15 +17,12 @@ import {
 } from "../../state/openclaw-agent-execution.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { loadSessionEntry, patchSessionEntryCore } from "./session-accessor.entry.js";
-import { createSessionEntryWithTranscriptInScope } from "./session-accessor.sqlite-creation.js";
 import { hasPreparedNativeSessionDeletion } from "./session-accessor.sqlite-deletion.js";
 import { prepareSessionEntryReplacementDatabase } from "./session-accessor.sqlite-replacement-worker.js";
 import {
   captureLifecycleDatabaseScope,
   resolveSqliteScope,
   prepareSqliteScope,
-  resolveSqliteWriteAdmissionScope,
-  runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import type {
@@ -35,12 +32,7 @@ import type {
   SessionAbortTargetContext,
   SessionAbortTargetIdentity,
   SessionAbortTargetResult,
-  SessionEntryCreateWithTranscriptContext,
-  SessionEntryCreateWithTranscriptResult,
-  SessionEntryCreateWithTranscriptPrepareResult,
-  SessionEntryCreateWithTranscriptOptions,
 } from "./session-accessor.types.js";
-import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
 import {
   captureExternalSessionCommitGuard,
   sessionEntryCommitGuardOptions,
@@ -65,6 +57,7 @@ export {
   forkSessionTranscriptFromParent as forkSessionFromParentTranscript,
   resolveSessionParentForkDecision,
 } from "./session-accessor.sqlite-parent-session.js";
+export { createSessionEntryWithTranscript } from "./session-entry-creation.js";
 
 type SessionEntryDatabasePreparationSource = {
   database: { agentId: string; path: string };
@@ -465,53 +458,6 @@ export function prepareSessionEntryMutationDatabases(
       }
     },
   };
-}
-
-/**
- * Creates or updates one session entry and initializes its transcript header as
- * one SQLite-backed lifecycle operation. Callers do not compose row creation,
- * transcript initialization, rollback, and normalized session identity.
- */
-export async function createSessionEntryWithTranscript<TError = string>(
-  scope: SessionAccessScope,
-  createEntry: (
-    context: SessionEntryCreateWithTranscriptContext,
-  ) =>
-    | Promise<SessionEntryCreateWithTranscriptPrepareResult<TError>>
-    | SessionEntryCreateWithTranscriptPrepareResult<TError>,
-  options: SessionEntryCreateWithTranscriptOptions = {},
-): Promise<SessionEntryCreateWithTranscriptResult<TError>> {
-  const captured = {
-    ...scope,
-    env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
-  };
-  const storePath = resolveSessionStorePathForScope(captured);
-  const agentId = captured.agentId ?? resolveAgentIdFromSessionKey(captured.sessionKey);
-  const target = { ...captured, agentId, storePath };
-  const incognito = captureIncognitoSessionBinding(target);
-  // A sibling's cold registration must not invalidate discovery of this same store.
-  // Release admission before creation callbacks acquire their own commit custody.
-  const admission =
-    isMainThread && !incognito ? resolveSqliteWriteAdmissionScope(target) : undefined;
-  const prepare = async () => {
-    const resolved = await prepareSqliteScope(target);
-    if (admission && resolved.path !== admission.path) {
-      throw new Error("Session creation preparation changed its reserved database path");
-    }
-    return resolved;
-  };
-  const resolved = captureLifecycleDatabaseScope(
-    isMainThread && !incognito
-      ? admission
-        ? await runExclusiveSqliteSessionWrite(
-            admission,
-            prepare,
-            "session.entry.create-with-transcript",
-          )
-        : await prepare()
-      : resolveSqliteScope(target),
-  );
-  return createSessionEntryWithTranscriptInScope(resolved, createEntry, options);
 }
 
 export function cloneSessionEntries(

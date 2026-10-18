@@ -12,6 +12,7 @@ import {
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -215,6 +216,21 @@ export async function prepareCronRunContext(params: {
     const runSessionKey = usesExactRunSession
       ? `${agentSessionKey}:run:${runSessionId}`
       : agentSessionKey;
+    // Pure rollover may preserve a root's metadata. This owner is the actual
+    // scheduled execution boundary: neither task nor current-result destination
+    // may use the headless root, even for service-origin jobs bypassing cron.add.
+    for (const sessionKey of new Set([
+      agentSessionKey,
+      ...(sourceSessionKey ? [sourceSessionKey] : []),
+    ])) {
+      assertExternalConversationTarget({
+        cfg: runtimeCfg,
+        agentId,
+        sessionKey,
+        entry: cronSession.store[sessionKey],
+        isSystemEvent: false,
+      });
+    }
     const sessionWorkAdmission = await beginCronSessionWorkAdmission({
       cronSession,
       agentSessionKey,

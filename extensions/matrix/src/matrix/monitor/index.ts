@@ -486,6 +486,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
         accountId: effectiveAccountId,
         config: rtcConfig,
         runtime: core,
+        runtimeEnv: runtime,
         logger,
         abortSignal: monitorLifecycleSignal,
       });

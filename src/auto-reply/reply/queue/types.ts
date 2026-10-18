@@ -12,6 +12,8 @@ import type { ReplyDeliveryObserver } from "../../../agents/reply-completion.js"
 import type { InboundEventKind } from "../../../channels/inbound-event/kind.js";
 import type { ChannelAdmissionEvidence } from "../../../channels/message-access/admission-evidence.js";
 import type { SessionEntry } from "../../../config/sessions.js";
+import type { SessionParticipantIdentity } from "../../../config/sessions/session-participant-identity.js";
+import type { SessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import type { PrepareAssistantTranscriptMessage } from "../../../config/sessions/transcript-assistant-delivery.js";
 import type { ReplyToMode } from "../../../config/types.base.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -31,6 +33,7 @@ import type { OriginatingChannelType } from "../../templating.js";
 import type { ThinkingCatalogEntry } from "../../thinking.js";
 import type { ElevatedLevel, ThinkLevel, TraceLevel, VerboseLevel } from "../directives.js";
 import type { ReplyOperationRunState } from "../reply-operation-run-state.js";
+import type { ReplySpeechPresentationSource } from "../reply-speech-presentation.js";
 import type { SessionEventExecution } from "../session-event-contract.js";
 
 export type { QueueDropPolicy } from "../../../config/types.queue.js";
@@ -103,8 +106,13 @@ type FollowupRunObservers = Pick<
 };
 
 export type FollowupRun = {
+  /** Original turn source, not the later drain's authority or transport lifetime. */
+  assertSourceCurrent?: SessionSourceAssertion;
+  speechPresentation?: ReplySpeechPresentationSource;
   /** External-turn eligibility; queued execution refreshes the session-selected profile. */
   personalBootstrapEligible?: boolean;
+  /** Immutable original input-person fact, process-local only; not session owner or operator authority. */
+  readonly conversationParticipant?: SessionParticipantIdentity;
   prompt: string;
   /** Original admitted source; queued execution must not replace it with a backend run ID. */
   sourceTurnId?: string;
@@ -297,13 +305,25 @@ export type FollowupRun = {
 };
 
 export function isFollowupRunAborted(
-  run: Pick<FollowupRun, "abortSignal" | "queueAbortSignal" | "operatorAuthority">,
+  run: Pick<
+    FollowupRun,
+    "abortSignal" | "queueAbortSignal" | "operatorAuthority" | "assertSourceCurrent"
+  >,
 ): boolean {
-  return (
+  if (
     run.abortSignal?.aborted === true ||
     run.queueAbortSignal?.aborted === true ||
     run.operatorAuthority?.signal?.aborted === true
-  );
+  ) {
+    return true;
+  }
+  try {
+    run.assertSourceCurrent?.();
+    return false;
+  } catch {
+    // Source authority cannot currently be proved, even without an operator signal.
+    return true;
+  }
 }
 
 export function resolveFollowupAbortSignal(

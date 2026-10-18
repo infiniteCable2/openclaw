@@ -1,4 +1,5 @@
 // Native realtime-provider strategy of the shared speech owner.
+import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { PluginRuntime, RuntimeLogger } from "../../plugins/runtime/types.js";
@@ -295,6 +296,8 @@ export async function startSpeechRealtimeSession(params: {
       consult: ({ question, responseStyle, signal }) =>
         params.consultAgent({
           sessionId: params.sessionId,
+          inputId: randomUUID(),
+          purpose: "user",
           requesterSessionKey: params.requesterSessionKey,
           args: { question, responseStyle },
           transcript: harness.transcript,
@@ -381,6 +384,8 @@ export async function startSpeechRealtimeSession(params: {
                 }
                 const consulted = await params.consultAgent({
                   sessionId: params.sessionId,
+                  inputId: randomUUID(),
+                  purpose: "user",
                   requesterSessionKey: params.requesterSessionKey,
                   args: { question: prompt },
                   transcript: harness.transcript,
@@ -570,6 +575,8 @@ export async function startSpeechRealtimeSession(params: {
             strategy,
             event,
             sessionId: params.sessionId,
+            inputId: event.callId || event.itemId || randomUUID(),
+            purpose: "user",
             requesterSessionKey: params.requesterSessionKey,
             transcript: harness.transcript,
           },

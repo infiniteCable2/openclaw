@@ -3,12 +3,16 @@ import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import * as sessionEntryReads from "../../config/sessions/session-entry-read-runtime.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import * as voiceWakeRouting from "../../infra/voicewake-routing.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import * as attachments from "../chat-attachments.js";
 import { createChatRunState } from "../server-chat-state.js";
+import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import "../session-utils-store-worker.js";
 import { prepareAgentContentPhase } from "./agent-content-phase.js";
 import type { AgentTurnContext } from "./types.js";
 
@@ -144,3 +148,62 @@ it.each([
     });
   },
 );
+
+it("rejects a voice-wake retarget to a persisted root before attachment parsing after mode opt-out", async () => {
+  state = await createOpenClawTestState({ label: "agent-voicewake-root-target" });
+  const cfg: OpenClawConfig = {
+    agents: { ownership: "explicit", entries: { main: {}, work: {} } },
+    plugins: { enabled: false },
+  };
+  await state.writeConfig(cfg);
+  await replaceSessionEntry(
+    { agentId: "work", sessionKey: "agent:work:main", env: state.env },
+    {
+      sessionId: "consolidation-root",
+      lifecycleRevision: "root-generation",
+      updatedAt: 1,
+      createdVia: "internal",
+      createdActor: { type: "system", id: "conversation-root" },
+      visibility: "draft",
+      delivery: { kind: "none" },
+      conversationTopology: { version: 1, role: "root" },
+    },
+  );
+  vi.spyOn(voiceWakeRouting, "loadVoiceWakeRoutingConfig").mockResolvedValue({
+    version: 1,
+    defaultTarget: { agentId: "work" },
+    routes: [],
+    updatedAtMs: 1,
+  });
+  const parse = vi.spyOn(attachments, "parseMessageWithAttachments");
+  const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+  const respond = vi.fn();
+  await expect(
+    prepareAgentContentPhase({
+      request: {
+        message: "Inspect this attachment",
+        voiceWakeTrigger: "assistant",
+        idempotencyKey: "voicewake-root-retarget",
+      },
+      cfg,
+      context,
+      respond,
+      conversationInput: true,
+      isRawModelRun: false,
+      agentId: "main",
+      requestedSessionKey: "agent:main:matrix:room",
+      knownAgents: ["main", "work"],
+      normalizedAttachments: [
+        {
+          type: "file",
+          mimeType: "image/png",
+          fileName: "pixel.png",
+          content:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        },
+      ],
+    }),
+  ).rejects.toThrow("Explicitly migrate it before changing conversation mode");
+  expect(parse).not.toHaveBeenCalled();
+  expect(respond).not.toHaveBeenCalled();
+});

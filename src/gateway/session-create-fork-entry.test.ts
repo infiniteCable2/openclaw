@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { testing as cliBackendsTesting } from "../agents/cli-backends.test-support.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions.js";
 import { buildForkedGatewaySessionEntry } from "./session-create-fork-entry.js";
+import { inheritSessionCreateParentFields } from "./session-create-inheritance.js";
 
 const forkableClaudeCliBackend = {
   id: "claude-cli",
@@ -19,6 +20,25 @@ afterEach(() => {
 });
 
 describe("buildForkedGatewaySessionEntry", () => {
+  it("does not give a new task or transcript fork its source's conversation membership", () => {
+    const parent: SessionEntry = {
+      sessionId: "root-generation",
+      updatedAt: 1,
+      conversationTopology: { version: 1, role: "root" },
+    };
+    const inherited = inheritSessionCreateParentFields({ parent, overrides: {} });
+    expect(inherited).not.toHaveProperty("conversationTopology");
+    const child = buildForkedGatewaySessionEntry(
+      { ...inherited, sessionId: "child-provisional", updatedAt: 2 },
+      { sessionId: "child-generation", sessionFile: "/tmp/synthetic-child" },
+      { sessionKey: "agent:main:main", entry: parent },
+    );
+    expect(child.conversationTopology).toBeUndefined();
+    expect(child.forkSource).toEqual({
+      sessionKey: "agent:main:main",
+      sessionId: "root-generation",
+    });
+  });
   it("preserves adopted node ancestry and links the replaced generation", () => {
     const previous: SessionEntry = {
       sessionId: "adopted-generation",

@@ -493,6 +493,26 @@ service lifetime as `invokeNode`; callers cannot select an identity or scopes.
 An optional `assertCurrent` callback adds the current operation's liveness check
 before dispatch and each frame. Closing the service cancels open channels.
 
+`ctx.prepareNodeConversationInput?.()` admits a conversation source for an
+already paired device using one command registered by that service's plugin.
+The plugin supplies its authoritative device-to-agent assignment check and the
+exact bridge-lifetime check; the host binds the real Node connection, pairing,
+command policy and service lifetime. IDs or successful presence discovery alone
+cannot create a source. This capability is optional on older/non-Gateway hosts;
+consumers requiring native device input must reject its absence, not fall back
+to an owner or subagent invocation.
+
+The returned versioned input source issues one opaque admission per input for
+its exact agent and conversation. Its device-scoped group context identifies an
+unknown speaker, does not inherit private main, and grants no person/owner/read
+authority. Use its host-derived `connectionPresentation` with the V2 Meeting
+binding to publish availability through the shared Speech lifecycle; it is
+metadata, not permission to send or read. `release()` and bridge closure fence
+new input immediately. Already accepted work retains its original authorization
+independently of the connection; pairing, assignment or service revocation still
+invalidates that authority. Close/release the source with its bridge, including
+failed startup. This adds no persistent store or state migration.
+
 Gateway-hosted services also receive `ctx.getCron?.()` for the scheduler operations
 already available to Gateway hooks: `list`, `add`, `update`, `remove`, and
 `removeStaleJobFamily`. Non-Gateway service hosts omit this getter.

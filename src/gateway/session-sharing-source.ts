@@ -25,7 +25,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { matchesAgentDatabaseReadCandidatePath } from "../state/openclaw-agent-db-resources.js";
-import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import {
@@ -49,8 +48,6 @@ import type {
   SessionMutationTarget,
   resolveTalkSessionTargetInput,
 } from "./session-sharing-target-input.js";
-import { prepareTalkSessionTarget, assertTalkSessionStorageTarget } from "./talk/session-target.js";
-import type { PreparedTalkSessionTarget } from "./talk/session-target.types.js";
 
 /** Hold the existing reader only until the prepared writer operation settles. */
 export async function prepareSessionSharingSource(
@@ -291,7 +288,7 @@ export function withPreparedSessionSharingSource(params: {
     assertRoutingCurrent(cfg);
     if (
       (params.talk && cfg.talk?.agentId !== talkAgentId) ||
-      (params.talk?.kind === "relay" && !params.talk.isCurrent())
+      (params.talk && params.talk.kind !== "request" && !params.talk.isCurrent())
     ) {
       throw changed();
     }
@@ -363,6 +360,10 @@ export function withPreparedSessionSharingSource(params: {
                       "visibility",
                       "incognito",
                       "sandbox",
+                      ...(params.talk &&
+                      !(params.talk.kind !== "relay" && params.talk.purpose === "settlement")
+                        ? (["conversationTopology"] as const)
+                        : []),
                     ],
                     expected: read.target?.entry,
                     members: read.members,
@@ -385,56 +386,6 @@ export function withPreparedSessionSharingSource(params: {
     prepareSessionSource: prepare,
     ...(boundSources.size ? { prepareSessionSourceScope: prepare } : {}),
   });
-}
-
-export function captureSessionSharingTalkAuthority({
-  request,
-  input,
-  target,
-  authorizesAgentRun,
-}: {
-  request: SessionMutationAuthorizationParams;
-  input: ReturnType<typeof resolveTalkSessionTargetInput>;
-  target: PreparedTalkSessionTarget | undefined;
-  authorizesAgentRun: boolean;
-}) {
-  return (cfg: OpenClawConfig) => {
-    if (!input || !target) {
-      return;
-    }
-    let current: PreparedTalkSessionTarget;
-    try {
-      if (input.kind === "relay") {
-        if (!input.isCurrent()) {
-          throw sessionMutationTargetChanged(request.method, target.sessionKey);
-        }
-        assertTalkSessionStorageTarget(cfg, target);
-        current = target;
-      } else {
-        current = prepareTalkSessionTarget(cfg, input.sessionKey);
-      }
-    } catch {
-      throw sessionMutationTargetChanged(request.method, target.sessionKey);
-    }
-    if (
-      current.agentId !== target.agentId ||
-      current.sessionKey !== target.sessionKey ||
-      current.canonicalKey !== target.canonicalKey ||
-      current.storePath !== target.storePath
-    ) {
-      throw sessionMutationTargetChanged(request.method, target.sessionKey);
-    }
-    const error =
-      authorizesAgentRun &&
-      authorizeGatewaySessionCreation({
-        cfg: request.context.getCommittedRuntimeConfig?.() ?? cfg,
-        client: request.client,
-        agentId: current.agentId,
-      });
-    if (error) {
-      throw new SessionMutationAuthorizationChangedError(error);
-    }
-  };
 }
 
 export function isSameSessionSharingSource(

@@ -12,6 +12,7 @@ import type {
   PreparedReplyDispatchRuntime,
 } from "../../agents/prepared-model-runtime.types.js";
 import { normalizeExplicitSessionKey } from "../../config/sessions/explicit-session-key-normalization.js";
+import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import {
   deriveInboundMessageHookContext,
   toPluginInboundClaimPair,
@@ -31,8 +32,10 @@ import {
 import { createDiagnosticMessageLifecycle } from "../../logging/message-lifecycle.js";
 import { stripLegacyMediaContextFields } from "../../media/media-facts.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { resolveSessionDispatchKind } from "../../sessions/session-key-utils.js";
 import { prepareChannelParticipantObservation } from "../../sessions/session-participant-input.js";
+import { classifySessionStateActor } from "../../sessions/session-state-events.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
 import { normalizeTtsAutoMode } from "../../tts/tts-config.js";
 import { prepareTtsPreferences, type PreparedTtsPreferences } from "../../tts/tts-preferences.js";
@@ -395,6 +398,27 @@ export async function gatherDispatchRequest(
     config: cfg,
     fallbackAgentId: ctx.AgentId,
   });
+  // ACP takeover bypasses ordinary Reply initialization. Apply the same external
+  // root fence before a harness or reply hook can consume this prepared target.
+  if (
+    dispatchKind === "acp" &&
+    acpDispatchSessionKey &&
+    state.allowInboundHandlers &&
+    ctx.InternalTurnSource === undefined &&
+    classifySessionStateActor({ inputProvenance: ctx.InputProvenance }).actorType === "human"
+  ) {
+    assertExternalConversationTarget({
+      cfg,
+      agentId: sessionAgentId,
+      sessionKey: canonicalizeMainSessionAlias({
+        cfg,
+        agentId: sessionAgentId,
+        sessionKey: acpDispatchSessionKey,
+      }),
+      isSystemEvent: false,
+      entry: sessionStoreEntry.entry,
+    });
+  }
   const sessionAgentCfg = resolveAgentConfig(cfg, sessionAgentId);
   const assertProgressCurrent = () => {
     assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);

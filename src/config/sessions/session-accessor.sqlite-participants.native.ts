@@ -14,6 +14,7 @@ import {
   publishSessionEntryCacheParticipantUpdate,
   trackSessionEntryCacheWrite,
 } from "./session-accessor.sqlite-entry-cache.js";
+import { readSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import {
   getSessionKysely,
   resolveSqliteScope,
@@ -65,6 +66,14 @@ function recordSessionParticipantWithAliasRead(
       : undefined;
   const result = runOpenClawAgentWriteTransaction(
     (database) => {
+      if (params.expectedSession) {
+        const entry = readSessionEntryRow(database, resolved.sessionKey)?.entry;
+        if (
+          entry?.sessionId !== params.expectedSession.sessionId ||
+          entry.lifecycleRevision !== params.expectedSession.lifecycleRevision
+        )
+          throw new Error("Original participant input session changed before commit");
+      }
       ensureSessionParticipantsSchema(database.db);
       const kysely = getSessionKysely(database.db);
       const participantQuery = kysely

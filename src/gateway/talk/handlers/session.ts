@@ -2,9 +2,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import {
   ErrorCodes,
   errorShape,
-  validateTalkSessionAcknowledgeMarkParams,
   validateTalkSessionAppendAudioParams,
-  validateTalkSessionCancelOutputParams,
   validateTalkSessionCloseParams,
   validateTalkSessionCreateParams,
   validateTalkSessionSteerParams,
@@ -21,24 +19,31 @@ import {
   resolveInternalRealtimeVoiceGatewayRelayLaunchError,
 } from "../../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProvider } from "../../../talk/provider-resolver.js";
+import {
+  forgetUnifiedTalkSession,
+  getUnifiedTalkSession,
+  rememberUnifiedTalkSession,
+} from "../../../talk/session-registry.js";
 import { ADMIN_SCOPE, hasGatewayAdminScope } from "../../operator-scopes.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import { gatewayClientSenderFields } from "../../server-methods/gateway-client-identity.js";
 import type { GatewayRequestHandlers, RespondFn } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
 import { resolveOperatorSessionCreation } from "../../session-creation-provenance.js";
+import { resolveGatewayInputParticipant } from "../../session-input-participant.js";
 import { getSessionRowProjection } from "../../session-row-projection-access.js";
 import { withPreparedSessionResolve } from "../../sessions-resolve.js";
 import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
+import { prepareTalkProviderConversationContext } from "../conversation-context.js";
 import { createTalkHandoff, getTalkHandoff, revokeTalkHandoff } from "../handoff.js";
+import { createTalkOperatorRunSource } from "../operator-run-source.js";
 import {
-  acknowledgeTalkRealtimeRelayMark,
-  cancelTalkRealtimeRelayTurn,
   sendTalkRealtimeRelayAudio,
   steerTalkRealtimeRelayAgentRun,
   stopTalkRealtimeRelaySession,
   submitTalkRealtimeRelayToolResult,
 } from "../relay/operations.js";
+import { publishTalkRealtimeRelayPresentation } from "../relay/presentation.js";
 import { createTalkRealtimeRelaySession } from "../relay/session-create.js";
 import { talkRequestError } from "../request-error.js";
 import {
@@ -53,12 +58,7 @@ import {
   buildTalkRealtimeHistoryInstructions,
   readTalkRealtimeInitialItems,
 } from "../session-history.js";
-import {
-  forgetUnifiedTalkSession,
-  getUnifiedTalkSession,
-  rememberUnifiedTalkSession,
-  requireUnifiedTalkSessionConn,
-} from "../session-registry.js";
+import { requireUnifiedTalkSessionConn } from "../session-registry.js";
 import { requirePreparedTalkSessionTarget } from "../session-target.js";
 import {
   createTalkTranscriptionRelaySession,
@@ -66,6 +66,7 @@ import {
   stopTalkTranscriptionRelaySession,
 } from "../transcription-relay.js";
 import { prepareTalkVoiceReplacement } from "../voice-selection.js";
+import { talkSessionOutputHandlers } from "./session-output.js";
 
 function respondInvalidRequest(respond: RespondFn, message: string) {
   respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, message));
@@ -79,6 +80,7 @@ function respondOk(respond: RespondFn, payload: unknown = { ok: true }) {
 }
 
 export const talkSessionHandlers: GatewayRequestHandlers = {
+  ...talkSessionOutputHandlers,
   "talk.session.create": defineValidatedGatewayHandler(
     "talk.session.create",
     validateTalkSessionCreateParams,
@@ -89,6 +91,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
       client,
       sessionMutationAuthorization,
       sessionMutationCommitGuard,
+      hasCurrentClientAuthority,
     }) => {
       const mode = params.mode ?? (params.transport === "managed-room" ? "stt-tts" : "realtime");
       const transport = params.transport ?? (mode === "stt-tts" ? "managed-room" : "gateway-relay");
@@ -252,6 +255,8 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           });
           const ensuredSessionId = await ensureClientVoiceAgentSessionEntry({
             agentId: target.agentId,
+            chatType: "direct",
+            cfg: runtimeConfig,
             sessionKey: target.canonicalKey,
             storePath: target.storePath,
             creation:
@@ -279,7 +284,9 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             cfg: runtimeConfig,
             sessionTarget: target,
             authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
+            captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
             callerId: gatewayClientSenderFields(client).sender?.id ?? undefined,
+            participant: resolveGatewayInputParticipant(client),
             provider: resolution.provider,
             providerConfig: resolution.providerConfig,
             capabilities: params.capabilities,
@@ -373,6 +380,8 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           assertCommitAllowed();
           const ensuredSessionId = await ensureClientVoiceAgentSessionEntry({
             agentId,
+            chatType: "direct",
+            cfg: runtimeConfig,
             sessionKey: target.canonicalKey,
             storePath: target.storePath,
             creation:
@@ -401,42 +410,81 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
               resolution.provider.voices ??
               []),
           ];
-          const session = createTalkRealtimeRelaySession({
-            context,
-            connId,
-            cfg: runtimeConfig,
-            consultAuthority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
-            provider: resolution.provider,
-            providerConfig,
-            controlSource,
-            capabilities,
-            clientCapabilities: params.capabilities?.filter(
-              (capability) => capability === "voice-selection",
-            ),
-            voiceChangeId: params.voiceChangeId,
-            initialItems,
-            voiceSelectionVoices: voices,
-            instructions:
-              (controlSource === "delegation"
-                ? (providerInstructions ?? "")
-                : buildRealtimeInstructions(providerInstructions)) +
-              buildTalkRealtimeHistoryInstructions(initialItems),
-            tools:
-              controlSource === "delegation"
-                ? []
-                : [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
-            model: launchOptions.model,
-            sessionTarget: target,
-            voice: launchOptions.voice,
-            language: params.language,
-            forceAgentConsultOnFinalTranscript,
+          const providerContext = await prepareTalkProviderConversationContext({
+            target,
+            participant: resolveGatewayInputParticipant(client),
+            assertCurrent: assertEnsuredTargetCurrent,
+            getRuntimeConfig: context.getRuntimeConfig,
+            captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
           });
+          let contextTransferred = false;
+          const session = await (async () => {
+            try {
+              providerContext.assertCurrent();
+              const created = createTalkRealtimeRelaySession({
+                startupContext: providerContext,
+                context,
+                connId,
+                cfg: runtimeConfig,
+                consultAuthority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
+                participant: resolveGatewayInputParticipant(client),
+                captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+                provider: resolution.provider,
+                providerConfig,
+                controlSource,
+                capabilities,
+                clientCapabilities: params.capabilities?.filter(
+                  (capability) => capability === "voice-selection",
+                ),
+                voiceChangeId: params.voiceChangeId,
+                initialItems,
+                voiceSelectionVoices: voices,
+                instructions:
+                  (controlSource === "delegation"
+                    ? (providerInstructions ?? "")
+                    : buildRealtimeInstructions(providerInstructions)) +
+                  buildTalkRealtimeHistoryInstructions(initialItems) +
+                  providerContext.instructions,
+                tools:
+                  controlSource === "delegation"
+                    ? []
+                    : [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
+                model: launchOptions.model,
+                sessionTarget: target,
+                voice: launchOptions.voice,
+                language: params.language,
+                forceAgentConsultOnFinalTranscript,
+              });
+              contextTransferred = true;
+              return created;
+            } finally {
+              if (!contextTransferred) {
+                try {
+                  await providerContext.release();
+                } catch {
+                  context.logGateway.warn("Talk provider context cleanup remains pending");
+                }
+              }
+            }
+          })();
           rememberUnifiedTalkSession(session.relaySessionId, {
             kind: "realtime-relay",
             connId,
             relaySessionId: session.relaySessionId,
             sessionTarget: target,
           });
+          try {
+            publishTalkRealtimeRelayPresentation({
+              sessionId: session.relaySessionId,
+              connId,
+              client,
+              context,
+              hasCurrentClientAuthority,
+            });
+          } catch (error) {
+            await stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId });
+            throw error;
+          }
           const publicSession = projectInternalRealtimeVoicePublicConfig({
             provider: resolution.provider,
             providerConfig,
@@ -534,62 +582,6 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
     },
     talkSessionError,
   ),
-  "talk.session.cancelOutput": defineValidatedGatewayHandler(
-    "talk.session.cancelOutput",
-    validateTalkSessionCancelOutputParams,
-    async ({ params, respond, client }) => {
-      const session = getUnifiedTalkSession(params.sessionId);
-      if (session.kind === "speech-relay") {
-        requireUnifiedTalkSessionConn(session, client?.connId);
-        const result = session.cancelOutput({
-          turnId: normalizeOptionalString(params.turnId),
-          reason: normalizeOptionalString(params.reason) ?? "output-cancelled",
-        });
-        respondOk(respond, { ok: true, ...result });
-        return;
-      }
-      if (session.kind !== "realtime-relay") {
-        respondInvalidRequest(respond, "talk.session.cancelOutput requires realtime relay");
-        return;
-      }
-      const connId = requireUnifiedTalkSessionConn(session, client?.connId);
-      const result = await cancelTalkRealtimeRelayTurn({
-        relaySessionId: session.relaySessionId,
-        connId,
-        reason: normalizeOptionalString(params.reason) ?? "output-cancelled",
-        turnId: normalizeOptionalString(params.turnId),
-      });
-      respondOk(respond, { ok: true, ...result });
-    },
-    talkSessionError,
-  ),
-  "talk.session.acknowledgeMark": defineValidatedGatewayHandler(
-    "talk.session.acknowledgeMark",
-    validateTalkSessionAcknowledgeMarkParams,
-    ({ params, respond, client }) => {
-      try {
-        const session = getUnifiedTalkSession(params.sessionId);
-        if (session.kind === "speech-relay") {
-          requireUnifiedTalkSessionConn(session, client?.connId);
-          session.acknowledgeMark(params.markName);
-          respondOk(respond);
-          return;
-        }
-        if (session.kind !== "realtime-relay") {
-          respondInvalidRequest(respond, "talk.session.acknowledgeMark requires realtime relay");
-          return;
-        }
-        acknowledgeTalkRealtimeRelayMark({
-          relaySessionId: session.relaySessionId,
-          connId: requireUnifiedTalkSessionConn(session, client?.connId),
-          markName: params.markName,
-        });
-        respondOk(respond);
-      } catch (error) {
-        respond(false, undefined, talkRequestError(error, "legacy-relay"));
-      }
-    },
-  ),
   "talk.session.submitToolResult": defineValidatedGatewayHandler(
     "talk.session.submitToolResult",
     validateTalkSessionSubmitToolResultParams,
@@ -671,7 +663,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         return;
       }
       // Managed rooms have no client admission route; creating a handoff grants no run authority.
-      if (client?.connId) {
+      if (session.kind === "managed-room" && client?.connId) {
         getTalkHandoff(session.handoffId);
       }
       respondInvalidRequest(
@@ -698,9 +690,12 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
       } else if (session.kind === "speech-relay") {
         requireUnifiedTalkSessionConn(session, client?.connId);
         await session.close();
-      } else {
+      } else if (session.kind === "managed-room") {
         getTalkHandoff(session.handoffId);
         revokeTalkHandoff(session.handoffId);
+      } else {
+        respondInvalidRequest(respond, "External speech connections retain their native owner");
+        return;
       }
       forgetUnifiedTalkSession(params.sessionId);
       respondOk(respond);

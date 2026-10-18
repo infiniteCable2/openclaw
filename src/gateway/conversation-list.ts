@@ -1,5 +1,9 @@
-import type { ConversationListResult } from "../../packages/gateway-protocol/src/schema/agent.js";
+import type {
+  ConversationActiveConnection,
+  ConversationListResult,
+} from "../../packages/gateway-protocol/src/schema/agent.js";
 import { resolveChannelAccount } from "../channels/account-resolution.js";
+import { resolveChannelPluginRegistration } from "../channels/plugins/registry.js";
 import type { ChannelDirectoryEntry } from "../channels/plugins/types.core.js";
 import {
   buildConversationIdentity,
@@ -17,6 +21,7 @@ import { resolveOutboundChannelPlugin } from "../infra/outbound/channel-resoluti
 import { resolveOutboundSessionRoute } from "../infra/outbound/outbound-session.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { defaultRuntime } from "../runtime.js";
+import { presentConversationList } from "./conversation-list-presentation.js";
 import { resolveConversationRouteEligibilitiesForAgent } from "./conversation-route-ownership.js";
 
 const log = createSubsystemLogger("gateway/conversations");
@@ -32,12 +37,15 @@ export async function runGatewayConversationList(
     channel?: string;
     query?: string;
     limit: number;
+    /** Native host-prepared read grants; model parameters cannot supply this projection. */
+    presentActiveConnections?: () => ConversationActiveConnection[];
   },
   deps = {
     listConversations,
     registerConversationAddresses,
     resolveOutboundChannelPlugin,
     resolveOutboundSessionRoute,
+    resolveChannelPluginRegistration,
   },
 ): Promise<ConversationListResult> {
   const scope = await prepareConversationRegistryScope(params);
@@ -217,30 +225,17 @@ export async function runGatewayConversationList(
     .filter((_, index) => eligibility[index] === "eligible")
     .slice(0, params.limit);
   return {
-    conversations: selected.map((conversation) => {
-      const row: Omit<
-        ConversationListResult["conversations"][number],
-        "firstSeenAt" | "lastSeenAt"
-      > = {
-        conversationRef: conversation.conversationRef,
-        channel: conversation.channel,
-        accountId: conversation.accountId,
-        kind: conversation.kind,
-        target: conversation.target,
-      };
-      if (conversation.threadId) {
-        row.threadId = conversation.threadId;
-      }
-      if (conversation.label) {
-        row.label = conversation.label;
-      }
-      if (conversation.contextRelation) {
-        row.contextRelation = conversation.contextRelation;
-      }
-      return Object.assign(row, {
-        firstSeenAt: conversation.firstSeenAt,
-        lastSeenAt: conversation.lastSeenAt,
-      });
-    }),
+    ...(params.presentActiveConnections
+      ? { activeConnections: params.presentActiveConnections() }
+      : {}),
+    // Only selected addresses reach metadata resolution. Reading a loaded
+    // registration neither activates a sender nor inspects connection presence.
+    conversations: presentConversationList(
+      selected,
+      (channel) =>
+        (deps.resolveChannelPluginRegistration ?? resolveChannelPluginRegistration)(channel, {
+          loadedOnly: true,
+        })?.plugin,
+    ),
   };
 }

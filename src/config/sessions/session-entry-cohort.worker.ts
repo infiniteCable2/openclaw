@@ -35,6 +35,7 @@ import type {
   SessionExactEntriesWorkerInput,
   SessionExactEntriesWorkerResult,
 } from "./session-entry-read.types.js";
+import { readInitialSessionContextInDatabase } from "./session-initial-context-read.kernel.js";
 import { readSessionTranscriptAnchorFactsInDatabase } from "./session-transcript-anchor-read.kernel.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "./session-transcript-worker.types.js";
 
@@ -96,6 +97,7 @@ export function readSessionEntryCohort(
     runtimeTarget,
     includeAuthProfileSource,
     includeColdMetadata,
+    initialContext,
     ...selection
   } = input;
   const count =
@@ -113,6 +115,9 @@ export function readSessionEntryCohort(
   }
   if (runtimeTarget && !input.sessionKeys.includes(runtimeTarget.sessionKey)) {
     throw new Error("Session runtime target must belong to its entry cohort");
+  }
+  if (initialContext && !input.sessionKeys.includes(initialContext.sessionKey)) {
+    throw new Error("Initial conversation context must belong to its entry cohort");
   }
   const source = readOpenClawAgentDatabaseIdentity(database);
   if (typeof source.identity !== "string" || !isOpenClawAgentDatabasePathCurrent(database)) {
@@ -182,6 +187,26 @@ export function readSessionEntryCohort(
         runtimeTarget.sessionKey,
       storePath: database.path,
     };
+    const capturedSource = {
+      agentId: database.agentId,
+      path: database.path,
+      databaseIdentity: identity,
+      databaseBirthtime: source.birthtime,
+    };
+    const contextEntry =
+      initialContext &&
+      result.entries.find(({ sessionKey }) => sessionKey === initialContext.sessionKey)?.entry;
+    if (initialContext && !contextEntry) {
+      throw new Error("Initial conversation context source is unavailable");
+    }
+    const preparedContext =
+      initialContext && contextEntry
+        ? readInitialSessionContextInDatabase(database, {
+            ...initialContext,
+            source: capturedSource,
+            entry: contextEntry,
+          })
+        : undefined;
     assertSource();
     return {
       ...result,
@@ -194,12 +219,7 @@ export function readSessionEntryCohort(
             ),
           }
         : {}),
-      source: {
-        agentId: database.agentId,
-        path: database.path,
-        databaseIdentity: identity,
-        databaseBirthtime: source.birthtime,
-      },
+      source: capturedSource,
       databaseIdentity: { ...source, identity },
       ...(sharedHeader
         ? {
@@ -213,6 +233,7 @@ export function readSessionEntryCohort(
         : {}),
       ...(transcript ? { transcript: transcriptFacts } : {}),
       ...(includeAuthProfileSource ? { authProfileSource } : {}),
+      ...(preparedContext ? { initialContext: preparedContext } : {}),
     };
   };
   // The transaction owner performs the one fresh probe after BEGIN; nested kernels share it.

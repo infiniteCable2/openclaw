@@ -308,7 +308,7 @@ export const cronHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      assertCronDoesNotTargetAgentHarness(jobCreate);
+      assertCronDoesNotTargetAgentHarness(jobCreate, cfg);
       await assertValidCronCreateDelivery(cfg, jobCreate);
     } catch (err) {
       respondInvalidCronParams(respond, "cron.add", formatErrorMessage(err));

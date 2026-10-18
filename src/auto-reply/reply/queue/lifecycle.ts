@@ -11,7 +11,7 @@ const deferredHeartbeatStops = new WeakMap<TurnAdoptionLifecycle, () => void>();
 
 type FollowupLifecycleRun = Pick<
   FollowupRun,
-  "steerPending" | "turnAdoptionLifecycle" | "operatorAuthority"
+  "steerPending" | "turnAdoptionLifecycle" | "operatorAuthority" | "assertSourceCurrent"
 >;
 
 export function startFollowupRunPreAdoptionHeartbeat(
@@ -61,6 +61,7 @@ export function startFollowupRunPreAdoptionHeartbeat(
 }
 
 export function markFollowupRunEnqueued(run: FollowupLifecycleRun): boolean {
+  run.assertSourceCurrent?.();
   const authority = run.operatorAuthority;
   authority?.signal?.throwIfAborted();
   authority?.assertCurrent();
@@ -76,6 +77,7 @@ export function markFollowupRunEnqueued(run: FollowupLifecycleRun): boolean {
     }
     let releaseAuthority: (() => void) | undefined;
     try {
+      run.assertSourceCurrent?.();
       releaseAuthority = authority?.retain?.();
     } catch (error) {
       completeFollowupRunLifecycle(run);
@@ -108,6 +110,7 @@ export function retireFollowupRunCancellation(run: FollowupLifecycleRun): void {
 }
 
 export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Promise<void> {
+  run.assertSourceCurrent?.();
   run.operatorAuthority?.assertCurrent();
   const lifecycle = run.turnAdoptionLifecycle;
   if (!lifecycle || admittedTurnAdoptionLifecycles.has(lifecycle)) {
@@ -116,6 +119,7 @@ export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Prom
   const existing = admittingTurnAdoptionLifecycles.get(lifecycle);
   if (existing) {
     await existing;
+    run.assertSourceCurrent?.();
     return;
   }
   if (completedTurnAdoptionLifecycles.has(lifecycle)) {
@@ -125,6 +129,7 @@ export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Prom
   const admission = Promise.resolve().then(async () => {
     if (!admittedTurnAdoptionLifecycles.has(lifecycle)) {
       await lifecycle.onAdopted();
+      run.assertSourceCurrent?.();
       run.operatorAuthority?.assertCurrent();
       admittedTurnAdoptionLifecycles.add(lifecycle);
       deferredHeartbeatStops.get(lifecycle)?.();

@@ -50,6 +50,8 @@ describe("meeting agent greeting preparation", () => {
     expect(consultAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "call-1",
+        inputId: expect.any(String),
+        purpose: "greeting",
         speechExpressionCaptureOnly: true,
         requesterSessionKey: "agent:example:matrix:direct:owner",
         args: expect.objectContaining({

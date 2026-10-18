@@ -21,6 +21,7 @@ import {
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import { canonicalizeSessionKeyForAgent } from "./session-store-key.js";
 import { resolveUnifiedTalkSessionTarget } from "./talk/session-registry.js";
+import { resolveTalkVoiceSessionTarget } from "./talk/voice-selection.js";
 
 export type { SessionMutationTarget } from "./session-mutation-authorization-error.js";
 
@@ -163,8 +164,11 @@ export function resolveTalkSessionTargetInput(
   params: unknown,
   connId?: string,
 ):
-  | { kind: "request"; sessionKey?: string }
+  | { kind: "request"; sessionKey?: string; purpose?: "settlement" }
   | ({ kind: "relay" } & NonNullable<ReturnType<typeof resolveUnifiedTalkSessionTarget>>)
+  | ({ kind: "retained"; purpose?: "settlement" } & NonNullable<
+      ReturnType<typeof resolveTalkVoiceSessionTarget>
+    >)
   | undefined {
   if (method === "talk.session.steer") {
     const sessionId = readSessionSharingStringParam(params, "sessionId");
@@ -182,15 +186,34 @@ export function resolveTalkSessionTargetInput(
     return undefined;
   }
   const sessionKey = readSessionSharingStringParam(params, "sessionKey");
+  const settlement = method === "talk.client.close" || method === "talk.client.transcript";
+  if (settlement || method === "talk.client.toolCall") {
+    const retained = resolveTalkVoiceSessionTarget({
+      connId,
+      voiceSessionId:
+        readSessionSharingStringParam(params, "voiceSessionId") ??
+        readSessionSharingStringParam(params, "relaySessionId"),
+      sessionKey,
+    });
+    if (retained) {
+      return { kind: "retained", ...retained, ...(settlement ? { purpose: "settlement" } : {}) };
+    }
+  }
   if (sessionKey) {
-    return { kind: "request", sessionKey };
+    return {
+      kind: "request",
+      sessionKey,
+      // Closing and mirroring accepted speech must still settle an old call
+      // after its main target becomes reserved for consolidation.
+      ...(settlement ? { purpose: "settlement" as const } : {}),
+    };
   }
   if (method === "talk.client.create") {
     return { kind: "request" };
   }
   if (
     method === "talk.session.create" &&
-    (readSessionSharingStringParam(params, "mode") ?? "realtime") === "realtime" &&
+    (readSessionSharingStringParam(params, "mode") ?? "realtime") !== "transcription" &&
     readSessionSharingStringParam(params, "transport") !== "managed-room"
   ) {
     return { kind: "request" };

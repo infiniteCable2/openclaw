@@ -7,7 +7,7 @@ import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 import { getSessionMaintenanceActivityAt } from "./store-maintenance-activity.js";
 import { shouldPreserveMaintenanceEntry } from "./store-maintenance.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 const maintenanceFields = [
   "sessionId",
@@ -75,7 +75,17 @@ export function readSessionMaintenanceKeyProjection(
     database.db,
     db
       .selectFrom("session_nodes")
-      .select(["current_session_id", "parent_session_key", "session_key", "updated_at"])
+      .select([
+        "current_session_id",
+        "parent_session_key",
+        "session_key",
+        "updated_at",
+        /* kysely-allow-raw: the existing key projection reads only the private root role, not history. */
+        sql<number>`CASE WHEN json_valid(entry_json) THEN CASE
+          WHEN json_extract(entry_json, '$.conversationTopology.version') = 1
+            AND json_extract(entry_json, '$.conversationTopology.role') = 'root'
+          THEN 1 ELSE 0 END ELSE 0 END`.as("conversation_root"),
+      ])
       .$if(sessionKeys !== undefined, (query) =>
         query.where("session_key", "in", sqliteStringSet(sessionKeys ?? [])),
       )
@@ -86,6 +96,9 @@ export function readSessionMaintenanceKeyProjection(
       sessionId: row.current_session_id,
       updatedAt: row.updated_at,
       ...(row.parent_session_key ? { parentSessionKey: row.parent_session_key } : {}),
+      ...(row.conversation_root === 1
+        ? { conversationTopology: { version: 1, role: "root" } }
+        : {}),
     };
   }
   return store;

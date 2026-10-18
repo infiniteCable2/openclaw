@@ -181,14 +181,47 @@ export const ConversationListItemSchema = closedObject({
   target: NonEmptyString,
   threadId: Type.Optional(NonEmptyString),
   label: Type.Optional(NonEmptyString),
+  channelLabel: Type.Optional(NonEmptyString),
+  /** Plugin-declared channel formats, not account readiness or permission to send. */
+  channelCapabilities: Type.Optional(
+    closedObject({
+      media: Type.Optional(Type.Boolean()),
+      voiceOutput: Type.Optional(
+        Type.Union([Type.Literal("audio-file"), Type.Literal("voice-note")]),
+      ),
+    }),
+  ),
   /** Informational relationship, not delivery permission or connection status. */
   contextRelation: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("parent")])),
   firstSeenAt: Type.Integer({ minimum: 0 }),
   lastSeenAt: Type.Integer({ minimum: 0 }),
 });
 
+/** Ephemeral connection metadata; neither a chat address nor permission to invoke an operation. */
+export const ConversationActiveConnectionSchema = closedObject({
+  connectionRef: Type.String({ pattern: "^talk_[a-f0-9]{32}$" }),
+  kind: Type.Union([Type.Literal("call"), Type.Literal("assistant"), Type.Literal("browser")]),
+  channel: NonEmptyString,
+  label: NonEmptyString,
+  state: Type.Union([Type.Literal("preparing"), Type.Literal("ready")]),
+  input: closedObject({
+    audio: Type.Boolean(),
+    video: Type.Optional(Type.Boolean()),
+    text: Type.Optional(Type.Boolean()),
+  }),
+  output: closedObject({ audio: Type.Boolean() }),
+  operations: Type.Array(
+    Type.Union([
+      Type.Literal("current-turn-reply"),
+      Type.Literal("steer"),
+      Type.Literal("cancel-output"),
+    ]),
+  ),
+});
+
 export const ConversationListResultSchema = closedObject({
   conversations: Type.Array(ConversationListItemSchema),
+  activeConnections: Type.Optional(Type.Array(ConversationActiveConnectionSchema)),
 });
 
 /** Gateway-owned request that sends to one durable external conversation. */
@@ -412,6 +445,7 @@ export type AgentIdentityResult = Static<typeof AgentIdentityResultSchema>;
 export type ConversationListParams = Static<typeof ConversationListParamsSchema>;
 export type ConversationListItem = Static<typeof ConversationListItemSchema>;
 export type ConversationListResult = Static<typeof ConversationListResultSchema>;
+export type ConversationActiveConnection = Static<typeof ConversationActiveConnectionSchema>;
 export type ConversationSendParams = Static<typeof ConversationSendParamsSchema>;
 export type ConversationSendResult = Static<typeof ConversationSendResultSchema>;
 export type ConversationTurnParams = Static<typeof ConversationTurnParamsSchema>;

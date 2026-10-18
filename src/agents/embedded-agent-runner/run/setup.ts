@@ -1,5 +1,6 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
-import type { SessionEntry } from "../../../config/sessions/types.js";
+import { resolveConversationModelRunError } from "../../../config/sessions/session-conversation-topology.js";
+import type { InternalSessionEntry as SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { withGuardedFetchRequestAuthority } from "../../../infra/net/fetch-request-authority.js";
 import { readClaimingHookAdmission } from "../../../plugins/hook-claim-admission.js";
@@ -44,11 +45,15 @@ export function resolveAgentHarnessRunAdmissionError(params: {
   sessionId: string;
   sessionKey?: string;
 }): string | undefined {
+  const entry = params.entry;
+  const conversationError = resolveConversationModelRunError(entry);
+  if (conversationError) {
+    return conversationError;
+  }
   const sessionKey = params.sessionKey?.trim();
   if (!sessionKey) {
     return undefined;
   }
-  const entry = params.entry;
   const reservedKey = isAgentHarnessSessionKey(sessionKey);
   if (!entry) {
     return reservedKey ? AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE : undefined;

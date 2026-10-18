@@ -16,6 +16,7 @@ import { findTranscriptEvent } from "../config/sessions/session-transcript-match
 import type { SessionTranscriptAssistantMessage } from "../config/sessions/transcript.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
+import { assertExternalConversationTarget } from "../routing/conversation-mode.js";
 import { ASSISTANT_DISPLAY_CONTENT_FIELD } from "../shared/assistant-display-content.js";
 import {
   OPENCLAW_TRANSCRIPT_ARTIFACT_API,
@@ -100,6 +101,13 @@ export async function commitBackgroundResultToSession(params: {
       ) {
         return { ok: false, reason: `session rebound for sessionKey: ${sessionKey}` };
       }
+      assertExternalConversationTarget({
+        cfg: params.config,
+        agentId: params.agentId,
+        sessionKey,
+        entry: current,
+        isSystemEvent: false,
+      });
       const unavailable = resolveSessionWorkStartError(sessionKey, current, {
         expectedSessionId,
         purpose: "accepted-result-settlement",

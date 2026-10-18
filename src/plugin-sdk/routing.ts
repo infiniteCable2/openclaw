@@ -31,6 +31,7 @@ export {
   sanitizeAgentId,
 } from "../routing/session-key.js";
 export { resolveAccountEntry } from "../routing/account-lookup.js";
+export { resolveAgentSpeechConversationRoute } from "../routing/conversation-mode.js";
 export { listBoundAccountIds, resolveDefaultAgentBoundAccountId } from "../routing/bindings.js";
 export {
   formatSetExplicitDefaultInstruction,

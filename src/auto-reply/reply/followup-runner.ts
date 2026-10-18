@@ -205,6 +205,7 @@ export function createFollowupRunner(
       const accounting = await accountFollowupTurn({ turn, defaults, execution });
       const deliveryOpts = {
         ...defaults.opts,
+        assertSourceCurrent: turn.queued.assertSourceCurrent,
         sourceReplyDeliveryMode: turn.queued.run.sourceReplyDeliveryMode,
         resolveReplyDelivery: turn.queued.runObservers?.resolveReplyDelivery,
         commentaryPayloadsEnabled: execution.commentaryPayloadsEnabled,
@@ -240,17 +241,20 @@ export function createFollowupRunner(
       // Source recovery has its own queued callback; this execution still closes once.
       terminalPayloads = delivery.kind === "completed" ? delivery.payloads : [];
     } catch (error) {
-      let operatorAuthorityLost = false;
+      let sourceAuthorityUnavailable = false;
       try {
+        queued.assertSourceCurrent?.();
         queued.operatorAuthority?.assertCurrent();
       } catch {
-        operatorAuthorityLost = true;
+        sourceAuthorityUnavailable = true;
       }
-      if (operatorAuthorityLost) {
-        // Revoked input is terminal; retrying it would hold the queue indefinitely.
+      if (sourceAuthorityUnavailable) {
+        // Unproved source authority is terminal here, not proof of a permanent revocation.
         disposition = { kind: "consumed" };
         completion = { kind: "aborted" };
-        defaultRuntime.error?.("followup queue: canceled input after loss of operator authority");
+        defaultRuntime.error?.(
+          "followup queue: canceled input because source authority is unavailable",
+        );
       } else if (error instanceof FollowupRunDeferredError) {
         disposition = { kind: "deferred", reason: error.message };
       } else if (

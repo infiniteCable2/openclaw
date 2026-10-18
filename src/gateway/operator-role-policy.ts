@@ -4,7 +4,10 @@ import {
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
-import { assertAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import {
+  assertAdmittedRunOperatorAuthority,
+  type AdmittedRunOperatorAuthority,
+} from "../agents/admitted-run-context.js";
 import type { SessionCreatedActor } from "../config/sessions/session-entry-provenance.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -211,23 +214,7 @@ export function resolveOperatorRolePolicy(
   }
   const authority = client?.internal?.operatorRunAuthority;
   if (actor?.kind === "operator" && authority) {
-    assertAdmittedRunOperatorAuthority(authority);
-    authority.assertCurrent();
-    if (authority.profileId !== actor.profileId) {
-      throw new Error("Gateway requester profile changed");
-    }
-    if (!cfg.gateway?.roles || authority.profileId === GATEWAY_OWNER_PROFILE_ID) {
-      return undefined;
-    }
-    if (!authority.readCurrentRoleAssignment) {
-      throw new Error("Operator role assignment was not prepared");
-    }
-    return resolveOperatorRolePolicyForAssignment(
-      authority.profileId,
-      authority.readCurrentRoleAssignment(),
-      cfg,
-      authority.readCurrentGithubLogin?.() ?? null,
-    );
+    return resolveAdmittedRunOperatorRolePolicy(authority, cfg, actor.profileId);
   }
   const prepared = client?.preparedSessionProfile;
   if (actor?.kind === "operator" && prepared?.aliases.has(actor.profileId)) {
@@ -239,6 +226,31 @@ export function resolveOperatorRolePolicy(
     );
   }
   return resolveOperatorRolePolicyForProfile(actor?.profileId, cfg);
+}
+
+/** Use the original prepared profile authority without manufacturing a connection. */
+export function resolveAdmittedRunOperatorRolePolicy(
+  authority: AdmittedRunOperatorAuthority,
+  cfg: OpenClawConfig,
+  expectedProfileId?: string,
+): GatewayOperatorRoleDefinition | undefined {
+  assertAdmittedRunOperatorAuthority(authority);
+  authority.assertCurrent();
+  if (expectedProfileId !== undefined && authority.profileId !== expectedProfileId) {
+    throw new Error("Gateway requester profile changed");
+  }
+  if (!cfg.gateway?.roles || authority.profileId === GATEWAY_OWNER_PROFILE_ID) {
+    return undefined;
+  }
+  if (!authority.readCurrentRoleAssignment) {
+    throw new Error("Operator role assignment was not prepared");
+  }
+  return resolveOperatorRolePolicyForAssignment(
+    authority.profileId,
+    authority.readCurrentRoleAssignment(),
+    cfg,
+    authority.readCurrentGithubLogin?.() ?? null,
+  );
 }
 
 /** A retained caller cannot keep grants removed by the current named role. */

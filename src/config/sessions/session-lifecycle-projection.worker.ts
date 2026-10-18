@@ -26,10 +26,13 @@ import type {
 import { commitPreparedSessionEntryLifecycleMutationInDatabase } from "./session-accessor.sqlite-projection-state.js";
 import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-state.js";
 import { transferSessionEntryWorkerCandidate } from "./session-entry-patch.worker.js";
+import { assertCapturedSessionEntryReadSource } from "./session-entry-read-source.js";
+import { assertInitialSessionContextReadSource } from "./session-initial-context.js";
 import type {
   SessionLifecycleProjectionCommit,
   SessionLifecycleProjectionCommitted,
 } from "./session-lifecycle-projection.types.js";
+import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 
 export function commitSessionLifecycleProjection(
   input: SessionLifecycleProjectionCommit,
@@ -37,6 +40,24 @@ export function commitSessionLifecycleProjection(
 ) {
   return writeTransaction("session.lifecycle.project", "Session lifecycle", (database) => {
     assertSessionSubagentRunsCurrent(input, options.env ?? process.env);
+    for (const upsert of input.projected.upsertedEntries) {
+      if (upsert.initialContext) {
+        assertInitialSessionContextReadSource(upsert.initialContext, input.sources);
+      }
+    }
+    const validateSources = () => {
+      for (const source of input.sources ?? []) {
+        assertCapturedSessionEntryReadSource(source.source, database);
+      }
+      return readSessionSourceValidation(database, input.sources);
+    };
+    if (input.sources) {
+      const sourceValidation = validateSources();
+      admit("transaction", { kind: "session-lifecycle-source-validated", sourceValidation });
+      if (sourceValidation.refusedSource) {
+        throw new Error("Lifecycle source refusal was not rejected");
+      }
+    }
     const progressCardResetKeys: string[] = [];
     const projectionReconcileSessionIds: string[] = [];
     const result = commitPreparedSessionEntryLifecycleMutationInDatabase(
@@ -61,6 +82,7 @@ export function commitSessionLifecycleProjection(
       },
     );
     const candidate: SessionLifecycleProjectionCommitted = {
+      ...(input.sources ? { sourceValidation: validateSources() } : {}),
       kind: "session-lifecycle-projection",
       result,
       progressCardResetKeys,

@@ -2,7 +2,7 @@ import type { SessionEntryMaintenancePlan } from "./session-accessor.sqlite-life
 import { SessionMaintenancePreservationConflictError } from "./session-mutation-conflict-error.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 import type { SessionMaintenancePreservationSnapshot } from "./store-maintenance-preserve-snapshot.types.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 export function addSessionMaintenancePreserveKeys(
   keys: Set<string>,
@@ -44,6 +44,13 @@ export function resolveSessionMaintenancePreserveKeys(params: {
 }): Set<string> {
   const keys = new Set(params.snapshot.providerKeys);
   addSessionMaintenancePreserveKeys(keys, params.baseKeys);
+  // Root membership is durable infrastructure, not task ancestry. An agent mode
+  // change does not authorize automatic deletion of its retained root history.
+  for (const [key, entry] of Object.entries(params.store)) {
+    if (entry.conversationTopology?.version === 1 && entry.conversationTopology.role === "root") {
+      addSessionMaintenancePreserveKeys(keys, [key]);
+    }
+  }
   for (const key of collectSessionWorkAdmissionKeysFromSnapshot(
     params.store,
     params.snapshot.workIdentities,

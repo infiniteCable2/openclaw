@@ -13,7 +13,7 @@ import { tryPrepareFreshManagerRuntimeSession } from "../acp/control-plane/manag
 import { getAcpRuntimeBackend } from "../acp/runtime/registry.js";
 import { rebindDurableAcpSessionMetaAfterReset } from "../acp/runtime/session-meta-reset.js";
 import { retireSessionMcpRuntime } from "../agents/agent-bundle-mcp-tools.js";
-import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { clearFinishedSessionsForScopes } from "../agents/bash-process-registry.js";
 import {
   clearBootstrapSnapshot,
@@ -25,8 +25,6 @@ import {
   isEmbeddedAgentRunActive,
   waitForEmbeddedAgentRunEnd,
 } from "../agents/embedded-agent-runner/runs.js";
-import { resetRegisteredAgentHarnessSessions } from "../agents/harness/registry.js";
-import { acquireAgentRuntimeCleanupRegistries } from "../agents/prepared-model-runtime.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import { readRegistryWorktree } from "../agents/worktrees/registry-read.js";
 import { captureWorktreeRunEndContext } from "../agents/worktrees/run-end-lifecycle.js";
@@ -69,6 +67,7 @@ import { getSessionBindingService } from "../infra/outbound/session-binding-serv
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { runPluginHostCleanup } from "../plugins/host-hook-cleanup.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
+import { assertExternalConversationTarget } from "../routing/conversation-mode.js";
 import {
   isIncognitoSessionKey,
   isSubagentSessionKey,
@@ -117,6 +116,7 @@ import {
   closeAcpRuntimeForSession,
   closeChildAcpRuntimesForParent,
 } from "./session-reset-acp.js";
+import { resetSessionAgentHarnesses } from "./session-reset-harness.js";
 import { deleteIncognitoSessionForReset } from "./session-reset-incognito.js";
 import { notifyGatewaySessionReset } from "./session-reset-notifications.js";
 import { resolveSessionResetTarget } from "./session-reset-target.js";
@@ -128,32 +128,6 @@ import {
   resolveSessionWorkerPlacementMutationError,
   retireSessionWorkerPlacementBeforeMutation,
 } from "./worker-environments/session-placement-lifecycle.js";
-
-async function resetSessionAgentHarnesses(params: {
-  cfg: OpenClawConfig;
-  target: Pick<GatewaySessionStoreTarget, "agentId" | "canonicalKey">;
-  entry: SessionEntry;
-  reason: "reset" | "deleted";
-  assertCurrent?: () => void;
-}): Promise<void> {
-  const { agentId, canonicalKey: sessionKey } = params.target;
-  params.assertCurrent?.();
-  await using owners = await acquireAgentRuntimeCleanupRegistries(
-    resolveAgentDir(params.cfg, agentId),
-  );
-  params.assertCurrent?.();
-  await resetRegisteredAgentHarnessSessions(
-    {
-      agentId,
-      sessionId: params.entry.sessionId,
-      sessionKey,
-      sessionFile: sessionKey,
-      reason: params.reason,
-    },
-    owners.registries,
-  );
-  params.assertCurrent?.();
-}
 
 type McpRunEndWatcherState = {
   cancellations: Map<string, () => void>;
@@ -515,6 +489,8 @@ export async function performGatewaySessionReset(params: {
   clearSpawnedCwd?: boolean;
   reason: "new" | "reset";
   commandSource: string;
+  /** Host-only direct user input classification, not an explicit session-management reset. */
+  conversationInput?: true;
   /** Trusted provenance for a reset that materializes a previously missing row. */
   creation?: { via: SessionCreatedVia; actor?: SessionCreatedActor };
   /** Authenticated durable operator identity for missing-session materialization. */
@@ -613,8 +589,22 @@ export async function performGatewaySessionReset(params: {
       ? missingScopeErrorShape({ missingScope: ADMIN_SCOPE, requiredScopes: [ADMIN_SCOPE] })
       : undefined;
   };
-  const resolveResetEntryAccessError = (entry: SessionEntry | undefined, canonicalKey: string) =>
-    resolveFastModeSelectionError(entry) ?? resolveResetOwnershipError(entry, canonicalKey);
+  const assertConversationInputTarget = (entry: SessionEntry | undefined, sessionKey: string) => {
+    if (params.conversationInput) {
+      assertExternalConversationTarget({
+        cfg: resetTarget.cfg,
+        agentId: resetTarget.target.agentId,
+        sessionKey,
+        entry,
+        isSystemEvent: false,
+      });
+    }
+  };
+  const resolveResetEntryAccessError = (entry: SessionEntry | undefined, canonicalKey: string) => {
+    assertConversationInputTarget(entry, canonicalKey);
+    return resolveFastModeSelectionError(entry) ?? resolveResetOwnershipError(entry, canonicalKey);
+  };
+  assertConversationInputTarget(initialResetEntry, resetTarget.target.canonicalKey);
   const initialEntryError =
     resolveResetCreationError(initialResetEntry) ??
     resolveResetOwnershipError(initialResetEntry) ??
@@ -1041,6 +1031,7 @@ export async function performGatewaySessionReset(params: {
         },
         buildNextEntry: async ({ currentEntry, primaryKey }) => {
           assertCompletionAuthorized?.();
+          assertConversationInputTarget(currentEntry, primaryKey);
           if (!currentEntry) {
             creationAuthorizationError = authorizeResetCreation();
             if (creationAuthorizationError) {

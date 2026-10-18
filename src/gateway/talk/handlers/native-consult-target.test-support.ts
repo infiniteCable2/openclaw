@@ -27,6 +27,7 @@ import type {
   RealtimeVoiceGatewayControl,
   RealtimeVoiceProviderCapabilities,
 } from "../../../talk/provider-types.js";
+import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -36,7 +37,7 @@ import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
 import { drainingRelaySessions } from "../relay/state.js";
-import { cleanupTalkConnection, getUnifiedTalkSession } from "../session-registry.js";
+import { cleanupTalkConnection } from "../session-registry.js";
 import { talkClientHandlers } from "./client.js";
 import { talkSessionHandlers } from "./session.js";
 

@@ -421,6 +421,7 @@ export async function resolveReplyDirectives(params: {
   const applyResult = await applyInlineDirectiveOverrides({
     ...params,
     abortSignal: opts?.abortSignal,
+    assertSourceCurrent: opts?.assertSourceCurrent,
     agentEntry,
     sessionEntry: targetSessionEntry,
     allowTextCommands,
@@ -509,6 +510,7 @@ export async function resolveReplyDirectives(params: {
       resolveModelLevels: createReplyModelLevelResolver({
         modelState,
         abortSignal: opts?.abortSignal,
+        assertSourceCurrent: opts?.assertSourceCurrent,
         selection: {
           provider,
           model,

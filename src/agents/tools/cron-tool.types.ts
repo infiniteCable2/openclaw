@@ -56,6 +56,8 @@ export type CronToolOptions = {
    */
   config?: OpenClawConfig;
   currentDeliveryContext?: DeliveryContext;
+  /** Host source has no durable reply surface; automatic delivery needs an explicit destination. */
+  requireExplicitDeliveryTarget?: boolean;
   /**
    * Effective tool surface visible to the caller that created or edited a cron job.
    * Cron agent turns and trigger scripts use fresh runtimes, so agent-origin jobs

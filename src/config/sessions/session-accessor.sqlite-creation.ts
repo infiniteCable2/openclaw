@@ -62,9 +62,13 @@ export async function createSessionEntryWithTranscriptInScope<TError>(
     | Promise<SessionEntryCreateWithTranscriptPrepareResult<TError>>
     | SessionEntryCreateWithTranscriptPrepareResult<TError>,
   options: SessionEntryCreateWithTranscriptOptions,
+  requireAbsent = false,
 ): Promise<SessionEntryCreateWithTranscriptResult<TError>> {
   const binding = captureIncognitoSessionBinding({ ...scope, storePath: scope.path });
   if (binding) {
+    if (requireAbsent) {
+      throw new Error("Absent-only session creation requires its durable worker owner");
+    }
     return createIncognitoSessionEntryWithTranscript(binding, scope, createEntry, options);
   }
   const databaseOptions = { ...toDatabaseOptions(scope), path: scope.path };
@@ -73,6 +77,9 @@ export async function createSessionEntryWithTranscriptInScope<TError>(
     supportsOpenClawAgentDatabaseExecution(databaseOptions) &&
     !hasPreparedNativeSessionDeletion();
   const retained = useWorker ? retainSessionHistoryWorkerDatabase(databaseOptions) : undefined;
+  if (requireAbsent && !retained) {
+    throw new Error("Absent-only session creation requires its durable worker owner");
+  }
   try {
     let source: CreationSource;
     if (retained) {
@@ -154,10 +161,18 @@ export async function createSessionEntryWithTranscriptInScope<TError>(
           }
           options.commitGuard?.();
         };
+        if (requireAbsent && legacyKeys.length > 0) {
+          throw new Error(
+            "Absent-only session creation requires explicit migration of legacy aliases",
+          );
+        }
         options.onPhase?.("entry");
         const created = await createEntry({ existingEntry, targetEntry, labelInUse });
         if (!created.ok) {
           return { ok: false, error: created.error, phase: "entry" };
+        }
+        if (requireAbsent && (existingEntry || targetEntry || legacyKeys.length)) {
+          throw new Error("Absent-only session creation cannot replace an existing conversation");
         }
         const owner = options.resolveOwnerAssignment?.();
         const preparedTranscript = created.transcriptEvents
@@ -279,6 +294,7 @@ export async function createSessionEntryWithTranscriptInScope<TError>(
             env: scope.env,
             sessionKey: normalizedKey,
             previousSessionKeys: legacyKeys,
+            requireAbsent,
             entry: created.entry,
             assertCommitAllowed: assertCurrent,
             withCommit,
