@@ -45,15 +45,8 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
-import { captureGatewayDeviceRevocation } from "../../device-revocation.js";
-import { handleGatewayRequest } from "../../server-methods.js";
-import {
-  bindWebSocketRequestMutationAuthority,
-  readGatewayRequestMutationAuthority,
-} from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
 import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
-import { createOperatorWsClient } from "../../server/ws-connection/authenticated-request-dispatch.test-support.js";
 import type { GatewayWsClient } from "../../server/ws-types.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
@@ -61,6 +54,10 @@ import { drainingRelaySessions } from "../relay/state.js";
 import { cleanupTalkConnection } from "../session-registry.js";
 import { talkClientHandlers } from "./client.js";
 import { talkSessionHandlers } from "./session.js";
+import {
+  createTalkWebSocketTestClient,
+  dispatchTalkWebSocketTestRequest,
+} from "./talk-websocket.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   capabilities: {
@@ -152,32 +149,17 @@ async function dispatch(
   handlers: GatewayRequestHandlers = {},
 ) {
   const respond = vi.fn();
-  const requestClient = client;
-  const authority = captureGatewayDeviceRevocation(
-    context,
-    { deviceId: requestClient.connect.device?.id, role: requestClient.connect.role },
-    () => !requestClient.invalidated,
-    requestClient.connectionSignal,
+  await dispatchTalkWebSocketTestRequest(
+    {
+      req: { type: "req", id: "native-consult", method, params },
+      client,
+      context,
+      isWebchatConnect: () => false,
+      respond,
+      extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
+    },
+    generation.reader,
   );
-  try {
-    const request = bindWebSocketRequestMutationAuthority(
-      {
-        req: { type: "req" as const, id: "native-consult", method, params },
-        client: requestClient,
-        context,
-        isWebchatConnect: () => false,
-        respond,
-        hasCurrentClientAuthority: authority.isCurrent,
-        extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
-      },
-      requestClient,
-      generation.reader,
-    );
-    expect(readGatewayRequestMutationAuthority(request).family).toBe("worker");
-    await handleGatewayRequest(request);
-  } finally {
-    authority.release();
-  }
   const payload = respond.mock.calls.at(-1)?.[1];
   if (
     method === "talk.client.create" &&
@@ -240,18 +222,11 @@ beforeEach(async () => {
     user: ensureProfileForEmail("native-listener@example.test").id,
     deviceId: "native-consult-device",
   });
-  client = {
-    ...createOperatorWsClient({ connId: "native-consult-client" }),
-    ...identity,
-    usesSharedGatewayAuth: false,
-    authenticatedUserProfile: identity.authenticatedUserProfile
-      ? {
-          ...identity.authenticatedUserProfile,
-          avatarRevision: identity.authenticatedUserProfile.avatarRevision ?? "",
-        }
-      : undefined,
+  client = createTalkWebSocketTestClient({
+    identity,
+    connId: "native-consult-client",
     connectionSignal: connection.signal,
-  };
+  });
   callback = undefined;
   providerInstructions = undefined;
   browserVoiceSessionIds.clear();
