@@ -1,6 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/promise.js";
+import { makeAgentAssistantMessage } from "../../../agents/test-helpers/agent-message-fixtures.js";
 import * as nativeQueue from "../../../auto-reply/reply/queue.js";
 import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.js";
 import {
@@ -133,7 +134,7 @@ it.for([false, true])(
         turnEnded.resolve();
     });
     mocks.runEmbeddedAgent.mockImplementation(async (params) =>
-      publishNativeSpeechModelRun(params, async () => {
+      publishNativeSpeechModelRun(params, async (persistAssistantMessage) => {
         const index = calls++;
         progress(`actual-model-start:${index + 1}`);
         if (index > 1) throw new Error("Accepted native input was replayed");
@@ -152,6 +153,11 @@ it.for([false, true])(
         }
         // A media close is not an explicit cancellation of accepted native work.
         params.abortSignal?.throwIfAborted();
+        const modelMessage = makeAgentAssistantMessage({
+          model: "synthetic-native-consult",
+          content: [{ type: "text", text: answers[index]! }],
+        });
+        await persistAssistantMessage(modelMessage);
         await params.onBlockReply?.({ text: answers[index] });
         await params.waitForPendingInput?.(params.abortSignal);
         return { payloads: [{ text: answers[index]! }], meta: { durationMs: 0 } };

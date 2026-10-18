@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { resolvePreparedRunAdmission } from "../../../agents/admitted-run-context.js";
 import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
@@ -10,6 +11,9 @@ import {
   createEmbeddedRunHandle,
   testing as embeddedRunTesting,
 } from "../../../agents/embedded-agent-runner/runs.test-support.js";
+import { guardSessionManager } from "../../../agents/session-tool-result-guard-wrapper.js";
+import { persistAgentSessionMessage } from "../../../agents/sessions/agent-session-transcript.js";
+import { SessionManager } from "../../../agents/sessions/session-manager.js";
 import { withGatewayToolCallerIdentity } from "../../../agents/tools/gateway-caller-context.js";
 import { markCompleteReplyConfig } from "../../../auto-reply/reply/get-reply-fast-path.test-support.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -414,7 +418,9 @@ async function createSpeechRelayCall(params: Record<string, unknown> = {}) {
 
 async function publishNativeSpeechModelRun(
   params: RunEmbeddedAgentParams,
-  work?: () => Promise<{ payloads: Array<{ text: string }>; meta: { durationMs: number } }>,
+  work?: (
+    persistAssistantMessage: (message: AssistantMessage) => Promise<void>,
+  ) => Promise<{ payloads: Array<{ text: string }>; meta: { durationMs: number } }>,
 ) {
   if (!params.agentId || !params.sessionKey) {
     throw new Error("The synthetic native speech run requires an explicit agent and session key");
@@ -436,11 +442,67 @@ async function publishNativeSpeechModelRun(
     () => setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey),
   );
   try {
+    // The replaced embedded runtime owns canonical user persistence even for
+    // follow-ups. Exercise its provided recorder, not a handcrafted transcript
+    // append: foreground admission is idempotent and queued source credit still
+    // has to commit before the synthetic model can see or act on it.
+    const recorder = params.userTurnTranscriptRecorder;
+    if (recorder) {
+      const persistence = recorder.persistApproved().then((persisted) => {
+        const message = persisted?.message ?? recorder.getPersistedMessage?.();
+        if (message && recorder.hasPersisted()) params.onUserMessagePersisted?.(message);
+      });
+      recorder.markRuntimePersistencePending(persistence);
+      await recorder.waitForRuntimePersistence();
+    }
     // The native subscriber emits lifecycle start before model/tool work. Its reply
     // handler prepares the actual transcript boundary before notifying voice custody.
     await params.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
     if (work) {
-      return await work();
+      let manager: ReturnType<typeof guardSessionManager> | undefined;
+      return await work(async (message) => {
+        // A controlled model emits an actual completed AssistantMessage here,
+        // independently of delivery payloads or Speech/TTS presentation. Replace
+        // only the model leaf; retain its native guarded transcript writer.
+        params.abortSignal?.throwIfAborted();
+        if (!manager) {
+          const target = params.sessionTarget;
+          if (
+            params.sessionPersistence === "detached" ||
+            !target?.agentId ||
+            !target.sessionId ||
+            !target.sessionKey ||
+            !target.storePath
+          ) {
+            throw new Error("Synthetic model persistence requires its actual durable run target");
+          }
+          manager = guardSessionManager(
+            await SessionManager.openAsync(
+              {
+                ...target,
+                agentId: target.agentId,
+                sessionId: target.sessionId,
+                sessionKey: target.sessionKey,
+                storePath: target.storePath,
+              },
+              params.workspaceDir,
+              undefined,
+              params.abortSignal,
+            ),
+            {
+              agentId: params.agentId,
+              sessionKey: params.sessionKey,
+              runId: params.runId,
+              config: params.config,
+              prepareAssistantTranscriptMessage: params.prepareAssistantTranscriptMessage,
+            },
+          );
+        }
+        params.abortSignal?.throwIfAborted();
+        await persistAgentSessionMessage(manager, message, {
+          invalidateSerializedPrefixCache: false,
+        });
+      });
     }
     await params.onBlockReply?.({ text: "The synthetic device is ready." });
     await params.waitForPendingInput?.(params.abortSignal);

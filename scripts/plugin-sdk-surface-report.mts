@@ -217,7 +217,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // MeetingAgentRealtimePreparation, PreparedMeetingAgentGreeting, MeetingOutputGate.
       // +4: fork-maintainer-approved sampled-video contracts (2026-10-15):
       // encodePngRgbaAsync, resolveTalkSpeechAgentProfile, SpeechVideoFrame, SpeechVideoConfig.
-      3650,
+      // +4: fork-maintainer-approved native conversation branch contracts (2026-10-18):
+      // ConversationInputSourceV1, createMeetingRealtimeEngineBindingsV2,
+      // MeetingRealtimeBindingsV2Params, resolveAgentSpeechConversationRoute.
+      3654,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -232,7 +235,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved async upstream-link writes with released sync compatibility.
       // +2: fork-maintainer-approved meeting-runtime preparation functions (2026-10-10).
       // +2: fork-maintainer-approved async PNG encoding and speech-profile resolution (2026-10-15).
-      2115,
+      // +2: fork-maintainer-approved V2 meeting bindings and speech route resolver (2026-10-18).
+      2117,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
