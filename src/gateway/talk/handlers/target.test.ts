@@ -25,6 +25,9 @@ import { sessionMutationTargetChanged } from "../../session-sharing-authorizatio
 import { hiddenSessionNotFound } from "../../session-sharing-policy.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
+import * as conversationContext from "../conversation-context.js";
+import { createRelayProviderStartup } from "../relay/provider-startup.js";
+import type { CreateTalkRealtimeRelaySessionParams } from "../relay/state.js";
 import { cleanupTalkConnection } from "../session-registry.js";
 import { assertTalkSessionStorageTarget, prepareTalkSessionTarget } from "../session-target.js";
 import { createTalkClient } from "./client-create.js";
@@ -34,7 +37,7 @@ import { talkSessionHandlers } from "./session.js";
 const mocks = vi.hoisted(() => ({
   resolveConfiguredRealtimeVoiceProvider: vi.fn(),
   bootstrap: vi.fn(async () => "Agent context fixture."),
-  createRelay: vi.fn(() => ({
+  createRelay: vi.fn((_params: CreateTalkRealtimeRelaySessionParams) => ({
     relaySessionId: "test-relay",
     provider: "test-voice",
     transport: "gateway-relay",
@@ -170,6 +173,61 @@ afterEach(async () => {
 });
 
 describe("Talk target preparation through Gateway authorization", () => {
+  it("rechecks native routing after empty provider-context preparation yields", async () => {
+    const prepare = conversationContext.prepareTalkProviderConversationContext;
+    vi.spyOn(conversationContext, "prepareTalkProviderConversationContext").mockImplementationOnce(
+      async (params) => {
+        const prepared = await prepare(params);
+        expect(prepared.instructions).toBe("");
+        config = { ...config, session: { scope: "global" } };
+        return prepared;
+      },
+    );
+    const respond = await dispatch("talk.session.create", {
+      mode: "realtime",
+      transport: "gateway-relay",
+      brain: "agent-consult",
+    });
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("session changed before talk.session.create"),
+      }),
+    );
+    expect(mocks.createRelay).not.toHaveBeenCalled();
+  });
+
+  it("retains native routing authority through the actual relay startup await", async () => {
+    let startupContext: CreateTalkRealtimeRelaySessionParams["startupContext"];
+    mocks.createRelay.mockImplementationOnce((params) => {
+      startupContext = params.startupContext;
+      return {
+        relaySessionId: "test-relay",
+        provider: "test-voice",
+        transport: "gateway-relay",
+      };
+    });
+    const respond = await dispatch("talk.session.create", {
+      mode: "realtime",
+      transport: "gateway-relay",
+      brain: "agent-consult",
+    });
+    expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
+    expect(startupContext).toBeDefined();
+    const gate = createDeferredCore();
+    const startup = createRelayProviderStartup(startupContext, vi.fn());
+    const pending = startup.connect({ connect: () => gate.promise });
+    const rejected = expect(pending).rejects.toThrow("session changed before talk.session.create");
+    try {
+      config = { ...config, session: { scope: "global" } };
+      expect(() => startup.assertCurrent()).toThrow("session changed before talk.session.create");
+    } finally {
+      gate.resolve();
+      await rejected;
+    }
+  });
+
   it.each(["native", "branches"] as const)(
     "keeps a foreign root hidden before applying the %s conversation fence",
     async (conversationMode) => {

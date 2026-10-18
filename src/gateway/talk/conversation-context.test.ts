@@ -74,6 +74,45 @@ describe("provider startup native context snapshot", () => {
     await context.release();
   });
 
+  it("does not retain absent-row authority when native mode captured no context", async () => {
+    const owner = setup();
+    let materialized = false;
+    const assertAbsentTarget = vi.fn(() => {
+      if (materialized) throw new Error("Original target was absent");
+    });
+    const context = await prepareTalkProviderConversationContext({
+      target,
+      assertCurrent: assertAbsentTarget,
+      getRuntimeConfig: () => ({}),
+      captureOperatorAuthority: owner.captureOperatorAuthority,
+    });
+    expect(assertAbsentTarget).toHaveBeenCalledOnce();
+    // The guarded native creation owner now checks the exact ensured session.
+    // This empty snapshot must not reapply the superseded absence assertion.
+    materialized = true;
+    expect(() => assertAbsentTarget()).toThrow("Original target was absent");
+    expect(() => context.assertCurrent()).not.toThrow();
+    expect(owner.captureOperatorAuthority).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    await context.release();
+    expect(() => context.assertCurrent()).toThrow("released");
+  });
+
+  it("still requires a current original source before native-mode preparation", async () => {
+    const owner = setup();
+    owner.revoke();
+    await expect(
+      prepareTalkProviderConversationContext({
+        target,
+        assertCurrent: owner.assertCurrent,
+        getRuntimeConfig: () => ({}),
+        captureOperatorAuthority: owner.captureOperatorAuthority,
+      }),
+    ).rejects.toThrow("revoked");
+    expect(owner.captureOperatorAuthority).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+  });
+
   it("passes original authority and canonical target into data-only provider instructions", async () => {
     const owner = setup();
     const context = await prepareTalkProviderConversationContext({

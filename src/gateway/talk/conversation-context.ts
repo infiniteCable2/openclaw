@@ -23,8 +23,11 @@ export async function prepareTalkProviderConversationContext(params: {
   let knowledge: PreparedVoiceConversationKnowledge | undefined;
   let active = true;
   let releasing: Promise<void> | undefined;
-  const assertCurrent = () => {
+  const assertActive = () => {
     if (!active) throw new Error("Talk provider context snapshot has been released");
+  };
+  const assertCurrent = () => {
+    assertActive();
     params.assertCurrent();
     source?.authority.assertCurrent();
     knowledge?.assertCurrent();
@@ -42,8 +45,12 @@ export async function prepareTalkProviderConversationContext(params: {
     assertCurrent();
     if (
       resolveAgentConversationMode(params.getRuntimeConfig(), params.target.agentId) !== "branches"
-    )
-      return { instructions: "", assertCurrent, release };
+    ) {
+      // No context was captured. The caller owns routing/creation authorization,
+      // including adoption of its guarded first write; do not retain its earlier
+      // absent-row assertion as a second authority after that materialization.
+      return { instructions: "", assertCurrent: assertActive, release };
+    }
     source = await params.captureOperatorAuthority({ assertCurrent: params.assertCurrent });
     assertCurrent();
     const target = {

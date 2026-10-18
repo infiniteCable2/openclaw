@@ -420,9 +420,16 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           let contextTransferred = false;
           const session = await (async () => {
             try {
+              assertEnsuredTargetCurrent();
               providerContext.assertCurrent();
               const created = createTalkRealtimeRelaySession({
-                startupContext: providerContext,
+                startupContext: {
+                  ...providerContext,
+                  assertCurrent: () => {
+                    assertEnsuredTargetCurrent();
+                    providerContext.assertCurrent();
+                  },
+                },
                 context,
                 connId,
                 cfg: runtimeConfig,
