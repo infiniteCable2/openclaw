@@ -50,6 +50,7 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "parentSessionKey",
   "parentSessionId",
   "parentSessionLifecycleRevision",
+  "conversationTopology",
   "createdVia",
   "createdSurface",
   "createdActor",

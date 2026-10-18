@@ -12,6 +12,7 @@ import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { sessionCreatorProfileId } from "../config/sessions/session-entry-provenance.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import { captureIncognitoSessionBinding } from "../config/sessions/session-incognito-binding.js";
+import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
@@ -46,7 +47,7 @@ import { findCanonicalStoreMatch } from "./session-utils-store-selection.js";
 export type SessionSharingTarget = {
   agentId: string;
   canonicalKey: string;
-  entry: SessionEntry;
+  entry: InternalSessionEntry;
   storeKey: string;
   storeKeys: string[];
   storePath: string;

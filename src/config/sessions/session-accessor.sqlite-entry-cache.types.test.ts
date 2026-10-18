@@ -1,18 +1,50 @@
 import { expect, it } from "vitest";
 import {
   recordCommittedSessionMetadataPublication,
+  retainPreparedSessionEntryPredicate,
+  retainPreparedSessionGenerationFacts,
   retainPreparedSessionSharingFacts,
 } from "./session-accessor.sqlite-entry-cache-publication-state.js";
 import {
   projectSessionSharingEntry,
   sessionSharingEntriesEqual,
 } from "./session-accessor.sqlite-entry-cache.types.js";
+import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
 import type { SessionConversationTopology } from "./session-conversation-topology.js";
 import { projectPublicSessionEntry } from "./session-entry-projection.js";
 import { resolveSessionWorkStartError } from "./session-work-start.js";
 import type { InternalSessionEntry } from "./types.js";
 
 const sessionId = "sharing-lifecycle";
+
+it("retains root admission and lineage facts through native sharing projection", () => {
+  const root: InternalSessionEntry = {
+    sessionId,
+    updatedAt: 1,
+    lifecycleRevision: "root-generation",
+    createdVia: "internal",
+    createdActor: { type: "system", id: "conversation-root" },
+    visibility: "draft",
+    delivery: { kind: "none" },
+    conversationTopology: { version: 1, role: "root" },
+  };
+  const retained = projectSessionSharingEntry(root);
+  expect(() => assertSessionConversationRootEntry(retained, "agent:example:main")).not.toThrow();
+  expect(retained.delivery).not.toBe(root.delivery);
+  for (const changes of [
+    { parentSessionId: "parent-original" },
+    { parentSessionLifecycleRevision: "parent-generation" },
+    { spawnedBySessionId: "spawner-original" },
+    { forkSource: { sessionKey: "agent:example:source", sessionId: "source-original" } },
+    { forkedFromParent: true },
+  ]) {
+    const entry = { ...root, ...changes };
+    expect(sessionSharingEntriesEqual(root, entry)).toBe(false);
+    expect(() =>
+      assertSessionConversationRootEntry(projectSessionSharingEntry(entry), "agent:example:main"),
+    ).toThrow("not admitted");
+  }
+});
 const tombstone = {
   cycleId: "recovery-cycle",
   revision: 1,
@@ -235,6 +267,53 @@ it("rejects an acquiring audience snapshot that crosses a participant publicatio
       }),
     ).toThrow("acquisition is no longer current");
   } finally {
+    retained.release();
+  }
+});
+
+it("invalidates an unknown participant postimage without replacing generation custody", () => {
+  const databaseIdentity = "file:synthetic-unknown-audience-source";
+  const key = "agent:example:unknown-audience";
+  const entry = projectSessionSharingEntry({
+    sessionId,
+    lifecycleRevision: "original-generation",
+    updatedAt: 1,
+    chatType: "direct",
+    participantCount: 1,
+    participants: [{ identity: { type: "profile", id: "example-person" } }],
+  });
+  const retained = retainPreparedSessionSharingFacts({
+    databaseIdentity,
+    sessionKey: key,
+    entry,
+    membership: new Set(),
+  });
+  const generation = retainPreparedSessionGenerationFacts({
+    databaseIdentity,
+    sessionKey: key,
+    entry,
+  });
+  const predicate = retainPreparedSessionEntryPredicate({
+    databaseIdentity,
+    sessionKey: key,
+    entry,
+    matches: (before, after) => before?.participantCount === after?.participantCount,
+  });
+  try {
+    expect(predicate.isCurrent()).toBe(true);
+    recordCommittedSessionMetadataPublication("synthetic-unknown-audience-source", key, {
+      kind: "participants",
+    });
+    expect(retained.readCurrent()).toBeUndefined();
+    expect(predicate.isCurrent()).toBe(false);
+    expect(predicate.canRefresh()).toBe(true);
+    expect(generation.readCurrent()).toMatchObject({
+      sessionId,
+      lifecycleRevision: "original-generation",
+    });
+  } finally {
+    predicate.release();
+    generation.release();
     retained.release();
   }
 });

@@ -75,7 +75,10 @@ export async function recordVoiceConversationObservation(params: {
         held.entry.lifecycleRevision !== params.lifecycleRevision
       )
         throw new Error("Original voice observation session changed");
-      const reader = held.databaseClaim.kind === "worker" ? held.databaseClaim.reader : undefined;
+      const reader =
+        "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"
+          ? held.databaseClaim.reader
+          : undefined;
       if (!reader) return;
       await owner.recordConversationUtteranceObservation({
         reader,
@@ -154,7 +157,10 @@ export async function prepareVoiceConversationKnowledge(params: {
     assertCurrent();
     if (held.entry?.sessionId !== params.target.sessionId)
       throw new Error("Voice conversation changed before its context read");
-    const reader = held.databaseClaim.kind === "worker" ? held.databaseClaim.reader : undefined;
+    const reader =
+      "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"
+        ? held.databaseClaim.reader
+        : undefined;
     if (reader && expectedAudienceIdentity) {
       prepared = await knowledge.prepareReplyConversationKnowledge({
         reader,

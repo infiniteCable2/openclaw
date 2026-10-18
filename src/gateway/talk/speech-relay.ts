@@ -369,7 +369,7 @@ export async function createTalkSpeechRelaySession(params: {
     config: {
       realtime: {
         agentId: params.sessionTarget.agentId,
-        toolPolicy: params.authority.toolsAllow ? "safe-read-only" : "inherit",
+        toolPolicy: params.authority.toolsAllow ? "safe-read-only" : "owner",
         speakCommentary: profile.speakCommentary,
       },
     },

@@ -36,7 +36,7 @@ const loadReply = createLazyRuntimeModule(async () => {
   return {
     getReplyFromConfig: reply.getReplyFromConfig,
     stateKey: state.REPLY_OPERATION_RUN_STATE,
-  };
+  } as const;
 });
 
 type SpeechPresentationParams = Parameters<typeof createReplySpeechPresentation>[0];

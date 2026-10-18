@@ -1,5 +1,18 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/auto-reply/reply/conversation-knowledge.scenario.test.ts",
+  "src/channels/message-access/conversation-input.profile.test.ts",
+  "src/config/sessions/conversation-knowledge-store.test.ts",
+  "src/config/sessions/session-accessor.sqlite-append-participants.test.ts",
+  "src/config/sessions/session-conversation-admission.test.ts",
+  "src/config/sessions/session-conversation-root.maintenance.test.ts",
+  "src/config/sessions/session-conversation-root.test.ts",
+  "src/config/sessions/session-conversation-topology.storage.test.ts",
+  "src/config/sessions/session-initial-context-read.test.ts",
+  "src/config/sessions/session-initial-context.test.ts",
+  "src/config/sessions/session-transcript-report-receipts.test.ts",
+  "src/cron/isolated-agent/run-session-state.conversation-admission.test.ts",
+  "src/gateway/server-startup-conversation-root.test.ts",
   "src/infra/sqlite-foreign-observation.worker.test.ts",
   "src/state/openclaw-state-db-current-reader.test.ts",
   "src/cli/admin-state-owner.process.test.ts",

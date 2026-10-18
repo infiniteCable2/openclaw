@@ -35,6 +35,7 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
     previousSessionId: entry.previousSessionId,
     updatedAt: entry.updatedAt,
     createdAt: entry.createdAt,
+    createdVia: entry.createdVia,
     initializationPending: entry.initializationPending,
     providerReview: entry.providerReview ? structuredClone(entry.providerReview) : undefined,
     mainRestartRecovery: entry.mainRestartRecovery
@@ -61,6 +62,7 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
       ? {}
       : { repositoryWorkspaceId: entry.repositoryWorkspaceId }),
     visibility: entry.visibility,
+    delivery: entry.delivery ? structuredClone(entry.delivery) : undefined,
     incognito: entry.incognito,
     // Audience facts remain data, not an automatic cross-conversation read/disclosure grant.
     chatType: entry.chatType,
@@ -77,8 +79,13 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
       : undefined,
     sandbox: entry.sandbox,
     spawnedBy: entry.spawnedBy,
+    spawnedBySessionId: entry.spawnedBySessionId,
     spawnDepth: entry.spawnDepth,
     parentSessionKey: entry.parentSessionKey,
+    parentSessionId: entry.parentSessionId,
+    parentSessionLifecycleRevision: entry.parentSessionLifecycleRevision,
+    forkSource: entry.forkSource ? { ...entry.forkSource } : undefined,
+    forkedFromParent: entry.forkedFromParent,
     sessionStartedAt: entry.sessionStartedAt,
     permissionMode: entry.permissionMode,
     toolOverrides: entry.toolOverrides ? structuredClone(entry.toolOverrides) : undefined,

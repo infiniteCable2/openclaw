@@ -1,6 +1,6 @@
 import type { ResolvedSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { SqliteSessionMutationConflictError } from "./session-mutation-conflict-error.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 export type SqliteLifecycleTargetSnapshot = Array<{
   entry: SessionEntry;

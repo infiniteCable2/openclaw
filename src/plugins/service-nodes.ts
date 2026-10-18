@@ -185,6 +185,12 @@ export function createPluginServiceNodeInvoker(options: {
       }
       const boundAuthority = {
         signal: authority.signal,
+        assertOwnerCurrent() {
+          authority.assertOwnerCurrent();
+          if (resolver() !== context) {
+            throw new Error("Plugin service Gateway changed during node invocation");
+          }
+        },
         assertCurrent() {
           authority.assertCurrent();
           request.assertCurrent?.();

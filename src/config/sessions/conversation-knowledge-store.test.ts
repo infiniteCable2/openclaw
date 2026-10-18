@@ -89,7 +89,7 @@ describe("native completed-turn root consolidation", () => {
           throw new Error("Expected a real native admitted cohort reader");
         }
         const reader = databaseClaim.reader;
-        const captured = captureSessionEntryReadSource(database, state.env);
+        const captured = captureSessionEntryReadSource(database, undefined);
         const assertCurrent: SessionSourceAssertion = Object.assign(
           () => databaseClaim.assertCurrent(),
           {
