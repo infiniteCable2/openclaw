@@ -74,17 +74,7 @@ export type {
   IngressReasonCode,
 } from "../channels/message-access/types.js";
 export type { ResolvedChannelImplicitMentions } from "../config/implicit-mentions.js";
-export type {
-  AdmitChannelConversationInputV1,
-  ChannelConversationInputContextFacts,
-  ChannelConversationInputRuntimeV1,
-} from "../channels/message-access/conversation-input.types.js";
-export type { ChannelIngressAdmissionScope } from "../channels/message-access/admission-evidence-scope-key.js";
-export type {
-  ConversationInputAdmissionV1,
-  ConversationInputScopeV1,
-  ConversationInputSourceV1,
-} from "../talk/conversation-input.types.js";
+export type { ConversationInputSourceV1 } from "../talk/conversation-input.types.js";
 
 function currentIngressInstance(): PluginInstanceHandle | undefined {
   const instance = pluginInstanceInvocation.getStore()?.instance;

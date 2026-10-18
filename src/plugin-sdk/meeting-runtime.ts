@@ -4,11 +4,6 @@
 export { resolveTalkSpeechAgentProfile } from "../talk/speech/profile.js";
 export type { SpeechVideoFrame } from "../talk/speech/transport.js";
 export type { SpeechVideoConfig } from "../config/zod-schema.media-frames.js";
-export type {
-  ConversationInputAdmissionV1,
-  ConversationInputScopeV1,
-  ConversationInputSourceV1,
-} from "../talk/conversation-input.types.js";
 
 export {
   startMeetingRealtimeEngine,
