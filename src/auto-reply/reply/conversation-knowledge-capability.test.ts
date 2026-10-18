@@ -109,6 +109,7 @@ async function nativeTurn(admin = false) {
     result: {
       payloads: [{ text: "Completed answer." }],
       meta: {
+        durationMs: 0,
         agentMeta: {
           sessionId: followupRun.run.sessionId,
           ...route,
