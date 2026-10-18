@@ -20,7 +20,6 @@ import {
 } from "../../agents/workspace-state-identity.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
-import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { logVerbose } from "../../globals.js";
@@ -521,36 +520,35 @@ export async function getReplyFromConfig(
           commandAuthorized,
           workspaceDir,
         })
-      : await traceGetReplyPhase("reply.init_session_state", () =>
-          initSessionState({
+      : await traceGetReplyPhase("reply.init_session_state", async () => {
+          const initialized = await initSessionState({
             ...resolveReplySessionInitializationOptions(optsWithSkillFilter),
             ctx: finalized,
             cfg,
             commandAuthorized,
-          }),
-        );
+          });
+          if (readSessionConversationParticipant(finalized)) {
+            // Initialization has released its writer/lifecycle holds, but its
+            // genuine accepted-input credit can still own an audience publication.
+            // Join that owner before the tracing wrapper rechecks source facts:
+            // pending sharing is not revocation and is never permission to run.
+            assertReplyPreprocessingActive({ abortSignal: optsWithSkillFilter?.abortSignal });
+            const { waitForSessionParticipantRecording } =
+              await import("../../sessions/session-participant-recording.js");
+            await waitForSessionParticipantRecording({
+              agentId,
+              sessionKey: initialized.sessionKey,
+              storePath: initialized.storePath,
+            });
+            assertReplyPreprocessingActive(optsWithSkillFilter);
+          }
+          return initialized;
+        });
   } catch (error) {
     if (error instanceof ModelSelectionLockedError || error instanceof SessionResetCleanupError) {
       return rejectSessionPreparation(error);
     }
     throw error;
-  }
-  if (
-    !useFastTestBootstrap &&
-    resolveAgentConversationMode(cfg, agentId) === "branches" &&
-    readSessionConversationParticipant(finalized)
-  ) {
-    // Initialization has released its writer/lifecycle holds. Join the native
-    // accepted-input credit before private branch knowledge snapshots its audience.
-    assertReplyPreprocessingActive(optsWithSkillFilter);
-    const { waitForSessionParticipantRecording } =
-      await import("../../sessions/session-participant-recording.js");
-    await waitForSessionParticipantRecording({
-      agentId,
-      sessionKey: sessionState.sessionKey,
-      storePath: sessionState.storePath,
-    });
-    assertReplyPreprocessingActive(optsWithSkillFilter);
   }
   if (!useFastTestBootstrap) {
     try {

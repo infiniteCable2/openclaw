@@ -436,6 +436,9 @@ async function publishNativeSpeechModelRun(
     () => setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey),
   );
   try {
+    // The native subscriber emits lifecycle start before model/tool work. Its reply
+    // handler prepares the actual transcript boundary before notifying voice custody.
+    await params.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
     if (work) {
       return await work();
     }
