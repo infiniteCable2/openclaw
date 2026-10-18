@@ -9,6 +9,7 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
+import * as sessionSharingPreparation from "../../session-sharing-preparation.js";
 import {
   context,
   createSpeechRelayCall,
@@ -56,6 +57,30 @@ it.for([false, true])(
     let calls = 0;
     let audioAtClose = 0;
     const enqueue = nativeQueue.enqueueFollowupRun;
+    const prepareFacts = sessionSharingPreparation.prepareSessionMutationFacts;
+    // Observation only: retain the actual storage/admission owner and rethrow
+    // its original error, including the exact native frame and nested cause.
+    const observeFacts = vi
+      .spyOn(sessionSharingPreparation, "prepareSessionMutationFacts")
+      .mockImplementation(async (...args) => {
+        try {
+          const prepared = await prepareFacts(...args);
+          return {
+            ...prepared,
+            readCurrent(cfg) {
+              try {
+                return prepared.readCurrent(cfg);
+              } catch (error) {
+                console.warn("[native-speech-scenario] native-access-read-failure", error);
+                throw error;
+              }
+            },
+          };
+        } catch (error) {
+          console.warn("[native-speech-scenario] native-access-prepare-failure", error);
+          throw error;
+        }
+      });
     const observeEnqueue = vi
       .spyOn(nativeQueue, "enqueueFollowupRun")
       .mockImplementation((...args) => {
@@ -196,6 +221,7 @@ it.for([false, true])(
         await Promise.all(ownerSettlements);
         progress("cleanup-owners-settled");
       } finally {
+        observeFacts.mockRestore();
         observeEnqueue.mockRestore();
         if (!closed) await dispatch("talk.session.close", { sessionId });
         progress("cleanup-closed");
