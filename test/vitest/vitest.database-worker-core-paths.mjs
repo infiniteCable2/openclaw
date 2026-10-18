@@ -152,6 +152,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/wait-for-idle-before-flush.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-session-identity.worker.test.ts",
   "src/agents/embedded-agent-runner/run-entry.cleanup.test.ts",
+  "src/agents/embedded-agent-runner/run-entry-cli.conversation-admission.test.ts",
   "src/agents/embedded-agent-runner/run-entry.cyber-failover.runner.test.ts",
   "src/agents/embedded-agent-runner/run-orchestrator.rooted-proof.test.ts",
   "src/agents/embedded-agent-runner/run-orchestrator.required-profile.test.ts",
