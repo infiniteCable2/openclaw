@@ -109,7 +109,9 @@ function resolveNativeConsultConfig(raw: OpenClawConfig): OpenClawConfig {
   // This fixture has no installed plugin manifests. Use the actual schema and
   // runtime-default materializer before declaring a complete config; marking
   // an arbitrary partial override would hide a real fixture-contract violation.
-  const validated = validateConfigObject(raw, { manifestRegistry: { plugins: [] } });
+  const validated = validateConfigObject(raw, {
+    manifestRegistry: { plugins: [], diagnostics: [] },
+  });
   if (!validated.ok) {
     throw new Error("Invalid native consult fixture configuration", { cause: validated.issues });
   }
