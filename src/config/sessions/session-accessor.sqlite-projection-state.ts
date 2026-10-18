@@ -29,7 +29,7 @@ import {
 import { appendSessionResetBoundary } from "./session-accessor.sqlite-reset-boundary.js";
 import type { ResolvedSqliteReadScope } from "./session-accessor.sqlite-scope.js";
 import { assertSessionConversationBranchInTransaction } from "./session-conversation-admission.worker.js";
-import { appendInitialSessionContextInTransaction } from "./session-initial-context.js";
+import { appendInitialSessionContextInTransaction } from "./session-initial-context.worker.js";
 import { SessionEntryLifecycleUpsertConflictError } from "./session-mutation-conflict-error.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
