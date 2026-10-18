@@ -10,6 +10,7 @@ import {
   setupAgentRunnerExecutionTestState,
   type FallbackRunnerParams,
 } from "./agent-runner-execution.test-support.js";
+import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 
 const knowledge = vi.hoisted(() => ({ create: vi.fn() }));
 // mock-isolation: This execution-lifetime fixture supplies knowledge receipts without transcript workers.
@@ -87,7 +88,18 @@ function fixture(provider = "anthropic", model = "claude") {
     },
   };
   state.runEmbeddedAgentMock.mockResolvedValue(result);
-  return { params, result, reader, fragments, assertCurrent, release, prepare, record, order };
+  return {
+    params,
+    result,
+    replyOperation,
+    reader,
+    fragments,
+    assertCurrent,
+    release,
+    prepare,
+    record,
+    order,
+  };
 }
 
 describe("actual native execution conversation knowledge lifetime", () => {
@@ -125,6 +137,9 @@ describe("actual native execution conversation knowledge lifetime", () => {
     const provider = "claude-cli";
     const model = "claude-sonnet-4-6";
     const f = fixture(provider, model);
+    // Direct execution fixtures must supply the snapshot normally bound by
+    // runReplyAgent before the CLI candidate selects its actual tool route.
+    f.replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(f.params.followupRun));
     state.isCliProviderMock.mockImplementation((candidate) => candidate === provider);
     // Select an actual configured CLI backend through the same native fallback
     // contract as the existing CLI execution fixtures, not an HTTP provider
@@ -152,6 +167,7 @@ describe("actual native execution conversation knowledge lifetime", () => {
       outcome: { kind: "settled", status: "ok" },
     });
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+    expect(f.replyOperation.toolAuthorityRoute).toEqual({ provider, model });
     expect(state.runCliAgentMock.mock.calls[0]?.[0]).toMatchObject({
       modelProvider: provider,
       model,

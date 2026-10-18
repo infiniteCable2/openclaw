@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { runSqliteImmediateTransactionSync } from "../../infra/sqlite-transaction.js";
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe as probe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
 import {
@@ -17,6 +18,7 @@ import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-store.
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { applySessionEntryLifecycleMutation } from "./session-accessor.sqlite-projection.js";
 import * as reclamation from "./session-accessor.sqlite-reclamation-commit.js";
+import { certifyCanonicalSessionValidationRow } from "./session-canonical-validation.js";
 import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
 import {
   SessionEntryLifecycleUpsertConflictError,
@@ -199,11 +201,23 @@ it("refuses a foreign source change between preparation and BEGIN without creati
       // the authoritative SQL predicate in the new writer snapshot sees this.
       const foreign = new DatabaseSync(f.scope.storePath);
       try {
-        foreign
-          .prepare(
-            "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.visibility', 'shared') WHERE session_key = ?",
-          )
-          .run(f.scope.sessionKey);
+        runSqliteImmediateTransactionSync(foreign, () => {
+          foreign
+            .prepare(
+              "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.visibility', 'shared') WHERE session_key = ?",
+            )
+            .run(f.scope.sessionKey);
+          // Mirror the canonical writer's mark-valid/certify ordering. The
+          // certifier rereads and validates the actual row under this same
+          // reservation, so malformed keys or identity still roll it back.
+          foreign
+            .prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")
+            .run(f.scope.sessionKey);
+          certifyCanonicalSessionValidationRow(
+            { agentId: f.scope.agentId, db: foreign },
+            f.scope.sessionKey,
+          );
+        });
         changed();
       } finally {
         foreign.close();
