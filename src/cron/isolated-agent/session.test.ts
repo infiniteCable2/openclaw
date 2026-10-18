@@ -136,7 +136,9 @@ describe("resolveCronSession", () => {
         },
         targetEntry,
       });
-      expect(result.sessionEntry.conversationTopology).toEqual(targetEntry?.conversationTopology);
+      expect(result.sessionEntry).toEqual(
+        expect.objectContaining({ conversationTopology: targetEntry?.conversationTopology }),
+      );
     }
   });
 
@@ -147,7 +149,9 @@ describe("resolveCronSession", () => {
       fresh: false,
       entry: { sessionId: "root", updatedAt: NOW_MS - 1_000, conversationTopology: topology },
     });
-    expect(result.sessionEntry.conversationTopology).toEqual(topology);
+    expect(result.sessionEntry).toEqual(
+      expect.objectContaining({ conversationTopology: topology }),
+    );
   });
 
   // Spawned children and memory-audience leases bind to the parent's exact

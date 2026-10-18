@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { Worker, WorkerOptions } from "node:worker_threads";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resolveChannelPluginRegistration } from "../../channels/plugins/registry.js";
 import {
   conversation,
   queueConversationDeliveryForTest,
@@ -222,6 +223,7 @@ test.each(["directory discovery", "Gateway send", "durable completion"] as const
           {
             listConversations,
             registerConversationAddresses,
+            resolveChannelPluginRegistration,
             resolveOutboundChannelPlugin: () => ({
               ...createChannelTestPluginBase({
                 id: "reef",
