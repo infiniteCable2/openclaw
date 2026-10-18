@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
@@ -264,7 +265,10 @@ describe("retained transcript read authority", () => {
         ).rejects.toThrow("Transcript source is no longer readable");
         expect(selectReport).toHaveBeenCalledOnce();
         expect(
-          (await loadTranscriptEvents(target)).filter((event) => event.type === "custom_message"),
+          (await loadTranscriptEvents(target)).filter((event) => {
+            if (!isRecord(event)) throw new Error("Expected a native transcript event object");
+            return event.type === "custom_message";
+          }),
         ).toHaveLength(1);
       } finally {
         grant.release();

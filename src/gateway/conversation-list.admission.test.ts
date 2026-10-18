@@ -2,6 +2,7 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resolveChannelPluginRegistration } from "../channels/plugins/registry.js";
 import {
   listConversations,
   registerConversationAddresses,
@@ -52,6 +53,7 @@ function createDirectory(
   const deps = {
     listConversations,
     registerConversationAddresses,
+    resolveChannelPluginRegistration,
     resolveOutboundChannelPlugin: () => ({
       ...createChannelTestPluginBase({ id: "reef" }),
       directory: {

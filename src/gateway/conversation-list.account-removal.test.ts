@@ -2,6 +2,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resolveChannelPluginRegistration } from "../channels/plugins/registry.js";
 import type { ChannelPlugin } from "../channels/plugins/types.public.js";
 import { buildConversationIdentity } from "../config/sessions/conversation-identity.js";
 import {
@@ -106,6 +107,7 @@ const deps = {
   registerConversationAddresses,
   resolveOutboundChannelPlugin: () => undefined,
   resolveOutboundSessionRoute,
+  resolveChannelPluginRegistration,
 };
 
 describe("conversation listings after removing accounts", () => {

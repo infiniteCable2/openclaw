@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { Value } from "typebox/value";
 import { describe, expect, it, vi } from "vitest";
 import { ConversationListItemSchema } from "../../packages/gateway-protocol/src/schema/agent.js";
@@ -60,7 +61,11 @@ describe("conversation list presentation", () => {
     ]);
     // There is no process-global metadata cache across registry replacements.
     const replacement = vi.fn(() => plugin({ chatTypes: ["direct"], media: false }));
-    expect(presentConversationList([conversation], replacement)[0].channelCapabilities).toEqual({
+    const replacementResult = expectDefined(
+      presentConversationList([conversation], replacement)[0],
+      "replacement conversation",
+    );
+    expect(replacementResult.channelCapabilities).toEqual({
       media: false,
     });
     expect(replacement).toHaveBeenCalledExactlyOnceWith("reef");

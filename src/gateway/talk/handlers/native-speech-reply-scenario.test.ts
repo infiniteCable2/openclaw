@@ -1,5 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/promise.js";
 import { makeAgentAssistantMessage } from "../../../agents/test-helpers/agent-message-fixtures.js";
 import * as nativeQueue from "../../../auto-reply/reply/queue.js";
@@ -17,7 +17,6 @@ import { ensureAgentConversationRoot } from "../../../config/sessions/session-co
 import { resolveAgentSpeechConversationRoute } from "../../../routing/conversation-mode.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import * as voiceSession from "../../../talk/client-voice-session.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import * as sessionSharingPreparation from "../../session-sharing-preparation.js";
 import {
@@ -33,6 +32,10 @@ import {
 // The existing fixture substitutes only STT/TTS hardware and the model runtime.
 // Admission, source capabilities, Speech/V2/getReply, native follow-up queue and
 // transcript writes remain real. Model counts are NOT proof of actual tool effects.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 it.for([
   { conversationMode: "native", closeAudio: false },
   { conversationMode: "native", closeAudio: true },
@@ -101,17 +104,6 @@ it.for([
     let calls = 0;
     let audioAtClose = 0;
     const enqueue = nativeQueue.enqueueFollowupRun;
-    const ensureVoiceEntry = voiceSession.ensureClientVoiceAgentSessionEntry;
-    const observeCreation = vi
-      .spyOn(voiceSession, "ensureClientVoiceAgentSessionEntry")
-      .mockImplementation(async (...args) => {
-        try {
-          return await ensureVoiceEntry(...args);
-        } catch (error) {
-          console.warn("[native-speech-scenario] native-creation-failure", error);
-          throw error;
-        }
-      });
     const prepareFacts = sessionSharingPreparation.prepareSessionMutationFacts;
     // Observation only: retain the actual storage/admission owner and rethrow
     // its original error, including the exact native frame and nested cause.
@@ -350,7 +342,6 @@ it.for([
         progress("cleanup-owners-settled");
       } finally {
         observeFacts.mockRestore();
-        observeCreation.mockRestore();
         observeEnqueue.mockRestore();
         if (!closed) await dispatch("talk.session.close", { sessionId });
         progress("cleanup-closed");
