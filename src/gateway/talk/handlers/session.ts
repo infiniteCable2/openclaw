@@ -263,6 +263,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
               resolveSandboxedSessionCreation(client, runtimeConfig) ??
               resolveOperatorSessionCreation(client),
             assertCommitAllowed: assertSourceCurrent,
+            onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
           });
           const assertCurrent = () => {
             // The guarded ensure may materialize this exact previously absent
@@ -388,6 +389,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
               resolveSandboxedSessionCreation(client, runtimeConfig) ??
               resolveOperatorSessionCreation(client),
             assertCommitAllowed,
+            onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
           });
           const assertEnsuredTargetCurrent = () => {
             sessionMutationCommitGuard?.();

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { createSessionEntryCreationOperation } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { admitSessionConversationBranch } from "../config/sessions/session-conversation-admission.js";
+import type { prepareSessionGenerationFacts } from "../config/sessions/session-delivery-generation.js";
 import type { SessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -13,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   patch: vi.fn(),
   snapshot: vi.fn(),
   commit: vi.fn(),
+  generation: vi.fn<typeof prepareSessionGenerationFacts>(),
   store: vi.fn(() => "/fixture/example/sessions.sqlite"),
 }));
 // mock-isolation: generic native writes are outside this adapter-selection unit.
@@ -21,6 +24,10 @@ vi.mock("../config/sessions/session-accessor.js", () => ({ patchSessionEntryCore
 vi.mock("../config/sessions/session-accessor.reset.js", () => ({
   loadReplySessionInitializationSnapshot: mocks.snapshot,
   commitReplySessionInitialization: mocks.commit,
+}));
+// mock-isolation: the native generation owner's exact COMMIT adoption is covered by worker tests.
+vi.mock("../config/sessions/session-delivery-generation.js", () => ({
+  prepareSessionGenerationFacts: mocks.generation,
 }));
 // mock-isolation: no physical session store is opened by this source-only fixture.
 vi.mock("../config/sessions/session-store-path.js", () => ({
@@ -61,8 +68,31 @@ function fixture() {
     revision: "original-revision",
     readEntry: (key: string) => (key === rootSessionKey ? state.root : undefined),
   });
+  let adopted = false;
+  let publishBinding:
+    | Parameters<Awaited<ReturnType<typeof prepareSessionGenerationFacts>>["bindCreation"]>[1]
+    | undefined;
+  const generation = {
+    assertCurrent: vi.fn(),
+    prepareRead: vi.fn(),
+    readSessionSettings: vi.fn(() => ({})),
+    release: vi.fn(),
+    isCreationAdopted: vi.fn(() => adopted),
+    bindCreation: vi.fn<Awaited<ReturnType<typeof prepareSessionGenerationFacts>>["bindCreation"]>(
+      (_operation, publish) => {
+        publishBinding = publish;
+        return () => {};
+      },
+    ),
+  };
+  mocks.generation.mockResolvedValue(generation);
+  const publishCreation = (entry: InternalSessionEntry) => {
+    adopted = true;
+    publishBinding?.({ sessionId: entry.sessionId, lifecycleRevision: entry.lifecycleRevision });
+  };
   mocks.snapshot.mockImplementation(async () => read());
   mocks.commit.mockImplementation(async (params) => {
+    params.bindCreation?.(createSessionEntryCreationOperation())();
     params.commitGuard();
     const topology = admitSessionConversationBranch({
       agentId: params.agentId,
@@ -71,9 +101,11 @@ function fixture() {
       rootSessionKey: params.branchRootSessionKey,
       rootEntry: state.root,
     });
-    return { ok: true, sessionEntry: { ...params.sessionEntry, conversationTopology: topology } };
+    const entry = { ...params.sessionEntry, conversationTopology: topology };
+    publishCreation(entry);
+    return { ok: true, sessionEntry: entry };
   });
-  return { target, rootSessionKey, state, read };
+  return { target, rootSessionKey, state, read, generation, publishCreation };
 }
 
 describe("native Talk startup conversation membership", () => {
@@ -102,6 +134,73 @@ describe("native Talk startup conversation membership", () => {
     expect(mocks.commit.mock.calls[0]![0].sessionEntry).not.toHaveProperty("parentSessionKey");
     expect(mocks.commit.mock.calls[0]![0].sessionEntry).not.toHaveProperty("spawnedBy");
     expect(mocks.patch).not.toHaveBeenCalled();
+  });
+
+  it("adopts only the native creation publication before rechecking the original absent source", async () => {
+    const f = fixture();
+    let created = false;
+    let admittedId: string | undefined;
+    f.target.assertCommitAllowed.mockImplementation(() => {
+      if (created && admittedId !== f.state.current?.sessionId) {
+        throw new Error("Original absence was not adopted");
+      }
+    });
+    const onCreatedSessionCommitted = vi.fn((binding: { sessionId: string }) => {
+      admittedId = binding.sessionId;
+    });
+    mocks.commit.mockImplementationOnce(async (params) => {
+      params.bindCreation(createSessionEntryCreationOperation())();
+      params.commitGuard();
+      const entry = { ...params.sessionEntry, lifecycleRevision: "committed-life" };
+      created = true;
+      f.state.current = entry;
+      expect(onCreatedSessionCommitted).not.toHaveBeenCalled();
+      f.publishCreation(entry);
+      return { ok: true, sessionEntry: entry };
+    });
+    const sessionId = await ensureClientVoiceAgentSessionEntry({
+      ...f.target,
+      onCreatedSessionCommitted,
+    });
+    expect(onCreatedSessionCommitted).toHaveBeenCalledExactlyOnceWith({
+      agentId: f.target.agentId,
+      sessionKey: f.target.sessionKey,
+      storePath: "/fixture/example/sessions.sqlite",
+      sessionId,
+      lifecycleRevision: "committed-life",
+    });
+    expect(f.generation.release).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat a returned candidate as a creation publication", async () => {
+    const f = fixture();
+    const onCreatedSessionCommitted = vi.fn();
+    mocks.commit.mockImplementationOnce(async (params) => {
+      params.bindCreation(createSessionEntryCreationOperation())();
+      params.commitGuard();
+      return { ok: true, sessionEntry: params.sessionEntry };
+    });
+    await expect(
+      ensureClientVoiceAgentSessionEntry({ ...f.target, onCreatedSessionCommitted }),
+    ).rejects.toThrow("changed during startup");
+    expect(onCreatedSessionCommitted).not.toHaveBeenCalled();
+    expect(f.generation.release).toHaveBeenCalledOnce();
+  });
+
+  it("retains revocation after native creation publication and releases the same lease", async () => {
+    const f = fixture();
+    await expect(
+      ensureClientVoiceAgentSessionEntry({
+        ...f.target,
+        onCreatedSessionCommitted: () => {
+          f.target.assertCommitAllowed.mockImplementation(() => {
+            throw new Error("Original requester revoked");
+          });
+        },
+      }),
+    ).rejects.toThrow("Original requester revoked");
+    expect(mocks.commit).toHaveBeenCalledOnce();
+    expect(f.generation.release).toHaveBeenCalledOnce();
   });
 
   it("keeps an existing admitted branch unchanged", async () => {

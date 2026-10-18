@@ -450,6 +450,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
               resolveOperatorSessionCreation(client),
             deadlineAt: sessionEntryDeadlineAt,
             assertCommitAllowed,
+            onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
           });
           sessionMutationCommitGuard?.();
           sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
