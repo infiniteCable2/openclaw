@@ -22,7 +22,7 @@ it("retains the real linked requester and operator, then refuses the retired ide
         resolveGatewayContext: () => gateway,
       };
       const runtime = createHostChannelIngressRuntime(owner);
-      const scope: ChannelIngressAdmissionScope = {
+      const scope = {
         channelId: identity.channelId,
         accountId: identity.accountId,
         rawPrincipalRef: identity.senderId,
@@ -32,7 +32,7 @@ it("retains the real linked requester and operator, then refuses the retired ide
           sessionKey: "agent:main:conversation:example-call",
           inboundEventKind: "user_request",
         },
-      };
+      } satisfies ChannelIngressAdmissionScope;
       const input: ConversationInputScopeV1 = {
         agentId: "main",
         conversationId: "example-call",

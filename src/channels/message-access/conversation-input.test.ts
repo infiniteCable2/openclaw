@@ -43,7 +43,7 @@ async function prepareSource() {
     resolveGatewayContext: () => currentGateway,
   };
   const runtime = createHostChannelIngressRuntime(owner);
-  const scope: ChannelIngressAdmissionScope = {
+  const scope = {
     channelId: "example",
     accountId: "primary",
     rawPrincipalRef: "person-alpha",
@@ -55,7 +55,7 @@ async function prepareSource() {
       nativeChannelId: "room-alpha",
       inboundEventKind: "user_request",
     },
-  };
+  } satisfies ChannelIngressAdmissionScope;
   const request = {
     channelId: scope.channelId,
     accountId: scope.accountId,
