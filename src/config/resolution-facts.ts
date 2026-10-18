@@ -76,8 +76,8 @@ export function cloneConfigWithResolutionFacts<T>(value: T): T {
 
 /** Owned data copy of the supplied config, not a live reader or a runtime capture. */
 export function cloneRuntimeConfigSnapshot(value: DeepReadonly<OpenClawConfig>): OpenClawConfig {
-  // SAFETY: structuredClone creates a separate, writable data graph; the native clone owner
-  // also preserves the exact source's resolution facts. No source object becomes mutable.
+  // The native clone owner also preserves the exact source's resolution facts.
+  // SAFETY: structuredClone creates an independent writable graph; the readonly source is untouched.
   return cloneConfigWithResolutionFacts(value) as OpenClawConfig;
 }
 
