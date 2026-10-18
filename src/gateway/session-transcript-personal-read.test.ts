@@ -304,7 +304,7 @@ describe("same-person conversation differences on native transcript read owner",
     await expect(
       prepareTranscriptReadAuthority({
         authority: undefined!,
-        getRuntimeConfig: f.params.getRuntimeConfig,
+        getRuntimeConfig: () => f.params.getRuntimeConfig(),
         sources: f.params.sources,
       }),
     ).rejects.toThrow();

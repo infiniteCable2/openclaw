@@ -292,7 +292,25 @@ export async function replyToConversationInput(
   let prepared: PreparedConversationSpeech | undefined;
   let speech = params.speech;
   let preparationFailed = false;
-  const execute = async (): Promise<ConversationReplyResult> => {
+  const release = async () => {
+    try {
+      try {
+        await prepared?.release();
+      } finally {
+        input.release?.();
+      }
+    } catch (error) {
+      if (input.scope.purpose === "greeting") {
+        throw error;
+      }
+      try {
+        params.speech.onError(error);
+      } catch {
+        // A release diagnostic must not turn completed user work into a retry.
+      }
+    }
+  };
+  try {
     claimConversationInputExecution(input);
     params.workSignal?.throwIfAborted();
     const context = await prepareConversationReplyContext(input, { text: params.text });
@@ -347,24 +365,8 @@ export async function replyToConversationInput(
       };
     }
     return await executeConversationReply(params, input, context, speech, preparationFailed);
-  };
-  // Join both release owners before returning; greeting cleanup still owns its failure outcome.
-  return await execute().finally(async () => {
-    try {
-      try {
-        await prepared?.release();
-      } finally {
-        input.release?.();
-      }
-    } catch (error) {
-      if (input.scope.purpose === "greeting") {
-        throw error;
-      }
-      try {
-        params.speech.onError(error);
-      } catch {
-        // A release diagnostic must not turn completed user work into a retry.
-      }
-    }
-  });
+  } finally {
+    // Join both release owners; greeting cleanup still owns its failure outcome.
+    await release();
+  }
 }

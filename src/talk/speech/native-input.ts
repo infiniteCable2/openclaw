@@ -176,7 +176,7 @@ export function createNativeSpeechInput(params: {
             // Finalize after this run's already admitted additions have resolved.
             // Their native dispatch can finish just after the model's terminal event.
             while (run.admissions.size > 0) {
-              await Promise.all([...run.admissions]);
+              await Promise.all(run.admissions);
             }
             if (run.generation === params.getGeneration() && !params.isStopped()) {
               params.output.finalizeSpeechUtterance(run.utterance, event.text);
@@ -257,7 +257,7 @@ export function createNativeSpeechInput(params: {
     submit,
     enqueue(input: Parameters<typeof submit>[0]) {
       // Accepted native work outlives media close; this observer never aborts or retries it.
-      void submit(input).catch(params.onFailure);
+      void submit(input).catch((error) => params.onFailure(error));
     },
   };
 }

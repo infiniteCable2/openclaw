@@ -419,7 +419,7 @@ export function readChannelContextGatewayContextResolver(
 export function bindHostConversationContextGatewayResolver(params: {
   context: object;
   resolveGatewayContext: GatewayContextResolver;
-  assertCurrent(): void;
+  assertCurrent(this: void): void;
 }): void {
   const { context, resolveGatewayContext, assertCurrent } = params;
   assertCurrent();

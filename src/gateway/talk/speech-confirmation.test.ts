@@ -261,10 +261,11 @@ describe("native getReply voice confirmation presentation", () => {
 
   it("retains a failed host registration even when it throws a falsy value", async () => {
     const f = fixture();
+    // oxlint-disable typescript/only-throw-error -- Exercise a genuinely falsy thrown value; an Error would not test the registration sentinel.
     mocks.registerRun.mockImplementationOnce(() => {
-      // oxlint-disable-next-line typescript/only-throw-error -- This regression must reject a genuinely falsy thrown value, not an Error substitute.
       throw undefined;
     });
+    // oxlint-enable typescript/only-throw-error
     f.dispatch.mockImplementation(async (input) => {
       try {
         input.onRunStarted?.("actual-native-run");

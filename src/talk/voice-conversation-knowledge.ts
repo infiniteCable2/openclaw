@@ -15,19 +15,18 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 
 const loadKnowledge = createLazyRuntimeModule(async () => {
-  const [admission, knowledge, recordConversationUtteranceObservation, participants] =
-    await Promise.all([
-      import("../config/sessions/session-accessor.sqlite-entry-admission.js"),
-      import("../auto-reply/reply/conversation-knowledge.js"),
-      import("../config/sessions/conversation-knowledge-store.js").then(
-        ({ recordConversationUtteranceObservation }) => recordConversationUtteranceObservation,
-      ),
-      import("../config/sessions/session-sharing-store.async.js"),
-    ]);
+  const [admission, knowledge, recordObservation, participants] = await Promise.all([
+    import("../config/sessions/session-accessor.sqlite-entry-admission.js"),
+    import("../auto-reply/reply/conversation-knowledge.js"),
+    import("../config/sessions/conversation-knowledge-store.js").then(
+      ({ recordConversationUtteranceObservation }) => recordConversationUtteranceObservation,
+    ),
+    import("../config/sessions/session-sharing-store.async.js"),
+  ]);
   return {
     loadSessionEntryForAdmission: admission.loadSessionEntryForAdmission,
     prepareReplyConversationKnowledge: knowledge.prepareReplyConversationKnowledge,
-    recordConversationUtteranceObservation,
+    recordConversationUtteranceObservation: recordObservation,
     recordSessionParticipant: participants.recordSessionParticipantInWorker,
   };
 });

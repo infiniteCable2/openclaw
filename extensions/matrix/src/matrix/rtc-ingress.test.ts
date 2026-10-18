@@ -345,7 +345,9 @@ describe("MatrixRTC text-free conversation admission", () => {
       await expect(source.admitInput(input)).resolves.toMatchObject({ version: 1 });
       await expect(source.admitInput({ ...input, inputId: "input-2" })).rejects.toThrow();
       expect(readStore).toHaveBeenCalledTimes(2);
-      expect(resolve.mock.calls.every(([params]) => params.event.mayPair === false)).toBe(true);
+      for (const [params] of resolve.mock.calls) {
+        expect(params.event.mayPair).toBe(false);
+      }
     });
   });
 

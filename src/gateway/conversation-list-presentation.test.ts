@@ -37,9 +37,9 @@ function plugin(capabilities: ChannelCapabilities) {
   };
 }
 
-function presentItem(conversation: ConversationRecord, channel?: ReturnType<typeof plugin>) {
+function presentItem(entry: ConversationRecord, channel?: ReturnType<typeof plugin>) {
   return expectDefined(
-    presentConversationList([conversation], () => channel)[0],
+    presentConversationList([entry], () => channel)[0],
     "presented conversation",
   );
 }
