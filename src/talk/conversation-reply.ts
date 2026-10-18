@@ -127,7 +127,9 @@ async function executeConversationReply(
   // Attach rejection custody immediately, while retaining the original result below.
   void completion.catch(() => {});
   const succeed = (payloads?: ReplyPayload | ReplyPayload[]) => {
-    if (completed) return;
+    if (completed) {
+      return;
+    }
     completed = true;
     // Output failure must not replay successfully executed tools. The output owner already
     // recorded the failure; no generated text is returned for accidental second playback.
@@ -137,12 +139,16 @@ async function executeConversationReply(
     });
   };
   const fail = (error: unknown) => {
-    if (completed) return;
+    if (completed) {
+      return;
+    }
     completed = true;
     rejectCompletion(error);
   };
   const settleWithoutReply = () => {
-    if (completed || !dispatchReturned || !settledWithoutReceipt) return;
+    if (completed || !dispatchReturned || !settledWithoutReceipt) {
+      return;
+    }
     if (
       runState.admission?.status === "accepted" &&
       runState.admission.mode === "steer" &&
@@ -156,7 +162,9 @@ async function executeConversationReply(
   };
   const queuedDelivery: QueuedFollowupReplyDelivery = Object.assign(
     async (batch: Parameters<QueuedFollowupReplyDelivery>[0]) => {
-      if (batch.completion.kind === "progress") return;
+      if (batch.completion.kind === "progress") {
+        return;
+      }
       if (batch.completion.kind === "completed") {
         succeed(batch.payloads);
       } else {
@@ -182,7 +190,9 @@ async function executeConversationReply(
     runId?: string,
   ) => {
     const key = `${mode}:${committed}:${runId ?? ""}`;
-    if (lastDisposition === key) return;
+    if (lastDisposition === key) {
+      return;
+    }
     lastDisposition = key;
     observe(() => params.onInputDisposition?.({ mode, committed, ...(runId ? { runId } : {}) }));
   };
@@ -264,8 +274,11 @@ async function executeConversationReply(
     } else if (admission?.status === "owned" || (!deferred && !admission)) {
       notifyDisposition("owned", true);
     }
-    if (!deferred) succeed(result);
-    else settleWithoutReply();
+    if (!deferred) {
+      succeed(result);
+    } else {
+      settleWithoutReply();
+    }
   } catch (error) {
     fail(error);
   }
@@ -279,7 +292,7 @@ export async function replyToConversationInput(
   let prepared: PreparedConversationSpeech | undefined;
   let speech = params.speech;
   let preparationFailed = false;
-  try {
+  const execute = async (): Promise<ConversationReplyResult> => {
     claimConversationInputExecution(input);
     params.workSignal?.throwIfAborted();
     const context = await prepareConversationReplyContext(input, { text: params.text });
@@ -289,7 +302,9 @@ export async function replyToConversationInput(
         ...structuredClone(params.runtimeContext),
       ];
     }
-    if (params.toolBindings) context.GatewayRunToolBindings = params.toolBindings;
+    if (params.toolBindings) {
+      context.GatewayRunToolBindings = params.toolBindings;
+    }
     if (params.prepareSpeech) {
       try {
         prepared = await params.prepareSpeech();
@@ -314,7 +329,9 @@ export async function replyToConversationInput(
       }
     }
     if (input.scope.purpose === "greeting") {
-      if (preparationFailed) throw new Error("Greeting speech preparation is unavailable");
+      if (preparationFailed) {
+        throw new Error("Greeting speech preparation is unavailable");
+      }
       const { prepareConversationGreeting } = await import("./conversation-greeting.js");
       input.assertCurrent();
       return {
@@ -330,7 +347,9 @@ export async function replyToConversationInput(
       };
     }
     return await executeConversationReply(params, input, context, speech, preparationFailed);
-  } finally {
+  };
+  // Join both release owners before returning; greeting cleanup still owns its failure outcome.
+  return await execute().finally(async () => {
     try {
       try {
         await prepared?.release();
@@ -338,12 +357,14 @@ export async function replyToConversationInput(
         input.release?.();
       }
     } catch (error) {
-      if (input.scope.purpose === "greeting") throw error;
+      if (input.scope.purpose === "greeting") {
+        throw error;
+      }
       try {
         params.speech.onError(error);
       } catch {
         // A release diagnostic must not turn completed user work into a retry.
       }
     }
-  }
+  });
 }

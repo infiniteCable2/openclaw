@@ -260,12 +260,12 @@ describe("native voice branch knowledge adapter", () => {
 
   it("records only genuine user participant with original row and commit fence", async () => {
     const owner = setup();
-    const participant = { type: "profile" as const, id: "example-person" };
+    const inputParticipant = { type: "profile" as const, id: "example-person" };
     await recordVoiceConversationObservation({
       anchor,
       lifecycleRevision: "row-a",
       role: "user",
-      participant,
+      participant: inputParticipant,
       fresh: true,
       timestamp: 42,
       config,
@@ -274,7 +274,7 @@ describe("native voice branch knowledge adapter", () => {
     expect(mocks.participant).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining(target),
       {
-        identity: participant,
+        identity: inputParticipant,
         promptedAt: 42,
         sessionAgentId: "example",
         expectedSession: { sessionId: target.sessionId, lifecycleRevision: "row-a" },

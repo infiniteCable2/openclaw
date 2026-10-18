@@ -42,10 +42,14 @@ export function captureSpeechPlaybackObservation(params: {
 }): SpeechPlaybackSnapshot | undefined {
   const { source } = params;
   const identities = [source.binding.runId, source.binding.sessionId, source.inputId];
-  if (identities.some((id) => !id || id.length > 256)) return;
+  if (identities.some((id) => !id || id.length > 256)) {
+    return undefined;
+  }
   const segments = { unplayed: 0, started: 0, submitted: 0, interrupted: 0 };
   for (const entry of source.utterance.transcriptEntries) {
-    if (entry.audioDelivery) segments[entry.audioDelivery] += 1;
+    if (entry.audioDelivery) {
+      segments[entry.audioDelivery] += 1;
+    }
   }
   return {
     ...(Number.isFinite(params.onsetAtMs) ? { onsetAtMs: params.onsetAtMs } : {}),

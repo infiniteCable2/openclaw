@@ -45,17 +45,12 @@ export async function preparePluginServiceNodeConversationInput(params: {
   assertServiceCurrent(): void;
   bindContext(context: MsgContext, assertCurrent: () => void): void;
 }): Promise<PluginNodeConversationInputV1> {
-  const {
-    nodeId,
-    command,
-    agentId,
-    conversationId,
-    label,
-    signal,
-    assertAssigned,
-    assertInputCurrent: assertBridgeCurrent,
-  } = params.request;
-  const { pluginId, context, assertServiceCurrent, bindContext } = params;
+  const { nodeId, command, agentId, conversationId, label, signal } = params.request;
+  const { pluginId, context } = params;
+  const assertAssigned = params.request.assertAssigned.bind(params.request);
+  const assertBridgeCurrent = params.request.assertInputCurrent.bind(params.request);
+  const assertServiceCurrent = params.assertServiceCurrent.bind(params);
+  const bindContext = params.bindContext.bind(params);
   if ([nodeId, command, agentId, conversationId, label].some((value) => !value.trim())) {
     throw new ConversationInputAdmissionError();
   }
@@ -168,7 +163,7 @@ export async function preparePluginServiceNodeConversationInput(params: {
         assertInputCurrent,
         async prepareContext(text) {
           assertCurrent();
-          const context = buildHostChannelInboundEventContext({
+          const inputContext = buildHostChannelInboundEventContext({
             channel: pluginId,
             accountId: nodeId,
             channelIngress: "unsupported",
@@ -193,11 +188,11 @@ export async function preparePluginServiceNodeConversationInput(params: {
             message: { rawBody: text, sourceModality: "audio", inboundEventKind: "user_request" },
             access: { commands: { authorized: false } },
           });
-          prepareSessionParticipantInput(context, identity, promptedAt);
-          context.CommandInterpretationSuppressed = true;
-          bindContext(context, assertCurrent);
+          prepareSessionParticipantInput(inputContext, identity, promptedAt);
+          inputContext.CommandInterpretationSuppressed = true;
+          bindContext(inputContext, assertCurrent);
           assertCurrent();
-          return context;
+          return inputContext;
         },
       });
     },

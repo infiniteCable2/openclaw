@@ -51,7 +51,9 @@ export async function prepareConversationActiveConnections(
         errors.push(error);
       }
     }
-    if (errors.length) throw new AggregateError(errors, "Active connection read release failed");
+    if (errors.length) {
+      throw new AggregateError(errors, "Active connection read release failed");
+    }
   };
   try {
     if (params.authority) {
@@ -81,7 +83,9 @@ export async function prepareConversationActiveConnections(
     }
     return {
       present(): ConversationActiveConnection[] {
-        if (!active) throw new Error("Active connection read has been released");
+        if (!active) {
+          throw new Error("Active connection read has been released");
+        }
         params.authority?.assertCurrent();
         const rows: ConversationActiveConnection[] = [];
         const query = params.query?.trim().toLowerCase();
@@ -99,7 +103,9 @@ export async function prepareConversationActiveConnections(
               continue;
             }
             const state = presentation.state();
-            if (state === "closed") continue;
+            if (state === "closed") {
+              continue;
+            }
             if (
               query &&
               ![presentation.label, presentation.channel, presentation.kind].some((value) =>
@@ -122,7 +128,9 @@ export async function prepareConversationActiveConnections(
             // Presence and read grants can disappear while another address is prepared.
             params.authority?.assertCurrent();
           }
-          if (rows.length >= params.limit) break;
+          if (rows.length >= params.limit) {
+            break;
+          }
         }
         return rows;
       },
@@ -135,6 +143,7 @@ export async function prepareConversationActiveConnections(
       throw new AggregateError(
         [error, releaseError],
         "Active connection authorization cleanup failed",
+        { cause: releaseError },
       );
     }
     throw error;

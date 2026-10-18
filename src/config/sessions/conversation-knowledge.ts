@@ -89,8 +89,9 @@ function readConversationKnowledgeReferenceBase(
     !Number.isSafeInteger(through.activeMessagePosition) ||
     Number(through.activeMessagePosition) < 0 ||
     (through.effectiveParentId !== null && !exact(through.effectiveParentId))
-  )
-    return;
+  ) {
+    return undefined;
+  }
   const receipt: ConversationKnowledgeReferenceBase = {
     version: 1,
     origin: record.origin,
@@ -113,10 +114,12 @@ function readConversationKnowledgeReferenceBase(
     },
   };
   if (record.observed !== undefined) {
-    if (!Array.isArray(record.observed) || record.observed.length > MAX_SOURCES) return;
+    if (!Array.isArray(record.observed) || record.observed.length > MAX_SOURCES) {
+      return undefined;
+    }
     receipt.observed = [];
-    for (const value of record.observed) {
-      const frontier = asOptionalRecord(value);
+    for (const observation of record.observed) {
+      const frontier = asOptionalRecord(observation);
       if (
         !frontier ||
         !exact(frontier.origin) ||
@@ -124,8 +127,9 @@ function readConversationKnowledgeReferenceBase(
         !exact(frontier.throughEntryId) ||
         !Number.isSafeInteger(frontier.throughRawSeq) ||
         Number(frontier.throughRawSeq) < 0
-      )
-        return;
+      ) {
+        return undefined;
+      }
       receipt.observed.push({
         origin: frontier.origin,
         generation: frontier.generation,
@@ -179,8 +183,9 @@ export function selectConversationKnowledgeReport(
     previous.origin === receipt.origin &&
     previous.through.generation === receipt.through.generation &&
     previous.through.rawSeq >= receipt.through.rawSeq
-  )
-    return;
+  ) {
+    return undefined;
+  }
   return {
     customType: utterance ? CONVERSATION_UTTERANCE_REPORT : CONVERSATION_KNOWLEDGE_REPORT,
     content: `${utterance ? "Committed utterance observation" : "Completed conversation"} reference. Readable source content requires its original current permission.`,
@@ -199,7 +204,9 @@ export function selectConversationKnowledgeReceipts(
   const incarnationByKey = new Map<string, string>();
   for (const event of events) {
     const record = asOptionalRecord(event);
-    if (record?.type !== "custom_message") continue;
+    if (record?.type !== "custom_message") {
+      continue;
+    }
     const receipt =
       record.customType === CONVERSATION_KNOWLEDGE_REPORT
         ? readConversationKnowledgeReceipt(record.details)
@@ -210,8 +217,9 @@ export function selectConversationKnowledgeReceipts(
       !receipt ||
       receipt.source.sessionId === currentSessionId ||
       receipt.source.sessionKey === currentSessionKey
-    )
+    ) {
       continue;
+    }
     const sourceKey = JSON.stringify([receipt.source.agentId, receipt.source.sessionKey]);
     const incarnation = conversationKnowledgeOrigin(receipt.source);
     const oldOrigin = incarnationByKey.get(sourceKey);
@@ -220,8 +228,9 @@ export function selectConversationKnowledgeReceipts(
         if (
           previous.source.agentId === receipt.source.agentId &&
           previous.source.sessionKey === receipt.source.sessionKey
-        )
+        ) {
           selected.delete(origin);
+        }
       }
     }
     incarnationByKey.set(sourceKey, incarnation);
@@ -241,8 +250,12 @@ export function selectConversationKnowledgeReceipts(
 }
 
 function messageText(message: Record<string, unknown>): string {
-  if (typeof message.content === "string") return message.content;
-  if (!Array.isArray(message.content)) return "";
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  if (!Array.isArray(message.content)) {
+    return "";
+  }
   return message.content
     .flatMap((value) => {
       const block = asOptionalRecord(value);
@@ -266,8 +279,9 @@ function completedConversationKnowledgeStart(
     final.role !== "assistant" ||
     readSessionTranscriptRunId(final) !== receipt.runId ||
     final.stopReason !== "stop"
-  )
-    return;
+  ) {
+    return undefined;
+  }
   const ownedStart = events.findIndex(
     (event, index) =>
       index <= terminalIndex &&
@@ -278,13 +292,17 @@ function completedConversationKnowledgeStart(
     (event, index) =>
       index < ownedStart && asOptionalRecord(asOptionalRecord(event)?.message)?.role === "user",
   );
-  if (userStart < 0) return;
+  if (userStart < 0) {
+    return undefined;
+  }
   const messages: AgentMessage[] = [];
   let sawUser = false;
   for (const event of events.slice(userStart, terminalIndex + 1)) {
     const record = asOptionalRecord(event);
     const message = asOptionalRecord(record?.message);
-    if (record?.type !== "message" || !message || !isReadableSessionMessage(message)) continue;
+    if (record?.type !== "message" || !message || !isReadableSessionMessage(message)) {
+      continue;
+    }
     if (message.role === "user") {
       sawUser = true;
     }
@@ -306,7 +324,7 @@ function completedConversationKnowledgeStart(
       return complete ? userStart : undefined;
     }
   }
-  return;
+  return undefined;
 }
 
 export function isCompletedConversationKnowledge(
@@ -322,7 +340,7 @@ export function isConversationUtteranceObservation(
   events: readonly TranscriptEvent[],
 ) {
   const event = asOptionalRecord(
-    events.find((event) => asOptionalRecord(event)?.id === receipt.through.entryId),
+    events.find((candidate) => asOptionalRecord(candidate)?.id === receipt.through.entryId),
   );
   return committedVoiceRole(event) === receipt.role;
 }
@@ -355,15 +373,18 @@ export function projectConversationKnowledge(
     frontier.origin === receipt.origin &&
     frontier.generation === receipt.through.generation &&
     frontier.throughRawSeq >= receipt.through.rawSeq
-  )
-    return;
+  ) {
+    return undefined;
+  }
   const utterance = "kind" in receipt;
   const start = utterance
     ? isConversationUtteranceObservation(receipt, events)
       ? 0
       : undefined
     : completedConversationKnowledgeStart(receipt, events);
-  if (start === undefined) return;
+  if (start === undefined) {
+    return undefined;
+  }
   const rows: Array<{ speaker: "user" | "assistant"; text: string }> = [];
   const previous =
     frontier?.origin === receipt.origin && frontier.generation === receipt.through.generation
@@ -373,7 +394,9 @@ export function projectConversationKnowledge(
     frontier?.origin === receipt.origin && frontier.generation !== receipt.through.generation;
   // Compaction or bounded truncation can remove a prior frontier. Never invent an offset.
   // A separately admitted new generation gets an explicit bounded rebase, not an old offset.
-  if (frontier && !frontierRebased && previous < 0) return;
+  if (frontier && !frontierRebased && previous < 0) {
+    return undefined;
+  }
   // The terminal receipt validates only its own completed exchange, not an earlier
   // interrupted run between frontiers. Omit that older prefix rather than replay it.
   const selectedStart = Math.max(start, previous + 1);
@@ -381,8 +404,12 @@ export function projectConversationKnowledge(
   for (const event of events.slice(selectedStart)) {
     const record = asOptionalRecord(event);
     const message = asOptionalRecord(record?.message);
-    if (record?.type !== "message" || !message) continue;
-    if (utterance && !committedVoiceRole(record)) continue;
+    if (record?.type !== "message" || !message) {
+      continue;
+    }
+    if (utterance && !committedVoiceRole(record)) {
+      continue;
+    }
     if (message.role === "user") {
       sawUser = true;
     }
@@ -397,10 +424,17 @@ export function projectConversationKnowledge(
         rows.push({ speaker: message.role, text });
       }
     }
-    if (record.id === receipt.through.entryId) break;
+    if (record.id === receipt.through.entryId) {
+      break;
+    }
   }
-  if (!sawUser) return;
-  const observations = rows.slice(-4).map((row) => ({ ...row, text: row.text.slice(0, 450) }));
+  if (!sawUser) {
+    return undefined;
+  }
+  const observations = rows.slice(-4).map((row) => ({
+    speaker: row.speaker,
+    text: row.text.slice(0, 450),
+  }));
   const truncated =
     (!utterance &&
       events.slice(previous + 1, start).some((event) => {
@@ -427,7 +461,9 @@ export function projectConversationKnowledge(
     contentTruncated: truncated,
     observations,
   });
-  if (text.length > MAX_SOURCE_CHARS) return;
+  if (text.length > MAX_SOURCE_CHARS) {
+    return undefined;
+  }
   return {
     text,
     frontier: {
@@ -445,7 +481,9 @@ export function combineConversationKnowledge(
   const selected: (typeof parts)[number][] = [];
   let chars = 0;
   for (const part of parts) {
-    if (chars + part.text.length > MAX_CONTEXT_CHARS) break;
+    if (chars + part.text.length > MAX_CONTEXT_CHARS) {
+      break;
+    }
     selected.push(part);
     chars += part.text.length;
   }

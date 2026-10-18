@@ -35,7 +35,9 @@ export async function prepareTranscriptReadAuthority(
       }
     | PersonalConversationReadParams,
 ) {
-  if (params.purpose === "conversation-differences") return preparePersonalConversationRead(params);
+  if (params.purpose === "conversation-differences") {
+    return preparePersonalConversationRead(params);
+  }
   assertAdmittedRunOperatorAuthority(params.authority);
   if (!params.sources.length || params.sources.length > MAX_SESSION_ROW_FACTS_KEYS) {
     throw new Error(`Transcript reads require 1 to ${MAX_SESSION_ROW_FACTS_KEYS} selected sources`);
@@ -238,7 +240,7 @@ export async function prepareTranscriptReadAuthority(
       throw new AggregateError(
         [error, releaseError],
         "Transcript read preparation and release failed",
-        { cause: error },
+        { cause: releaseError },
       );
     }
     throw error;

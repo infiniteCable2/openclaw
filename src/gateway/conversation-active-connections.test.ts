@@ -51,7 +51,10 @@ function reader() {
         throw new Error("Connection discovery requires its existing operator read authority");
       }
       expect(params.authority).toBe(authority);
-      const id = params.sources[0]?.sessionKey.split(":").at(-1)!;
+      const id = params.sources[0]?.sessionKey.split(":").at(-1);
+      if (!id) {
+        throw new Error("Connection fixture requires an exact source session");
+      }
       if (id === "denied") throw new Error("Native sharing policy refused this person");
       const read = { assertCurrent: vi.fn(), release: vi.fn() };
       reads.push(read);

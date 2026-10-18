@@ -60,10 +60,11 @@ export function createReplyConversationKnowledgeTurn(params: {
     !reader ||
     resolveReplyRunTrigger(params.turn) !== "user" ||
     followupRun.currentInboundEventKind === "room_event"
-  )
-    return;
+  ) {
+    return undefined;
+  }
   const { sessionId, agentId } = followupRun.run;
-  const { getRuntimeConfig } = params;
+  const getRuntimeConfig = () => params.getRuntimeConfig();
   let prepared: PreparedReplyConversationKnowledge | undefined;
   let execution: { admission: PreparedAgentRunAdmission; signal: AbortSignal } | undefined;
   let phase: "unprepared" | "prepared" | "released" = "unprepared";
@@ -77,7 +78,9 @@ export function createReplyConversationKnowledgeTurn(params: {
   const assertCurrent = composeSessionSourceAssertion(
     [params.originalSource, selected],
     (check) => {
-      if (phase === "released") throw new Error("Conversation knowledge turn has been released");
+      if (phase === "released") {
+        throw new Error("Conversation knowledge turn has been released");
+      }
       check();
     },
   );
@@ -88,13 +91,15 @@ export function createReplyConversationKnowledgeTurn(params: {
       return prepared?.fragments ?? [];
     },
     async prepare(admission: PreparedAgentRunAdmission, signal: AbortSignal) {
-      if (phase !== "unprepared") throw new Error("Conversation knowledge turn already prepared");
+      if (phase !== "unprepared") {
+        throw new Error("Conversation knowledge turn already prepared");
+      }
       phase = "prepared";
       execution = { admission, signal };
       assertCurrent();
       signal.throwIfAborted();
       enabled = resolveAgentConversationMode(getRuntimeConfig(), agentId) === "branches";
-      if (enabled)
+      if (enabled) {
         prepared = await prepareReplyConversationKnowledge({
           reader,
           sessionId,
@@ -103,11 +108,14 @@ export function createReplyConversationKnowledgeTurn(params: {
           getRuntimeConfig,
           signal,
         });
+      }
       assertCurrent();
       signal.throwIfAborted();
     },
     async record(result: AgentTurnInternalResult) {
-      if (!execution) throw new Error("Conversation knowledge execution was not prepared");
+      if (!execution) {
+        throw new Error("Conversation knowledge execution was not prepared");
+      }
       const { admission, signal } = execution;
       const runId = admission.operationalRunInstance.runId;
       const terminal =
@@ -121,8 +129,9 @@ export function createReplyConversationKnowledgeTurn(params: {
         terminal.sessionId !== sessionId ||
         !terminal.assistantTranscriptIdempotencyKey ||
         signal.aborted
-      )
+      ) {
         return;
+      }
       await drainAgentRunTerminalWrites(admission.operationalRunInstance);
       admission.assertSourceCurrent();
       signal.throwIfAborted();
@@ -149,7 +158,9 @@ export function createReplyConversationKnowledgeTurn(params: {
       }
     },
     release() {
-      if (phase === "released") return;
+      if (phase === "released") {
+        return;
+      }
       phase = "released";
       prepared?.release();
     },
@@ -170,7 +181,9 @@ function unavailableConversationKnowledge(
 ): PreparedReplyConversationKnowledge {
   let active = true;
   const assertCurrent = composeSessionSourceAssertion([params.assertCurrent], (assertSource) => {
-    if (!active) throw new Error("Conversation knowledge capability has been released");
+    if (!active) {
+      throw new Error("Conversation knowledge capability has been released");
+    }
     params.signal?.throwIfAborted();
     assertSource();
   });
@@ -214,11 +227,14 @@ export async function prepareReplyConversationKnowledge(params: {
     : undefined;
   const participantIdentity = conversationKnowledgeParticipantIdentity(originalParticipant);
   // An administrator's history scope is not permission for implicit disclosure.
-  if (!originalParticipant || !participantIdentity)
+  if (!originalParticipant || !participantIdentity) {
     return unavailableConversationKnowledge(params, "original-participant-unconfirmed");
+  }
   const branch = await readConversationKnowledgeBranch(params);
   params.assertCurrent();
-  if (!branch) return;
+  if (!branch) {
+    return undefined;
+  }
   const targetFacts = await prepareConversationKnowledgeBranchFacts({
     branch,
     getRuntimeConfig: params.getRuntimeConfig,
@@ -241,7 +257,9 @@ export async function prepareReplyConversationKnowledge(params: {
   }> = [];
   const drop = (read: (typeof reads)[number]) => {
     const index = reads.indexOf(read);
-    if (index < 0) return;
+    if (index < 0) {
+      return;
+    }
     reads.splice(index, 1);
     const failures: unknown[] = [];
     for (const owner of [read.facts, read.grant]) {
@@ -251,12 +269,15 @@ export async function prepareReplyConversationKnowledge(params: {
         failures.push(error);
       }
     }
-    if (failures.length)
+    if (failures.length) {
       throw new AggregateError(failures, "Conversation knowledge source release failed");
+    }
   };
   let active = true;
   const release = () => {
-    if (!active) return;
+    if (!active) {
+      return;
+    }
     active = false;
     const failures: unknown[] = [];
     for (const read of reads.toReversed()) {
@@ -271,8 +292,9 @@ export async function prepareReplyConversationKnowledge(params: {
     } catch (error) {
       failures.push(error);
     }
-    if (failures.length)
+    if (failures.length) {
       throw new AggregateError(failures, "Conversation knowledge read cleanup failed");
+    }
   };
   try {
     params.assertCurrent();
@@ -388,7 +410,9 @@ export async function prepareReplyConversationKnowledge(params: {
     }
     const combined = combineConversationKnowledge(parts);
     for (const read of reads.toReversed()) {
-      if (!combined.frontiers.some((frontier) => frontier.origin === read.origin)) drop(read);
+      if (!combined.frontiers.some((frontier) => frontier.origin === read.origin)) {
+        drop(read);
+      }
     }
     const source = composeSessionSourceAssertion(
       [
@@ -397,7 +421,9 @@ export async function prepareReplyConversationKnowledge(params: {
         ...reads.flatMap((read) => [read.grant.assertCurrent, read.facts?.assertCurrent]),
       ],
       (check) => {
-        if (!active) throw new Error("Conversation knowledge read has been released");
+        if (!active) {
+          throw new Error("Conversation knowledge read has been released");
+        }
         params.signal?.throwIfAborted();
         check();
       },
@@ -425,7 +451,9 @@ export async function prepareReplyConversationKnowledge(params: {
     try {
       release();
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "Conversation knowledge preparation failed");
+      throw new AggregateError([error, cleanupError], "Conversation knowledge preparation failed", {
+        cause: cleanupError,
+      });
     }
     throw error;
   }

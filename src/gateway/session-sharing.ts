@@ -380,7 +380,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
       consuming.sharing = undefined;
       const targetChanged = (sessionKey: string) =>
         sessionMutationTargetChanged(params.method, sessionKey);
-      const assertTalkTargetCurrent = talkAdmission.assertCurrent;
+      const assertTalkTargetCurrent = talkAdmission.assertCurrent.bind(talkAdmission);
       const assertTargetCurrent = (
         targetRef: SessionMutationTarget,
         expected: AuthorizedSessionMutationTarget | undefined,

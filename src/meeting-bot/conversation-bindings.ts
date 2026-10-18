@@ -84,7 +84,7 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
     const speech: ConversationReplyParams["speech"] = {
       outputOwner,
       logger: params.logger,
-      assertOutputCurrent: params.assertOutputCurrent,
+      assertOutputCurrent: params.assertOutputCurrent.bind(params),
       onError,
       onSpeakableText: consult.onSpeakableText,
       waitForPendingInput: consult.waitForPendingInput,
@@ -185,7 +185,9 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
           try {
             await release();
           } catch (cleanup) {
-            throw new AggregateError([error, cleanup], "Speech preparation and cleanup failed");
+            throw new AggregateError([error, cleanup], "Speech preparation and cleanup failed", {
+              cause: cleanup,
+            });
           }
           throw error;
         }

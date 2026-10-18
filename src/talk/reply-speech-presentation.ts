@@ -44,7 +44,7 @@ export function createReplySpeechPresentation(
       breakPreference: "sentence" as const,
       ...(params.speechSegmentationProfile ? { speech: params.speechSegmentationProfile } : {}),
     },
-    onError: params.onError,
+    onError: (error) => params.onError(error),
     openRun(binding) {
       let open = true;
       let accepting = true;

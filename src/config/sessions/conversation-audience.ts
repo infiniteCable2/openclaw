@@ -10,10 +10,12 @@ export function conversationKnowledgeAudience(entry: Partial<InternalSessionEntr
     entry.chatType === "direct" &&
     entry.publicShare === undefined &&
     (entry.participantCount ?? 0) <= 1
-  )
+  ) {
     return "private-direct" as const;
-  if (entry.chatType === "group" || entry.chatType === "channel" || entry.publicShare)
+  }
+  if (entry.chatType === "group" || entry.chatType === "channel" || entry.publicShare) {
     return "shared" as const;
+  }
   return "unknown" as const;
 }
 
@@ -21,7 +23,9 @@ export function conversationKnowledgeAudience(entry: Partial<InternalSessionEntr
 export function conversationKnowledgeParticipantIdentity(
   identity: SessionParticipantIdentity | undefined,
 ) {
-  if (identity?.type !== "profile" && identity?.type !== "remote") return;
+  if (identity?.type !== "profile" && identity?.type !== "remote") {
+    return undefined;
+  }
   return JSON.stringify([participantIdentityNamespace(identity), identity.id]);
 }
 
@@ -31,7 +35,8 @@ export function conversationKnowledgeAudienceIdentity(entry: Partial<InternalSes
     conversationKnowledgeAudience(entry) !== "private-direct" ||
     entry.participantCount !== 1 ||
     entry.participants?.length !== 1
-  )
-    return;
+  ) {
+    return undefined;
+  }
   return conversationKnowledgeParticipantIdentity(entry.participants[0]?.identity);
 }

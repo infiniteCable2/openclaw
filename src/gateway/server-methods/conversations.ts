@@ -236,7 +236,7 @@ export const conversationHandlers: GatewayRequestHandlers = {
           ...(request.channel ? { channel: request.channel } : {}),
           ...(request.query ? { query: request.query } : {}),
           limit: request.limit ?? 50,
-          presentActiveConnections: connections?.present,
+          presentActiveConnections: connections ? connections.present.bind(connections) : undefined,
         });
         captured?.authority.assertCurrent();
         respond(true, payload, undefined);

@@ -46,7 +46,9 @@ export async function recordVoiceConversationObservation(params: {
   env?: NodeJS.ProcessEnv;
   assertCurrent: SessionSourceAssertion;
 }): Promise<void> {
-  if (resolveAgentConversationMode(params.config, params.anchor.agentId) !== "branches") return;
+  if (resolveAgentConversationMode(params.config, params.anchor.agentId) !== "branches") {
+    return;
+  }
   try {
     params.assertCurrent();
     const owner = await loadKnowledge();
@@ -76,13 +78,16 @@ export async function recordVoiceConversationObservation(params: {
       if (
         held.entry?.sessionId !== params.anchor.sessionId ||
         held.entry.lifecycleRevision !== params.lifecycleRevision
-      )
+      ) {
         throw new Error("Original voice observation session changed");
+      }
       const reader =
         "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"
           ? held.databaseClaim.reader
           : undefined;
-      if (!reader) return;
+      if (!reader) {
+        return;
+      }
       await owner.recordConversationUtteranceObservation({
         reader,
         assertCurrent: params.assertCurrent,
@@ -123,8 +128,11 @@ export async function prepareVoiceConversationKnowledge(params: {
       : undefined;
   params.assertCurrent();
   params.signal?.throwIfAborted();
-  if (resolveAgentConversationMode(params.getRuntimeConfig(), params.target.agentId) !== "branches")
-    return;
+  if (
+    resolveAgentConversationMode(params.getRuntimeConfig(), params.target.agentId) !== "branches"
+  ) {
+    return undefined;
+  }
   const knowledge = await loadKnowledge();
   params.assertCurrent();
   const held = await knowledge.loadSessionEntryForAdmission(params.target, {
@@ -135,7 +143,9 @@ export async function prepareVoiceConversationKnowledge(params: {
   let active = true;
   let releasing: Promise<void> | undefined;
   const assertCurrent = composeSessionSourceAssertion([params.assertCurrent], (check) => {
-    if (!active) throw new Error("Voice conversation knowledge has been released");
+    if (!active) {
+      throw new Error("Voice conversation knowledge has been released");
+    }
     check();
     params.signal?.throwIfAborted();
     held.databaseClaim.assertCurrent();
@@ -154,12 +164,15 @@ export async function prepareVoiceConversationKnowledge(params: {
       } catch (error) {
         errors.push(error);
       }
-      if (errors.length) throw new AggregateError(errors, "Voice knowledge release failed");
+      if (errors.length) {
+        throw new AggregateError(errors, "Voice knowledge release failed");
+      }
     })());
   try {
     assertCurrent();
-    if (held.entry?.sessionId !== params.target.sessionId)
+    if (held.entry?.sessionId !== params.target.sessionId) {
       throw new Error("Voice conversation changed before its context read");
+    }
     const reader =
       "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"
         ? held.databaseClaim.reader
@@ -171,7 +184,7 @@ export async function prepareVoiceConversationKnowledge(params: {
         assertCurrent,
         originalParticipant: participant,
         expectedAudienceIdentity,
-        getRuntimeConfig: params.getRuntimeConfig,
+        getRuntimeConfig: () => params.getRuntimeConfig(),
         signal: params.signal,
       });
       assertCurrent();
@@ -200,7 +213,13 @@ export async function prepareVoiceConversationKnowledge(params: {
     try {
       await release();
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "Voice knowledge preparation cleanup failed");
+      throw new AggregateError(
+        [error, cleanupError],
+        "Voice knowledge preparation cleanup failed",
+        {
+          cause: cleanupError,
+        },
+      );
     }
     throw error;
   }

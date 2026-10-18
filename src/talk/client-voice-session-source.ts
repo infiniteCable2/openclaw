@@ -27,7 +27,7 @@ function capturedSource(options: ReturnType<typeof sourceOptions>, identity: Dat
     options,
     identity,
     settlementContext,
-    assertCurrent() {
+    assertCurrent(this: void) {
       assertClientVoiceSessionSettlementCurrent(settlementContext);
       settlementContext.admission.assertCurrent();
       assertExistingDatabaseIdentity(options.path, identity.key, identity.birthtime);

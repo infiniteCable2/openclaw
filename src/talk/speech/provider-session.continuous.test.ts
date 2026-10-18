@@ -253,7 +253,7 @@ describe("meeting native continuous voice", () => {
     const fixture = await createLiveFixture();
     const event = { callId, itemId, name: "openclaw_agent_consult", args: { question: "Check" } };
     try {
-      await fixture.callbacks.onToolCall?.(event);
+      fixture.callbacks.onToolCall?.(event);
       expect(fixture.handleToolCall).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ event, inputId, purpose: "user", sessionId: "meeting-1" }),
       );

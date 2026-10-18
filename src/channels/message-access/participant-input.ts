@@ -46,7 +46,7 @@ export function selectBoundChannelParticipantInputs(
         input.binding.inboundEventKind !== params.binding.inboundEventKind,
     )
   ) {
-    return;
+    return undefined;
   }
   return batch.filter((input) => input !== undefined);
 }

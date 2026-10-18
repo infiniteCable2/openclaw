@@ -1,6 +1,7 @@
 import { projectRuntimeContextFragments } from "../../agents/internal-runtime-context.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveClientVoiceAgentSessionId } from "../../talk/client-voice-session.js";
 import {
@@ -13,8 +14,8 @@ import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 /** Creation-time data snapshot. This is not a continuous provider context-update capability. */
 export async function prepareTalkProviderConversationContext(params: {
   target: PreparedTalkSessionTarget;
-  assertCurrent(): void;
-  getRuntimeConfig(): OpenClawConfig;
+  assertCurrent: SessionSourceAssertion;
+  getRuntimeConfig: () => OpenClawConfig;
   captureOperatorAuthority: TalkOperatorRunSource;
   participant?: SessionParticipantIdentity;
 }) {
@@ -24,7 +25,9 @@ export async function prepareTalkProviderConversationContext(params: {
   let active = true;
   let releasing: Promise<void> | undefined;
   const assertActive = () => {
-    if (!active) throw new Error("Talk provider context snapshot has been released");
+    if (!active) {
+      throw new Error("Talk provider context snapshot has been released");
+    }
   };
   const assertCurrent = () => {
     assertActive();
@@ -59,13 +62,14 @@ export async function prepareTalkProviderConversationContext(params: {
       storePath: params.target.storePath,
     };
     const sessionId = resolveClientVoiceAgentSessionId(target);
-    if (sessionId)
+    if (sessionId) {
       knowledge = await prepareVoiceConversationKnowledge({
         target: { ...target, sessionId },
         assertCurrent: params.assertCurrent,
         getRuntimeConfig: params.getRuntimeConfig,
         participant,
       });
+    }
     assertCurrent();
     const fragments = knowledge?.fragments ?? [
       {
@@ -88,7 +92,9 @@ export async function prepareTalkProviderConversationContext(params: {
     try {
       await release();
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "Talk provider context cleanup failed");
+      throw new AggregateError([error, cleanupError], "Talk provider context cleanup failed", {
+        cause: cleanupError,
+      });
     }
     throw error;
   }

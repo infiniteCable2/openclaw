@@ -129,7 +129,9 @@ async function createScenario(state: OpenClawTestState) {
       throw new Error("Scenario requires the real admitted worker cohort reader");
     }
     const reader = databaseClaim.reader;
-    closeClaims.push(async () => void (await databaseClaim.release()));
+    closeClaims.push(async () => {
+      await databaseClaim.release();
+    });
     const captured = captureSessionEntryReadSource(database, undefined);
     let current = true;
     const check = () => {

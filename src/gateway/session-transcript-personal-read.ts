@@ -86,10 +86,11 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       (key) => isIncognitoSessionKey(key) || parseAgentSessionKey(key)?.agentId !== target.agentId,
     ) ||
     selected.some((source) => source.agentId !== target.agentId)
-  )
+  ) {
     throw new Error(
       "Personal conversation differences require an original same-person branch source",
     );
+  }
   const audienceIdentity = conversationKnowledgeParticipantIdentity(participant);
   type Held = Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
   type Source = Readonly<{
@@ -119,12 +120,17 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     throw error;
   };
   const policy = () => {
-    if (!active) throw new Error("Personal conversation read has been released");
-    if (revoked) throw refusal;
+    if (!active) {
+      throw new Error("Personal conversation read has been released");
+    }
+    if (revoked) {
+      throw refusal;
+    }
     original();
     const cfg = params.getRuntimeConfig();
-    if (resolveAgentConversationMode(cfg, target.agentId) !== "branches")
+    if (resolveAgentConversationMode(cfg, target.agentId) !== "branches") {
       throw new Error("Personal conversation difference mode changed");
+    }
     return cfg;
   };
   const checkEntry = (entry: InternalSessionEntry, isRoot: boolean) => {
@@ -133,8 +139,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       if (
         entry.sessionId !== target.root.sessionId ||
         entry.lifecycleRevision !== target.root.lifecycleRevision
-      )
+      ) {
         throw new Error("Personal conversation root incarnation changed");
+      }
       return;
     }
     const membership = entry.conversationTopology;
@@ -146,15 +153,17 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       membership.rootSessionKey !== target.root.sessionKey ||
       membership.rootSessionId !== target.root.sessionId ||
       membership.rootSessionLifecycleRevision !== target.root.lifecycleRevision
-    )
+    ) {
       throw new Error("Personal conversation source audience or root is not the original person's");
+    }
   };
   const checkMembers = (members: readonly string[], root: boolean) => {
     if (
       !root &&
       members.some((member) => participant.type !== "profile" || member !== participant.id)
-    )
+    ) {
       throw new Error("Personal conversation has another explicitly shared reader");
+    }
   };
   const assertCurrent = () => {
     try {
@@ -171,8 +180,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
           !isDeepStrictEqual(current.readSource, expected.readSource) ||
           !isDeepStrictEqual([...facts.membership].toSorted(), read.members) ||
           fields.some((field) => !isDeepStrictEqual(current.entry[field], read.entry[field]))
-        )
+        ) {
           throw new Error("Personal conversation source changed after admission");
+        }
         checkEntry(current.entry, read.root);
         checkMembers(read.members, read.root);
       }
@@ -208,8 +218,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       current.readSource?.path !== target.storePath ||
       typeof current.readSource.databaseIdentity !== "string" ||
       isIncognitoSessionKey(current.canonicalKey)
-    )
+    ) {
       throw new Error("Personal conversation source physical ownership changed");
+    }
     checkEntry(current.entry, root);
     checkMembers(members, root);
     const expected = Object.freeze({
@@ -239,18 +250,21 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     if (
       originalTarget.sessionId !== target.sessionId ||
       originalTarget.lifecycleRevision !== target.lifecycleRevision
-    )
+    ) {
       throw new Error("Personal destination is not the original input incarnation");
+    }
     const originalRoot = await hold(
       { agentId: target.agentId, sessionKey: target.root.sessionKey },
       true,
     );
-    if (!isDeepStrictEqual(originalRoot.readSource, originalTarget.readSource))
+    if (!isDeepStrictEqual(originalRoot.readSource, originalTarget.readSource)) {
       throw new Error("Personal conversation root differs from the original physical store");
+    }
     for (const request of selected) {
       const source = await hold(request, false);
-      if (!isDeepStrictEqual(source.readSource, originalTarget.readSource))
+      if (!isDeepStrictEqual(source.readSource, originalTarget.readSource)) {
         throw new Error("Personal conversation sources do not share the original physical store");
+      }
       sources.push(source);
     }
     const prepare = async (): Promise<PreparedSessionSourceAuthority> => {
@@ -290,7 +304,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       release();
     } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], "Personal read preparation cleanup failed", {
-        cause: error,
+        cause: cleanupError,
       });
     }
     throw error;

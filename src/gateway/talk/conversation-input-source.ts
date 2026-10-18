@@ -22,7 +22,7 @@ export function createGatewayTalkConversationInputSource(input: {
   authority: TalkAgentConsultAuthority;
   /** Original Gateway participant owner, not caller display metadata or device identity. */
   participant?: SessionParticipantIdentity;
-  assertInputCurrent(): void;
+  assertInputCurrent(this: void): void;
   resolveGatewayContext: GatewayContextResolver;
 }): ConversationInputSourceV1 {
   const params = {
@@ -50,7 +50,9 @@ export function createGatewayTalkConversationInputSource(input: {
       let source: Awaited<ReturnType<TalkOperatorRunSource>>;
       let released = false;
       const release = () => {
-        if (released) return;
+        if (released) {
+          return;
+        }
         released = true;
         try {
           source?.release();
@@ -74,7 +76,9 @@ export function createGatewayTalkConversationInputSource(input: {
         // The native owner supplies resident facts. Rechecking does not run SQLite on the
         // Gateway thread, and media closure cannot revoke already accepted user work.
         const assertCurrent = () => {
-          if (released) throw new Error("Talk input source is closed");
+          if (released) {
+            throw new Error("Talk input source is closed");
+          }
           const cfg = params.getRuntimeConfig();
           const current = facts.readCurrent(cfg).target;
           if (
@@ -100,8 +104,9 @@ export function createGatewayTalkConversationInputSource(input: {
         params.assertInputCurrent();
         scope.signal?.throwIfAborted();
         assertCurrent();
-        if (!source)
+        if (!source) {
           throw new Error("Talk conversation requires its original authenticated caller");
+        }
         const capturedSource = source;
         capturedSource.authority.assertCurrent();
         if (

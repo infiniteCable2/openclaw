@@ -50,8 +50,9 @@ export async function runCliFallbackCandidate(
 ): ReturnType<typeof runCliAgentWithLifecycle> {
   const turn = params.turn;
   const onPreparedBlockReply = turn.opts?.onPreparedBlockReply;
+  const speechPresentationRun = turn.speechPresentationRun;
   const onNativeBlockReply: NonNullable<typeof turn.opts>["onBlockReply"] =
-    turn.speechPresentationRun?.onBlockReply ??
+    speechPresentationRun?.onBlockReply.bind(speechPresentationRun) ??
     turn.opts?.onBlockReply ??
     (onPreparedBlockReply
       ? (payload, context) => deliverPreparedBlockReply({ onPreparedBlockReply }, payload, context)

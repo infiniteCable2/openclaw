@@ -51,8 +51,9 @@ export async function readConversationKnowledgeBranch(params: {
       membership?.role !== "branch" ||
       !entry.lifecycleRevision ||
       entry.incognito
-    )
-      return;
+    ) {
+      return undefined;
+    }
     return {
       agentId: reader.logicalAgentId,
       sessionKey: reader.sessionKey,
@@ -86,7 +87,9 @@ export async function recordConversationKnowledgeTurn(params: {
   check();
   const branch = await readConversationKnowledgeBranch(params);
   check();
-  if (!branch) return false;
+  if (!branch) {
+    return false;
+  }
   const found = await findTranscriptEvent(branch, {
     kind: "idempotency",
     key: params.assistantTranscriptIdempotencyKey,
@@ -101,14 +104,17 @@ export async function recordConversationKnowledgeTurn(params: {
     message?.role !== "assistant" ||
     message.stopReason !== "stop" ||
     readSessionTranscriptRunId(message) !== params.runId
-  )
+  ) {
     return false;
+  }
   const through = await readActiveTranscriptEntryAnchorAsync(
     { ...branch, entryId: event.id },
     params.signal,
   );
   check();
-  if (!through) return false;
+  if (!through) {
+    return false;
+  }
   return recordConversationKnowledgeReference({
     ...params,
     branch,
@@ -144,8 +150,9 @@ export async function recordConversationUtteranceObservation(params: {
     anchor.sessionKey !== branch.sessionKey ||
     anchor.sessionId !== sessionId ||
     anchor.storePath !== branch.storePath
-  )
+  ) {
     return false;
+  }
   const through = await readActiveTranscriptEntryAnchorAsync(
     { ...branch, entryId: anchor.entryId },
     signal,
@@ -157,8 +164,9 @@ export async function recordConversationUtteranceObservation(params: {
     through.rawSeq !== anchor.rawSeq ||
     through.effectiveParentId !== anchor.effectiveParentId ||
     through.activeMessagePosition !== anchor.activeMessagePosition
-  )
+  ) {
     return false;
+  }
   return recordConversationKnowledgeReference({
     reader,
     assertCurrent,
@@ -199,7 +207,9 @@ async function recordConversationKnowledgeReference(params: {
   );
   check();
   const sourceVersion = sourceContext.version;
-  if (!sourceVersion) return false;
+  if (!sourceVersion) {
+    return false;
+  }
   return params.reader
     .withRead(
       { sessionKeys: [branch.sessionKey, branch.root.sessionKey] },
@@ -223,8 +233,9 @@ async function recordConversationKnowledgeReference(params: {
             branch.root.lifecycleRevision ||
           root.sessionId !== branch.root.sessionId ||
           root.lifecycleRevision !== branch.root.lifecycleRevision
-        )
+        ) {
           throw new Error("Conversation knowledge incarnation changed");
+        }
         const sourceIdentity = {
           agentId: branch.agentId,
           sessionKey: branch.sessionKey,
@@ -247,13 +258,16 @@ async function recordConversationKnowledgeReference(params: {
           utterance
             ? !readConversationUtteranceObservation(receipt)
             : !readConversationKnowledgeReceipt(receipt)
-        )
+        ) {
           throw new Error("Invalid conversation knowledge reference");
-        if (utterance && !isConversationUtteranceObservation(receipt, sourceContext.events))
+        }
+        if (utterance && !isConversationUtteranceObservation(receipt, sourceContext.events)) {
           return undefined;
+        }
         // A terminal-looking assistant is insufficient if the actual stored path has unclosed work.
-        if (!utterance && !isCompletedConversationKnowledge(receipt, sourceContext.events))
+        if (!utterance && !isCompletedConversationKnowledge(receipt, sourceContext.events)) {
           return undefined;
+        }
         const predicate = (
           sessionKey: string,
           entry: InternalSessionEntry,
@@ -277,7 +291,9 @@ async function recordConversationKnowledgeReference(params: {
       },
     )
     .then(async (prepared) => {
-      if (!prepared) return false;
+      if (!prepared) {
+        return false;
+      }
       const { receipt, predicates } = prepared;
       const source = composeSessionSourceAssertion([
         params.assertCurrent,
@@ -313,8 +329,9 @@ async function recordConversationKnowledgeReference(params: {
         { source },
       );
       check();
-      if (!result.ok)
+      if (!result.ok) {
         throw new Error("Conversation knowledge report was refused", { cause: result.error });
+      }
       return true;
     });
 }
@@ -344,8 +361,9 @@ export async function readConversationKnowledgeRoot(params: {
           current.conversationTopology.rootSessionKey !== branch.root.sessionKey ||
           current.conversationTopology.rootSessionId !== root.sessionId ||
           current.conversationTopology.rootSessionLifecycleRevision !== root.lifecycleRevision
-        )
+        ) {
           throw new Error("Conversation knowledge root changed");
+        }
       },
     );
   await validate();
