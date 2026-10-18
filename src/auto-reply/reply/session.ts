@@ -907,9 +907,15 @@ async function initSessionStateAttemptLocked(
     params.newlyCreatedSessionId === sessionId &&
     !previousSessionEntry;
   const isFirstSessionTurn = isNewSession || createdByAdmission;
-  if (!isSystemEvent && !isInterSession) {
+  // New native sessions have an explicit lifecycle stamp. An unstamped legacy
+  // row cannot safely receive deferred credit after a same-key replacement.
+  if (!isSystemEvent && !isInterSession && sessionEntry.lifecycleRevision?.trim()) {
     recordAcceptedSessionParticipantInput(ctx, {
       ...sessionTarget,
+      expectedSession: {
+        sessionId: sessionEntry.sessionId,
+        lifecycleRevision: sessionEntry.lifecycleRevision,
+      },
       onError: (error) => log.warn("failed to record session participant", { error }),
     });
   }

@@ -8,15 +8,19 @@ import {
 } from "../process/gateway-work-admission.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { recordAcceptedSessionParticipantInput } from "./session-participant-input-recording.js";
+import { prepareSessionParticipantInput } from "./session-participant-input.js";
 import {
   recordSessionParticipantBestEffort,
   waitForSessionParticipantRecording,
 } from "./session-participant-recording.js";
 
 const { recordParticipant } = vi.hoisted(() => ({
-  recordParticipant: vi.fn<() => Promise<"inserted">>(),
+  recordParticipant:
+    vi.fn<typeof import("../config/sessions/session-accessor.js").recordSessionParticipant>(),
 }));
 
+// mock-isolation: Inspect deferred native writer arguments; SQLite incarnation refusal has its own worker suite.
 vi.mock("../config/sessions/session-accessor.js", () => ({
   recordSessionParticipant: recordParticipant,
 }));
@@ -34,6 +38,78 @@ const target = {
   storePath: "/synthetic/participant.sqlite",
   promptedAt: 1,
 };
+
+it("snapshots the original principal, target and incarnation before deferred persistence", async () => {
+  const started = createDeferredCore();
+  const persistence = createDeferredCore<"inserted">();
+  const work = new AsyncWorkScope();
+  const reported: unknown[] = [];
+  const expectedSession = { sessionId: "original-session", lifecycleRevision: "original-life" };
+  const input = {
+    ...target,
+    identity: { ...target.identity },
+    expectedSession: { ...expectedSession },
+    onError: (error: unknown) => reported.push(error),
+  };
+  recordParticipant.mockImplementation(() => {
+    started.resolve();
+    return persistence.promise;
+  });
+  try {
+    work.run(() => recordSessionParticipantBestEffort(input));
+    expect(recordParticipant).not.toHaveBeenCalled();
+    input.identity.id = "replacement-person";
+    input.sessionKey = "agent:main:replacement";
+    input.expectedSession.sessionId = "replacement-session";
+    input.expectedSession.lifecycleRevision = "replacement-life";
+    await started.promise;
+    expect(recordParticipant).toHaveBeenCalledExactlyOnceWith(
+      { agentId: target.agentId, sessionKey: target.sessionKey, storePath: target.storePath },
+      {
+        identity: target.identity,
+        promptedAt: target.promptedAt,
+        sessionAgentId: target.agentId,
+        expectedSession,
+      },
+    );
+    const refused = new Error("Original participant input session changed before commit");
+    persistence.reject(refused);
+    await waitForSessionParticipantRecording(target);
+    await work.drain();
+    expect(reported).toEqual([refused]);
+  } finally {
+    persistence.resolve("inserted");
+    await work.drain();
+  }
+});
+
+it("carries an accepted input's native incarnation without manufacturing another contribution", async () => {
+  const work = new AsyncWorkScope();
+  const context = {};
+  prepareSessionParticipantInput(context, target.identity, target.promptedAt);
+  const selected = {
+    agentId: target.agentId,
+    sessionKey: target.sessionKey,
+    storePath: target.storePath,
+    expectedSession: { sessionId: "accepted-session", lifecycleRevision: "accepted-life" },
+  };
+  recordParticipant.mockResolvedValue("inserted");
+  work.run(() => {
+    recordAcceptedSessionParticipantInput(context, selected);
+    recordAcceptedSessionParticipantInput({ ...context }, selected);
+  });
+  await waitForSessionParticipantRecording(selected);
+  await work.drain();
+  expect(recordParticipant).toHaveBeenCalledExactlyOnceWith(
+    { agentId: target.agentId, sessionKey: target.sessionKey, storePath: target.storePath },
+    {
+      identity: target.identity,
+      promptedAt: target.promptedAt,
+      sessionAgentId: target.agentId,
+      expectedSession: selected.expectedSession,
+    },
+  );
+});
 
 it.each(["resolve", "reject"] as const)(
   "joins participant persistence without retaining its caller root when it %ss",

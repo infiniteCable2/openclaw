@@ -1,6 +1,7 @@
 import path from "node:path";
 import { recordSessionParticipant } from "../config/sessions/session-accessor.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
+import type { SessionParticipantRecordInput } from "../config/sessions/session-sharing-store.types.js";
 import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { captureSessionTranscriptStorageEnvironment } from "../config/sessions/transcript-target-binding.js";
 import { resolveIdentityPathViaExistingAncestorSync } from "../infra/boundary-path.js";
@@ -69,41 +70,44 @@ export async function waitForSessionParticipantRecording(
   );
 }
 
-/** Defers participant history persistence so it can never delay or abort an admitted turn. */
+/** Schedules optional participant history outside its caller's root-work admission. */
 export function recordSessionParticipantBestEffort(params: {
   identity: SessionParticipantIdentity;
   agentId: string;
   sessionKey: string;
   storePath: string;
   promptedAt?: number;
+  expectedSession?: SessionParticipantRecordInput["expectedSession"];
   onError?: (error: unknown) => void;
 }): void {
-  const promptedAt = params.promptedAt ?? Date.now();
+  // Accepted input owns these identities before the deferred writer can yield.
+  // Caller mutation or a later session replacement must not retarget its credit.
+  const target = {
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    storePath: params.storePath,
+  };
+  const input: SessionParticipantRecordInput = {
+    identity: structuredClone(params.identity),
+    promptedAt: params.promptedAt ?? Date.now(),
+    sessionAgentId: target.agentId,
+    ...(params.expectedSession ? { expectedSession: { ...params.expectedSession } } : {}),
+  };
+  const onError = params.onError;
   const work = trackAsyncWork(() =>
     runOutsideGatewayRootWorkAdmission(async () => {
       await Promise.resolve();
       try {
-        await recordSessionParticipant(
-          {
-            agentId: params.agentId,
-            sessionKey: params.sessionKey,
-            storePath: params.storePath,
-          },
-          {
-            identity: params.identity,
-            promptedAt,
-            sessionAgentId: params.agentId,
-          },
-        );
+        await recordSessionParticipant(target, input);
       } catch (error) {
-        params.onError?.(error);
+        onError?.(error);
       }
     }),
-  ).catch((error: unknown) => params.onError?.(error));
-  const key = participantSessionKey(params);
+  ).catch((error: unknown) => onError?.(error));
+  const key = participantSessionKey(target);
   const pending = pendingRecordings.get(key) ?? new Set<PendingParticipantRecording>();
   const recording = {
-    target: { agentId: params.agentId, sessionKey: params.sessionKey, storePath: params.storePath },
+    target,
     env: captureSessionTranscriptStorageEnvironment(process.env),
     work,
   };
