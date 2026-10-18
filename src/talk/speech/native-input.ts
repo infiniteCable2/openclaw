@@ -257,7 +257,7 @@ export function createNativeSpeechInput(params: {
     submit,
     enqueue(input: Parameters<typeof submit>[0]) {
       // Accepted native work outlives media close; this observer never aborts or retries it.
-      void submit(input).catch((error) => params.onFailure(error));
+      void submit(input).catch((error: unknown) => params.onFailure(error));
     },
   };
 }
