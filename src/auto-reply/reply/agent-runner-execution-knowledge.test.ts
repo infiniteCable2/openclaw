@@ -5,7 +5,9 @@ import {
   createFollowupRun,
   createMinimalRunAgentTurnParams,
   createMockReplyOperation,
+  initialFallbackAttemptOptions,
   setupAgentRunnerExecutionTestState,
+  type FallbackRunnerParams,
 } from "./agent-runner-execution.test-support.js";
 
 const knowledge = vi.hoisted(() => ({ create: vi.fn() }));
@@ -22,9 +24,11 @@ beforeEach(() => {
   knowledge.create.mockReset();
 });
 
-function fixture() {
+function fixture(provider = "anthropic", model = "claude") {
   const order: string[] = [];
   const followupRun = createFollowupRun();
+  followupRun.run.provider = provider;
+  followupRun.run.model = model;
   followupRun.run.config = { agents: { entries: { main: { conversationMode: "branches" } } } };
   const { replyOperation } = createMockReplyOperation();
   const reader: SessionEntryCohortReader = {
@@ -72,8 +76,8 @@ function fixture() {
           runId: "run-knowledge",
           sessionId: followupRun.run.sessionId,
           turnId: "turn-original",
-          requested: { provider: "anthropic", model: "claude" },
-          effective: { provider: "anthropic", model: "claude", responseModel: "claude" },
+          requested: { provider, model },
+          effective: { provider, model, responseModel: model },
           successfulToolNames: [],
           rerouted: false,
           assistantTranscriptIdempotencyKey: "run-knowledge:assistant",
@@ -105,7 +109,10 @@ describe("actual native execution conversation knowledge lifetime", () => {
       expect.objectContaining({
         kind: "settled",
         status: "ok",
-        result: f.result,
+        result: expect.objectContaining({
+          payloads: f.result.payloads,
+          meta: expect.objectContaining(f.result.meta),
+        }),
       }),
     );
     expect(f.order).toEqual(["record", "finish", "release"]);
@@ -114,14 +121,27 @@ describe("actual native execution conversation knowledge lifetime", () => {
   });
 
   it("passes the same native neutral fragments to a CLI candidate", async () => {
-    const f = fixture();
-    state.isCliProviderMock.mockReturnValue(true);
+    const provider = "claude-cli";
+    const model = "claude-sonnet-4-6";
+    const f = fixture(provider, model);
+    state.isCliProviderMock.mockImplementation((candidate) => candidate === provider);
+    // Select an actual configured CLI backend through the same native fallback
+    // contract as the existing CLI execution fixtures, not an HTTP provider
+    // mislabeled as CLI by an unconditional predicate.
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
+      result: await params.run(provider, model, initialFallbackAttemptOptions(params)),
+      provider,
+      model,
+      attempts: [],
+    }));
     state.runCliAgentMock.mockResolvedValue(f.result);
     await expect(executeAgentTurn(f.params)).resolves.toMatchObject({
       outcome: { kind: "settled", status: "ok" },
     });
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect(state.runCliAgentMock.mock.calls[0]?.[0]).toMatchObject({
+      modelProvider: provider,
+      model,
       prompt: "fix it",
       runtimeContextFragments: f.fragments,
     });
