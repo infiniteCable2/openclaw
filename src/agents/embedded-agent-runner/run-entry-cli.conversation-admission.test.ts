@@ -6,7 +6,7 @@ import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.
 import { installSessionPlacementAdmissionProvider } from "../session-placement-admission.js";
 import { withAdmittedCliCandidate } from "./run-entry-cli.js";
 
-// There are no spawned tasks in these candidate-admission fixtures.
+// mock-isolation: These CLI admission cases have no spawned tasks or background subagent registry owners.
 vi.mock("../subagents/registry/subagent-registry.js", () => ({
   markRequesterTurnYielded: vi.fn(async () => 0),
   settleRequesterAfterSessionSpawns: vi.fn(async () => true),

@@ -11,8 +11,7 @@ import type { SpeechNativeInputParams } from "../../talk/speech/types.js";
 import { createNativeSpeechConfirmation } from "./speech-confirmation.js";
 
 const mocks = vi.hoisted(() => ({ registerRun: vi.fn() }));
-// mock-isolation: Only durable voice-run registration is isolated. Actual pending challenges,
-// persisted-utterance receipts and one-shot fingerprint grants stay native.
+// mock-isolation: Isolate durable voice-run registration; actual one-shot confirmation state stays native.
 vi.mock("../../talk/client-voice-session.js", () => ({
   registerClientVoiceConsultRun: mocks.registerRun,
 }));

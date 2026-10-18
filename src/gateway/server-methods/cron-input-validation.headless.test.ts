@@ -2,8 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
 const mocks = vi.hoisted(() => ({ load: vi.fn() }));
-// mock-isolation: Exact existing Gateway row resolution is the only database boundary;
-// the native cron validator and conversation target policy remain real.
+// mock-isolation: Supply exact persisted row facts without opening the Gateway session database.
 vi.mock("../session-utils.js", () => ({ loadGatewaySessionEntryReadOnly: mocks.load }));
 
 import { assertCronDoesNotTargetAgentHarness } from "./cron-input-validation.js";

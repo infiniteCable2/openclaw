@@ -8,7 +8,8 @@ const mocks = vi.hoisted(() => ({ sessionId: vi.fn(), prepare: vi.fn() }));
 vi.mock("../../talk/client-voice-session.js", () => ({
   resolveClientVoiceAgentSessionId: mocks.sessionId,
 }));
-vi.mock("../../talk/voice-conversation-knowledge.js", () => ({
+vi.mock("../../talk/voice-conversation-knowledge.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../talk/voice-conversation-knowledge.js")>()),
   prepareVoiceConversationKnowledge: mocks.prepare,
 }));
 import { prepareTalkProviderConversationContext } from "./conversation-context.js";

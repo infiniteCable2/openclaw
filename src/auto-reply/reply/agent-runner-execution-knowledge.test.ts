@@ -9,8 +9,7 @@ import {
 } from "./agent-runner-execution.test-support.js";
 
 const knowledge = vi.hoisted(() => ({ create: vi.fn() }));
-// mock-isolation: Exercise the real execution lifetime without opening transcript workers.
-// Native receipt selection/storage and history authority have separate owner-bound suites.
+// mock-isolation: This execution-lifetime fixture supplies knowledge receipts without transcript workers.
 vi.mock("./conversation-knowledge.js", () => ({
   createReplyConversationKnowledgeTurn: knowledge.create,
 }));

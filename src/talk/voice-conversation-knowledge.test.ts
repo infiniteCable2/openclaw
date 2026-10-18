@@ -14,16 +14,22 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../config/sessions/session-accessor.sqlite-entry-admission.js", () => ({
   loadSessionEntryForAdmission: mocks.load,
 }));
+// mock-isolation: Borrowed-reader lifetime is tested without starting a second knowledge read owner.
 vi.mock("../auto-reply/reply/conversation-knowledge.js", () => ({
   prepareReplyConversationKnowledge: mocks.prepare,
 }));
+// mock-isolation: Capture exact observation receipts without committing transcript reports in this adapter test.
 vi.mock("../config/sessions/conversation-knowledge-store.js", () => ({
   recordConversationUtteranceObservation: mocks.record,
 }));
+// mock-isolation: Record participant commit arguments without invoking the native SQLite participant worker.
 vi.mock("../config/sessions/session-sharing-store.async.js", () => ({
   recordSessionParticipantInWorker: mocks.participant,
 }));
-vi.mock("../logging/subsystem.js", () => ({ createSubsystemLogger: () => ({ warn: mocks.warn }) }));
+vi.mock("../logging/subsystem.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../logging/subsystem.js")>()),
+  createSubsystemLogger: () => ({ warn: mocks.warn }),
+}));
 
 import {
   prepareVoiceConversationKnowledge,

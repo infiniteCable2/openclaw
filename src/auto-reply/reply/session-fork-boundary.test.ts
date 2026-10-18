@@ -17,7 +17,8 @@ import { readCodexSessionContext } from "../../plugin-sdk/codex-session-transcri
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { forkSessionEntryFromParent } from "./session-fork.js";
 
-vi.mock("../../plugins/text-transforms.runtime.js", () => ({
+vi.mock("../../plugins/text-transforms.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../plugins/text-transforms.runtime.js")>()),
   resolveRuntimeTextTransforms: () => [],
 }));
 

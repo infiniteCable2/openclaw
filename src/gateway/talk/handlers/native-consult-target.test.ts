@@ -124,7 +124,14 @@ it.each([undefined, "main"])(
 
 it("rejects retained relay mapping changes even when the physical store is unchanged", async () => {
   const { sessionId } = await createRelayCall();
-  testState.config = { ...testState.config, session: { mainKey: "home" } };
+  const originalStore = testState.config.session?.store;
+  // mainKey is a retired setting, not a routing mutation. Global scope is a
+  // supported canonicalization change for the already persisted agent main row.
+  testState.config = {
+    ...testState.config,
+    session: { ...testState.config.session, scope: "global" },
+  };
+  expect(testState.config.session?.store).toBe(originalStore);
   expect(
     await dispatch("talk.session.steer", { sessionId, text: "status", mode: "status" }),
   ).toHaveBeenCalledWith(

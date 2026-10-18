@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ encode: vi.fn(async (data: Buffer) => Buffer.from(data)) }));
+// mock-isolation: A controlled asynchronous encoder proves revocation before frame publication.
 vi.mock("openclaw/plugin-sdk/media-runtime", () => ({ encodePngRgbaAsync: mocks.encode }));
 import {
   consumeMatrixRtcVideo,

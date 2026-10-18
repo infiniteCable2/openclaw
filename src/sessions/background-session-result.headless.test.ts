@@ -2,8 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 
 const mocks = vi.hoisted(() => ({ load: vi.fn(), persist: vi.fn() }));
-// mock-isolation: This source guard test supplies the existing owner's exact row;
-// it never opens a database or substitutes another transcript writer.
+// mock-isolation: Supply exact row and append spies so the headless refusal cannot open a database.
 vi.mock("../config/sessions/session-accessor.js", () => ({
   loadSessionEntryReadOnly: mocks.load,
   persistSessionTranscriptTurn: mocks.persist,

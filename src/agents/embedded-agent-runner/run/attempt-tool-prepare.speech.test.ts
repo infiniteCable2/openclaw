@@ -8,8 +8,7 @@ import { getHoisted, resetEmbeddedAttemptHarness } from "./attempt-spawn-workspa
 import { prepareEmbeddedAttemptToolBase } from "./attempt-tool-prepare.js";
 import type { EmbeddedRunAttemptInternalParams } from "./internal-params.js";
 
-// mock-isolation: This source-target authority fixture must not start independent
-// automatic channel TTS readiness; that producer has its own real-route tests.
+// mock-isolation: Native source-authority preparation must not start unrelated channel TTS readiness.
 vi.mock("../../../tts/automatic-expression.js", () => ({
   prepareAutomaticSpeechExpressionContext: async () => undefined,
 }));
