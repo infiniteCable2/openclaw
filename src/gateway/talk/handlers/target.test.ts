@@ -376,7 +376,7 @@ describe("Talk target preparation through Gateway authorization", () => {
             await dispatch("talk.client.transcript", {
               sessionKey: target.sessionKey,
               voiceSessionId,
-              entryId: `speech-${sessionKey}`,
+              entryId: `speech-${createdCalls.length}`,
               role: "user",
               text: "Connection-owned speech.",
             }),
