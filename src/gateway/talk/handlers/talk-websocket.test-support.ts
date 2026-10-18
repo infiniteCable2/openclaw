@@ -21,7 +21,6 @@ export function createTalkWebSocketTestClient(params: {
     ...createOperatorWsClient({ connId }),
     ...identity,
     connId,
-    connId,
     usesSharedGatewayAuth: false,
     authenticatedUserProfile: identity.authenticatedUserProfile
       ? {
