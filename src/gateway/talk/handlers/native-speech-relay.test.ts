@@ -189,7 +189,7 @@ it("public STT/TTS relay gates media readiness and uses native consultation, voi
       event: expect.objectContaining({
         message: expect.objectContaining({
           role: "user",
-          content: [{ type: "text", text: "Check the synthetic device." }],
+          content: "Check the synthetic device.",
         }),
       }),
     }),
