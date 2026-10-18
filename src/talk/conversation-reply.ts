@@ -35,8 +35,8 @@ const loadReply = createLazyRuntimeModule(async () => {
   ]);
   return {
     getReplyFromConfig: reply.getReplyFromConfig,
-    stateKey: state.REPLY_OPERATION_RUN_STATE,
-  } as const;
+    state,
+  };
 });
 
 type SpeechPresentationParams = Parameters<typeof createReplySpeechPresentation>[0];
@@ -247,8 +247,8 @@ async function executeConversationReply(
     },
   };
   try {
-    const { getReplyFromConfig, stateKey } = await loadReply();
-    options[stateKey] = runState;
+    const { getReplyFromConfig, state } = await loadReply();
+    options[state.REPLY_OPERATION_RUN_STATE] = runState;
     assertWorkCurrent();
     params.workSignal?.throwIfAborted();
     const result = await getReplyFromConfig(ctxPayload, options, params.cfg);
