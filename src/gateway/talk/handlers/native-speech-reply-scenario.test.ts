@@ -17,6 +17,7 @@ import { ensureAgentConversationRoot } from "../../../config/sessions/session-co
 import { resolveAgentSpeechConversationRoute } from "../../../routing/conversation-mode.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import * as voiceSession from "../../../talk/client-voice-session.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import * as sessionSharingPreparation from "../../session-sharing-preparation.js";
 import {
@@ -100,6 +101,17 @@ it.for([
     let calls = 0;
     let audioAtClose = 0;
     const enqueue = nativeQueue.enqueueFollowupRun;
+    const ensureVoiceEntry = voiceSession.ensureClientVoiceAgentSessionEntry;
+    const observeCreation = vi
+      .spyOn(voiceSession, "ensureClientVoiceAgentSessionEntry")
+      .mockImplementation(async (...args) => {
+        try {
+          return await ensureVoiceEntry(...args);
+        } catch (error) {
+          console.warn("[native-speech-scenario] native-creation-failure", error);
+          throw error;
+        }
+      });
     const prepareFacts = sessionSharingPreparation.prepareSessionMutationFacts;
     // Observation only: retain the actual storage/admission owner and rethrow
     // its original error, including the exact native frame and nested cause.
@@ -338,6 +350,7 @@ it.for([
         progress("cleanup-owners-settled");
       } finally {
         observeFacts.mockRestore();
+        observeCreation.mockRestore();
         observeEnqueue.mockRestore();
         if (!closed) await dispatch("talk.session.close", { sessionId });
         progress("cleanup-closed");
