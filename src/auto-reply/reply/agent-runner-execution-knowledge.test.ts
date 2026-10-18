@@ -44,7 +44,9 @@ function fixture(provider = "anthropic", model = "claude") {
     },
   };
   lifecycleAdmissionByOperation.set(replyOperation, { reader });
-  onTestFinished(() => lifecycleAdmissionByOperation.delete(replyOperation));
+  onTestFinished(() => {
+    lifecycleAdmissionByOperation.delete(replyOperation);
+  });
   const fragments = [{ kind: "conversation-data" as const, text: "Quoted related observations." }];
   const assertCurrent = vi.fn();
   const release = vi.fn(() => order.push("release"));

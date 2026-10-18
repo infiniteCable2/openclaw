@@ -71,7 +71,9 @@ async function nativeTurn(admin = false) {
   });
   const { replyOperation } = createMockReplyOperation({ sessionId: "source-session" });
   lifecycleAdmissionByOperation.set(replyOperation, { reader: unusedReader() });
-  onTestFinished(() => lifecycleAdmissionByOperation.delete(replyOperation));
+  onTestFinished(() => {
+    lifecycleAdmissionByOperation.delete(replyOperation);
+  });
   const originalSource = vi.fn();
   const admission = prepareAgentRunAdmission({
     cfg,
@@ -96,10 +98,11 @@ async function nativeTurn(admin = false) {
   });
   const abort = new AbortController();
   await owner.prepare(admission, abort.signal);
+  const route = { provider: "example-provider", model: "example-model" };
   const result: SettledAgentTurn = {
     kind: "settled",
     status: "ok",
-    resolved: { provider: "example-provider", model: "example-model" },
+    resolved: route,
     fallback: { exhausted: false, attempts: [] },
     autoCompactionCount: 0,
     didLogHeartbeatStrip: false,
@@ -107,15 +110,16 @@ async function nativeTurn(admin = false) {
       payloads: [{ text: "Completed answer." }],
       meta: {
         agentMeta: {
+          sessionId: followupRun.run.sessionId,
+          ...route,
           terminalReceipt: {
             runId: "source-run",
-            sessionId: "source-session",
+            sessionId: followupRun.run.sessionId,
             turnId: "native-turn",
-            requested: { provider: "example-provider", model: "example-model" },
+            requested: route,
             effective: {
-              provider: "example-provider",
-              model: "example-model",
-              responseModel: "example-model",
+              ...route,
+              responseModel: route.model,
             },
             successfulToolNames: [],
             rerouted: false,

@@ -9,7 +9,7 @@ function fixture() {
   const source: ReplyInitialSessionContext = {
     agentId: "example",
     sessionKey: "agent:example:matrix:direct:peer",
-    assertCurrent: vi.fn(),
+    assertCurrent: vi.fn<() => void>(),
     context: {
       source: { agentId: "example", path: "/example/agent.sqlite", databaseIdentity: "synthetic" },
       sourceSessionKey: "agent:example:source",

@@ -93,7 +93,7 @@ describe("native speech output steering ownership", () => {
       operation.setPhase("running");
       const followupRun = createQueueTestRun({ prompt: "A genuine addition." });
       followupRun.speechPresentation = incoming;
-      followupRun.assertSourceCurrent = vi.fn();
+      followupRun.assertSourceCurrent = vi.fn<() => void>();
       const typing = createTypingController({});
       const runState: ReplyOperationRunState = {};
       const invocation = runActiveReplySteer({

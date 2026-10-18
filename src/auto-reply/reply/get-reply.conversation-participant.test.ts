@@ -11,6 +11,7 @@ import {
   createGetReplySessionState,
   registerGetReplyRuntimeOverrides,
 } from "./get-reply.test-fixtures.js";
+import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import "./get-reply.test-runtime-mocks.js";
 
 const mocks = vi.hoisted(() => ({
@@ -91,11 +92,8 @@ describe("native reply joins its accepted participant before model preparation",
       const assertSourceCurrent = vi.fn(() => {
         if (pending) throw new Error("Native participant publication is still pending");
       });
-      const reply = getReplyFromConfig(
-        originalInput(),
-        { assertSourceCurrent },
-        resolvedConfig(mode),
-      );
+      const options: InternalGetReplyOptions = { assertSourceCurrent };
+      const reply = getReplyFromConfig(originalInput(), options, resolvedConfig(mode));
       try {
         // On the old seam traceGetReplyPhase rechecks this source while pending,
         // rejects the actual getReply invocation, and never reaches this join.
@@ -153,17 +151,14 @@ describe("native reply joins its accepted participant before model preparation",
     mocks.waitForRecording.mockImplementation(async () => {
       revoked = true;
     });
-    await expect(
-      getReplyFromConfig(
-        originalInput(),
-        {
-          assertSourceCurrent() {
-            if (revoked) throw new Error("Original source revoked during recording");
-          },
-        },
-        cfg,
-      ),
-    ).rejects.toThrow("Original source revoked during recording");
+    const options: InternalGetReplyOptions = {
+      assertSourceCurrent() {
+        if (revoked) throw new Error("Original source revoked during recording");
+      },
+    };
+    await expect(getReplyFromConfig(originalInput(), options, cfg)).rejects.toThrow(
+      "Original source revoked during recording",
+    );
     expect(runPreparedReply).not.toHaveBeenCalled();
   });
 
