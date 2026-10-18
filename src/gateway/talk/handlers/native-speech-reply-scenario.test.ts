@@ -1,6 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
-import { withinTest } from "../../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/promise.js";
 import * as nativeQueue from "../../../auto-reply/reply/queue.js";
 import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.js";
 import {
@@ -32,6 +32,15 @@ it.for([false, true])(
     const queued = createDeferredCore();
     const releaseFirst = createDeferredCore();
     const turnEnded = createDeferredCore();
+    const nativeFailure = createDeferredCore<never>();
+    void nativeFailure.promise.catch(() => {});
+    const progress = (stage: string) =>
+      console.info(`[native-speech-scenario close=${closeAudio}] ${stage}`);
+    const waitAt = async (stage: string, work: PromiseLike<unknown>) => {
+      progress(`waiting:${stage}`);
+      await withinTest(Promise.race([work, nativeFailure.promise]), signal);
+      progress(`reached:${stage}`);
+    };
     const ownerSettlements: Promise<void>[] = [];
     const questions = ["Inspect the first synthetic item.", "Also inspect the second item."];
     const answers = ["The first inspection completed.", "The second inspection completed."];
@@ -45,18 +54,26 @@ it.for([false, true])(
       .spyOn(nativeQueue, "enqueueFollowupRun")
       .mockImplementation((...args) => {
         const accepted = enqueue(...args);
-        if (accepted) queued.resolve();
+        if (accepted) {
+          progress("actual-enqueue-accepted");
+          queued.resolve();
+        }
         return accepted;
       });
     vi.mocked(context.broadcastToConnIds).mockImplementation((_name, payload) => {
       if (!isRecord(payload)) return;
       if (payload.type === "audio") audioEvents++;
+      if (isRecord(payload.talkEvent) && payload.talkEvent.type === "session.error") {
+        progress("native-session-error");
+        nativeFailure.reject(new Error("Native speech reported session.error", { cause: payload }));
+      }
       if (isRecord(payload.talkEvent) && payload.talkEvent.type === "turn.ended")
         turnEnded.resolve();
     });
     mocks.runEmbeddedAgent.mockImplementation(async (params) =>
       publishNativeSpeechModelRun(params, async () => {
         const index = calls++;
+        progress(`actual-model-start:${index + 1}`);
         if (index > 1) throw new Error("Accepted native input was replayed");
         modelPrompts.push(params.prompt);
         params.onExecutionPhase?.({ phase: "model_call_started" });
@@ -65,7 +82,9 @@ it.for([false, true])(
         ownerSettlements.push(operation.ownerSettlement);
         if (index === 0) {
           firstStarted.resolve();
+          progress("waiting:first-model-release");
           await releaseFirst.promise;
+          progress("reached:first-model-release");
         } else {
           secondStarted.resolve();
         }
@@ -76,7 +95,9 @@ it.for([false, true])(
         return { payloads: [{ text: answers[index]! }], meta: { durationMs: 0 } };
       }),
     );
+    progress("before-create");
     const { sessionId, readyMark, target } = await createSpeechRelayCall();
+    progress("after-create");
     try {
       expect(
         await dispatch("talk.session.acknowledgeMark", { sessionId, markName: readyMark }),
@@ -89,26 +110,35 @@ it.for([false, true])(
       // before a model run exists. Its delayed final transcript must follow up,
       // not steer whichever backend happens to be active when decoding finishes.
       stt.onSpeechActivity({ utteranceId: "scenario-input-two", state: "candidate" });
-      await withinTest(firstStarted.promise, signal);
+      await waitAt(
+        "first-model-start",
+        awaitGateBeforeSettlement(
+          firstStarted.promise,
+          turnEnded.promise,
+          "Native speech ended before starting the first model run",
+        ),
+      );
       stt.onTranscript(questions[1]!, { utteranceId: "scenario-input-two" });
       // The native enqueue return, not the earlier transcript event, proves acceptance.
-      await withinTest(queued.promise, signal);
+      await waitAt("actual-enqueue", queued.promise);
       expect(calls).toBe(1);
       expect(nativeQueue.getFollowupQueueDepth(target.canonicalKey)).toBe(1);
       if (closeAudio) {
+        progress("before-close");
         expect(await dispatch("talk.session.close", { sessionId })).toHaveBeenCalledWith(
           true,
           { ok: true },
           undefined,
         );
         closed = true;
+        progress("after-close");
         audioAtClose = audioEvents;
         expect(() => getUnifiedTalkSession(sessionId)).toThrow();
       }
       releaseFirst.resolve();
-      await withinTest(secondStarted.promise, signal);
-      await withinTest(Promise.all(ownerSettlements), signal);
-      if (!closeAudio) await withinTest(turnEnded.promise, signal);
+      await waitAt("second-model-start", secondStarted.promise);
+      await waitAt("native-owner-settlement", Promise.all(ownerSettlements));
+      if (!closeAudio) await waitAt("turn-ended", turnEnded.promise);
       expect(calls).toBe(2);
       expect(modelPrompts[0]).toContain(questions[0]);
       expect(modelPrompts[1]).toContain(questions[1]);
@@ -148,14 +178,17 @@ it.for([false, true])(
       if (closeAudio) expect(audioEvents).toBe(audioAtClose);
       else expect(audioEvents).toBeGreaterThan(0);
     } finally {
+      progress("cleanup-release-first");
       releaseFirst.resolve();
       try {
         // Vitest may already have aborted its signal; cleanup must still join
         // the released real owners before the shared fixture closes SQLite.
         await Promise.all(ownerSettlements);
+        progress("cleanup-owners-settled");
       } finally {
         observeEnqueue.mockRestore();
         if (!closed) await dispatch("talk.session.close", { sessionId });
+        progress("cleanup-closed");
       }
     }
   },
