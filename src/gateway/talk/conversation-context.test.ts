@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 const mocks = vi.hoisted(() => ({ sessionId: vi.fn(), prepare: vi.fn() }));
@@ -38,7 +39,10 @@ function setup() {
     retain: () => () => {},
   });
   const sourceRelease = vi.fn();
-  const captureOperatorAuthority = vi.fn(async () => ({ authority, release: sourceRelease }));
+  const captureOperatorAuthority = vi.fn<TalkOperatorRunSource>(async () => ({
+    authority,
+    release: sourceRelease,
+  }));
   const knowledgeRelease = vi.fn(async () => {});
   mocks.sessionId.mockReturnValue("native-session");
   mocks.prepare.mockResolvedValue({

@@ -11,8 +11,11 @@ import {
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 
 type RunParams = Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0];
+type NativeRunParams = Parameters<
+  typeof import("../../agents/embedded-agent.js").runEmbeddedAgent
+>[0];
 const mocks = vi.hoisted(() => ({
-  runEmbeddedAgent: vi.fn<(params: RunParams) => Promise<{ payloads: [] }>>(),
+  runEmbeddedAgent: vi.fn<(params: NativeRunParams) => Promise<{ payloads: [] }>>(),
   onTerminalDrain: vi.fn<() => void>(),
 }));
 
