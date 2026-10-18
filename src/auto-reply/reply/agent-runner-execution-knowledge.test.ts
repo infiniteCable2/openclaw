@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { RunEmbeddedAgentInternalParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
@@ -135,7 +136,19 @@ describe("actual native execution conversation knowledge lifetime", () => {
       attempts: [],
     }));
     state.runCliAgentMock.mockResolvedValue(f.result);
-    await expect(executeAgentTurn(f.params)).resolves.toMatchObject({
+    const { defaultRuntime } = await import("../../runtime.js");
+    const priorErrors = vi.mocked(defaultRuntime.error).mock.calls.length;
+    const result = await executeAgentTurn(f.params);
+    expect(
+      result,
+      `Actual native CLI failure: ${inspect(
+        {
+          outcome: result.outcome,
+          errors: vi.mocked(defaultRuntime.error).mock.calls.slice(priorErrors),
+        },
+        { depth: 8 },
+      )}`,
+    ).toMatchObject({
       outcome: { kind: "settled", status: "ok" },
     });
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
