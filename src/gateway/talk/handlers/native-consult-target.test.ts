@@ -608,6 +608,11 @@ describe.each(["browser", "relay"] as const)("native %s Talk consultation", (tra
       brain: "agent-consult",
       ...(transport === "browser" ? { capabilities: ["gateway-control-v1"] } : {}),
     });
+    console.info("[native-consult-create-stage]", {
+      transport,
+      scope,
+      providerOpened: typeof callback === "function",
+    });
     expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
     expect(providerInstructions).toBe(
       `Keep native answers brief.\n\n${REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS}`,
