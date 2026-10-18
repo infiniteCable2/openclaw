@@ -12,6 +12,10 @@ import {
   pendingSessionEntryPublications,
   preparedSharingReads,
 } from "../../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
+import { assertSessionConversationRootEntry } from "../../../config/sessions/session-conversation-admission.js";
+import { ensureAgentConversationRoot } from "../../../config/sessions/session-conversation-root.js";
+import { resolveAgentSpeechConversationRoute } from "../../../routing/conversation-mode.js";
+import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import * as sessionSharingPreparation from "../../session-sharing-preparation.js";
@@ -28,10 +32,39 @@ import {
 // The existing fixture substitutes only STT/TTS hardware and the model runtime.
 // Admission, source capabilities, Speech/V2/getReply, native follow-up queue and
 // transcript writes remain real. Model counts are NOT proof of actual tool effects.
-it.for([false, true])(
-  "native Speech serializes two original inputs exactly once after audio-close=%s",
-  async (closeAudio, { signal }) => {
-    testState.config.session = { mainKey: "scenario", scope: "global" };
+it.for([
+  { conversationMode: "native", closeAudio: false },
+  { conversationMode: "native", closeAudio: true },
+  { conversationMode: "branches", closeAudio: false },
+  { conversationMode: "branches", closeAudio: true },
+] as const)(
+  "native Speech serializes two original inputs exactly once in $conversationMode after audio-close=$closeAudio",
+  async ({ conversationMode, closeAudio }, { signal }) => {
+    let root: Awaited<ReturnType<typeof ensureAgentConversationRoot>> | undefined;
+    if (conversationMode === "branches") {
+      const cfg = testState.config;
+      testState.config = {
+        ...cfg,
+        session: { scope: "per-sender" },
+        agents: {
+          ...cfg.agents,
+          entries: {
+            ...cfg.agents?.entries,
+            voice: { ...cfg.agents?.entries?.voice, conversationMode },
+          },
+        },
+      };
+      // Use the actual Host infrastructure owner, never fabricated topology or
+      // a private-history donor. The same authenticated caller then creates its branch.
+      root = await ensureAgentConversationRoot({
+        cfg: testState.config,
+        agentId: "voice",
+        getConfig: () => testState.config,
+        signal,
+      });
+    } else {
+      testState.config.session = { mainKey: "scenario", scope: "global" };
+    }
     const hardware = installSyntheticSpeechHardware();
     const firstStarted = createDeferredCore();
     const secondStarted = createDeferredCore();
@@ -41,12 +74,17 @@ it.for([false, true])(
     const nativeFailure = createDeferredCore<never>();
     void nativeFailure.promise.catch(() => {});
     const progress = (stage: string) =>
-      console.info(`[native-speech-scenario close=${closeAudio}] ${stage}`);
+      console.info(
+        `[native-speech-scenario mode=${conversationMode} close=${closeAudio}] ${stage}`,
+      );
     // The shared fixture normally silences the real runtime logger. Preserve
     // its exact synthetic failure before Speech emits its intentionally generic
     // session.error; otherwise an admission failure looks like a queue timeout.
     vi.mocked(context.logGateway.warn).mockImplementation((...args) => {
-      console.warn(`[native-speech-scenario close=${closeAudio}] native-warning`, ...args);
+      console.warn(
+        `[native-speech-scenario mode=${conversationMode} close=${closeAudio}] native-warning`,
+        ...args,
+      );
     });
     const waitAt = async (stage: string, work: PromiseLike<unknown>) => {
       progress(`waiting:${stage}`);
@@ -138,6 +176,7 @@ it.for([false, true])(
         const index = calls++;
         progress(`actual-model-start:${index + 1}`);
         if (index > 1) throw new Error("Accepted native input was replayed");
+        expect(params.sessionKey).toBe(target.canonicalKey);
         modelPrompts.push(params.prompt);
         params.onExecutionPhase?.({ phase: "model_call_started" });
         const operation = replyRunRegistry.get(params.sessionKey!);
@@ -167,6 +206,33 @@ it.for([false, true])(
     const { sessionId, readyMark, target } = await createSpeechRelayCall();
     progress("after-create");
     try {
+      if (root) {
+        const route = resolveAgentSpeechConversationRoute({
+          cfg: testState.config,
+          agentId: target.agentId,
+          channel: "talk",
+          accountId: "gateway",
+          sourceSessionKey: root.sessionKey,
+          conversationId: testState.client.connId,
+        });
+        expect(target.canonicalKey).toBe(route.sessionKey);
+        expect(target.canonicalKey).not.toBe(root.sessionKey);
+        expect(isSubagentSessionKey(target.canonicalKey)).toBe(false);
+        const branch = loadSessionEntry({
+          agentId: target.agentId,
+          sessionKey: target.canonicalKey,
+          storePath: target.storePath,
+        });
+        expect(branch?.conversationTopology).toEqual({
+          version: 1,
+          role: "branch",
+          rootSessionKey: root.sessionKey,
+          rootSessionId: root.entry.sessionId,
+          rootSessionLifecycleRevision: root.entry.lifecycleRevision,
+        });
+        expect(branch?.parentSessionKey).toBeUndefined();
+        expect(branch?.spawnedBy).toBeUndefined();
+      }
       expect(
         await dispatch("talk.session.acknowledgeMark", { sessionId, markName: readyMark }),
       ).toHaveBeenCalledWith(true, { ok: true }, undefined);
@@ -242,6 +308,23 @@ it.for([false, true])(
         expect(
           messages.filter((message) => message.role === "assistant" && message.text === answer),
         ).toHaveLength(1);
+      }
+      if (root) {
+        const currentRoot = loadSessionEntry({
+          agentId: target.agentId,
+          sessionKey: root.sessionKey,
+          storePath: target.storePath,
+        });
+        assertSessionConversationRootEntry(currentRoot, root.sessionKey);
+        expect(currentRoot.sessionId).toBe(root.entry.sessionId);
+        expect(currentRoot.lifecycleRevision).toBe(root.entry.lifecycleRevision);
+        expect(
+          readSessionTranscriptMessageEvents({
+            agentId: target.agentId,
+            sessionId: currentRoot.sessionId,
+            storePath: target.storePath,
+          }),
+        ).toHaveLength(0);
       }
       if (closeAudio) expect(audioEvents).toBe(audioAtClose);
       else expect(audioEvents).toBeGreaterThan(0);

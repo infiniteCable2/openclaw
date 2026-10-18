@@ -139,7 +139,7 @@ it("rejects retained relay mapping changes even when the physical store is uncha
     undefined,
     expect.objectContaining({
       code: "INVALID_REQUEST",
-      message: expect.stringContaining("non-canonical persisted row"),
+      message: "Talk session storage target changed; retry the request",
     }),
   );
 });
