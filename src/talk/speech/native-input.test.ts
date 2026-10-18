@@ -77,7 +77,7 @@ function fixture() {
     runId,
     sessionId: "native-session",
     abortSignal: new AbortController().signal,
-    assertCurrent: vi.fn(),
+    assertCurrent: vi.fn<() => void>(),
   });
   return {
     owner,

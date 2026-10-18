@@ -63,9 +63,13 @@ describe("original native conversation participant snapshot", () => {
     },
   );
 
-  it("does not infer native participant proof from sender, owner or display fields", () => {
+  it("does not infer native participant proof from sender, owner allowlist or display fields", () => {
     expect(
-      readSessionConversationParticipant({ SenderId: profile.id, SenderIsOwner: true }),
+      readSessionConversationParticipant({
+        SenderId: profile.id,
+        SenderName: "Example person",
+        OwnerAllowFrom: [profile.id],
+      }),
     ).toBeUndefined();
   });
 
@@ -75,8 +79,10 @@ describe("original native conversation participant snapshot", () => {
     expect(readSessionConversationParticipant(ctx)).toBeUndefined();
   });
 
-  it("declines a non-external continuation even when original native participant facts remain", () => {
-    const ctx: SessionParticipantInputContext = { InputProvenance: { kind: "continuation" } };
+  it("declines an inter-session handoff even when original native participant facts remain", () => {
+    const ctx: SessionParticipantInputContext = {
+      InputProvenance: { kind: "inter_session", sourceTool: "sessions_send" },
+    };
     prepareSessionParticipantInput(ctx, profile);
     expect(readSessionConversationParticipant(ctx)).toBeUndefined();
   });

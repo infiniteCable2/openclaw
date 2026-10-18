@@ -65,7 +65,7 @@ function fixture() {
       },
       session: { idPrefix: "example", participantIdentity: () => "example-caller" },
     },
-    config: { realtime: { agentId: "example", toolPolicy: "inherit", speakCommentary: true } },
+    config: { realtime: { agentId: "example", toolPolicy: "owner", speakCommentary: true } },
     fullConfig: {},
     runtime: { tts },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -120,6 +120,7 @@ describe("original speech binding to native reply", () => {
           }),
         ).toThrow("target changed");
         expect(options.queueModeOverride).toBe("followup");
+        expect(options.toolsAllow).toBeUndefined();
         expect(options.abortSignal).toBeUndefined();
         return { text: "Native answer." };
       },

@@ -146,6 +146,9 @@ describe("speech-confirmed waiting audio", () => {
     });
     const f = await setup({ nativeInput });
     try {
+      if (!f.callbacks.onTranscript) {
+        throw new Error("Expected native speech transcript handler");
+      }
       f.callbacks.onTranscript("A real caller request.", { utteranceId: "caller-input" });
       const input = await admitted.promise;
       expect(f.consultAgent).not.toHaveBeenCalled();
