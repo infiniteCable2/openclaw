@@ -260,6 +260,7 @@ describe("Talk target preparation through Gateway authorization", () => {
             ...createParams,
             sessionKey,
             transport: method === "talk.client.create" ? "webrtc" : "gateway-relay",
+            capabilities: method === "talk.client.create" ? createParams.capabilities : [],
           }),
         ).toHaveBeenCalledWith(false, undefined, hiddenSessionNotFound(sessionKey));
       }
@@ -278,6 +279,7 @@ describe("Talk target preparation through Gateway authorization", () => {
         const respond = await dispatch(method, {
           ...createParams,
           transport: method === "talk.client.create" ? "webrtc" : "gateway-relay",
+          capabilities: method === "talk.client.create" ? createParams.capabilities : [],
           ...(sessionKey ? { sessionKey } : {}),
         });
         expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
