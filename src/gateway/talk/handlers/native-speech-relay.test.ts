@@ -24,6 +24,12 @@ import {
 it.for([false, true])(
   "native STT/TTS actual run retains its spoken confirmation gate after early commentary=%s",
   async (partial, { signal }) => {
+    if (partial) {
+      testState.config.talk = {
+        ...testState.config.talk,
+        speech: { agentProfiles: { voice: { speakCommentary: true } } },
+      };
+    }
     const hardware = installSyntheticSpeechHardware();
     const turnEnded = createDeferredCore();
     let admittedVoiceRun: ReturnType<typeof resolveClientVoiceRunBinding>;
@@ -136,6 +142,9 @@ it("public STT/TTS relay gates media readiness and uses native consultation, voi
   ).toHaveBeenCalledWith(true, { ok: true }, undefined);
   expect(hardware.input).toHaveBeenCalledWith(Buffer.from(audioBase64, "base64"));
   await withinTest(turnEnded.promise, signal);
+  // Audio completion can precede getReply's return and its preparation finally.
+  // Join the actual per-turn lease callback, not a timer or a duplicate cleanup.
+  await withinTest(hardware.turnTtsReleased, signal);
   expect(mocks.prepareSpeech).toHaveBeenCalledTimes(2);
   expect(hardware.releaseTts).not.toHaveBeenCalled();
   expect(hardware.turnTtsReleases).toHaveLength(1);
