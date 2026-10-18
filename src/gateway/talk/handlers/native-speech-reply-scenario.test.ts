@@ -36,6 +36,12 @@ it.for([false, true])(
     void nativeFailure.promise.catch(() => {});
     const progress = (stage: string) =>
       console.info(`[native-speech-scenario close=${closeAudio}] ${stage}`);
+    // The shared fixture normally silences the real runtime logger. Preserve
+    // its exact synthetic failure before Speech emits its intentionally generic
+    // session.error; otherwise an admission failure looks like a queue timeout.
+    vi.mocked(context.logGateway.warn).mockImplementation((...args) => {
+      console.warn(`[native-speech-scenario close=${closeAudio}] native-warning`, ...args);
+    });
     const waitAt = async (stage: string, work: PromiseLike<unknown>) => {
       progress(`waiting:${stage}`);
       await withinTest(Promise.race([work, nativeFailure.promise]), signal);
@@ -65,7 +71,11 @@ it.for([false, true])(
       if (payload.type === "audio") audioEvents++;
       if (isRecord(payload.talkEvent) && payload.talkEvent.type === "session.error") {
         progress("native-session-error");
-        nativeFailure.reject(new Error("Native speech reported session.error", { cause: payload }));
+        nativeFailure.reject(
+          new Error("Native speech reported session.error", {
+            cause: { payload, warnings: vi.mocked(context.logGateway.warn).mock.calls },
+          }),
+        );
       }
       if (isRecord(payload.talkEvent) && payload.talkEvent.type === "turn.ended")
         turnEnded.resolve();
