@@ -11,7 +11,9 @@ import {
   testing as embeddedRunTesting,
 } from "../../../agents/embedded-agent-runner/runs.test-support.js";
 import { withGatewayToolCallerIdentity } from "../../../agents/tools/gateway-caller-context.js";
+import { markCompleteReplyConfig } from "../../../auto-reply/reply/get-reply-fast-path.test-support.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { validateConfigObject } from "../../../config/validation-core.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../../plugins/runtime.js";
 import type {
@@ -103,6 +105,19 @@ const context = {
   logGateway: { info: vi.fn(), warn: vi.fn() },
 } as unknown as GatewayRequestContext;
 
+function resolveNativeConsultConfig(raw: OpenClawConfig): OpenClawConfig {
+  // This fixture has no installed plugin manifests. Use the actual schema and
+  // runtime-default materializer before declaring a complete config; marking
+  // an arbitrary partial override would hide a real fixture-contract violation.
+  const validated = validateConfigObject(raw, { manifestRegistry: { plugins: [] } });
+  if (!validated.ok) {
+    throw new Error("Invalid native consult fixture configuration", { cause: validated.issues });
+  }
+  // Preserve real Session/SQLite initialization, rather than the abbreviated
+  // fast-test bootstrap. Only hardware/model leaf implementations are mocked.
+  return markCompleteReplyConfig(validated.config, { runtimeMode: "full" });
+}
+
 async function dispatch(
   method: string,
   params: Record<string, unknown>,
@@ -141,13 +156,38 @@ async function dispatch(
 
 beforeEach(async () => {
   state = await createOpenClawTestState({ label: "talk-native-consult" });
-  config = {
+  config = resolveNativeConsultConfig({
     agents: {
       ownership: "explicit",
+      defaults: {
+        workspace: state.workspaceDir,
+        skipBootstrap: true,
+        model: { primary: "openai/synthetic-native-consult" },
+      },
       entries: { primary: {}, voice: { workspace: state.workspaceDir } },
     },
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://model.example.test/v1",
+          apiKey: "synthetic-native-consult-key",
+          api: "openai-responses",
+          models: [
+            {
+              id: "synthetic-native-consult",
+              name: "Synthetic native consult model",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 128_000,
+              maxTokens: 8192,
+            },
+          ],
+        },
+      },
+    },
     talk: { agentId: "voice" },
-  };
+  });
   client = {
     ...sharingPolicyClient({ user: ensureProfileForEmail("native-listener@example.test").id }),
     connId: "native-consult-client",
@@ -410,7 +450,7 @@ export const testState = {
     return config;
   },
   set config(value: OpenClawConfig) {
-    config = value;
+    config = resolveNativeConsultConfig(value);
   },
   get client() {
     return client;

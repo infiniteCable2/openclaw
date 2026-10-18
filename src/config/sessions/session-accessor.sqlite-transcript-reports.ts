@@ -430,9 +430,9 @@ async function withReportWorker<T>(
                       ) {
                         throw new Error("Transcript report omitted its composed source validation");
                       }
-                      // SAFETY: The paired report worker supplies these transaction source facts.
                       acceptSessionSourceValidation(
                         composedSource,
+                        // SAFETY: This pinned report worker publishes readSessionSourceValidation's return value.
                         admitted.facts.reportSourceValidation as SessionSourceValidation,
                       );
                       composedSource.assertCurrent();

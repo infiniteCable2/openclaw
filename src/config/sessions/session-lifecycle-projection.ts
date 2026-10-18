@@ -128,9 +128,9 @@ export function commitSessionLifecycleProjectionInWorker(params: {
       if (!params.preparedSource || !isRecord(facts.sourceValidation)) {
         throw new Error("Lifecycle source validation has no prepared authority");
       }
-      // SAFETY: The paired lifecycle worker supplies validation from this transaction.
       acceptSessionSourceValidation(
         params.preparedSource,
+        // SAFETY: This lifecycle worker's marker carries readSessionSourceValidation's return value.
         facts.sourceValidation as SessionSourceValidation,
       );
       (params.preparedSource.assertPreparedCurrent ?? params.preparedSource.assertCurrent)();

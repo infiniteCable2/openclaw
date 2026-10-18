@@ -298,9 +298,14 @@ describe("native reply initial context", () => {
           entryId: expect.any(String),
         },
         totalTokensFresh: false,
-        delivery: normalizeSessionDeliveryState({
-          context: { channel: "matrix", to: "room:synthetic" },
-        }),
+      });
+      // The durable JSON representation omits optional own keys whose value is undefined.
+      // Assert the entire persisted route, not an in-memory normalizer's undefined keys.
+      expect(entry.delivery).toStrictEqual({
+        kind: "external",
+        route: { channel: "matrix", target: { to: "room:synthetic" } },
+        context: { channel: "matrix", to: "room:synthetic" },
+        origin: { provider: "matrix", to: "room:synthetic" },
       });
       expect(entry.totalTokens).toBeUndefined();
       expect(entry.parentSessionKey).toBeUndefined();

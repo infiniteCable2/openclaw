@@ -5,6 +5,7 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { isSessionWorkAdmissionActive } from "../../sessions/session-lifecycle-admission.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { beginCronSessionWorkAdmission, type MutableCronSession } from "./run-session-state.js";
+import { loadCronSessionEntryLatest } from "./session.js";
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-cron-conversation-admission-");
 
@@ -34,11 +35,16 @@ describe("cron conversation model admission", () => {
               };
       }
       await replaceSessionEntry({ sessionKey, storePath }, entry);
+      // Cron captures its claim from the canonical read, not the pre-commit write input.
+      const committedEntry = await loadCronSessionEntryLatest(storePath, sessionKey);
+      expect(committedEntry).toMatchObject({ sessionId: entry.sessionId, lifecycleRevision });
+      expect(committedEntry?.conversationTopology).toEqual(entry.conversationTopology);
+      if (!committedEntry) throw new Error("Cron fixture session was not committed");
       const cronSession: MutableCronSession = {
         storePath,
-        store: { [sessionKey]: { ...entry } },
-        sessionEntry: { ...entry },
-        initialSessionEntry: { ...entry },
+        store: { [sessionKey]: structuredClone(committedEntry) },
+        sessionEntry: structuredClone(committedEntry),
+        initialSessionEntry: structuredClone(committedEntry),
         lifecycleRevision,
         systemSent: true,
         isNewSession: false,
