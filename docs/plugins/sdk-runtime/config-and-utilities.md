@@ -16,6 +16,15 @@ Prefer config that was already passed into the active call path, for example `ap
 
 Use `api.runtime.config.current()` only when a long-lived handler needs the current process snapshot and no config was passed to that function. The returned value is readonly; clone or use a mutation helper before editing.
 
+In this fork, `cloneRuntimeConfigSnapshot(cfg)` from
+`openclaw/plugin-sdk/runtime-config-snapshot` creates a caller-owned, writable
+data copy of that exact config, including its resolution metadata. It does not
+read a global config, follow later updates, capture source ownership, or grant
+write authority. Use it when an existing helper requires a mutable config type;
+use the normal mutation owner for persistent edits. Read and copy again when
+revalidating live policy: a readonly view does not guarantee the underlying
+runtime object is immutable, so caching solely by its object identity is unsafe.
+
 Tool factories receive `ctx.runtimeConfig` plus `ctx.getRuntimeConfig()`. Use the getter inside a long-lived tool's `execute` callback when config can change after the tool definition was created.
 
 Persist changes with `api.runtime.config.mutateConfigFile(...)` or `api.runtime.config.replaceConfigFile(...)`. Each write must choose an explicit `afterWrite` policy:

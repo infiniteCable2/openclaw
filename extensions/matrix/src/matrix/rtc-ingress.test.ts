@@ -239,6 +239,53 @@ describe("MatrixRTC text-free conversation admission", () => {
     });
   });
 
+  it("uses an owned copy of the injected frozen snapshot without replacing its source", async () => {
+    await withSource(async ({ cfg, matrix, runtime, source }) => {
+      const allowFrom = Object.freeze([senderId]);
+      const snapshot = Object.freeze({
+        ...cfg,
+        bindings: Object.freeze([...(cfg.bindings ?? [])]),
+        channels: Object.freeze({
+          ...cfg.channels,
+          matrix: Object.freeze({ ...matrix, dm: Object.freeze({ ...matrix.dm, allowFrom }) }),
+        }),
+      });
+      runtime.config.current = () => snapshot;
+      const original = routes.resolveMatrixInboundRoute;
+      const route = vi.spyOn(routes, "resolveMatrixInboundRoute").mockImplementation((params) => {
+        expect(params.cfg).not.toBe(snapshot);
+        expect(params.cfg).toEqual(snapshot);
+        expect(Object.isFrozen(params.cfg)).toBe(false);
+        expect(params.cfg.channels?.matrix?.dm?.allowFrom).not.toBe(allowFrom);
+        return original(params);
+      });
+      await expect(source.admitInput(input)).resolves.toMatchObject({ version: 1 });
+      expect(route).toHaveBeenCalled();
+      expect(snapshot.channels.matrix.dm.allowFrom).toEqual([senderId]);
+      expect(runtime.config.current()).toBe(snapshot);
+    });
+  });
+
+  it("refuses a distinct injected policy replacement after native resolution yields", async () => {
+    await withSource(async ({ cfg, matrix, runtime, source, resolve, nativeResolve, admit }) => {
+      resolve.mockImplementationOnce(async (params) => {
+        const result = await nativeResolve(params);
+        const replacement: OpenClawConfig = {
+          ...cfg,
+          channels: {
+            ...cfg.channels,
+            matrix: { ...matrix, dm: { ...matrix.dm, allowFrom: [] } },
+          },
+        };
+        runtime.config.current = () => replacement;
+        return result;
+      });
+      await expect(source.admitInput(input)).rejects.toThrow("policy changed");
+      expect(matrix.dm?.allowFrom).toEqual([senderId]);
+      expect(admit).not.toHaveBeenCalled();
+    });
+  });
+
   it("rejects an absent named account before input or provider acquisition", async () => {
     await withSource(async ({ createSource, resolve, admit }) => {
       expect(() => createSource({ accountId: "removed-fixture-account" })).toThrow(

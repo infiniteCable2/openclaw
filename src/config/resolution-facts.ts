@@ -3,6 +3,8 @@ import {
   type ConcreteConfigPathSegment,
 } from "../shared/dot-path.js";
 import type { EnvSubstitutionWarning } from "./env-substitution.js";
+import type { DeepReadonly } from "./readonly.js";
+import type { OpenClawConfig } from "./types.openclaw.js";
 import {
   parseSecretRef,
   DEFAULT_SECRET_PROVIDER_ALIAS,
@@ -70,6 +72,13 @@ export function cloneConfigWithResolutionFacts<T>(value: T): T {
   const cloned = structuredClone(value);
   copyConfigResolutionFacts(value, cloned);
   return cloned;
+}
+
+/** Owned data copy of the supplied config, not a live reader or a runtime capture. */
+export function cloneRuntimeConfigSnapshot(value: DeepReadonly<OpenClawConfig>): OpenClawConfig {
+  // SAFETY: structuredClone creates a separate, writable data graph; the native clone owner
+  // also preserves the exact source's resolution facts. No source object becomes mutable.
+  return cloneConfigWithResolutionFacts(value) as OpenClawConfig;
 }
 
 export function copyConfigResolutionFactsExcept(

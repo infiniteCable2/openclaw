@@ -40,7 +40,7 @@ const loadReply = createLazyRuntimeModule(async () => {
 });
 
 type SpeechPresentationParams = Parameters<typeof createReplySpeechPresentation>[0];
-export type PreparedConversationSpeech = {
+type PreparedConversationSpeech = {
   presentation: Omit<SpeechPresentationParams, "onResult">;
   release(): void | Promise<void>;
 };

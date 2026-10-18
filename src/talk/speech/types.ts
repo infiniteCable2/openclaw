@@ -23,7 +23,6 @@ import type { TalkEvent, TalkEventInput } from "../talk-events.js";
 import type { SpeechAudioFormat, SpeechInputAudioFormat } from "./audio-format.js";
 import type { PreparedSpeechGreeting } from "./greeting.js";
 import type { SpeechPlaybackObservation } from "./playback-observation.js";
-export type { SpeechPlaybackObservation } from "./playback-observation.js";
 import type { SpeechAudioTransport, SpeechAudioTransportHealth } from "./transport.js";
 import type { SpeechWaitingAudioConfig } from "./waiting-audio.js";
 

@@ -4,10 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ConversationListItemSchema } from "../../packages/gateway-protocol/src/schema/agent.js";
 import type { ChannelCapabilities } from "../channels/plugins/types.core.js";
 import type { ConversationRecord } from "../config/sessions/conversation-registry.types.js";
-import {
-  presentConversationList,
-  presentConversationListItem,
-} from "./conversation-list-presentation.js";
+import { presentConversationList } from "./conversation-list-presentation.js";
 
 const conversation: ConversationRecord = {
   conversationRef: "conv_0123456789abcdef0123456789abcdef",
@@ -38,6 +35,13 @@ function plugin(capabilities: ChannelCapabilities) {
     },
     capabilities,
   };
+}
+
+function presentItem(conversation: ConversationRecord, channel?: ReturnType<typeof plugin>) {
+  return expectDefined(
+    presentConversationList([conversation], () => channel)[0],
+    "presented conversation",
+  );
 }
 
 describe("conversation list presentation", () => {
@@ -72,7 +76,7 @@ describe("conversation list presentation", () => {
   });
 
   it("keeps durable address facts without leaking session bindings or inventing presence", () => {
-    const result = presentConversationListItem(conversation);
+    const result = presentItem(conversation);
     expect(result).toEqual({
       conversationRef: conversation.conversationRef,
       channel: "reef",
@@ -89,10 +93,7 @@ describe("conversation list presentation", () => {
   });
 
   it.each([true, false])("preserves the exact declared media capability %s", (media) => {
-    const result = presentConversationListItem(
-      conversation,
-      plugin({ chatTypes: ["direct"], media }),
-    );
+    const result = presentItem(conversation, plugin({ chatTypes: ["direct"], media }));
     expect(result.channelLabel).toBe("Reef Chat");
     expect(result.channelCapabilities).toEqual({ media });
     expect(Value.Check(ConversationListItemSchema, result)).toBe(true);
@@ -101,7 +102,7 @@ describe("conversation list presentation", () => {
   it.each(["audio-file", "voice-note"] as const)(
     "reports the native voice output format %s without deriving another delivery grant",
     (synthesisTarget) => {
-      const result = presentConversationListItem(
+      const result = presentItem(
         conversation,
         plugin({ chatTypes: ["direct"], tts: { voice: { synthesisTarget } } }),
       );
@@ -111,13 +112,13 @@ describe("conversation list presentation", () => {
   );
 
   it("omits undeclared media capabilities rather than declaring unsupported formats", () => {
-    const result = presentConversationListItem(conversation, plugin({ chatTypes: ["direct"] }));
+    const result = presentItem(conversation, plugin({ chatTypes: ["direct"] }));
     expect(result.channelLabel).toBe("Reef Chat");
     expect(result).not.toHaveProperty("channelCapabilities");
   });
 
   it("rejects unsupported capability and presence claims at the wire boundary", () => {
-    const result = presentConversationListItem(conversation);
+    const result = presentItem(conversation);
     expect(
       Value.Check(ConversationListItemSchema, { ...result, channelCapabilities: { video: true } }),
     ).toBe(false);

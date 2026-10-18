@@ -288,7 +288,7 @@ export function registerMatrixRtcController(params: {
         const meetingSessionId = randomUUID();
         const agentProfile = resolveMatrixRtcAgentProfile(params.config, admission.agentId);
         const speechProfile = resolveTalkSpeechAgentProfile(params.cfg, admission.agentId);
-        const { conversation, bindings } = createMatrixRtcConversationBindings({
+        const { bindings } = createMatrixRtcConversationBindings({
           source: {
             runtime: params.runtime,
             runtimeEnv: params.runtimeEnv,

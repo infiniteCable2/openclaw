@@ -19,7 +19,7 @@ export function presentConversationList(
 }
 
 /** Presents an authorized external address without exposing its backing session or authority. */
-export function presentConversationListItem(
+function presentConversationListItem(
   conversation: ConversationRecord,
   plugin?: ConversationChannelPresentation,
 ): ConversationListItem {

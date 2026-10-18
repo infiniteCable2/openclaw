@@ -17,6 +17,7 @@ import type {
   MatchesMentionWithExplicit,
 } from "../../auto-reply/reply/mentions.types.js";
 import type { CreateReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-dispatcher.runtime-types.js";
+import type { ChannelConversationInputRuntimeV1 } from "../../channels/message-access/conversation-input.types.js";
 import type { ChannelRuntimeContextRegistry } from "../../channels/plugins/channel-runtime-surface.types.js";
 import type { LoadChannelOutboundAdapter } from "../../channels/plugins/outbound/load.types.js";
 import type { ResolveMarkdownTableMode } from "../../config/markdown-tables.types.js";
@@ -162,7 +163,7 @@ export type PluginRuntimeChannel = {
     /** Ingress policy and identity handoff bound to this channel's host instance. */
     ingress: {
       /** Available only on a live host-bound channel; policy-only runtimes cannot mint inputs. */
-      conversation?: import("../../channels/message-access/conversation-input.types.js").ChannelConversationInputRuntimeV1;
+      conversation?: ChannelConversationInputRuntimeV1;
       createResolver: typeof import("../../channels/message-access/runtime.js").createChannelIngressPolicyResolver;
       resolve: typeof import("../../channels/message-access/runtime.js").resolveChannelIngressPolicy;
       resolveStable: typeof import("../../channels/message-access/runtime.js").resolveStableChannelIngressPolicy;

@@ -3,7 +3,7 @@ import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SpeechSessionHandle } from "./speech/types.js";
 
 /** Storage identity is private metadata, never a capability or an external address. */
-export type TalkSessionStorageTarget = Readonly<{
+type TalkSessionStorageTarget = Readonly<{
   agentId: string;
   sessionKey: string;
   canonicalKey: string;
@@ -24,7 +24,7 @@ export type TalkConnectionPresentation = Readonly<{
   assertCurrent(): void;
 }>;
 
-export type TalkSpeechRelayRecord = {
+type TalkSpeechRelayRecord = {
   kind: "speech-relay";
   id: string;
   connId: string;

@@ -12,12 +12,6 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
 
-export {
-  conversationKnowledgeAudience,
-  conversationKnowledgeAudienceIdentity,
-  conversationKnowledgeParticipantIdentity,
-} from "../../config/sessions/conversation-audience.js";
-
 const fields = [
   "sessionId",
   "lifecycleRevision",

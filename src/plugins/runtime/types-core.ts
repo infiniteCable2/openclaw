@@ -2,6 +2,7 @@ import type { StopReason } from "../../../packages/llm-core/src/types.js";
 import type { CreateChannelIngressDrainOptions } from "../../channels/message/ingress-drain.js";
 import type { CreateChannelIngressQueueOptions } from "../../channels/message/ingress-queue.types.js";
 import type { ConfigMutationBase } from "../../config/mutation-types.js";
+import type { DeepReadonly } from "../../config/readonly.js";
 import type { SessionPluginJsonValue } from "../../config/sessions/types.js";
 import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
 import type { LogLevel } from "../../logging/levels.js";
@@ -31,14 +32,6 @@ type RuntimeWriteConfigOptions = {
   expectedConfigPath?: string;
   unsetPaths?: string[][];
 };
-
-type DeepReadonly<T> = T extends (...args: never[]) => unknown
-  ? T
-  : T extends readonly (infer U)[]
-    ? ReadonlyArray<DeepReadonly<U>>
-    : T extends object
-      ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
-      : T;
 
 type RuntimeConfigAfterWrite = import("../../config/config.js").ConfigWriteAfterWrite;
 type RuntimeConfigReplaceResult = import("../../config/mutate.js").ConfigReplaceResult;

@@ -6,6 +6,7 @@ import {
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { resolveAgentSpeechConversationRoute } from "openclaw/plugin-sdk/routing";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
+import { cloneRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { findMatrixAccountEntry, hasImplicitMatrixAccountConfig } from "../account-selection.js";
 import {
   resolveMatrixAccountAllowlistConfig,
@@ -88,7 +89,9 @@ export function createMatrixRtcConversationInputSource(
   };
   const selectCurrent = () => {
     assertTransportCurrent();
-    const cfg = runtime.config.current();
+    // Existing account/routing consumers require an owned mutable projection.
+    // Read and copy the exact live source each time, including in-place updates.
+    const cfg = cloneRuntimeConfigSnapshot(runtime.config.current());
     if (
       !findMatrixAccountEntry(cfg, accountId) &&
       !hasImplicitMatrixAccountConfig(cfg, accountId)

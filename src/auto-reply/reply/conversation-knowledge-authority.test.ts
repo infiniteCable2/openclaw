@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  conversationKnowledgeAudience,
+  conversationKnowledgeAudienceIdentity,
+  conversationKnowledgeParticipantIdentity,
+} from "../../config/sessions/conversation-audience.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 
@@ -8,12 +13,7 @@ vi.mock("../../gateway/session-sharing-preparation.js", () => ({
   prepareSessionMutationFacts: prepare,
 }));
 
-import {
-  conversationKnowledgeAudience,
-  conversationKnowledgeAudienceIdentity,
-  conversationKnowledgeParticipantIdentity,
-  prepareConversationKnowledgeBranchFacts,
-} from "./conversation-knowledge-authority.js";
+import { prepareConversationKnowledgeBranchFacts } from "./conversation-knowledge-authority.js";
 
 const branch: ConversationKnowledgeBranch = {
   agentId: "example",

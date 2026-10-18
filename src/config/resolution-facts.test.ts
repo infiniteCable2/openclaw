@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { freezeJsonSnapshot } from "../shared/immutable-data.js";
+import type { DeepReadonly } from "./readonly.js";
 import {
+  cloneRuntimeConfigSnapshot,
   collectEnvSecretRefIds,
   copyConfigResolutionFactsThroughRewrite,
   createConfigResolutionFacts,
@@ -9,6 +12,61 @@ import {
   hasUnresolvedConfigPath,
   setConfigResolutionFacts,
 } from "./resolution-facts.js";
+import type { OpenClawConfig } from "./types.openclaw.js";
+
+describe("owned runtime config copy", () => {
+  it("makes frozen readonly config independently writable without selecting a global source", () => {
+    const source: DeepReadonly<OpenClawConfig> = freezeJsonSnapshot({
+      tools: { allow: ["read"] },
+      bindings: [{ agentId: "primary", match: { channel: "matrix" } }],
+    });
+    const copied = cloneRuntimeConfigSnapshot(source);
+    expect(copied).toEqual(source);
+    expect(copied).not.toBe(source);
+    expect(copied.tools?.allow).not.toBe(source.tools?.allow);
+    expect(copied.bindings?.[0]).not.toBe(source.bindings?.[0]);
+    copied.tools?.allow?.push("write");
+    copied.bindings?.splice(0, 1);
+    expect(source.tools?.allow).toEqual(["read"]);
+    expect(source.bindings).toHaveLength(1);
+    expect(Object.isFrozen(source.tools?.allow)).toBe(true);
+    expect(cloneRuntimeConfigSnapshot(source)).toEqual(source);
+  });
+
+  it.each([false, true])("retains authoritative empty resolution facts: %s", (resolved) => {
+    const source = { hooks: { token: "${LITERAL_NOT_A_REFERENCE}" } };
+    if (resolved) {
+      setConfigResolutionFacts(source, createConfigResolutionFacts([]));
+    }
+    const copied = cloneRuntimeConfigSnapshot(source);
+    expect(getConfigResolutionFacts(copied)).toBe(getConfigResolutionFacts(source));
+    expect(collectEnvSecretRefIds(copied)).toEqual(
+      resolved ? new Set() : new Set(["LITERAL_NOT_A_REFERENCE"]),
+    );
+  });
+
+  it("retains pending and resolved environment provenance from the supplied source", () => {
+    const source = {
+      hooks: { token: "${PENDING_TOKEN}" },
+      env: { vars: { EXAMPLE: "resolved literal" } },
+    };
+    setConfigResolutionFacts(
+      source,
+      createConfigResolutionFacts(
+        [{ configPath: "hooks.token", varName: "PENDING_TOKEN" }],
+        new Map([["hooks.token", "PENDING_TOKEN"]]),
+        "default",
+        new Map([["env.vars.EXAMPLE", "RESOLVED_TOKEN"]]),
+      ),
+    );
+    const copied = cloneRuntimeConfigSnapshot(source);
+    expect(hasUnresolvedConfigPath(copied, "hooks.token")).toBe(true);
+    expect(getAuthoredConfigSecretRef(copied, "hooks.token")?.id).toBe("PENDING_TOKEN");
+    expect(getResolvedConfigEnvSecretRef(copied, "env.vars.EXAMPLE")?.id).toBe("RESOLVED_TOKEN");
+    expect(collectEnvSecretRefIds(copied)).toEqual(new Set(["PENDING_TOKEN", "RESOLVED_TOKEN"]));
+    expect(getConfigResolutionFacts(copied)).toBe(getConfigResolutionFacts(source));
+  });
+});
 
 describe("resolution facts through config rewrites", () => {
   it.each<{
