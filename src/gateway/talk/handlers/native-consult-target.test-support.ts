@@ -1,7 +1,10 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, expect, vi } from "vitest";
-import { resolvePreparedRunAdmission } from "../../../agents/admitted-run-context.js";
+import {
+  resolveAdmittedRunActiveAssertion,
+  resolvePreparedRunAdmission,
+} from "../../../agents/admitted-run-context.js";
 import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
 import {
   clearActiveEmbeddedRun,
@@ -11,11 +14,14 @@ import {
   createEmbeddedRunHandle,
   testing as embeddedRunTesting,
 } from "../../../agents/embedded-agent-runner/runs.test-support.js";
+import { resolveAgentRunSessionTarget } from "../../../agents/run-session-target.js";
 import { guardSessionManager } from "../../../agents/session-tool-result-guard-wrapper.js";
 import { persistAgentSessionMessage } from "../../../agents/sessions/agent-session-transcript.js";
+import { withSessionManagerWriteAssertion } from "../../../agents/sessions/session-manager-write-admission.js";
 import { SessionManager } from "../../../agents/sessions/session-manager.js";
 import { withGatewayToolCallerIdentity } from "../../../agents/tools/gateway-caller-context.js";
 import { markCompleteReplyConfig } from "../../../auto-reply/reply/get-reply-fast-path.test-support.js";
+import { withOwnedSessionTranscriptWriterFence } from "../../../config/sessions/transcript-write-context.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { validateConfigObject } from "../../../config/validation-core.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
@@ -426,6 +432,11 @@ async function publishNativeSpeechModelRun(
     throw new Error("The synthetic native speech run requires an explicit agent and session key");
   }
   const admitted = await resolvePreparedRunAdmission({ ...params, runtimeKind: "embedded" });
+  const assertAdmitted = resolveAdmittedRunActiveAssertion(admitted, params.abortSignal);
+  const assertCurrent = () => {
+    params.abortSignal?.throwIfAborted();
+    assertAdmitted?.();
+  };
   const handle = createEmbeddedRunHandle({ runId: params.runId });
   await withGatewayToolCallerIdentity(
     {
@@ -464,27 +475,27 @@ async function publishNativeSpeechModelRun(
         // A controlled model emits an actual completed AssistantMessage here,
         // independently of delivery payloads or Speech/TTS presentation. Replace
         // only the model leaf; retain its native guarded transcript writer.
-        params.abortSignal?.throwIfAborted();
+        assertCurrent();
         if (!manager) {
-          const target = params.sessionTarget;
-          if (
-            params.sessionPersistence === "detached" ||
-            !target?.agentId ||
-            !target.sessionId ||
-            !target.sessionKey ||
-            !target.storePath
-          ) {
+          if (params.sessionPersistence === "detached") {
             throw new Error("Synthetic model persistence requires its actual durable run target");
           }
+          // The real embedded runtime resolves optional run targets at session
+          // bootstrap/attempt preparation. Use that same owner, not a target
+          // reconstructed from the scenario's expected transcript address.
+          const resolved = await resolveAgentRunSessionTarget({
+            ...params,
+            missingSessionKey: "resolve-existing",
+          });
+          assertCurrent();
+          const target = withOwnedSessionTranscriptWriterFence({
+            ...resolved,
+            expectedLifecycleRevision: params.sessionTarget?.expectedLifecycleRevision,
+            expectedWriterRunId: params.sessionTarget?.expectedWriterRunId,
+          });
           manager = guardSessionManager(
             await SessionManager.openAsync(
-              {
-                ...target,
-                agentId: target.agentId,
-                sessionId: target.sessionId,
-                sessionKey: target.sessionKey,
-                storePath: target.storePath,
-              },
+              target,
               params.workspaceDir,
               undefined,
               params.abortSignal,
@@ -498,10 +509,13 @@ async function publishNativeSpeechModelRun(
             },
           );
         }
-        params.abortSignal?.throwIfAborted();
-        await persistAgentSessionMessage(manager, message, {
-          invalidateSerializedPrefixCache: false,
-        });
+        assertCurrent();
+        const transcriptManager = manager;
+        await withSessionManagerWriteAssertion(transcriptManager, assertCurrent, () =>
+          persistAgentSessionMessage(transcriptManager, message, {
+            invalidateSerializedPrefixCache: false,
+          }),
+        );
       });
     }
     await params.onBlockReply?.({ text: "The synthetic device is ready." });
