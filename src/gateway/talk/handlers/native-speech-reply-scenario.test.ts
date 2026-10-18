@@ -7,6 +7,10 @@ import {
   loadSessionEntry,
   readSessionTranscriptMessageEvents,
 } from "../../../config/sessions/session-accessor.js";
+import {
+  pendingSessionEntryPublications,
+  preparedSharingReads,
+} from "../../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import * as sessionSharingPreparation from "../../session-sharing-preparation.js";
@@ -72,6 +76,29 @@ it.for([false, true])(
                 return prepared.readCurrent(cfg);
               } catch (error) {
                 console.warn("[native-speech-scenario] native-access-read-failure", error);
+                console.warn(
+                  "[native-speech-scenario] native-publication-state",
+                  JSON.stringify(
+                    [...preparedSharingReads].map(([key, reads]) => ({
+                      key,
+                      reads: [...reads].map((read) => ({
+                        factsPresent: read.facts !== undefined,
+                        entryPresent: read.facts?.entry !== undefined,
+                        pendingFields: read.pending.size,
+                        acquiringInvalidated: read.acquisition?.invalidated,
+                      })),
+                      publications: [...(pendingSessionEntryPublications.get(key) ?? [])].map(
+                        (publication) => ({
+                          settled: publication.settled,
+                          sharingUnchanged: [...publication.sharingUnchanged],
+                          generationUnchanged: [...publication.generationUnchanged],
+                          membershipInvalidated: [...publication.membershipInvalidated],
+                          superseded: [...publication.superseded.keys()],
+                        }),
+                      ),
+                    })),
+                  ),
+                );
                 throw error;
               }
             },
