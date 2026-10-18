@@ -62,7 +62,9 @@ export function createReplySpeechPresentation(
       };
       const assertAccepting = () => {
         assertRunCurrent();
-        if (!accepting) throw new Error("Current-source speech presentation is settling");
+        if (!accepting) {
+          throw new Error("Current-source speech presentation is settling");
+        }
       };
       assertAccepting();
       try {
@@ -83,7 +85,9 @@ export function createReplySpeechPresentation(
         onSpeakableText: params.onSpeakableText
           ? (event) => {
               // Abort releases the output even after the connection has closed.
-              if (event.type !== "abort") assertOutputCurrent();
+              if (event.type !== "abort") {
+                assertOutputCurrent();
+              }
               return params.onSpeakableText!(event);
             }
           : undefined,
@@ -112,7 +116,9 @@ export function createReplySpeechPresentation(
           : {}),
         onBlockReply(payload) {
           assertAccepting();
-          if (!params.bufferReply) delivery.onBlockReply(payload);
+          if (!params.bufferReply) {
+            delivery.onBlockReply(payload);
+          }
         },
         async finish(result) {
           accepting = false;

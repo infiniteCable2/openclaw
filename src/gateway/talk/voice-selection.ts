@@ -272,7 +272,9 @@ export function resolveTalkVoiceSessionTarget(params: {
   voiceSessionId?: string;
   sessionKey?: string;
 }) {
-  if (!params.connId || !params.voiceSessionId) return undefined;
+  if (!params.connId || !params.voiceSessionId) {
+    return undefined;
+  }
   const matching = [...sessions.values()].filter(
     (session) =>
       session.connId === params.connId &&
@@ -282,7 +284,9 @@ export function resolveTalkVoiceSessionTarget(params: {
         session.sessionTarget.canonicalKey === params.sessionKey),
   );
   const session = matching[0];
-  if (matching.length !== 1 || !session) return undefined;
+  if (matching.length !== 1 || !session) {
+    return undefined;
+  }
   return {
     target: session.sessionTarget,
     isCurrent: () => sessions.get(sessionKey(session)) === session,

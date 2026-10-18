@@ -431,7 +431,9 @@ export function bindHostConversationContextGatewayResolver(params: {
     );
   }
   const gateway = resolveGatewayContext();
-  if (!gateway) throw new Error("Conversation host Gateway is unavailable");
+  if (!gateway) {
+    throw new Error("Conversation host Gateway is unavailable");
+  }
   const resolveOriginal = () => {
     assertCurrent();
     if (finalizedContextScopeKey(context) !== scope || resolveGatewayContext() !== gateway) {

@@ -187,7 +187,9 @@ describe("native conversation knowledge references and bounded data", () => {
   it("selects only data newer than the exact accepted frontier and suppresses replay", () => {
     const f = fixture();
     const first = projectConversationKnowledge(f.receipt, f.events);
-    if (!first) throw new Error("Synthetic completed observation missing");
+    if (!first) {
+      throw new Error("Synthetic completed observation missing");
+    }
     expect(projectConversationKnowledge(f.receipt, f.events, first.frontier)).toBeUndefined();
     const next = {
       ...f.receipt,
@@ -268,7 +270,9 @@ describe("native conversation knowledge references and bounded data", () => {
   it("rebases only an admitted replacement generation without reusing the old sequence", () => {
     const f = fixture();
     const frontier = projectConversationKnowledge(f.receipt, f.events)?.frontier;
-    if (!frontier) throw new Error("Synthetic frontier missing");
+    if (!frontier) {
+      throw new Error("Synthetic frontier missing");
+    }
     const replacement = {
       ...f.receipt,
       through: { ...f.receipt.through, generation: "replacement-generation", rawSeq: 1 },

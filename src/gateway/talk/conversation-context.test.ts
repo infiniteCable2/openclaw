@@ -28,7 +28,9 @@ const target: PreparedTalkSessionTarget = {
 function setup() {
   let current = true;
   const assertCurrent = () => {
-    if (!current) throw new Error("Original source revoked");
+    if (!current) {
+      throw new Error("Original source revoked");
+    }
   };
   const authority = createAdmittedRunOperatorAuthority({
     profileId: "example-person",
@@ -82,7 +84,9 @@ describe("provider startup native context snapshot", () => {
     const owner = setup();
     let materialized = false;
     const assertAbsentTarget = vi.fn(() => {
-      if (materialized) throw new Error("Original target was absent");
+      if (materialized) {
+        throw new Error("Original target was absent");
+      }
     });
     const context = await prepareTalkProviderConversationContext({
       target,

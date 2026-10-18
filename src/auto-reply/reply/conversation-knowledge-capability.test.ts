@@ -52,7 +52,9 @@ import {
 } from "./conversation-knowledge.js";
 
 beforeEach(() => {
-  for (const mock of Object.values(source)) mock.mockReset();
+  for (const mock of Object.values(source)) {
+    mock.mockReset();
+  }
 });
 
 async function nativeTurn(admin = false) {
@@ -91,7 +93,9 @@ async function nativeTurn(admin = false) {
     originalSource,
     getRuntimeConfig: () => cfg,
   });
-  if (!owner) throw new Error("Expected the actual native reader-bound knowledge owner");
+  if (!owner) {
+    throw new Error("Expected the actual native reader-bound knowledge owner");
+  }
   onTestFinished(() => {
     owner.release();
     admission.close();
@@ -156,7 +160,9 @@ describe("actual native-turn knowledge ownership", () => {
   it("rejects unrelated terminal metadata and aborted work before any report", async () => {
     const f = await nativeTurn();
     const terminal = f.result.result.meta.agentMeta?.terminalReceipt;
-    if (!terminal) throw new Error("Fixture terminal was not prepared");
+    if (!terminal) {
+      throw new Error("Fixture terminal was not prepared");
+    }
     terminal.runId = "other-run";
     await f.owner.record(f.result);
     terminal.runId = "source-run";
@@ -359,7 +365,9 @@ function personalFixture() {
   const grantRelease = vi.fn();
   let current = true;
   const assertCurrent = () => {
-    if (!current) throw new Error("Original participant source revoked");
+    if (!current) {
+      throw new Error("Original participant source revoked");
+    }
   };
   const facts = {
     audience: "private-direct",

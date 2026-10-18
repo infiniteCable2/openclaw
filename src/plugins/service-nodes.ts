@@ -53,7 +53,9 @@ export function createPluginServiceNodeInvoker(options: {
     const command = request.command;
     const signal = AbortSignal.any(request.signal ? [...signals, request.signal] : signals);
     const assertOwnerCurrent = () => {
-      for (const sourceSignal of signals) sourceSignal.throwIfAborted();
+      for (const sourceSignal of signals) {
+        sourceSignal.throwIfAborted();
+      }
       lease.assertActive("node access");
       if (options.isStopping() || !isPluginRecordActive(registry, record)) {
         throw new Error("Plugin service node access is no longer active");

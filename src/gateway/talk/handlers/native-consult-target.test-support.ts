@@ -490,7 +490,9 @@ async function publishNativeSpeechModelRun(
     if (recorder) {
       const persistence = recorder.persistApproved().then((persisted) => {
         const message = persisted?.message ?? recorder.getPersistedMessage?.();
-        if (message && recorder.hasPersisted()) params.onUserMessagePersisted?.(message);
+        if (message && recorder.hasPersisted()) {
+          params.onUserMessagePersisted?.(message);
+        }
       });
       recorder.markRuntimePersistencePending(persistence);
       await recorder.waitForRuntimePersistence();
@@ -545,7 +547,9 @@ async function publishNativeSpeechModelRun(
         }),
       );
     };
-    if (work) return await work(persistAssistantMessage);
+    if (work) {
+      return await work(persistAssistantMessage);
+    }
     const text = "The synthetic device is ready.";
     await persistAssistantMessage(
       makeAgentAssistantMessage({

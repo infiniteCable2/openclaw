@@ -44,7 +44,9 @@ describe("connection-owned Talk target retention", () => {
         connId,
       );
       expect(input).toMatchObject({ kind: "retained", purpose: "settlement", target });
-      if (input?.kind !== "retained") throw new Error("Missing original owner");
+      if (input?.kind !== "retained") {
+        throw new Error("Missing original owner");
+      }
       expect(input.target).toBe(target);
       expect(input.isCurrent()).toBe(true);
     }
@@ -66,8 +68,9 @@ describe("connection-owned Talk target retention", () => {
       { connId, voiceSessionId: "different", sessionKey: "main" },
       { connId, voiceSessionId, sessionKey: "agent:primary:other" },
       { connId, sessionKey: "main" },
-    ])
+    ]) {
       expect(resolveTalkVoiceSessionTarget(request)).toBeUndefined();
+    }
   });
   it("revokes captured metadata when its actual native owner is removed", () => {
     const release = register();

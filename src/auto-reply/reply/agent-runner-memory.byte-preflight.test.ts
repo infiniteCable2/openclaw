@@ -103,7 +103,9 @@ it.each(["before-preflight", "during-transcript-read"] as const)(
     });
     const followupRun = createTestFollowupRun({ provider: "openai", model: "gpt-5.5" });
     followupRun.assertSourceCurrent = () => {
-      if (!available) throw new Error("guest source unavailable");
+      if (!available) {
+        throw new Error("guest source unavailable");
+      }
     };
     const sessionEntry: InternalSessionEntry = {
       sessionId: "session",

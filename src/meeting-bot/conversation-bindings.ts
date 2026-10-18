@@ -49,24 +49,28 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
       : baseTools;
   const dispatch = async (consult: MeetingAgentConsultParams | SpeechNativeInputParams) => {
     const sessionId = "meetingSessionId" in consult ? consult.meetingSessionId : consult.sessionId;
-    if (sessionId !== params.conversationId) throw new Error("Conversation input binding changed");
+    if (sessionId !== params.conversationId) {
+      throw new Error("Conversation input binding changed");
+    }
     const parsed = parseRealtimeVoiceAgentConsultArgs(consult.args);
     const text = parsed.question;
     const runtimeContext: NonNullable<ConversationReplyParams["runtimeContext"]> = [];
-    if (parsed.context)
+    if (parsed.context) {
       runtimeContext.push({
         label: "Speech input context",
         source: "speech",
         type: "media-context",
         payload: { text: parsed.context },
       });
-    if ("playbackObservation" in consult && consult.playbackObservation)
+    }
+    if ("playbackObservation" in consult && consult.playbackObservation) {
       runtimeContext.push({
         label: "Speech delivery observation",
         source: "speech",
         type: "speech-delivery-observation",
         payload: consult.playbackObservation,
       });
+    }
     const scope = {
       agentId: params.agentId,
       conversationId: params.conversationId,
@@ -135,11 +139,12 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
             preparation?.release?.(),
           ]);
           const failed = outcomes.filter((outcome) => outcome.status === "rejected");
-          if (failed.length)
+          if (failed.length) {
             throw new AggregateError(
               failed.map((outcome) => outcome.reason),
               "Speech preparation cleanup failed",
             );
+          }
         };
         try {
           params.assertOutputCurrent();
@@ -163,8 +168,9 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
               channelId: params.ttsContext?.channelId,
               accountId: params.ttsContext?.accountId,
             });
-            if (!preparation.success)
+            if (!preparation.success) {
               throw new Error(preparation.error ?? "Speech preparation failed");
+            }
           }
           params.assertOutputCurrent();
           return {

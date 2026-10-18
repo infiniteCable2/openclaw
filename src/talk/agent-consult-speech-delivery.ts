@@ -22,7 +22,9 @@ import { collectRealtimeVoiceAgentConsultVisibleText } from "./agent-consult-too
 export function resolveRealtimeVoiceYieldAcknowledgment(
   meta: Pick<EmbeddedAgentRunMeta, "yielded" | "yieldAcknowledgment"> | undefined,
 ): string | undefined {
-  if (meta?.yielded !== true) return undefined;
+  if (meta?.yielded !== true) {
+    return undefined;
+  }
   return (
     truncateUtf16Safe(
       typeof meta.yieldAcknowledgment === "string"

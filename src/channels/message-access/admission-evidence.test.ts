@@ -118,7 +118,9 @@ describe("channel admission evidence", () => {
         expect(consumeChannelAdmissionEvidence(accepted.evidence)).toMatchObject({
           ingressState: enabled ? "present" : "unknown",
         });
-        if (!enabled) expect(accepted.evidence).toBeUndefined();
+        if (!enabled) {
+          expect(accepted.evidence).toBeUndefined();
+        }
         expect(accepted.resolver).toBe(owner.resolveGatewayContext);
         expect(accepted.participantInput).toMatchObject({ owner, binding: scope.binding });
         expect(takeChannelParticipantInput(ingress)).toBeUndefined();
@@ -164,24 +166,55 @@ describe("channel admission evidence", () => {
           conversation: { ...scope.conversation },
           binding: { ...scope.binding },
         };
-        if (change === "channel") changed.channelId = "other";
-        if (change === "account") changed.accountId = "other";
-        if (change === "principal") changed.rawPrincipalRef = "person-b";
-        if (change === "conversation") changed.conversation.id = "other";
-        if (change === "parent") changed.conversation.parentId = "other";
-        if (change === "thread") changed.conversation.threadId = "other";
-        if (change === "agent") changed.binding.agentId = "other";
-        if (change === "session") changed.binding.sessionKey = "other";
-        if (change === "message") changed.binding.messageId = "other";
-        if (change === "native") changed.binding.nativeChannelId = "dm-1";
-        if (change === "event") changed.binding.inboundEventKind = "room_event";
+        if (change === "channel") {
+          changed.channelId = "other";
+        }
+        if (change === "account") {
+          changed.accountId = "other";
+        }
+        if (change === "principal") {
+          changed.rawPrincipalRef = "person-b";
+        }
+        if (change === "conversation") {
+          changed.conversation.id = "other";
+        }
+        if (change === "parent") {
+          changed.conversation.parentId = "other";
+        }
+        if (change === "thread") {
+          changed.conversation.threadId = "other";
+        }
+        if (change === "agent") {
+          changed.binding.agentId = "other";
+        }
+        if (change === "session") {
+          changed.binding.sessionKey = "other";
+        }
+        if (change === "message") {
+          changed.binding.messageId = "other";
+        }
+        if (change === "native") {
+          changed.binding.nativeChannelId = "dm-1";
+        }
+        if (change === "event") {
+          changed.binding.inboundEventKind = "room_event";
+        }
         const accessor = vi.fn(() => "msg-1");
-        if (change === "accessor")
+        if (change === "accessor") {
           Object.defineProperty(changed.binding, "messageId", { get: accessor });
-        if (change === "mutation") ingress.state.accountId = "other";
-        if (change === "owner") owner = { ...owner };
-        if (change === "closed") owner.isLive = () => false;
-        if (change === "gateway") owner.resolveGatewayContext = () => undefined;
+        }
+        if (change === "mutation") {
+          ingress.state.accountId = "other";
+        }
+        if (change === "owner") {
+          owner = { ...owner };
+        }
+        if (change === "closed") {
+          owner.isLive = () => false;
+        }
+        if (change === "gateway") {
+          owner.resolveGatewayContext = () => undefined;
+        }
         const consumed = consumeHostChannelIngressAdmission({
           owner,
           ingress: change === "copy" ? { ...ingress } : ingress,

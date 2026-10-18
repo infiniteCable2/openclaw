@@ -38,7 +38,9 @@ function fixture() {
         scope,
         source: { channelId: "example", sessionKey: "agent:example:call" },
         assertCurrent() {
-          if (!current) throw new Error("Original source revoked");
+          if (!current) {
+            throw new Error("Original source revoked");
+          }
         },
         assertInputCurrent() {
           scope.signal?.throwIfAborted();

@@ -42,7 +42,9 @@ export function publishTalkRealtimeRelayPresentation(
     }
   };
   assertCurrent();
-  if (!session) throw new Error("Unknown Talk realtime relay");
+  if (!session) {
+    throw new Error("Unknown Talk realtime relay");
+  }
   return publishTalkConnectionPresentation(sessionId, {
     kind: "browser",
     channel: "talk",

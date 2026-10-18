@@ -56,7 +56,9 @@ function selectTalkConversationKey(
   const identity = resolveSessionStoreIdentity({ cfg, sessionKey, agentId });
   const main = resolveAgentMainSessionKey({ cfg, agentId: identity.agentId });
   // An explicitly selected conversation is a continuation, not another automatic fork.
-  if (identity.canonicalKey !== main) return sessionKey;
+  if (identity.canonicalKey !== main) {
+    return sessionKey;
+  }
   return resolveAgentSpeechConversationRoute({
     cfg,
     agentId: identity.agentId,

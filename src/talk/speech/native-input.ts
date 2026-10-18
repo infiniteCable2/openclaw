@@ -68,7 +68,9 @@ export function createNativeSpeechInput(params: {
   }): Promise<ConversationReplyResult> => {
     input.signal?.throwIfAborted();
     input.assertCurrent?.();
-    if (params.isStopped()) throw new Error("Speech input connection is closed");
+    if (params.isStopped()) {
+      throw new Error("Speech input connection is closed");
+    }
     const generation = params.getGeneration();
     const waitingTurn = params.startWaiting();
     const captured = input.hasOnset ? input.onsetRun : active;
@@ -92,7 +94,9 @@ export function createNativeSpeechInput(params: {
       const visual = await params.video.prepare(metadata?.snapshot, input.signal);
       input.signal?.throwIfAborted();
       input.assertCurrent?.();
-      if (params.isStopped()) throw new Error("Speech input connection closed during preparation");
+      if (params.isStopped()) {
+        throw new Error("Speech input connection closed during preparation");
+      }
       const result = await params.dispatch({
         sessionId: params.session.sessionId,
         requesterSessionKey: params.session.requesterSessionKey,
@@ -154,7 +158,9 @@ export function createNativeSpeechInput(params: {
         },
         waitForPendingInput: (signal) => (run ? params.waitForInput(run, signal) : undefined),
         async onSpeakableText(event) {
-          if (!run || params.isStopped()) return;
+          if (!run || params.isStopped()) {
+            return;
+          }
           const utterance = run.utterance;
           if (event.type === "chunk") {
             params.output.enqueueSpeechChunk(
@@ -169,7 +175,9 @@ export function createNativeSpeechInput(params: {
           } else if (event.type === "done") {
             // Finalize after this run's already admitted additions have resolved.
             // Their native dispatch can finish just after the model's terminal event.
-            while (run.admissions.size > 0) await Promise.all([...run.admissions]);
+            while (run.admissions.size > 0) {
+              await Promise.all([...run.admissions]);
+            }
             if (run.generation === params.getGeneration() && !params.isStopped()) {
               params.output.finalizeSpeechUtterance(run.utterance, event.text);
               finalized = true;
@@ -182,10 +190,12 @@ export function createNativeSpeechInput(params: {
       } satisfies SpeechNativeInputParams);
       if (run) {
         while (run.admissions.size > 0) {
-          await Promise.all([...run.admissions]);
+          await Promise.all(run.admissions);
         }
       }
-      if (result.kind === "steered") return result;
+      if (result.kind === "steered") {
+        return result;
+      }
       if (!run) {
         // Native shortcuts may answer without opening a model run. This is delivery of
         // that accepted input's result, not a manufactured backend or steering owner.
@@ -201,7 +211,9 @@ export function createNativeSpeechInput(params: {
         params.recordUnplayed(run.utterance, result.reply.text);
         return result;
       }
-      if (finalized) return result;
+      if (finalized) {
+        return result;
+      }
       if (run.utterance.chunks.length === 0) {
         if (result.reply.utterances?.length) {
           params.output.enqueueSpeechResult(
@@ -225,7 +237,9 @@ export function createNativeSpeechInput(params: {
       input.onAccepted?.();
       releaseAdmission();
       metadata?.snapshot?.release();
-      if (active === run) active = undefined;
+      if (active === run) {
+        active = undefined;
+      }
       // Nonempty output keeps its own waiting turn until the shared playout queue drains.
       if (
         !adopted &&

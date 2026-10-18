@@ -116,7 +116,9 @@ export async function prepareConversationGreeting(params: {
         },
         original.entry,
       );
-      if (resolution.status === "granted") sourceAudience = resolution;
+      if (resolution.status === "granted") {
+        sourceAudience = resolution;
+      }
       assertTargetCurrent();
       if (resolution.status === "granted") {
         delegatedAudience = await delegateMemoryAudience(resolution.audience, {

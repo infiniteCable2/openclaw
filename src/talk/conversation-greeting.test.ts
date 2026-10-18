@@ -62,7 +62,9 @@ async function setup(existing = true) {
   const context: MsgContext = { AgentId: scope.agentId, SessionKey: sessionKey };
   const state = { current: true };
   const assertCurrent = vi.fn(() => {
-    if (!state.current) throw new Error("Original admission revoked");
+    if (!state.current) {
+      throw new Error("Original admission revoked");
+    }
   });
   const cap = createConversationInputAdmission({
     scope,

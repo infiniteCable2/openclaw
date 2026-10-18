@@ -97,7 +97,9 @@ export function createSpeechSessionLifecycle(params: {
     stop,
     stopAfterFailure,
     fail(source: string, error: unknown) {
-      if (fenced) return;
+      if (fenced) {
+        return;
+      }
       params.logger.warn(`${params.logScope} ${source} failed: ${formatErrorMessage(error)}`);
       stopAfterFailure(source);
     },

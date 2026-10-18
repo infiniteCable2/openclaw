@@ -132,7 +132,9 @@ export async function startSpeechSession(
   );
   const finishWaitingTurn = (turn: number) => {
     waiting.onTurnFinished(turn);
-    if (currentWaitingTurn === turn) currentWaitingTurn = undefined;
+    if (currentWaitingTurn === turn) {
+      currentWaitingTurn = undefined;
+    }
   };
 
   const lifecycle = createSpeechSessionLifecycle({

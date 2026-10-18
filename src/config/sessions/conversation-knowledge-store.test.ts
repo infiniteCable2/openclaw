@@ -147,7 +147,9 @@ describe("native completed-turn root consolidation", () => {
           });
           expect(receipt?.runId).toBe("run-original");
           const selected = await readConversationKnowledgeBranch(completed);
-          if (!selected) throw new Error("Native branch missing");
+          if (!selected) {
+            throw new Error("Native branch missing");
+          }
           expect(
             await readConversationKnowledgeRoot({ branch: selected, reader, assertCurrent }),
           ).toEqual(events);
@@ -159,7 +161,9 @@ describe("native completed-turn root consolidation", () => {
               provenance: { kind: "realtime_voice", sourceChannel: "talk" },
             },
           });
-          if (!voice.ok || !voice.value?.anchor) throw new Error("Native voice anchor missing");
+          if (!voice.ok || !voice.value?.anchor) {
+            throw new Error("Native voice anchor missing");
+          }
           const observation = {
             reader,
             assertCurrent,
@@ -186,7 +190,9 @@ describe("native completed-turn root consolidation", () => {
           const observed = readConversationUtteranceObservation(references[0]?.details);
           expect(observed?.kind).toBe("utterance-observation");
           expect(observed).not.toHaveProperty("runId");
-          if (!observed) throw new Error("Native utterance reference missing");
+          if (!observed) {
+            throw new Error("Native utterance reference missing");
+          }
           expect(
             projectConversationKnowledge(observed, await loadTranscriptEvents(branch))?.text,
           ).toContain("A separate realtime utterance.");

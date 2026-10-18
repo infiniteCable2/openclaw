@@ -34,8 +34,12 @@ export function captureConsistentConversationParticipant(
   const exact = (value: unknown): value is string =>
     typeof value === "string" && value.length > 0 && value === value.trim();
   const snapshots = identities.map((identity): SessionParticipantIdentity | undefined => {
-    if (!identity || !exact(identity.id)) return undefined;
-    if (identity.type === "profile") return Object.freeze({ type: "profile", id: identity.id });
+    if (!identity || !exact(identity.id)) {
+      return undefined;
+    }
+    if (identity.type === "profile") {
+      return Object.freeze({ type: "profile", id: identity.id });
+    }
     if (
       identity.type === "remote" &&
       exact(identity.pluginId) &&
@@ -53,7 +57,9 @@ export function captureConsistentConversationParticipant(
     return undefined;
   });
   const first = snapshots[0];
-  if (!first) return undefined;
+  if (!first) {
+    return undefined;
+  }
   const key = JSON.stringify(first);
   return snapshots.every((identity) => identity && JSON.stringify(identity) === key)
     ? first

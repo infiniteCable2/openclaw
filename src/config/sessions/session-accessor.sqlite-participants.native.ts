@@ -71,8 +71,9 @@ function recordSessionParticipantWithAliasRead(
         if (
           entry?.sessionId !== params.expectedSession.sessionId ||
           entry.lifecycleRevision !== params.expectedSession.lifecycleRevision
-        )
+        ) {
           throw new Error("Original participant input session changed before commit");
+        }
       }
       ensureSessionParticipantsSchema(database.db);
       const kysely = getSessionKysely(database.db);

@@ -39,7 +39,9 @@ function setup(purpose: ConversationInputScopeV1["purpose"] = "user") {
   };
   const prepareContext = vi.fn(() => context);
   const assertCurrent = vi.fn(() => {
-    if (!source.current) throw new Error("Original source unavailable");
+    if (!source.current) {
+      throw new Error("Original source unavailable");
+    }
   });
   const release = vi.fn();
   const admission = createConversationInputAdmission({
@@ -59,7 +61,9 @@ function setup(purpose: ConversationInputScopeV1["purpose"] = "user") {
     text: "Original speech",
     speech: {
       assertOutputCurrent() {
-        if (!output.current) throw new Error("Audio output closed");
+        if (!output.current) {
+          throw new Error("Audio output closed");
+        }
       },
       onSpeakableText,
       speakCommentary: true,
@@ -161,7 +165,9 @@ describe("original conversation input through native reply", () => {
       replyToConversationInput({
         ...fixture.params,
         assertWorkCurrent: () => {
-          if (failed) throw new Error("Host work source failed");
+          if (failed) {
+            throw new Error("Host work source failed");
+          }
         },
       }),
     ).rejects.toThrow("Host work source failed");
@@ -301,8 +307,9 @@ describe("original conversation input through native reply", () => {
             ? { status: "skipped", reason: "question-response-indeterminate" }
             : { status: "accepted", mode: "steer" };
         options.turnAdoptionLifecycle.onSettled();
-        if (outcome === "aborted")
+        if (outcome === "aborted") {
           options[REPLY_OPERATION_RUN_STATE].messageInjectionAborted = true;
+        }
         return undefined;
       });
       await expect(replyToConversationInput(fixture.params)).rejects.toThrow("completion receipt");

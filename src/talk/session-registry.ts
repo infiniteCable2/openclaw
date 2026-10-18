@@ -61,7 +61,9 @@ export function rememberUnifiedTalkSession(sessionId: string, session: UnifiedTa
 
 export function getUnifiedTalkSession(sessionId: string): UnifiedTalkSessionRecord {
   const session = unifiedTalkSessions.get(sessionId);
-  if (!session) throw new Error("Unknown Talk session");
+  if (!session) {
+    throw new Error("Unknown Talk session");
+  }
   return session;
 }
 
@@ -85,7 +87,9 @@ export function publishTalkConnectionPresentation(
 ): () => void {
   presentation.assertCurrent();
   const current = unifiedTalkSessions.get(sessionId);
-  if (current?.presentation) throw new Error("Talk session presentation already has an owner");
+  if (current?.presentation) {
+    throw new Error("Talk session presentation already has an owner");
+  }
   const session: UnifiedTalkSessionRecord = current ?? { kind: "external-speech" };
   session.presentation = presentation;
   session.presentationRef = `talk_${randomUUID().replaceAll("-", "")}`;
@@ -96,7 +100,9 @@ export function publishTalkConnectionPresentation(
     }
     delete session.presentation;
     delete session.presentationRef;
-    if (session.kind === "external-speech") unifiedTalkSessions.delete(sessionId);
+    if (session.kind === "external-speech") {
+      unifiedTalkSessions.delete(sessionId);
+    }
   };
 }
 
@@ -105,7 +111,9 @@ export function selectTalkConnectionPresentations() {
   return [...unifiedTalkSessions.entries()].flatMap(([sessionId, session]) => {
     const presentation = session.presentation;
     const connectionRef = session.presentationRef;
-    if (!presentation || !connectionRef) return [];
+    if (!presentation || !connectionRef) {
+      return [];
+    }
     const assertCurrent = () => {
       if (
         unifiedTalkSessions.get(sessionId) !== session ||
@@ -115,7 +123,9 @@ export function selectTalkConnectionPresentations() {
         throw new Error("Talk session presentation was replaced");
       }
       presentation.assertCurrent();
-      if (presentation.state() === "closed") throw new Error("Talk output is closed");
+      if (presentation.state() === "closed") {
+        throw new Error("Talk output is closed");
+      }
     };
     try {
       assertCurrent();

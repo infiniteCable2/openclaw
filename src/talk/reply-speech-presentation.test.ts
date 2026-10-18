@@ -24,7 +24,9 @@ function setup() {
   };
   const source = createReplySpeechPresentation({
     assertOutputCurrent() {
-      if (!output.available) throw new Error("Output closed");
+      if (!output.available) {
+        throw new Error("Output closed");
+      }
     },
     speechExpressionContext: { guidance: "Use admitted speech facts.", assertCurrent },
     onSpeakableText: (event) => {
@@ -170,7 +172,9 @@ describe("native turn-owned speech presentation", () => {
     "keeps input and stream authority when output closes %s",
     async (when) => {
       const fixture = setup();
-      if (when === "before admission") fixture.output.available = false;
+      if (when === "before admission") {
+        fixture.output.available = false;
+      }
       const outcome = completed("Work finished.");
       const work = vi.fn(async (run: ReplySpeechPresentationRun | undefined) => {
         fixture.output.available = false;

@@ -82,7 +82,9 @@ function fixture() {
     return {
       readCurrent: () => {
         const selected = rows.get(sessionKey);
-        if (!selected) throw new Error("Native row removed");
+        if (!selected) {
+          throw new Error("Native row removed");
+        }
         return { target: selected, membership: members.get(sessionKey)! };
       },
       release,
@@ -94,7 +96,9 @@ function fixture() {
     agents: { entries: { example: { conversationMode: "branches" } } },
   };
   const assertCurrent = vi.fn(() => {
-    if (!current) throw new Error("Original input source revoked");
+    if (!current) {
+      throw new Error("Original input source revoked");
+    }
   });
   const params: PersonalConversationReadParams = {
     purpose: "conversation-differences" as const,
@@ -174,16 +178,23 @@ describe("same-person conversation differences on native transcript read owner",
     "foreign-source-member",
   ] as const)("refuses %s without an operator or fallback grant", async (change) => {
     const f = fixture();
-    if (change === "other-person")
+    if (change === "other-person") {
       f.source.entry.participants = [{ identity: { type: "profile", id: "other-person" } }];
-    if (change === "group") f.source.entry.chatType = "group";
-    if (change === "mixed") f.source.entry.participantCount = 2;
+    }
+    if (change === "group") {
+      f.source.entry.chatType = "group";
+    }
+    if (change === "mixed") {
+      f.source.entry.participantCount = 2;
+    }
     if (change === "unconfirmed") {
       f.source.entry.participantCount = 0;
       f.source.entry.participants = [];
     }
-    if (change === "incognito") f.source.entry.incognito = true;
-    if (change === "different-root")
+    if (change === "incognito") {
+      f.source.entry.incognito = true;
+    }
+    if (change === "different-root") {
       f.source.entry.conversationTopology = {
         version: 1,
         role: "branch",
@@ -191,9 +202,14 @@ describe("same-person conversation differences on native transcript read owner",
         rootSessionId: "other-root",
         rootSessionLifecycleRevision: "other-life",
       };
-    if (change === "different-store") f.source.storePath = "/example/other.sqlite";
-    if (change === "root-source") f.params.sources[0]!.sessionKey = f.rootRow.canonicalKey;
-    if (change === "unknown-participant")
+    }
+    if (change === "different-store") {
+      f.source.storePath = "/example/other.sqlite";
+    }
+    if (change === "root-source") {
+      f.params.sources[0]!.sessionKey = f.rootRow.canonicalKey;
+    }
+    if (change === "unknown-participant") {
       f.params.personal.originalParticipant = {
         type: "observation",
         pluginId: "example-channel",
@@ -201,9 +217,13 @@ describe("same-person conversation differences on native transcript read owner",
         senderKind: "unknown",
         id: "device-a",
       } satisfies SessionParticipantIdentity;
-    if (change === "foreign-target-member")
+    }
+    if (change === "foreign-target-member") {
       f.members.get(f.recipient.canonicalKey)!.add("person-b");
-    if (change === "foreign-source-member") f.members.get(f.source.canonicalKey)!.add("person-b");
+    }
+    if (change === "foreign-source-member") {
+      f.members.get(f.source.canonicalKey)!.add("person-b");
+    }
     await expect(prepareTranscriptReadAuthority(f.params)).rejects.toThrow();
     expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
   });
@@ -216,12 +236,21 @@ describe("same-person conversation differences on native transcript read owner",
     "target-incarnation",
   ] as const)("does not admit %s", async (change) => {
     const f = fixture();
-    if (change === "mode-off") f.setConfig({});
-    if (change === "cross-agent") f.params.sources[0]!.agentId = "other-agent";
-    if (change === "root-incarnation") f.rootRow.entry.sessionId = "replacement-root";
-    if (change === "root-physical-generation")
+    if (change === "mode-off") {
+      f.setConfig({});
+    }
+    if (change === "cross-agent") {
+      f.params.sources[0]!.agentId = "other-agent";
+    }
+    if (change === "root-incarnation") {
+      f.rootRow.entry.sessionId = "replacement-root";
+    }
+    if (change === "root-physical-generation") {
       f.rootRow.readSource = { ...f.rootRow.readSource!, databaseIdentity: "different-generation" };
-    if (change === "target-incarnation") f.recipient.entry.sessionId = "replacement-target";
+    }
+    if (change === "target-incarnation") {
+      f.recipient.entry.sessionId = "replacement-target";
+    }
     await expect(prepareTranscriptReadAuthority(f.params)).rejects.toThrow();
     expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
   });
@@ -230,7 +259,9 @@ describe("same-person conversation differences on native transcript read owner",
     const f = fixture();
     mocks.prepare.mockImplementation(async (request) => {
       const held = await f.prepare(request);
-      if (request.sessionKey === f.source.canonicalKey) f.recipient.entry.chatType = "channel";
+      if (request.sessionKey === f.source.canonicalKey) {
+        f.recipient.entry.chatType = "channel";
+      }
       return held;
     });
     await expect(prepareTranscriptReadAuthority(f.params)).rejects.toThrow("changed");
@@ -247,11 +278,21 @@ describe("same-person conversation differences on native transcript read owner",
     const f = fixture();
     const grant = await prepareTranscriptReadAuthority(f.params);
     const prepared = await prepareSessionSourceAuthority(grant.assertCurrent);
-    if (change === "source-incarnation") f.source.entry.lifecycleRevision = "replacement-source";
-    if (change === "participant") f.source.entry.participantCount = 2;
-    if (change === "input-revocation") f.revoke();
-    if (change === "mode-revocation") f.setConfig({});
-    if (change === "membership") f.members.get(f.source.canonicalKey)!.add("person-b");
+    if (change === "source-incarnation") {
+      f.source.entry.lifecycleRevision = "replacement-source";
+    }
+    if (change === "participant") {
+      f.source.entry.participantCount = 2;
+    }
+    if (change === "input-revocation") {
+      f.revoke();
+    }
+    if (change === "mode-revocation") {
+      f.setConfig({});
+    }
+    if (change === "membership") {
+      f.members.get(f.source.canonicalKey)!.add("person-b");
+    }
     expect(() => grant.assertCurrent()).toThrow();
     expect(() => prepared.checks.at(-1)!.refuse({ entry: f.source.entry })).toThrow();
     await prepared.release?.();

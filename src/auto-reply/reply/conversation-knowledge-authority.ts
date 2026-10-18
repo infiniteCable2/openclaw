@@ -36,7 +36,9 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
   });
   let active = true;
   const release = () => {
-    if (!active) return;
+    if (!active) {
+      return;
+    }
     active = false;
     held.release();
   };
@@ -46,7 +48,9 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
       Object.fromEntries(fields.map((field) => [field, original.entry[field]])),
     );
     const current = () => {
-      if (!active) throw new Error("Conversation knowledge branch facts have been released");
+      if (!active) {
+        throw new Error("Conversation knowledge branch facts have been released");
+      }
       const target = held.readCurrent(params.getRuntimeConfig()).target;
       const membership = target.entry.conversationTopology;
       if (
@@ -61,14 +65,17 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
         membership.rootSessionId !== branch.root.sessionId ||
         membership.rootSessionLifecycleRevision !== branch.root.lifecycleRevision ||
         fields.some((field) => !isDeepStrictEqual(originalFields[field], target.entry[field]))
-      )
+      ) {
         throw new Error("Conversation knowledge branch audience or incarnation changed");
+      }
       return target;
     };
     current();
     const prepare = async (): Promise<PreparedSessionSourceAuthority> => {
       const target = current();
-      if (!target.readSource) throw new Error("Conversation knowledge native source unavailable");
+      if (!target.readSource) {
+        throw new Error("Conversation knowledge native source unavailable");
+      }
       return {
         assertCurrent: () => void current(),
         assertPreparedCurrent: () => void current(),

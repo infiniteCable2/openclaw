@@ -39,7 +39,9 @@ describe("cron conversation model admission", () => {
       const committedEntry = await loadCronSessionEntryLatest(storePath, sessionKey);
       expect(committedEntry).toMatchObject({ sessionId: entry.sessionId, lifecycleRevision });
       expect(committedEntry?.conversationTopology).toEqual(entry.conversationTopology);
-      if (!committedEntry) throw new Error("Cron fixture session was not committed");
+      if (!committedEntry) {
+        throw new Error("Cron fixture session was not committed");
+      }
       const cronSession: MutableCronSession = {
         storePath,
         store: { [sessionKey]: structuredClone(committedEntry) },

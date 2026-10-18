@@ -27,7 +27,9 @@ describe("actual provider startup context custody", () => {
     const startup = createRelayProviderStartup(
       {
         assertCurrent: () => {
-          if (!current) throw new Error("Original snapshot revoked");
+          if (!current) {
+            throw new Error("Original snapshot revoked");
+          }
         },
         release,
       },

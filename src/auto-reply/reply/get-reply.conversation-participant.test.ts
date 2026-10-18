@@ -37,15 +37,18 @@ function resolvedConfig(mode: "branches" | "native" = "branches"): OpenClawConfi
     { agents: { entries: { main: { conversationMode: mode } } } },
     { manifestRegistry: { plugins: [], diagnostics: [] } },
   );
-  if (!validated.ok)
+  if (!validated.ok) {
     throw new Error("Invalid participant reply fixture", { cause: validated.issues });
+  }
   return markCompleteReplyConfig(validated.config, { runtimeMode: "full" });
 }
 
 const cfg = resolvedConfig();
 
 beforeEach(() => {
-  for (const mock of Object.values(mocks)) mock.mockReset();
+  for (const mock of Object.values(mocks)) {
+    mock.mockReset();
+  }
   vi.mocked(runPreparedReply).mockClear();
   mocks.initSessionState.mockResolvedValue(createGetReplySessionState());
   mocks.waitForRecording.mockResolvedValue();
@@ -90,7 +93,9 @@ describe("native reply joins its accepted participant before model preparation",
         pending = false;
       });
       const assertSourceCurrent = vi.fn(() => {
-        if (pending) throw new Error("Native participant publication is still pending");
+        if (pending) {
+          throw new Error("Native participant publication is still pending");
+        }
       });
       const options: InternalGetReplyOptions = { assertSourceCurrent };
       const reply = getReplyFromConfig(originalInput(), options, resolvedConfig(mode));
@@ -153,7 +158,9 @@ describe("native reply joins its accepted participant before model preparation",
     });
     const options: InternalGetReplyOptions = {
       assertSourceCurrent() {
-        if (revoked) throw new Error("Original source revoked during recording");
+        if (revoked) {
+          throw new Error("Original source revoked during recording");
+        }
       },
     };
     await expect(getReplyFromConfig(originalInput(), options, cfg)).rejects.toThrow(

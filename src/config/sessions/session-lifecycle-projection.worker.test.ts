@@ -196,7 +196,9 @@ it("refuses a foreign source change between preparation and BEGIN without creati
     const changed = vi.fn();
     const committed = vi.fn();
     delivery.beforeCommand = async (type) => {
-      if (type !== "session.lifecycle.project") return;
+      if (type !== "session.lifecycle.project") {
+        return;
+      }
       // Bypass host publication exactly as an independent process can. Only
       // the authoritative SQL predicate in the new writer snapshot sees this.
       const foreign = new DatabaseSync(f.scope.storePath);
@@ -263,7 +265,9 @@ it("rolls back its validated-source creation when the original caller revokes at
         skipMaintenance: true,
         upserts: [{ sessionKey: createdKey, entry: { sessionId: "revoked-target", updatedAt: 2 } }],
         commitGuard: () => {
-          if (!current) throw refusal;
+          if (!current) {
+            throw refusal;
+          }
         },
         onLifecycleCommitted: committed,
       }),

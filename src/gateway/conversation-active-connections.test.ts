@@ -13,7 +13,9 @@ import type { prepareTranscriptReadAuthority } from "./session-transcript-read-a
 
 const ids = new Set<string>();
 afterEach(() => {
-  for (const id of ids) forgetUnifiedTalkSession(id);
+  for (const id of ids) {
+    forgetUnifiedTalkSession(id);
+  }
   ids.clear();
 });
 function source(id: string, agentId = "example") {
@@ -29,7 +31,9 @@ function source(id: string, agentId = "example") {
     operations: ["current-turn-reply"],
     state: () => (state.ready ? "ready" : "preparing"),
     assertCurrent() {
-      if (!state.current) throw new Error("Source revoked");
+      if (!state.current) {
+        throw new Error("Source revoked");
+      }
     },
   });
   return { state, release };
@@ -40,7 +44,9 @@ function reader() {
     profileId: "original-reader",
     scopes: ["operator.read"],
     assertCurrent() {
-      if (!state.current) throw new Error("Reader revoked");
+      if (!state.current) {
+        throw new Error("Reader revoked");
+      }
     },
   };
   const reads: { assertCurrent: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> }[] =
@@ -55,7 +61,9 @@ function reader() {
       if (!id) {
         throw new Error("Connection fixture requires an exact source session");
       }
-      if (id === "denied") throw new Error("Native sharing policy refused this person");
+      if (id === "denied") {
+        throw new Error("Native sharing policy refused this person");
+      }
       const read = { assertCurrent: vi.fn(), release: vi.fn() };
       reads.push(read);
       return { ...read, sources: [{ sessionId: id }] };

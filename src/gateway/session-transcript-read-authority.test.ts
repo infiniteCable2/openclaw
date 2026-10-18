@@ -266,7 +266,9 @@ describe("retained transcript read authority", () => {
         expect(selectReport).toHaveBeenCalledOnce();
         expect(
           (await loadTranscriptEvents(target)).filter((event) => {
-            if (!isRecord(event)) throw new Error("Expected a native transcript event object");
+            if (!isRecord(event)) {
+              throw new Error("Expected a native transcript event object");
+            }
             return event.type === "custom_message";
           }),
         ).toHaveLength(1);

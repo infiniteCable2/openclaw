@@ -120,7 +120,9 @@ export function recordCommittedSessionMetadataPublication(
     if (change?.kind === "participants") {
       // Participant display stays separate, but its count is now a retained audience fact.
       // An acquiring snapshot cannot establish which side of this commit it observed.
-      if (read.acquisition) read.acquisition.invalidated = true;
+      if (read.acquisition) {
+        read.acquisition.invalidated = true;
+      }
       if (!change.projection) {
         // A publication without its postimage cannot preserve a private audience claim.
         read.facts = undefined;

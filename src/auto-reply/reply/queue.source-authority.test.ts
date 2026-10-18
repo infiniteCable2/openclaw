@@ -16,7 +16,9 @@ import type { ReplySpeechPresentationSource } from "./reply-speech-presentation.
 
 const queueKeys = new Set<string>();
 afterEach(() => {
-  for (const key of queueKeys) clearFollowupQueueForTest(key);
+  for (const key of queueKeys) {
+    clearFollowupQueueForTest(key);
+  }
   queueKeys.clear();
 });
 
@@ -24,7 +26,9 @@ function source(name: string) {
   let available = true;
   return {
     assertCurrent: vi.fn(() => {
-      if (!available) throw new Error(`${name} source unavailable`);
+      if (!available) {
+        throw new Error(`${name} source unavailable`);
+      }
     }),
     refuse: () => {
       available = false;
@@ -195,7 +199,9 @@ describe("native queued non-owner source authority", () => {
         output: outputs[1],
       },
     ]);
-    for (const output of outputs) expect(output.openRun).not.toHaveBeenCalled();
+    for (const output of outputs) {
+      expect(output.openRun).not.toHaveBeenCalled();
+    }
   });
 
   it("retains the original speech source through preprocessing and overflow retry", () => {

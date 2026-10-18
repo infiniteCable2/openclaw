@@ -90,7 +90,9 @@ async function prepareSource() {
   const ingress = await runtime.resolveStable(request);
   expect(ingress.ingress.admission).toBe("dispatch");
   const assertCurrent = () => {
-    if (!transportLive) throw new Error("Transport closed");
+    if (!transportLive) {
+      throw new Error("Transport closed");
+    }
   };
   return {
     runtime,

@@ -57,7 +57,9 @@ const anchor: TranscriptEntryAnchor = {
 function setup() {
   let current = true;
   const assertCurrent = vi.fn(() => {
-    if (!current) throw new Error("Original voice source revoked");
+    if (!current) {
+      throw new Error("Original voice source revoked");
+    }
   });
   const reader = { assertCurrent };
   const release = vi.fn(async () => {});

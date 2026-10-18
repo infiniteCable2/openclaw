@@ -15,7 +15,9 @@ export async function handleMeetingConsultToolCall(
   },
 ): Promise<void> {
   const callId = params.event.callId || params.event.itemId;
-  if (params.abortSignal?.aborted) return;
+  if (params.abortSignal?.aborted) {
+    return;
+  }
   const submitError = async (message: string) => {
     await params.session.submitToolResult(callId, { error: message });
     if (!params.abortSignal?.aborted) {
@@ -38,7 +40,9 @@ export async function handleMeetingConsultToolCall(
       { willContinue: true },
     );
   }
-  if (params.abortSignal?.aborted) return;
+  if (params.abortSignal?.aborted) {
+    return;
+  }
   params.onTalkEvent({
     type: "tool.progress",
     callId,
@@ -48,10 +52,14 @@ export async function handleMeetingConsultToolCall(
   try {
     text = (await params.consultAgent(params.event.args)).text;
   } catch (error) {
-    if (!params.abortSignal?.aborted) await submitError(formatErrorMessage(error));
+    if (!params.abortSignal?.aborted) {
+      await submitError(formatErrorMessage(error));
+    }
     return;
   }
-  if (params.abortSignal?.aborted) return;
+  if (params.abortSignal?.aborted) {
+    return;
+  }
   const result = { text };
   await params.session.submitToolResult(callId, result);
   if (!params.abortSignal?.aborted) {

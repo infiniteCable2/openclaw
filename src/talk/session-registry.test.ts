@@ -11,7 +11,9 @@ import {
 
 const ownedIds = new Set<string>();
 afterEach(() => {
-  for (const id of ownedIds) forgetUnifiedTalkSession(id);
+  for (const id of ownedIds) {
+    forgetUnifiedTalkSession(id);
+  }
   ownedIds.clear();
 });
 function publication(id: string) {
@@ -27,7 +29,9 @@ function publication(id: string) {
     operations: ["current-turn-reply"],
     state: () => lifecycle.state,
     assertCurrent() {
-      if (!lifecycle.current) throw new Error("Original owner revoked");
+      if (!lifecycle.current) {
+        throw new Error("Original owner revoked");
+      }
     },
   };
   return { metadata, lifecycle };

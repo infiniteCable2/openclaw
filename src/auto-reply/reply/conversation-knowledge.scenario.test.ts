@@ -111,7 +111,7 @@ async function createScenario(state: OpenClawTestState) {
         rootEntry: loadSessionEntry(root),
       }),
     });
-    if (participant)
+    if (participant) {
       expect(
         await recordSessionParticipantInWorker(selected, {
           identity: participant,
@@ -120,6 +120,7 @@ async function createScenario(state: OpenClawTestState) {
           expectedSession: selected,
         }),
       ).toBe("inserted");
+    }
     return selected;
   };
   const claim = async (selected: Branch) => {
@@ -136,7 +137,9 @@ async function createScenario(state: OpenClawTestState) {
     let current = true;
     const check = () => {
       databaseClaim.assertCurrent();
-      if (!current) throw new Error("Original scenario input revoked");
+      if (!current) {
+        throw new Error("Original scenario input revoked");
+      }
     };
     const prepare = async (): Promise<PreparedSessionSourceAuthority> => {
       check();
@@ -199,7 +202,9 @@ async function createScenario(state: OpenClawTestState) {
       originalParticipant,
       getRuntimeConfig: () => cfg,
     });
-    if (!prepared) throw new Error("Expected the actual admitted branch knowledge capability");
+    if (!prepared) {
+      throw new Error("Expected the actual admitted branch knowledge capability");
+    }
     try {
       prepared.assertCurrent();
       expect(prepared.fragments.every((fragment) => fragment.kind === "conversation-data")).toBe(
@@ -239,7 +244,9 @@ async function createScenario(state: OpenClawTestState) {
           failures.push(error);
         }
       }
-      if (failures.length) throw new AggregateError(failures, "Scenario claim cleanup failed");
+      if (failures.length) {
+        throw new AggregateError(failures, "Scenario claim cleanup failed");
+      }
     },
   };
 }
@@ -424,10 +431,13 @@ describe("ordered native branch Knowledge scenario", () => {
                   ),
                   signal,
                 );
-                if (mode === "revoke") owner.revoke();
-                else {
+                if (mode === "revoke") {
+                  owner.revoke();
+                } else {
                   const previous = loadSessionEntry(selected);
-                  if (!previous) throw new Error("Expected the actual original branch row");
+                  if (!previous) {
+                    throw new Error("Expected the actual original branch row");
+                  }
                   await replaceSessionEntry(selected, {
                     ...previous,
                     lifecycleRevision: "replacement-life",
@@ -448,7 +458,7 @@ describe("ordered native branch Knowledge scenario", () => {
               for (const cfg of [
                 fixture.cfg,
                 { ...fixture.cfg, agents: { entries: { main: {} } } },
-              ])
+              ]) {
                 expect(() =>
                   assertExternalConversationTarget({
                     cfg,
@@ -458,6 +468,7 @@ describe("ordered native branch Knowledge scenario", () => {
                     entry,
                   }),
                 ).toThrow("cannot receive external input");
+              }
               const events = await loadTranscriptEvents(fixture.root);
               expect(events.some((event) => asOptionalRecord(event)?.type === "message")).toBe(
                 false,

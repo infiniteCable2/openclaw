@@ -47,7 +47,9 @@ function fixture() {
       },
     },
     assertServiceCurrent() {
-      if (!state.service) throw new Error("Service revoked");
+      if (!state.service) {
+        throw new Error("Service revoked");
+      }
     },
     bindContext(context, assertCurrent) {
       // Only identity is observed here; the real service provides its complete native Gateway.
@@ -64,10 +66,14 @@ function fixture() {
       conversationId: scope.conversationId,
       label: "Shared room assistant",
       assertAssigned() {
-        if (!state.assigned) throw new Error("Assignment revoked");
+        if (!state.assigned) {
+          throw new Error("Assignment revoked");
+        }
       },
       assertInputCurrent() {
-        if (!state.bridge) throw new Error("Bridge closed");
+        if (!state.bridge) {
+          throw new Error("Bridge closed");
+        }
       },
     },
   };

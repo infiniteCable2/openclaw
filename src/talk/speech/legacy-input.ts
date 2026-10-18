@@ -19,7 +19,9 @@ export function admitLegacySpeechInput(params: {
   const { metadata, video } = params;
   const snapshot = metadata.snapshot;
   const enqueueInput = () => {
-    if (!params.enqueue()) snapshot?.release();
+    if (!params.enqueue()) {
+      snapshot?.release();
+    }
   };
   // A delayed decoder result cannot steer whichever replacement run is active now.
   const consult = params.hasOnset ? params.onsetConsult : params.getConsult();
@@ -31,7 +33,9 @@ export function admitLegacySpeechInput(params: {
   const control = consult.control;
   consult.admissions = consult.admissions
     .then(async () => {
-      if (params.isStopped()) return;
+      if (params.isStopped()) {
+        return;
+      }
       if (consult.followupOnly) {
         enqueueInput();
         return;
@@ -39,7 +43,9 @@ export function admitLegacySpeechInput(params: {
       // Commitment needs the held native loop to resume. Release its acoustic
       // reservation on queue acceptance, not on the later transcript commit.
       const frameInput = await video.prepare(snapshot);
-      if (params.isStopped()) return;
+      if (params.isStopped()) {
+        return;
+      }
       const inputText = frameInput.context
         ? `${params.text}\n\n${frameInput.context}`
         : params.text;
@@ -48,13 +54,17 @@ export function admitLegacySpeechInput(params: {
         purpose: "steering",
         images: frameInput.images,
       });
-      if (params.isStopped()) return;
+      if (params.isStopped()) {
+        return;
+      }
       if (outcome?.queued) {
         // queued=true also covers uncertain commitment: never resubmit it.
         consult.adoptedGeneration = params.generation;
         consult.unconfirmed ||= !outcome.ok;
         consult.followupOnly ||= !outcome.ok;
-        if (snapshot) consult.releaseVideo.add(snapshot.release);
+        if (snapshot) {
+          consult.releaseVideo.add(snapshot.release);
+        }
       } else {
         // Once B waits behind A, C must not overtake B by steering into A.
         consult.followupOnly = true;
@@ -65,7 +75,9 @@ export function admitLegacySpeechInput(params: {
       // An exception cannot prove non-adoption of potentially write-capable work.
       consult.unconfirmed = true;
       consult.followupOnly = true;
-      if (snapshot) consult.releaseVideo.add(snapshot.release);
+      if (snapshot) {
+        consult.releaseVideo.add(snapshot.release);
+      }
       params.onUnconfirmed();
     })
     .finally(() => params.releaseOnset?.());

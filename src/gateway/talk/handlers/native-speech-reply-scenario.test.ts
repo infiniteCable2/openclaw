@@ -162,8 +162,12 @@ it.for([
         return accepted;
       });
     vi.mocked(context.broadcastToConnIds).mockImplementation((_name, payload) => {
-      if (!isRecord(payload)) return;
-      if (payload.type === "audio") audioEvents++;
+      if (!isRecord(payload)) {
+        return;
+      }
+      if (payload.type === "audio") {
+        audioEvents++;
+      }
       if (isRecord(payload.talkEvent) && payload.talkEvent.type === "session.error") {
         progress("native-session-error");
         nativeFailure.reject(
@@ -172,19 +176,24 @@ it.for([
           }),
         );
       }
-      if (isRecord(payload.talkEvent) && payload.talkEvent.type === "turn.ended")
+      if (isRecord(payload.talkEvent) && payload.talkEvent.type === "turn.ended") {
         turnEnded.resolve();
+      }
     });
     mocks.runEmbeddedAgent.mockImplementation(async (params) =>
       publishNativeSpeechModelRun(params, async (persistAssistantMessage) => {
         const index = calls++;
         progress(`actual-model-start:${index + 1}`);
-        if (index > 1) throw new Error("Accepted native input was replayed");
+        if (index > 1) {
+          throw new Error("Accepted native input was replayed");
+        }
         expect(params.sessionKey).toBe(target.canonicalKey);
         modelPrompts.push(params.prompt);
         params.onExecutionPhase?.({ phase: "model_call_started" });
         const operation = replyRunRegistry.get(params.sessionKey!);
-        if (!operation?.ownerSettlement) throw new Error("Actual native reply owner is missing");
+        if (!operation?.ownerSettlement) {
+          throw new Error("Actual native reply owner is missing");
+        }
         ownerSettlements.push(operation.ownerSettlement);
         if (index === 0) {
           firstStarted.resolve();
@@ -241,8 +250,9 @@ it.for([
         await dispatch("talk.session.acknowledgeMark", { sessionId, markName: readyMark }),
       ).toHaveBeenCalledWith(true, { ok: true }, undefined);
       const stt = vi.mocked(hardware.provider.createSession).mock.calls[0]?.[0];
-      if (!stt?.onTranscript || !stt.onSpeechActivity)
+      if (!stt?.onTranscript || !stt.onSpeechActivity) {
         throw new Error("Actual STT capture callbacks are missing");
+      }
       stt.onTranscript(questions[0]!, { utteranceId: "scenario-input-one" });
       // The second utterance begins while the first input is still preparing,
       // before a model run exists. Its delayed final transcript must follow up,
@@ -276,7 +286,9 @@ it.for([
       releaseFirst.resolve();
       await waitAt("second-model-start", secondStarted.promise);
       await waitAt("native-owner-settlement", Promise.all(ownerSettlements));
-      if (!closeAudio) await waitAt("turn-ended", turnEnded.promise);
+      if (!closeAudio) {
+        await waitAt("turn-ended", turnEnded.promise);
+      }
       expect(calls).toBe(2);
       expect(modelPrompts[0]).toContain(questions[0]);
       expect(modelPrompts[1]).toContain(questions[1]);
@@ -285,13 +297,17 @@ it.for([
         sessionKey: target.canonicalKey,
         storePath: target.storePath,
       });
-      if (!entry) throw new Error("Native conversation disappeared after accepted work");
+      if (!entry) {
+        throw new Error("Native conversation disappeared after accepted work");
+      }
       const messages = readSessionTranscriptMessageEvents({
         agentId: target.agentId,
         sessionId: entry.sessionId,
         storePath: target.storePath,
       }).flatMap(({ event }) => {
-        if (!isRecord(event) || !isRecord(event.message)) return [];
+        if (!isRecord(event) || !isRecord(event.message)) {
+          return [];
+        }
         const content = event.message.content;
         const text =
           typeof content === "string"
@@ -330,8 +346,11 @@ it.for([
           }),
         ).toHaveLength(0);
       }
-      if (closeAudio) expect(audioEvents).toBe(audioAtClose);
-      else expect(audioEvents).toBeGreaterThan(0);
+      if (closeAudio) {
+        expect(audioEvents).toBe(audioAtClose);
+      } else {
+        expect(audioEvents).toBeGreaterThan(0);
+      }
     } finally {
       progress("cleanup-release-first");
       releaseFirst.resolve();
@@ -343,7 +362,9 @@ it.for([
       } finally {
         observeFacts.mockRestore();
         observeEnqueue.mockRestore();
-        if (!closed) await dispatch("talk.session.close", { sessionId });
+        if (!closed) {
+          await dispatch("talk.session.close", { sessionId });
+        }
         progress("cleanup-closed");
       }
     }

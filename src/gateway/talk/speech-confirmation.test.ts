@@ -75,7 +75,9 @@ describe("native getReply voice confirmation presentation", () => {
       f.dispatch.mockImplementation(async (input) => {
         input.onOriginalInputCommitted?.(originalCommit("Send a message"));
         input.onRunStarted?.("actual-native-run");
-        if (partial) await input.onSpeakableText?.({ type: "chunk", text: "Checking." });
+        if (partial) {
+          await input.onSpeakableText?.({ type: "chunk", text: "Checking." });
+        }
         expect(
           checkClientVoiceToolConfirmationPolicy({
             ...target,
@@ -92,7 +94,9 @@ describe("native getReply voice confirmation presentation", () => {
         expect.objectContaining({ ...target, runId: "actual-native-run" }),
       );
       expect(result.kind).toBe("reply");
-      if (result.kind !== "reply") throw new Error("Expected the actual native reply");
+      if (result.kind !== "reply") {
+        throw new Error("Expected the actual native reply");
+      }
       expect(result.reply.text).toContain("has not run");
       expect(result.reply.utterances).toBeUndefined();
       expect(f.events.filter((event) => event.type === "done")).toHaveLength(1);
@@ -115,8 +119,11 @@ describe("native getReply voice confirmation presentation", () => {
       f.input.args = { question: "yes" };
       f.dispatch.mockImplementation(async (input) => {
         expect(input.queueMode).toBe("followup");
-        if (order === "commit-first") input.onOriginalInputCommitted?.(originalCommit("yes"));
-        else input.onRunStarted?.("actual-approved-run");
+        if (order === "commit-first") {
+          input.onOriginalInputCommitted?.(originalCommit("yes"));
+        } else {
+          input.onRunStarted?.("actual-approved-run");
+        }
         expect(
           checkClientVoiceToolConfirmationPolicy({
             ...target,
@@ -124,8 +131,11 @@ describe("native getReply voice confirmation presentation", () => {
             runId: "actual-approved-run",
           }).allowed,
         ).toBe(false);
-        if (order === "commit-first") input.onRunStarted?.("actual-approved-run");
-        else input.onOriginalInputCommitted?.(originalCommit("yes"));
+        if (order === "commit-first") {
+          input.onRunStarted?.("actual-approved-run");
+        } else {
+          input.onOriginalInputCommitted?.(originalCommit("yes"));
+        }
         expect(
           consumeClientVoiceToolConfirmationPolicy({
             ...target,
@@ -174,9 +184,13 @@ describe("native getReply voice confirmation presentation", () => {
       f.dispatch.mockImplementation(async (input) => {
         const close = () =>
           deactivateClientVoiceConfirmationSession(target.agentId, target.voiceSessionId);
-        if (closeAt === "before-commit") close();
+        if (closeAt === "before-commit") {
+          close();
+        }
         input.onOriginalInputCommitted?.(originalCommit("yes"));
-        if (closeAt === "before-run") close();
+        if (closeAt === "before-run") {
+          close();
+        }
         input.onRunStarted?.("accepted-after-close");
         expect(() => input.assertWorkCurrent?.()).not.toThrow();
         expect(

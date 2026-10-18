@@ -40,8 +40,9 @@ it.for([false, true])(
         params.onExecutionPhase?.({ phase: "model_call_started" });
         admittedVoiceRun = resolveClientVoiceRunBinding(params.runId);
         expect(admittedVoiceRun).toBeDefined();
-        if (partial)
+        if (partial) {
           await params.onBlockReply?.({ text: "Checking that request.", isCommentary: true });
+        }
         const decision = checkClientVoiceToolConfirmationPolicy({
           agentId: admittedVoiceRun?.agentId,
           voiceSessionId: admittedVoiceRun?.voiceSessionId,
@@ -59,8 +60,9 @@ it.for([false, true])(
         isRecord(payload) &&
         isRecord(payload.talkEvent) &&
         payload.talkEvent.type === "turn.ended"
-      )
+      ) {
         turnEnded.resolve();
+      }
     });
     const { sessionId, readyMark, target } = await createSpeechRelayCall();
     await dispatch("talk.session.acknowledgeMark", { sessionId, markName: readyMark });
@@ -74,7 +76,9 @@ it.for([false, true])(
     const spoken = mocks.streamSpeech.mock.calls.map(([request]) => request.text);
     expect(spoken).not.toContain("The message was sent.");
     expect(spoken.filter((text) => text?.includes("has not run"))).toHaveLength(1);
-    if (partial) expect(spoken[0]).toBe("Checking that request.");
+    if (partial) {
+      expect(spoken[0]).toBe("Checking that request.");
+    }
     expect(await dispatch("talk.session.close", { sessionId })).toHaveBeenCalledWith(
       true,
       { ok: true },

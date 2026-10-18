@@ -71,7 +71,9 @@ async function ensureConversationBranch(params: VoiceSessionInitializationParams
     rootSessionKey,
     rootEntry: snapshot.readEntry(rootSessionKey),
   });
-  if (snapshot.currentEntry?.sessionId) return snapshot.currentEntry.sessionId;
+  if (snapshot.currentEntry?.sessionId) {
+    return snapshot.currentEntry.sessionId;
+  }
   const sessionEntry = snapshot.currentEntry
     ? mergeSessionEntry(snapshot.currentEntry, { sessionId: randomUUID() })
     : mergeSessionEntry(undefined, {
@@ -134,8 +136,12 @@ export async function ensureClientVoiceAgentSessionEntry(
   const created = await patchSessionEntryCore(
     params,
     (_entry, context) => {
-      if (context.existingEntry?.sessionId) return null;
-      if (context.existingEntry) return { sessionId: randomUUID() };
+      if (context.existingEntry?.sessionId) {
+        return null;
+      }
+      if (context.existingEntry) {
+        return { sessionId: randomUUID() };
+      }
       return {
         ...buildSessionCreationStamp({
           via: "talk",

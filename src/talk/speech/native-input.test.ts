@@ -48,7 +48,9 @@ function fixture() {
     isCurrentSpeechUtterance: (value: SpeechUtterance) =>
       !stopped && !value.finalized && value.generation === generation,
     enqueueSpeechChunk: vi.fn((text: string | undefined, value: SpeechUtterance) => {
-      if (text && output.isCurrentSpeechUtterance(value)) value.chunks.push(text);
+      if (text && output.isCurrentSpeechUtterance(value)) {
+        value.chunks.push(text);
+      }
     }),
     finalizeSpeechUtterance: vi.fn(),
     enqueueSpeechResult: vi.fn(),
@@ -89,7 +91,9 @@ function fixture() {
     bound,
     utterances,
     waitForCall(count: number) {
-      if (calls.length >= count) return Promise.resolve();
+      if (calls.length >= count) {
+        return Promise.resolve();
+      }
       const ready = reached.get(count) ?? deferred<void>();
       reached.set(count, ready);
       return ready.promise;

@@ -37,9 +37,13 @@ export function createNativeSpeechConfirmation(params: {
     const bindCommittedGrant = () => {
       // Native CLI and embedded paths may publish these two facts in either
       // order. Neither a commit nor a run announcement alone grants a tool.
-      if (!originalCommitted || !actualRunId) return;
+      if (!originalCommitted || !actualRunId) {
+        return;
+      }
       const grant = authorizeObservedClientVoiceConfirmation(params);
-      if (grant) bindAuthorizedClientVoiceConfirmation({ grant, runId: actualRunId });
+      if (grant) {
+        bindAuthorizedClientVoiceConfirmation({ grant, runId: actualRunId });
+      }
     };
     try {
       const result = await params.dispatch({
@@ -49,22 +53,29 @@ export function createNativeSpeechConfirmation(params: {
         ...(pending ? { queueMode: "followup" as const } : {}),
         assertWorkCurrent() {
           input.assertWorkCurrent?.();
-          if (commitFailure) throw commitFailure.error;
-          if (runRegistrationFailure) throw runRegistrationFailure.error;
+          if (commitFailure) {
+            throw commitFailure.error;
+          }
+          if (runRegistrationFailure) {
+            throw runRegistrationFailure.error;
+          }
         },
         onOriginalInputCommitted(commit) {
           try {
             if (
               commit.anchor.agentId !== params.agentId ||
               commit.anchor.sessionKey !== params.canonicalSessionKey
-            )
+            ) {
               throw new Error("Native voice input committed to a different conversation");
+            }
             const confirmation = prepareClientVoiceConfirmationTranscript({
               ...params,
               confirmation: utterance,
               entryId: commit.anchor.entryId,
             });
-            if (!confirmation) throw new Error("Native voice confirmation observation changed");
+            if (!confirmation) {
+              throw new Error("Native voice confirmation observation changed");
+            }
             // This callback is issued only by the existing native recorder after
             // a fresh original append. Never infer it from a caption or text match.
             const text =
@@ -96,7 +107,9 @@ export function createNativeSpeechConfirmation(params: {
           input.onOriginalInputCommitted?.(commit);
         },
         onRunStarted(...args) {
-          if (commitFailure) throw commitFailure.error;
+          if (commitFailure) {
+            throw commitFailure.error;
+          }
           const [runId] = args;
           try {
             registerClientVoiceConsultRun({
@@ -145,14 +158,19 @@ export function createNativeSpeechConfirmation(params: {
             }
           : undefined,
       });
-      if (result.kind === "steered") return result;
+      if (result.kind === "steered") {
+        return result;
+      }
       yielded = result.reply.yielded === true;
       const challenge = observation?.readReply();
-      if (!challenge) return result;
+      if (!challenge) {
+        return result;
+      }
       // A missing live completion means output failed or was closed. Do not
       // manufacture done after native presentation release or retry its work.
-      if (outputFailed || (input.onSpeakableText && !challengePresented))
+      if (outputFailed || (input.onSpeakableText && !challengePresented)) {
         return { kind: "reply", reply: { text: "" } };
+      }
       return {
         kind: "reply",
         reply: {
@@ -164,7 +182,9 @@ export function createNativeSpeechConfirmation(params: {
       };
     } finally {
       // The existing trusted native run completion releases yielded observers.
-      if (!yielded) observation?.release();
+      if (!yielded) {
+        observation?.release();
+      }
     }
   };
 }

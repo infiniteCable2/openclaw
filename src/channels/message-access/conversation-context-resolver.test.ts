@@ -34,7 +34,9 @@ describe("original non-channel conversation Gateway context", () => {
         context: source,
         resolveGatewayContext: () => gateway,
         assertCurrent() {
-          if (!state.current) throw new Error("Original host revoked");
+          if (!state.current) {
+            throw new Error("Original host revoked");
+          }
         },
       });
       const copied = { ...source };
