@@ -413,7 +413,9 @@ function personalFixture(sourceMode: "native" | "branches" = "branches") {
     source: sibling,
     runId: "sibling-run",
     through: {
-      ...sibling,
+      agentId: sibling.agentId,
+      sessionKey: sibling.sessionKey,
+      sessionId: sibling.sessionId,
       storePath: branch.storePath,
       generation: "original",
       entryId: "answer",
