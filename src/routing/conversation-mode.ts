@@ -7,7 +7,7 @@ import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { DmScope, GroupScope } from "../config/types.base.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeRouteBindingId } from "./binding-scope.js";
-import { buildAgentPeerSessionKey } from "./session-key.js";
+import { agentSessionKeysMatchByRequestKey, buildAgentPeerSessionKey } from "./session-key.js";
 
 /** Final ingress validation also covers command and conversation-binding overrides. */
 export function assertExternalConversationTarget(params: {
@@ -38,7 +38,7 @@ export function assertExternalConversationTarget(params: {
     agentId: params.agentId,
     cfg: params.cfg,
   });
-  if (params.sessionKey === root) {
+  if (agentSessionKeysMatchByRequestKey(params.sessionKey, root)) {
     throw new Error(
       "Branch conversation mode reserves its internal root for consolidation. Route this input to a conversation branch.",
     );

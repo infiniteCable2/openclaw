@@ -87,6 +87,15 @@ describe("agent conversation routing", () => {
       "reserves its internal root for consolidation",
     );
     expect(() =>
+      assertExternalConversationTarget({ ...target, sessionKey: "internal:conversation-root" }),
+    ).toThrow("reserves its internal root for consolidation");
+    expect(() =>
+      assertExternalConversationTarget({
+        ...target,
+        sessionKey: "agent:other:internal:conversation-root",
+      }),
+    ).not.toThrow();
+    expect(() =>
       assertExternalConversationTarget({
         ...target,
         sessionKey: "agent:researcher:matrix:default:direct:peer",
