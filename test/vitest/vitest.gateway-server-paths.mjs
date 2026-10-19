@@ -11,9 +11,6 @@ export const gatewayPluginTestFiles = [
 
 // Native database consumers retain lifecycle cleanup within each forked process.
 export const gatewayDatabaseWorkerTestFiles = [
-  "src/gateway/talk/handlers/native-consult-target.test.ts",
-  "src/gateway/talk/handlers/native-speech-relay.test.ts",
-  "src/gateway/talk/handlers/native-speech-reply-scenario.test.ts",
   "src/gateway/agent-runtime-identity-token.test.ts",
   "src/gateway/agent-turn/agent-run-media.test.ts",
   "src/gateway/approval-fixture.test.ts",
@@ -289,6 +286,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/talk/handlers/client.test.ts",
   "src/gateway/talk/handlers/native-consult-target.test.ts",
   "src/gateway/talk/handlers/native-speech-relay.test.ts",
+  "src/gateway/talk/handlers/native-speech-reply-scenario.test.ts",
   "src/gateway/talk/relay/index.test.ts",
   "src/gateway/test-helpers.acquisition.test.ts",
   "src/gateway/tool-resolution.cron-capture.test.ts",
