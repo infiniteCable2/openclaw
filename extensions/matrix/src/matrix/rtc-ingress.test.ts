@@ -204,6 +204,12 @@ describe("MatrixRTC text-free conversation admission", () => {
         },
       });
       expect(last?.identity.primary.authentication).toBe("verified");
+      expect(last?.identity.resolveParticipant?.({ stableId: senderId })).toEqual({
+        domain: "example.test",
+        idKind: "user-id",
+        id: senderId,
+      });
+      expect(last?.identity.resolveParticipant?.({ stableId: "Alice" })).toBeUndefined();
       expect(admit.mock.calls.at(-1)?.[0]).toMatchObject({
         input: { ...input, inputId: "greeting", purpose: "greeting" },
         scope: { rawPrincipalRef: senderId, conversation: { kind: "direct", id: roomId } },

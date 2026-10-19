@@ -1,6 +1,6 @@
 // Matrix tests cover access state plugin behavior.
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setMatrixRuntime } from "../../runtime.js";
 import {
   resolveMatrixMonitorAccessState,
@@ -23,6 +23,36 @@ async function expectCommandAccess(
 }
 
 describe("resolveMatrixMonitorAccessState", () => {
+  it("publishes the SDK sender identity without strengthening text command authentication", async () => {
+    const runtime = createPluginRuntimeMock();
+    const createResolver = vi.spyOn(runtime.channel.inbound.ingress, "createResolver");
+    setMatrixRuntime(runtime);
+    const senderId = "@Alice:example.test";
+    try {
+      const state = await resolveMatrixMonitorAccessState({
+        allowFrom: [senderId],
+        storeAllowFrom: [],
+        groupAllowFrom: [],
+        roomUsers: [],
+        senderId,
+        isRoom: false,
+        dmPolicy: "allowlist",
+      });
+      const identity = createResolver.mock.calls[0]?.[0].identity;
+      expect(identity?.resolveParticipant?.({ stableId: senderId })).toEqual({
+        domain: "example.test",
+        idKind: "user-id",
+        id: senderId,
+      });
+      expect(identity?.resolveParticipant?.({ stableId: "Alice" })).toBeUndefined();
+      // Existing asserted text identity is not upgraded to an operator principal.
+      expect(identity?.primary.authentication).toBeUndefined();
+      expect(state.messageIngress.ingress.decision).toBe("allow");
+    } finally {
+      createResolver.mockRestore();
+    }
+  });
+
   it("normalizes group allowlists and uses shared ingress matching", async () => {
     const state = await resolveMatrixMonitorAccessState({
       allowFrom: ["matrix:@Alice:Example.org"],

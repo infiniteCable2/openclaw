@@ -43,6 +43,10 @@ it.runIf(process.env.OPENCLAW_CONVERSATION_KNOWLEDGE_BENCH === "1")(
           lifecycleRevision: root.lifecycleRevision,
           updatedAt: 1,
           conversationTopology: { version: 1, role: "root" },
+          createdVia: "internal",
+          createdActor: { type: "system", id: "conversation-root" },
+          visibility: "draft",
+          delivery: { kind: "none" },
         });
         for (const references of [100, 1_000, 10_000]) {
           const receipts: ConversationKnowledgeReceipt[] = Array.from(

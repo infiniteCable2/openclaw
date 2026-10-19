@@ -4,6 +4,7 @@ import {
   type ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { getMatrixRuntime } from "../../runtime.js";
+import { resolveMatrixSenderParticipant } from "../sender-identity.js";
 import { normalizeMatrixAllowList, resolveMatrixAllowListMatch } from "./allowlist.js";
 
 type MatrixMonitorAccessState = {
@@ -26,6 +27,7 @@ function normalizeMatrixEntry(raw?: string | null): string | null {
 const matrixIngressIdentity = defineStableChannelIngressIdentity({
   key: "sender-id",
   normalize: normalizeMatrixEntry,
+  resolveParticipant: resolveMatrixSenderParticipant,
   matchEntry({ subject, entry }) {
     const senderId = subject.identifiers[0]?.value;
     return (

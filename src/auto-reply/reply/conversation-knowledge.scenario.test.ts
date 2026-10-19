@@ -10,253 +10,21 @@ import {
   readConversationKnowledgeBranch,
   recordConversationKnowledgeTurn,
 } from "../../config/sessions/conversation-knowledge-store.js";
-import {
-  CONVERSATION_KNOWLEDGE_REPORT,
-  readConversationKnowledgeReceipt,
-  type ConversationKnowledgeFrontier,
-} from "../../config/sessions/conversation-knowledge.js";
+import type { ConversationKnowledgeFrontier } from "../../config/sessions/conversation-knowledge.js";
 import {
   appendTranscriptMessage,
   loadSessionEntry,
   loadTranscriptEvents,
   replaceSessionEntry,
-  upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
-import { admitSessionConversationBranch } from "../../config/sessions/session-conversation-admission.js";
-import { captureSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.js";
-import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
-import { recordSessionParticipantInWorker } from "../../config/sessions/session-sharing-store.async.js";
-import type {
-  PreparedSessionSourceAuthority,
-  SessionSourceAssertion,
-} from "../../config/sessions/session-source-authority.js";
-import type { InternalSessionEntry } from "../../config/sessions/types.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import {
-  withOpenClawTestState,
-  type OpenClawTestState,
-} from "../../test-utils/openclaw-test-state.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
-
-// Actual SQLite, compiled read/write workers, personal read authority and Knowledge owners
-// are intentionally not mocked. Controlled transcript commits replace only model generation;
-// this proves the Knowledge/storage contract, not Matrix/Assistant or model-loop E2E.
-type Branch = {
-  agentId: string;
-  storePath: string;
-  env: NodeJS.ProcessEnv;
-  sessionKey: string;
-  sessionId: string;
-  lifecycleRevision: string;
-};
-
-const person: SessionParticipantIdentity = {
-  type: "remote",
-  pluginId: "matrix",
-  domain: "example.test",
-  idKind: "user-id",
-  id: "@person-a:example.test",
-};
-const otherPerson: SessionParticipantIdentity = { ...person, id: "@person-b:example.test" };
-
-async function createScenario(state: OpenClawTestState) {
-  const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
-  const cfg: OpenClawConfig = {
-    agents: { entries: { main: { conversationMode: "branches" } } },
-    session: { store: database.path },
-  };
-  await state.writeConfig(cfg);
-  const root = {
-    agentId: "main",
-    storePath: database.path,
-    env: state.env,
-    sessionKey: "agent:main:main",
-    sessionId: "scenario-root",
-  };
-  const rootEntry: InternalSessionEntry = {
-    sessionId: root.sessionId,
-    updatedAt: 1,
-    lifecycleRevision: "scenario-root-life",
-    createdVia: "internal",
-    createdActor: { type: "system", id: "conversation-root" },
-    visibility: "draft",
-    delivery: { kind: "none" },
-    conversationTopology: { version: 1, role: "root" },
-  };
-  await upsertSessionEntryCore(root, rootEntry);
-  let clock = 10;
-  const closeClaims: Array<() => Promise<void>> = [];
-  const branch = async (
-    label: string,
-    participant: SessionParticipantIdentity | null = person,
-    chatType: "direct" | "group" = "direct",
-  ): Promise<Branch> => {
-    const selected = {
-      ...root,
-      sessionKey: `agent:main:scenario-${label}`,
-      sessionId: `scenario-${label}`,
-      lifecycleRevision: `scenario-${label}-life`,
-    };
-    await upsertSessionEntryCore(selected, {
-      sessionId: selected.sessionId,
-      lifecycleRevision: selected.lifecycleRevision,
-      updatedAt: ++clock,
-      chatType,
-      conversationTopology: admitSessionConversationBranch({
-        agentId: selected.agentId,
-        sessionKey: selected.sessionKey,
-        rootSessionKey: root.sessionKey,
-        rootEntry: loadSessionEntry(root),
-      }),
-    });
-    if (participant) {
-      expect(
-        await recordSessionParticipantInWorker(selected, {
-          identity: participant,
-          promptedAt: ++clock,
-          sessionAgentId: selected.agentId,
-          expectedSession: selected,
-        }),
-      ).toBe("inserted");
-    }
-    return selected;
-  };
-  const claim = async (selected: Branch) => {
-    const { databaseClaim } = await loadSessionEntryForAdmission(selected);
-    if (!("kind" in databaseClaim) || databaseClaim.kind !== "worker" || !databaseClaim.reader) {
-      await databaseClaim.release();
-      throw new Error("Scenario requires the real admitted worker cohort reader");
-    }
-    const reader = databaseClaim.reader;
-    closeClaims.push(async () => {
-      await databaseClaim.release();
-    });
-    const captured = captureSessionEntryReadSource(database, undefined);
-    let current = true;
-    const check = () => {
-      databaseClaim.assertCurrent();
-      if (!current) {
-        throw new Error("Original scenario input revoked");
-      }
-    };
-    const prepare = async (): Promise<PreparedSessionSourceAuthority> => {
-      check();
-      return {
-        assertCurrent: check,
-        checks: [
-          {
-            predicate: {
-              source: captured,
-              sessionKey: selected.sessionKey,
-              fields: ["sessionId", "lifecycleRevision"],
-              expected: {
-                sessionId: selected.sessionId,
-                lifecycleRevision: selected.lifecycleRevision,
-              },
-            },
-            refuse: (): never => {
-              throw new Error("Original scenario input incarnation changed");
-            },
-          },
-        ],
-      };
-    };
-    const assertCurrent: SessionSourceAssertion = Object.assign(check, {
-      prepareSessionSource: prepare,
-    });
-    return {
-      reader,
-      sourceMode: "branches" as const,
-      assertCurrent,
-      sessionId: selected.sessionId,
-      revoke: () => {
-        current = false;
-      },
-    };
-  };
-  const append = async (
-    selected: Branch,
-    runId: string,
-    stopReason = "stop",
-    answerText = `${runId} answer`,
-  ) => {
-    await appendTranscriptMessage(selected, {
-      message: { role: "user", content: `${runId} question`, timestamp: ++clock },
-    });
-    const saved = await appendTranscriptMessage(selected, {
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: answerText }],
-        stopReason,
-        timestamp: ++clock,
-        idempotencyKey: `${runId}:assistant`,
-        __openclaw: { runId },
-      },
-    });
-    expect(saved.appended).toBe(true);
-    expect(saved.anchor).toBeDefined();
-    return { runId, assistantTranscriptIdempotencyKey: `${runId}:assistant` };
-  };
-  const read = async (
-    selected: Awaited<ReturnType<typeof claim>>,
-    originalParticipant: SessionParticipantIdentity | undefined = person,
-  ) => {
-    const prepared = await prepareReplyConversationKnowledge({
-      ...selected,
-      originalParticipant,
-      getRuntimeConfig: () => cfg,
-    });
-    if (!prepared) {
-      throw new Error("Expected the actual admitted branch knowledge capability");
-    }
-    try {
-      prepared.assertCurrent();
-      expect(prepared.fragments.every((fragment) => fragment.kind === "conversation-data")).toBe(
-        true,
-      );
-      return {
-        text: prepared.fragments.map((fragment) => fragment.text).join("\n"),
-        observed: structuredClone(prepared.observed),
-      };
-    } finally {
-      prepared.release();
-    }
-  };
-  const receipts = async () =>
-    (await loadTranscriptEvents(root)).flatMap((event) => {
-      const record = asOptionalRecord(event);
-      const receipt =
-        record?.customType === CONVERSATION_KNOWLEDGE_REPORT
-          ? readConversationKnowledgeReceipt(record.details)
-          : undefined;
-      return receipt ? [receipt] : [];
-    });
-  return {
-    cfg,
-    root,
-    branch,
-    claim,
-    append,
-    read,
-    receipts,
-    close: async () => {
-      const failures: unknown[] = [];
-      for (const close of closeClaims.toReversed()) {
-        try {
-          await close();
-        } catch (error) {
-          failures.push(error);
-        }
-      }
-      if (failures.length) {
-        throw new AggregateError(failures, "Scenario claim cleanup failed");
-      }
-    },
-  };
-}
+import {
+  createConversationKnowledgeScenario,
+  otherPerson,
+  person,
+} from "./conversation-knowledge.scenario.test-support.js";
 
 describe("ordered native branch Knowledge scenario", () => {
   it("keeps committed differences, personal authority and the headless root consistent", async ({
@@ -265,7 +33,7 @@ describe("ordered native branch Knowledge scenario", () => {
     await withOpenClawTestState(
       { scenario: "minimal", label: "branch-knowledge-scenario" },
       async (state) => {
-        const fixture = await createScenario(state);
+        const fixture = await createConversationKnowledgeScenario(state);
         const trace: string[] = [];
         const step = async (label: string, body: () => Promise<void>) => {
           await body();

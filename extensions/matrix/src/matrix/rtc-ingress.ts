@@ -19,6 +19,7 @@ import {
 } from "./monitor/config.js";
 import { resolveMatrixInboundRoute } from "./monitor/route.js";
 import { findMatrixRtcAdmission, resolveMatrixRtcConfig } from "./rtc-config.js";
+import { resolveMatrixSenderParticipant } from "./sender-identity.js";
 import { isMatrixQualifiedUserId } from "./target-ids.js";
 
 // SDK CallMembership parsing checks the Matrix event sender against member.user_id.
@@ -27,6 +28,7 @@ const rtcIdentity = defineStableChannelIngressIdentity({
   key: "sender-id",
   authentication: "verified",
   normalize: (value) => normalizeMatrixUserId(value) || null,
+  resolveParticipant: resolveMatrixSenderParticipant,
 });
 
 type MatrixRtcInputSourceParams = {
