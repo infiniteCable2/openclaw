@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { resolveConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
 import { projectConversationToolNames } from "../../agents/conversation-tool-policy-pipeline.js";
@@ -320,7 +321,11 @@ describe("branch communication owner pilot", () => {
           vi.spyOn(gatewayTransport, "callAgentToolGatewayRequest").mockImplementation(
             async (request) => {
               original.operatorAuthority?.assertCurrent();
-              expect(request.params.sourceSessionKey).toBe(call.sessionKey);
+              const params = asOptionalRecord(request.params);
+              if (!params) {
+                throw new Error("Native conversation tools must supply request parameters");
+              }
+              expect(params.sourceSessionKey).toBe(call.sessionKey);
               if (request.method === "conversations.list") {
                 return runGatewayConversationList({
                   config: cfg,
@@ -336,11 +341,11 @@ describe("branch communication owner pilot", () => {
                 agentId: "main",
                 senderIsOwner: true,
                 sourceSessionKey: call.sessionKey,
-                operationId: readToolStringParam(request.params, "operationId", { required: true }),
-                conversationRef: readToolStringParam(request.params, "conversationRef", {
+                operationId: readToolStringParam(params, "operationId", { required: true }),
+                conversationRef: readToolStringParam(params, "conversationRef", {
                   required: true,
                 }),
-                message: readToolStringParam(request.params, "message", { required: true }),
+                message: readToolStringParam(params, "message", { required: true }),
               });
             },
           );
