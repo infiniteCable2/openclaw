@@ -141,7 +141,7 @@ describe("client voice session", () => {
     await seedSession("agent:main:branch", {}, "original-branch-revision");
     const observing = createDeferred();
     const finish = createDeferred();
-    const audience: ConversationPrivateAudience = Object.freeze({
+    const audience = Object.freeze<ConversationPrivateAudience>({
       agentId: "main",
       sessionKey: "agent:main:branch",
       channelId: "webchat",

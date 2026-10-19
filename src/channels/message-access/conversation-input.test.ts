@@ -94,7 +94,7 @@ async function prepareSource(withPrivateAudience = false, omitAccount = false) {
     { agentId: input.agentId, sessionKey: "agent:researcher:example:room-alpha" },
     { kind: "none" },
     input.agentId,
-    { channel: "example", accountId, conversationId: "room-alpha" },
+    { channel: "example", accountId: request.accountId, conversationId: "room-alpha" },
   );
   const context: ChannelConversationInputContextFacts = {
     channel: "example",
@@ -113,13 +113,13 @@ async function prepareSource(withPrivateAudience = false, omitAccount = false) {
   const ingress = omitAccount
     ? await runtime.resolve({
         channelId: request.channelId,
-        accountId,
+        accountId: request.accountId,
         identity: defineStableChannelIngressIdentity(request.identity),
         subject: request.subject,
         conversation: request.conversation,
         contextBinding: request.contextBinding,
         privateAudience: request.privateAudience,
-        policy: { dmPolicy: request.dmPolicy },
+        policy: { dmPolicy: request.dmPolicy, groupPolicy: "disabled" },
         allowFrom: request.allowFrom,
         event: request.event,
         readStoreAllowFrom: async () => [],
