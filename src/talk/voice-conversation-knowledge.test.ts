@@ -54,7 +54,14 @@ const anchor: TranscriptEntryAnchor = {
   activeMessagePosition: 0,
   effectiveParentId: null,
 };
-function setup() {
+const membership = {
+  version: 1 as const,
+  role: "branch" as const,
+  rootSessionKey: "agent:example:internal:conversation-root",
+  rootSessionId: "root-a",
+  rootSessionLifecycleRevision: "root-life-a",
+};
+function setup(enrolled = true) {
   let current = true;
   const assertCurrent = vi.fn(() => {
     if (!current) {
@@ -64,7 +71,11 @@ function setup() {
   const reader = { assertCurrent };
   const release = vi.fn(async () => {});
   mocks.load.mockResolvedValue({
-    entry: { sessionId: target.sessionId, lifecycleRevision: "row-a" },
+    entry: {
+      sessionId: target.sessionId,
+      lifecycleRevision: "row-a",
+      ...(enrolled ? { conversationTopology: membership } : {}),
+    },
     databaseClaim: { kind: "worker", reader, assertCurrent, release },
   });
   mocks.record.mockResolvedValue(true);
@@ -89,8 +100,8 @@ function setup() {
 beforeEach(() => vi.resetAllMocks());
 
 describe("native voice branch knowledge adapter", () => {
-  it("leaves source-only native mode unchanged without loading a reader", async () => {
-    const owner = setup();
+  it("leaves unenrolled native mode unchanged and releases its admission reader", async () => {
+    const owner = setup(false);
     expect(
       await prepareVoiceConversationKnowledge({
         target,
@@ -98,7 +109,23 @@ describe("native voice branch knowledge adapter", () => {
         getRuntimeConfig: () => ({}),
       }),
     ).toBeUndefined();
-    expect(mocks.load).not.toHaveBeenCalled();
+    expect(mocks.load).toHaveBeenCalledOnce();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(owner.release).toHaveBeenCalledOnce();
+  });
+
+  it("permits enrolled native context through the same authorized knowledge owner", async () => {
+    const owner = setup();
+    const prepared = await prepareVoiceConversationKnowledge({
+      target,
+      participant,
+      assertCurrent: owner.assertCurrent,
+      getRuntimeConfig: () => ({}),
+    });
+    expect(mocks.prepare).toHaveBeenCalledOnce();
+    expect(prepared?.fragments[0]?.text).toBe("quoted observation");
+    await prepared?.release();
+    expect(owner.release).toHaveBeenCalledOnce();
   });
 
   it("uses the actual borrowed reader and retains it until release", async () => {
@@ -129,7 +156,7 @@ describe("native voice branch knowledge adapter", () => {
   it("does not infer history access from a non-worker row or matching IDs", async () => {
     const owner = setup();
     mocks.load.mockResolvedValue({
-      entry: { sessionId: target.sessionId },
+      entry: { sessionId: target.sessionId, conversationTopology: membership },
       databaseClaim: { kind: "native", assertCurrent: owner.assertCurrent, release: owner.release },
     });
     const prepared = await prepareVoiceConversationKnowledge({
@@ -210,7 +237,11 @@ describe("native voice branch knowledge adapter", () => {
     mocks.load.mockImplementationOnce(async () => {
       original.id = "replacement-person";
       return {
-        entry: { sessionId: target.sessionId, lifecycleRevision: "row-a" },
+        entry: {
+          sessionId: target.sessionId,
+          lifecycleRevision: "row-a",
+          conversationTopology: membership,
+        },
         databaseClaim: {
           kind: "worker",
           reader: owner.reader,
@@ -254,6 +285,7 @@ describe("native voice branch knowledge adapter", () => {
       sessionId: target.sessionId,
       anchor,
       role: "assistant",
+      sourceMode: "branches",
     });
     expect(mocks.record.mock.calls[0]?.[0]).not.toHaveProperty("runId");
     expect(mocks.participant).not.toHaveBeenCalled();
@@ -285,6 +317,33 @@ describe("native voice branch knowledge adapter", () => {
     );
     expect(mocks.record).toHaveBeenCalledOnce();
   });
+
+  it.each([true, false])(
+    "native voice reports only previously enrolled sources (enrolled %s)",
+    async (enrolled) => {
+      const owner = setup(enrolled);
+      await recordVoiceConversationObservation({
+        anchor,
+        lifecycleRevision: "row-a",
+        role: "user",
+        participant,
+        fresh: true,
+        timestamp: 1,
+        config: {},
+        assertCurrent: owner.assertCurrent,
+      });
+      if (enrolled) {
+        expect(mocks.record).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ sourceMode: "native", anchor, role: "user" }),
+        );
+        expect(mocks.participant).toHaveBeenCalledOnce();
+      } else {
+        expect(mocks.record).not.toHaveBeenCalled();
+        expect(mocks.participant).not.toHaveBeenCalled();
+      }
+      expect(owner.release).toHaveBeenCalledOnce();
+    },
+  );
 
   it("does not double-credit participants on transcript deduplication", async () => {
     const owner = setup();

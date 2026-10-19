@@ -85,6 +85,7 @@ export function diffGatewayReloadPaths(
     rosterPaths.push("agents.entries");
   }
   const refineDecisionModel = refinementPrefixes.delete("agents.entries.*.decisionModel");
+  const refineConversationMode = refinementPrefixes.delete("agents.entries.*.conversationMode");
   for (const [config, other] of [
     [prevConfig, nextConfig],
     [nextConfig, prevConfig],
@@ -96,6 +97,9 @@ export function diffGatewayReloadPaths(
       }
       if (refineDecisionModel && agent.decisionModel !== undefined) {
         refinementPrefixes.add(`agents.entries.${agentId}.decisionModel`);
+      }
+      if (refineConversationMode && agent.conversationMode !== undefined) {
+        refinementPrefixes.add(`agents.entries.${agentId}.conversationMode`);
       }
     }
   }

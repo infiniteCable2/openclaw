@@ -50,7 +50,7 @@ preserved even when the agents use the same session key.
 `agents.entries.<agentId>.conversationMode` selects conversation organization:
 
 - `native` (default) keeps the normal channel routing and session-scope settings.
-- `branches` reserves the agent's main session as a headless consolidation root.
+- `branches` uses a separate internal headless consolidation root.
   Direct conversations use separate account/channel/peer branches; groups remain
   separate. A direct audio connection is a conversation branch, not a task
   sub-agent, and does not acquire sub-agent tool restrictions or a parent read grant.
@@ -65,11 +65,35 @@ preserved even when the agents use the same session key.
 }
 ```
 
-The root cannot accept external input, run a model, or serve as a reply address.
-The mode cannot use `session.scope: "global"`. Enabling it does not silently
-convert existing history: an existing unmarked main session or conversation
-requires explicit migration/admission. Disabling the setting does not turn a
-persisted headless root back into a user conversation.
+The internal root has a stable key independent of `session.mainKey`. Native main
+keys, session IDs, histories, delivery addresses, and CLI bindings are not renamed
+or moved. The root cannot accept external input, run a model, or serve as a reply
+address. The mode cannot use `session.scope: "global"`; choosing the reserved
+internal root as the native main key is rejected.
+
+Changing the mode uses the existing Gateway restart/drain boundary, not a hot
+switch underneath an accepted turn. Startup admits the root before channels
+become ready. Existing conversations are enrolled through a separate exact-row
+native lifecycle operation, never an ordinary metadata merge. Enrollment changes
+only membership, not history, ownership, or permissions. The existing native main
+is admitted at startup; other existing conversations are admitted when their
+authorized ingress selects them. Missing lifecycle facts or conflicting root
+incarnations require explicit repair instead of silent adoption.
+
+An initial bounded history seed records only proven completed native exchanges
+and committed realtime utterances as opaque references. It never invents missing
+completion evidence, a speaker identity, or permission to disclose the history.
+An interrupted seed can resume through its existing native receipts. Oversized or
+changed source prefixes are not acknowledged as complete.
+
+Switching back to `native` restores normal routing and leaves the internal root
+separate. Previously enrolled native conversations may catch up authorized
+branch-origin contributions; they do not automatically share newly produced
+native dialogue with one another. Their completed turns can publish passive
+native-origin references, so re-enabling `branches` can catch up the intervening
+native work. Source mode is captured from the admitted turn, not guessed at
+settlement. Existing packet progress deduplicates repeated switches. A root's
+mere existence grants neither enrollment authority nor cross-conversation access.
 
 Branches remain independent native session lanes. Concurrent inputs to one branch
 use the existing queue/steering policy; separate branches may work concurrently.
@@ -118,9 +142,10 @@ must all remain valid. Root membership is not authorization. Shared, unidentifie
 or group audiences do not automatically receive private context. In particular,
 a paired room device authenticates the device, not the person speaking nearby.
 Automatic private context also requires the same verified native participant
-identity in the actual incoming request and both conversations. In `branches`
-mode, a narrow personal permission can read bounded differences between that
-person's private branches under the same agent and consolidation root; it does
+identity in the actual incoming request and both conversations. For eligible
+enrolled conversations, a narrow personal permission can read bounded differences
+under the same agent and consolidation root, subject to the selected mode's
+source filter; it does
 not require an operator history scope. This permission does not authorize
 `chat.history`, `sessions_history`, another agent, or a shared/group audience.
 The original input source and native audience facts remain live throughout the

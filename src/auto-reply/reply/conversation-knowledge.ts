@@ -9,6 +9,7 @@ import {
   readConversationKnowledgePacketProgress,
   retainConversationKnowledgePacket,
 } from "../../config/sessions/conversation-knowledge-packets.js";
+import { ensureConversationKnowledgeSeed } from "../../config/sessions/conversation-knowledge-seed.js";
 import {
   readConversationKnowledgeBranch,
   readConversationKnowledgeRoot,
@@ -76,6 +77,7 @@ export function createReplyConversationKnowledgeTurn(params: {
   let execution: { admission: PreparedAgentRunAdmission; signal: AbortSignal } | undefined;
   let phase: "unprepared" | "prepared" | "released" = "unprepared";
   let enabled = false;
+  let sourceMode: "native" | "branches" | undefined;
   let historyPrepared = false;
   const selected = createDynamicSessionSourceAssertion(
     () => prepared?.assertCurrent,
@@ -83,15 +85,19 @@ export function createReplyConversationKnowledgeTurn(params: {
       throw new Error("Conversation knowledge ownership changed during execution");
     },
   );
-  const assertCurrent = composeSessionSourceAssertion(
-    [params.originalSource, selected],
+  const assertTurnSourceCurrent = composeSessionSourceAssertion(
+    [params.originalSource],
     (check) => {
       if (phase === "released") {
         throw new Error("Conversation knowledge turn has been released");
       }
+      if (sourceMode && resolveAgentConversationMode(getRuntimeConfig(), agentId) !== sourceMode) {
+        throw new Error("Conversation mode changed during the admitted turn");
+      }
       check();
     },
   );
+  const assertCurrent = composeSessionSourceAssertion([assertTurnSourceCurrent, selected]);
   return {
     assertCurrent,
     get fragments(): readonly RuntimeContextFragment[] {
@@ -106,12 +112,34 @@ export function createReplyConversationKnowledgeTurn(params: {
       execution = { admission, signal };
       assertCurrent();
       signal.throwIfAborted();
-      enabled = resolveAgentConversationMode(getRuntimeConfig(), agentId) === "branches";
+      sourceMode = resolveAgentConversationMode(followupRun.run.config, agentId);
+      assertCurrent();
+      // Previously enrolled native conversations retain only transition continuity.
+      // An ordinary native session never starts sharing merely because a root exists.
+      enabled =
+        sourceMode === "branches" ||
+        Boolean(
+          await readConversationKnowledgeBranch({
+            reader,
+            sessionId,
+            assertCurrent: assertTurnSourceCurrent,
+          }),
+        );
       if (enabled) {
+        // This is the actual admitted native turn, not a read-only CLI/provider
+        // startup snapshot. Establish the seed even without a verified audience
+        // before this source may publish its first live completion reference.
+        await ensureConversationKnowledgeSeed({
+          reader,
+          sessionId,
+          assertCurrent: assertTurnSourceCurrent,
+          signal,
+        });
+        assertCurrent();
         prepared = await prepareReplyConversationKnowledge({
           reader,
           sessionId,
-          assertCurrent: params.originalSource,
+          assertCurrent: assertTurnSourceCurrent,
           originalParticipant: followupRun.conversationParticipant,
           getRuntimeConfig,
           signal,
@@ -137,12 +165,12 @@ export function createReplyConversationKnowledgeTurn(params: {
       const { createConversationKnowledgeMaintenance, withConversationKnowledgeWriter } =
         await import("./conversation-knowledge-maintenance.js");
       const next = await withConversationKnowledgeWriter(
-        { run, assertCurrent: params.originalSource },
+        { run, assertCurrent: assertTurnSourceCurrent },
         () =>
           prepareReplyConversationKnowledge({
             reader,
             sessionId,
-            assertCurrent: params.originalSource,
+            assertCurrent: assertTurnSourceCurrent,
             originalParticipant: followupRun.conversationParticipant,
             getRuntimeConfig,
             signal,
@@ -178,6 +206,7 @@ export function createReplyConversationKnowledgeTurn(params: {
           : undefined;
       if (
         !enabled ||
+        !sourceMode ||
         !terminal ||
         terminal.runId !== runId ||
         terminal.sessionId !== sessionId ||
@@ -199,6 +228,7 @@ export function createReplyConversationKnowledgeTurn(params: {
           sessionId: terminal.sessionId,
           runId: terminal.runId,
           assistantTranscriptIdempotencyKey: terminal.assistantTranscriptIdempotencyKey,
+          sourceMode,
           observed: prepared?.observed,
           signal,
         });
@@ -261,8 +291,7 @@ function unavailableConversationKnowledge(
   };
 }
 
-/** A root reference selects candidates, never grants access to another person's conversation. */
-export async function prepareReplyConversationKnowledge(params: {
+type ReplyConversationKnowledgeParams = {
   reader: SessionEntryCohortReader;
   sessionId: string;
   assertCurrent: SessionSourceAssertion;
@@ -274,7 +303,31 @@ export async function prepareReplyConversationKnowledge(params: {
   signal?: AbortSignal;
   /** Actual native user runs retain observations; provider startup snapshots remain read-only. */
   retainInHistory?: { maintainContext(sources: SessionSourceAssertion): Promise<void> };
-}): Promise<PreparedReplyConversationKnowledge | undefined> {
+};
+
+/** A root reference selects candidates, never grants access to another person's conversation. */
+export async function prepareReplyConversationKnowledge(
+  params: ReplyConversationKnowledgeParams,
+): Promise<PreparedReplyConversationKnowledge | undefined> {
+  const mode = resolveAgentConversationMode(
+    params.getRuntimeConfig(),
+    params.reader.logicalAgentId,
+  );
+  const assertCurrent = composeSessionSourceAssertion([params.assertCurrent], (check) => {
+    check();
+    if (
+      resolveAgentConversationMode(params.getRuntimeConfig(), params.reader.logicalAgentId) !== mode
+    ) {
+      throw new Error("Conversation mode changed during context admission");
+    }
+  });
+  return prepareReplyConversationKnowledgeInMode({ ...params, assertCurrent }, mode);
+}
+
+async function prepareReplyConversationKnowledgeInMode(
+  params: ReplyConversationKnowledgeParams,
+  mode: "native" | "branches",
+): Promise<PreparedReplyConversationKnowledge | undefined> {
   params.assertCurrent();
   params.signal?.throwIfAborted();
   const expectedAudienceIdentity = params.expectedAudienceIdentity;
@@ -387,6 +440,7 @@ export async function prepareReplyConversationKnowledge(params: {
       events,
       branch.sessionId,
       branch.sessionKey,
+      mode,
     )) {
       params.signal?.throwIfAborted();
       params.assertCurrent();

@@ -335,13 +335,10 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
       groupScope: sessionOverride?.groupScope ?? groupScope,
     });
     const { sessionKey } = conversation;
-    const mainSessionKey =
-      conversation.mode === "branches"
-        ? conversation.rootSessionKey
-        : buildAgentMainSessionKey({
-            agentId: resolvedAgentId,
-            mainKey: input.cfg.session?.mainKey,
-          });
+    const mainSessionKey = buildAgentMainSessionKey({
+      agentId: resolvedAgentId,
+      mainKey: input.cfg.session?.mainKey,
+    });
     const route = {
       agentId: resolvedAgentId,
       channel,

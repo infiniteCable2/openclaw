@@ -2,6 +2,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import type { ChatType } from "../channels/chat-type.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
 import { resolveCanonicalMainSessionKey } from "../config/sessions/main-session-key.js";
+import { resolveAgentConversationRootSessionKey } from "../config/sessions/session-conversation-root-key.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { DmScope, GroupScope } from "../config/types.base.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -33,14 +34,13 @@ export function assertExternalConversationTarget(params: {
       "Branch conversations require per-agent roots; session.scope cannot be global.",
     );
   }
-  const root = resolveCanonicalMainSessionKey({
+  const root = resolveAgentConversationRootSessionKey({
     agentId: params.agentId,
-    mainKey: params.cfg.session?.mainKey,
-    sessionScope: params.cfg.session?.scope,
+    cfg: params.cfg,
   });
   if (params.sessionKey === root) {
     throw new Error(
-      "Branch conversation mode reserves main for consolidation. Route this input to a conversation branch.",
+      "Branch conversation mode reserves its internal root for consolidation. Route this input to a conversation branch.",
     );
   }
 }
@@ -81,11 +81,14 @@ export function resolveAgentConversationRoute(params: {
     groupScope,
     identityLinks: params.cfg.session?.identityLinks,
   });
-  const rootSessionKey = resolveCanonicalMainSessionKey({
-    agentId: params.agentId,
-    mainKey: params.cfg.session?.mainKey,
-    sessionScope: params.cfg.session?.scope,
-  });
+  const rootSessionKey =
+    mode === "branches"
+      ? resolveAgentConversationRootSessionKey({ cfg: params.cfg, agentId: params.agentId })
+      : resolveCanonicalMainSessionKey({
+          agentId: params.agentId,
+          mainKey: params.cfg.session?.mainKey,
+          sessionScope: params.cfg.session?.scope,
+        });
   return { mode, sessionKey, rootSessionKey, dmScope, groupScope };
 }
 

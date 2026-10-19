@@ -68,6 +68,7 @@ beforeEach(() => vi.resetAllMocks());
 describe("provider startup native context snapshot", () => {
   it("does nothing to native source-compatible mode", async () => {
     const owner = setup();
+    mocks.prepare.mockResolvedValue(undefined);
     const context = await prepareTalkProviderConversationContext({
       target,
       assertCurrent: owner.assertCurrent,
@@ -75,13 +76,15 @@ describe("provider startup native context snapshot", () => {
       captureOperatorAuthority: owner.captureOperatorAuthority,
     });
     expect(context.instructions).toBe("");
-    expect(owner.captureOperatorAuthority).not.toHaveBeenCalled();
-    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(owner.captureOperatorAuthority).toHaveBeenCalledOnce();
+    expect(mocks.prepare).toHaveBeenCalledOnce();
     await context.release();
+    expect(owner.sourceRelease).toHaveBeenCalledOnce();
   });
 
   it("does not retain absent-row authority when native mode captured no context", async () => {
     const owner = setup();
+    mocks.sessionId.mockReturnValue(undefined);
     let materialized = false;
     const assertAbsentTarget = vi.fn(() => {
       if (materialized) {
@@ -94,13 +97,13 @@ describe("provider startup native context snapshot", () => {
       getRuntimeConfig: () => ({}),
       captureOperatorAuthority: owner.captureOperatorAuthority,
     });
-    expect(assertAbsentTarget).toHaveBeenCalledOnce();
+    expect(assertAbsentTarget).toHaveBeenCalled();
     // The guarded native creation owner now checks the exact ensured session.
     // This empty snapshot must not reapply the superseded absence assertion.
     materialized = true;
     expect(() => assertAbsentTarget()).toThrow("Original target was absent");
     expect(() => context.assertCurrent()).not.toThrow();
-    expect(owner.captureOperatorAuthority).not.toHaveBeenCalled();
+    expect(owner.captureOperatorAuthority).toHaveBeenCalledOnce();
     expect(mocks.prepare).not.toHaveBeenCalled();
     await context.release();
     expect(() => context.assertCurrent()).toThrow("released");
@@ -159,7 +162,7 @@ describe("provider startup native context snapshot", () => {
       getRuntimeConfig: () => config,
       captureOperatorAuthority: owner.captureOperatorAuthority,
     });
-    expect(context.instructions).toContain("conversation-awaiting-native-admission");
+    expect(context.instructions).toBe("");
     expect(mocks.prepare).not.toHaveBeenCalled();
     await context.release();
   });

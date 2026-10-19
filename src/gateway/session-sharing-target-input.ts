@@ -203,8 +203,8 @@ export function resolveTalkSessionTargetInput(
     return {
       kind: "request",
       sessionKey,
-      // Closing and mirroring accepted speech must still settle an old call
-      // after its main target becomes reserved for consolidation.
+      // Closing and mirroring accepted speech retain settlement custody even
+      // when a routing change no longer admits new work to that call's target.
       ...(settlement ? { purpose: "settlement" as const } : {}),
     };
   }

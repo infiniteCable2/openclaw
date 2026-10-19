@@ -24,6 +24,7 @@ function fixture(suffix = "alpha") {
   };
   const receipt: ConversationKnowledgeReceipt = {
     version: 1,
+    sourceMode: "branches",
     origin: conversationKnowledgeOrigin(source),
     source,
     runId: `run-${suffix}`,
@@ -87,6 +88,9 @@ describe("native conversation knowledge references and bounded data", () => {
     const previous = selectConversationKnowledgeReport(f.receipt, undefined);
     expect(selectConversationKnowledgeReport(f.receipt, previous)).toBeUndefined();
     expect(
+      selectConversationKnowledgeReport({ ...f.receipt, sourceMode: "native" }, previous),
+    ).toBeUndefined();
+    expect(
       selectConversationKnowledgeReport(
         { ...f.receipt, through: { ...f.receipt.through, rawSeq: 3 } },
         previous,
@@ -109,6 +113,57 @@ describe("native conversation knowledge references and bounded data", () => {
         previous,
       ),
     ).toBeDefined();
+  });
+
+  it.each([undefined, null, "", "Native", " branches", "other"])(
+    "rejects missing or invalid source mode %j instead of guessing a legacy mode",
+    (sourceMode) => {
+      const f = fixture();
+      expect(readConversationKnowledgeReceipt({ ...f.receipt, sourceMode })).toBeUndefined();
+      expect(
+        readConversationUtteranceObservation({
+          ...f.receipt,
+          runId: undefined,
+          origin: conversationKnowledgeOrigin(f.source, "utterance-observation"),
+          kind: "utterance-observation",
+          role: "assistant",
+          sourceMode,
+        }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("keeps native consumption limited to branch-origin receipts without changing order or endpoint identity", () => {
+    const branch = fixture("branch").receipt;
+    const native: ConversationKnowledgeReceipt = {
+      ...fixture("native").receipt,
+      sourceMode: "native",
+    };
+    const nextBranch = {
+      ...branch,
+      through: { ...branch.through, entryId: "later-branch-answer", rawSeq: 8 },
+    };
+    const relabeled: ConversationKnowledgeReceipt = { ...native, sourceMode: "branches" };
+    const events = [branch, native, nextBranch, relabeled].map((details) => ({
+      type: "custom_message",
+      customType: CONVERSATION_KNOWLEDGE_REPORT,
+      details,
+    }));
+    expect(selectConversationKnowledgeReceipts(events, "recipient")).toEqual([
+      branch,
+      native,
+      nextBranch,
+    ]);
+    expect(selectConversationKnowledgeReceipts(events, "recipient", undefined, "native")).toEqual([
+      branch,
+      nextBranch,
+    ]);
+    expect(readConversationKnowledgeReceipt(native)?.sourceMode).toBe("native");
+    const nativeProjection = projectConversationKnowledge(
+      { ...fixture().receipt, sourceMode: "native" },
+      fixture().events,
+    );
+    expect(JSON.parse(nativeProjection?.text ?? "{}").sourceMode).toBe("native");
   });
 
   it("does not project a running suffix, wrong run, failed reply, or missing terminal", () => {
@@ -265,6 +320,7 @@ describe("native conversation knowledge references and bounded data", () => {
     expect(data.throughEntryId).toBe("answer");
     expect(data.observations[0].speaker).toBe("user");
     expect(data.sourceAudience).toBe("unknown");
+    expect(data.sourceMode).toBe("branches");
     expect(data.speakerIdentity).toBe("not-attributed-to-the-current-user");
     expect(projected).not.toHaveProperty("role");
     let offset = 0;
@@ -513,6 +569,14 @@ describe("native conversation knowledge references and bounded data", () => {
     expect(selectConversationKnowledgeReceipts(events, "other-current-session")).toEqual([
       replacement,
     ]);
+    expect(
+      selectConversationKnowledgeReceipts(
+        [events[0]!, { ...events[1]!, details: { ...replacement, sourceMode: "native" } }],
+        "other-current-session",
+        undefined,
+        "native",
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -521,6 +585,7 @@ describe("committed native realtime utterance observations", () => {
     const f = fixture();
     const receipt: ConversationUtteranceObservation = {
       version: 1,
+      sourceMode: "branches",
       source: f.source,
       origin: conversationKnowledgeOrigin(f.source, "utterance-observation"),
       kind: "utterance-observation",
@@ -630,6 +695,18 @@ describe("committed native realtime utterance observations", () => {
       { type: "custom_message", customType: CONVERSATION_UTTERANCE_REPORT, details: f.receipt },
     ];
     expect(selectConversationKnowledgeReceipts(events, "other")).toEqual([complete, f.receipt]);
+    const nativeUtterance: ConversationUtteranceObservation = {
+      ...f.receipt,
+      sourceMode: "native",
+    };
+    const nativeEvents = [events[0]!, { ...events[1]!, details: nativeUtterance }];
+    expect(selectConversationKnowledgeReceipts(nativeEvents, "other", undefined, "native")).toEqual(
+      [complete],
+    );
+    expect(selectConversationKnowledgeReceipts(nativeEvents, "other")).toEqual([
+      complete,
+      nativeUtterance,
+    ]);
     expect(selectConversationKnowledgeReceipts(events, f.source.sessionId)).toEqual([]);
     const nextSource = {
       ...f.source,

@@ -78,6 +78,8 @@ export async function recordConversationKnowledgeTurn(params: {
   sessionId: string;
   runId: string;
   assistantTranscriptIdempotencyKey: string;
+  /** Captured from this turn's admitted configuration, never from settlement-time config. */
+  sourceMode: "native" | "branches";
   observed?: ConversationKnowledgeFrontier[];
   signal?: AbortSignal;
 }): Promise<boolean> {
@@ -132,10 +134,11 @@ export async function recordConversationUtteranceObservation(params: {
   sessionId: string;
   anchor: TranscriptEntryAnchor;
   role: "user" | "assistant";
+  sourceMode: "native" | "branches";
   observed?: ConversationKnowledgeFrontier[];
   signal?: AbortSignal;
 }): Promise<boolean> {
-  const { reader, assertCurrent, sessionId, role, signal } = params;
+  const { reader, assertCurrent, sessionId, role, signal, sourceMode } = params;
   const anchor = structuredClone(params.anchor);
   const observed = params.observed ? structuredClone(params.observed) : undefined;
   const check = () => {
@@ -178,6 +181,7 @@ export async function recordConversationUtteranceObservation(params: {
     branch,
     through,
     completion: { kind: "utterance-observation", role },
+    sourceMode,
   });
 }
 
@@ -190,6 +194,7 @@ async function recordConversationKnowledgeReference(params: {
   observed?: ConversationKnowledgeFrontier[];
   branch: ConversationKnowledgeBranch;
   through: TranscriptEntryAnchor;
+  sourceMode: "native" | "branches";
   completion: { runId: string } | { kind: "utterance-observation"; role: "user" | "assistant" };
 }): Promise<boolean> {
   const { branch, through } = params;
@@ -221,6 +226,7 @@ async function recordConversationKnowledgeReference(params: {
   });
   const candidate = {
     version: 1,
+    sourceMode: params.sourceMode,
     source: branch,
     origin: conversationKnowledgeOrigin(
       branch,
@@ -278,6 +284,7 @@ async function recordConversationKnowledgeReference(params: {
         };
         const base = {
           version: 1,
+          sourceMode: params.sourceMode,
           source: sourceIdentity,
           origin: conversationKnowledgeOrigin(
             branch,

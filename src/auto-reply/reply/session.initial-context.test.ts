@@ -123,12 +123,15 @@ describe("reply initialization with native copied context", () => {
       ...f.cfg,
       agents: { ...f.cfg.agents, entries: { main: { conversationMode: "branches" as const } } },
     };
-    const ctx = finalizeInboundContext({ ...f.ctx, SessionKey: "agent:main:main" });
-    const root = { ...f.target, sessionKey: "agent:main:main" };
+    const ctx = finalizeInboundContext({
+      ...f.ctx,
+      SessionKey: "agent:main:internal:conversation-root",
+    });
+    const root = { ...f.target, sessionKey: "agent:main:internal:conversation-root" };
     const before = loadSessionEntry(root);
     const events = await loadTranscriptEvents(root);
     await expect(initSessionState({ cfg, ctx, commandAuthorized: true })).rejects.toThrow(
-      "reserves main for consolidation",
+      "reserves its internal root for consolidation",
     );
     expect(loadSessionEntry(root)).toEqual(before);
     expect(await loadTranscriptEvents(root)).toEqual(events);

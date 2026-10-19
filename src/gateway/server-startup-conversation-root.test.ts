@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { resolveAgentConversationRootSessionKey } from "../config/sessions/session-conversation-root-key.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import { loadTranscriptEvents } from "../config/sessions/session-transcript-events.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -27,7 +28,11 @@ describe("Gateway host conversation root startup", () => {
           log: { info: vi.fn(), warn: vi.fn() },
         });
         for (const agentId of ["main", "helper", "ordinary"]) {
-          const scope = { agentId, env: state.env, sessionKey: `agent:${agentId}:main` };
+          const scope = {
+            agentId,
+            env: state.env,
+            sessionKey: resolveAgentConversationRootSessionKey({ cfg, agentId }),
+          };
           const entry = await readSessionEntryReadOnlyInWorker(scope);
           const expected = agentId === "helper" || (phase === "initial" && agentId === "main");
           if (!expected) {
@@ -47,6 +52,12 @@ describe("Gateway host conversation root startup", () => {
           const events = await loadTranscriptEvents({ ...scope, sessionId: entry.sessionId });
           expect(events).toHaveLength(1);
           expect(events[0]).toMatchObject({ type: "session", id: entry.sessionId });
+          expect(
+            await readSessionEntryReadOnlyInWorker({
+              ...scope,
+              sessionKey: `agent:${agentId}:main`,
+            }),
+          ).toBeUndefined();
         }
         expect(databases).toHaveLength(phase === "initial" ? 2 : 1);
         for (const database of databases) {

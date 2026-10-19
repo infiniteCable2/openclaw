@@ -36,10 +36,18 @@ describe("cron creation conversation target validation", () => {
     const cfg: OpenClawConfig = {
       agents: { entries: { example: { conversationMode: "branches" } } },
     };
+    const sessionKey = "agent:example:internal:conversation-root";
+    mocks.load.mockReturnValue({ cfg, agentId: "example", canonicalKey: sessionKey });
+    expect(() =>
+      assertCronDoesNotTargetAgentHarness(
+        { agentId: "example", sessionTarget: `session:${sessionKey}` },
+        cfg,
+      ),
+    ).toThrow("reserves its internal root for consolidation");
     mocks.load.mockReturnValue({ cfg, agentId: "example", canonicalKey: "agent:example:main" });
     expect(() =>
       assertCronDoesNotTargetAgentHarness({ agentId: "example", sessionTarget: "main" }, cfg),
-    ).toThrow("reserves main for consolidation");
+    ).not.toThrow();
   });
 
   it("does not apply a source harness lock to an independent isolated task", () => {

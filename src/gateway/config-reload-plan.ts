@@ -152,6 +152,12 @@ const AGENT_ROSTER_RELOAD_ACTIONS: readonly ReloadAction[] = [
 const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
   { prefixes: ["gateway.remote", "gateway.reload"], kind: "none" },
   {
+    // Conversation routing must cross the native drain/startup-admission boundary.
+    // Hot publication could expose branch routes before their root is admitted.
+    prefixes: ["agents.entries.*.conversationMode"],
+    kind: "restart",
+  },
+  {
     prefixes: [...AUTH_CREDENTIAL_PATHS, "mcp.apps", "secrets.egressProxy", "gateway.portals"],
     kind: "restart",
   },

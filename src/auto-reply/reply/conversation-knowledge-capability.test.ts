@@ -22,6 +22,11 @@ const source = vi.hoisted(() => ({
   context: vi.fn(),
   record: vi.fn(),
   drain: vi.fn(),
+  seed: vi.fn(),
+}));
+// mock-isolation: Seed persistence has real worker coverage; this fixture tests disclosure and turn custody.
+vi.mock("../../config/sessions/conversation-knowledge-seed.js", () => ({
+  ensureConversationKnowledgeSeed: source.seed,
 }));
 // mock-isolation: Capability absence must not open source history or transcript workers.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
@@ -57,8 +62,8 @@ beforeEach(() => {
   }
 });
 
-async function nativeTurn(admin = false) {
-  const cfg = { agents: { entries: { example: { conversationMode: "branches" as const } } } };
+async function nativeTurn(admin = false, conversationMode: "native" | "branches" = "branches") {
+  const cfg = { agents: { entries: { example: { conversationMode } } } };
   const operatorAuthority = admin
     ? createAdmittedRunOperatorAuthority({
         profileId: "example-admin",
@@ -148,6 +153,7 @@ describe("actual native-turn knowledge ownership", () => {
         runId: "source-run",
         sessionId: "source-session",
         assistantTranscriptIdempotencyKey: "native-terminal-occurrence",
+        sourceMode: "branches",
       }),
     );
     expect(source.drain.mock.invocationCallOrder[0]).toBeLessThan(
@@ -171,6 +177,28 @@ describe("actual native-turn knowledge ownership", () => {
     await f.owner.record({ kind: "aborted", reason: "user" });
     expect(source.drain).not.toHaveBeenCalled();
     expect(source.record).not.toHaveBeenCalled();
+  });
+
+  it("passively reports completed native work only for a previously enrolled conversation", async () => {
+    source.branch.mockResolvedValue({ sessionId: "source-session" });
+    const f = await nativeTurn(false, "native");
+    await f.owner.record(f.result);
+    expect(source.record).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ sourceMode: "native", runId: "source-run" }),
+    );
+    expect(source.history).not.toHaveBeenCalled();
+  });
+
+  it("does not start reporting or add context for an ordinary unenrolled native conversation", async () => {
+    source.branch.mockResolvedValue(undefined);
+    const f = await nativeTurn(false, "native");
+    expect(f.owner.fragments).toEqual([]);
+    await f.owner.record(f.result);
+    expect(source.branch).toHaveBeenCalledOnce();
+    expect(source.root).not.toHaveBeenCalled();
+    expect(source.history).not.toHaveBeenCalled();
+    expect(source.record).not.toHaveBeenCalled();
+    expect(source.drain).not.toHaveBeenCalled();
   });
 
   it("does not fail or retry completed work when only the root report fails", async () => {
@@ -293,6 +321,7 @@ describe("conversation knowledge capability absence", () => {
         customType: CONVERSATION_KNOWLEDGE_REPORT,
         details: {
           version: 1,
+          sourceMode: "branches",
           origin: conversationKnowledgeOrigin(sibling),
           source: sibling,
           runId: "completed-sibling-run",
@@ -345,7 +374,7 @@ describe("conversation knowledge capability absence", () => {
   });
 });
 
-function personalFixture() {
+function personalFixture(sourceMode: "native" | "branches" = "branches") {
   const participant = { type: "profile" as const, id: "example-person" };
   const branch = {
     agentId: "example",
@@ -383,6 +412,7 @@ function personalFixture() {
       customType: CONVERSATION_KNOWLEDGE_REPORT,
       details: {
         version: 1,
+        sourceMode,
         origin: conversationKnowledgeOrigin(sibling),
         source: sibling,
         runId: "sibling-run",
@@ -443,6 +473,28 @@ function personalFixture() {
 }
 
 describe("native personal difference-context integration", () => {
+  it.each(["native", "branches"] as const)(
+    "native enrolled consumers accept only branch-origin context (source %s)",
+    async (sourceMode) => {
+      const f = personalFixture(sourceMode);
+      const prepared = await prepareReplyConversationKnowledge({
+        ...f.params,
+        getRuntimeConfig: () => ({
+          agents: { entries: { example: { conversationMode: "native" } } },
+        }),
+      });
+      if (sourceMode === "branches") {
+        expect(source.history).toHaveBeenCalledOnce();
+        expect(prepared?.fragments[0]?.text).toContain("Agreed, blue.");
+      } else {
+        expect(source.history).not.toHaveBeenCalled();
+        expect(source.context).not.toHaveBeenCalled();
+        expect(prepared?.fragments).toEqual([]);
+      }
+      prepared?.release();
+    },
+  );
+
   it("uses the narrow native personal purpose without operator scope and retains its original custody", async () => {
     const f = personalFixture();
     source.branch.mockImplementationOnce(async () => {

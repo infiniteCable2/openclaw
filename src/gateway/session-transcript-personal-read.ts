@@ -71,6 +71,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
   const selected = params.sources.map(({ agentId, sessionKey }) => ({ agentId, sessionKey }));
   const original = params.personal.assertCurrent;
   original();
+  const selectedMode = resolveAgentConversationMode(params.getRuntimeConfig(), target.agentId);
   if (
     (participant.type !== "profile" && participant.type !== "remote") ||
     !participant.id.trim() ||
@@ -128,7 +129,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     }
     original();
     const cfg = params.getRuntimeConfig();
-    if (resolveAgentConversationMode(cfg, target.agentId) !== "branches") {
+    if (resolveAgentConversationMode(cfg, target.agentId) !== selectedMode) {
       throw new Error("Personal conversation difference mode changed");
     }
     return cfg;

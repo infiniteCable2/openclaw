@@ -26,6 +26,43 @@ function rootFixture(overrides: Partial<InternalSessionEntry> = {}): InternalSes
 }
 
 describe("host conversation root admission", () => {
+  it("preserves native main history and reuses one internal root across main-key changes", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const nativeScope = {
+        agentId: "main",
+        env: state.env,
+        sessionKey: "agent:main:main",
+        sessionId: "native-conversation",
+      };
+      replaceSessionEntrySync(nativeScope, {
+        sessionId: nativeScope.sessionId,
+        updatedAt: 1,
+      });
+      await appendTranscriptMessage(nativeScope, {
+        message: { role: "user", content: "Keep the native conversation." },
+      });
+      const before = await readSessionEntryReadOnlyInWorker(nativeScope);
+      const events = await loadTranscriptEvents(nativeScope);
+      const cfg: OpenClawConfig = {
+        agents: { entries: { main: { conversationMode: "branches" } } },
+      };
+      const root = await ensureAgentConversationRoot({ cfg, agentId: "main", env: state.env });
+      cfg.session = { mainKey: "primary" };
+      const reused = await ensureAgentConversationRoot({ cfg, agentId: "main", env: state.env });
+      expect(reused.created).toBe(false);
+      expect(reused.sessionKey).toBe(root.sessionKey);
+      expect(reused.entry).toEqual(root.entry);
+      expect(await readSessionEntryReadOnlyInWorker(nativeScope)).toEqual(before);
+      expect(await loadTranscriptEvents(nativeScope)).toEqual(events);
+      expect(
+        await readSessionEntryReadOnlyInWorker({
+          ...nativeScope,
+          sessionKey: "agent:main:primary",
+        }),
+      ).toBeUndefined();
+    });
+  });
+
   it("creates only an empty private system root, then reuses it without writes", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const cfg: OpenClawConfig = {
@@ -33,6 +70,7 @@ describe("host conversation root admission", () => {
       };
       const params = { cfg, agentId: "main", env: state.env };
       const root = await ensureAgentConversationRoot(params);
+      expect(root.sessionKey).toBe("agent:main:internal:conversation-root");
       const scope = { agentId: "main", env: state.env, sessionKey: root.sessionKey };
       const before = await readSessionEntryReadOnlyInWorker(scope);
       const events = await loadTranscriptEvents({ ...scope, sessionId: root.entry.sessionId });
@@ -75,7 +113,7 @@ describe("host conversation root admission", () => {
         const scope = {
           agentId: "main",
           env: state.env,
-          sessionKey: "agent:main:main",
+          sessionKey: "agent:main:internal:conversation-root",
           sessionId: "existing-root",
         };
         replaceSessionEntrySync(scope, rootFixture(patch));
@@ -102,7 +140,7 @@ describe("host conversation root admission", () => {
       const scope = {
         agentId: "main",
         env: state.env,
-        sessionKey: "agent:main:main",
+        sessionKey: "agent:main:internal:conversation-root",
         sessionId: "winning-root",
       };
       let winner: InternalSessionEntry | undefined;
@@ -130,7 +168,7 @@ describe("host conversation root admission", () => {
       const scope = {
         agentId: "main",
         env: state.env,
-        sessionKey: "agent:main:main",
+        sessionKey: "agent:main:internal:conversation-root",
         sessionId: "revoked-root",
       };
       let revoked = false;
@@ -184,7 +222,7 @@ describe("host conversation root admission", () => {
         await readSessionEntryReadOnlyInWorker({
           agentId: "main",
           env: state.env,
-          sessionKey: "agent:main:main",
+          sessionKey: "agent:main:internal:conversation-root",
         }),
       ).toBeUndefined();
     });
@@ -214,7 +252,7 @@ describe("host conversation root admission", () => {
         await readSessionEntryReadOnlyInWorker({
           agentId: "main",
           env: state.env,
-          sessionKey: "agent:main:main",
+          sessionKey: "agent:main:internal:conversation-root",
         }),
       ).toBeUndefined();
     });

@@ -80,11 +80,11 @@ describe("agent conversation routing", () => {
     const target = {
       cfg,
       agentId: "researcher",
-      sessionKey: "agent:researcher:main",
+      sessionKey: "agent:researcher:internal:conversation-root",
       isSystemEvent: false,
     };
     expect(() => assertExternalConversationTarget(target)).toThrow(
-      "reserves main for consolidation",
+      "reserves its internal root for consolidation",
     );
     expect(() =>
       assertExternalConversationTarget({
@@ -104,7 +104,10 @@ describe("agent conversation routing", () => {
         cfg: { ...cfg, session: { mainKey: "consolidation" } },
         sessionKey: "agent:researcher:consolidation",
       }),
-    ).toThrow("reserves main for consolidation");
+    ).not.toThrow();
+    expect(() =>
+      assertExternalConversationTarget({ ...target, sessionKey: "agent:researcher:main" }),
+    ).not.toThrow();
     expect(() =>
       assertExternalConversationTarget({
         ...target,
@@ -143,6 +146,34 @@ describe("agent conversation routing", () => {
       first.sessionKey,
     );
     expect(first).not.toHaveProperty("spawnedBy");
+  });
+
+  it("keeps a custom native main separate across branch and native mode changes", () => {
+    const cfg = config("branches");
+    cfg.session = { ...cfg.session, mainKey: "primary" };
+    const input = {
+      cfg,
+      agentId: "researcher",
+      channel: "matrix",
+      accountId: "default",
+      peer: { kind: "direct" as const, id: "person-a" },
+      dmScope: "main" as const,
+      groupScope: "main" as const,
+    };
+    expect(resolveAgentConversationRoute(input).rootSessionKey).toBe(
+      "agent:researcher:internal:conversation-root",
+    );
+    expect(route(cfg)).toMatchObject({
+      mainSessionKey: "agent:researcher:primary",
+      sessionKey: "agent:researcher:matrix:default:direct:person-a",
+    });
+    cfg.agents = config("native").agents;
+    expect(route(cfg).sessionKey).toBe("agent:researcher:primary");
+    expect(resolveAgentConversationRoute(input).rootSessionKey).toBe("agent:researcher:primary");
+    cfg.session.mainKey = "internal:conversation-root";
+    expect(route(cfg).sessionKey).toBe("agent:researcher:internal:conversation-root");
+    cfg.agents = config("branches").agents;
+    expect(() => route(cfg)).toThrow("collides with the reserved internal conversation root");
   });
 
   it("keeps linked identity normalization without merging histories across channel defaults", () => {

@@ -14,6 +14,57 @@ describe("Gateway core reload policy", () => {
   beforeEach(() => setActivePluginRegistry(createEmptyPluginRegistry()));
   afterEach(() => resetPluginRuntimeStateForTest());
 
+  it.each(["native", "branches", undefined] as const)(
+    "settles conversation-mode routing through restart admission: %s",
+    (conversationMode) => {
+      const previous: OpenClawConfig = {
+        agents: { entries: { example: { conversationMode: "branches" } } },
+      };
+      const candidate: OpenClawConfig = {
+        agents: { entries: { example: { conversationMode } } },
+      };
+      if (conversationMode === "branches") {
+        previous.agents!.entries!.example!.conversationMode = "native";
+      }
+      const paths = diffGatewayReloadPaths(
+        previous,
+        candidate,
+        listConfigReloadRefinementPrefixes(),
+      );
+      const plan = buildGatewayReloadPlan(paths, {
+        previousConfig: previous,
+        candidateConfig: candidate,
+      });
+      expect(plan.restartGateway).toBe(true);
+      expect(plan.restartReasons).toContain("agents.entries.example.conversationMode");
+    },
+  );
+
+  it.each(["add-entry", "remove-entry", "add-roster", "remove-roster"])(
+    "does not hide a conversation-mode boundary inside %s",
+    (operation) => {
+      const absent: OpenClawConfig = operation.includes("entry")
+        ? { agents: { entries: { unrelated: {} } } }
+        : {};
+      const present: OpenClawConfig = {
+        agents: { entries: { unrelated: {}, example: { conversationMode: "branches" } } },
+      };
+      const [previous, candidate] = operation.startsWith("add")
+        ? [absent, present]
+        : [present, absent];
+      const paths = diffGatewayReloadPaths(
+        previous,
+        candidate,
+        listConfigReloadRefinementPrefixes(),
+      );
+      const plan = buildGatewayReloadPlan(paths, {
+        previousConfig: previous,
+        candidateConfig: candidate,
+      });
+      expect(plan.restartReasons).toContain("agents.entries.example.conversationMode");
+    },
+  );
+
   it.each([
     { change: "allow", mode: "noop" },
     { change: "remove-policy", mode: "noop" },

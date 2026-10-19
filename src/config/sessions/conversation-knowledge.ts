@@ -24,6 +24,8 @@ const MAX_SOURCE_CHARS = 4_000;
 /** A root stores references, never a second copy of another audience's dialogue. */
 type ConversationKnowledgeReferenceBase = {
   version: 1;
+  /** Captured by the original admitted conversation, not inferred during later consumption. */
+  sourceMode: "native" | "branches";
   origin: string;
   source: { agentId: string; sessionKey: string; sessionId: string; lifecycleRevision: string };
   through: TranscriptEntryAnchor;
@@ -74,6 +76,7 @@ function readConversationKnowledgeReferenceBase(
   const through = asOptionalRecord(record?.through);
   if (
     record?.version !== 1 ||
+    (record.sourceMode !== "native" && record.sourceMode !== "branches") ||
     !exact(record.origin) ||
     !source ||
     !through ||
@@ -97,6 +100,7 @@ function readConversationKnowledgeReferenceBase(
   }
   const receipt: ConversationKnowledgeReferenceBase = {
     version: 1,
+    sourceMode: record.sourceMode,
     origin: record.origin,
     source: {
       agentId: source.agentId,
@@ -202,6 +206,7 @@ export function selectConversationKnowledgeReceipts(
   events: readonly TranscriptEvent[],
   currentSessionId: string,
   currentSessionKey?: string,
+  consumerMode: "native" | "branches" = "branches",
 ) {
   const selected = new Map<string, ConversationKnowledgeReference>();
   const incarnationByKey = new Map<string, string>();
@@ -249,7 +254,11 @@ export function selectConversationKnowledgeReceipts(
       selected.set(endpoint, receipt);
     }
   }
-  return [...selected.values()];
+  // Deduplicate and reconcile incarnations before filtering: a later duplicate
+  // cannot relabel the same saved occurrence to make it visible in native mode.
+  return [...selected.values()].filter(
+    (receipt) => consumerMode === "branches" || receipt.sourceMode === "branches",
+  );
 }
 
 function messageText(message: Record<string, unknown>): string {
@@ -502,6 +511,7 @@ export function projectConversationKnowledge(
     // a source frontier is issued after the complete contribution is included.
     return JSON.stringify({
       source: receipt.origin,
+      sourceMode: receipt.sourceMode,
       sourceAudience,
       speakerIdentity: "not-attributed-to-the-current-user",
       sourceSessionKey: receipt.source.sessionKey,

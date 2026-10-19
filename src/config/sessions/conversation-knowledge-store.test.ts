@@ -115,6 +115,7 @@ describe("native completed-turn root consolidation", () => {
           },
         );
         const completed = {
+          sourceMode: "branches" as const,
           reader,
           assertCurrent,
           sessionId: branch.sessionId,
@@ -165,6 +166,7 @@ describe("native completed-turn root consolidation", () => {
             throw new Error("Native voice anchor missing");
           }
           const observation = {
+            sourceMode: "branches" as const,
             reader,
             assertCurrent,
             sessionId: branch.sessionId,
@@ -189,6 +191,7 @@ describe("native completed-turn root consolidation", () => {
           expect(JSON.stringify(references)).not.toContain("separate realtime");
           const observed = readConversationUtteranceObservation(references[0]?.details);
           expect(observed?.kind).toBe("utterance-observation");
+          expect(observed?.sourceMode).toBe("branches");
           expect(observed).not.toHaveProperty("runId");
           if (!observed) {
             throw new Error("Native utterance reference missing");

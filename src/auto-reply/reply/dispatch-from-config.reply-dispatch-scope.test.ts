@@ -29,13 +29,19 @@ describe("dispatchReplyFromConfig reply hook scope", () => {
 
   it.each([
     {
-      name: "canonical main",
-      sessionKey: "agent:test:main",
+      name: "canonical internal root",
+      sessionKey: "agent:test:internal:conversation-root",
       marked: false,
       mode: "branches",
       bound: false,
     },
-    { name: "main alias", sessionKey: "main", marked: false, mode: "branches", bound: false },
+    {
+      name: "agent-relative internal root",
+      sessionKey: "internal:conversation-root",
+      marked: false,
+      mode: "branches",
+      bound: false,
+    },
     {
       name: "persisted root after opt-out",
       sessionKey: "agent:test:acp:root",
@@ -91,7 +97,9 @@ describe("dispatchReplyFromConfig reply hook scope", () => {
           dispatcher: createDispatcher(),
           replyResolver,
         }),
-      ).rejects.toThrow(scenario.marked ? "Explicitly migrate" : "reserves main for consolidation");
+      ).rejects.toThrow(
+        scenario.marked ? "Explicitly migrate" : "reserves its internal root for consolidation",
+      );
       expect(hookMocks.runner.runReplyDispatch).not.toHaveBeenCalled();
       expect(replyResolver).not.toHaveBeenCalled();
     },

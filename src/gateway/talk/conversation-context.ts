@@ -1,5 +1,4 @@
 import { projectRuntimeContextFragments } from "../../agents/internal-runtime-context.js";
-import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -46,14 +45,6 @@ export async function prepareTalkProviderConversationContext(params: {
     })());
   try {
     assertCurrent();
-    if (
-      resolveAgentConversationMode(params.getRuntimeConfig(), params.target.agentId) !== "branches"
-    ) {
-      // No context was captured. The caller owns routing/creation authorization,
-      // including adoption of its guarded first write; do not retain its earlier
-      // absent-row assertion as a second authority after that materialization.
-      return { instructions: "", assertCurrent: assertActive, release };
-    }
     source = await params.captureOperatorAuthority({ assertCurrent: params.assertCurrent });
     assertCurrent();
     const target = {
@@ -69,6 +60,11 @@ export async function prepareTalkProviderConversationContext(params: {
         getRuntimeConfig: params.getRuntimeConfig,
         participant,
       });
+    }
+    if (!knowledge) {
+      // Ordinary native targets have no enrolled context to disclose. Retain no
+      // stale absence assertion after their caller's guarded first materialization.
+      return { instructions: "", assertCurrent: assertActive, release };
     }
     assertCurrent();
     const fragments = knowledge?.fragments ?? [

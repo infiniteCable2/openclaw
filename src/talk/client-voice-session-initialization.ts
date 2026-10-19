@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ChatType } from "../channels/chat-type.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
-import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import {
   commitReplySessionInitialization,
@@ -9,15 +8,18 @@ import {
 } from "../config/sessions/session-accessor.reset.js";
 import type { SessionEntryCreationOperation } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { admitSessionConversationBranch } from "../config/sessions/session-conversation-admission.js";
+import { resolveAgentConversationRootSessionKey } from "../config/sessions/session-conversation-root-key.js";
 import { prepareSessionGenerationFacts } from "../config/sessions/session-delivery-generation.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
 import {
   sessionEntryCommitGuardOptions,
+  composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import { mergeSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isSubagentSessionKey, isIncognitoSessionKey } from "../routing/session-key.js";
 
 type VoiceSessionInitializationParams = {
   agentId: string;
@@ -40,9 +42,15 @@ type VoiceSessionInitializationParams = {
 };
 
 /** Native startup uses the same conversation membership owner as real inbound turns. */
-async function ensureConversationBranch(params: VoiceSessionInitializationParams): Promise<string> {
-  const cfg = params.cfg!;
-  const rootSessionKey = resolveAgentMainSessionKey({ cfg, agentId: params.agentId });
+async function ensureConversationSession(
+  params: VoiceSessionInitializationParams & { cfg: OpenClawConfig },
+): Promise<string> {
+  const cfg = params.cfg;
+  const mode = resolveAgentConversationMode(cfg, params.agentId);
+  const rootSessionKey =
+    mode === "branches"
+      ? resolveAgentConversationRootSessionKey({ cfg, agentId: params.agentId })
+      : undefined;
   const storePath = resolveSessionStorePathForScope(params, cfg);
   const assertCurrent = () => {
     params.assertCommitAllowed?.();
@@ -50,9 +58,10 @@ async function ensureConversationBranch(params: VoiceSessionInitializationParams
       throw new Error("Realtime browser session expired during startup; try again");
     }
     if (
-      cfg.session?.scope === "global" ||
-      resolveAgentConversationMode(cfg, params.agentId) !== "branches" ||
-      resolveAgentMainSessionKey({ cfg, agentId: params.agentId }) !== rootSessionKey
+      (rootSessionKey && cfg.session?.scope === "global") ||
+      resolveAgentConversationMode(cfg, params.agentId) !== mode ||
+      (rootSessionKey &&
+        resolveAgentConversationRootSessionKey({ cfg, agentId: params.agentId }) !== rootSessionKey)
     ) {
       throw new Error("Talk conversation configuration changed during startup");
     }
@@ -60,17 +69,19 @@ async function ensureConversationBranch(params: VoiceSessionInitializationParams
   assertCurrent();
   const target = { agentId: params.agentId, sessionKey: params.sessionKey, storePath };
   const snapshot = await loadReplySessionInitializationSnapshot(
-    { ...target, relatedSessionKeys: [rootSessionKey] },
+    { ...target, relatedSessionKeys: rootSessionKey ? [rootSessionKey] : [] },
     { assertCurrent },
   );
   assertCurrent();
-  // In particular, never silently adopt a pre-existing unmarked private history.
-  admitSessionConversationBranch({
-    ...target,
-    currentEntry: snapshot.currentEntry,
-    rootSessionKey,
-    rootEntry: snapshot.readEntry(rootSessionKey),
-  });
+  if (rootSessionKey) {
+    // Existing history must have completed exact enrollment before this owner.
+    admitSessionConversationBranch({
+      ...target,
+      currentEntry: snapshot.currentEntry,
+      rootSessionKey,
+      rootEntry: snapshot.readEntry(rootSessionKey),
+    });
+  }
   if (snapshot.currentEntry?.sessionId) {
     return snapshot.currentEntry.sessionId;
   }
@@ -94,7 +105,7 @@ async function ensureConversationBranch(params: VoiceSessionInitializationParams
     const committed = await commitReplySessionInitialization({
       ...target,
       activeSessionKey: params.sessionKey,
-      branchRootSessionKey: rootSessionKey,
+      ...(rootSessionKey ? { branchRootSessionKey: rootSessionKey } : {}),
       expectedRevision: snapshot.revision,
       sessionEntry,
       commitGuard: assertCurrent,
@@ -129,8 +140,45 @@ async function ensureConversationBranch(params: VoiceSessionInitializationParams
 export async function ensureClientVoiceAgentSessionEntry(
   params: VoiceSessionInitializationParams,
 ): Promise<string> {
-  if (params.cfg && resolveAgentConversationMode(params.cfg, params.agentId) === "branches") {
-    return ensureConversationBranch(params);
+  if (
+    params.cfg &&
+    !isSubagentSessionKey(params.sessionKey) &&
+    !isIncognitoSessionKey(params.sessionKey)
+  ) {
+    const { prepareSessionConversationActivation } =
+      await import("../config/sessions/session-conversation-activation.js");
+    await prepareSessionConversationActivation({
+      ...params,
+      cfg: params.cfg,
+      storePath: resolveSessionStorePathForScope(params, params.cfg),
+      assertCurrent: composeSessionSourceAssertion([params.assertCommitAllowed], (check) => {
+        check();
+        if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {
+          throw new Error("Realtime browser session expired during startup; try again");
+        }
+      }),
+    });
+  }
+  if (params.cfg) {
+    const sessionId = await ensureConversationSession({ ...params, cfg: params.cfg });
+    // First creation has no row for the preflight enrollment helper. Establish
+    // the empty/history seed barrier before any realtime utterance can publish.
+    const { prepareSessionConversationActivation } =
+      await import("../config/sessions/session-conversation-activation.js");
+    if (!isSubagentSessionKey(params.sessionKey) && !isIncognitoSessionKey(params.sessionKey)) {
+      await prepareSessionConversationActivation({
+        ...params,
+        cfg: params.cfg,
+        storePath: resolveSessionStorePathForScope(params, params.cfg),
+        assertCurrent: composeSessionSourceAssertion([params.assertCommitAllowed], (check) => {
+          check();
+          if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {
+            throw new Error("Realtime browser session expired during startup; try again");
+          }
+        }),
+      });
+    }
+    return sessionId;
   }
   const commitGuard = sessionEntryCommitGuardOptions(params.assertCommitAllowed);
   const created = await patchSessionEntryCore(

@@ -169,6 +169,7 @@ async function createScenario(state: OpenClawTestState) {
     });
     return {
       reader,
+      sourceMode: "branches" as const,
       assertCurrent,
       sessionId: selected.sessionId,
       revoke: () => {

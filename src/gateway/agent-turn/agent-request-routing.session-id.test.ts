@@ -171,12 +171,12 @@ it("refuses direct root input before content, reset, or execution despite intern
     const principal = directConversationClient();
     const service = createAgentTurnService({ context, isWebchatConnect: () => false });
     const payloads: Partial<AgentRunRequest>[] = [
-      {},
-      { sessionKey: "main" },
-      { sessionKey: "agent:main:consolidation", message: "/reset continue" },
-      { sessionKey: "main", lane: "subagent" },
+      { sessionKey: "agent:main:internal:conversation-root" },
+      { sessionKey: "internal:conversation-root" },
+      { sessionKey: "agent:main:internal:conversation-root", message: "/reset continue" },
+      { sessionKey: "internal:conversation-root", lane: "subagent" },
       {
-        sessionKey: "main",
+        sessionKey: "internal:conversation-root",
         internalEvents: [
           {
             type: "task_completion",
@@ -192,7 +192,7 @@ it("refuses direct root input before content, reset, or execution despite intern
         ],
       },
       {
-        sessionKey: "main",
+        sessionKey: "internal:conversation-root",
         bootstrapContextMode: "lightweight",
         bootstrapContextRunKind: "heartbeat",
         sessionEffects: "internal",
@@ -222,7 +222,7 @@ it("refuses direct root input before content, reset, or execution despite intern
             undefined,
             expect.objectContaining({
               code: "INVALID_REQUEST",
-              message: expect.stringContaining("reserves main for consolidation"),
+              message: expect.stringContaining("reserves its internal root for consolidation"),
             }),
           ],
           undefined,
@@ -300,6 +300,7 @@ it("keeps normal branches, native conversations, and host-owned task input routa
       input: true | undefined;
     }> = [
       { mode: "branches", sessionKey: "agent:main:matrix:room", principal: direct, input: true },
+      { mode: "branches", sessionKey: "main", principal: direct, input: true },
       { mode: "native", sessionKey: "main", principal: direct, input: true },
       { mode: "branches", sessionKey: "main", principal: internal, input: undefined },
     ];

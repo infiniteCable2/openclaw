@@ -45,29 +45,12 @@ export async function recordVoiceConversationObservation(params: {
   env?: NodeJS.ProcessEnv;
   assertCurrent: SessionSourceAssertion;
 }): Promise<void> {
-  if (resolveAgentConversationMode(params.config, params.anchor.agentId) !== "branches") {
-    return;
-  }
+  const sourceMode = resolveAgentConversationMode(params.config, params.anchor.agentId);
   try {
     params.assertCurrent();
     const owner = await loadKnowledge();
     params.assertCurrent();
     const target = { ...params.anchor, env: params.env };
-    if (params.role === "user" && params.participant && params.fresh) {
-      await owner.recordSessionParticipant(
-        target,
-        {
-          identity: params.participant,
-          promptedAt: params.timestamp,
-          sessionAgentId: params.anchor.agentId,
-          expectedSession: {
-            sessionId: params.anchor.sessionId,
-            lifecycleRevision: params.lifecycleRevision,
-          },
-        },
-        params.assertCurrent,
-      );
-    }
     const held = await owner.loadSessionEntryForAdmission(target, {
       assertCurrent: params.assertCurrent,
     });
@@ -79,6 +62,24 @@ export async function recordVoiceConversationObservation(params: {
         held.entry.lifecycleRevision !== params.lifecycleRevision
       ) {
         throw new Error("Original voice observation session changed");
+      }
+      if (held.entry.conversationTopology?.role !== "branch") {
+        return;
+      }
+      if (params.role === "user" && params.participant && params.fresh) {
+        await owner.recordSessionParticipant(
+          target,
+          {
+            identity: params.participant,
+            promptedAt: params.timestamp,
+            sessionAgentId: params.anchor.agentId,
+            expectedSession: {
+              sessionId: params.anchor.sessionId,
+              lifecycleRevision: params.lifecycleRevision,
+            },
+          },
+          params.assertCurrent,
+        );
       }
       const reader =
         "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"
@@ -93,6 +94,7 @@ export async function recordVoiceConversationObservation(params: {
         sessionId: params.anchor.sessionId,
         anchor: params.anchor,
         role: params.role,
+        sourceMode,
       });
     } finally {
       await held.databaseClaim.release();
@@ -127,11 +129,6 @@ export async function prepareVoiceConversationKnowledge(params: {
       : undefined;
   params.assertCurrent();
   params.signal?.throwIfAborted();
-  if (
-    resolveAgentConversationMode(params.getRuntimeConfig(), params.target.agentId) !== "branches"
-  ) {
-    return undefined;
-  }
   const knowledge = await loadKnowledge();
   params.assertCurrent();
   const held = await knowledge.loadSessionEntryForAdmission(params.target, {
@@ -171,6 +168,10 @@ export async function prepareVoiceConversationKnowledge(params: {
     assertCurrent();
     if (held.entry?.sessionId !== params.target.sessionId) {
       throw new Error("Voice conversation changed before its context read");
+    }
+    if (held.entry.conversationTopology?.role !== "branch") {
+      await release();
+      return undefined;
     }
     const reader =
       "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"

@@ -34,6 +34,7 @@ import {
   commitReplySessionInitialization,
   loadReplySessionInitializationSnapshot,
 } from "../../config/sessions/session-accessor.js";
+import { resolveAgentConversationRootSessionKey } from "../../config/sessions/session-conversation-root-key.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
 import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { selectSessionModelOverride } from "../../config/sessions/session-entry-selection.js";
@@ -66,7 +67,9 @@ import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gat
 import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import {
   buildAgentMainSessionKey,
+  isCronSessionKey,
   isIncognitoSessionKey,
+  isSubagentSessionKey,
   isAcpSessionKey,
   normalizeMainKey,
   toAgentStoreSessionKey,
@@ -229,6 +232,24 @@ async function initSessionStateAttempt(params: InitSessionStateParams): Promise<
     }
   }
   params.signal?.throwIfAborted();
+  if (
+    !attemptContext.isSystemEvent &&
+    !isIncognitoSessionKey(attemptContext.sessionKey) &&
+    !isSubagentSessionKey(attemptContext.sessionKey) &&
+    !isCronSessionKey(attemptContext.sessionKey) &&
+    !isAcpSessionKey(attemptContext.sessionKey)
+  ) {
+    const { prepareSessionConversationActivation } =
+      await import("../../config/sessions/session-conversation-activation.js");
+    await prepareSessionConversationActivation({
+      cfg: params.cfg,
+      agentId: attemptContext.agentId,
+      sessionKey: attemptContext.sessionKey,
+      storePath: attemptContext.storePath,
+      assertCurrent: params.assertSourceCurrent ?? (() => {}),
+      signal: params.signal,
+    });
+  }
   const { snapshot, parentSessionKey } = await prepareReplySessionInitialization(
     params,
     attemptContext,
@@ -801,7 +822,7 @@ async function initSessionStateAttemptLocked(
     ...(!isSystemEvent &&
     !isIncognitoSessionKey(sessionKey) &&
     resolveAgentConversationMode(cfg, agentId) === "branches"
-      ? { branchRootSessionKey: mainSessionKey }
+      ? { branchRootSessionKey: resolveAgentConversationRootSessionKey({ cfg, agentId }) }
       : {}),
     expectedRevision: initializationSnapshot.revision,
     ...(initialContext

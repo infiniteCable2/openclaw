@@ -89,6 +89,7 @@ describe("native retained conversation knowledge packets", () => {
         }
         const receipt: ConversationKnowledgeReceipt = {
           version: 1,
+          sourceMode: "branches",
           source,
           origin: conversationKnowledgeOrigin(source),
           runId: "source-run",

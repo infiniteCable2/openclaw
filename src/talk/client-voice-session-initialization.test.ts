@@ -16,7 +16,12 @@ const mocks = vi.hoisted(() => ({
   snapshot: vi.fn(),
   commit: vi.fn(),
   generation: vi.fn<typeof prepareSessionGenerationFacts>(),
+  activate: vi.fn(),
   store: vi.fn(() => "/fixture/example/sessions.sqlite"),
+}));
+// mock-isolation: Exact-row enrollment/seed has durable owner tests; this adapter verifies native initialization selection.
+vi.mock("../config/sessions/session-conversation-activation.js", () => ({
+  prepareSessionConversationActivation: mocks.activate,
 }));
 // mock-isolation: generic native writes are outside this adapter-selection unit.
 vi.mock("../config/sessions/session-accessor.js", () => ({ patchSessionEntryCore: mocks.patch }));
@@ -35,6 +40,8 @@ vi.mock("../config/sessions/session-store-path.js", () => ({
 }));
 
 function fixture() {
+  mocks.activate.mockReset();
+  mocks.activate.mockImplementation(async (params) => params.assertCurrent());
   const cfg: OpenClawConfig = {
     agents: { entries: { example: { conversationMode: "branches" } } },
     session: { mainKey: "primary" },
@@ -48,7 +55,7 @@ function fixture() {
       actor: { type: "human" as const, source: "profile" as const, id: "example-person" },
     },
   };
-  const rootSessionKey = "agent:example:primary";
+  const rootSessionKey = "agent:example:internal:conversation-root";
   const root: InternalSessionEntry = {
     sessionId: "root-original",
     lifecycleRevision: "root-lifecycle",
@@ -94,14 +101,21 @@ function fixture() {
   mocks.commit.mockImplementation(async (params) => {
     params.bindCreation?.(createSessionEntryCreationOperation())();
     params.commitGuard();
-    const topology = admitSessionConversationBranch({
-      agentId: params.agentId,
-      sessionKey: params.sessionKey,
-      currentEntry: state.current,
-      rootSessionKey: params.branchRootSessionKey,
-      rootEntry: state.root,
-    });
-    const entry = { ...params.sessionEntry, conversationTopology: topology };
+    const entry = {
+      ...params.sessionEntry,
+      ...(params.branchRootSessionKey
+        ? {
+            conversationTopology: admitSessionConversationBranch({
+              agentId: params.agentId,
+              sessionKey: params.sessionKey,
+              currentEntry: state.current,
+              rootSessionKey: params.branchRootSessionKey,
+              rootEntry: state.root,
+            }),
+          }
+        : {}),
+    };
+    state.current = entry;
     publishCreation(entry);
     return { ok: true, sessionEntry: entry };
   });
@@ -253,22 +267,139 @@ describe("native Talk startup conversation membership", () => {
   it("keeps the same new-row surface classification on the native-mode initialization path", async () => {
     const f = fixture();
     f.target.cfg.agents!.entries!.example!.conversationMode = "native";
-    mocks.patch.mockImplementation(async (_target, update) => {
-      const created = update(undefined, { existingEntry: undefined });
-      expect(created.chatType).toBe("direct");
-      expect(created.participants ?? []).toEqual([]);
-      expect(created).not.toHaveProperty("conversationTopology");
-      // The native patch owner supplies the row ID; the callback only proposes metadata.
-      return { ...created, sessionId: "native-created" };
+    f.state.root = undefined;
+    const onCreatedSessionCommitted = vi.fn();
+    const sessionId = await ensureClientVoiceAgentSessionEntry({
+      ...f.target,
+      chatType: "direct",
+      onCreatedSessionCommitted,
     });
-    await expect(
-      ensureClientVoiceAgentSessionEntry({ ...f.target, chatType: "direct" }),
-    ).resolves.toEqual(expect.any(String));
-    expect(mocks.snapshot).not.toHaveBeenCalled();
-    expect(mocks.commit).not.toHaveBeenCalled();
+    expect(mocks.snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ relatedSessionKeys: [] }),
+      expect.objectContaining({ assertCurrent: expect.any(Function) }),
+    );
+    expect(mocks.commit).toHaveBeenCalledOnce();
+    const committed = mocks.commit.mock.calls[0]![0];
+    expect(committed).not.toHaveProperty("branchRootSessionKey");
+    expect(committed.sessionEntry.chatType).toBe("direct");
+    expect(committed.sessionEntry.participants ?? []).toEqual([]);
+    expect(f.state.current).not.toHaveProperty("conversationTopology");
+    expect(onCreatedSessionCommitted).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ sessionId }),
+    );
+    expect(f.generation.isCreationAdopted).toHaveReturnedWith(true);
+    expect(f.generation.release).toHaveBeenCalledOnce();
+    expect(mocks.activate).toHaveBeenCalledTimes(2);
+    expect(mocks.patch).not.toHaveBeenCalled();
   });
 
-  it("refuses unmarked existing history rather than implicitly migrating it", async () => {
+  it("activates an absent native target only after its real creation has adopted the original source", async () => {
+    const f = fixture();
+    f.target.cfg.agents!.entries!.example!.conversationMode = "native";
+    let admittedId: string | undefined;
+    const order: string[] = [];
+    f.target.assertCommitAllowed.mockImplementation(() => {
+      if (f.state.current && admittedId !== f.state.current.sessionId) {
+        throw new Error("Original absence was not adopted");
+      }
+    });
+    const onCreatedSessionCommitted = vi.fn((binding: { sessionId: string }) => {
+      expect(f.state.current?.sessionId).toBe(binding.sessionId);
+      admittedId = binding.sessionId;
+      order.push("published");
+    });
+    mocks.activate.mockImplementation(async (params) => {
+      params.assertCurrent();
+      expect(params).not.toHaveProperty("sessionId");
+      if (!f.state.current) {
+        order.push("activate-absent");
+        expect(onCreatedSessionCommitted).not.toHaveBeenCalled();
+        return;
+      }
+      order.push("activate-committed");
+      expect(onCreatedSessionCommitted).toHaveBeenCalledOnce();
+      expect(f.state.current.sessionId).toBe(admittedId);
+      f.state.current = {
+        ...f.state.current,
+        conversationTopology: admitSessionConversationBranch({
+          ...f.target,
+          rootSessionKey: f.rootSessionKey,
+          rootEntry: f.state.root,
+        }),
+      };
+      params.assertCurrent();
+    });
+    mocks.commit.mockImplementationOnce(async (params) => {
+      expect(params).not.toHaveProperty("branchRootSessionKey");
+      params.bindCreation(createSessionEntryCreationOperation())();
+      params.commitGuard();
+      order.push("commit");
+      const entry = { ...params.sessionEntry, lifecycleRevision: "native-committed-life" };
+      f.state.current = entry;
+      expect(onCreatedSessionCommitted).not.toHaveBeenCalled();
+      f.publishCreation(entry);
+      return { ok: true, sessionEntry: entry };
+    });
+    const sessionId = await ensureClientVoiceAgentSessionEntry({
+      ...f.target,
+      onCreatedSessionCommitted,
+    });
+    expect(order).toEqual(["activate-absent", "commit", "published", "activate-committed"]);
+    expect(onCreatedSessionCommitted).toHaveBeenCalledExactlyOnceWith({
+      agentId: f.target.agentId,
+      sessionKey: f.target.sessionKey,
+      storePath: "/fixture/example/sessions.sqlite",
+      sessionId,
+      lifecycleRevision: "native-committed-life",
+    });
+    expect(f.state.current?.conversationTopology).toEqual(
+      expect.objectContaining({ role: "branch", rootSessionId: "root-original" }),
+    );
+    expect(f.generation.release).toHaveBeenCalledOnce();
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+
+  it("reuses exact existing history after the activation owner admits its membership", async () => {
+    const f = fixture();
+    f.state.current = { sessionId: "existing-native-conversation", updatedAt: 1 };
+    mocks.activate.mockImplementationOnce(async (params) => {
+      params.assertCurrent();
+      f.state.current = {
+        ...f.state.current!,
+        conversationTopology: admitSessionConversationBranch({
+          ...f.target,
+          rootSessionKey: f.rootSessionKey,
+          rootEntry: f.state.root,
+        }),
+      };
+    });
+    await expect(ensureClientVoiceAgentSessionEntry(f.target)).resolves.toBe(
+      "existing-native-conversation",
+    );
+    expect(mocks.activate).toHaveBeenCalledTimes(2);
+    for (const [params] of mocks.activate.mock.calls) {
+      expect(params).toEqual(
+        expect.objectContaining({
+          cfg: f.target.cfg,
+          agentId: f.target.agentId,
+          sessionKey: f.target.sessionKey,
+          assertCurrent: expect.any(Function),
+        }),
+      );
+      params.assertCurrent();
+    }
+    f.target.assertCommitAllowed.mockImplementation(() => {
+      throw new Error("Original requester revoked");
+    });
+    for (const [params] of mocks.activate.mock.calls) {
+      expect(() => params.assertCurrent()).toThrow("Original requester revoked");
+    }
+    expect(f.state.current.updatedAt).toBe(1);
+    expect(mocks.commit).not.toHaveBeenCalled();
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+
+  it("still refuses an unmarked row if the activation owner did not admit it", async () => {
     const f = fixture();
     f.state.current = { sessionId: "legacy-conversation", updatedAt: 1 };
     await expect(ensureClientVoiceAgentSessionEntry(f.target)).rejects.toThrow(
@@ -284,6 +415,36 @@ describe("native Talk startup conversation membership", () => {
     f.state.root = undefined;
     await expect(ensureClientVoiceAgentSessionEntry(f.target)).rejects.toThrow(
       "root is not admitted",
+    );
+    expect(mocks.commit).not.toHaveBeenCalled();
+  });
+
+  it("does not use a native main row as the internal root", async () => {
+    const f = fixture();
+    mocks.snapshot.mockResolvedValue({
+      ...f.read(),
+      readEntry: (key: string) => (key === "agent:example:primary" ? f.state.root : undefined),
+    });
+    await expect(ensureClientVoiceAgentSessionEntry(f.target)).rejects.toThrow(
+      "root is not admitted",
+    );
+    expect(mocks.commit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a main-key collision or global scope selected during snapshot preparation", async () => {
+    const f = fixture();
+    mocks.snapshot.mockImplementationOnce(async () => {
+      f.target.cfg.session!.mainKey = "internal:conversation-root";
+      return f.read();
+    });
+    await expect(ensureClientVoiceAgentSessionEntry(f.target)).rejects.toThrow("collides");
+    f.target.cfg.session = { mainKey: "primary" };
+    mocks.snapshot.mockImplementationOnce(async () => {
+      f.target.cfg.session!.scope = "global";
+      return f.read();
+    });
+    await expect(ensureClientVoiceAgentSessionEntry(f.target)).rejects.toThrow(
+      "configuration changed",
     );
     expect(mocks.commit).not.toHaveBeenCalled();
   });

@@ -4,9 +4,9 @@ import { captureAgentDatabaseAdmission } from "../../state/agent-database-admiss
 import { isSameOpenClawAgentDatabasePath } from "../../state/openclaw-agent-db.paths.js";
 import { resolveAgentConversationMode } from "../agent-conversation-mode.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
-import { resolveAgentMainSessionKey } from "./main-session.js";
 import { resolveSessionStorePathCore } from "./paths.js";
 import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
+import { resolveAgentConversationRootSessionKey } from "./session-conversation-root-key.js";
 import { createSessionEntryWithTranscriptIfAbsent } from "./session-entry-creation.js";
 import { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import { prepareSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
@@ -29,7 +29,10 @@ export async function ensureAgentConversationRoot(params: {
     throw new Error("Conversation branches require per-agent session scope, not global scope");
   }
   const env = captureSessionTranscriptStorageEnvironment(params.env ?? process.env);
-  const sessionKey = resolveAgentMainSessionKey({ cfg: params.cfg, agentId: params.agentId });
+  const sessionKey = resolveAgentConversationRootSessionKey({
+    cfg: params.cfg,
+    agentId: params.agentId,
+  });
   const storePath = resolveSessionStorePathCore(params.cfg.session?.store, {
     agentId: params.agentId,
     env,
@@ -44,7 +47,8 @@ export async function ensureAgentConversationRoot(params: {
       !listAgentIds(current).includes(params.agentId) ||
       current.session?.scope === "global" ||
       resolveAgentConversationMode(current, params.agentId) !== "branches" ||
-      resolveAgentMainSessionKey({ cfg: current, agentId: params.agentId }) !== sessionKey ||
+      resolveAgentConversationRootSessionKey({ cfg: current, agentId: params.agentId }) !==
+        sessionKey ||
       resolveSessionStorePathCore(current.session?.store, { agentId: params.agentId, env }) !==
         storePath
     ) {

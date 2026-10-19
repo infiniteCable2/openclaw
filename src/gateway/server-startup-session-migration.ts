@@ -123,6 +123,22 @@ export async function prepareGatewayStartupSessions(params: {
       signal: params.signal,
     });
     assertCurrent();
+    // The native main keeps its identity and bytes. It is only registered as an
+    // eligible source; later disclosure still needs the original person's grant.
+    const { resolveAgentMainSessionKey } = await import("../config/sessions/main-session.js");
+    const { prepareSessionConversationActivation } =
+      await import("../config/sessions/session-conversation-activation.js");
+    await prepareSessionConversationActivation({
+      cfg: params.cfg,
+      getConfig: params.getConfig,
+      agentId,
+      sessionKey: resolveAgentMainSessionKey({ cfg: params.cfg, agentId }),
+      storePath: physical.path,
+      env: params.env,
+      assertCurrent,
+      signal: params.signal,
+    });
+    assertCurrent();
     if (!admitted) {
       retainDatabase({ agentId: physical.agentId ?? agentId, env, path: physical.path });
     }
