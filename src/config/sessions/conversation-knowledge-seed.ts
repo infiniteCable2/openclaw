@@ -20,6 +20,7 @@ import {
   isConversationUtteranceObservation,
   readConversationKnowledgeReceipt,
   readConversationUtteranceObservation,
+  type ConversationUtteranceObservation,
 } from "./conversation-knowledge.js";
 import { appendSessionTranscriptReport } from "./session-accessor.sqlite-transcript-reports.js";
 import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
@@ -256,7 +257,7 @@ export async function ensureConversationKnowledgeSeed(params: {
                 kind: "utterance-observation" as const,
                 role: message.role,
                 through: anchor,
-              };
+              } satisfies ConversationUtteranceObservation;
               if (isConversationUtteranceObservation(candidate, [row.event])) {
                 accepted = await recordConversationUtteranceObservation({
                   ...params,
