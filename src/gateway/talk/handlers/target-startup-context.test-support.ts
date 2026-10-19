@@ -1,4 +1,4 @@
-import { expect, it, vi, type Mock } from "vitest";
+import { assert, expect, it, vi, type Mock } from "vitest";
 import { createConversationKnowledgeScenario } from "../../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
 import { recordConversationKnowledgeTurn } from "../../../config/sessions/conversation-knowledge-store.js";
 import {
@@ -115,9 +115,14 @@ export function defineTalkTargetStartupContextTests(getFixture: () => TargetStar
       expect(f.createBrowserSession).toHaveBeenCalledOnce();
       const entry = loadSessionEntry({ ...target, sessionKey: target.canonicalKey });
       if (conversationMode === "branches") {
+        assert(entry, "Expected the admitted branch to survive provider failure");
         expect(entry).toMatchObject({ conversationTopology: { role: "branch" } });
         expect(
-          readSessionTranscriptMessageEvents({ ...target, sessionKey: target.canonicalKey }),
+          readSessionTranscriptMessageEvents({
+            ...target,
+            sessionKey: target.canonicalKey,
+            sessionId: entry.sessionId,
+          }),
         ).toEqual([]);
       } else {
         expect(entry).toBeUndefined();

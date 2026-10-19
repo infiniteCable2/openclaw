@@ -185,12 +185,18 @@ describe("prepareChatSendUserTurn private browser audience", () => {
         try {
           const person = { type: "profile" as const, id: "profile-ada" };
           const chat = await f.branch("browser", person);
-          await recordSessionParticipantInWorker(chat, {
-            identity: { type: "agent", id: "main" },
-            promptedAt: Date.now(),
-            sessionAgentId: chat.agentId,
-            expectedSession: chat,
-          });
+          // The native writer intentionally ignores the session agent itself.
+          // Use another actual recorded actor so this exercises mixed history,
+          // rather than accidentally remaining a one-person private session.
+          expect(
+            await recordSessionParticipantInWorker(chat, {
+              identity: { type: "agent", id: "courier" },
+              promptedAt: Date.now(),
+              sessionAgentId: chat.agentId,
+              expectedSession: chat,
+            }),
+          ).toBe("inserted");
+          expect(loadSessionEntry(chat)?.participantCount).toBe(2);
           const sibling = await f.branch("speech", person);
           const siblingOwner = await f.claim(sibling);
           await recordConversationKnowledgeTurn({
@@ -230,15 +236,17 @@ describe("prepareChatSendUserTurn private browser audience", () => {
             expect(loadSessionEntry(chat)?.participants?.map((row) => row.identity)).toEqual(
               expect.arrayContaining([
                 { type: "profile", id: person.id },
-                { type: "agent", id: "main" },
+                { type: "agent", id: "courier" },
               ]),
             );
-            await recordSessionParticipantInWorker(chat, {
-              identity: { type: "agent", id: "helper" },
-              promptedAt: Date.now(),
-              sessionAgentId: chat.agentId,
-              expectedSession: chat,
-            });
+            expect(
+              await recordSessionParticipantInWorker(chat, {
+                identity: { type: "agent", id: "helper" },
+                promptedAt: Date.now(),
+                sessionAgentId: chat.agentId,
+                expectedSession: chat,
+              }),
+            ).toBe("inserted");
             expect(() => knowledge?.assertCurrent()).not.toThrow();
             // The same native COMMIT owner must bind the current, complete actor
             // roster; ignoring it only in a synchronous callback is insufficient.

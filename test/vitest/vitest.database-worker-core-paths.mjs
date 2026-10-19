@@ -24,7 +24,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/gateway/server-startup-conversation-root.test.ts",
   "src/gateway/session-transcript-read-authority.test.ts",
   "src/gateway/server-methods/chat-send-user-turn.private-audience.test.ts",
-  "src/gateway/talk/client-agent-runtime.test.ts",
+  "src/gateway/talk/client-agent-runtime.conversation-knowledge.test.ts",
   "src/infra/sqlite-foreign-observation.worker.test.ts",
   "src/state/openclaw-state-db-current-reader.test.ts",
   "src/cli/admin-state-owner.process.test.ts",

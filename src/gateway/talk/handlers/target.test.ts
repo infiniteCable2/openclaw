@@ -285,7 +285,8 @@ describe("Talk target preparation through Gateway authorization", () => {
     "routes branch-mode main aliases to the original connection before %s prepares a provider",
     async (method) => {
       config.agents!.entries!.voice = { conversationMode: "branches" };
-      await ensureAgentConversationRoot({ cfg: config, agentId: "voice" });
+      const root = await ensureAgentConversationRoot({ cfg: config, agentId: "voice" });
+      expect(root.sessionKey).not.toBe("agent:voice:main");
       for (const sessionKey of [undefined, "main", "agent:voice:main"]) {
         const respond = await dispatch(method, {
           ...createParams,
@@ -304,7 +305,7 @@ describe("Talk target preparation through Gateway authorization", () => {
         expect(
           loadSessionEntry({ agentId: "voice", sessionKey: target.canonicalKey }),
         ).toMatchObject({
-          conversationTopology: { role: "branch", rootSessionKey: "agent:voice:main" },
+          conversationTopology: { role: "branch", rootSessionKey: root.sessionKey },
         });
         expect(mocks.bootstrap).toHaveBeenLastCalledWith(
           expect.objectContaining({ sessionKey: target.canonicalKey }),
@@ -331,9 +332,12 @@ describe("Talk target preparation through Gateway authorization", () => {
         }
       }
       expect(
-        loadSessionEntry({ agentId: "voice", sessionKey: "agent:voice:main" })
-          ?.conversationTopology,
+        loadSessionEntry({ agentId: "voice", sessionKey: root.sessionKey })?.conversationTopology,
       ).toMatchObject({ role: "root" });
+      expect(
+        loadSessionEntry({ agentId: "voice", sessionKey: "agent:voice:main" })?.conversationTopology
+          ?.role,
+      ).not.toBe("root");
     },
   );
 
