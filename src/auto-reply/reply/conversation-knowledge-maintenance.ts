@@ -73,7 +73,7 @@ export function createConversationKnowledgeMaintenance(params: {
     assertSources();
   });
   return async (packetIds, pendingText) => {
-    packetIds ??= [];
+    const expectedPackets = packetIds ?? [];
     check();
     const target = await resolveAgentRunSessionTarget({
       ...params.run,
@@ -125,7 +125,7 @@ export function createConversationKnowledgeMaintenance(params: {
     // A native no-op means this prepared context fits; a committed native
     // compaction can be server-owned without a textual summary. Neither is
     // evidence that every fact survived reduction: packet coverage stays exact.
-    if (result.compacted || packetIds.length === 0) {
+    if (result.compacted || expectedPackets.length === 0) {
       return { compacted: result.compacted, complete: true };
     }
     const visible = await readSessionTranscriptModelContextAsync(
@@ -148,6 +148,6 @@ export function createConversationKnowledgeMaintenance(params: {
     check();
     // Native hydration can omit old media harmlessly. Only missing NEW packets
     // make catch-up incomplete; this fact never forces compaction or deletes data.
-    return { compacted: false, complete: packetIds.every((id) => visible.has(id)) };
+    return { compacted: false, complete: expectedPackets.every((id) => visible.has(id)) };
   };
 }
