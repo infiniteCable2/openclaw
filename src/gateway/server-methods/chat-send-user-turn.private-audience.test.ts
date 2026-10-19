@@ -247,6 +247,7 @@ describe("prepareChatSendUserTurn private browser audience", () => {
                 expectedSession: chat,
               }),
             ).toBe("inserted");
+            expect(loadSessionEntry(chat)?.participantCount).toBe(3);
             expect(() => knowledge?.assertCurrent()).not.toThrow();
             // The same native COMMIT owner must bind the current, complete actor
             // roster; ignoring it only in a synchronous callback is insufficient.
@@ -260,10 +261,8 @@ describe("prepareChatSendUserTurn private browser audience", () => {
               );
               expect(recipientChecks.length).toBeGreaterThan(0);
               expect(
-                recipientChecks.every(
-                  ({ predicate }) => predicate.expected?.participantCount === 3,
-                ),
-              ).toBe(true);
+                recipientChecks.map(({ predicate }) => predicate.expected?.participantCount),
+              ).toEqual(recipientChecks.map(() => 3));
             } finally {
               await commit.release?.();
             }
