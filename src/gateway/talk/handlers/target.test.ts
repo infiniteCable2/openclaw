@@ -1,6 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createConversationKnowledgeScenario } from "../../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
-import { recordConversationKnowledgeTurn } from "../../../config/sessions/conversation-knowledge-store.js";
 import {
   loadSessionEntry,
   readSessionTranscriptMessageEvents,
@@ -21,7 +19,6 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
-import { invalidateGatewayDeviceRevocation } from "../../device-revocation.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
 import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
 import type { GatewayWsClient } from "../../server/ws-types.js";
@@ -29,7 +26,6 @@ import { sessionMutationTargetChanged } from "../../session-sharing-authorizatio
 import { hiddenSessionNotFound } from "../../session-sharing-policy.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
-import * as conversationContext from "../conversation-context.js";
 import { createRelayProviderStartup } from "../relay/provider-startup.js";
 import type { CreateTalkRealtimeRelaySessionParams } from "../relay/state.js";
 import { cleanupTalkConnection } from "../session-registry.js";
@@ -41,6 +37,7 @@ import {
   createTalkWebSocketTestClient,
   dispatchTalkWebSocketTestRequest,
 } from "./talk-websocket.test-support.js";
+import { defineTalkTargetStartupContextTests } from "./target-startup-context.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   resolveConfiguredRealtimeVoiceProvider: vi.fn(),
@@ -194,166 +191,23 @@ afterEach(async () => {
 });
 
 describe("Talk target preparation through Gateway authorization", () => {
-  it("includes an existing private sibling in the very first browser branch before provider startup", async () => {
-    const fixture = await createConversationKnowledgeScenario(state);
-    config = { ...fixture.cfg, talk: { agentId: "main" } };
-    const participant = {
-      type: "profile" as const,
-      id: client.authenticatedUserProfile!.profileId,
-    };
-    try {
-      const sibling = await fixture.branch("personal-chat", participant);
-      const siblingOwner = await fixture.claim(sibling);
-      const terminal = await fixture.append(
-        sibling,
-        "private-before-browser",
-        "stop",
-        "The private synthetic appointment is at noon.",
-      );
-      expect(await recordConversationKnowledgeTurn({ ...siblingOwner, ...terminal })).toBe(true);
-      const target = prepareTalkSessionTarget(
-        config,
-        undefined,
-        "conversation-input",
-        client.connId,
-      );
-      expect(loadSessionEntry({ ...target, sessionKey: target.canonicalKey })).toBeUndefined();
-      createBrowserSession.mockImplementationOnce(async (request) => {
-        expect(loadSessionEntry({ ...target, sessionKey: target.canonicalKey })).toMatchObject({
-          conversationTopology: { role: "branch" },
-          chatType: "direct",
-        });
-        expect(request.instructions).toContain("The private synthetic appointment is at noon.");
-        expect(request.instructions).toContain("not live synchronization");
-        expect(request.instructions).toContain("use openclaw_agent_consult");
-        return browserSession;
-      });
-      expect(await dispatch("talk.client.create", createParams)).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining(browserSession),
-        undefined,
-      );
-      expect(createBrowserSession).toHaveBeenCalledOnce();
-      // No fake first utterance/participant was written to make a fresh recipient
-      // appear historical. The current browser proof owns only this disclosure.
-      const created = loadSessionEntry({ ...target, sessionKey: target.canonicalKey });
-      expect(created?.participantCount ?? 0).toBe(0);
-    } finally {
-      await fixture.close();
-    }
-  });
-
-  it.each(["native", "branches"] as const)(
-    "keeps native-mode defer and retains a genuinely begun %s attempt on provider failure",
-    async (conversationMode) => {
-      config.agents!.entries!.voice = { conversationMode };
-      if (conversationMode === "branches") {
-        await ensureAgentConversationRoot({ cfg: config, agentId: "voice" });
-      }
-      const target = prepareTalkSessionTarget(
-        config,
-        undefined,
-        "conversation-input",
-        client.connId,
-      );
-      createBrowserSession.mockImplementationOnce(async () => {
-        const entry = loadSessionEntry({ ...target, sessionKey: target.canonicalKey });
-        if (conversationMode === "branches") {
-          expect(entry).toMatchObject({ conversationTopology: { role: "branch" } });
-        } else {
-          expect(entry).toBeUndefined();
-        }
-        throw new Error("Synthetic provider startup failure");
-      });
-      expect(await dispatch("talk.client.create", createParams)).toHaveBeenCalledWith(
-        false,
-        undefined,
-        expect.objectContaining({
-          message: expect.stringContaining("Synthetic provider startup failure"),
-        }),
-      );
-      expect(createBrowserSession).toHaveBeenCalledOnce();
-      const entry = loadSessionEntry({ ...target, sessionKey: target.canonicalKey });
-      if (conversationMode === "branches") {
-        expect(entry).toMatchObject({ conversationTopology: { role: "branch" } });
-        expect(
-          readSessionTranscriptMessageEvents({ ...target, sessionKey: target.canonicalKey }),
-        ).toEqual([]);
-      } else {
-        expect(entry).toBeUndefined();
-      }
+  defineTalkTargetStartupContextTests(() => ({
+    state,
+    client,
+    context,
+    dispatch,
+    createParams,
+    browserSession,
+    createBrowserSession,
+    bootstrap: mocks.bootstrap,
+    createRelay: mocks.createRelay,
+    get config() {
+      return config;
     },
-  );
-
-  it("refuses authority revocation before an initial branch is materialized", async () => {
-    config.agents!.entries!.voice = { conversationMode: "branches" };
-    await ensureAgentConversationRoot({ cfg: config, agentId: "voice" });
-    const target = prepareTalkSessionTarget(config, undefined, "conversation-input", client.connId);
-    mocks.bootstrap.mockImplementationOnce(async () => {
-      invalidateGatewayDeviceRevocation(context, "talk-target-device", "operator");
-      return "Agent context fixture.";
-    });
-    expect(await dispatch("talk.client.create", createParams)).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        message: expect.stringContaining("Gateway requester authority changed"),
-      }),
-    );
-    expect(createBrowserSession).not.toHaveBeenCalled();
-    expect(loadSessionEntry({ ...target, sessionKey: target.canonicalKey })).toBeUndefined();
-  });
-
-  it("retains the original WebSocket device revocation while provider context is awaited", async () => {
-    const gate = createDeferredCore();
-    const started = createDeferredCore();
-    mocks.bootstrap.mockImplementationOnce(async () => {
-      started.resolve();
-      await gate.promise;
-      return "Agent context fixture.";
-    });
-    const pending = dispatch("talk.client.create", createParams);
-    try {
-      await started.promise;
-      invalidateGatewayDeviceRevocation(context, "talk-target-device", "operator");
-    } finally {
-      gate.resolve();
-    }
-    expect(await pending).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        message: expect.stringContaining("Gateway requester authority changed"),
-      }),
-    );
-    expect(createBrowserSession).not.toHaveBeenCalled();
-    expect(loadSessionEntry({ agentId: "voice", sessionKey: "agent:voice:main" })).toBeUndefined();
-  });
-
-  it("rechecks native routing after empty provider-context preparation yields", async () => {
-    const prepare = conversationContext.prepareTalkProviderConversationContext;
-    vi.spyOn(conversationContext, "prepareTalkProviderConversationContext").mockImplementationOnce(
-      async (params) => {
-        const prepared = await prepare(params);
-        expect(prepared.instructions).toBe("");
-        config = { ...config, session: { scope: "global" } };
-        return prepared;
-      },
-    );
-    const respond = await dispatch("talk.session.create", {
-      mode: "realtime",
-      transport: "gateway-relay",
-      brain: "agent-consult",
-    });
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        message: expect.stringContaining("session changed before talk.session.create"),
-      }),
-    );
-    expect(mocks.createRelay).not.toHaveBeenCalled();
-  });
+    set config(value) {
+      config = value;
+    },
+  }));
 
   it("retains native routing authority through the actual relay startup await", async () => {
     let startupContext: CreateTalkRealtimeRelaySessionParams["startupContext"];

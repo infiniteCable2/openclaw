@@ -1,25 +1,33 @@
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
-import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PrepareVoiceTranscriptAudience } from "../../talk/voice-transcript-audience.types.js";
-import { captureGatewayPrivateConversationAudience } from "../session-input-participant.js";
+import type { GatewayClient, GatewayRequestContext } from "../server-methods/shared-types.js";
+import {
+  captureGatewayPrivateConversationAudience,
+  resolveGatewayInputParticipant,
+} from "../session-input-participant.js";
 import { prepareSessionMutationFacts } from "../session-sharing-preparation.js";
 import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
+import { createTalkOperatorRunSource } from "./operator-run-source.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 /** Capture per accepted utterance; normal transport closure cannot revoke accepted persistence. */
 export function createGatewayVoiceTranscriptAudience(input: {
   target: PreparedTalkSessionTarget;
-  expectedSessionId?: string;
-  participant?: SessionParticipantIdentity;
-  getRuntimeConfig(): OpenClawConfig;
-  captureOperatorAuthority: TalkOperatorRunSource;
-  /** Admission only; never retained as the authority of an accepted transcript. */
-  assertInputCurrent?(): void;
+  expectedSessionId: string;
+  client: GatewayClient | null;
+  context: Pick<
+    GatewayRequestContext,
+    "getRuntimeConfig" | "getCommittedRuntimeConfig" | "resolveGatewayContext" | "getClientConnIds"
+  >;
 }): PrepareVoiceTranscriptAudience {
   const target = Object.freeze({ ...input.target });
-  const participant = input.participant && Object.freeze({ ...input.participant });
+  const expectedSessionId = input.expectedSessionId;
+  const participant = resolveGatewayInputParticipant(input.client);
+  const client = input.client;
+  const connId = client?.connId;
+  const getRuntimeConfig = input.context.getRuntimeConfig;
+  const captureOperatorAuthority = createTalkOperatorRunSource({ client, context: input.context });
   // The creating native owner already selected/materialized this exact target.
   // A later utterance must not rebind a still-open voice record to a successor row.
   const entry =
@@ -36,16 +44,26 @@ export function createGatewayVoiceTranscriptAudience(input: {
     if (
       participant?.type !== "profile" ||
       !sessionId ||
-      (input.expectedSessionId !== undefined && sessionId !== input.expectedSessionId) ||
+      sessionId !== expectedSessionId ||
       !lifecycleRevision ||
       entry?.chatType !== "direct" ||
       entry.publicShare !== undefined
     ) {
       return undefined;
     }
-    input.assertInputCurrent?.();
+    // Admission only. After this utterance is accepted, a normal socket close
+    // removes its audience instead of revoking its original retained work owner.
+    if (
+      !client ||
+      !connId ||
+      client.invalidated ||
+      client.connectionSignal?.aborted ||
+      !input.context.getClientConnIds?.((candidate) => candidate === client).has(connId)
+    ) {
+      throw new Error("Voice transcript original input closed");
+    }
     const facts = await prepareSessionMutationFacts({
-      cfg: input.getRuntimeConfig(),
+      cfg: getRuntimeConfig(),
       agentId: target.agentId,
       sessionKey: target.canonicalKey,
       preserveQualifiedAddress: true,
@@ -63,7 +81,7 @@ export function createGatewayVoiceTranscriptAudience(input: {
       }
     };
     try {
-      const original = facts.readCurrent(input.getRuntimeConfig()).target;
+      const original = facts.readCurrent(getRuntimeConfig()).target;
       if (
         original.agentId !== target.agentId ||
         original.canonicalKey !== target.canonicalKey ||
@@ -77,7 +95,7 @@ export function createGatewayVoiceTranscriptAudience(input: {
         if (released) {
           throw new Error("Voice transcript audience has been released");
         }
-        const current = facts.readCurrent(input.getRuntimeConfig()).target;
+        const current = facts.readCurrent(getRuntimeConfig()).target;
         if (
           current.agentId !== target.agentId ||
           current.canonicalKey !== target.canonicalKey ||
@@ -96,7 +114,7 @@ export function createGatewayVoiceTranscriptAudience(input: {
         return undefined;
       }
       assertCurrent();
-      source = await input.captureOperatorAuthority({ assertCurrent });
+      source = await captureOperatorAuthority({ assertCurrent });
       const audience = captureGatewayPrivateConversationAudience({
         agentId: target.agentId,
         sessionKey: target.canonicalKey,

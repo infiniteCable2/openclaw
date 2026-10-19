@@ -13,8 +13,6 @@ import {
   onTrustedToolExecutionEvent,
   type TrustedToolExecutionEvent,
 } from "../infra/diagnostic-events.js";
-import { formatErrorMessage } from "../infra/errors.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
 import { captureGatewayRootWorkReleaseObserver } from "../process/gateway-work-admission.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
@@ -56,10 +54,8 @@ import {
   writeVoiceSessionRecordInTransaction as writeRecordInTransaction,
 } from "./client-voice-session-store.js";
 import { recordVoiceConversationObservation } from "./voice-conversation-knowledge.js";
-import type {
-  PrepareVoiceTranscriptAudience,
-  PreparedVoiceTranscriptAudience,
-} from "./voice-transcript-audience.types.js";
+import { prepareVoiceTranscriptAudience } from "./voice-transcript-audience.js";
+import type { PrepareVoiceTranscriptAudience } from "./voice-transcript-audience.types.js";
 import {
   buildPersistedVoiceMessage,
   VoiceTranscriptOperationRegistry,
@@ -79,7 +75,6 @@ type ClientVoiceRun = {
 
 const voiceSessionByRunId = new Map<string, ClientVoiceRun>();
 const voiceSessionOperations = new VoiceTranscriptOperationRegistry();
-const log = createSubsystemLogger("talk/client-voice-session");
 let unsubscribeToolEffects: (() => void) | undefined;
 let unsubscribeRunCompletion: (() => void) | undefined;
 
@@ -390,20 +385,7 @@ function appendVoiceTranscript(
         })
       : null;
   const append = async () => {
-    const noPrivateAudience = (error: unknown) => {
-      // Already accepted speech must persist even when no additional personal
-      // read/contribution proof can be established. Never invent a fallback grant.
-      log.warn("Voice transcript retained without a private recipient receipt.", {
-        error: formatErrorMessage(error),
-      });
-      return undefined;
-    };
-    let audiencePreparation: Promise<PreparedVoiceTranscriptAudience | undefined> | undefined;
-    try {
-      audiencePreparation = normalized.preparePrivateAudience?.().catch(noPrivateAudience);
-    } catch (error) {
-      noPrivateAudience(error);
-    }
+    const audiencePreparation = prepareVoiceTranscriptAudience(normalized.preparePrivateAudience);
     try {
       const source = retainedSource ?? captureClientVoiceSessionSource(normalized.agentId);
       return await voiceSessionOperations.run(

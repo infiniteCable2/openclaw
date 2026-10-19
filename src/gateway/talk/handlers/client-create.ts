@@ -505,16 +505,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
             preparePrivateAudience = createGatewayVoiceTranscriptAudience({
               target,
               expectedSessionId: ensuredSessionId,
-              participant: inputParticipant,
-              getRuntimeConfig: context.getRuntimeConfig,
-              captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
-              assertInputCurrent() {
-                if (
-                  !context.getClientConnIds?.((candidate) => candidate === client).has(ownerConnId!)
-                ) {
-                  throw new Error("Realtime voice client disconnected before transcript admission");
-                }
-              },
+              client,
+              context,
             });
           }
           // Recovering 6h-abandoned calls (and retrying their digests) is not on the

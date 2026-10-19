@@ -3,7 +3,6 @@ import {
   ErrorCodes,
   errorShape,
   validateTalkSessionAppendAudioParams,
-  validateTalkSessionCloseParams,
   validateTalkSessionCreateParams,
   validateTalkSessionSteerParams,
   validateTalkSessionSubmitToolResultParams,
@@ -20,7 +19,6 @@ import {
 } from "../../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProvider } from "../../../talk/provider-resolver.js";
 import {
-  forgetUnifiedTalkSession,
   getUnifiedTalkSession,
   rememberUnifiedTalkSession,
 } from "../../../talk/session-registry.js";
@@ -35,7 +33,7 @@ import { getSessionRowProjection } from "../../session-row-projection-access.js"
 import { withPreparedSessionResolve } from "../../sessions-resolve.js";
 import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
 import { prepareTalkProviderConversationContext } from "../conversation-context.js";
-import { createTalkHandoff, getTalkHandoff, revokeTalkHandoff } from "../handoff.js";
+import { createTalkHandoff, getTalkHandoff } from "../handoff.js";
 import { createTalkOperatorRunSource } from "../operator-run-source.js";
 import {
   sendTalkRealtimeRelayAudio,
@@ -63,10 +61,10 @@ import { requirePreparedTalkSessionTarget } from "../session-target.js";
 import {
   createTalkTranscriptionRelaySession,
   sendTalkTranscriptionRelayAudio,
-  stopTalkTranscriptionRelaySession,
 } from "../transcription-relay.js";
 import { prepareTalkVoiceReplacement } from "../voice-selection.js";
 import { createGatewayVoiceTranscriptAudience } from "../voice-transcript-audience.js";
+import { talkSessionLifecycleHandlers } from "./session-lifecycle.js";
 import { talkSessionOutputHandlers } from "./session-output.js";
 
 function respondInvalidRequest(respond: RespondFn, message: string) {
@@ -81,6 +79,7 @@ function respondOk(respond: RespondFn, payload: unknown = { ok: true }) {
 }
 
 export const talkSessionHandlers: GatewayRequestHandlers = {
+  ...talkSessionLifecycleHandlers,
   ...talkSessionOutputHandlers,
   "talk.session.create": defineValidatedGatewayHandler(
     "talk.session.create",
@@ -444,18 +443,8 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
                 preparePrivateAudience: createGatewayVoiceTranscriptAudience({
                   target,
                   expectedSessionId: ensuredSessionId,
-                  participant: resolveGatewayInputParticipant(client),
-                  getRuntimeConfig: context.getRuntimeConfig,
-                  captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
-                  assertInputCurrent() {
-                    if (
-                      !context.getClientConnIds?.((candidate) => candidate === client).has(connId)
-                    ) {
-                      throw new Error(
-                        "Realtime relay client disconnected before transcript admission",
-                      );
-                    }
-                  },
+                  client,
+                  context,
                 }),
                 captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
                 provider: resolution.provider,
@@ -699,35 +688,6 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         respond,
         "talk.session.steer requires the active managed-room connection",
       );
-    },
-    talkSessionError,
-  ),
-  "talk.session.close": defineValidatedGatewayHandler(
-    "talk.session.close",
-    validateTalkSessionCloseParams,
-    async ({ params, respond, client }) => {
-      const session = getUnifiedTalkSession(params.sessionId);
-      if (session.kind === "realtime-relay") {
-        const connId = requireUnifiedTalkSessionConn(session, client?.connId);
-        await stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId });
-      } else if (session.kind === "transcription-relay") {
-        const connId = requireUnifiedTalkSessionConn(session, client?.connId);
-        stopTalkTranscriptionRelaySession({
-          transcriptionSessionId: session.transcriptionSessionId,
-          connId,
-        });
-      } else if (session.kind === "speech-relay") {
-        requireUnifiedTalkSessionConn(session, client?.connId);
-        await session.close();
-      } else if (session.kind === "managed-room") {
-        getTalkHandoff(session.handoffId);
-        revokeTalkHandoff(session.handoffId);
-      } else {
-        respondInvalidRequest(respond, "External speech connections retain their native owner");
-        return;
-      }
-      forgetUnifiedTalkSession(params.sessionId);
-      respondOk(respond);
     },
     talkSessionError,
   ),

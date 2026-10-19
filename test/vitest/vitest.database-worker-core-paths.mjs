@@ -23,7 +23,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/cron/isolated-agent/run-session-state.conversation-admission.test.ts",
   "src/gateway/server-startup-conversation-root.test.ts",
   "src/gateway/session-transcript-read-authority.test.ts",
-  "src/gateway/server-methods/chat-send-user-turn.test.ts",
+  "src/gateway/server-methods/chat-send-user-turn.private-audience.test.ts",
   "src/gateway/talk/client-agent-runtime.test.ts",
   "src/infra/sqlite-foreign-observation.worker.test.ts",
   "src/state/openclaw-state-db-current-reader.test.ts",

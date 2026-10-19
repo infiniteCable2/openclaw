@@ -22,6 +22,7 @@ import {
   readChannelContextGatewayContextResolver,
 } from "./admission-evidence.js";
 import type { ChannelConversationInputContextFacts } from "./conversation-input.types.js";
+import { defineStableChannelIngressIdentity } from "./runtime-identity.js";
 import { createHostChannelIngressRuntime, resolveStableChannelIngressPolicy } from "./runtime.js";
 
 const input: ConversationInputScopeV1 = {
@@ -113,7 +114,7 @@ async function prepareSource(withPrivateAudience = false, omitAccount = false) {
     ? await runtime.resolve({
         channelId: request.channelId,
         accountId,
-        identity: request.identity,
+        identity: defineStableChannelIngressIdentity(request.identity),
         subject: request.subject,
         conversation: request.conversation,
         contextBinding: request.contextBinding,

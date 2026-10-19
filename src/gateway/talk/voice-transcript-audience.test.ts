@@ -4,10 +4,12 @@ import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-co
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
 
-const mocks = vi.hoisted(() => ({ entry: vi.fn(), facts: vi.fn() }));
+const mocks = vi.hoisted(() => ({ entry: vi.fn(), facts: vi.fn(), source: vi.fn() }));
 // mock-isolation: Test the held ingress/recipient boundary, not native row publication I/O.
 vi.mock("../../config/sessions/session-accessor.js", () => ({ loadSessionEntry: mocks.entry }));
 vi.mock("../session-sharing-preparation.js", () => ({ prepareSessionMutationFacts: mocks.facts }));
+// mock-isolation: The native source issuer is an independent owner; keep its held authority explicit.
+vi.mock("./operator-run-source.js", () => ({ createTalkOperatorRunSource: mocks.source }));
 
 import { createGatewayVoiceTranscriptAudience } from "./voice-transcript-audience.js";
 
@@ -47,15 +49,30 @@ function fixture(profileId = "example-person") {
     readCurrent: () => ({ target: { ...target, entry } }),
     release: releaseFacts,
   });
+  mocks.source.mockReturnValue(captureOperatorAuthority);
+  const client: NonNullable<Parameters<typeof createGatewayVoiceTranscriptAudience>[0]["client"]> =
+    {
+      connId: "original-client",
+      authenticatedUserProfile: {
+        profileId,
+        displayName: "Example",
+        hasAvatar: false,
+        updatedAt: 1,
+      },
+      connect: {
+        minProtocol: 1,
+        maxProtocol: 1,
+        client: { id: "openclaw-control-ui", version: "test", platform: "test", mode: "webchat" },
+        scopes: ["operator.write"],
+      },
+    };
   const input = {
     target,
-    participant: { type: "profile" as const, id: profileId },
-    getRuntimeConfig: () => ({}),
-    captureOperatorAuthority,
-    assertInputCurrent() {
-      if (!audioOpen) {
-        throw new Error("Input closed");
-      }
+    expectedSessionId: "original-session",
+    client,
+    context: {
+      getRuntimeConfig: () => ({}),
+      getClientConnIds: () => new Set(audioOpen ? ["original-client"] : []),
     },
   };
   return {
@@ -79,7 +96,8 @@ describe("native voice transcript recipient custody", () => {
   it("keeps one accepted utterance bound to its original person and target after normal close", async () => {
     const f = fixture();
     const prepare = createGatewayVoiceTranscriptAudience(f.input);
-    f.input.participant.id = "mutated-caller-metadata";
+    f.input.client.authenticatedUserProfile!.profileId = "mutated-caller-metadata";
+    f.input.expectedSessionId = "mutated-successor-selection";
     const held = await prepare();
     expect(held?.audience.participant).toEqual({ type: "profile", id: "example-person" });
     f.close();
@@ -96,7 +114,7 @@ describe("native voice transcript recipient custody", () => {
     const f = fixture();
     const prepare = createGatewayVoiceTranscriptAudience(f.input);
     f.close();
-    await expect(prepare()).rejects.toThrow("Input closed");
+    await expect(prepare()).rejects.toThrow("input closed");
     expect(mocks.facts).not.toHaveBeenCalled();
     expect(f.captureOperatorAuthority).not.toHaveBeenCalled();
   });

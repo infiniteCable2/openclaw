@@ -91,7 +91,7 @@ describe("client voice session", () => {
   });
 
   it("publishes the original committed voice anchor without fabricating a completed run", async () => {
-    await seedSession("agent:main:branch");
+    await seedSession("agent:main:branch", {}, "original-branch-revision");
     const observe = vi
       .spyOn(voiceKnowledge, "recordVoiceConversationObservation")
       .mockResolvedValue();
@@ -138,7 +138,7 @@ describe("client voice session", () => {
   });
 
   it("retains the original recipient until a saved assistant observation settles without inventing user provenance", async () => {
-    await seedSession("agent:main:branch");
+    await seedSession("agent:main:branch", {}, "original-branch-revision");
     const observing = createDeferred();
     const finish = createDeferred();
     const audience: ConversationPrivateAudience = Object.freeze({

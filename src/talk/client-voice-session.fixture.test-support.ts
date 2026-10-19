@@ -33,12 +33,14 @@ export async function createCompletedMutationSession(): Promise<string> {
 export async function seedSession(
   sessionKey: string,
   context: DeliveryContext = {},
+  lifecycleRevision?: string,
 ): Promise<void> {
   await replaceSessionEntry(
     { agentId: "main", sessionKey },
     {
       sessionId: `session-${sessionKey.replaceAll(":", "-")}`,
       updatedAt: Date.now(),
+      ...(lifecycleRevision ? { lifecycleRevision } : {}),
       delivery: normalizeSessionDeliveryState({ context }),
     },
   );
