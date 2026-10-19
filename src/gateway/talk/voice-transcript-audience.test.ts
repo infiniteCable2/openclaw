@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
 
 const mocks = vi.hoisted(() => ({ entry: vi.fn(), facts: vi.fn() }));
@@ -14,7 +14,7 @@ import { createGatewayVoiceTranscriptAudience } from "./voice-transcript-audienc
 function fixture(profileId = "example-person") {
   let current = true;
   let audioOpen = true;
-  const entry: SessionEntry = {
+  const entry: InternalSessionEntry = {
     sessionId: "original-session",
     lifecycleRevision: "original-life",
     updatedAt: 1,

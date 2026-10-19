@@ -4,7 +4,7 @@ import {
   type AdmittedRunOperatorAuthority,
 } from "../agents/admitted-run-context.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/account-id.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import type { InputProvenance } from "../sessions/input-provenance.js";
@@ -53,7 +53,7 @@ export function captureGatewayPrivateConversationAudience(input: {
   sessionKey: string;
   participant?: SessionParticipantIdentity;
   operatorAuthority?: AdmittedRunOperatorAuthority;
-  entry?: Pick<SessionEntry, "chatType" | "publicShare">;
+  entry?: Pick<InternalSessionEntry, "chatType" | "publicShare">;
   assertCurrent(): void;
 }): ConversationPrivateAudience | undefined {
   const { participant, operatorAuthority, assertCurrent } = input;

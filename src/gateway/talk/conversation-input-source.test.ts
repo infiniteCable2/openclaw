@@ -4,7 +4,7 @@ import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-co
 import type { ChatType } from "../../channels/chat-type.js";
 import { deriveSessionMetaPatch } from "../../config/sessions/metadata.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
 import {
@@ -45,12 +45,14 @@ function fixture(
   const releaseFacts = vi.fn();
   let revoked = false;
   let audioClosed = false;
-  const entry: Pick<SessionEntry, "sessionId" | "lifecycleRevision" | "chatType" | "publicShare"> =
-    {
-      sessionId: "original-session",
-      lifecycleRevision: "original-revision",
-      chatType,
-    };
+  const entry: Pick<
+    InternalSessionEntry,
+    "sessionId" | "lifecycleRevision" | "chatType" | "publicShare"
+  > = {
+    sessionId: "original-session",
+    lifecycleRevision: "original-revision",
+    chatType,
+  };
   mocks.prepareFacts.mockResolvedValue({
     readCurrent: () => ({
       target: {
