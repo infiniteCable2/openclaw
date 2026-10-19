@@ -74,7 +74,7 @@ describe("realtime relay voice transcript persistence", () => {
         const entered = createDeferred();
         const release = vi.fn();
         const { session } = createRelaySession();
-        const audience: ConversationPrivateAudience = Object.freeze({
+        const audience = Object.freeze<ConversationPrivateAudience>({
           agentId: "main",
           sessionKey: session.sessionTarget.canonicalKey,
           channelId: "webchat",
