@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { listAgentIds } from "../../agents/agent-scope-config.js";
+import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { isSameOpenClawAgentDatabasePath } from "../../state/openclaw-agent-db.paths.js";
 import { resolveAgentConversationMode } from "../agent-conversation-mode.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
@@ -68,6 +69,13 @@ export async function prepareSessionConversationActivation(params: {
       read.assertCurrent();
       const root = read.result.entries.find((row) => row.sessionKey === rootSessionKey)?.entry;
       const entry = read.result.entries.find((row) => row.sessionKey === params.sessionKey)?.entry;
+      assertExternalConversationTarget({
+        cfg: params.getConfig?.() ?? params.cfg,
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        entry,
+        isSystemEvent: false,
+      });
       // Default native mode has no infrastructure and performs no mutation.
       if (!root && mode === "native" && !entry?.conversationTopology) {
         return;

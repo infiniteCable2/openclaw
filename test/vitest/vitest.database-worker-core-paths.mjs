@@ -1,6 +1,7 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/conversation-knowledge.scenario.test.ts",
+  "src/auto-reply/reply/session.initial-context.test.ts",
   "src/channels/message-access/conversation-input.profile.test.ts",
   "src/config/sessions/conversation-knowledge-store.test.ts",
   "src/config/sessions/conversation-knowledge-history.test.ts",

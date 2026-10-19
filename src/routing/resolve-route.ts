@@ -199,6 +199,7 @@ const resolvedRouteCacheByCfg = new WeakMap<
     sessionRef: OpenClawConfig["session"];
     conversationModes: string;
     sessionScope: NonNullable<OpenClawConfig["session"]>["scope"];
+    mainKey: NonNullable<OpenClawConfig["session"]>["mainKey"];
     byKey: Map<string, ResolvedAgentRoute>;
   }
 >();
@@ -227,7 +228,8 @@ function resolveRouteCacheForConfig(cfg: OpenClawConfig): Map<string, ResolvedAg
     existing.agentsRef === cfg.agents &&
     existing.sessionRef === cfg.session &&
     existing.conversationModes === conversationModes &&
-    existing.sessionScope === cfg.session?.scope
+    existing.sessionScope === cfg.session?.scope &&
+    existing.mainKey === cfg.session?.mainKey
   ) {
     return existing.byKey;
   }
@@ -238,6 +240,7 @@ function resolveRouteCacheForConfig(cfg: OpenClawConfig): Map<string, ResolvedAg
     sessionRef: cfg.session,
     conversationModes,
     sessionScope: cfg.session?.scope,
+    mainKey: cfg.session?.mainKey,
     byKey,
   });
   return byKey;
