@@ -1,9 +1,11 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { withCompleteCompactionSummary } from "../../agents/compaction-summary-coverage.js";
 import { resolveContextTokensForModelFromCache } from "../../agents/context-resolution.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { resolveEmbeddedSessionContextLimits } from "../../agents/embedded-agent-runner/run/session-context-limits.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
+import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
@@ -20,6 +22,20 @@ const KNOWLEDGE_COMPACTION_INSTRUCTIONS = [
   "Preserve completed actions as completed; do not turn them into instructions to repeat work.",
   "Distinguish observed dialogue from confirmed task completion and from the current user's request.",
 ].join(" ");
+
+export function resolveConversationKnowledgeContextLimits(run: RunEmbeddedAgentParams) {
+  return resolveEmbeddedSessionContextLimits(
+    run.contextTokenBudget ??
+      resolveContextTokensForModelFromCache({
+        cfg: run.config,
+        provider: run.provider,
+        model: run.model,
+        fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
+        allowUnscopedModelLookup: false,
+      }) ??
+      DEFAULT_CONTEXT_TOKENS,
+  );
+}
 
 /** Bind pre-hydration writes to the actual claim admitted by the native lane. */
 export function withConversationKnowledgeWriter<T>(
@@ -43,17 +59,20 @@ export function withConversationKnowledgeWriter<T>(
   });
 }
 
-/** Use the current native lane's compactor, never enqueue a second task for catch-up. */
+/** Ask the native prepared-context budget owner; catch-up must not force compaction. */
 export function createConversationKnowledgeMaintenance(params: {
   run: RunEmbeddedAgentParams;
   assertCurrent: SessionSourceAssertion;
   signal: AbortSignal;
-}): () => Promise<void> {
+}): (
+  packetIds?: readonly string[],
+  pendingText?: string,
+) => Promise<{ compacted: boolean; complete: boolean }> {
   const check = composeSessionSourceAssertion([params.assertCurrent], (assertSources) => {
     params.signal.throwIfAborted();
     assertSources();
   });
-  return async () => {
+  return async (packetIds = [], pendingText) => {
     check();
     const target = await resolveAgentRunSessionTarget({
       ...params.run,
@@ -68,45 +87,6 @@ export function createConversationKnowledgeMaintenance(params: {
       throw new Error("Conversation knowledge maintenance recipient changed");
     }
     const ownedTarget = { ...params.run.sessionTarget, ...target };
-    const contextTokens =
-      resolveContextTokensForModelFromCache({
-        cfg: params.run.config,
-        provider: params.run.provider,
-        model: params.run.model,
-        fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
-        allowUnscopedModelLookup: false,
-      }) ?? DEFAULT_CONTEXT_TOKENS;
-    const hydration = resolveEmbeddedSessionContextLimits(contextTokens);
-    // Keep a quarter of native hydration capacity free for the next packet and
-    // current request. Normal native prompt checks still own the actual token budget.
-    const limits = {
-      maxBytes: Math.max(1, Math.floor(Math.min(hydration.maxBytes * 0.75, contextTokens * 3))),
-      maxEvents: Math.max(1, Math.floor(hydration.maxEvents * 0.75)),
-    };
-    const exceedsSafeCapacity = async () => {
-      check();
-      const truncated = await readSessionTranscriptModelContextAsync(
-        target,
-        (context) => context.truncated === true,
-        undefined,
-        params.signal,
-        undefined,
-        limits,
-      ).catch((error: unknown) => {
-        check();
-        if (!(error instanceof RangeError)) {
-          throw error;
-        }
-        // Even the latest entry or required summary can exceed this conservative
-        // probe budget. Try the same native compactor once instead of stalling.
-        return true;
-      });
-      check();
-      return truncated;
-    };
-    if (!(await exceedsSafeCapacity())) {
-      return;
-    }
     const { compactEmbeddedAgentSessionDirect } =
       await import("../../agents/embedded-agent-runner/compact.js");
     check();
@@ -122,29 +102,51 @@ export function createConversationKnowledgeMaintenance(params: {
             senderE164: params.run.senderE164 ?? undefined,
             sessionTarget: ownedTarget,
             abortSignal: params.signal,
-            disableTools: true,
+            // Preserve the foreground tool definitions for native budget accounting.
+            // Summary generation does not execute those tools.
             modelFallbacksOverride: [],
-            force: true,
-            forcePreflight: true,
-            preflightRequired: true,
-            preflightCompactionTrigger: "tokens",
+            budgetPreflight: {
+              prompt: pendingText
+                ? `${params.run.prompt}\nAdditional quoted observation pending admission:\n${pendingText}`
+                : params.run.prompt,
+            },
             trigger: "budget",
             customInstructions: KNOWLEDGE_COMPACTION_INSTRUCTIONS,
           }),
         ),
     );
     check();
-    if (!result.ok || !result.compacted || !result.result?.summary?.trim()) {
+    if (!result.ok) {
       throw new Error(
-        "Conversation knowledge catch-up remains pending: native compaction produced no summary",
+        "Conversation knowledge catch-up remains pending: native budget maintenance failed",
       );
     }
-    if (await exceedsSafeCapacity()) {
-      throw new Error(
-        "Conversation knowledge catch-up remains pending: compacted context still exceeds safe capacity",
-      );
+    // A native no-op means this prepared context fits; a committed native
+    // compaction can be server-owned without a textual summary. Neither is
+    // evidence that every fact survived reduction: packet coverage stays exact.
+    if (result.compacted || packetIds.length === 0) {
+      return { compacted: result.compacted, complete: true };
     }
-    // A native summary is necessary, not evidence that every fact survived the
-    // model's lossy reduction. The ingestion owner retains exact packet coverage.
+    const visible = await readSessionTranscriptModelContextAsync(
+      target,
+      (context) =>
+        new Set(
+          context.events.flatMap((event) => {
+            const record = asOptionalRecord(event);
+            return record?.type === "custom_message" &&
+              record.customType === CONVERSATION_KNOWLEDGE_CONTEXT
+              ? [asOptionalRecord(record.details)?.packetId]
+              : [];
+          }),
+        ),
+      undefined,
+      params.signal,
+      undefined,
+      resolveConversationKnowledgeContextLimits(params.run),
+    );
+    check();
+    // Native hydration can omit old media harmlessly. Only missing NEW packets
+    // make catch-up incomplete; this fact never forces compaction or deletes data.
+    return { compacted: false, complete: packetIds.every((id) => visible.has(id)) };
   };
 }

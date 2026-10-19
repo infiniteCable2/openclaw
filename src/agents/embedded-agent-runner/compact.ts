@@ -39,6 +39,7 @@ import type {
   CompactEmbeddedAgentSessionParams,
   CompactEmbeddedAgentSessionRuntimeParams,
 } from "./compact.types.js";
+import { prepareCompactionForegroundBudget } from "./compaction-foreground-budget.js";
 import { resolveEmbeddedCompactionTarget } from "./compaction-runtime-context.js";
 import {
   projectCodexHostTranscriptBytePreflightConfig,
@@ -340,6 +341,21 @@ export async function compactEmbeddedAgentSessionDirect(
                   : {}),
                 agentId: requestedAgentIds.sessionAgentId,
               },
+              ...(paramsBase.budgetPreflight
+                ? [
+                    {
+                      provider:
+                        paramsBase.provider ??
+                        paramsBase.runtimePlan?.resolvedRef.provider ??
+                        DEFAULT_PROVIDER,
+                      modelId:
+                        paramsBase.model ??
+                        paramsBase.runtimePlan?.resolvedRef.modelId ??
+                        DEFAULT_MODEL,
+                      agentId: requestedAgentIds.sessionAgentId,
+                    },
+                  ]
+                : []),
               ...pluginPlanCandidates
                 .filter(
                   (candidate) =>
@@ -379,10 +395,15 @@ export async function compactEmbeddedAgentSessionDirect(
         config: preparedConfig,
         ...projects,
       });
+      const budgetPreflight = await prepareCompactionForegroundBudget(
+        { ...paramsBase, config: preparedConfig },
+        preparedModelRuntime,
+      );
       // Fallback policy and every attempt consume the same generation as model/auth discovery.
       // A reload may have committed while session targeting was resolved above.
       const params: PreparedCompactEmbeddedAgentSessionParams = {
         ...requestedParams,
+        ...(budgetPreflight ? { budgetPreflight } : {}),
         config: preparedConfig,
         agentId: preparedModelRuntime.agentId ?? requestedAgentIds.sessionAgentId,
         agentDir: preparedModelRuntime.agentDir,

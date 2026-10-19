@@ -16,6 +16,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
 import type { CliHistoryWriterFacts } from "./cli-history-boundary.js";
+import { readSessionTranscriptBoundedActiveContextCore } from "./session-accessor.sqlite-active-context.js";
 import { advanceCliHistoryBoundaryRangeInTransaction } from "./session-accessor.sqlite-cli-history-boundary.js";
 import type {
   SessionTranscriptWriteScope,
@@ -213,6 +214,24 @@ export function bindSqliteWorkerBackend(
             if (!isDeepStrictEqual(currentVersion, plan.version)) {
               admit("commit");
               return ok({ committed: false, projectionNeedsReconcile: false });
+            }
+            const limits = command.input.preserveContextLimits;
+            if (limits) {
+              const snapshot = readSessionTranscriptBoundedActiveContextCore(resolved, {
+                ...limits,
+                resolvedScope: resolved,
+              });
+              const additionalBytes = Buffer.byteLength(command.input.eventJson, "utf8") + 1;
+              // Header and injected boundaries remain counted. The event count is
+              // deliberately conservative so no currently hydrated row is displaced.
+              if (
+                snapshot.events.length === 0 ||
+                snapshot.serializedBytes + additionalBytes > limits.maxBytes ||
+                snapshot.events.length + 1 > limits.maxEvents
+              ) {
+                admit("commit");
+                return ok({ committed: false, projectionNeedsReconcile: false, deferred: true });
+              }
             }
             appendSelectedTranscriptReportInTransaction(
               database,

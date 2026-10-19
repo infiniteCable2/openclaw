@@ -44,7 +44,6 @@ import { prepareTranscriptMessageAppend } from "./session-accessor.sqlite-transc
 import {
   appendAbortedSessionTranscriptPartialInTransaction,
   appendSessionTranscriptReportInTransaction,
-  prepareCustomTranscriptReport,
   prepareTranscriptReportSelection,
 } from "./session-accessor.sqlite-transcript-reports.kernel.js";
 import type {
@@ -52,6 +51,7 @@ import type {
   AbortedSessionTranscriptPartial,
   AbortedSessionTranscriptPartialResult,
   TranscriptReport,
+  TranscriptReportContextAdmission,
   TranscriptReportWorkerOperations,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { TranscriptReportWorkerTarget } from "./session-accessor.sqlite-transcript-reports.worker.js";
@@ -74,6 +74,7 @@ import {
   captureSessionStoreCandidateIdentities,
 } from "./session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
+import { appendCustomTranscriptReportWithWorker } from "./session-transcript-custom-report.js";
 import {
   reconcileSessionTranscriptIndexes,
   startSessionTranscriptIndexReconcile,
@@ -625,6 +626,7 @@ export async function appendSessionTranscriptReport(
   scope: SessionTranscriptWriteScope,
   report: TranscriptReport,
   options?: {
+    contextAdmission?: TranscriptReportContextAdmission;
     sessionEntryCurrent?: SessionEntryCurrentCheck;
     incognito?: IncognitoTranscriptReportBinding;
     /**
@@ -634,7 +636,17 @@ export async function appendSessionTranscriptReport(
     source?: SessionSourceAssertion;
   },
 ): Promise<Result<void, TranscriptAppendRefusal>> {
+  const contextAdmission = options?.contextAdmission && {
+    limits: structuredClone(options.contextAdmission.limits),
+    onDeferred: options.contextAdmission.onDeferred,
+  };
   const incognito = options?.incognito ?? captureIncognitoSessionOperation(scope);
+  if (
+    contextAdmission &&
+    (report.kind !== "custom" || incognito || isProcessHeldTranscript(scope))
+  ) {
+    throw new Error("Context-preserving report admission requires a durable native custom report");
+  }
   if (!incognito && isProcessHeldTranscript(scope)) {
     if (options?.source) {
       throw new Error("Composed report sources require a durable native transcript target");
@@ -670,49 +682,22 @@ export async function appendSessionTranscriptReport(
       options?.source,
     );
   }
-  const selection = {
-    kind: report.kind,
+  const customReport = {
+    ...report,
     customTypes: [...report.customTypes],
     ...(report.receipt ? { receipt: { ...report.receipt } } : {}),
-    suppressWhenAssistantRun: report.suppressWhenAssistantRun,
   };
-  const selectReport = report.selectReport;
   return withReportWorker(
     scope,
     "append",
-    async (operation, assertCurrent, publish) => {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const prepared = await operation.execute({ type: "prepare", input: selection });
-        assertCurrent();
-        if (!prepared.ok) {
-          return prepared;
-        }
-        if (prepared.value.suppressed) {
-          return ok(undefined);
-        }
-        const selected = selectReport(prepared.value.latest);
-        assertCurrent();
-        if (!selected) {
-          return ok(undefined);
-        }
-        const input = prepareCustomTranscriptReport(
-          selected,
-          prepared.value.appendParentId,
-          selection,
-        );
-        assertCurrent();
-        const result = await operation.execute({ type: "append", input });
-        if (!result.ok) {
-          return result;
-        }
-        if (result.value.committed) {
-          publish(result.value);
-          return ok(undefined);
-        }
-        // Only a proven no-write revision mismatch permits another selection; errors never replay.
-      }
-      throw new Error("Session transcript kept changing while selecting its report");
-    },
+    (operation, assertCurrent, publish) =>
+      appendCustomTranscriptReportWithWorker({
+        operation,
+        assertCurrent,
+        publish,
+        report: customReport,
+        contextAdmission,
+      }),
     options?.sessionEntryCurrent,
     incognito,
     options?.source,

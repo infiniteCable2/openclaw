@@ -5,6 +5,7 @@ import {
   createDeferred,
   withinTest,
 } from "../../../test/helpers/promise.js";
+import { resolveEmbeddedSessionContextLimits } from "../../agents/embedded-agent-runner/run/session-context-limits.js";
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
   readConversationKnowledgeBranch,
@@ -18,6 +19,7 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
 import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
@@ -257,7 +259,18 @@ describe("ordered native branch Knowledge scenario", () => {
             "12 durable catch-up resumes every authorized source without duplicate packets",
             async () => {
               const recipient = await fixture.branch("catch-up");
+              // Old retained media can exceed native hydration without being new
+              // catch-up growth. Keep new packet coverage independently visible.
+              await appendTranscriptMessage(recipient, {
+                message: {
+                  role: "user",
+                  content: [{ type: "image", mimeType: "image/png", data: "A".repeat(8_100_000) }],
+                  timestamp: 1,
+                },
+              });
+              await fixture.append(recipient, "old-image-reply");
               const owner = await fixture.claim(recipient);
+              const contextLimits = resolveEmbeddedSessionContextLimits(1_000_000);
               for (let index = 0; index < 7; index += 1) {
                 const donor = await fixture.branch(`donor-${index}`);
                 const sourceOwner = await fixture.claim(donor);
@@ -282,6 +295,7 @@ describe("ordered native branch Knowledge scenario", () => {
                   originalParticipant: person,
                   getRuntimeConfig: () => fixture.cfg,
                   retainInHistory: {
+                    contextLimits,
                     maintainContext: async (source) => {
                       source();
                       maintenanceCalls += 1;
@@ -298,6 +312,7 @@ describe("ordered native branch Knowledge scenario", () => {
                 originalParticipant: person,
                 getRuntimeConfig: () => fixture.cfg,
                 retainInHistory: {
+                  contextLimits,
                   maintainContext: async (source) => {
                     source();
                   },
@@ -313,6 +328,23 @@ describe("ordered native branch Knowledge scenario", () => {
               const ids = packets.map((event) => asOptionalRecord(event?.details)?.packetId);
               expect(new Set(ids).size).toBe(ids.length);
               expect(packets.length).toBeGreaterThan(interruptedPackets.length);
+              const hydrated = await prepareSessionTranscriptHydration(
+                recipient,
+                contextLimits,
+                signal,
+              ).read();
+              expect(hydrated.kind).toBe("bounded");
+              if (hydrated.kind !== "bounded") {
+                throw new Error("Expected native bounded hydration");
+              }
+              expect(hydrated.snapshot.truncated).toBe(true);
+              const visiblePacketIds = hydrated.snapshot.events.flatMap((event) => {
+                const record = asOptionalRecord(event);
+                return record?.customType === CONVERSATION_KNOWLEDGE_CONTEXT
+                  ? [asOptionalRecord(record.details)?.packetId]
+                  : [];
+              });
+              expect(new Set(visiblePacketIds)).toEqual(new Set(ids));
               const retainedText = JSON.stringify(packets);
               for (let index = 0; index < 7; index += 1) {
                 expect(retainedText).toContain(`donor-${index}`);
@@ -322,13 +354,80 @@ describe("ordered native branch Knowledge scenario", () => {
                 originalParticipant: person,
                 getRuntimeConfig: () => fixture.cfg,
                 retainInHistory: {
+                  contextLimits,
                   maintainContext: async (source) => {
                     source();
+                    throw new Error("No new knowledge packets may force history maintenance");
                   },
                 },
               });
               repeated?.release();
               expect(await readPackets()).toHaveLength(packets.length);
+              const lateDonor = await fixture.branch("late-donor");
+              const lateOwner = await fixture.claim(lateDonor);
+              const lateTerminal = await fixture.append(lateDonor, "late-observation");
+              expect(await recordConversationKnowledgeTurn({ ...lateOwner, ...lateTerminal })).toBe(
+                true,
+              );
+              const incomplete = await prepareReplyConversationKnowledge({
+                ...owner,
+                originalParticipant: person,
+                getRuntimeConfig: () => fixture.cfg,
+                retainInHistory: {
+                  contextLimits,
+                  maintainContext: async (source) => {
+                    source();
+                    return { compacted: false, complete: false };
+                  },
+                },
+              });
+              try {
+                expect(incomplete?.fragments).toEqual([
+                  expect.objectContaining({
+                    text: expect.stringContaining("catch-up is incomplete"),
+                  }),
+                ]);
+                expect(JSON.stringify(await readPackets())).toContain("late-observation");
+              } finally {
+                incomplete?.release();
+              }
+              const pendingDonor = await fixture.branch("pending-window-donor");
+              const pendingOwner = await fixture.claim(pendingDonor);
+              const pendingTerminal = await fixture.append(pendingDonor, "pending-window-fact");
+              expect(
+                await recordConversationKnowledgeTurn({ ...pendingOwner, ...pendingTerminal }),
+              ).toBe(true);
+              const beforeDeferred = await readPackets();
+              const deferred = await prepareReplyConversationKnowledge({
+                ...owner,
+                originalParticipant: person,
+                getRuntimeConfig: () => fixture.cfg,
+                retainInHistory: {
+                  contextLimits: { ...contextLimits, maxEvents: 2 },
+                  maintainContext: async (source) => {
+                    source();
+                    return { compacted: false, complete: true };
+                  },
+                },
+              });
+              expect(deferred?.fragments[0]?.text).toContain("catch-up is incomplete");
+              deferred?.release();
+              expect(await readPackets()).toEqual(beforeDeferred);
+              const retried = await prepareReplyConversationKnowledge({
+                ...owner,
+                originalParticipant: person,
+                getRuntimeConfig: () => fixture.cfg,
+                retainInHistory: {
+                  contextLimits,
+                  maintainContext: async (source) => {
+                    source();
+                  },
+                },
+              });
+              expect(retried?.fragments).toEqual([]);
+              retried?.release();
+              expect((await readPackets()).length).toBeGreaterThan(beforeDeferred.length);
+              expect(JSON.stringify(await readPackets())).toContain("pending-window-fact");
             },
           );
           expect(trace).toEqual([

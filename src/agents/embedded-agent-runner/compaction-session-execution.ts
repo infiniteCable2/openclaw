@@ -1,7 +1,4 @@
-import {
-  preserveCompactionReplayWindow,
-  resolveCompactionReplayEligibility,
-} from "@openclaw/ai/transports";
+import { resolveCompactionReplayEligibility } from "@openclaw/ai/transports";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import { captureOwnedTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import type { ContextEngineSessionTarget } from "../../context-engine/types.js";
@@ -32,7 +29,6 @@ import { pickFallbackThinkingLevel } from "../embedded-agent-helpers.js";
 import { registerProviderStreamForModel } from "../provider-stream.js";
 import { resolveAgentRunSessionTarget } from "../run-session-target.js";
 import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
-import { sanitizeToolUseResultPairingForModel } from "../session-transcript-repair.js";
 import {
   agentSessionAutomaticCompaction,
   agentSessionSetContextReplacementHook,
@@ -48,24 +44,22 @@ import {
   containsRealConversationMessages,
   summarizeCompactionMessages,
 } from "./compaction-diagnostics.js";
-import { dedupeDuplicateUserMessagesForCompaction } from "./compaction-duplicate-user-messages.js";
 import {
   buildBeforeCompactionHookMetrics,
   estimateTokensAfterCompaction,
   runCompactionHooks,
   runPostCompactionSideEffects,
 } from "./compaction-hooks.js";
+import { prepareCompactionPromptContext } from "./compaction-prompt-preparation.js";
 import {
   compactWithSafetyTimeout,
   resolveCompactionTimeoutMs,
 } from "./compaction-safety-timeout.js";
 import { prepareCompactionSessionAgent } from "./compaction-session-agent.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
-import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "./history.js";
 import { log } from "./logger.js";
 import type { PreparedCompactionRuntime } from "./prepared-compaction-runtime.js";
 import { declarePromptHistoryRewrite } from "./prompt-cache-observability.js";
-import { sanitizeSessionHistory, validateReplayTurns } from "./replay-history.js";
 import { wrapStreamFnWithDiagnosticModelCallEvents } from "./run/attempt.model-diagnostic-events.js";
 import { readCompactionAccountingRecorder } from "./run/compaction-accounting-bridge.js";
 import { estimateLlmBoundaryTokenPressure } from "./run/preemptive-compaction.js";
@@ -283,6 +277,24 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           extraParams: effectiveExtraParams,
           apiKey: transportApiKey,
         });
+        const { originalMessages, skipCompaction } = await prepareCompactionPromptContext({
+          runtime,
+          session,
+          sessionManager,
+          settingsManager,
+          systemPrompt: systemPromptText,
+          transcriptPolicy,
+          responsesApi,
+          compactionReplayEnabled,
+          assertActive,
+        });
+        if (skipCompaction) {
+          return {
+            ok: true,
+            compacted: false,
+            reason: "below threshold: prepared native prompt does not require compaction",
+          };
+        }
         diagnosticOwner = createDiagnosticEmbeddedRunOwner({
           sessionId: params.sessionId,
           ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
@@ -314,62 +326,6 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           onStarted: refreshCompactionWatchdogs,
           onOutputDelta: refreshCompactionWatchdogs,
         });
-
-        const replayContext = () => ({
-          modelApi: effectiveModel.api,
-          modelId,
-          provider,
-          config: params.config,
-          workspaceDir: effectiveWorkspace,
-          env: process.env,
-          model: effectiveModel,
-          sessionId: params.sessionId,
-          policy: transcriptPolicy,
-        });
-        const prior = await sanitizeSessionHistory({
-          ...replayContext(),
-          messages: session.messages,
-          allowedToolNames,
-          sessionManager,
-          preserveLatestAssistantThinking: false,
-        });
-        const validated = await validateReplayTurns({
-          ...replayContext(),
-          messages: prior,
-        });
-        const dedupedValidated = dedupeDuplicateUserMessagesForCompaction(validated);
-        // Apply validated transcript to the live session even when no history limit is configured,
-        // so compaction and hook metrics are based on the same message set.
-        session.agent.state.messages = dedupedValidated;
-        // "Original" compaction metrics should describe the validated transcript that enters
-        // limiting/compaction, not the raw on-disk session snapshot.
-        const originalMessages = session.messages.slice();
-        const truncated = preserveCompactionReplayWindow(
-          originalMessages,
-          limitHistoryTurns(
-            session.messages,
-            getHistoryLimitFromSessionKey(params.sessionKey, params.config, {
-              accountId: params.agentAccountId,
-              peerId: params.conversationRoutePeerId,
-              chatType: params.chatType,
-            }),
-          ),
-          effectiveModel,
-          {
-            sessionId: params.sessionId,
-            authProfileId: runtimePlan.auth.forwardedAuthProfileId,
-            enabled: compactionReplayEnabled,
-          },
-        );
-        // Re-run tool_use/tool_result pairing repair after truncation, since
-        // limitHistoryTurns can orphan tool_result blocks by removing the
-        // assistant message that contained the matching tool_use.
-        const limited = transcriptPolicy.repairToolUseResultPairing
-          ? sanitizeToolUseResultPairingForModel(truncated, responsesApi)
-          : truncated;
-        if (limited.length > 0) {
-          session.agent.state.messages = limited;
-        }
         const hookRunner = getGlobalHookRunner();
         const observedTokenCount = normalizeContextTokenBudget(params.currentTokenCount);
         const beforeHookMetrics = buildBeforeCompactionHookMetrics({

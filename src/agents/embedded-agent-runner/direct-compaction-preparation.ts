@@ -31,6 +31,7 @@ import {
 } from "./compact-reasons.js";
 import type { CompactEmbeddedAgentSessionParams } from "./compact.types.js";
 import { createDirectCompactionDiagId } from "./compaction-diagnostics.js";
+import type { PreparedCompactionBudgetPreflight } from "./compaction-foreground-budget.js";
 import { resolveEmbeddedCompactionThinkingLevel } from "./compaction-runtime-context.js";
 import {
   prepareCompactionHarnessAuth,
@@ -46,6 +47,7 @@ import type {
 import type { EmbeddedAgentCompactResult } from "./types.js";
 
 export type PreparedCompactEmbeddedAgentSessionParams = CompactEmbeddedAgentSessionParams & {
+  budgetPreflight?: PreparedCompactionBudgetPreflight;
   preparedModelRuntime: PreparedModelRuntimeSnapshot;
   requestedRouteResolution?: "resolved";
   transcriptBytePreflightAuthority?: true;

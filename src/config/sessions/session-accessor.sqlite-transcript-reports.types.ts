@@ -5,6 +5,12 @@ import type {
   TranscriptMessageAppendResult,
 } from "./session-accessor.sqlite-contract.js";
 import type { PreparedTranscriptMessageAppend } from "./session-accessor.sqlite-transcript-message-append.types.js";
+import type { SessionModelContextLimits } from "./session-history-read.types.js";
+
+export type TranscriptReportContextAdmission = {
+  limits: Pick<SessionModelContextLimits, "maxBytes" | "maxEvents">;
+  onDeferred(): void;
+};
 
 export type AbortedSessionTranscriptPartial = {
   runId: string;
@@ -55,7 +61,12 @@ export type TranscriptReport =
 
 export type SelectedTranscriptReport =
   | Extract<TranscriptReport, { kind: "assistant" }>
-  | { kind: "custom"; eventJson: string };
+  | {
+      kind: "custom";
+      eventJson: string;
+      /** Ephemeral append admission, never part of the persisted event envelope. */
+      preserveContextLimits?: TranscriptReportContextAdmission["limits"];
+    };
 
 export type TranscriptReportSelection =
   | { kind: "assistant"; responseId: string }
@@ -73,6 +84,7 @@ export type PreparedTranscriptReport = {
 export type TranscriptReportCommit = {
   committed: boolean;
   projectionNeedsReconcile: boolean;
+  deferred?: true;
   cliHistoryChanged?: boolean;
   abortedPartial?: AbortedSessionTranscriptPartialResult;
   sessionEntryChanged?: boolean;

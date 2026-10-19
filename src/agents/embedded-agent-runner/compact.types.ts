@@ -137,4 +137,6 @@ export type CompactEmbeddedAgentSessionRuntimeParams = Omit<
 > & {
   /** Deprecated file-backed artifact target. Prefer sessionTarget for new callers. */
   sessionFile?: string;
+  /** Internal ingestion maintenance: let prepared native token pressure decide whether to compact. */
+  budgetPreflight?: { prompt: string };
 };

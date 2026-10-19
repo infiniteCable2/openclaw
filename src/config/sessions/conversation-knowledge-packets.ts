@@ -81,7 +81,8 @@ export async function retainConversationKnowledgePacket(params: {
   sourceVersion: SessionTranscriptContextVersion;
   source: SessionSourceAssertion;
   signal?: AbortSignal;
-}): Promise<void> {
+  contextLimits?: { maxBytes: number; maxEvents: number };
+}): Promise<string | undefined> {
   params.signal?.throwIfAborted();
   params.source();
   const contributionId = conversationKnowledgeContributionId(params.receipt);
@@ -129,6 +130,7 @@ export async function retainConversationKnowledgePacket(params: {
       }),
     }),
   ]);
+  let deferred = false;
   const result = await appendSessionTranscriptReport(
     {
       ...params.branch,
@@ -160,11 +162,24 @@ export async function retainConversationKnowledgePacket(params: {
               },
             },
     },
-    { source },
+    {
+      source,
+      ...(params.contextLimits
+        ? {
+            contextAdmission: {
+              limits: params.contextLimits,
+              onDeferred: () => {
+                deferred = true;
+              },
+            },
+          }
+        : {}),
+    },
   );
   params.source();
   params.signal?.throwIfAborted();
   if (!result.ok) {
     throw new Error("Conversation knowledge packet admission was refused", { cause: result.error });
   }
+  return deferred ? undefined : packetId;
 }

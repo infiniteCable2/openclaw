@@ -42,6 +42,10 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-execution.types.js";
 import { prepareConversationKnowledgeBranchFacts } from "./conversation-knowledge-authority.js";
+import {
+  createConversationKnowledgeIngestion,
+  type ConversationKnowledgeIngestionMaintenance,
+} from "./conversation-knowledge-ingestion.js";
 import { getReplyOperationSessionReader } from "./reply-run-registry.state.js";
 import { resolveReplyRunTrigger } from "./reply-turn-kind.js";
 
@@ -164,8 +168,11 @@ export function createReplyConversationKnowledgeTurn(params: {
       }
       const { signal } = execution;
       const preview = prepared?.fragments ?? [];
-      const { createConversationKnowledgeMaintenance, withConversationKnowledgeWriter } =
-        await import("./conversation-knowledge-maintenance.js");
+      const {
+        createConversationKnowledgeMaintenance,
+        resolveConversationKnowledgeContextLimits,
+        withConversationKnowledgeWriter,
+      } = await import("./conversation-knowledge-maintenance.js");
       const next = await withConversationKnowledgeWriter(
         { run, assertCurrent: assertTurnSourceCurrent },
         () =>
@@ -178,12 +185,13 @@ export function createReplyConversationKnowledgeTurn(params: {
             getRuntimeConfig,
             signal,
             retainInHistory: {
-              maintainContext: async (sources) =>
+              contextLimits: resolveConversationKnowledgeContextLimits(run),
+              maintainContext: async (sources, packetIds, pendingText) =>
                 createConversationKnowledgeMaintenance({
                   run: { ...followupRun.run, ...run },
                   assertCurrent: composeSessionSourceAssertion([assertCurrent, sources]),
                   signal,
-                })(),
+                })(packetIds, pendingText),
             },
           }),
       );
@@ -325,7 +333,7 @@ type ReplyConversationKnowledgeParams = {
   getRuntimeConfig: () => OpenClawConfig;
   signal?: AbortSignal;
   /** Actual native user runs retain observations; provider startup snapshots remain read-only. */
-  retainInHistory?: { maintainContext(sources: SessionSourceAssertion): Promise<void> };
+  retainInHistory?: ConversationKnowledgeIngestionMaintenance;
 };
 
 /** A root reference selects candidates, never grants access to another person's conversation. */
@@ -463,7 +471,17 @@ async function prepareReplyConversationKnowledgeInMode(
           signal: params.signal,
         })
       : undefined;
-    let admittedChars = 0;
+    const ingestion = params.retainInHistory
+      ? createConversationKnowledgeIngestion({
+          maintenance: params.retainInHistory,
+          captureSources: () =>
+            composeSessionSourceAssertion([
+              params.assertCurrent,
+              targetFacts.assertCurrent,
+              ...reads.flatMap((held) => [held.grant.assertCurrent, held.facts?.assertCurrent]),
+            ]),
+        })
+      : undefined;
     let unresolved = false;
     for (const receipt of selectConversationKnowledgeReceipts(
       events,
@@ -605,31 +623,26 @@ async function prepareReplyConversationKnowledgeInMode(
         if (!projection.version) {
           throw new Error("Conversation knowledge packet has no admitted source version");
         }
-        if (admittedChars >= 24_000) {
-          await params.retainInHistory.maintainContext(
-            composeSessionSourceAssertion([
-              params.assertCurrent,
-              targetFacts.assertCurrent,
-              ...reads.flatMap((held) => [held.grant.assertCurrent, held.facts?.assertCurrent]),
-            ]),
-          );
-          sourceAssertion();
-          admittedChars = 0;
+        const sourceVersion = projection.version;
+        const accepted = await ingestion?.tryPacket(part.text, () =>
+          retainConversationKnowledgePacket({
+            branch,
+            receipt,
+            text: part.text,
+            offset,
+            nextOffset: part.nextOffset ?? offset,
+            complete: part.complete,
+            reader: params.reader,
+            sourceVersion,
+            source: sourceAssertion,
+            signal: params.signal,
+            contextLimits: params.retainInHistory?.contextLimits,
+          }),
+        );
+        if (!accepted) {
+          break;
         }
-        await retainConversationKnowledgePacket({
-          branch,
-          receipt,
-          text: part.text,
-          offset,
-          nextOffset: part.nextOffset ?? offset,
-          complete: part.complete,
-          reader: params.reader,
-          sourceVersion: projection.version,
-          source: sourceAssertion,
-          signal: params.signal,
-        });
         sourceAssertion();
-        admittedChars += part.text.length;
         if (part.frontier) {
           break;
         }
@@ -642,16 +655,7 @@ async function prepareReplyConversationKnowledgeInMode(
         drop(read);
       }
     }
-    if (params.retainInHistory) {
-      // Native full-context maintenance precedes ordinary bounded attempt hydration.
-      await params.retainInHistory.maintainContext(
-        composeSessionSourceAssertion([
-          params.assertCurrent,
-          targetFacts.assertCurrent,
-          ...reads.flatMap((held) => [held.grant.assertCurrent, held.facts?.assertCurrent]),
-        ]),
-      );
-    }
+    await ingestion?.finish();
     const combined = combineConversationKnowledge(parts);
     for (const read of reads.toReversed()) {
       if (
@@ -678,14 +682,7 @@ async function prepareReplyConversationKnowledgeInMode(
     source();
     return {
       fragments: params.retainInHistory
-        ? unresolved
-          ? [
-              {
-                kind: "conversation-data",
-                text: "Related-conversation catch-up is incomplete: an exact source range could not be projected. Do not assume all related history has been incorporated; use authorized history/search for missing detail.",
-              },
-            ]
-          : []
+        ? (ingestion?.coverageNotice(unresolved) ?? [])
         : combined.text
           ? [
               {

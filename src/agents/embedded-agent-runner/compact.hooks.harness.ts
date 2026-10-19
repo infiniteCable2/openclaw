@@ -167,6 +167,7 @@ function createMockCompactionSession() {
       streamFn: vi.fn(),
       transport: "sse",
       state: {
+        tools: [],
         get messages() {
           return session.messages;
         },
@@ -225,6 +226,7 @@ const guardSessionManagerMock = vi.fn((sessionManager: Record<string, unknown>) 
 const applyAgentCompactionSettingsFromConfigMock = vi.fn();
 const createPreparedEmbeddedAgentSettingsManagerMock = vi.fn(() => ({
   getGlobalSettings: vi.fn(() => ({})),
+  getCompactionReserveTokens: vi.fn(() => 2_000),
 }));
 export const listRegisteredPluginAgentPromptGuidanceMock = vi.fn((params?: { surface?: string }) =>
   params?.surface === "subagent"
@@ -558,6 +560,7 @@ export function resetCompactHooksHarnessMocks(workspaceDir: string, sessionId = 
   createPreparedEmbeddedAgentSettingsManagerMock.mockReset();
   createPreparedEmbeddedAgentSettingsManagerMock.mockReturnValue({
     getGlobalSettings: vi.fn(() => ({})),
+    getCompactionReserveTokens: vi.fn(() => 2_000),
   });
 }
 

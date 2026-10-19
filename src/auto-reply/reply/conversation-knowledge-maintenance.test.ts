@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CompactEmbeddedAgentSessionRuntimeParams } from "../../agents/embedded-agent-runner/compact.types.js";
 import type { EmbeddedAgentCompactResult } from "../../agents/embedded-agent-runner/types.js";
 import {
   captureOwnedTranscriptWriteAssertion,
@@ -7,14 +8,18 @@ import {
 } from "../../config/sessions/transcript-write-context.js";
 import {
   createConversationKnowledgeMaintenance,
+  resolveConversationKnowledgeContextLimits,
   withConversationKnowledgeWriter,
 } from "./conversation-knowledge-maintenance.js";
 import type { FollowupRun } from "./queue/types.js";
 
 const mocks = vi.hoisted(() => ({
-  compact: vi.fn<() => Promise<EmbeddedAgentCompactResult>>(),
+  compact:
+    vi.fn<
+      (params: CompactEmbeddedAgentSessionRuntimeParams) => Promise<EmbeddedAgentCompactResult>
+    >(),
   resolve: vi.fn(),
-  read: vi.fn<() => Promise<boolean>>(),
+  read: vi.fn(),
 }));
 // mock-isolation: Keep provider execution, plugins, and compaction workers outside this adapter test.
 vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
@@ -24,7 +29,7 @@ vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
 vi.mock("../../agents/run-session-target.js", () => ({
   resolveAgentRunSessionTarget: mocks.resolve,
 }));
-// mock-isolation: Exercise capacity decisions without starting transcript reader workers.
+// mock-isolation: Packet visibility is supplied without opening transcript workers.
 vi.mock("../../config/sessions/session-transcript-context-read.js", () => ({
   readSessionTranscriptModelContextAsync: mocks.read,
 }));
@@ -60,7 +65,7 @@ const run = {
 beforeEach(() => {
   mocks.compact.mockReset();
   mocks.resolve.mockReset().mockResolvedValue(target);
-  mocks.read.mockReset().mockResolvedValueOnce(true).mockResolvedValue(false);
+  mocks.read.mockReset().mockResolvedValue(new Set());
   mocks.compact.mockResolvedValue({
     ok: true,
     compacted: true,
@@ -69,6 +74,27 @@ beforeEach(() => {
 });
 
 describe("conversation knowledge native maintenance", () => {
+  it("uses the foreground native hydration budget, not a custom catch-up cap", () => {
+    expect(
+      resolveConversationKnowledgeContextLimits({ ...run, contextTokenBudget: 1_000_000 }),
+    ).toEqual({ maxBytes: 8_000_000, maxEvents: 10_000 });
+  });
+
+  it("counts a deferred prospective observation without adding it to the transcript", async () => {
+    mocks.compact.mockResolvedValueOnce({ ok: true, compacted: false, reason: "within budget" });
+    await createConversationKnowledgeMaintenance({
+      run,
+      signal: new AbortController().signal,
+      assertCurrent: () => {},
+    })([], "Pending quoted observation.");
+    expect(mocks.compact).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        budgetPreflight: { prompt: expect.stringContaining("Pending quoted observation.") },
+      }),
+    );
+    expect(mocks.read).not.toHaveBeenCalled();
+  });
+
   it("binds packet admission to the actual native claim without silently borrowing a weaker parent", async () => {
     await withConversationKnowledgeWriter({ run, assertCurrent: () => {} }, async () => {
       expect(getOwnedSessionTranscriptWriterFence({ sessionTarget: target })).toEqual({
@@ -92,42 +118,14 @@ describe("conversation knowledge native maintenance", () => {
       ),
     ).toThrow("no admitted native writer");
   });
-  it("keeps complete packets that already fit without starting compaction", async () => {
-    mocks.read.mockReset().mockResolvedValue(false);
-    await createConversationKnowledgeMaintenance({
-      run,
-      signal: new AbortController().signal,
-      assertCurrent: () => {},
-    })();
-    expect(mocks.read).toHaveBeenCalledTimes(1);
-    expect(mocks.compact).not.toHaveBeenCalled();
-  });
-
-  it("compacts once when a required entry alone exceeds the conservative probe budget", async () => {
-    mocks.read
-      .mockReset()
-      .mockRejectedValueOnce(new RangeError("oversized entry"))
-      .mockResolvedValue(false);
+  it("accepts the native budget owner's decision that compaction is unnecessary", async () => {
+    mocks.compact.mockResolvedValueOnce({ ok: true, compacted: false, reason: "within budget" });
     await createConversationKnowledgeMaintenance({
       run,
       signal: new AbortController().signal,
       assertCurrent: () => {},
     })();
     expect(mocks.compact).toHaveBeenCalledTimes(1);
-    expect(mocks.read).toHaveBeenCalledTimes(2);
-  });
-
-  it("leaves a still-oversized required entry pending after one compaction", async () => {
-    mocks.read.mockReset().mockRejectedValue(new RangeError("oversized entry"));
-    await expect(
-      createConversationKnowledgeMaintenance({
-        run,
-        signal: new AbortController().signal,
-        assertCurrent: () => {},
-      })(),
-    ).rejects.toThrow("still exceeds safe capacity");
-    expect(mocks.compact).toHaveBeenCalledTimes(1);
-    expect(mocks.read).toHaveBeenCalledTimes(2);
   });
 
   it.each(["source", "cancel"] as const)(
@@ -135,13 +133,13 @@ describe("conversation knowledge native maintenance", () => {
     async (mode) => {
       const controller = new AbortController();
       let current = true;
-      mocks.read.mockReset().mockImplementationOnce(async () => {
+      mocks.resolve.mockImplementationOnce(async () => {
         if (mode === "source") {
           current = false;
         } else {
           controller.abort(new Error("cancelled during read"));
         }
-        throw new RangeError("oversized entry");
+        return target;
       });
       await expect(
         createConversationKnowledgeMaintenance({
@@ -175,13 +173,16 @@ describe("conversation knowledge native maintenance", () => {
         authProfileIdSource: run.authProfileIdSource,
         config: run.config,
         abortSignal: controller.signal,
-        disableTools: true,
         modelFallbacksOverride: [],
         trigger: "budget",
-        forcePreflight: true,
+        budgetPreflight: { prompt: run.prompt },
         customInstructions: expect.stringContaining("not new requests"),
       }),
     );
+    const request = mocks.compact.mock.calls[0]?.[0];
+    expect(request).not.toHaveProperty("force");
+    expect(request).not.toHaveProperty("forcePreflight");
+    expect(request).not.toHaveProperty("preflightRequired");
   });
 
   it("retains both original writer authority and source revocation through native persistence", async () => {
@@ -265,33 +266,52 @@ describe("conversation knowledge native maintenance", () => {
     expect(mocks.compact).not.toHaveBeenCalled();
   });
 
-  it("does not loop when native compaction cannot restore complete bounded hydration", async () => {
-    mocks.read.mockReset().mockResolvedValue(true);
+  it("keeps failed native maintenance pending without retrying or inventing a byte threshold", async () => {
+    mocks.compact.mockResolvedValueOnce({ ok: false, compacted: false });
     await expect(
       createConversationKnowledgeMaintenance({
         run,
         signal: new AbortController().signal,
         assertCurrent: () => {},
       })(),
-    ).rejects.toThrow("still exceeds safe capacity");
+    ).rejects.toThrow("native budget maintenance failed");
     expect(mocks.compact).toHaveBeenCalledTimes(1);
-    expect(mocks.read).toHaveBeenCalledTimes(2);
   });
 
   it.each<EmbeddedAgentCompactResult>([
-    { ok: false, compacted: false },
     { ok: true, compacted: false, reason: "skipped" },
     { ok: true, compacted: true, result: { kind: "server-endpoint", tokensBefore: 100 } },
-    { ok: true, compacted: true, result: { summary: "   ", tokensBefore: 100 } },
-  ])("keeps catch-up pending without a successful native summary (%j)", async (result) => {
-    mocks.compact.mockResolvedValueOnce(result);
-    await expect(
-      createConversationKnowledgeMaintenance({
+  ])(
+    "accepts successful native maintenance without demanding a textual summary (%j)",
+    async (result) => {
+      mocks.compact.mockResolvedValueOnce(result);
+      await expect(
+        createConversationKnowledgeMaintenance({
+          run,
+          signal: new AbortController().signal,
+          assertCurrent: () => {},
+        })(),
+      ).resolves.toMatchObject({ complete: true });
+      expect(mocks.compact).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([true, false])(
+    "reports actual new-packet visibility after a native no-op (%s)",
+    async (visible) => {
+      mocks.compact.mockResolvedValueOnce({ ok: true, compacted: false, reason: "within budget" });
+      mocks.read.mockResolvedValueOnce(new Set(visible ? ["synthetic-packet"] : []));
+      const maintenance = createConversationKnowledgeMaintenance({
         run,
         signal: new AbortController().signal,
         assertCurrent: () => {},
-      })(),
-    ).rejects.toThrow("catch-up remains pending");
-    expect(mocks.compact).toHaveBeenCalledTimes(1);
-  });
+      });
+      await expect(maintenance(["synthetic-packet"])).resolves.toEqual({
+        compacted: false,
+        complete: visible,
+      });
+      expect(mocks.compact).toHaveBeenCalledOnce();
+      expect(mocks.read).toHaveBeenCalledOnce();
+    },
+  );
 });
