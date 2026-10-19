@@ -68,8 +68,15 @@ export async function ensureAgentConversationRoot(params: {
   ) {
     throw new Error("Conversation root lost its admitted physical session store");
   }
+  // A fresh suffix becomes an exact locator here; retain its prepared physical owner.
   const result = await createSessionEntryWithTranscriptIfAbsent<ExistingRoot>(
-    { agentId: params.agentId, sessionKey, storePath: selectedStore.path, env },
+    {
+      agentId: params.agentId,
+      defaultAgentId: selectedStore.agentId,
+      sessionKey,
+      storePath: selectedStore.path,
+      env,
+    },
     ({ existingEntry, targetEntry }) => {
       assertCurrent();
       if (existingEntry || targetEntry) {
