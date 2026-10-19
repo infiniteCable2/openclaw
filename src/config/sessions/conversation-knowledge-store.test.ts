@@ -1,6 +1,12 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it } from "vitest";
+import {
+  createConversationKnowledgeScenario,
+  otherPerson,
+  person,
+} from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { buildPersistedVoiceMessage } from "../../talk/voice-transcript.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   readConversationKnowledgeBranch,
@@ -16,7 +22,9 @@ import {
   projectConversationKnowledge,
 } from "./conversation-knowledge.js";
 import {
+  appendTranscriptMessage,
   appendTranscriptMessageSync,
+  loadSessionEntry,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
@@ -25,6 +33,101 @@ import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
 
 describe("native completed-turn root consolidation", () => {
+  it("shares only exact attested voice observations from a legacy agent-created source", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "private-voice-observations" },
+      async (state) => {
+        const fixture = await createConversationKnowledgeScenario(state);
+        try {
+          // Keep the original legacy actor/empty participant roster. A current
+          // utterance attestation must not turn that old row into a private donor.
+          const source = await fixture.branch("legacy-provider-voice", null);
+          await upsertSessionEntryCore(source, {
+            createdActor: { type: "agent", id: "main" },
+          });
+          const before = loadSessionEntry(source);
+          const sourceOwner = await fixture.claim(source);
+          const destination = await fixture.branch("same-person-browser", person);
+          const destinationOwner = await fixture.claim(destination);
+          const foreign = await fixture.branch("other-person-browser", otherPerson);
+          const foreignOwner = await fixture.claim(foreign);
+          let clock = Date.now();
+          const appendVoice = async (role: "user" | "assistant", text: string) => {
+            const saved = await appendTranscriptMessage(source, {
+              message: buildPersistedVoiceMessage({
+                role,
+                text,
+                timestamp: ++clock,
+                provider: "example",
+              }),
+            });
+            if (!saved.appended || !saved.anchor) {
+              throw new Error("Expected the actual committed native voice anchor");
+            }
+            return saved.anchor;
+          };
+          await appendVoice("user", "Historical private prefix must remain unreadable.");
+          const unconfirmed = await appendVoice("assistant", "Old unconfirmed voice answer.");
+          expect(
+            await recordConversationUtteranceObservation({
+              ...sourceOwner,
+              anchor: unconfirmed,
+              role: "assistant",
+            }),
+          ).toBe(true);
+          expect((await fixture.read(destinationOwner)).text).not.toContain(
+            "Old unconfirmed voice answer.",
+          );
+
+          for (const role of ["user", "assistant"] as const) {
+            const text = `Exact attested ${role} voice observation.`;
+            const anchor = await appendVoice(role, text);
+            expect(
+              await recordConversationUtteranceObservation({
+                ...sourceOwner,
+                anchor,
+                role,
+                privateAudience: { participant: person, admission: anchor },
+              }),
+            ).toBe(true);
+            // A later saved event is not admitted by the earlier occurrence's
+            // exact range. It also must not be needed to make its prefix visible.
+            await appendVoice("user", `Unattested following event after ${role}.`);
+            const knowledge = await fixture.read(destinationOwner);
+            expect(knowledge.text).toContain(text);
+            expect(knowledge.text).not.toContain("Historical private prefix");
+            expect(knowledge.text).not.toContain("Old unconfirmed voice answer");
+            expect(knowledge.text).not.toContain("Unattested following event");
+            const denied = await fixture.read(foreignOwner, otherPerson);
+            expect(denied.text).not.toContain(text);
+
+            const receipts = (await loadTranscriptEvents(fixture.root))
+              .map(asOptionalRecord)
+              .filter((event) => event?.customType === CONVERSATION_UTTERANCE_REPORT)
+              .map((event) => readConversationUtteranceObservation(event?.details));
+            const receipt = receipts.find((value) => value?.through.entryId === anchor.entryId);
+            expect(receipt).toMatchObject({
+              role,
+              privateAudience: { participant: person, admission: anchor },
+              through: anchor,
+            });
+          }
+          const after = loadSessionEntry(source);
+          expect(after?.createdActor).toEqual(before?.createdActor);
+          expect(after?.participants).toEqual(before?.participants);
+          expect(after?.participantCount).toBe(before?.participantCount);
+          expect(after?.sessionId).toBe(before?.sessionId);
+          expect(after?.lifecycleRevision).toBe(before?.lifecycleRevision);
+          expect(JSON.stringify(await loadTranscriptEvents(source))).toContain(
+            "Historical private prefix must remain unreadable.",
+          );
+        } finally {
+          await fixture.close();
+        }
+      },
+    );
+  });
+
   it("reports the exact saved occurrence once, without duplicating dialogue in its root", async () => {
     await withOpenClawTestState(
       { scenario: "minimal", label: "conversation-knowledge" },

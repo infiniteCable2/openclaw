@@ -167,11 +167,31 @@ access or inferred from a matching device, agent, or display name.
 Automatic difference context never substitutes operator scope for a missing
 original participant, even when the caller is an administrator.
 
-A new provider-owned voice branch has no recorded participant at startup, so it
-does not receive a private sibling snapshot merely because the connection is
-authenticated. Its first genuine user utterance records the native participant;
-later startup snapshots and actual agent consultations can then use the narrow
-personal read. Startup does not manufacture an initial user turn or contribution.
+A current private recipient can be proved by the original native ingress without
+reinterpreting historical participant rows. Matrix checks the actual private room
+state independently of its channel routing; personal browser Chat and Talk bind
+the original authenticated profile and retained native operator authority to the
+exact private target. A generic authenticated connection, administrator, shared
+device, or public target is insufficient. Internal agent bookkeeping alone does
+not revoke this separately proved audience; another person, observation, sharing
+change, or replaced session still invalidates a held read.
+
+Only future accepted contributions receive this additional provenance, with an
+exact lower transcript boundary. Older unconfirmed dialogue remains stored but is
+not automatically promoted into privately readable history. Normal audio hangup
+does not undo already accepted work; actual recipient or authority revocation
+still prevents additional disclosure. A Gateway restart discards live proofs,
+not history or saved references; the next verified ingress obtains a new proof.
+
+A new provider-owned voice branch is natively materialized before its authorized
+startup snapshot. When its original personal recipient is proved, that snapshot
+can include readable sibling context before the first utterance. Startup does not
+manufacture an initial user turn or contribution. Each future accepted provider
+utterance is independently qualified and references only its exact saved event;
+replayed old events do not acquire new provenance.
+Legacy transcript clients without an original native session-incarnation binding
+continue to save dialogue, but do not manufacture this additional private proof
+from the current session key.
 The central native Reply path joins its already accepted participant recording
 before preparing difference context for the first real turn. Provider-owned
 voice receives a startup snapshot and refreshes on actual consultations, not

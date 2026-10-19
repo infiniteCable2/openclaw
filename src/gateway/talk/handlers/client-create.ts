@@ -10,7 +10,11 @@ import {
   validateTalkClientCreateParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentWorkspaceDir } from "../../../agents/agent-scope.js";
-import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
+import { resolveAgentConversationMode } from "../../../config/agent-conversation-mode.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "../../../config/sessions/session-source-authority.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-control-shared.js";
@@ -61,6 +65,7 @@ import {
   prepareTalkVoiceReplacement,
   registerTalkVoiceSession,
 } from "../voice-selection.js";
+import { createGatewayVoiceTranscriptAudience } from "../voice-transcript-audience.js";
 import {
   forgetLegacyVoiceBinding,
   rememberLegacyVoiceBinding,
@@ -192,13 +197,6 @@ export const createTalkClient: GatewayRequestHandler = async ({
         `Realtime provider ${resolution.provider.id} does not support browser video frames`,
       );
     }
-    conversationContext = await prepareTalkProviderConversationContext({
-      target,
-      assertCurrent: assertTargetCurrent,
-      getRuntimeConfig: context.getRuntimeConfig,
-      captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
-      participant: inputParticipant,
-    });
     const providerInstructions =
       (await resolveTalkRealtimeProviderInstructions({
         config: runtimeConfig,
@@ -207,9 +205,56 @@ export const createTalkClient: GatewayRequestHandler = async ({
         sessionKey: target.canonicalKey,
         warn: (message) => context.logGateway.warn(`talk realtime context: ${message}`),
       })) ?? "";
-    const contextualProviderInstructions = providerInstructions + conversationContext.instructions;
     assertTargetCurrent();
     if (resolution.provider.createBrowserSession) {
+      const ownerConnId = normalizeOptionalString(client?.connId);
+      const ownsProvider =
+        wantsGatewayControl || providerCapabilities?.handlesAgentConsult === true;
+      if (ownsProvider && !ownerConnId) {
+        return rejectRequest(
+          ErrorCodes.UNAVAILABLE,
+          "Gateway-owned realtime sessions require a connected client",
+        );
+      }
+      let startupEnsuredSessionId: string | undefined;
+      conversationContext = await prepareTalkProviderConversationContext({
+        target,
+        assertCurrent: assertTargetCurrent,
+        getRuntimeConfig: context.getRuntimeConfig,
+        captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+        participant: inputParticipant,
+        agentConsultAvailable:
+          providerCapabilities?.supportsToolCalls !== false ||
+          providerCapabilities?.handlesAgentConsult === true,
+        ...(resolveAgentConversationMode(runtimeConfig, agentId) === "branches"
+          ? {
+              prepareTarget: async (assertSourceCurrent: SessionSourceAssertion) => {
+                // A branch is an explicitly begun conversation attempt. Its native
+                // row must exist before the authorized Knowledge snapshot; retain
+                // that attempt even when provider startup subsequently fails.
+                startupEnsuredSessionId = await ensureClientVoiceAgentSessionEntry({
+                  chatType: "direct",
+                  ...sessionTarget,
+                  cfg: runtimeConfig,
+                  creation:
+                    resolveSandboxedSessionCreation(client, runtimeConfig) ??
+                    resolveOperatorSessionCreation(client),
+                  assertCommitAllowed: composeSessionSourceAssertion([
+                    sessionMutationCommitGuard,
+                    assertSourceCurrent,
+                  ]),
+                  onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
+                });
+                sessionMutationAuthorization?.assertTargetCurrent({
+                  ...sessionTarget,
+                  ensuredSessionId: startupEnsuredSessionId,
+                });
+              },
+            }
+          : {}),
+      });
+      const contextualProviderInstructions =
+        providerInstructions + conversationContext.instructions;
       const initialItems = await readTalkRealtimeInitialItems(target, assertTargetCurrent);
       assertTargetCurrent();
       const controlSource =
@@ -226,21 +271,12 @@ export const createTalkClient: GatewayRequestHandler = async ({
           ? normalizeOptionalString(contextualProviderInstructions)
           : buildRealtimeInstructions(contextualProviderInstructions);
       const requestedVoiceSessionId = normalizeOptionalString(params.voiceSessionId);
-      const ownsProvider =
-        wantsGatewayControl || providerCapabilities?.handlesAgentConsult === true;
       let activeVoiceSessionId = ownsProvider
         ? (requestedVoiceSessionId ?? randomUUID())
         : undefined;
       let logicalSessionCreated = false;
       let unregisterVoiceSession: (() => void) | undefined;
       let providerReady = !ownsProvider;
-      const ownerConnId = normalizeOptionalString(client?.connId);
-      if (ownsProvider && !ownerConnId) {
-        return rejectRequest(
-          ErrorCodes.UNAVAILABLE,
-          "Gateway-owned realtime sessions require a connected client",
-        );
-      }
       let closingSource: ClientVoiceSessionSource | undefined;
       let closingFailure: { error: unknown } | undefined;
       const closeLogicalSession = async () => {
@@ -279,6 +315,11 @@ export const createTalkClient: GatewayRequestHandler = async ({
         getVoiceSessionId: () => activeVoiceSessionId,
         initialItems,
       });
+      // Native mode materializes only after a usable provider session exists.
+      // Bind once below that ensure, never keep an absent-row or successor binding.
+      let preparePrivateAudience:
+        | ReturnType<typeof createGatewayVoiceTranscriptAudience>
+        | undefined;
       const gatewayControlOwner = ownsProvider
         ? createTalkClientGatewayControlOwner({
             voiceSessionId: activeVoiceSessionId!,
@@ -315,6 +356,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
                       role,
                       text,
                       participant: role === "user" ? inputParticipant : undefined,
+                      preparePrivateAudience,
                       confirmation,
                       config: runtimeConfig,
                     },
@@ -438,25 +480,43 @@ export const createTalkClient: GatewayRequestHandler = async ({
           if (sessionEntryDeadlineAt !== undefined && Date.now() >= sessionEntryDeadlineAt) {
             throw new Error("Realtime browser session expired during startup; try again");
           }
-          // Defer persistent session creation until the provider has returned a
-          // usable client transport. The write boundary rechecks the credential
-          // deadline so queued storage work cannot leave a phantom chat.
-          const ensuredSessionId = await ensureClientVoiceAgentSessionEntry({
-            chatType: "direct",
-            ...sessionTarget,
-            cfg: runtimeConfig,
-            creation:
-              resolveSandboxedSessionCreation(client, runtimeConfig) ??
-              resolveOperatorSessionCreation(client),
-            deadlineAt: sessionEntryDeadlineAt,
-            assertCommitAllowed,
-            onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
-          });
+          // Native mode still defers creation until a usable transport exists.
+          // Branch mode already admitted its actual attempt before the snapshot;
+          // never delete/recreate it on provider failure or discard its history.
+          const ensuredSessionId =
+            startupEnsuredSessionId ??
+            (await ensureClientVoiceAgentSessionEntry({
+              chatType: "direct",
+              ...sessionTarget,
+              cfg: runtimeConfig,
+              creation:
+                resolveSandboxedSessionCreation(client, runtimeConfig) ??
+                resolveOperatorSessionCreation(client),
+              deadlineAt: sessionEntryDeadlineAt,
+              assertCommitAllowed,
+              onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
+            }));
           sessionMutationCommitGuard?.();
           sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
           replacement?.assertCurrent(target);
           gatewayControlOwner?.assertOpen();
           conversationContext.assertCurrent();
+          if (ownsProvider) {
+            preparePrivateAudience = createGatewayVoiceTranscriptAudience({
+              target,
+              expectedSessionId: ensuredSessionId,
+              participant: inputParticipant,
+              getRuntimeConfig: context.getRuntimeConfig,
+              captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+              assertInputCurrent() {
+                if (
+                  !context.getClientConnIds?.((candidate) => candidate === client).has(ownerConnId!)
+                ) {
+                  throw new Error("Realtime voice client disconnected before transcript admission");
+                }
+              },
+            });
+          }
           // Recovering 6h-abandoned calls (and retrying their digests) is not on the
           // start path; running it inline would delay use of time-sensitive provider
           // credentials behind slow channel sends. Fire it off the response path.

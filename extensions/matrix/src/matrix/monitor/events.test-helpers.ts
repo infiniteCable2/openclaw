@@ -80,6 +80,9 @@ export function createMatrixMonitorEventsTestHarness(params: {
     idbSnapshotPath: path.join(stateDir, "idb-snapshot.json"),
     cryptoDatabasePrefix: path.join(stateDir, "crypto"),
   });
+  const invalidatePrivateAudiences = vi.fn();
+  const invalidateRoom = vi.fn();
+  const invalidateMemberDisplayName = vi.fn();
   disposeClient = () => eventClient.stopWithoutPersist();
   disposeMonitor = registerMatrixMonitorEvents({
     cfg: params.cfg ?? { channels: { matrix: {} } },
@@ -90,12 +93,13 @@ export function createMatrixMonitorEventsTestHarness(params: {
     dmPolicy: "open",
     readStoreAllowFrom: async () => [],
     directTracker: {
-      invalidateRoom: vi.fn(),
-      invalidatePrivateAudiences: vi.fn(),
+      invalidateRoom,
+      invalidatePrivateAudiences,
       rememberInvite: vi.fn(),
       isDirectMessage: async () => false,
     },
     groupPolicy: "open",
+    invalidateMemberDisplayName,
     needsRoomAliasesForConfig: false,
     getRoomInfo: async () => ({ altAliases: [], nameResolved: true, aliasesResolved: true }),
     logVerboseMessage: vi.fn(),
@@ -117,6 +121,9 @@ export function createMatrixMonitorEventsTestHarness(params: {
   return {
     dispose,
     flushTasks,
+    invalidatePrivateAudiences,
+    invalidateRoom,
+    invalidateMemberDisplayName,
     roomEventListener: (...args: MatrixClientEventMap["room.event"]) =>
       eventClient.emitForTest("room.event", ...args),
     roomMessageListener: (...args: MatrixClientEventMap["room.message"]) =>

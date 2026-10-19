@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import { deriveSessionMetaPatch } from "../../config/sessions/metadata.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
+import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
 import {
   claimConversationInputExecution,
@@ -32,15 +35,22 @@ const scope = {
   purpose: "user" as const,
 };
 
-function fixture(participant?: SessionParticipantIdentity, chatType?: ChatType) {
+function fixture(
+  participant?: SessionParticipantIdentity,
+  chatType?: ChatType,
+  profileId = "operator-alpha",
+) {
   const gateway = createDirectChatContext({ getRuntimeConfig: () => ({}) });
   const release = vi.fn();
   const releaseFacts = vi.fn();
-  const entry = {
-    sessionId: "original-session",
-    lifecycleRevision: "original-revision",
-    chatType,
-  };
+  let revoked = false;
+  let audioClosed = false;
+  const entry: Pick<SessionEntry, "sessionId" | "lifecycleRevision" | "chatType" | "publicShare"> =
+    {
+      sessionId: "original-session",
+      lifecycleRevision: "original-revision",
+      chatType,
+    };
   mocks.prepareFacts.mockResolvedValue({
     readCurrent: () => ({
       target: {
@@ -51,11 +61,15 @@ function fixture(participant?: SessionParticipantIdentity, chatType?: ChatType) 
     release: releaseFacts,
   });
   const authority = createAdmittedRunOperatorAuthority({
-    profileId: "operator-alpha",
+    profileId,
     scopes: ["operator.write"],
     gatewayAccessGrant: null,
     rolePolicy: { sessionAccessCap: "none", sandboxRequired: true, agents: [target.agentId] },
-    assertCurrent() {},
+    assertCurrent() {
+      if (revoked) {
+        throw new Error("Original operator revoked");
+      }
+    },
   });
   const source = createGatewayTalkConversationInputSource({
     target,
@@ -64,10 +78,21 @@ function fixture(participant?: SessionParticipantIdentity, chatType?: ChatType) 
     captureOperatorAuthority: async () => ({ authority, release }),
     authority: { senderIsOwner: false },
     participant,
-    assertInputCurrent() {},
+    assertInputCurrent() {
+      if (audioClosed) {
+        throw new Error("Audio connection closed");
+      }
+    },
     resolveGatewayContext: () => gateway,
   });
-  return { source, release, releaseFacts, entry };
+  return {
+    source,
+    release,
+    releaseFacts,
+    entry,
+    closeAudio: () => (audioClosed = true),
+    revoke: () => (revoked = true),
+  };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -75,7 +100,7 @@ beforeEach(() => vi.clearAllMocks());
 describe("native Gateway speech participant", () => {
   it("carries the original authenticated person through the actual native input handoff", async () => {
     const original = { type: "profile" as const, id: "operator-alpha" };
-    const fixtureValue = fixture(original);
+    const fixtureValue = fixture(original, "direct");
     original.id = "changed-after-source-creation";
     const admission = await fixtureValue.source.admitInput(scope);
     const input = consumeConversationInputAdmission(admission, scope);
@@ -87,6 +112,17 @@ describe("native Gateway speech participant", () => {
       expect(context.SessionKey).toBe(target.canonicalKey);
       expect(context.CommandInterpretationSuppressed).toBe(true);
       expect(input.assertOwnerCurrent).toBeUndefined();
+      const audience = readConversationPrivateAudience({ ...context });
+      expect(audience).toMatchObject({
+        agentId: target.agentId,
+        sessionKey: target.canonicalKey,
+        participant: { type: "profile", id: "operator-alpha" },
+      });
+      fixtureValue.closeAudio();
+      expect(() => audience?.assertCurrent()).not.toThrow();
+      expect(() => input.assertCurrent()).not.toThrow();
+      fixtureValue.revoke();
+      expect(() => audience?.assertCurrent()).toThrow("Original operator revoked");
     } finally {
       input.release?.();
     }
@@ -102,6 +138,48 @@ describe("native Gateway speech participant", () => {
       const context = await prepareConversationReplyContext(input, { text: "Original request." });
       expect(readSessionInputProfileId(context)).toBeUndefined();
       expect(input.participant).toBeUndefined();
+      expect(readConversationPrivateAudience(context)).toBeUndefined();
+    } finally {
+      input.release?.();
+    }
+  });
+
+  it.each(["owner", "group", "public", "unknown"] as const)(
+    "does not attest a private speech recipient for %s",
+    async (kind) => {
+      const id = kind === "owner" ? GATEWAY_OWNER_PROFILE_ID : "operator-alpha";
+      const f = fixture(
+        { type: "profile", id },
+        kind === "unknown" ? undefined : kind === "group" ? "group" : "direct",
+        id,
+      );
+      if (kind === "public") {
+        f.entry.publicShare = { id: "public", sessionId: f.entry.sessionId, createdAt: 1 };
+      }
+      const input = consumeConversationInputAdmission(await f.source.admitInput(scope), scope);
+      try {
+        claimConversationInputExecution(input);
+        const context = await prepareConversationReplyContext(input, { text: "Original request." });
+        expect(readConversationPrivateAudience(context)).toBeUndefined();
+      } finally {
+        input.release?.();
+      }
+    },
+  );
+
+  it("revokes a prepared private speech audience when native sharing changes", async () => {
+    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct");
+    const input = consumeConversationInputAdmission(await f.source.admitInput(scope), scope);
+    try {
+      claimConversationInputExecution(input);
+      f.closeAudio();
+      const context = await prepareConversationReplyContext(input, {
+        text: "Already accepted request.",
+      });
+      const audience = readConversationPrivateAudience(context);
+      expect(audience).toBeDefined();
+      f.entry.publicShare = { id: "new-share", sessionId: f.entry.sessionId, createdAt: 1 };
+      expect(() => audience?.assertCurrent()).toThrow("private conversation was shared");
     } finally {
       input.release?.();
     }

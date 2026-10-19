@@ -4,10 +4,12 @@ import { bindHostConversationContextGatewayResolver } from "../../channels/messa
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
+import { bindConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import { createConversationInputAdmission } from "../../talk/conversation-input-admission.js";
 import type { ConversationInputSourceV1 } from "../../talk/conversation-input.types.js";
 import type { GatewayContextResolver } from "../server-methods/types.js";
+import { captureGatewayPrivateConversationAudience } from "../session-input-participant.js";
 import { prepareSessionMutationFacts } from "../session-sharing-preparation.js";
 import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
 import type { TalkAgentConsultAuthority } from "./client-gateway-control.js";
@@ -115,6 +117,20 @@ export function createGatewayTalkConversationInputSource(input: {
         ) {
           throw new Error("Talk participant does not match the original authenticated caller");
         }
+        const audience = captureGatewayPrivateConversationAudience({
+          agentId: params.target.agentId,
+          sessionKey: params.target.canonicalKey,
+          participant: params.participant,
+          operatorAuthority: capturedSource.authority,
+          entry: original.entry,
+          assertCurrent() {
+            assertCurrent();
+            const entry = facts.readCurrent(params.getRuntimeConfig()).target?.entry;
+            if (entry?.chatType !== "direct" || entry.publicShare !== undefined) {
+              throw new Error("Talk private conversation was shared or changed audience");
+            }
+          },
+        });
         const promptedAt = Date.now();
         return createConversationInputAdmission({
           scope,
@@ -148,6 +164,9 @@ export function createGatewayTalkConversationInputSource(input: {
             });
             if (params.participant) {
               prepareSessionParticipantInput(context, params.participant, promptedAt);
+            }
+            if (audience) {
+              bindConversationPrivateAudience(context, audience);
             }
             context.CommandInterpretationSuppressed = true;
             bindHostConversationContextGatewayResolver({

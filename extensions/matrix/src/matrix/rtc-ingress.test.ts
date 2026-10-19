@@ -60,6 +60,7 @@ async function withSource(
     readStore: ReturnType<typeof vi.fn<PluginRuntime["channel"]["pairing"]["readAllowFromStore"]>>;
     endCall: () => void;
     retire: () => void;
+    revokeAudience: () => void;
   }) => Promise<void>,
 ) {
   await withTempHome(async () => {
@@ -127,6 +128,7 @@ async function withSource(
           conversationId,
         }).sessionKey;
         let live = true;
+        let privateAudienceLive = true;
         const createSource = (
           overrides: Partial<Parameters<typeof createMatrixRtcConversationInputSource>[0]> = {},
         ) =>
@@ -147,6 +149,13 @@ async function withSource(
               conversationId: overrides.conversationId ?? conversationId,
             }).sessionKey,
             remoteMembership,
+            preparePrivateAudience: async () => ({
+              assertCurrent: () => {
+                if (!privateAudienceLive) {
+                  throw new Error("Private room audience revoked");
+                }
+              },
+            }),
             assertCurrent: () => {
               if (!live) {
                 throw new Error("Original call ended");
@@ -169,6 +178,9 @@ async function withSource(
             live = false;
           },
           retire,
+          revokeAudience: () => {
+            privateAudienceLive = false;
+          },
         });
       },
     );
@@ -178,6 +190,20 @@ async function withSource(
 afterEach(() => vi.restoreAllMocks());
 
 describe("MatrixRTC text-free conversation admission", () => {
+  it("keeps account privacy separate from audio closure and forwards the original room proof", async () => {
+    await withSource(async ({ source, resolve, endCall, revokeAudience }) => {
+      await source.admitInput(input);
+      const proof = resolve.mock.calls.at(-1)?.[0].privateAudience;
+      expect(proof).toBeDefined();
+      endCall();
+      expect(() => proof!.assertCurrent()).not.toThrow();
+      await expect(source.admitInput({ ...input, inputId: "after-close" })).rejects.toThrow(
+        "Original call ended",
+      );
+      revokeAudience();
+      expect(() => proof!.assertCurrent()).toThrow("Private room audience revoked");
+    });
+  });
   it("admits each user, steering and greeting input through the original native owner", async () => {
     await withSource(async ({ source, resolve, admit, readStore, dispatchSessionKey }) => {
       const admissions = [];

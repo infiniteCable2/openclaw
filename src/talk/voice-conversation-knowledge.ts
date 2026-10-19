@@ -1,5 +1,6 @@
 import type { PreparedReplyConversationKnowledge } from "../auto-reply/reply/conversation-knowledge.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
+import { conversationKnowledgeParticipantIdentity } from "../config/sessions/conversation-audience.js";
 import {
   participantIdentityNamespace,
   type SessionParticipantIdentity,
@@ -12,6 +13,7 @@ import type { TranscriptEntryAnchor } from "../config/sessions/transcript-entry-
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 
 const loadKnowledge = createLazyRuntimeModule(async () => {
@@ -39,6 +41,7 @@ export async function recordVoiceConversationObservation(params: {
   lifecycleRevision: string;
   role: "user" | "assistant";
   participant?: SessionParticipantIdentity;
+  destinationAudience?: ConversationPrivateAudience;
   fresh: boolean;
   timestamp: number;
   config: OpenClawConfig;
@@ -88,13 +91,29 @@ export async function recordVoiceConversationObservation(params: {
       if (!reader) {
         return;
       }
+      const audience = params.destinationAudience;
+      const recipient = audience?.participant;
+      const privateAudience =
+        params.fresh &&
+        audience?.agentId === params.anchor.agentId &&
+        audience.sessionKey === params.anchor.sessionKey &&
+        recipient &&
+        (recipient.type === "profile" || recipient.type === "remote") &&
+        (params.role === "assistant" ||
+          conversationKnowledgeParticipantIdentity(params.participant) ===
+            conversationKnowledgeParticipantIdentity(recipient))
+          ? { participant: recipient, admission: params.anchor }
+          : undefined;
       await owner.recordConversationUtteranceObservation({
         reader,
-        assertCurrent: params.assertCurrent,
+        assertCurrent: privateAudience
+          ? composeSessionSourceAssertion([params.assertCurrent, () => audience!.assertCurrent()])
+          : params.assertCurrent,
         sessionId: params.anchor.sessionId,
         anchor: params.anchor,
         role: params.role,
         sourceMode,
+        ...(privateAudience ? { privateAudience } : {}),
       });
     } finally {
       await held.databaseClaim.release();
@@ -120,6 +139,7 @@ export async function prepareVoiceConversationKnowledge(params: {
   assertCurrent: SessionSourceAssertion;
   participant?: SessionParticipantIdentity;
   getRuntimeConfig(): OpenClawConfig;
+  destinationAudience?: ConversationPrivateAudience;
   signal?: AbortSignal;
 }): Promise<PreparedVoiceConversationKnowledge | undefined> {
   const participant = params.participant && Object.freeze({ ...params.participant });
@@ -183,6 +203,7 @@ export async function prepareVoiceConversationKnowledge(params: {
         sessionId: params.target.sessionId,
         assertCurrent,
         originalParticipant: participant,
+        destinationAudience: params.destinationAudience,
         expectedAudienceIdentity,
         getRuntimeConfig: () => params.getRuntimeConfig(),
         signal: params.signal,

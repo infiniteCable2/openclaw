@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ConversationKnowledgeReference } from "./conversation-knowledge.js";
 import {
   participantIdentityNamespace,
@@ -28,6 +29,26 @@ export function conversationKnowledgeParticipantIdentity(
     return undefined;
   }
   return JSON.stringify([participantIdentityNamespace(identity), identity.id]);
+}
+
+/** Only a separately proved recipient may tolerate internal actor bookkeeping. */
+export function hasOnlyConversationAgentActorChanges(
+  original: Pick<InternalSessionEntry, "participants" | "participantCount">,
+  current: Pick<InternalSessionEntry, "participants" | "participantCount">,
+): boolean {
+  const before = original.participants ?? [];
+  const after = current.participants ?? [];
+  // A partial roster cannot prove that another person was not hidden by truncation.
+  if (
+    (original.participantCount ?? 0) !== before.length ||
+    (current.participantCount ?? 0) !== after.length
+  ) {
+    return false;
+  }
+  return isDeepStrictEqual(
+    before.filter((row) => row.identity.type !== "agent"),
+    after.filter((row) => row.identity.type !== "agent"),
+  );
 }
 
 /** Exactly one recorded private person is required before two audiences can be compared. */

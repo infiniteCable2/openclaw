@@ -221,6 +221,9 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           role: params.role,
           text: params.text,
           participant: params.role === "user" ? resolveGatewayInputParticipant(client) : undefined,
+          // Legacy records bind only a session key, not the original native
+          // incarnation. Preserve their accepted transcript, but never invent a
+          // private contribution proof from whichever row currently owns that key.
           ...(params.timestamp !== undefined ? { timestamp: params.timestamp } : {}),
           config,
         });

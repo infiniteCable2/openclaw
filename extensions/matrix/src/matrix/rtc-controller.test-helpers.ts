@@ -104,6 +104,9 @@ export function createHarness(
     video?: boolean;
     cfg?: CoreConfig;
     runtime?: PluginRuntime;
+    preparePrivateAudience?: Parameters<
+      typeof registerMatrixRtcController
+    >[0]["preparePrivateAudience"];
   } = {},
 ) {
   const emitter = new EventEmitter();
@@ -231,6 +234,7 @@ export function createHarness(
     cfg,
     accountConfig: {} as never,
     accountId: "default",
+    preparePrivateAudience: options.preparePrivateAudience ?? (async () => undefined),
     config: {
       authServiceUrl: "https://rtc.example.test",
       mediaBridgeCommand: "/usr/local/bin/matrix-rtc-bridge",

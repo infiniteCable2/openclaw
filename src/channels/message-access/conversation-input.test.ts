@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getCommandOwnerAuthority } from "../../auto-reply/command-owner-authority.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
+import { DEFAULT_ACCOUNT_ID } from "../../routing/account-id.js";
 import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { sessionParticipantInput } from "../../sessions/session-participant-input.js";
 import {
@@ -61,7 +62,7 @@ async function prepareSource(withPrivateAudience = false, omitAccount = false) {
   } satisfies ChannelIngressAdmissionScope;
   const request = {
     channelId: scope.channelId,
-    accountId: scope.accountId,
+    accountId: scope.accountId ?? DEFAULT_ACCOUNT_ID,
     subject: { stableId: scope.rawPrincipalRef },
     conversation: scope.conversation,
     contextBinding: scope.binding,
@@ -92,7 +93,7 @@ async function prepareSource(withPrivateAudience = false, omitAccount = false) {
     { agentId: input.agentId, sessionKey: "agent:researcher:example:room-alpha" },
     { kind: "none" },
     input.agentId,
-    { channel: "example", accountId: "primary", conversationId: "room-alpha" },
+    { channel: "example", accountId, conversationId: "room-alpha" },
   );
   const context: ChannelConversationInputContextFacts = {
     channel: "example",
@@ -108,7 +109,21 @@ async function prepareSource(withPrivateAudience = false, omitAccount = false) {
     reply: { to: "room-alpha", nativeChannelId: "room-alpha" },
     access: { toolPolicy: { allow: ["read"] } },
   };
-  const ingress = await runtime.resolveStable(request);
+  const ingress = omitAccount
+    ? await runtime.resolve({
+        channelId: request.channelId,
+        accountId,
+        identity: request.identity,
+        subject: request.subject,
+        conversation: request.conversation,
+        contextBinding: request.contextBinding,
+        privateAudience: request.privateAudience,
+        policy: { dmPolicy: request.dmPolicy },
+        allowFrom: request.allowFrom,
+        event: request.event,
+        readStoreAllowFrom: async () => [],
+      })
+    : await runtime.resolveStable(request);
   expect(ingress.ingress.admission).toBe("dispatch");
   const assertCurrent = () => {
     if (!transportLive) {

@@ -1,5 +1,6 @@
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
+import { createDeferredCore } from "../../../shared/deferred.js";
 import {
   captureClientVoiceSessionSettlement,
   withClientVoiceSessionSettlement,
@@ -13,6 +14,7 @@ import {
   closeRelayVoiceSessionRecord,
   createOrResumeClientVoiceSession,
 } from "../../../talk/client-voice-session.js";
+import type { PreparedVoiceTranscriptAudience } from "../../../talk/voice-transcript-audience.types.js";
 import {
   normalizeVoiceTranscriptText,
   VOICE_TRANSCRIPT_QUEUE_POLICY,
@@ -30,6 +32,7 @@ export type RelayVoiceSessionOwner = Pick<
   | "provider"
   | "voiceConfig"
   | "participant"
+  | "preparePrivateAudience"
   | "context"
   | "voiceSessionCreated"
   | "voiceTranscriptSeq"
@@ -106,11 +109,28 @@ export function enqueueRelayVoiceTranscript(
   const { agentId, sessionKey, canonicalKey, storePath } = session.sessionTarget;
   const source = retainedSource ?? captureClientVoiceSessionSource(agentId);
   const settlement = captureClientVoiceSessionSettlement(source.settlementContext);
+  const audienceGate = session.preparePrivateAudience
+    ? createDeferredCore<PreparedVoiceTranscriptAudience | undefined>()
+    : undefined;
+  const audiencePreparation = audienceGate?.promise;
+  const releaseCustody = () => {
+    if (!audiencePreparation) {
+      settlement.release();
+      return;
+    }
+    return audiencePreparation
+      .then((prepared) => prepared?.release())
+      .catch((error: unknown) => {
+        logRelayVoiceFailure(session, "voice transcript recipient release failed", error);
+      })
+      .finally(() => settlement.release());
+  };
   let admission: ReturnType<typeof session.voiceTranscriptQueue.enqueue<void>>;
   try {
     admission = settlement.run(() =>
       session.voiceTranscriptQueue.enqueue(
         async () => {
+          const audience = audiencePreparation ? await audiencePreparation : undefined;
           let lastError: unknown;
           for (const delayMs of RELAY_TRANSCRIPT_RETRY_DELAYS_MS) {
             if (delayMs > 0) {
@@ -127,6 +147,7 @@ export function enqueueRelayVoiceTranscript(
                   role,
                   text: normalizedText,
                   participant: role === "user" ? session.participant : undefined,
+                  ...(audience ? { destinationAudience: audience.audience } : {}),
                   confirmation: observed?.confirmation ?? null,
                   ...(session.voiceConfig ? { config: session.voiceConfig } : {}),
                 },
@@ -146,11 +167,13 @@ export function enqueueRelayVoiceTranscript(
       ),
     );
   } catch (error) {
-    settlement.release();
+    audienceGate?.resolve(undefined);
+    void releaseCustody();
     throw error;
   }
   if (!admission.accepted) {
-    settlement.release();
+    audienceGate?.resolve(undefined);
+    void releaseCustody();
     session.confirmationReadiness.fail(
       new Error("Realtime voice transcript queue is closed or full"),
     );
@@ -159,8 +182,29 @@ export function enqueueRelayVoiceTranscript(
     }
     return false;
   }
+  if (audienceGate) {
+    // Start in the same synchronous admission frame, but only after native queue
+    // acceptance. Rejected/overflow traffic must not acquire unbounded sources.
+    try {
+      void settlement.run(async () => {
+        try {
+          audienceGate.resolve(await session.preparePrivateAudience?.());
+        } catch (error) {
+          logRelayVoiceFailure(
+            session,
+            "voice transcript retained without private recipient receipt",
+            error,
+          );
+          audienceGate.resolve(undefined);
+        }
+      });
+    } catch (error) {
+      logRelayVoiceFailure(session, "voice transcript recipient preparation refused", error);
+      audienceGate.resolve(undefined);
+    }
+  }
   session.voiceTranscriptSeq = transcriptSeq;
-  void admission.completion.finally(() => settlement.release()).catch(() => {});
+  void admission.completion.finally(releaseCustody).catch(() => {});
   void admission.completion.then(observed?.persisted, (error: unknown) => {
     session.confirmationReadiness.fail(error);
     logRelayVoiceFailure(session, "realtime relay transcript append failed", error);

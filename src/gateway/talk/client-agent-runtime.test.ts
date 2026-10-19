@@ -8,7 +8,11 @@ import {
   type AdmittedRunContext,
   type PreparedAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
+import { createConversationKnowledgeScenario } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
+import { recordConversationKnowledgeTurn } from "../../config/sessions/conversation-knowledge-store.js";
+import { recordSessionParticipantInWorker } from "../../config/sessions/session-sharing-store.async.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 
 type RunParams = Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0];
 type NativeRunParams = Parameters<
@@ -103,6 +107,65 @@ beforeEach(() => {
 });
 
 describe("Talk original-source admission", () => {
+  it("reads fresh native sibling differences on each personal consult despite internal agent actors", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "talk-consult-private-actors" },
+      async (state) => {
+        const f = await createConversationKnowledgeScenario(state);
+        try {
+          const participant = { type: "profile" as const, id: "operator-alpha" };
+          const call = await f.branch("personal-provider", participant);
+          await recordSessionParticipantInWorker(call, {
+            identity: { type: "agent", id: "main" },
+            promptedAt: Date.now(),
+            sessionAgentId: call.agentId,
+            expectedSession: call,
+          });
+          const sibling = await f.branch("other-input", participant);
+          const siblingOwner = await f.claim(sibling);
+          const authority = createAdmittedRunOperatorAuthority({
+            profileId: participant.id,
+            scopes: ["operator.write"],
+            gatewayAccessGrant: null,
+            assertCurrent: siblingOwner.assertCurrent,
+          });
+          const release = vi.fn();
+          const runtime = createTalkClientAgentRuntime({
+            config: f.cfg,
+            getRuntimeConfig: () => f.cfg,
+            participant,
+            captureOperatorAuthority: async () => ({ authority, release }),
+          });
+          for (const [index, text] of ["first-live-fact", "second-live-fact"].entries()) {
+            await recordConversationKnowledgeTurn({
+              ...siblingOwner,
+              ...(await f.append(sibling, text)),
+            });
+            mocks.runEmbeddedAgent.mockImplementationOnce(async (params) => {
+              const fragments = params.runtimeContextFragments?.map((part) => part.text).join("\n");
+              expect(fragments).toContain(`${text} answer`);
+              if (index === 0) {
+                expect(fragments).not.toContain("second-live-fact");
+              }
+              return { payloads: [] };
+            });
+            await runtime.runEmbeddedAgent({
+              ...runParams(),
+              config: f.cfg,
+              runId: `personal-consult-${index}`,
+              sessionId: call.sessionId,
+              sessionTarget: call,
+            });
+          }
+          expect(mocks.runEmbeddedAgent).toHaveBeenCalledTimes(2);
+          expect(release).toHaveBeenCalledTimes(2);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+  });
+
   it("keeps the original restriction across native retries without spawning task authority", async () => {
     const source = originalSource();
     let prepared: PreparedAgentRunAdmission | undefined;

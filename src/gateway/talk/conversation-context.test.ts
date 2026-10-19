@@ -4,7 +4,12 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
-const mocks = vi.hoisted(() => ({ sessionId: vi.fn(), prepare: vi.fn() }));
+const mocks = vi.hoisted(() => ({ sessionId: vi.fn(), prepare: vi.fn(), entry: vi.fn() }));
+// mock-isolation: Exact row presentation belongs to the native accessor; no database in this unit.
+vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
+  loadSessionEntry: mocks.entry,
+}));
 // mock-isolation: Existing transcript selection and worker reads are tested by their native owners.
 vi.mock("../../talk/client-voice-session.js", () => ({
   resolveClientVoiceAgentSessionId: mocks.sessionId,
@@ -47,6 +52,7 @@ function setup() {
   }));
   const knowledgeRelease = vi.fn(async () => {});
   mocks.sessionId.mockReturnValue("native-session");
+  mocks.entry.mockReturnValue({ sessionId: "native-session", chatType: "direct" });
   mocks.prepare.mockResolvedValue({
     fragments: [{ kind: "conversation-data", text: "quoted related facts" }],
     observed: [],
@@ -132,6 +138,7 @@ describe("provider startup native context snapshot", () => {
       getRuntimeConfig: () => config,
       captureOperatorAuthority: owner.captureOperatorAuthority,
       participant,
+      agentConsultAvailable: true,
     });
     expect(mocks.prepare).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -146,11 +153,100 @@ describe("provider startup native context snapshot", () => {
     );
     expect(context.instructions).toContain("quoted related facts");
     expect(context.instructions).toContain("not live synchronization");
+    expect(context.instructions).toContain("use openclaw_agent_consult");
     expect(context.instructions).not.toContain("<user>");
     await Promise.all([context.release(), context.release()]);
     expect(owner.sourceRelease).toHaveBeenCalledOnce();
     expect(owner.knowledgeRelease).toHaveBeenCalledOnce();
     expect(() => context.assertCurrent()).toThrow("released");
+  });
+
+  it("does not advertise a native consult when the actual provider exposes none", async () => {
+    const owner = setup();
+    const context = await prepareTalkProviderConversationContext({
+      target,
+      assertCurrent: owner.assertCurrent,
+      getRuntimeConfig: () => config,
+      participant,
+      captureOperatorAuthority: owner.captureOperatorAuthority,
+      agentConsultAvailable: false,
+    });
+    expect(context.instructions).toContain("No native agent-consult context refresh is exposed");
+    expect(context.instructions).not.toContain("use openclaw_agent_consult");
+    expect(context.instructions).toContain("not live synchronization");
+    await context.release();
+  });
+
+  it("captures original authority before materialization and snapshots only the ensured target", async () => {
+    const owner = setup();
+    mocks.sessionId.mockReturnValue(undefined);
+    const order: string[] = [];
+    const context = await prepareTalkProviderConversationContext({
+      target,
+      assertCurrent: owner.assertCurrent,
+      getRuntimeConfig: () => config,
+      participant,
+      captureOperatorAuthority: async (invocation) => {
+        order.push("authority");
+        return owner.captureOperatorAuthority(invocation);
+      },
+      prepareTarget: async (assertCurrent) => {
+        assertCurrent();
+        order.push("native-ensure");
+        mocks.sessionId.mockReturnValue("just-created-session");
+        mocks.entry.mockReturnValue({ sessionId: "just-created-session", chatType: "direct" });
+      },
+    });
+    expect(order).toEqual(["authority", "native-ensure"]);
+    expect(mocks.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: expect.objectContaining({ sessionId: "just-created-session" }),
+        participant,
+        destinationAudience: expect.objectContaining({ participant }),
+      }),
+    );
+    owner.revoke();
+    expect(() => context.assertCurrent()).toThrow("revoked");
+    await context.release();
+    expect(owner.sourceRelease).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, { sessionId: "replacement", chatType: "direct" }])(
+    "does not attest a missing or mismatched native row after resolving its session (%j)",
+    async (entry) => {
+      const owner = setup();
+      mocks.entry.mockReturnValue(entry);
+      await expect(
+        prepareTalkProviderConversationContext({
+          target,
+          assertCurrent: owner.assertCurrent,
+          getRuntimeConfig: () => config,
+          captureOperatorAuthority: owner.captureOperatorAuthority,
+          participant,
+        }),
+      ).rejects.toThrow("target changed before its recipient read");
+      expect(mocks.prepare).not.toHaveBeenCalled();
+      expect(owner.sourceRelease).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not read a snapshot after authority is revoked during native materialization", async () => {
+    const owner = setup();
+    await expect(
+      prepareTalkProviderConversationContext({
+        target,
+        assertCurrent: owner.assertCurrent,
+        getRuntimeConfig: () => config,
+        captureOperatorAuthority: owner.captureOperatorAuthority,
+        prepareTarget: async (assertCurrent) => {
+          assertCurrent();
+          owner.revoke();
+          assertCurrent();
+        },
+      }),
+    ).rejects.toThrow("revoked");
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(owner.sourceRelease).toHaveBeenCalledOnce();
   });
 
   it("describes absent native admission without creating or copying a user turn", async () => {

@@ -17,6 +17,7 @@ import {
   resolveMatrixMonitorLiveUserAllowlist,
   type MatrixResolvedAllowlistEntry,
 } from "./monitor/config.js";
+import type { createDirectRoomTracker } from "./monitor/direct.js";
 import { resolveMatrixInboundRoute } from "./monitor/route.js";
 import { findMatrixRtcAdmission, resolveMatrixRtcConfig } from "./rtc-config.js";
 import { resolveMatrixSenderParticipant } from "./sender-identity.js";
@@ -44,6 +45,8 @@ type MatrixRtcInputSourceParams = {
   remoteMembership: Pick<CallMembership, "userId" | "deviceId" | "memberId" | "rtcBackendIdentity">;
   /** Revalidate the original SDK session, membership, slot and controller call incarnation. */
   assertCurrent: () => void;
+  /** Account-owned room privacy, deliberately independent of the call's audio lifetime. */
+  preparePrivateAudience: ReturnType<typeof createDirectRoomTracker>["preparePrivateAudience"];
   signal?: AbortSignal;
   startupResolvedEntries?: readonly MatrixResolvedAllowlistEntry[];
 };
@@ -65,6 +68,7 @@ export function createMatrixRtcConversationInputSource(
     conversationId,
     sourceSessionKey,
     dispatchSessionKey,
+    preparePrivateAudience,
     assertCurrent: assertCallCurrent,
     signal: callSignal,
   } = params;
@@ -187,6 +191,8 @@ export function createMatrixRtcConversationInputSource(
         runtime: runtimeEnv,
       });
       assertCurrent();
+      const privateAudience = await preparePrivateAudience({ roomId, senderId });
+      assertCurrent();
       const scope = {
         channelId: "matrix",
         accountId,
@@ -207,6 +213,7 @@ export function createMatrixRtcConversationInputSource(
         subject: { stableId: senderId },
         conversation: scope.conversation,
         contextBinding: scope.binding,
+        privateAudience,
         event: { kind: "conversation", authMode: "inbound", mayPair: false },
         policy: { dmPolicy: selected.dmPolicy, groupPolicy: "disabled" },
         accessGroups: selected.cfg.accessGroups,

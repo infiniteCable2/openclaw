@@ -66,6 +66,7 @@ import {
   stopTalkTranscriptionRelaySession,
 } from "../transcription-relay.js";
 import { prepareTalkVoiceReplacement } from "../voice-selection.js";
+import { createGatewayVoiceTranscriptAudience } from "../voice-transcript-audience.js";
 import { talkSessionOutputHandlers } from "./session-output.js";
 
 function respondInvalidRequest(respond: RespondFn, message: string) {
@@ -414,6 +415,9 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           ];
           const providerContext = await prepareTalkProviderConversationContext({
             target,
+            agentConsultAvailable:
+              capabilities?.supportsToolCalls !== false ||
+              capabilities?.handlesAgentConsult === true,
             participant: resolveGatewayInputParticipant(client),
             assertCurrent: assertEnsuredTargetCurrent,
             getRuntimeConfig: context.getRuntimeConfig,
@@ -437,6 +441,22 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
                 cfg: runtimeConfig,
                 consultAuthority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
                 participant: resolveGatewayInputParticipant(client),
+                preparePrivateAudience: createGatewayVoiceTranscriptAudience({
+                  target,
+                  expectedSessionId: ensuredSessionId,
+                  participant: resolveGatewayInputParticipant(client),
+                  getRuntimeConfig: context.getRuntimeConfig,
+                  captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+                  assertInputCurrent() {
+                    if (
+                      !context.getClientConnIds?.((candidate) => candidate === client).has(connId)
+                    ) {
+                      throw new Error(
+                        "Realtime relay client disconnected before transcript admission",
+                      );
+                    }
+                  },
+                }),
                 captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
                 provider: resolution.provider,
                 providerConfig,

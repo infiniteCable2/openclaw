@@ -293,6 +293,82 @@ describe("same-person conversation differences on native transcript read owner",
     expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
   });
 
+  it.each(["person", "observation", "agent"] as const)(
+    "rechecks a fresh %s actor change between source assertion and COMMIT preparation",
+    async (kind) => {
+      const f = fixture();
+      f.params.personal.targetAudience = {
+        agentId: f.params.personal.target.agentId,
+        sessionKey: f.recipient.canonicalKey,
+        channelId: "example-channel",
+        accountId: "default",
+        nativeChannelId: "private-room",
+        participant: f.params.personal.originalParticipant,
+        assertCurrent() {},
+      };
+      let armed = false;
+      let recipientReads = 0;
+      const addition: SessionParticipantIdentity =
+        kind === "person"
+          ? { type: "profile", id: "another-person" }
+          : kind === "agent"
+            ? { type: "agent", id: "internal-helper" }
+            : {
+                type: "observation",
+                pluginId: "example-channel",
+                accountId: "default",
+                senderKind: "unknown",
+                id: "unknown-device",
+              };
+      mocks.prepare.mockImplementation(async (request: { sessionKey: string }) => {
+        const held = await f.prepare(request);
+        return {
+          ...held,
+          readCurrent() {
+            // The first recipient read belongs to assertCurrent(). The second
+            // refreshes its native COMMIT predicate; simulate a foreign commit
+            // at that precise read boundary, not an earlier revoked assertion.
+            if (
+              armed &&
+              request.sessionKey === f.recipient.canonicalKey &&
+              ++recipientReads === 2
+            ) {
+              f.recipient.entry.participants!.push({ identity: addition });
+              f.recipient.entry.participantCount = f.recipient.entry.participants!.length;
+            }
+            return held.readCurrent();
+          },
+        };
+      });
+      const grant = await prepareTranscriptReadAuthority(f.params);
+      try {
+        armed = true;
+        const prepared = prepareSessionSourceAuthority(grant.assertCurrent);
+        if (kind === "agent") {
+          const accepted = await prepared;
+          try {
+            expect(accepted.checks[0]?.predicate).toMatchObject({
+              fields: expect.arrayContaining(["participants", "participantCount"]),
+              expected: {
+                participantCount: 2,
+                participants: f.recipient.entry.participants,
+              },
+            });
+          } finally {
+            await accepted.release?.();
+          }
+        } else {
+          await expect(prepared).rejects.toThrow("recipients changed during source preparation");
+          expect(() => grant.assertCurrent()).toThrow();
+        }
+        expect(recipientReads).toBe(2);
+      } finally {
+        grant.release();
+      }
+      expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
+    },
+  );
+
   it.each([
     "source-incarnation",
     "participant",

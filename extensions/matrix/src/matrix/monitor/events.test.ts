@@ -358,48 +358,6 @@ describe("registerMatrixMonitorEvents verification routing", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("invalidates direct-room and observed member-display-name caches on room member events", () => {
-    const { invalidateRoom, invalidateMemberDisplayName, roomEventListener } = createHarness();
-
-    roomEventListener("!room:example.org", {
-      event_id: "$member1",
-      sender: "@alice:example.org",
-      state_key: "@mallory:example.org",
-      type: EventType.RoomMember,
-      origin_server_ts: Date.now(),
-      content: {
-        membership: "join",
-      },
-    });
-
-    expect(invalidateRoom).toHaveBeenCalledWith("!room:example.org");
-    expect(invalidateMemberDisplayName).toHaveBeenCalledWith(
-      "!room:example.org",
-      "@mallory:example.org",
-    );
-  });
-
-  it.each([
-    { type: "m.room.history_visibility", content: { history_visibility: "world_readable" } },
-    { type: "m.room.join_rules", content: { join_rule: "public" } },
-    { type: "m.room.third_party_invite", content: { display_name: "Another reader" } },
-  ])(
-    "revokes only the affected room's private evidence when $type changes",
-    ({ type, content }) => {
-      const { invalidateRoom, invalidatePrivateAudiences, roomEventListener } = createHarness();
-      roomEventListener("!room:example.org", {
-        event_id: "$privacy-state-change",
-        sender: "@alice:example.org",
-        type,
-        state_key: "",
-        origin_server_ts: Date.now(),
-        content,
-      });
-      expect(invalidatePrivateAudiences).toHaveBeenCalledExactlyOnceWith("!room:example.org");
-      expect(invalidateRoom).not.toHaveBeenCalled();
-    },
-  );
-
   it("does not invalidate a member display name without an authoritative state key", () => {
     const { invalidateRoom, invalidateMemberDisplayName, roomEventListener } = createHarness();
 

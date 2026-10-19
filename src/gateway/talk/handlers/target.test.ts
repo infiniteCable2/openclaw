@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createConversationKnowledgeScenario } from "../../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
+import { recordConversationKnowledgeTurn } from "../../../config/sessions/conversation-knowledge-store.js";
 import {
   loadSessionEntry,
   readSessionTranscriptMessageEvents,
@@ -129,7 +131,7 @@ async function dispatch(
   );
   if (method === "talk.client.create" && respond.mock.calls[0]?.[0] === true) {
     const { voiceSessionId } = respond.mock.calls[0][1] as { voiceSessionId: string };
-    const record = ["voice", "primary"]
+    const record = ["voice", "primary", "main"]
       .map((agentId) => clientVoiceSessionTesting.readRecord(agentId, voiceSessionId))
       .find(Boolean);
     if (record) {
@@ -192,6 +194,116 @@ afterEach(async () => {
 });
 
 describe("Talk target preparation through Gateway authorization", () => {
+  it("includes an existing private sibling in the very first browser branch before provider startup", async () => {
+    const fixture = await createConversationKnowledgeScenario(state);
+    config = { ...fixture.cfg, talk: { agentId: "main" } };
+    const participant = {
+      type: "profile" as const,
+      id: client.authenticatedUserProfile!.profileId,
+    };
+    try {
+      const sibling = await fixture.branch("personal-chat", participant);
+      const siblingOwner = await fixture.claim(sibling);
+      const terminal = await fixture.append(
+        sibling,
+        "private-before-browser",
+        "stop",
+        "The private synthetic appointment is at noon.",
+      );
+      expect(await recordConversationKnowledgeTurn({ ...siblingOwner, ...terminal })).toBe(true);
+      const target = prepareTalkSessionTarget(
+        config,
+        undefined,
+        "conversation-input",
+        client.connId,
+      );
+      expect(loadSessionEntry({ ...target, sessionKey: target.canonicalKey })).toBeUndefined();
+      createBrowserSession.mockImplementationOnce(async (request) => {
+        expect(loadSessionEntry({ ...target, sessionKey: target.canonicalKey })).toMatchObject({
+          conversationTopology: { role: "branch" },
+          chatType: "direct",
+        });
+        expect(request.instructions).toContain("The private synthetic appointment is at noon.");
+        expect(request.instructions).toContain("not live synchronization");
+        expect(request.instructions).toContain("use openclaw_agent_consult");
+        return browserSession;
+      });
+      expect(await dispatch("talk.client.create", createParams)).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining(browserSession),
+        undefined,
+      );
+      expect(createBrowserSession).toHaveBeenCalledOnce();
+      // No fake first utterance/participant was written to make a fresh recipient
+      // appear historical. The current browser proof owns only this disclosure.
+      const created = loadSessionEntry({ ...target, sessionKey: target.canonicalKey });
+      expect(created?.participantCount ?? 0).toBe(0);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it.each(["native", "branches"] as const)(
+    "keeps native-mode defer and retains a genuinely begun %s attempt on provider failure",
+    async (conversationMode) => {
+      config.agents!.entries!.voice = { conversationMode };
+      if (conversationMode === "branches") {
+        await ensureAgentConversationRoot({ cfg: config, agentId: "voice" });
+      }
+      const target = prepareTalkSessionTarget(
+        config,
+        undefined,
+        "conversation-input",
+        client.connId,
+      );
+      createBrowserSession.mockImplementationOnce(async () => {
+        const entry = loadSessionEntry({ ...target, sessionKey: target.canonicalKey });
+        if (conversationMode === "branches") {
+          expect(entry).toMatchObject({ conversationTopology: { role: "branch" } });
+        } else {
+          expect(entry).toBeUndefined();
+        }
+        throw new Error("Synthetic provider startup failure");
+      });
+      expect(await dispatch("talk.client.create", createParams)).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          message: expect.stringContaining("Synthetic provider startup failure"),
+        }),
+      );
+      expect(createBrowserSession).toHaveBeenCalledOnce();
+      const entry = loadSessionEntry({ ...target, sessionKey: target.canonicalKey });
+      if (conversationMode === "branches") {
+        expect(entry).toMatchObject({ conversationTopology: { role: "branch" } });
+        expect(
+          readSessionTranscriptMessageEvents({ ...target, sessionKey: target.canonicalKey }),
+        ).toEqual([]);
+      } else {
+        expect(entry).toBeUndefined();
+      }
+    },
+  );
+
+  it("refuses authority revocation before an initial branch is materialized", async () => {
+    config.agents!.entries!.voice = { conversationMode: "branches" };
+    await ensureAgentConversationRoot({ cfg: config, agentId: "voice" });
+    const target = prepareTalkSessionTarget(config, undefined, "conversation-input", client.connId);
+    mocks.bootstrap.mockImplementationOnce(async () => {
+      invalidateGatewayDeviceRevocation(context, "talk-target-device", "operator");
+      return "Agent context fixture.";
+    });
+    expect(await dispatch("talk.client.create", createParams)).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("Gateway requester authority changed"),
+      }),
+    );
+    expect(createBrowserSession).not.toHaveBeenCalled();
+    expect(loadSessionEntry({ ...target, sessionKey: target.canonicalKey })).toBeUndefined();
+  });
+
   it("retains the original WebSocket device revocation while provider context is awaited", async () => {
     const gate = createDeferredCore();
     const started = createDeferredCore();

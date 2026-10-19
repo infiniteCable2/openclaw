@@ -4,6 +4,7 @@ import {
   conversationKnowledgeAudienceIdentity,
   conversationKnowledgeParticipantIdentity,
   conversationKnowledgeContributionIdentity,
+  hasOnlyConversationAgentActorChanges,
 } from "../../config/sessions/conversation-audience.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
@@ -52,6 +53,23 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
   };
   try {
     const original = held.readCurrent(params.getRuntimeConfig()).target;
+    const destination = params.destinationAudience;
+    const destinationIdentity =
+      destination &&
+      destination.agentId === branch.agentId &&
+      destination.sessionKey === branch.sessionKey &&
+      original.entry.publicShare === undefined &&
+      conversationKnowledgeParticipantIdentity(destination.participant);
+    const contributionIdentity = conversationKnowledgeContributionIdentity(
+      original.entry,
+      branch,
+      params.contribution,
+    );
+    const privateIdentity = destinationIdentity || contributionIdentity;
+    const originalActors = structuredClone({
+      participants: original.entry.participants,
+      participantCount: original.entry.participantCount,
+    });
     const originalFields = structuredClone(
       Object.fromEntries(fields.map((field) => [field, original.entry[field]])),
     );
@@ -62,6 +80,8 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
       const target = held.readCurrent(params.getRuntimeConfig()).target;
       params.destinationAudience?.assertCurrent();
       const membership = target.entry.conversationTopology;
+      const actorOnlyChange =
+        privateIdentity && hasOnlyConversationAgentActorChanges(originalActors, target.entry);
       if (
         target.agentId !== branch.agentId ||
         target.canonicalKey !== branch.sessionKey ||
@@ -73,7 +93,11 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
         membership.rootSessionKey !== branch.root.sessionKey ||
         membership.rootSessionId !== branch.root.sessionId ||
         membership.rootSessionLifecycleRevision !== branch.root.lifecycleRevision ||
-        fields.some((field) => !isDeepStrictEqual(originalFields[field], target.entry[field]))
+        fields.some(
+          (field) =>
+            !(actorOnlyChange && (field === "participants" || field === "participantCount")) &&
+            !isDeepStrictEqual(originalFields[field], target.entry[field]),
+        )
       ) {
         throw new Error("Conversation knowledge branch audience or incarnation changed");
       }
@@ -107,19 +131,6 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
       prepareSessionSource: prepare,
       prepareSessionSourceScope: prepare,
     });
-    const destination = params.destinationAudience;
-    const destinationIdentity =
-      destination &&
-      destination.agentId === branch.agentId &&
-      destination.sessionKey === branch.sessionKey &&
-      original.entry.publicShare === undefined &&
-      conversationKnowledgeParticipantIdentity(destination.participant);
-    const contributionIdentity = conversationKnowledgeContributionIdentity(
-      original.entry,
-      branch,
-      params.contribution,
-    );
-    const privateIdentity = destinationIdentity || contributionIdentity;
     return {
       assertCurrent,
       audience: privateIdentity

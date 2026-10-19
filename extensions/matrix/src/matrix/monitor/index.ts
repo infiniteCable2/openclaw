@@ -496,6 +496,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
         runtimeEnv: runtime,
         logger,
         abortSignal: monitorLifecycleSignal,
+        preparePrivateAudience: directTracker.preparePrivateAudience,
       });
     }
 

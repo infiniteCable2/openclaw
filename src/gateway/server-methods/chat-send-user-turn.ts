@@ -3,11 +3,15 @@ import { bindRequesterProfile } from "../../auto-reply/requester-profile.js";
 import type { RuntimeMsgContext as MsgContext } from "../../auto-reply/templating.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { readPersistedMediaFacts, type MediaFact } from "../../media/media-facts.js";
+import { bindConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import type { UserTurnInput } from "../../sessions/user-turn-transcript.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
-import { isBrowserOperatorUiClient } from "../../utils/message-channel.js";
+import {
+  INTERNAL_MESSAGE_CHANNEL,
+  isBrowserOperatorUiClient,
+} from "../../utils/message-channel.js";
 import {
   INLINE_IMAGE_DURABLE_OMISSION_MARKER,
   discardPreparedInboundMedia,
@@ -16,7 +20,10 @@ import {
 import { transferGatewayLocalUserIngress } from "../local-user-ingress.js";
 import { resolveCreatorSandbox } from "../operator-role-policy.js";
 import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
-import { resolveGatewayInputParticipant } from "../session-input-participant.js";
+import {
+  captureGatewayPrivateConversationAudience,
+  resolveGatewayInputParticipant,
+} from "../session-input-participant.js";
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
 import { captureGatewayUiCommandTarget } from "../ui-command-target.js";
 import { isAcpBridgeClient } from "./chat-origin-routing.js";
@@ -99,9 +106,19 @@ export function prepareChatSendUserTurn(params: {
     | "toolBindings"
   >;
   session: Pick<PreparedChatSendSession, "agentId" | "clientRunId" | "sessionKey"> &
-    Partial<Pick<PreparedChatSendSession, "cfg">>;
+    Partial<Pick<PreparedChatSendSession, "cfg" | "entry">>;
   admission: Pick<AdmittedChatSend, "originatingRoute"> &
-    Partial<Pick<AdmittedChatSend, "assertWorkAdmissionCurrent" | "assertClientUploadAllowed">>;
+    Partial<
+      Pick<
+        AdmittedChatSend,
+        | "assertWorkAdmissionCurrent"
+        | "assertClientUploadAllowed"
+        | "assertSessionTargetCurrent"
+        | "operatorAuthority"
+        | "admittedSessionEntry"
+        | "initialSessionEntry"
+      >
+    >;
   attachments: PreparedChatSendAttachments;
   client: GatewayRequestHandlerOptions["client"];
   logGateway: GatewayRequestContext["logGateway"];
@@ -275,6 +292,35 @@ export function prepareChatSendUserTurn(params: {
   const participant = resolveGatewayInputParticipant(client, request.systemInputProvenance);
   if (participant) {
     prepareSessionParticipantInput(ctx, participant, userTurn.baseInput.timestamp);
+  }
+  if (
+    client?.connId &&
+    !client.invalidated &&
+    !client.connectionSignal?.aborted &&
+    !isSyntheticGatewayCaller(client) &&
+    isBrowserOperatorUiClient(request.clientInfo) &&
+    originatingChannel === INTERNAL_MESSAGE_CHANNEL &&
+    originatingTo === session.sessionKey &&
+    !explicitDeliverRoute &&
+    admission.assertSessionTargetCurrent &&
+    admission.assertWorkAdmissionCurrent
+  ) {
+    const assertTargetCurrent = admission.assertSessionTargetCurrent;
+    const assertWorkCurrent = admission.assertWorkAdmissionCurrent;
+    const audience = captureGatewayPrivateConversationAudience({
+      agentId: session.agentId,
+      sessionKey: session.sessionKey,
+      participant,
+      operatorAuthority: admission.operatorAuthority,
+      entry: admission.admittedSessionEntry ?? admission.initialSessionEntry ?? session.entry,
+      assertCurrent() {
+        assertTargetCurrent();
+        assertWorkCurrent();
+      },
+    });
+    if (audience) {
+      bindConversationPrivateAudience(ctx, audience);
+    }
   }
   return {
     prepareSessionCreation: async () => {

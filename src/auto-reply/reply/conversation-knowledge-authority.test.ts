@@ -112,6 +112,46 @@ describe("native conversation knowledge audience custody", () => {
     expect(() => facts.assertCurrent()).toThrow("released");
   });
 
+  it.each([false, true])(
+    "permits actor-only evolution only with current recipient proof (%s)",
+    async (attested) => {
+      const f = fixture();
+      const destinationAudience = {
+        agentId: branch.agentId,
+        sessionKey: branch.sessionKey,
+        channelId: "webchat",
+        accountId: "default",
+        nativeChannelId: branch.sessionKey,
+        participant: { type: "profile" as const, id: "person-example" },
+        assertCurrent() {},
+      };
+      const facts = await prepareConversationKnowledgeBranchFacts({
+        branch,
+        getRuntimeConfig: () => ({}),
+        ...(attested ? { destinationAudience } : {}),
+      });
+      try {
+        f.entry.participants!.push({ identity: { type: "agent", id: "helper" } });
+        f.entry.participantCount = 2;
+        if (!attested) {
+          expect(() => facts.assertCurrent()).toThrow("audience or incarnation changed");
+          return;
+        }
+        expect(() => facts.assertCurrent()).not.toThrow();
+        const prepared = await facts.assertCurrent.prepareSessionSource?.();
+        expect(prepared?.checks[0]?.predicate).toMatchObject({
+          fields: expect.arrayContaining(["participants", "participantCount"]),
+          expected: { participants: f.entry.participants, participantCount: 2 },
+        });
+        f.entry.participants!.push({ identity: { type: "profile", id: "another-person" } });
+        f.entry.participantCount = 3;
+        expect(() => facts.assertCurrent()).toThrow("audience or incarnation changed");
+      } finally {
+        facts.release();
+      }
+    },
+  );
+
   it.each<Partial<InternalSessionEntry>>([
     { chatType: "channel" },
     { publicShare: { id: "share", sessionId: branch.sessionId, createdAt: 1 } },

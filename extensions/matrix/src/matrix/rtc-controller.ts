@@ -86,6 +86,9 @@ export function registerMatrixRtcController(params: {
   runtime: PluginRuntime;
   runtimeEnv: RuntimeEnv;
   logger: RuntimeLogger;
+  preparePrivateAudience: Parameters<
+    typeof createMatrixRtcConversationBindings
+  >[0]["source"]["preparePrivateAudience"];
   abortSignal?: AbortSignal;
 }): { startExisting(): void; stop(): Promise<void> } {
   const calls = new Map<string, ActiveCall>();
@@ -298,6 +301,7 @@ export function registerMatrixRtcController(params: {
             conversationId: meetingSessionId,
             sourceSessionKey: route.sessionKey,
             remoteMembership: remote,
+            preparePrivateAudience: params.preparePrivateAudience,
             assertCurrent: () => {
               assertCurrentMembership();
             },

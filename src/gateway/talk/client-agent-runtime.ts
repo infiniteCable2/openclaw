@@ -2,6 +2,7 @@ import type {
   AdmittedRunOperatorAuthority,
   OperationalRunInstanceRef,
 } from "../../agents/admitted-run-context.js";
+import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
@@ -21,6 +22,7 @@ import {
   prepareVoiceConversationKnowledge,
   type PreparedVoiceConversationKnowledge,
 } from "../../talk/voice-conversation-knowledge.js";
+import { captureGatewayPrivateConversationAudience } from "../session-input-participant.js";
 
 const loadTalkAgentExecution = createLazyRuntimeModule(async () => {
   const [embeddedAgent, admission] = await Promise.all([
@@ -101,10 +103,27 @@ export function createTalkClientAgentRuntime(params: {
         signal: runParams.abortSignal,
       });
       assertSourceCurrent();
+      const target = { agentId, sessionId, sessionKey, storePath };
+      const entry =
+        participant?.type === "profile" && operatorSource ? loadSessionEntry(target) : undefined;
+      // This runtime serves the original personal browser connection. An internal
+      // agent consultation is still not a new human recipient of that connection.
+      const destinationAudience =
+        entry?.sessionId === sessionId && participant?.type === "profile" && operatorSource
+          ? captureGatewayPrivateConversationAudience({
+              agentId,
+              sessionKey,
+              participant,
+              operatorAuthority: operatorSource.authority,
+              entry,
+              assertCurrent: assertHostCurrent,
+            })
+          : undefined;
       knowledge = await prepareVoiceConversationKnowledge({
-        target: { agentId, sessionId, sessionKey, storePath },
+        target,
         assertCurrent: assertHostCurrent,
         participant,
+        destinationAudience,
         getRuntimeConfig: params.getRuntimeConfig ?? (() => params.config),
         signal: runParams.abortSignal,
       });

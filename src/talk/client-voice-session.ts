@@ -13,7 +13,10 @@ import {
   onTrustedToolExecutionEvent,
   type TrustedToolExecutionEvent,
 } from "../infra/diagnostic-events.js";
+import { formatErrorMessage } from "../infra/errors.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { captureGatewayRootWorkReleaseObserver } from "../process/gateway-work-admission.js";
+import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
 import {
   type ClientVoiceConfirmationUtteranceContext,
@@ -53,6 +56,10 @@ import {
   writeVoiceSessionRecordInTransaction as writeRecordInTransaction,
 } from "./client-voice-session-store.js";
 import { recordVoiceConversationObservation } from "./voice-conversation-knowledge.js";
+import type {
+  PrepareVoiceTranscriptAudience,
+  PreparedVoiceTranscriptAudience,
+} from "./voice-transcript-audience.types.js";
 import {
   buildPersistedVoiceMessage,
   VoiceTranscriptOperationRegistry,
@@ -72,6 +79,7 @@ type ClientVoiceRun = {
 
 const voiceSessionByRunId = new Map<string, ClientVoiceRun>();
 const voiceSessionOperations = new VoiceTranscriptOperationRegistry();
+const log = createSubsystemLogger("talk/client-voice-session");
 let unsubscribeToolEffects: (() => void) | undefined;
 let unsubscribeRunCompletion: (() => void) | undefined;
 
@@ -359,6 +367,10 @@ function appendVoiceTranscript(
     config?: OpenClawConfig;
     /** Captured by the actual native ingress, not reconstructed from device or session IDs. */
     participant?: SessionParticipantIdentity;
+    /** Borrowed across a relay's own native retries; its caller owns the release. */
+    destinationAudience?: ConversationPrivateAudience;
+    /** Direct append owns this one accepted utterance's recipient custody. */
+    preparePrivateAudience?: PrepareVoiceTranscriptAudience;
     confirmation?: ClientVoiceConfirmationUtteranceContext | null;
   },
   retainedSource?: ClientVoiceSessionSource,
@@ -378,138 +390,162 @@ function appendVoiceTranscript(
         })
       : null;
   const append = async () => {
-    const source = retainedSource ?? captureClientVoiceSessionSource(normalized.agentId);
-    return voiceSessionOperations.run(
-      operationKey(normalized.agentId, normalized.voiceSessionId),
-      async () => {
-        source.assertCurrent();
-        const record = readRecord(normalized.agentId, normalized.voiceSessionId, source.options);
-        if (!record) {
-          throw new Error("voice session not found");
-        }
-        assertOwnership(record, normalized);
-        if (record.status !== "open") {
-          throw new Error("voice session is closed");
-        }
-        if (record.origin !== normalized.origin) {
-          throw new Error("voice session origin does not allow this transcript source");
-        }
-        const failureKey = sha256Hex(normalized.entryId);
-        if (
-          record.transcriptFailureKeys.length >= VOICE_TRANSCRIPT_MAX_UNRESOLVED &&
-          !record.transcriptFailureKeys.includes(failureKey)
-        ) {
-          throw new Error("voice transcript persistence has too many unresolved entries");
-        }
-        // Voice ownership keeps the original key; transcript storage uses the target
-        // prepared before main/global aliases lose their selected agent identity.
-        const sessionTarget = {
-          ...normalized.sessionTarget,
-          agentId: normalized.agentId,
-          env: source.options.env,
-        };
-        const sessionEntry = loadSessionEntryReadOnly(sessionTarget);
-        if (!sessionEntry?.sessionId) {
-          throw new Error(`agent session not found (${normalized.sessionKey})`);
-        }
-        const timestamp = normalized.timestamp ?? Date.now();
-        // Reserve before the fallible append. A crash can leave a conservative
-        // retry requirement, but can never let close skip an accepted entry.
-        source.assertCurrent();
-        runOpenClawAgentWriteTransaction(
-          (database) => {
-            source.assertCurrent();
-            const current = readRecordInTransaction(database, normalized.voiceSessionId);
-            if (!current) {
-              throw new Error("voice session disappeared during transcript reservation");
-            }
-            assertOwnership(current, normalized);
-            if (!current.transcriptFailureKeys.includes(failureKey)) {
-              current.transcriptFailureKeys.push(failureKey);
-            }
-            current.updatedAt = Date.now();
-            writeRecordInTransaction(database, current);
-          },
-          source.options,
-          { operationLabel: "voice.transcript.reserve" },
-        );
-        const appended = await appendTranscriptMessage(
-          { ...sessionTarget, sessionId: sessionEntry.sessionId },
-          {
-            ...(normalized.config ? { config: normalized.config } : {}),
-            eventId: voiceTranscriptEventId(normalized.voiceSessionId, normalized.entryId),
-            message: buildPersistedVoiceMessage({
-              role: normalized.role,
-              text: normalized.text,
-              timestamp,
-              provider: record.provider ?? "realtime",
-            }),
-            now: timestamp,
-          },
-        );
-        // Publish the committed row before fallible bookkeeping; a retry can deduplicate it.
-        if (confirmation) {
-          recordClientVoiceConfirmationTranscriptAppend({
-            confirmation,
-            entryId: normalized.entryId,
-            text: normalized.text,
-            appended: appended.appended,
-          });
-        }
-        if (appended.appended) {
-          await publishTranscriptUpdate(
-            { ...sessionTarget, sessionId: sessionEntry.sessionId },
-            { message: appended.message, messageId: appended.messageId },
-          );
-        }
-        if (appended.anchor && sessionEntry.lifecycleRevision && normalized.config) {
-          await recordVoiceConversationObservation({
-            anchor: appended.anchor,
-            lifecycleRevision: sessionEntry.lifecycleRevision,
-            role: normalized.role,
-            participant: normalized.participant,
-            fresh: appended.appended,
-            timestamp,
-            config: normalized.config,
-            env: source.options.env,
-            assertCurrent: source.assertCurrent,
-          });
-        }
-        source.assertCurrent();
-        runOpenClawAgentWriteTransaction(
-          (database) => {
-            source.assertCurrent();
-            const current = readRecordInTransaction(database, normalized.voiceSessionId);
-            if (!current) {
-              throw new Error("voice session disappeared during transcript append");
-            }
-            assertOwnership(current, normalized);
-            // Reaching here means this exact eventId is durably persisted (fresh append or
-            // idempotent dedup of our own prior write). Arm confirmation bookkeeping in both
-            // cases so a retry after a partial failure still records the user utterance.
-            if (normalized.role === "user") {
-              current.hasUserTranscript = true;
-            }
-            current.transcriptFailureKeys = current.transcriptFailureKeys.filter(
-              (key) => key !== failureKey,
-            );
-            current.updatedAt = Date.now();
-            writeRecordInTransaction(database, current);
-          },
-          source.options,
-          { operationLabel: "voice.transcript.confirm" },
-        );
-        if (normalized.role === "user" && confirmation) {
-          noteClientVoiceConfirmationUtterance({
+    const noPrivateAudience = (error: unknown) => {
+      // Already accepted speech must persist even when no additional personal
+      // read/contribution proof can be established. Never invent a fallback grant.
+      log.warn("Voice transcript retained without a private recipient receipt.", {
+        error: formatErrorMessage(error),
+      });
+      return undefined;
+    };
+    let audiencePreparation: Promise<PreparedVoiceTranscriptAudience | undefined> | undefined;
+    try {
+      audiencePreparation = normalized.preparePrivateAudience?.().catch(noPrivateAudience);
+    } catch (error) {
+      noPrivateAudience(error);
+    }
+    try {
+      const source = retainedSource ?? captureClientVoiceSessionSource(normalized.agentId);
+      return await voiceSessionOperations.run(
+        operationKey(normalized.agentId, normalized.voiceSessionId),
+        async () => {
+          // Reserve the original ordered operation before awaiting recipient
+          // qualification. A later append/close may not overtake this accepted one.
+          const audience = audiencePreparation ? await audiencePreparation : undefined;
+          source.assertCurrent();
+          const record = readRecord(normalized.agentId, normalized.voiceSessionId, source.options);
+          if (!record) {
+            throw new Error("voice session not found");
+          }
+          assertOwnership(record, normalized);
+          if (record.status !== "open") {
+            throw new Error("voice session is closed");
+          }
+          if (record.origin !== normalized.origin) {
+            throw new Error("voice session origin does not allow this transcript source");
+          }
+          const failureKey = sha256Hex(normalized.entryId);
+          if (
+            record.transcriptFailureKeys.length >= VOICE_TRANSCRIPT_MAX_UNRESOLVED &&
+            !record.transcriptFailureKeys.includes(failureKey)
+          ) {
+            throw new Error("voice transcript persistence has too many unresolved entries");
+          }
+          // Voice ownership keeps the original key; transcript storage uses the target
+          // prepared before main/global aliases lose their selected agent identity.
+          const sessionTarget = {
+            ...normalized.sessionTarget,
             agentId: normalized.agentId,
-            voiceSessionId: normalized.voiceSessionId,
-            timestamp: Date.now(),
-            confirmation,
-          });
-        }
-      },
-      { weight: normalized.text.length },
-    );
+            env: source.options.env,
+          };
+          const sessionEntry = loadSessionEntryReadOnly(sessionTarget);
+          if (!sessionEntry?.sessionId) {
+            throw new Error(`agent session not found (${normalized.sessionKey})`);
+          }
+          const timestamp = normalized.timestamp ?? Date.now();
+          // Reserve before the fallible append. A crash can leave a conservative
+          // retry requirement, but can never let close skip an accepted entry.
+          source.assertCurrent();
+          runOpenClawAgentWriteTransaction(
+            (database) => {
+              source.assertCurrent();
+              const current = readRecordInTransaction(database, normalized.voiceSessionId);
+              if (!current) {
+                throw new Error("voice session disappeared during transcript reservation");
+              }
+              assertOwnership(current, normalized);
+              if (!current.transcriptFailureKeys.includes(failureKey)) {
+                current.transcriptFailureKeys.push(failureKey);
+              }
+              current.updatedAt = Date.now();
+              writeRecordInTransaction(database, current);
+            },
+            source.options,
+            { operationLabel: "voice.transcript.reserve" },
+          );
+          const appended = await appendTranscriptMessage(
+            { ...sessionTarget, sessionId: sessionEntry.sessionId },
+            {
+              ...(normalized.config ? { config: normalized.config } : {}),
+              eventId: voiceTranscriptEventId(normalized.voiceSessionId, normalized.entryId),
+              message: buildPersistedVoiceMessage({
+                role: normalized.role,
+                text: normalized.text,
+                timestamp,
+                provider: record.provider ?? "realtime",
+              }),
+              now: timestamp,
+            },
+          );
+          // Publish the committed row before fallible bookkeeping; a retry can deduplicate it.
+          if (confirmation) {
+            recordClientVoiceConfirmationTranscriptAppend({
+              confirmation,
+              entryId: normalized.entryId,
+              text: normalized.text,
+              appended: appended.appended,
+            });
+          }
+          if (appended.appended) {
+            await publishTranscriptUpdate(
+              { ...sessionTarget, sessionId: sessionEntry.sessionId },
+              { message: appended.message, messageId: appended.messageId },
+            );
+          }
+          if (appended.anchor && sessionEntry.lifecycleRevision && normalized.config) {
+            await recordVoiceConversationObservation({
+              anchor: appended.anchor,
+              lifecycleRevision: sessionEntry.lifecycleRevision,
+              role: normalized.role,
+              participant: normalized.participant,
+              destinationAudience: normalized.destinationAudience ?? audience?.audience,
+              fresh: appended.appended,
+              timestamp,
+              config: normalized.config,
+              env: source.options.env,
+              assertCurrent: source.assertCurrent,
+            });
+          }
+          source.assertCurrent();
+          runOpenClawAgentWriteTransaction(
+            (database) => {
+              source.assertCurrent();
+              const current = readRecordInTransaction(database, normalized.voiceSessionId);
+              if (!current) {
+                throw new Error("voice session disappeared during transcript append");
+              }
+              assertOwnership(current, normalized);
+              // Reaching here means this exact eventId is durably persisted (fresh append or
+              // idempotent dedup of our own prior write). Arm confirmation bookkeeping in both
+              // cases so a retry after a partial failure still records the user utterance.
+              if (normalized.role === "user") {
+                current.hasUserTranscript = true;
+              }
+              current.transcriptFailureKeys = current.transcriptFailureKeys.filter(
+                (key) => key !== failureKey,
+              );
+              current.updatedAt = Date.now();
+              writeRecordInTransaction(database, current);
+            },
+            source.options,
+            { operationLabel: "voice.transcript.confirm" },
+          );
+          if (normalized.role === "user" && confirmation) {
+            noteClientVoiceConfirmationUtterance({
+              agentId: normalized.agentId,
+              voiceSessionId: normalized.voiceSessionId,
+              timestamp: Date.now(),
+              confirmation,
+            });
+          }
+        },
+        { weight: normalized.text.length },
+      );
+    } finally {
+      if (audiencePreparation) {
+        (await audiencePreparation)?.release();
+      }
+    }
   };
   return withClientVoiceSessionSettlement(append, undefined, retainedSource?.settlementContext);
 }

@@ -5,6 +5,7 @@ import {
   conversationKnowledgeAudienceIdentity,
   conversationKnowledgeParticipantIdentity,
   conversationKnowledgeContributionIdentity,
+  hasOnlyConversationAgentActorChanges,
 } from "../config/sessions/conversation-audience.js";
 import type {
   ConversationKnowledgeBranch,
@@ -130,6 +131,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     members: string[];
     entry: InternalSessionEntry;
     root: boolean;
+    attested: boolean;
   }> = [];
   const sources: Source[] = [];
   const releases: Array<() => void> = [];
@@ -171,7 +173,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       ) {
         throw new Error("Personal conversation root incarnation changed");
       }
-      return;
+      return false;
     }
     const membership = entry.conversationTopology;
     const destinationIdentity =
@@ -204,6 +206,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     ) {
       throw new Error("Personal conversation source audience or root is not the original person's");
     }
+    return destinationIdentity === audienceIdentity || contributionIdentity === audienceIdentity;
   };
   const checkMembers = (members: readonly string[], root: boolean) => {
     if (
@@ -220,6 +223,8 @@ export async function preparePersonalConversationRead(params: PersonalConversati
         const facts = read.held.readCurrent(cfg);
         const current = facts.target;
         const expected = read.expected;
+        const actorOnlyChange =
+          read.attested && hasOnlyConversationAgentActorChanges(read.entry, current.entry);
         if (
           current.agentId !== expected.agentId ||
           current.canonicalKey !== expected.canonicalKey ||
@@ -227,7 +232,11 @@ export async function preparePersonalConversationRead(params: PersonalConversati
           current.storeKey !== read.storeKey ||
           !isDeepStrictEqual(current.readSource, expected.readSource) ||
           !isDeepStrictEqual([...facts.membership].toSorted(), read.members) ||
-          fields.some((field) => !isDeepStrictEqual(current.entry[field], read.entry[field]))
+          fields.some(
+            (field) =>
+              !(actorOnlyChange && (field === "participants" || field === "participantCount")) &&
+              !isDeepStrictEqual(current.entry[field], read.entry[field]),
+          )
         ) {
           throw new Error("Personal conversation source changed after admission");
         }
@@ -269,7 +278,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     ) {
       throw new Error("Personal conversation source physical ownership changed");
     }
-    checkEntry(current.entry, root, current.canonicalKey);
+    const attested = checkEntry(current.entry, root, current.canonicalKey);
     checkMembers(members, root);
     const expected = Object.freeze({
       agentId: current.agentId,
@@ -286,6 +295,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       members,
       entry: structuredClone(current.entry),
       root,
+      attested,
     });
     assertCurrent();
     return expected;
@@ -340,16 +350,28 @@ export async function preparePersonalConversationRead(params: PersonalConversati
             refuse(error);
           }
         },
-        checks: reads.map((read) => ({
-          predicate: {
-            source: read.expected.readSource,
-            sessionKey: read.storeKey,
-            fields: [...fields],
-            expected: structuredClone(read.entry),
-            members: [...read.members],
-          },
-          refuse: () => refuse(new Error("Personal conversation read facts changed before commit")),
-        })),
+        checks: reads.map((read) => {
+          const current = read.attested ? read.held.readCurrent(policy()).target.entry : read.entry;
+          if (read.attested && !hasOnlyConversationAgentActorChanges(read.entry, current)) {
+            refuse(new Error("Personal conversation recipients changed during source preparation"));
+          }
+          return {
+            predicate: {
+              source: read.expected.readSource,
+              sessionKey: read.storeKey,
+              fields: [...fields],
+              // Keep every native COMMIT field, refreshing only proved internal actors.
+              expected: structuredClone({
+                ...read.entry,
+                participants: current.participants,
+                participantCount: current.participantCount,
+              }),
+              members: [...read.members],
+            },
+            refuse: () =>
+              refuse(new Error("Personal conversation read facts changed before commit")),
+          };
+        }),
       };
     };
     const source = Object.assign(assertCurrent, {

@@ -130,9 +130,19 @@ describe("native voice branch knowledge adapter", () => {
 
   it("uses the actual borrowed reader and retains it until release", async () => {
     const owner = setup();
+    const destinationAudience = Object.freeze({
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      channelId: "webchat",
+      accountId: "default",
+      nativeChannelId: "original-connection",
+      participant,
+      assertCurrent: owner.assertCurrent,
+    });
     const prepared = await prepareVoiceConversationKnowledge({
       target,
       participant,
+      destinationAudience,
       assertCurrent: owner.assertCurrent,
       getRuntimeConfig: () => config,
     });
@@ -141,6 +151,7 @@ describe("native voice branch knowledge adapter", () => {
         reader: owner.reader,
         sessionId: target.sessionId,
         originalParticipant: participant,
+        destinationAudience,
       }),
     );
     expect(prepared?.fragments).toEqual([
@@ -317,6 +328,60 @@ describe("native voice branch knowledge adapter", () => {
     );
     expect(mocks.record).toHaveBeenCalledOnce();
   });
+
+  it.each(["user", "assistant"] as const)(
+    "attests only the exact fresh provider %s occurrence and retains recipient revocation",
+    async (role) => {
+      const owner = setup();
+      let audienceCurrent = true;
+      const destinationAudience = Object.freeze({
+        agentId: target.agentId,
+        sessionKey: target.sessionKey,
+        channelId: "webchat",
+        accountId: "default",
+        nativeChannelId: target.sessionKey,
+        participant,
+        assertCurrent() {
+          if (!audienceCurrent) throw new Error("Recipient revoked");
+        },
+      });
+      await recordVoiceConversationObservation({
+        anchor,
+        lifecycleRevision: "row-a",
+        role,
+        ...(role === "user" ? { participant } : {}),
+        destinationAudience,
+        fresh: true,
+        timestamp: 42,
+        config,
+        assertCurrent: owner.assertCurrent,
+      });
+      const recorded = mocks.record.mock.calls[0]?.[0];
+      expect(recorded).toMatchObject({
+        role,
+        anchor,
+        privateAudience: { participant, admission: anchor },
+      });
+      expect(() => recorded.assertCurrent()).not.toThrow();
+      audienceCurrent = false;
+      expect(() => recorded.assertCurrent()).toThrow("Recipient revoked");
+      if (role === "assistant") expect(mocks.participant).not.toHaveBeenCalled();
+      mocks.record.mockClear();
+      audienceCurrent = true;
+      await recordVoiceConversationObservation({
+        anchor,
+        lifecycleRevision: "row-a",
+        role,
+        participant,
+        destinationAudience,
+        fresh: false,
+        timestamp: 42,
+        config,
+        assertCurrent: owner.assertCurrent,
+      });
+      expect(mocks.record.mock.calls[0]?.[0]).not.toHaveProperty("privateAudience");
+    },
+  );
 
   it.each([true, false])(
     "native voice reports only previously enrolled sources (enrolled %s)",

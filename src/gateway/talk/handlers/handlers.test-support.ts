@@ -208,6 +208,16 @@ vi.mock("../../../talk/client-voice-session.js", async (importOriginal) => {
   };
 });
 
+// mock-isolation: This handler fixture simulates session creation; real snapshot
+// admission and exact native rows are covered by conversation-context/target tests.
+vi.mock("../conversation-context.js", () => ({
+  prepareTalkProviderConversationContext: async () => ({
+    instructions: "",
+    assertCurrent() {},
+    async release() {},
+  }),
+}));
+
 vi.mock("../../server-methods/chat-send-handler.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../server-methods/chat-send-handler.js")>()),
   handleChatSend: mocks.chatSend,

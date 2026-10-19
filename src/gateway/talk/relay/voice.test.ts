@@ -5,6 +5,7 @@ import {
   hasSqliteWorkerOutcomeUnknown,
   SqliteWorkerError,
 } from "../../../infra/sqlite-worker-contract.js";
+import type { ConversationPrivateAudience } from "../../../sessions/conversation-private-audience.js";
 import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
 import { captureClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
 import { VOICE_TRANSCRIPT_QUEUE_POLICY } from "../../../talk/voice-transcript.js";
@@ -63,6 +64,52 @@ describe("realtime relay voice transcript persistence", () => {
     voiceSessionMocks.appendRelayVoiceTranscript.mockReset();
     voiceSessionMocks.closeRelayVoiceSessionRecord.mockReset().mockResolvedValue(undefined);
     voiceSessionMocks.createOrResumeClientVoiceSession.mockReset();
+  });
+
+  it("captures each original recipient at admission and holds it through queued close settlement", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "relay-private-recipient-custody" },
+      async () => {
+        const finish = createDeferred();
+        const entered = createDeferred();
+        const release = vi.fn();
+        const { session } = createRelaySession();
+        const audience: ConversationPrivateAudience = Object.freeze({
+          agentId: "main",
+          sessionKey: session.sessionTarget.canonicalKey,
+          channelId: "webchat",
+          accountId: "default",
+          nativeChannelId: session.sessionTarget.canonicalKey,
+          participant: { type: "profile", id: "example-person" },
+          assertCurrent() {},
+        });
+        session.preparePrivateAudience = vi.fn(async () => ({ audience, release }));
+        voiceSessionMocks.appendRelayVoiceTranscript.mockImplementation(async (params) => {
+          expect(params.role).toBe("assistant");
+          expect(params.participant).toBeUndefined();
+          expect(params.destinationAudience).toBe(audience);
+          expect(release).not.toHaveBeenCalled();
+          entered.resolve();
+          await finish.promise;
+        });
+        expect(enqueueRelayVoiceTranscript(session, "assistant", "Final original answer.")).toBe(
+          true,
+        );
+        expect(session.preparePrivateAudience).toHaveBeenCalledOnce();
+        const closed = closeRelayVoiceSession(session);
+        try {
+          await entered.promise;
+          expect(release).not.toHaveBeenCalled();
+          finish.resolve();
+          await closed;
+          expect(release).toHaveBeenCalledOnce();
+          expect(session.preparePrivateAudience).toHaveBeenCalledOnce();
+        } finally {
+          finish.resolve();
+          await closed.catch(() => {});
+        }
+      },
+    );
   });
 
   it("joins its accepted prefix after close settlement admission is lost", async () => {

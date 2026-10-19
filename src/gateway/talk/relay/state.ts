@@ -19,6 +19,7 @@ import type {
 import type { RealtimeVoiceSessionHarness } from "../../../talk/realtime-session-harness.js";
 import type { RealtimeVoiceBridgeSession } from "../../../talk/session-runtime.js";
 import type { TalkEvent } from "../../../talk/talk-session-controller.js";
+import type { PrepareVoiceTranscriptAudience } from "../../../talk/voice-transcript-audience.types.js";
 import { abortChatRunById } from "../../chat-abort.js";
 import type { GatewayRequestContext } from "../../server-methods/shared-types.js";
 import type { TalkOperatorRunSource } from "../client-agent-runtime.js";
@@ -282,6 +283,7 @@ export type RelaySession = {
   toolResultEpoch: number;
   voiceConfig?: OpenClawConfig;
   participant?: SessionParticipantIdentity;
+  preparePrivateAudience?: PrepareVoiceTranscriptAudience;
   voiceSessionCreated: boolean;
   voiceTranscriptSeq: number;
   voiceTranscriptQueue: BoundedSerialQueue;
@@ -302,6 +304,7 @@ export type CreateTalkRealtimeRelaySessionParams = {
   consultAuthority?: TalkAgentConsultAuthority;
   captureOperatorAuthority?: TalkOperatorRunSource;
   participant?: SessionParticipantIdentity;
+  preparePrivateAudience?: PrepareVoiceTranscriptAudience;
   /** Original authorized snapshot stays held until asynchronous provider connection accepts it. */
   startupContext?: { assertCurrent(): void; release(): Promise<void> };
   provider: RealtimeVoiceProviderPlugin;

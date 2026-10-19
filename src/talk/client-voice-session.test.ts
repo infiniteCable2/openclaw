@@ -3,9 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { StatementSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred, withinTest } from "../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../test/helpers/promise.js";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
+import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import {
@@ -130,6 +135,99 @@ describe("client voice session", () => {
     } finally {
       observe.mockRestore();
     }
+  });
+
+  it("retains the original recipient until a saved assistant observation settles without inventing user provenance", async () => {
+    await seedSession("agent:main:branch");
+    const observing = createDeferred();
+    const finish = createDeferred();
+    const audience: ConversationPrivateAudience = Object.freeze({
+      agentId: "main",
+      sessionKey: "agent:main:branch",
+      channelId: "webchat",
+      accountId: "default",
+      nativeChannelId: "agent:main:branch",
+      participant: { type: "profile", id: "example-person" },
+      assertCurrent() {},
+    });
+    const release = vi.fn();
+    const preparePrivateAudience = vi.fn(async () => ({ audience, release }));
+    const observe = vi
+      .spyOn(voiceKnowledge, "recordVoiceConversationObservation")
+      .mockImplementation(async (params) => {
+        expect(params.role).toBe("assistant");
+        expect(params.participant).toBeUndefined();
+        expect(params.destinationAudience).toBe(audience);
+        expect(release).not.toHaveBeenCalled();
+        observing.resolve();
+        await finish.promise;
+      });
+    const voiceSessionId = createOrResumeClientVoiceSession({
+      agentId: "main",
+      sessionKey: "main",
+      origin: "client",
+    });
+    const append = appendClientVoiceTranscript({
+      agentId: "main",
+      sessionKey: "main",
+      sessionTarget: { sessionKey: "agent:main:branch" },
+      voiceSessionId,
+      entryId: "saved-assistant",
+      role: "assistant",
+      text: "An actual spoken answer.",
+      config: {},
+      preparePrivateAudience,
+    });
+    try {
+      await awaitGateBeforeSettlement(
+        observing.promise,
+        append,
+        "Saved assistant observation was not reached",
+      );
+      expect(preparePrivateAudience).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled();
+      finish.resolve();
+      await append;
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      finish.resolve();
+      await append.catch(() => {});
+      observe.mockRestore();
+    }
+  });
+
+  it("keeps accepted append order while private audience preparation is pending", async () => {
+    await seedSession("agent:main:branch");
+    const prepared = createDeferred<undefined>();
+    const voiceSessionId = createOrResumeClientVoiceSession({
+      agentId: "main",
+      sessionKey: "main",
+      origin: "client",
+    });
+    const input = {
+      agentId: "main",
+      sessionKey: "main",
+      sessionTarget: { sessionKey: "agent:main:branch" },
+      voiceSessionId,
+      role: "user" as const,
+      config: {},
+    };
+    const first = appendClientVoiceTranscript({
+      ...input,
+      entryId: "first",
+      text: "First accepted utterance.",
+      preparePrivateAudience: () => prepared.promise,
+    });
+    const second = appendClientVoiceTranscript({
+      ...input,
+      entryId: "second",
+      text: "Second accepted utterance.",
+    });
+    prepared.resolve(undefined);
+    await Promise.all([first, second]);
+    expect(
+      sessionAccessorMocks.appendTranscriptMessage.mock.calls.map((call) => call[1]?.eventId),
+    ).toEqual([`voice:${voiceSessionId}:first`, `voice:${voiceSessionId}:second`]);
   });
 
   it("creates, resumes, and enforces ownership and open state", async () => {

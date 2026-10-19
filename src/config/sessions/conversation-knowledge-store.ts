@@ -160,6 +160,7 @@ export async function recordConversationKnowledgeTurn(params: {
   observed?: ConversationKnowledgeFrontier[];
   signal?: AbortSignal;
 }): Promise<boolean> {
+  const privateAudience = params.privateAudience && structuredClone(params.privateAudience);
   const check = () => {
     params.signal?.throwIfAborted();
     params.reader.assertCurrent();
@@ -201,7 +202,7 @@ export async function recordConversationKnowledgeTurn(params: {
     branch,
     through,
     completion: { runId: params.runId },
-    privateAudience: params.privateAudience,
+    privateAudience,
   });
 }
 
@@ -213,11 +214,13 @@ export async function recordConversationUtteranceObservation(params: {
   anchor: TranscriptEntryAnchor;
   role: "user" | "assistant";
   sourceMode: "native" | "branches";
+  privateAudience?: ConversationKnowledgeReference["privateAudience"];
   observed?: ConversationKnowledgeFrontier[];
   signal?: AbortSignal;
 }): Promise<boolean> {
   const { reader, assertCurrent, sessionId, role, signal, sourceMode } = params;
   const anchor = structuredClone(params.anchor);
+  const privateAudience = params.privateAudience && structuredClone(params.privateAudience);
   const observed = params.observed ? structuredClone(params.observed) : undefined;
   const check = () => {
     signal?.throwIfAborted();
@@ -260,6 +263,7 @@ export async function recordConversationUtteranceObservation(params: {
     through,
     completion: { kind: "utterance-observation", role },
     sourceMode,
+    privateAudience,
   });
 }
 

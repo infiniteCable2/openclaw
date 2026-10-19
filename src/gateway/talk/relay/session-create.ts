@@ -671,6 +671,9 @@ export function createTalkRealtimeRelaySession(
     toolResultEpoch: 0,
     ...(params.cfg ? { voiceConfig: params.cfg } : {}),
     ...(params.participant ? { participant: structuredClone(params.participant) } : {}),
+    ...(params.preparePrivateAudience
+      ? { preparePrivateAudience: params.preparePrivateAudience }
+      : {}),
     voiceSessionCreated: false,
     voiceTranscriptSeq: 0,
     voiceTranscriptQueue: VOICE_TRANSCRIPT_QUEUE_POLICY.createQueue(),
