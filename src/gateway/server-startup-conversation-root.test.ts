@@ -62,7 +62,9 @@ describe("Gateway host conversation root startup", () => {
         const result = await initSessionState({ cfg, ctx, commandAuthorized: false });
         expect(result.sessionId).toBe(scope.sessionId);
         expect(result.sessionEntry.lifecycleRevision).toBe(initialized?.lifecycleRevision);
-        expect(result.sessionEntry.conversationTopology).toMatchObject({ role: "branch" });
+        expect(await readSessionEntryReadOnlyInWorker(scope)).toMatchObject({
+          conversationTopology: { role: "branch" },
+        });
         expect(await loadTranscriptEvents(scope)).toEqual(history);
       }
     });
