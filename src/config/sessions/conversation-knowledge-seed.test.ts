@@ -12,6 +12,7 @@ import type { SessionEntryCohortReader } from "./session-entry-read-runtime.type
 import type { SessionEntryCohortResult } from "./session-entry-read.types.js";
 import type { SessionTranscriptModelContext } from "./session-history-read.types.js";
 import type { SessionSourceAssertion } from "./session-source-authority.js";
+import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 
 const mocks = vi.hoisted(() => ({
   branch: vi.fn(),
@@ -164,10 +165,12 @@ const voice = {
   },
 };
 let savedReports: Array<Record<string, unknown>>;
+let sourceVersion: SessionTranscriptContextVersion;
 
 beforeEach(() => {
   Object.values(mocks).forEach((mock) => mock.mockReset());
   savedReports = [];
+  sourceVersion = version;
   mocks.branch.mockResolvedValue(branch);
   mocks.reports.mockImplementation(async () => savedReports);
   mocks.watermark.mockResolvedValue({ generation: version.generation, maxSeq: version.rawSeq });
@@ -180,7 +183,7 @@ beforeEach(() => {
   mocks.delta.mockImplementation(async (_target, consume) => consume({ raw: mocks.raw }));
   mocks.context.mockImplementation(
     async (_target, consume: (context: SessionTranscriptModelContext) => unknown) =>
-      consume({ events: [], version }),
+      consume({ events: [], version: sourceVersion }),
   );
   mocks.record.mockResolvedValue(true);
   mocks.voice.mockResolvedValue(true);
@@ -190,7 +193,7 @@ beforeEach(() => {
       const prepared = await options.source.prepareSessionSource?.();
       prepared?.assertCurrent();
       expect(
-        prepared?.checks.some((check) => check.predicate.transcript?.version === version),
+        prepared?.checks.some((check) => check.predicate.transcript?.version === sourceVersion),
       ).toBe(true);
       if (report.kind !== "custom") {
         throw new Error("Expected opaque seed marker");
@@ -205,6 +208,30 @@ beforeEach(() => {
 });
 
 describe("explicit native conversation history seed", () => {
+  it("fences an empty native history without inventing a transcript or completed exchange", async () => {
+    sourceVersion = { generation: null, rawSeq: null, updatedAt: null };
+    mocks.watermark.mockResolvedValue({ generation: null, maxSeq: null });
+    expect(await ensureConversationKnowledgeSeed(params)).toEqual({
+      status: "seeded",
+      recorded: 0,
+      skipped: 0,
+    });
+    expect(mocks.delta).not.toHaveBeenCalled();
+    expect(mocks.record).not.toHaveBeenCalled();
+    expect(mocks.voice).not.toHaveBeenCalled();
+    expect(savedReports).toHaveLength(1);
+    expect(savedReports[0]?.details).toMatchObject({
+      complete: true,
+      through: { generation: null, maxSeq: null },
+    });
+  });
+
+  it("does not mark an empty source complete if a transcript appears before completion", async () => {
+    mocks.watermark.mockResolvedValue({ generation: null, maxSeq: null });
+    await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow("source changed");
+    expect(mocks.append).not.toHaveBeenCalled();
+  });
+
   it("records validated native occurrences in order, then persists one opaque completion marker", async () => {
     expect(await ensureConversationKnowledgeSeed(params)).toEqual({
       status: "seeded",

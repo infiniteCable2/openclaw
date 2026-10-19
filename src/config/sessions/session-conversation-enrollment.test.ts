@@ -12,18 +12,41 @@ import type { OpenClawConfig } from "../types.openclaw.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import * as lifecycle from "./session-accessor.sqlite-projection.js";
 import { appendTranscriptMessage } from "./session-accessor.sqlite-transcript-write.js";
+import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
 import { enrollSessionConversationBranch } from "./session-conversation-enrollment.js";
 import { resolveAgentConversationRootSessionKey } from "./session-conversation-root-key.js";
+import { ensureAgentConversationRoot } from "./session-conversation-root.js";
 import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import { loadTranscriptEvents } from "./session-transcript-events.js";
 import type { InternalSessionEntry } from "./types.js";
 
 let state: OpenClawTestState;
 let storePath: string;
+let rootEntry: InternalSessionEntry;
 let nextId = 0;
 beforeAll(async () => {
   state = await createOpenClawTestState({ scenario: "minimal", label: "conversation-enrollment" });
   storePath = openOpenClawAgentDatabase({ agentId: "main", env: state.env }).path;
+  const cfg: OpenClawConfig = {
+    agents: { entries: { main: { conversationMode: "branches" } } },
+    session: { store: storePath },
+  };
+  const admitted = await ensureAgentConversationRoot({
+    cfg,
+    agentId: "main",
+    env: state.env,
+    admittedStorePath: storePath,
+  });
+  const saved = await readSessionEntryReadOnlyInWorker({
+    agentId: "main",
+    sessionKey: admitted.sessionKey,
+    storePath,
+    env: state.env,
+  });
+  if (!saved) {
+    throw new Error("Expected the native suite-owned conversation root");
+  }
+  rootEntry = saved;
 });
 afterEach(() => vi.restoreAllMocks());
 afterAll(async () => {
@@ -39,17 +62,8 @@ async function fixture(patch: Partial<InternalSessionEntry> = {}) {
   const rootSessionKey = resolveAgentConversationRootSessionKey({ cfg, agentId: "main" });
   const scope = { agentId: "main", env: state.env, storePath, sessionKey };
   const rootScope = { ...scope, sessionKey: rootSessionKey };
-  const root: InternalSessionEntry = {
-    sessionId: `root-${nextId}`,
-    lifecycleRevision: `root-lifecycle-${nextId}`,
-    updatedAt: 1,
-    createdVia: "internal",
-    createdActor: { type: "system", id: "conversation-root" },
-    visibility: "draft",
-    delivery: { kind: "none" },
-    conversationTopology: { version: 1, role: "root" },
-  };
-  replaceSessionEntrySync(rootScope, root);
+  // One native infrastructure owner, not repeated logical-node resets across cases.
+  const root = structuredClone(rootEntry);
   replaceSessionEntrySync(scope, {
     sessionId: `conversation-${nextId}`,
     lifecycleRevision: `conversation-lifecycle-${nextId}`,
@@ -203,9 +217,12 @@ it.each(["reset", "source", "root", "mode", "abort"] as const)(
         } else if (change === "root") {
           replaceSessionEntrySync(f.rootScope, {
             ...f.root,
-            sessionId: "replacement-root",
             lifecycleRevision: "replacement",
           });
+          assertSessionConversationRootEntry(
+            await readSessionEntryReadOnlyInWorker(f.rootScope),
+            f.rootScope.sessionKey,
+          );
         } else if (change === "source") {
           f.revoke();
         } else if (change === "mode") {
@@ -216,11 +233,17 @@ it.each(["reset", "source", "root", "mode", "abort"] as const)(
         return mutate(input);
       },
     );
-    await expect(
-      enrollSessionConversationBranch({ ...f.params, signal: signal.signal }),
-    ).rejects.toThrow();
-    expect(await f.read()).toEqual(expected);
-    expect(await f.history()).toEqual(f.events);
+    try {
+      await expect(
+        enrollSessionConversationBranch({ ...f.params, signal: signal.signal }),
+      ).rejects.toThrow();
+      expect(await f.read()).toEqual(expected);
+      expect(await f.history()).toEqual(f.events);
+    } finally {
+      if (change === "root") {
+        replaceSessionEntrySync(f.rootScope, f.root);
+      }
+    }
   },
 );
 

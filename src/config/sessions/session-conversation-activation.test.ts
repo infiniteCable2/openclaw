@@ -25,7 +25,10 @@ import { loadSessionEntryForAdmission } from "./session-accessor.sqlite-entry-ad
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { appendTranscriptMessage } from "./session-accessor.sqlite-transcript-write.js";
 import { prepareSessionConversationActivation } from "./session-conversation-activation.js";
-import { admitSessionConversationBranch } from "./session-conversation-admission.js";
+import {
+  admitSessionConversationBranch,
+  assertSessionConversationRootEntry,
+} from "./session-conversation-admission.js";
 import { enrollSessionConversationBranch } from "./session-conversation-enrollment.js";
 import { resolveAgentConversationRootSessionKey } from "./session-conversation-root-key.js";
 import { ensureAgentConversationRoot } from "./session-conversation-root.js";
@@ -472,9 +475,12 @@ describe("native conversation mode activation", () => {
             } else if (change === "root") {
               replaceSessionEntrySync(root, {
                 ...admitted.entry,
-                sessionId: "replaced-activation-root",
                 lifecycleRevision: "replaced",
               });
+              assertSessionConversationRootEntry(
+                await readSessionEntryReadOnlyInWorker(root),
+                root.sessionKey,
+              );
             } else if (change === "store") {
               cfg = {
                 ...inputConfig,

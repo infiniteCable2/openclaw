@@ -174,115 +174,121 @@ export async function ensureConversationKnowledgeSeed(params: {
   check();
   let recorded = 0;
   let skipped = 0;
-  await withSessionTranscriptDeltaReader(
-    branch,
-    async (reader) => {
-      let cursor: string | undefined;
-      let maxBytes = 1_000_000;
-      for (;;) {
-        check();
-        const limits = { cursor, maxEvents: 96, maxBytes, activePathOnly: true };
-        const page = await reader.raw(limits).catch(async (error: unknown) => {
-          if (!isSessionTranscriptProjectionUnavailableError(error)) {
-            throw error;
-          }
+  // A newly admitted row can legitimately have no transcript yet. Its empty
+  // version is still captured below and fenced by the native marker writer.
+  if (through.generation !== null || through.maxSeq !== null) {
+    await withSessionTranscriptDeltaReader(
+      branch,
+      async (reader) => {
+        let cursor: string | undefined;
+        let maxBytes = 1_000_000;
+        for (;;) {
           check();
-          await waitForSessionTranscriptProjection(branch, params.signal);
+          const limits = { cursor, maxEvents: 96, maxBytes, activePathOnly: true };
+          const page = await reader.raw(limits).catch(async (error: unknown) => {
+            if (!isSessionTranscriptProjectionUnavailableError(error)) {
+              throw error;
+            }
+            check();
+            await waitForSessionTranscriptProjection(branch, params.signal);
+            check();
+            return reader.raw(limits);
+          });
           check();
-          return reader.raw(limits);
-        });
-        check();
-        if (page.kind !== "page") {
-          throw new Error("Conversation knowledge seed history changed");
-        }
-        if (page.requiredBytes !== undefined) {
-          if (
-            page.requiredBytes <= maxBytes ||
-            page.requiredBytes > CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxBytes
-          ) {
-            throw new Error("Conversation knowledge seed remains pending: oversized source entry");
+          if (page.kind !== "page") {
+            throw new Error("Conversation knowledge seed history changed");
           }
-          maxBytes = page.requiredBytes;
-          continue;
-        }
-        for (const row of page.events) {
-          if (row.seq > (through.maxSeq ?? -1)) {
-            break;
-          }
-          const event = asOptionalRecord(row.event);
-          const message = asOptionalRecord(event?.message);
-          if (event?.type !== "message" || !message || typeof event.id !== "string") {
+          if (page.requiredBytes !== undefined) {
+            if (
+              page.requiredBytes <= maxBytes ||
+              page.requiredBytes > CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxBytes
+            ) {
+              throw new Error(
+                "Conversation knowledge seed remains pending: oversized source entry",
+              );
+            }
+            maxBytes = page.requiredBytes;
             continue;
           }
-          const runId = readSessionTranscriptRunId(message);
-          let accepted: boolean | undefined;
-          if (
-            message.role === "assistant" &&
-            message.stopReason === "stop" &&
-            message.endTurn !== false &&
-            runId &&
-            resolveTerminalAssistantTranscriptRunId(message, runId) &&
-            typeof message.idempotencyKey === "string" &&
-            message.idempotencyKey.trim()
-          ) {
-            accepted = await recordConversationKnowledgeTurn({
-              ...params,
-              sourceMode: "native",
-              runId,
-              assistantTranscriptIdempotencyKey: message.idempotencyKey,
-            });
-          } else if (
-            asOptionalRecord(message.provenance)?.kind === "realtime_voice" &&
-            (message.role === "user" || message.role === "assistant")
-          ) {
-            const anchor = await readActiveTranscriptEntryAnchorAsync(
-              { ...branch, entryId: event.id },
-              params.signal,
-            );
-            check();
-            if (!anchor) {
-              throw new Error("Conversation knowledge seed source anchor disappeared");
+          for (const row of page.events) {
+            if (row.seq > (through.maxSeq ?? -1)) {
+              break;
             }
-            const candidate = {
-              version: 1 as const,
-              sourceMode: "native" as const,
-              source: branch,
-              origin: conversationKnowledgeOrigin(branch, "utterance-observation"),
-              kind: "utterance-observation" as const,
-              role: message.role,
-              through: anchor,
-            };
-            if (isConversationUtteranceObservation(candidate, [row.event])) {
-              accepted = await recordConversationUtteranceObservation({
+            const event = asOptionalRecord(row.event);
+            const message = asOptionalRecord(event?.message);
+            if (event?.type !== "message" || !message || typeof event.id !== "string") {
+              continue;
+            }
+            const runId = readSessionTranscriptRunId(message);
+            let accepted: boolean | undefined;
+            if (
+              message.role === "assistant" &&
+              message.stopReason === "stop" &&
+              message.endTurn !== false &&
+              runId &&
+              resolveTerminalAssistantTranscriptRunId(message, runId) &&
+              typeof message.idempotencyKey === "string" &&
+              message.idempotencyKey.trim()
+            ) {
+              accepted = await recordConversationKnowledgeTurn({
                 ...params,
                 sourceMode: "native",
-                anchor,
-                role: message.role,
+                runId,
+                assistantTranscriptIdempotencyKey: message.idempotencyKey,
               });
+            } else if (
+              asOptionalRecord(message.provenance)?.kind === "realtime_voice" &&
+              (message.role === "user" || message.role === "assistant")
+            ) {
+              const anchor = await readActiveTranscriptEntryAnchorAsync(
+                { ...branch, entryId: event.id },
+                params.signal,
+              );
+              check();
+              if (!anchor) {
+                throw new Error("Conversation knowledge seed source anchor disappeared");
+              }
+              const candidate = {
+                version: 1 as const,
+                sourceMode: "native" as const,
+                source: branch,
+                origin: conversationKnowledgeOrigin(branch, "utterance-observation"),
+                kind: "utterance-observation" as const,
+                role: message.role,
+                through: anchor,
+              };
+              if (isConversationUtteranceObservation(candidate, [row.event])) {
+                accepted = await recordConversationUtteranceObservation({
+                  ...params,
+                  sourceMode: "native",
+                  anchor,
+                  role: message.role,
+                });
+              }
+            }
+            check();
+            if (accepted) {
+              recorded += 1;
+            } else if (message.role === "assistant" || message.role === "user") {
+              skipped += 1;
             }
           }
-          check();
-          if (accepted) {
-            recorded += 1;
-          } else if (message.role === "assistant" || message.role === "user") {
-            skipped += 1;
+          if (
+            !page.hasMore ||
+            (page.events.at(-1)?.seq ?? -1) >= (through.maxSeq ?? -1) ||
+            page.events.length === 0
+          ) {
+            break;
           }
+          if (cursor === page.cursor) {
+            throw new Error("Conversation knowledge seed made no progress");
+          }
+          cursor = page.cursor;
         }
-        if (
-          !page.hasMore ||
-          (page.events.at(-1)?.seq ?? -1) >= (through.maxSeq ?? -1) ||
-          page.events.length === 0
-        ) {
-          break;
-        }
-        if (cursor === page.cursor) {
-          throw new Error("Conversation knowledge seed made no progress");
-        }
-        cursor = page.cursor;
-      }
-    },
-    params.signal,
-  );
+      },
+      params.signal,
+    );
+  }
   check();
   const version = await readSessionTranscriptModelContextAsync(
     branch,
