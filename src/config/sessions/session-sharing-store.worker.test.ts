@@ -298,8 +298,20 @@ it("commits aliased worker membership and participant facts before publishing, a
       visibility: undefined,
       incognito: undefined,
     };
+    const sharing = retainPreparedSessionSharingFacts({
+      databaseIdentity: `file:${String(readOpenClawAgentDatabaseIdentity(database).identity)}`,
+      sessionKey: scope.sessionKey,
+      entry,
+      membership: new Set(),
+    });
     const changes: SessionRowChange[] = [];
-    const stop = sessionChanges.subscribeFacts((change) => changes.push(change));
+    const publishedParticipantCounts: Array<number | undefined> = [];
+    const stop = sessionChanges.subscribeFacts((change) => {
+      changes.push(change);
+      if (change.sessionKey === scope.sessionKey && change.facts?.kind === "participants") {
+        publishedParticipantCounts.push(sharing.readCurrent()?.entry?.participantCount);
+      }
+    });
     const participantLifecycle = vi.fn();
     const stopLifecycle = onSessionLifecycleEvent((event) => {
       if (event.sessionKey === scope.sessionKey && event.reason === "participants") {
@@ -358,6 +370,15 @@ it("commits aliased worker membership and participant facts before publishing, a
       ).toBe("updated");
       expect(changes).toHaveLength(publications);
       expect(participantLifecycle).toHaveBeenCalledTimes(2);
+      expect(
+        await recordSessionParticipant(scope, {
+          identity: { type: "agent", id: "courier" },
+          promptedAt: 5,
+        }),
+      ).toBe("inserted");
+      expect(sharing.readCurrent()?.entry?.participantCount).toBe(2);
+      expect(publishedParticipantCounts).toEqual([1, 2]);
+      expect(participantLifecycle).toHaveBeenCalledTimes(3);
       await expect(
         addSessionMember(scope, {
           identityId: "stale",
@@ -387,6 +408,7 @@ it("commits aliased worker membership and participant facts before publishing, a
         queries.filter((sql) => /\b(session_members|session_participants)\b/.test(sql)),
       ).toEqual([]);
     } finally {
+      sharing.release();
       stop();
       stopLifecycle();
       for (const method of methods) {

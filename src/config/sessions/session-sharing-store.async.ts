@@ -29,7 +29,10 @@ import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../state-dir.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
-import { bindSessionEntryPublicationSource } from "./session-accessor.sqlite-entry-cache-publication.js";
+import {
+  bindSessionEntryPublicationSource,
+  publishSessionSharingEntryChange,
+} from "./session-accessor.sqlite-entry-cache-publication.js";
 import { publishSessionSharingMemberChange } from "./session-accessor.sqlite-entry-cache.js";
 import { retainSessionEntryWorkerPublication } from "./session-accessor.sqlite-entry-worker-publication.js";
 import { recordSessionParticipant } from "./session-accessor.sqlite-participants.native.js";
@@ -511,6 +514,14 @@ export function recordSessionParticipantInWorker(
             scope: "session-entry",
             facts: { kind: "participants", projection: result.participants },
           };
+          if (database) {
+            // Install the admitted COMMIT postimage before observers inspect held
+            // audience facts; the notification alone does not update that owner.
+            publishSessionSharingEntryChange(database, {
+              sessionKey: location.sessionKey,
+              facts: change.facts,
+            });
+          }
           sessionChanges.emit(
             database ? bindSessionEntryPublicationSource(change, database) : change,
             database?.db,
