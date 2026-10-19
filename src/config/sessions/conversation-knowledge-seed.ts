@@ -130,19 +130,17 @@ export async function ensureConversationKnowledgeSeed(params: {
   const seedId = sha256Hex(
     JSON.stringify([branch.sessionKey, branch.sessionId, branch.lifecycleRevision]),
   );
-  const reports = await readConversationKnowledgeReports({
+  // Completed enrollment is the steady-state path. Filter in the native reader
+  // so checking its marker does not hydrate every contribution in the root.
+  const markers = await readConversationKnowledgeReports({
     target: root,
-    customTypes: [
-      CONVERSATION_KNOWLEDGE_SEED,
-      CONVERSATION_KNOWLEDGE_REPORT,
-      CONVERSATION_UTTERANCE_REPORT,
-    ],
+    customTypes: [CONVERSATION_KNOWLEDGE_SEED],
     assertCurrent: check,
     signal: params.signal,
   });
   check();
   if (
-    reports.some((event) => {
+    markers.some((event) => {
       const record = asOptionalRecord(event);
       const detail = asOptionalRecord(record?.details);
       return (
@@ -160,6 +158,13 @@ export async function ensureConversationKnowledgeSeed(params: {
     }
     return { status: "already-seeded", recorded: 0, skipped: 0 };
   }
+  const reports = await readConversationKnowledgeReports({
+    target: root,
+    customTypes: [CONVERSATION_KNOWLEDGE_REPORT, CONVERSATION_UTTERANCE_REPORT],
+    assertCurrent: check,
+    signal: params.signal,
+  });
+  check();
   const resumed = reports.some((event) => {
     const record = asOptionalRecord(event);
     const receipt =

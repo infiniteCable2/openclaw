@@ -6,6 +6,7 @@ import {
 import {
   conversationKnowledgeOrigin,
   CONVERSATION_KNOWLEDGE_REPORT,
+  CONVERSATION_UTTERANCE_REPORT,
 } from "./conversation-knowledge.js";
 import type { TranscriptReport } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
@@ -172,7 +173,9 @@ beforeEach(() => {
   savedReports = [];
   sourceVersion = version;
   mocks.branch.mockResolvedValue(branch);
-  mocks.reports.mockImplementation(async () => savedReports);
+  mocks.reports.mockImplementation(async ({ customTypes }: { customTypes: string[] }) =>
+    savedReports.filter((report) => customTypes.includes(String(report.customType))),
+  );
   mocks.watermark.mockResolvedValue({ generation: version.generation, maxSeq: version.rawSeq });
   mocks.raw.mockResolvedValue({
     kind: "page",
@@ -253,8 +256,13 @@ describe("explicit native conversation history seed", () => {
     expect(JSON.stringify(savedReports)).not.toContain("completed answer");
     expect(savedReports[0]?.customType).toBe(CONVERSATION_KNOWLEDGE_SEED);
     mocks.raw.mockClear();
+    mocks.reports.mockClear();
     expect((await ensureConversationKnowledgeSeed(params)).status).toBe("already-seeded");
     expect(mocks.raw).not.toHaveBeenCalled();
+    expect(mocks.reports).toHaveBeenCalledTimes(1);
+    expect(mocks.reports).toHaveBeenCalledWith(
+      expect.objectContaining({ customTypes: [CONVERSATION_KNOWLEDGE_SEED] }),
+    );
   });
 
   it("resumes a partially recorded source without replacing native idempotency", async () => {
@@ -272,6 +280,50 @@ describe("explicit native conversation history seed", () => {
     });
     expect((await ensureConversationKnowledgeSeed(params)).status).toBe("resumed");
     expect(mocks.record).toHaveBeenCalledTimes(1);
+    expect(mocks.reports).toHaveBeenCalledTimes(2);
+    expect(mocks.reports).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        customTypes: [CONVERSATION_KNOWLEDGE_REPORT, CONVERSATION_UTTERANCE_REPORT],
+      }),
+    );
+  });
+
+  it.each(["different-source", "incomplete"] as const)(
+    "does not skip traversal for a %s completion marker",
+    async (mode) => {
+      await ensureConversationKnowledgeSeed(params);
+      const marker = savedReports[0]!;
+      const details = marker.details as Record<string, unknown>;
+      marker.details =
+        mode === "different-source"
+          ? { ...details, seedId: "another-source-incarnation" }
+          : { ...details, complete: false };
+      mocks.raw.mockClear();
+      mocks.reports.mockClear();
+      expect((await ensureConversationKnowledgeSeed(params)).status).toBe("seeded");
+      expect(mocks.raw).toHaveBeenCalledTimes(1);
+      expect(mocks.reports).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("keeps the source assertion live when the completed marker is found", async () => {
+    await ensureConversationKnowledgeSeed(params);
+    let permitted = true;
+    mocks.reports.mockImplementationOnce(async () => {
+      permitted = false;
+      return savedReports;
+    });
+    await expect(
+      ensureConversationKnowledgeSeed({
+        ...params,
+        assertCurrent: () => {
+          if (!permitted) {
+            throw new Error("completed seed permission revoked");
+          }
+        },
+      }),
+    ).rejects.toThrow("completed seed permission revoked");
   });
 
   it("never marks a partially failed traversal complete and lets a later attempt retry", async () => {
