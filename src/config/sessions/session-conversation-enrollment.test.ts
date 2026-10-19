@@ -252,10 +252,11 @@ it("rolls back when the actual caller revokes at the native COMMIT grant", async
   let lifecycleValidated = false;
   const revoked = vi.fn(f.revoke);
   sqliteWorkerOwnerProbe.admission(admission, (request, grant, callback) => {
+    const publication = isRecord(request.facts) ? request.facts.publication : undefined;
     if (
       request.stage === "transaction" &&
-      isRecord(request.facts) &&
-      request.facts.kind === "session-lifecycle-source-validated"
+      isRecord(publication) &&
+      publication.kind === "session-lifecycle-source-validated"
     ) {
       lifecycleValidated = true;
     }
@@ -267,6 +268,7 @@ it("rolls back when the actual caller revokes at the native COMMIT grant", async
   await expect(enrollSessionConversationBranch(f.params)).rejects.toThrow(
     "Original enrollment caller revoked",
   );
+  expect(lifecycleValidated).toBe(true);
   expect(revoked).toHaveBeenCalledOnce();
   expect(await f.read()).toEqual(f.before);
   expect(await f.history()).toEqual(f.events);
