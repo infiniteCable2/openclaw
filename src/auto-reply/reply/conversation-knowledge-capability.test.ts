@@ -406,26 +406,27 @@ function personalFixture(sourceMode: "native" | "branches" = "branches") {
   };
   source.branch.mockResolvedValue(branch);
   source.facts.mockResolvedValue(facts);
+  const contribution = {
+    version: 1,
+    sourceMode,
+    origin: conversationKnowledgeOrigin(sibling),
+    source: sibling,
+    runId: "sibling-run",
+    through: {
+      ...sibling,
+      storePath: branch.storePath,
+      generation: "original",
+      entryId: "answer",
+      rawSeq: 2,
+      activeMessagePosition: 1,
+      effectiveParentId: "question",
+    },
+  };
   source.root.mockResolvedValue([
     {
       type: "custom_message",
       customType: CONVERSATION_KNOWLEDGE_REPORT,
-      details: {
-        version: 1,
-        sourceMode,
-        origin: conversationKnowledgeOrigin(sibling),
-        source: sibling,
-        runId: "sibling-run",
-        through: {
-          ...sibling,
-          storePath: branch.storePath,
-          generation: "original",
-          entryId: "answer",
-          rawSeq: 2,
-          activeMessagePosition: 1,
-          effectiveParentId: "question",
-        },
-      },
+      details: contribution,
     },
   ]);
   source.history.mockResolvedValue({
@@ -452,6 +453,7 @@ function personalFixture(sourceMode: "native" | "branches" = "branches") {
   );
   return {
     participant,
+    contribution,
     branch,
     facts,
     factsRelease,
@@ -509,6 +511,9 @@ describe("native personal difference-context integration", () => {
           originalParticipant: { type: "profile", id: "example-person" },
           assertCurrent: expect.any(Function),
           target: f.branch,
+          contribution: f.contribution,
+          rootEvidence: undefined,
+          targetAudience: undefined,
         },
       }),
     );
