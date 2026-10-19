@@ -27,6 +27,7 @@ import {
   resolveEffectiveCompactionMode,
 } from "../agent-settings.js";
 import { toToolDefinitions } from "../agent-tool-definition-adapter.js";
+import { requiresCompleteCompactionSummary } from "../compaction-summary-coverage.js";
 import { pickFallbackThinkingLevel } from "../embedded-agent-helpers.js";
 import { registerProviderStreamForModel } from "../provider-stream.js";
 import { resolveAgentRunSessionTarget } from "../run-session-target.js";
@@ -525,6 +526,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
               // (#133260, #159105, #130993); manual /compact reports its own failure.
               if (
                 trigger === "manual" ||
+                requiresCompleteCompactionSummary() ||
                 params.abortSignal?.aborted ||
                 summaryReady ||
                 !isSummaryTimeoutFailure({

@@ -14,9 +14,12 @@ import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 export const CONVERSATION_KNOWLEDGE_REPORT = "openclaw.conversation-knowledge.v1";
 export const CONVERSATION_UTTERANCE_REPORT = "openclaw.conversation-utterance.v1";
 export const CONVERSATION_KNOWLEDGE_LIMITS = Object.freeze({ maxBytes: 48_000, maxEvents: 96 });
+export const CONVERSATION_KNOWLEDGE_SOURCE_LIMITS = Object.freeze({
+  maxBytes: 64 * 1024 * 1024,
+  maxEvents: 10_000,
+});
 const MAX_CONTEXT_CHARS = 12_000;
 const MAX_SOURCE_CHARS = 4_000;
-const MAX_SOURCES = 4;
 
 /** A root stores references, never a second copy of another audience's dialogue. */
 type ConversationKnowledgeReferenceBase = {
@@ -114,7 +117,7 @@ function readConversationKnowledgeReferenceBase(
     },
   };
   if (record.observed !== undefined) {
-    if (!Array.isArray(record.observed) || record.observed.length > MAX_SOURCES) {
+    if (!Array.isArray(record.observed)) {
       return undefined;
     }
     receipt.observed = [];
@@ -194,7 +197,7 @@ export function selectConversationKnowledgeReport(
   };
 }
 
-/** Bounded active root history supplies only each source incarnation's newest reference. */
+/** Keep every distinct admitted endpoint in report order, not only a source's latest turn. */
 export function selectConversationKnowledgeReceipts(
   events: readonly TranscriptEvent[],
   currentSessionId: string,
@@ -234,19 +237,19 @@ export function selectConversationKnowledgeReceipts(
       }
     }
     incarnationByKey.set(sourceKey, incarnation);
-    const previous = selected.get(receipt.origin);
-    if (
-      !previous ||
-      previous.through.generation !== receipt.through.generation ||
-      previous.through.rawSeq < receipt.through.rawSeq
-    ) {
-      // Reports are admitted against their current native transcript generation.
-      // A replacement generation cannot be ordered using the old generation's sequence.
-      selected.delete(receipt.origin);
-      selected.set(receipt.origin, receipt);
+    const endpoint = JSON.stringify([
+      receipt.origin,
+      receipt.through.generation,
+      receipt.through.rawSeq,
+      receipt.through.entryId,
+    ]);
+    if (!selected.has(endpoint)) {
+      // Generations are incomparable. Keep older endpoints for explicit gap handling
+      // rather than letting compaction silently acknowledge an unread contribution.
+      selected.set(endpoint, receipt);
     }
   }
-  return [...selected.values()].slice(-MAX_SOURCES);
+  return [...selected.values()];
 }
 
 function messageText(message: Record<string, unknown>): string {
@@ -288,10 +291,19 @@ function completedConversationKnowledgeStart(
       asOptionalRecord(asOptionalRecord(event)?.message)?.role === "assistant" &&
       readSessionTranscriptRunId(asOptionalRecord(event)?.message) === receipt.runId,
   );
-  const userStart = events.findLastIndex(
-    (event, index) =>
-      index < ownedStart && asOptionalRecord(asOptionalRecord(event)?.message)?.role === "user",
-  );
+  // Collected/steered inputs can precede the first assistant occurrence. Keep
+  // that contiguous input batch, not just its last message. A previous assistant
+  // or tool result is a separate exchange, never implicit completed coverage.
+  let userStart = -1;
+  for (let index = ownedStart - 1; index >= 0; index -= 1) {
+    const role = asOptionalRecord(asOptionalRecord(events[index])?.message)?.role;
+    if (userStart >= 0 && (role === "assistant" || role === "toolResult")) {
+      break;
+    }
+    if (role === "user") {
+      userStart = index;
+    }
+  }
   if (userStart < 0) {
     return undefined;
   }
@@ -367,6 +379,7 @@ export function projectConversationKnowledge(
   events: readonly TranscriptEvent[],
   frontier?: ConversationKnowledgeFrontier,
   sourceAudience: "private-direct" | "shared" | "unknown" = "unknown",
+  options: { maxChars?: number; offset?: number } = {},
 ) {
   if (
     frontier &&
@@ -379,7 +392,7 @@ export function projectConversationKnowledge(
   const utterance = "kind" in receipt;
   const start = utterance
     ? isConversationUtteranceObservation(receipt, events)
-      ? 0
+      ? events.findIndex((event) => asOptionalRecord(event)?.id === receipt.through.entryId)
       : undefined
     : completedConversationKnowledgeStart(receipt, events);
   if (start === undefined) {
@@ -419,8 +432,8 @@ export function projectConversationKnowledge(
         message.role === "user" ||
         readSessionTranscriptRunId(message) === receipt.runId)
     ) {
-      const text = messageText(message).trim();
-      if (text && sawUser) {
+      const text = messageText(message);
+      if (text.trim() && sawUser) {
         rows.push({ speaker: message.role, text });
       }
     }
@@ -431,64 +444,137 @@ export function projectConversationKnowledge(
   if (!sawUser) {
     return undefined;
   }
-  const observations = rows.slice(-4).map((row) => ({
-    speaker: row.speaker,
-    text: row.text.slice(0, 450),
-  }));
-  const truncated =
-    (!utterance &&
-      events.slice(previous + 1, start).some((event) => {
-        const message = asOptionalRecord(asOptionalRecord(event)?.message);
-        return (
-          message &&
-          (message.role === "user" || message.role === "assistant") &&
-          messageText(message).trim()
-        );
-      })) ||
-    rows.length !== observations.length ||
-    observations.some((row, index) => row.text !== rows.slice(-4)[index]?.text);
-  // Bounded completed exchanges are quoted knowledge, not a replayable conversation or task.
-  const text = JSON.stringify({
-    source: receipt.origin,
-    sourceAudience,
-    speakerIdentity: "not-attributed-to-the-current-user",
-    sourceSessionKey: receipt.source.sessionKey,
-    throughEntryId: receipt.through.entryId,
-    ...(utterance
-      ? { kind: receipt.kind, taskCompletion: "not-implied" }
-      : { completedRun: receipt.runId }),
-    frontierRebased,
-    contentTruncated: truncated,
-    observations,
-  });
-  if (text.length > MAX_SOURCE_CHARS) {
+  const omittedPrefix =
+    !utterance &&
+    events.slice(previous + 1, start).some((event) => {
+      const message = asOptionalRecord(asOptionalRecord(event)?.message);
+      return (
+        message &&
+        (message.role === "user" || message.role === "assistant") &&
+        messageText(message).trim()
+      );
+    });
+  const totalChars = rows.reduce((total, row) => total + row.text.length, 0);
+  const offset = options.offset ?? 0;
+  const maxChars = options.maxChars ?? MAX_SOURCE_CHARS;
+  if (
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    offset > totalChars ||
+    !Number.isSafeInteger(maxChars) ||
+    maxChars < 1
+  ) {
     return undefined;
   }
-  return {
-    text,
-    frontier: {
-      origin: receipt.origin,
-      generation: receipt.through.generation,
-      throughRawSeq: receipt.through.rawSeq,
+  // Packet cuts always land between Unicode characters. JSON escapes an isolated
+  // surrogate, which would otherwise also make size search non-monotonic.
+  const safeEnd = (end: number) => {
+    let position = 0;
+    for (const row of rows) {
+      const localEnd = end - position;
+      if (localEnd > 0 && localEnd < row.text.length) {
+        const before = row.text.charCodeAt(localEnd - 1);
+        const after = row.text.charCodeAt(localEnd);
+        return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff
+          ? end - 1
+          : end;
+      }
+      position += row.text.length;
+    }
+    return end;
+  };
+  if (safeEnd(offset) !== offset) {
+    return undefined;
+  }
+  const render = (requestedEnd: number) => {
+    const end = safeEnd(requestedEnd);
+    let position = 0;
+    const observations = rows.flatMap((row) => {
+      const rowStart = position;
+      position += row.text.length;
+      const text = row.text.slice(
+        Math.max(0, offset - rowStart),
+        Math.min(row.text.length, end - rowStart),
+      );
+      return position > offset && rowStart < end && text ? [{ speaker: row.speaker, text }] : [];
+    });
+    // Each packet remains quoted data. Only its exact consumed offset advances;
+    // a source frontier is issued after the complete contribution is included.
+    return JSON.stringify({
+      source: receipt.origin,
+      sourceAudience,
+      speakerIdentity: "not-attributed-to-the-current-user",
+      sourceSessionKey: receipt.source.sessionKey,
       throughEntryId: receipt.through.entryId,
-    },
+      ...(utterance
+        ? { kind: receipt.kind, taskCompletion: "not-implied" }
+        : { completedRun: receipt.runId }),
+      frontierRebased,
+      contentTruncated: omittedPrefix || end < totalChars,
+      contentOffset: offset,
+      contentComplete: end === totalChars,
+      observations,
+    });
+  };
+  let end = safeEnd(Math.min(totalChars, offset + maxChars));
+  let text = render(end);
+  if (text.length > maxChars) {
+    let low = offset;
+    let high = end;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (render(middle).length <= maxChars) {
+        low = middle;
+      } else {
+        high = middle - 1;
+      }
+    }
+    end = safeEnd(low);
+    text = render(end);
+  }
+  if (text.length > maxChars || (end === offset && offset < totalChars)) {
+    return undefined;
+  }
+  const complete = end === totalChars;
+  return {
+    origin: receipt.origin,
+    text,
+    complete,
+    nextOffset: complete ? undefined : end,
+    frontier: complete
+      ? {
+          origin: receipt.origin,
+          generation: receipt.through.generation,
+          throughRawSeq: receipt.through.rawSeq,
+          throughEntryId: receipt.through.entryId,
+        }
+      : undefined,
   };
 }
 
 export function combineConversationKnowledge(
-  parts: readonly { text: string; frontier: ConversationKnowledgeFrontier }[],
+  parts: readonly { text: string; frontier?: ConversationKnowledgeFrontier; complete?: boolean }[],
 ) {
   const selected: (typeof parts)[number][] = [];
   let chars = 0;
   for (const part of parts) {
-    if (chars + part.text.length > MAX_CONTEXT_CHARS) {
+    const added = part.text.length + (selected.length ? 1 : 0);
+    if (chars + added > MAX_CONTEXT_CHARS) {
       break;
     }
     selected.push(part);
-    chars += part.text.length;
+    chars += added;
   }
   return {
     text: selected.map((part) => part.text).join("\n"),
-    frontiers: selected.map((part) => part.frontier),
+    includedCount: selected.length,
+    frontiers: [
+      ...new Map(
+        selected.flatMap((part) =>
+          part.frontier ? [[part.frontier.origin, part.frontier] as const] : [],
+        ),
+      ).values(),
+    ],
+    pending: selected.length < parts.length || selected.some((part) => part.complete === false),
   };
 }

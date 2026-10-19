@@ -643,6 +643,9 @@ async function executeAgentTurnOutcome(
               const result = await executeAgentTurnInternalLoop(
                 {
                   ...executionParams,
+                  prepareConversationContext: conversationKnowledge
+                    ? (run) => conversationKnowledge.prepareHistory(run)
+                    : undefined,
                   speechPresentationRun,
                   runtimeContextFragments: [
                     ...(executionParams.runtimeContextFragments ?? []),

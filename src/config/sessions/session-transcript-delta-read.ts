@@ -143,7 +143,20 @@ export async function withSessionTranscriptDeltaReader<T>(
         };
         return consume({
           raw: (limits) =>
-            read(() => reader.readRawDelta({ ...request, limits: { ...limits } }, signal)),
+            read(async () => {
+              try {
+                return await reader.readRawDelta({ ...request, limits: { ...limits } }, signal);
+              } catch (error) {
+                if (limits.activePathOnly && isSessionTranscriptProjectionUnavailableError(error)) {
+                  assertCurrent();
+                  startSessionTranscriptIndexReconcile({
+                    ...toDatabaseOptions(source.resolved),
+                    preferredSessionId: source.resolved.sessionId,
+                  });
+                }
+                throw error;
+              }
+            }),
           visible: (limits) =>
             read(async () => {
               try {

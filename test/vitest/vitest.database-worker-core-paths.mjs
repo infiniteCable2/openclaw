@@ -3,6 +3,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/conversation-knowledge.scenario.test.ts",
   "src/channels/message-access/conversation-input.profile.test.ts",
   "src/config/sessions/conversation-knowledge-store.test.ts",
+  "src/config/sessions/conversation-knowledge-history.test.ts",
+  "src/config/sessions/conversation-knowledge-packets.test.ts",
   "src/config/sessions/session-accessor.sqlite-append-participants.test.ts",
   "src/config/sessions/session-conversation-admission.test.ts",
   "src/config/sessions/session-conversation-root.maintenance.test.ts",

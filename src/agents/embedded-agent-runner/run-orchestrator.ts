@@ -235,6 +235,18 @@ async function runEmbeddedAgentForSession(
       const runGeneration = async (): Promise<EmbeddedAgentRunResult> => {
         throwIfAborted();
         assertInitialOperatorModelPolicy(params, sessionAdmission?.entry);
+        if (params.prepareConversationContext) {
+          const fragments = await params.prepareConversationContext({
+            ...params,
+            sessionTarget: { ...params.sessionTarget, ...runSessionTarget },
+          });
+          throwIfAborted();
+          params = {
+            ...params,
+            prepareConversationContext: undefined,
+            runtimeContextFragments: fragments,
+          };
+        }
         // Subscription-scoped claude-cli auth executes via the CLI backend;
         // resolved post-admission so dispatched runs obey the same lifecycle,
         // placement, and concurrency gates as native embedded runs.

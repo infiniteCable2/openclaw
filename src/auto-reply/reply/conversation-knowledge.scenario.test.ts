@@ -5,6 +5,7 @@ import {
   createDeferred,
   withinTest,
 } from "../../../test/helpers/promise.js";
+import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
   readConversationKnowledgeBranch,
   recordConversationKnowledgeTurn,
@@ -175,14 +176,19 @@ async function createScenario(state: OpenClawTestState) {
       },
     };
   };
-  const append = async (selected: Branch, runId: string, stopReason = "stop") => {
+  const append = async (
+    selected: Branch,
+    runId: string,
+    stopReason = "stop",
+    answerText = `${runId} answer`,
+  ) => {
     await appendTranscriptMessage(selected, {
       message: { role: "user", content: `${runId} question`, timestamp: ++clock },
     });
     const saved = await appendTranscriptMessage(selected, {
       message: {
         role: "assistant",
-        content: [{ type: "text", text: `${runId} answer` }],
+        content: [{ type: "text", text: answerText }],
         stopReason,
         timestamp: ++clock,
         idempotencyKey: `${runId}:assistant`,
@@ -477,6 +483,84 @@ describe("ordered native branch Knowledge scenario", () => {
               expect(JSON.stringify(events)).not.toContain("b-two answer");
             },
           );
+          await step(
+            "12 durable catch-up resumes every authorized source without duplicate packets",
+            async () => {
+              const recipient = await fixture.branch("catch-up");
+              const owner = await fixture.claim(recipient);
+              for (let index = 0; index < 7; index += 1) {
+                const donor = await fixture.branch(`donor-${index}`);
+                const sourceOwner = await fixture.claim(donor);
+                const terminal = await fixture.append(
+                  donor,
+                  `donor-${index}`,
+                  "stop",
+                  `donor-${index} ${"complete observation ".repeat(index === 0 ? 3_000 : 300)}`,
+                );
+                expect(await recordConversationKnowledgeTurn({ ...sourceOwner, ...terminal })).toBe(
+                  true,
+                );
+              }
+              const readPackets = async () =>
+                (await loadTranscriptEvents(recipient))
+                  .map(asOptionalRecord)
+                  .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT);
+              let maintenanceCalls = 0;
+              await expect(
+                prepareReplyConversationKnowledge({
+                  ...owner,
+                  originalParticipant: person,
+                  getRuntimeConfig: () => fixture.cfg,
+                  retainInHistory: {
+                    maintainContext: async (source) => {
+                      source();
+                      maintenanceCalls += 1;
+                      throw new Error("Synthetic interruption after durable admission");
+                    },
+                  },
+                }),
+              ).rejects.toThrow("Synthetic interruption after durable admission");
+              expect(maintenanceCalls).toBe(1);
+              const interruptedPackets = await readPackets();
+              expect(interruptedPackets.length).toBeGreaterThan(0);
+              const resumed = await prepareReplyConversationKnowledge({
+                ...owner,
+                originalParticipant: person,
+                getRuntimeConfig: () => fixture.cfg,
+                retainInHistory: {
+                  maintainContext: async (source) => {
+                    source();
+                  },
+                },
+              });
+              try {
+                expect(resumed?.fragments).toEqual([]);
+                expect(resumed?.observed).toEqual([]);
+              } finally {
+                resumed?.release();
+              }
+              const packets = await readPackets();
+              const ids = packets.map((event) => asOptionalRecord(event?.details)?.packetId);
+              expect(new Set(ids).size).toBe(ids.length);
+              expect(packets.length).toBeGreaterThan(interruptedPackets.length);
+              const retainedText = JSON.stringify(packets);
+              for (let index = 0; index < 7; index += 1) {
+                expect(retainedText).toContain(`donor-${index}`);
+              }
+              const repeated = await prepareReplyConversationKnowledge({
+                ...owner,
+                originalParticipant: person,
+                getRuntimeConfig: () => fixture.cfg,
+                retainInHistory: {
+                  maintainContext: async (source) => {
+                    source();
+                  },
+                },
+              });
+              repeated?.release();
+              expect(await readPackets()).toHaveLength(packets.length);
+            },
+          );
           expect(trace).toEqual([
             "01 root + equal private branches admitted",
             "02 A committed turn becomes one opaque receipt",
@@ -490,6 +574,7 @@ describe("ordered native branch Knowledge scenario", () => {
             "10 revoke during native report preparation refuses commit",
             "10 replace during native report preparation refuses commit",
             "11 headless root rejects external ingress and contains no dialogue",
+            "12 durable catch-up resumes every authorized source without duplicate packets",
           ]);
         } finally {
           await fixture.close();

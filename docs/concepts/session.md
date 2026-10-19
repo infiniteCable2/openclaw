@@ -89,6 +89,30 @@ The two reference kinds use separate progress frontiers and deduplicate within
 their actual source incarnation and transcript generation. The root stores
 neither dialogue text nor fabricated model turns.
 
+The central embedded Reply path catches up a fixed prefix of all eligible root
+references, not just the latest four sources. It copies quoted observations into
+the recipient's native transcript in bounded packets. Each packet records its
+source occurrence and exact content offset; a partial packet never acknowledges
+the whole contribution. Cancellation can therefore resume from durable progress
+without duplicating admitted packets. Progress means that text was admitted,
+not that a model understood every fact or executed an action.
+
+Before ordinary context hydration, the same native session lane checks capacity.
+When necessary, it invokes native compaction, then continues with the remaining
+packets. Compaction must produce a summary without the known partial-summary or
+no-summary fallbacks; otherwise catch-up remains pending. As with normal session
+compaction, a summary is a lossy model interpretation, not lossless retention of
+every detail. Exact source history remains subject to its own current read grants.
+Already admitted observations are recipient history and participate in later
+native compaction; they do not require repeatedly copying the source text.
+
+A reset/replaced source is not silently treated as its previous incarnation.
+An exact source range that is no longer projectable remains explicitly pending
+rather than being marked consumed. This does not reconstruct deleted history.
+Read-only snapshots, including provider-owned realtime startup and direct CLI
+candidates, remain bounded and identify partial coverage. They do not claim the
+embedded path's durable automatic catch-up.
+
 Original live read permissions, source incarnation, and target audience
 must all remain valid. Root membership is not authorization. Shared, unidentified,
 or group audiences do not automatically receive private context. In particular,

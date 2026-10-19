@@ -15,7 +15,7 @@ import {
   resolveSqliteSessionTranscriptReadFence,
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
 
 const RAW_TRANSCRIPT_CURSOR_VERSION = 1;
 const DEFAULT_RAW_TRANSCRIPT_MAX_EVENTS = 1_000;
@@ -118,6 +118,8 @@ export function readTranscriptRawDeltaFromProjection(
     maxBytes,
     beforeEventSeq,
     { generation: projection.generation, indexedSeq: projection.state.indexedSeq },
+    limits.customTypes,
+    limits.activePathOnly,
   );
 }
 
@@ -130,6 +132,8 @@ export function readRawDeltaInTransaction(
   maxBytes: number,
   beforeEventSeq: number | undefined,
   snapshot?: { generation: string | undefined; indexedSeq: number },
+  customTypes?: readonly string[],
+  activePathOnly = false,
 ): SessionTranscriptRawDeltaResult {
   const watermark = snapshot
     ? undefined
@@ -158,8 +162,37 @@ export function readRawDeltaInTransaction(
   if (cursor.generation !== generation) {
     return reset("generation_mismatch");
   }
-  const db = getNodeSqliteKysely<Pick<DB, "transcript_events">>(database);
-  const transcript = db.selectFrom("transcript_events").where("session_id", "=", scope.sessionId);
+  const db =
+    getNodeSqliteKysely<Pick<DB, "transcript_events" | "session_transcript_active_events">>(
+      database,
+    );
+  const transcript = db
+    .selectFrom("transcript_events")
+    .where("session_id", "=", scope.sessionId)
+    .$if(activePathOnly, (query) =>
+      query.where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom("session_transcript_active_events as active")
+            .select("active.event_seq")
+            .whereRef("active.session_id", "=", "transcript_events.session_id")
+            .whereRef("active.event_seq", "=", "transcript_events.seq"),
+        ),
+      ),
+    )
+    .$if(customTypes !== undefined, (query) =>
+      query
+        // kysely-allow-raw: Canonical navigation metadata narrows report selection without loading bodies.
+        .where(
+          sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`,
+          "=",
+          "custom_message",
+        )
+        // kysely-allow-raw: Types are bound values; existing read authority still owns the full scope.
+        .where(sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.customType')`, "in", [
+          ...(customTypes ?? []),
+        ]),
+    );
   const frontier = snapshot ? snapshot.indexedSeq : watermark?.maxSeq;
   const maxSeq = Math.min(
     sqliteNumber(frontier ?? -1),

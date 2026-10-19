@@ -1,7 +1,9 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
+import { readConversationKnowledgeReports } from "./conversation-knowledge-history.js";
 import {
   CONVERSATION_KNOWLEDGE_LIMITS,
+  CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
   CONVERSATION_KNOWLEDGE_REPORT,
   CONVERSATION_UTTERANCE_REPORT,
   conversationKnowledgeOrigin,
@@ -197,15 +199,47 @@ async function recordConversationKnowledgeReference(params: {
     params.assertCurrent();
   };
   check();
-  const sourceContext = await readSessionTranscriptModelContextAsync(
-    branch,
-    (context) => context,
-    undefined,
-    params.signal,
+  const readContext = async (limits: { maxBytes: number; maxEvents: number }) => {
+    const readContextResult = await readSessionTranscriptModelContextAsync(
+      branch,
+      (context) => context,
+      undefined,
+      params.signal,
+      through,
+      limits,
+    );
+    check();
+    return readContextResult;
+  };
+  let sourceContext = await readContext(CONVERSATION_KNOWLEDGE_LIMITS).catch((error: unknown) => {
+    check();
+    if (!(error instanceof RangeError)) {
+      throw error;
+    }
+    // A single latest entry can exceed the small validation budget entirely.
+    return undefined;
+  });
+  const candidate = {
+    version: 1,
+    source: branch,
+    origin: conversationKnowledgeOrigin(
+      branch,
+      "kind" in params.completion ? params.completion.kind : undefined,
+    ),
     through,
-    CONVERSATION_KNOWLEDGE_LIMITS,
-  );
-  check();
+    ...params.completion,
+  } as const;
+  if (
+    !sourceContext ||
+    (sourceContext.truncated &&
+      !("kind" in candidate
+        ? isConversationUtteranceObservation(candidate, sourceContext.events)
+        : isCompletedConversationKnowledge(candidate, sourceContext.events)))
+  ) {
+    // A clipped validation tail is not evidence that a long completed exchange
+    // never happened. Expand once through the same exact native source anchor.
+    sourceContext = await readContext(CONVERSATION_KNOWLEDGE_SOURCE_LIMITS);
+  }
   const sourceVersion = sourceContext.version;
   if (!sourceVersion) {
     return false;
@@ -368,14 +402,12 @@ export async function readConversationKnowledgeRoot(params: {
     );
   await validate();
   assertCurrent();
-  const result = await readSessionTranscriptModelContextAsync(
-    { ...branch, ...branch.root },
-    (context) => context.events,
-    undefined,
+  const result = await readConversationKnowledgeReports({
+    target: { ...branch, ...branch.root },
+    customTypes: [CONVERSATION_KNOWLEDGE_REPORT, CONVERSATION_UTTERANCE_REPORT],
+    assertCurrent,
     signal,
-    undefined,
-    CONVERSATION_KNOWLEDGE_LIMITS,
-  );
+  });
   await validate();
   assertCurrent();
   return result;

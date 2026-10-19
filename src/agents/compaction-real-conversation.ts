@@ -32,8 +32,14 @@ function hasMeaningfulConversationContent(message: AgentMessage): boolean {
     return false;
   }
   if ((message as { role?: unknown }).role === "custom") {
-    const custom = message as { content?: unknown; display?: unknown };
-    return custom.display !== false && hasMeaningfulMessageContent(custom.content);
+    const custom = message as { content?: unknown; display?: unknown; customType?: unknown };
+    // Authorized, retained observations are real knowledge even before this
+    // recipient's first user turn. Other hidden runtime carriers remain excluded.
+    return (
+      (custom.display !== false ||
+        custom.customType === "openclaw.conversation-knowledge-context.v1") &&
+      hasMeaningfulMessageContent(custom.content)
+    );
   }
   if (message.role === "bashExecution") {
     const command = typeof message.command === "string" ? message.command : "";

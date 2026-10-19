@@ -39,6 +39,10 @@ export type CompactionAccountingFact = Readonly<
 >;
 
 export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
+  /** Replace transient fragments after host-owned admission in native lanes, before hydration. */
+  prepareConversationContext?: (
+    run: RunEmbeddedAgentParams,
+  ) => Promise<import("../../internal-runtime-context.js").RuntimeContextFragment[]>;
   preparedTtsPreferences?: PreparedTtsPreferences;
   /** Fail-closed caller input admission against the actual prepared model, before dispatch. */
   assertModelInput?: (model: Pick<Model, "input">) => void;

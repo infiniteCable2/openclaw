@@ -27,6 +27,7 @@ import {
   withRecentActiveTranscriptEvents,
 } from "./session-accessor.sqlite-history.test-support.js";
 import { seedUnindexedTranscriptForTest } from "./session-accessor.sqlite-import.test-support.js";
+import { readSessionTranscriptModelContext } from "./session-accessor.sqlite-model-context.js";
 import { runWithSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import {
   reconcileSessionTranscriptIndexes,
@@ -58,6 +59,32 @@ async function withBoundedContextScope(
     await run(scope);
   });
 }
+
+it("reports active model-context omission without treating a retained complete view as truncated", async () => {
+  await withBoundedContextScope(async (scope) => {
+    await persistSessionTranscriptTurn(scope, {
+      messages: [
+        transcriptMessage("large", null, { role: "user", content: "a".repeat(2_048) }),
+        transcriptMessage("middle", "large", { role: "user", content: "Middle message." }),
+        transcriptMessage("last", "middle", { role: "user", content: "Last message." }),
+      ],
+      touchSessionEntry: false,
+    });
+    expect(readSessionTranscriptModelContext(scope).truncated).toBeUndefined();
+    expect(
+      readSessionTranscriptModelContext(scope, undefined, { maxBytes: 16_384, maxEvents: 3 })
+        .truncated,
+    ).toBeUndefined();
+    expect(
+      readSessionTranscriptModelContext(scope, undefined, { maxBytes: 16_384, maxEvents: 2 })
+        .truncated,
+    ).toBe(true);
+    expect(
+      readSessionTranscriptModelContext(scope, undefined, { maxBytes: 1_024, maxEvents: 3 })
+        .truncated,
+    ).toBe(true);
+  });
+});
 
 async function seedImportedTranscript(
   scope: Parameters<Parameters<typeof withBoundedContextScope>[0]>[0],

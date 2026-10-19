@@ -42,10 +42,12 @@ vi.mock("../infra/retry.js", async () => {
 });
 
 let summarizeInStages: typeof import("./compaction.js").summarizeInStages;
+let withCompleteCompactionSummary: typeof import("./compaction-summary-coverage.js").withCompleteCompactionSummary;
 
 beforeAll(async () => {
   vi.resetModules();
   ({ summarizeInStages } = await import("./compaction.js"));
+  ({ withCompleteCompactionSummary } = await import("./compaction-summary-coverage.js"));
 });
 
 describe("summarizeChunks partial summary preservation (#82952)", () => {
@@ -98,6 +100,20 @@ describe("summarizeChunks partial summary preservation (#82952)", () => {
       "chunk summarization failed after retries; partial summary available",
       expect.objectContaining({ err: expect.any(Error) }),
     );
+  });
+
+  it("keeps catch-up pending instead of accepting a partial chunk fallback", async () => {
+    compactionMocks.generateSummary
+      .mockResolvedValueOnce("Summary of chunk 1")
+      .mockRejectedValue(new Error("Second chunk unavailable"));
+    await expect(withCompleteCompactionSummary(() => callSummarize())).rejects.toThrow();
+    expect(compactionMocks.generateSummary).toHaveBeenCalledTimes(2);
+    // The requirement belongs to this operation, not subsequent native compactions.
+    compactionMocks.generateSummary
+      .mockReset()
+      .mockResolvedValueOnce("Summary of chunk 1")
+      .mockRejectedValue(new Error("Second chunk unavailable"));
+    expect(await callSummarize()).toContain("[Partial summary:");
   });
 
   it("re-throws abort errors when the caller signal is already aborted", async () => {

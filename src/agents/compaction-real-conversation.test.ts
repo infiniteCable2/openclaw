@@ -14,6 +14,45 @@ function summaryMessage(role: SummaryRole, summary: string): AgentMessage {
 }
 
 describe("compaction real conversation classification", () => {
+  it.each([
+    {
+      customType: "openclaw.conversation-knowledge-context.v1",
+      content: "Observed facts.",
+      expected: true,
+    },
+    {
+      customType: "openclaw.runtime-context",
+      content: "Internal runtime instructions.",
+      expected: false,
+    },
+    { customType: "other-hidden-context", content: "Unrelated hidden data.", expected: false },
+    { customType: "openclaw.conversation-knowledge-context.v1", content: "   ", expected: false },
+  ])(
+    "classifies only meaningful retained Knowledge among hidden custom messages ($customType)",
+    ({ customType, content, expected }) => {
+      const message = {
+        role: "custom",
+        customType,
+        content,
+        display: false,
+        timestamp: 1,
+      } satisfies AgentMessage;
+      expect(isRealConversationMessage(message, [message], 0)).toBe(expected);
+    },
+  );
+
+  it("does not compact retained Knowledge excluded from model context", () => {
+    const message = {
+      role: "custom",
+      customType: "openclaw.conversation-knowledge-context.v1",
+      content: "Observed facts.",
+      display: false,
+      excludeFromContext: true,
+      timestamp: 1,
+    } satisfies AgentMessage;
+    expect(isRealConversationMessage(message, [message], 0)).toBe(false);
+  });
+
   it("expires streaming tool-result anchors after the 20-message lookback", () => {
     const classify = createRealConversationClassifier();
     expect(classify({ role: "user", content: "Inspect the repo", timestamp: 1 })).toBe(true);

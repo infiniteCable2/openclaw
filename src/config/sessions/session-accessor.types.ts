@@ -247,6 +247,10 @@ export type SessionTranscriptEventRow = {
 
 /** Count, byte, and continuation bounds for one raw transcript page. */
 export type SessionTranscriptRawDeltaLimits = {
+  /** Narrow native report reads before sizing/decoding unrelated transcript bodies. */
+  customTypes?: readonly string[];
+  /** Require the current native transcript path, including its compacted ancestors. */
+  activePathOnly?: boolean;
   /** Opaque cursor returned by a prior page or reset result. */
   cursor?: string;
   /** Maximum serialized JSONL bytes returned by this page. */

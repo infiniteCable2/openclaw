@@ -29,6 +29,7 @@ import { normalizeAcceptedSessionSpawnResult } from "../accepted-session-spawn.j
 import { computeAdaptiveChunkRatioWithWorker } from "../compaction-planning-worker.js";
 import { buildHistoryPrunePlan } from "../compaction-planning.js";
 import { isRealConversationMessage } from "../compaction-real-conversation.js";
+import { reportCompactionSummaryLosses } from "../compaction-summary-coverage.js";
 import {
   SUMMARIZATION_OVERHEAD_TOKENS,
   resolveContextWindowTokens,
@@ -967,11 +968,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       if (finalized.suffixTrimmed) {
         losses.add("suffix-head");
       }
-      if (losses.size > 0) {
-        log.warn(
-          `Compaction safeguard: finalized artifact truncated; loss=${[...losses].join(",")}`,
-        );
-      }
+      reportCompactionSummaryLosses(losses, (message) => log.warn(message));
       return finalized;
     };
     const compactionResult = (summary: string) => ({

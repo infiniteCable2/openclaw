@@ -482,6 +482,10 @@ export function readSessionTranscriptModelContext(
       return {
         events: [...(header ? [header] : []), ...contextEntries],
         version,
+        ...(selected.length < requests.length ||
+        selected.some((request) => request.toolResultOmission)
+          ? { truncated: true as const }
+          : {}),
       };
     },
     through,

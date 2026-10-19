@@ -43,6 +43,8 @@ export type SessionModelContextLimits = {
 export type SessionTranscriptModelContext = {
   events: TranscriptEvent[];
   version?: SessionTranscriptContextVersion;
+  /** The bounded view omitted active model-context entries or result bodies. */
+  truncated?: true;
 };
 
 export type SessionTranscriptReadSnapshot = {

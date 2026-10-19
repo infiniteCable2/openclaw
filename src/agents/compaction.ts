@@ -13,6 +13,7 @@ import {
   buildStageSplitPlanWithWorker,
   buildSummaryChunksWithWorker,
 } from "./compaction-planning-worker.js";
+import { requiresCompleteCompactionSummary } from "./compaction-summary-coverage.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
 import { isTimeoutError } from "./failover-error.js";
 import type {
@@ -187,6 +188,10 @@ async function summarizeWithFallback(params: CompactionSummaryParams): Promise<s
   try {
     return await summarizeChunks(params);
   } catch (err) {
+    if (requiresCompleteCompactionSummary()) {
+      // A partial or oversized-message fallback must not consume catch-up coverage.
+      throw err;
+    }
     recordFailure(err, "Full summarization failed");
   }
 

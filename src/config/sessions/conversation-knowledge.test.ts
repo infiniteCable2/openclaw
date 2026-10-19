@@ -187,7 +187,7 @@ describe("native conversation knowledge references and bounded data", () => {
   it("selects only data newer than the exact accepted frontier and suppresses replay", () => {
     const f = fixture();
     const first = projectConversationKnowledge(f.receipt, f.events);
-    if (!first) {
+    if (!first?.frontier) {
       throw new Error("Synthetic completed observation missing");
     }
     expect(projectConversationKnowledge(f.receipt, f.events, first.frontier)).toBeUndefined();
@@ -248,7 +248,7 @@ describe("native conversation knowledge references and bounded data", () => {
     expect(JSON.parse(projected?.text ?? "{}").contentTruncated).toBe(true);
   });
 
-  it("keeps quoting bounded and explicitly exposes truncation plus the native readable reference", () => {
+  it("keeps packets bounded without acknowledging undelivered text", () => {
     const f = fixture();
     f.events[1] = {
       type: "message",
@@ -256,7 +256,9 @@ describe("native conversation knowledge references and bounded data", () => {
       message: { role: "user", content: "x".repeat(10_000) },
     };
     const projected = projectConversationKnowledge(f.receipt, f.events);
-    expect(projected?.text.length).toBeLessThan(4_000);
+    expect(projected?.text.length).toBeLessThanOrEqual(4_000);
+    expect(projected?.complete).toBe(false);
+    expect(projected?.frontier).toBeUndefined();
     const data = JSON.parse(projected?.text ?? "{}");
     expect(data.contentTruncated).toBe(true);
     expect(data.sourceSessionKey).toBe(f.source.sessionKey);
@@ -265,6 +267,172 @@ describe("native conversation knowledge references and bounded data", () => {
     expect(data.sourceAudience).toBe("unknown");
     expect(data.speakerIdentity).toBe("not-attributed-to-the-current-user");
     expect(projected).not.toHaveProperty("role");
+    let offset = 0;
+    let text = "";
+    for (let packet = 0; packet < 64; packet += 1) {
+      const part = projectConversationKnowledge(f.receipt, f.events, undefined, "unknown", {
+        maxChars: 1_000,
+        offset,
+      });
+      if (!part) {
+        throw new Error("Synthetic pending packet missing");
+      }
+      const observations: Array<{ text: string }> = JSON.parse(part.text).observations;
+      text += observations.map((observation) => observation.text).join("");
+      expect(part.text.length).toBeLessThanOrEqual(1_000);
+      if (part.complete) {
+        expect(part.frontier?.throughEntryId).toBe("answer");
+        expect(text).toBe("x".repeat(10_000) + "The example is blue.");
+        return;
+      }
+      expect(part.frontier).toBeUndefined();
+      expect(part.nextOffset).toBeGreaterThan(offset);
+      offset = part.nextOffset!;
+    }
+    throw new Error("Synthetic contribution did not finish within its expected packet count");
+  });
+
+  it("retains distinct completions from one source in chronological order without duplicates", () => {
+    const f = fixture();
+    const next = {
+      ...f.receipt,
+      runId: "run-next",
+      through: { ...f.receipt.through, rawSeq: 7, entryId: "answer-next" },
+    };
+    const events = [f.receipt, next, f.receipt, next].map((details) => ({
+      type: "custom_message",
+      customType: CONVERSATION_KNOWLEDGE_REPORT,
+      details,
+    }));
+    expect(selectConversationKnowledgeReceipts(events, "other")).toEqual([f.receipt, next]);
+    const observed = Array.from({ length: 7 }, (_, index) => ({
+      origin: fixture(String(index)).receipt.origin,
+      generation: "original",
+      throughRawSeq: index,
+      throughEntryId: `entry-${index}`,
+    }));
+    expect(readConversationKnowledgeReceipt({ ...f.receipt, observed })?.observed).toEqual(
+      observed,
+    );
+    expect(
+      combineConversationKnowledge([
+        {
+          text: "Earlier observed exchange.",
+          frontier: {
+            origin: f.receipt.origin,
+            generation: "original",
+            throughRawSeq: 2,
+            throughEntryId: "earlier",
+          },
+        },
+        {
+          text: "Later observed exchange.",
+          frontier: {
+            origin: f.receipt.origin,
+            generation: "original",
+            throughRawSeq: 4,
+            throughEntryId: "later",
+          },
+        },
+      ]).frontiers,
+    ).toEqual([
+      {
+        origin: f.receipt.origin,
+        generation: "original",
+        throughRawSeq: 4,
+        throughEntryId: "later",
+      },
+    ]);
+  });
+
+  it("quotes every completed row rather than selecting the final four", () => {
+    const f = fixture();
+    const middle = Array.from({ length: 5 }, (_, index) => ({
+      type: "message",
+      id: `commentary-${index}`,
+      message: {
+        role: "assistant",
+        content: `Observation ${index}.`,
+        __openclaw: { runId: f.receipt.runId },
+      },
+    }));
+    const part = projectConversationKnowledge(f.receipt, [
+      f.events[0]!,
+      f.events[1]!,
+      ...middle,
+      f.events[2]!,
+    ]);
+    expect(part?.complete).toBe(true);
+    expect(JSON.parse(part?.text ?? "{}").observations).toHaveLength(7);
+    expect(part?.text).toContain("Observation 0.");
+    const collected = projectConversationKnowledge(f.receipt, [
+      f.events[0]!,
+      {
+        type: "message",
+        id: "collected-first",
+        message: { role: "user", content: "First collected request." },
+      },
+      f.events[1]!,
+      f.events[2]!,
+    ]);
+    expect(collected?.text).toContain("First collected request.");
+    expect(JSON.parse(collected?.text ?? "{}").observations).toHaveLength(3);
+  });
+
+  it("keeps partial and excluded packets pending without granting their completion frontier", () => {
+    const f = fixture();
+    const full = projectConversationKnowledge(f.receipt, f.events);
+    if (!full?.frontier) {
+      throw new Error("Synthetic full contribution missing");
+    }
+    const combined = combineConversationKnowledge([
+      full,
+      { text: "partial", complete: false },
+      { text: "x".repeat(12_000), frontier: full.frontier },
+    ]);
+    expect(combined.pending).toBe(true);
+    expect(combined.text).toContain("partial");
+    expect(combined.frontiers).toEqual([full.frontier]);
+    expect(combined.text.length).toBeLessThanOrEqual(12_000);
+    expect(
+      projectConversationKnowledge(f.receipt, f.events, undefined, "unknown", { offset: -1 }),
+    ).toBeUndefined();
+    expect(
+      projectConversationKnowledge(f.receipt, f.events, undefined, "unknown", { maxChars: 1 }),
+    ).toBeUndefined();
+  });
+
+  it("resumes escaped and Unicode text without splitting surrogate pairs or acknowledging a prefix", () => {
+    const f = fixture();
+    const original = '🦊"\\\n'.repeat(200);
+    f.events[1] = {
+      type: "message",
+      id: "question",
+      message: { role: "user", content: original },
+    };
+    let offset = 0;
+    let reconstructed = "";
+    for (let packet = 0; packet < 64; packet += 1) {
+      const part = projectConversationKnowledge(f.receipt, f.events, undefined, "unknown", {
+        offset,
+        maxChars: 700,
+      });
+      if (!part) {
+        throw new Error("Synthetic Unicode packet missing");
+      }
+      const observations: Array<{ text: string }> = JSON.parse(part.text).observations;
+      const chunk = observations.map((row) => row.text).join("");
+      expect(chunk.isWellFormed()).toBe(true);
+      expect(part.text.length).toBeLessThanOrEqual(700);
+      reconstructed += chunk;
+      if (part.complete) {
+        expect(reconstructed).toBe(original + "The example is blue.");
+        return;
+      }
+      expect(part.frontier).toBeUndefined();
+      offset = part.nextOffset!;
+    }
+    throw new Error("Synthetic Unicode contribution did not finish");
   });
 
   it("rebases only an admitted replacement generation without reusing the old sequence", () => {
@@ -289,6 +457,7 @@ describe("native conversation knowledge references and bounded data", () => {
       details,
     }));
     expect(selectConversationKnowledgeReceipts(events, "other-current-session")).toEqual([
+      f.receipt,
       replacement,
     ]);
     expect(
@@ -296,7 +465,7 @@ describe("native conversation knowledge references and bounded data", () => {
     ).toEqual([]);
   });
 
-  it("keeps root selection bounded and excludes this branch rather than assuming ancestry is permission", () => {
+  it("keeps all eligible sources and excludes this branch rather than assuming ancestry is permission", () => {
     const receipts = Array.from({ length: 8 }, (_, index) => fixture(String(index)).receipt);
     const events = receipts.map((receipt) => ({
       type: "custom_message",
@@ -304,7 +473,7 @@ describe("native conversation knowledge references and bounded data", () => {
       details: receipt,
     }));
     const selected = selectConversationKnowledgeReceipts(events, receipts[7]!.source.sessionId);
-    expect(selected).toHaveLength(4);
+    expect(selected).toHaveLength(7);
     expect(
       selected.some((receipt) => receipt.source.sessionId === receipts[7]!.source.sessionId),
     ).toBe(false);
@@ -323,7 +492,7 @@ describe("native conversation knowledge references and bounded data", () => {
     ).toBeLessThan(12_010);
   });
 
-  it("does not spend the source budget on superseded incarnations of one logical branch", () => {
+  it("excludes superseded incarnations of one logical branch", () => {
     const f = fixture();
     const nextSource = {
       ...f.source,
@@ -415,11 +584,21 @@ describe("committed native realtime utterance observations", () => {
     const data = JSON.parse(part?.text ?? "{}");
     expect(data).toMatchObject({ kind: "utterance-observation", taskCompletion: "not-implied" });
     expect(data).not.toHaveProperty("completedRun");
-    expect(data.observations).toEqual([
-      { speaker: "user", text: "A spoken question." },
-      { speaker: "assistant", text: "A spoken answer." },
-    ]);
+    expect(data.observations).toEqual([{ speaker: "assistant", text: "A spoken answer." }]);
     expect(projectConversationKnowledge(f.receipt, events, part?.frontier)).toBeUndefined();
+  });
+
+  it("projects each committed utterance reference exactly once rather than replaying its prefix", () => {
+    const f = utteranceFixture();
+    const first = {
+      ...f.receipt,
+      role: "user" as const,
+      through: { ...f.receipt.through, entryId: "question", rawSeq: 1 },
+    };
+    const user = JSON.parse(projectConversationKnowledge(first, f.events)?.text ?? "{}");
+    const assistant = JSON.parse(projectConversationKnowledge(f.receipt, f.events)?.text ?? "{}");
+    expect(user.observations).toEqual([{ speaker: "user", text: "A spoken question." }]);
+    expect(assistant.observations).toEqual([{ speaker: "assistant", text: "A spoken answer." }]);
   });
 
   it("refuses role/provenance/run mismatches and tool-bearing voice-looking data", () => {
