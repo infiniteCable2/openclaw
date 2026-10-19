@@ -636,9 +636,10 @@ export async function appendSessionTranscriptReport(
     source?: SessionSourceAssertion;
   },
 ): Promise<Result<void, TranscriptAppendRefusal>> {
-  const contextAdmission = options?.contextAdmission && {
-    limits: structuredClone(options.contextAdmission.limits),
-    onDeferred: options.contextAdmission.onDeferred,
+  const suppliedAdmission = options?.contextAdmission;
+  const contextAdmission = suppliedAdmission && {
+    limits: structuredClone(suppliedAdmission.limits),
+    onDeferred: () => suppliedAdmission.onDeferred(),
   };
   const incognito = options?.incognito ?? captureIncognitoSessionOperation(scope);
   if (

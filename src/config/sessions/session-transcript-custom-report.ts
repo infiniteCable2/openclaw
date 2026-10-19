@@ -17,7 +17,8 @@ export async function appendCustomTranscriptReportWithWorker(params: {
   publish(result: TranscriptReportCommit): void;
   contextAdmission?: TranscriptReportContextAdmission;
 }): Promise<Result<void, TranscriptAppendRefusal>> {
-  const { report, operation, assertCurrent } = params;
+  const { report, operation } = params;
+  const assertCurrent = () => params.assertCurrent();
   const selection = {
     kind: report.kind,
     customTypes: [...report.customTypes],

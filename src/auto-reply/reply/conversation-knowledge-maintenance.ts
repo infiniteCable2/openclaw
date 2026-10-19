@@ -72,7 +72,8 @@ export function createConversationKnowledgeMaintenance(params: {
     params.signal.throwIfAborted();
     assertSources();
   });
-  return async (packetIds = [], pendingText) => {
+  return async (packetIds, pendingText) => {
+    packetIds ??= [];
     check();
     const target = await resolveAgentRunSessionTarget({
       ...params.run,
