@@ -1,4 +1,3 @@
-import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../../agents/sessions/session-manager.js";
@@ -6,14 +5,12 @@ import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-messa
 import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   appendTranscriptEvent,
   appendTranscriptMessage,
   persistSessionTranscriptTurn,
   loadTranscriptEventsSync,
   readTranscriptStatsSync,
-  upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "./session-accessor.sqlite-active-context.js";
 import {
@@ -21,6 +18,7 @@ import {
   readSessionTranscriptMessageEventPage,
   readSessionTranscriptBoundedMessageTailPage,
 } from "./session-accessor.sqlite-active-events.js";
+import { withBoundedContextScope } from "./session-accessor.sqlite-bounded-context.test-support.js";
 import {
   readActiveTranscriptStats,
   readSessionTranscriptHistoryEventById,
@@ -43,26 +41,6 @@ const readSessionTranscriptMessageEventCount = (
   scope: Parameters<typeof readSessionTranscriptMessageEventPage>[0],
 ): number =>
   readSessionTranscriptMessageEventPage(scope, { maxMessages: 0, offset: 0 }).totalMessages;
-
-async function withBoundedContextScope(
-  run: (scope: {
-    agentId: string;
-    sessionId: string;
-    sessionKey: string;
-    storePath: string;
-  }) => Promise<void>,
-): Promise<void> {
-  await withOpenClawTestState({ label: "bounded-transcript-context" }, async (state) => {
-    const scope = {
-      agentId: "main",
-      sessionId: "bounded-context",
-      sessionKey: "agent:main:bounded-context",
-      storePath: path.join(state.sessionsDir("main"), "sessions.json"),
-    };
-    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-    await run(scope);
-  });
-}
 
 it("reports active model-context omission without treating a retained complete view as truncated", async () => {
   await withBoundedContextScope(async (scope) => {
