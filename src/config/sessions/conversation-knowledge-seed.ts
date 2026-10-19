@@ -315,7 +315,7 @@ export async function ensureConversationKnowledgeSeed(params: {
   }
   const predicates = expected.map((predicate, index) =>
     index === 0
-      ? { ...predicate, transcript: { sessionId: branch.sessionId, version } }
+      ? Object.assign({}, predicate, { transcript: { sessionId: branch.sessionId, version } })
       : predicate,
   );
   const source = composeSessionSourceAssertion([
