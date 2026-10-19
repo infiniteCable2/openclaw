@@ -13,7 +13,10 @@ import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import * as lifecycle from "./session-accessor.sqlite-projection.js";
 import { appendTranscriptMessage } from "./session-accessor.sqlite-transcript-write.js";
 import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
-import { enrollSessionConversationBranch } from "./session-conversation-enrollment.js";
+import {
+  enrollSessionConversationBranch,
+  prepareConversationLifecyclesForStartup,
+} from "./session-conversation-enrollment.js";
 import { resolveAgentConversationRootSessionKey } from "./session-conversation-root-key.js";
 import { ensureAgentConversationRoot } from "./session-conversation-root.js";
 import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
@@ -164,12 +167,72 @@ it("allows an explicit native-mode enrollment without activating branch routing"
   expect(await f.history()).toEqual(f.events);
 });
 
+it("initializes an eligible legacy lifecycle before claims, preserving all history and other fields", async () => {
+  const f = await fixture({ lifecycleRevision: undefined });
+  const rootBefore = await readSessionEntryReadOnlyInWorker(f.rootScope);
+  await expect(enrollSessionConversationBranch(f.params)).rejects.toThrow(
+    "existing live, non-task",
+  );
+  await prepareConversationLifecyclesForStartup(f.params);
+  const initialized = await f.read();
+  expect(initialized).toEqual({ ...f.before, lifecycleRevision: expect.any(String) });
+  expect(await f.history()).toEqual(f.events);
+  expect(await readSessionEntryReadOnlyInWorker(f.rootScope)).toEqual(rootBefore);
+  await prepareConversationLifecyclesForStartup(f.params);
+  expect(await f.read()).toEqual(initialized);
+  await enrollSessionConversationBranch(f.params);
+  expect(await f.read()).toMatchObject({
+    sessionId: f.before.sessionId,
+    lifecycleRevision: initialized?.lifecycleRevision,
+    conversationTopology: { role: "branch" },
+  });
+  expect(await f.history()).toEqual(f.events);
+});
+
+it.each(["reset", "source", "mode", "abort"] as const)(
+  "refuses a %s racing legacy lifecycle initialization without changing the selected history",
+  async (change) => {
+    const ready = await fixture();
+    await prepareConversationLifecyclesForStartup(ready.params);
+    const f = await fixture({ lifecycleRevision: undefined });
+    const signal = new AbortController();
+    let expected = f.before;
+    const mutate = lifecycle.applySessionEntryLifecycleMutation;
+    vi.spyOn(lifecycle, "applySessionEntryLifecycleMutation").mockImplementationOnce(
+      async (input) => {
+        if (change === "reset") {
+          replaceSessionEntrySync(f.scope, { ...f.before, lifecycleRevision: "winning-reset" });
+          const winner = await f.read();
+          if (!winner) {
+            throw new Error("Expected the actual concurrent lifecycle winner");
+          }
+          expected = winner;
+        } else if (change === "source") {
+          f.revoke();
+        } else if (change === "mode") {
+          f.setMode("native");
+        } else {
+          signal.abort(new Error("Startup cancelled"));
+        }
+        return mutate(input);
+      },
+    );
+    await expect(
+      prepareConversationLifecyclesForStartup({ ...f.params, signal: signal.signal }),
+    ).rejects.toThrow();
+    expect(await f.read()).toEqual(expected);
+    expect(await f.history()).toEqual(f.events);
+  },
+);
+
 it.each([
   { parentSessionKey: "agent:main:original" },
   { spawnedBy: "agent:main:original" },
   { forkSource: { sessionKey: "agent:main:original", sessionId: "original" } },
   { incognito: true },
   { archivedAt: 1 },
+  { createdVia: "cron" },
+  { createdVia: "spawn" },
   { heartbeatIsolatedBaseSessionKey: "agent:main:original" },
 ] satisfies Partial<InternalSessionEntry>[])(
   "refuses non-conversation metadata %# without changing it",
@@ -178,7 +241,10 @@ it.each([
     await expect(enrollSessionConversationBranch(f.params)).rejects.toThrow(
       "existing live, non-task",
     );
-    expect(await f.read()).toEqual(f.before);
+    const legacy = { ...f.before, lifecycleRevision: undefined };
+    replaceSessionEntrySync(f.scope, legacy);
+    await prepareConversationLifecyclesForStartup(f.params);
+    expect(await f.read()).toEqual(legacy);
     expect(await f.history()).toEqual(f.events);
   },
 );
@@ -247,32 +313,37 @@ it.each(["reset", "source", "root", "mode", "abort"] as const)(
   },
 );
 
-it("rolls back when the actual caller revokes at the native COMMIT grant", async () => {
-  const f = await fixture();
-  let lifecycleValidated = false;
-  const revoked = vi.fn(f.revoke);
-  sqliteWorkerOwnerProbe.admission(admission, (request, grant, callback) => {
-    const publication = isRecord(request.facts) ? request.facts.publication : undefined;
-    if (
-      request.stage === "transaction" &&
-      isRecord(publication) &&
-      publication.kind === "session-lifecycle-source-validated"
-    ) {
-      lifecycleValidated = true;
-    }
-    if (lifecycleValidated && request.stage === "commit") {
-      revoked();
-    }
-    callback(request, grant);
-  });
-  await expect(enrollSessionConversationBranch(f.params)).rejects.toThrow(
-    "Original enrollment caller revoked",
-  );
-  expect(lifecycleValidated).toBe(true);
-  expect(revoked).toHaveBeenCalledOnce();
-  expect(await f.read()).toEqual(f.before);
-  expect(await f.history()).toEqual(f.events);
-});
+it.each(["enrollment", "startup"] as const)(
+  "rolls back %s when the actual caller revokes at the native COMMIT grant",
+  async (operation) => {
+    const f = await fixture(operation === "startup" ? { lifecycleRevision: undefined } : {});
+    let lifecycleValidated = false;
+    const revoked = vi.fn(f.revoke);
+    sqliteWorkerOwnerProbe.admission(admission, (request, grant, callback) => {
+      const publication = isRecord(request.facts) ? request.facts.publication : undefined;
+      if (
+        request.stage === "transaction" &&
+        isRecord(publication) &&
+        publication.kind === "session-lifecycle-source-validated"
+      ) {
+        lifecycleValidated = true;
+      }
+      if (lifecycleValidated && request.stage === "commit") {
+        revoked();
+      }
+      callback(request, grant);
+    });
+    await expect(
+      operation === "startup"
+        ? prepareConversationLifecyclesForStartup(f.params)
+        : enrollSessionConversationBranch(f.params),
+    ).rejects.toThrow("Original enrollment caller revoked");
+    expect(lifecycleValidated).toBe(true);
+    expect(revoked).toHaveBeenCalledOnce();
+    expect(await f.read()).toEqual(f.before);
+    expect(await f.history()).toEqual(f.events);
+  },
+);
 
 it("never creates a missing root or adopts a different existing root binding", async () => {
   const f = await fixture();

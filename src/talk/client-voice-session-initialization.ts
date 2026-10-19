@@ -93,6 +93,7 @@ async function ensureConversationSession(
           actor: params.creation?.actor ?? { type: "human", source: "unknown" },
           sandbox: params.creation?.sandbox,
         }),
+        lifecycleRevision: randomUUID(),
         ...(params.chatType ? { chatType: params.chatType } : {}),
       });
   const source = params.assertCommitAllowed;

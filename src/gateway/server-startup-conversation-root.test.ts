@@ -1,14 +1,72 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
+import { initSessionState } from "../auto-reply/reply/session.js";
+import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
+import { appendTranscriptMessage } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { resolveAgentConversationRootSessionKey } from "../config/sessions/session-conversation-root-key.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import { loadTranscriptEvents } from "../config/sessions/session-transcript-events.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayStartupSessions } from "./server-startup-session-migration.js";
 
 describe("Gateway host conversation root startup", () => {
+  it("prepares legacy channel history before the first and next real native reply initialization", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const cfg: OpenClawConfig = {
+        agents: { entries: { main: { conversationMode: "branches" } } },
+        session: { reset: { mode: "idle", idleMinutes: 1_440 } },
+      };
+      await state.writeConfig(cfg);
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const scope = {
+        agentId: "main",
+        storePath: database.path,
+        env: state.env,
+        sessionKey: "agent:main:matrix:channel:synthetic-room",
+        sessionId: "original-legacy-conversation",
+      };
+      replaceSessionEntrySync(scope, {
+        sessionId: scope.sessionId,
+        updatedAt: Date.now(),
+        createdVia: "channel",
+        chatType: "channel",
+      });
+      await appendTranscriptMessage(scope, {
+        message: { role: "user", content: "Keep this original conversation." },
+      });
+      const before = await readSessionEntryReadOnlyInWorker(scope);
+      const history = await loadTranscriptEvents(scope);
+      expect(before?.lifecycleRevision).toBeUndefined();
+      await prepareGatewayStartupSessions({
+        cfg,
+        env: state.env,
+        log: { info: vi.fn(), warn: vi.fn() },
+      });
+      const initialized = await readSessionEntryReadOnlyInWorker(scope);
+      expect(initialized).toEqual({ ...before, lifecycleRevision: expect.any(String) });
+      expect(await loadTranscriptEvents(scope)).toEqual(history);
+      const ctx = finalizeInboundContext({
+        AgentId: "main",
+        SessionKey: scope.sessionKey,
+        Provider: "matrix",
+        From: "synthetic-peer",
+        To: "synthetic-room",
+        ChatType: "channel",
+        Body: "Continue the conversation.",
+      });
+      for (let turn = 0; turn < 2; turn++) {
+        const result = await initSessionState({ cfg, ctx, commandAuthorized: false });
+        expect(result.sessionId).toBe(scope.sessionId);
+        expect(result.sessionEntry.lifecycleRevision).toBe(initialized?.lifecycleRevision);
+        expect(result.sessionEntry.conversationTopology).toMatchObject({ role: "branch" });
+        expect(await loadTranscriptEvents(scope)).toEqual(history);
+      }
+    });
+  });
   it.each(["initial", "deferred"] as const)(
     "refuses shared branch/native stores before %s startup maintenance or root creation",
     async (phase) => {

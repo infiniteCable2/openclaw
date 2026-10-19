@@ -140,6 +140,7 @@ describe("native Talk startup conversation membership", () => {
         expectedRevision: "original-revision",
         sessionEntry: expect.objectContaining({
           sessionId,
+          lifecycleRevision: expect.any(String),
           createdVia: "talk",
           createdActor: f.target.creation.actor,
         }),

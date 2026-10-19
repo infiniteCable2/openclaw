@@ -173,6 +173,17 @@ export async function prepareGatewayStartupSessions(params: {
       admitted?.assertCurrent();
     };
     assertCurrent();
+    // A revision change invalidates retained readers. Normalize legacy conversations
+    // through the native lifecycle writer before any channel/Talk claim is admitted.
+    const { prepareConversationLifecyclesForStartup } =
+      await import("../config/sessions/session-conversation-enrollment.js");
+    await prepareConversationLifecyclesForStartup({
+      ...params,
+      agentId,
+      storePath: physical.path,
+      assertCurrent,
+    });
+    assertCurrent();
     await ensureAgentConversationRoot({
       cfg: params.cfg,
       agentId,
