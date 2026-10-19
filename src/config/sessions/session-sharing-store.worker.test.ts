@@ -308,7 +308,11 @@ it("commits aliased worker membership and participant facts before publishing, a
     const publishedParticipantCounts: Array<number | undefined> = [];
     const stop = sessionChanges.subscribeFacts((change) => {
       changes.push(change);
-      if (change.sessionKey === scope.sessionKey && change.facts?.kind === "participants") {
+      if (
+        !("all" in change) &&
+        change.sessionKey === scope.sessionKey &&
+        change.facts?.kind === "participants"
+      ) {
         publishedParticipantCounts.push(sharing.readCurrent()?.entry?.participantCount);
       }
     });
