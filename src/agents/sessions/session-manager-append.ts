@@ -97,8 +97,8 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
           "db" in admission.database &&
           !(canonical.type === "compaction" && persistCompaction))
       ) {
-        // Incognito retains its host-owned store until actor activation; detached views do not write.
-        if (canonical.type === "message") {
+        // Detached views and legacy incognito reuse already-normalized, frozen assistant facts.
+        if (canonical.type === "message" && canonical.message.role !== "assistant") {
           const result = this.appendMessageWithTranscriptAnchorSync(canonical.message, options);
           canonical.id = result.entryId;
           canonical.message = result.message;
