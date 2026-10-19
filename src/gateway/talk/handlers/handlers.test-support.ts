@@ -208,8 +208,7 @@ vi.mock("../../../talk/client-voice-session.js", async (importOriginal) => {
   };
 });
 
-// mock-isolation: This handler fixture simulates session creation; real snapshot
-// admission and exact native rows are covered by conversation-context/target tests.
+// mock-isolation: Simulated creation; real snapshot admission is covered by native context/target tests.
 vi.mock("../conversation-context.js", () => ({
   prepareTalkProviderConversationContext: async () => ({
     instructions: "",

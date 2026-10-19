@@ -7,6 +7,7 @@ import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
 const mocks = vi.hoisted(() => ({ entry: vi.fn(), facts: vi.fn(), source: vi.fn() }));
 // mock-isolation: Test the held ingress/recipient boundary, not native row publication I/O.
 vi.mock("../../config/sessions/session-accessor.js", () => ({ loadSessionEntry: mocks.entry }));
+// mock-isolation: Inject held row authority; native publication is covered by real SQLite scenarios.
 vi.mock("../session-sharing-preparation.js", () => ({ prepareSessionMutationFacts: mocks.facts }));
 // mock-isolation: The native source issuer is an independent owner; keep its held authority explicit.
 vi.mock("./operator-run-source.js", () => ({ createTalkOperatorRunSource: mocks.source }));
