@@ -113,10 +113,10 @@ export function enqueueRelayVoiceTranscript(
     ? createDeferredCore<PreparedVoiceTranscriptAudience | undefined>()
     : undefined;
   const audiencePreparation = audienceGate?.promise;
-  const releaseCustody = () => {
+  const releaseCustody = (): Promise<void> => {
     if (!audiencePreparation) {
       settlement.release();
-      return;
+      return Promise.resolve();
     }
     return audiencePreparation
       .then((prepared) => prepared?.release())
@@ -204,7 +204,7 @@ export function enqueueRelayVoiceTranscript(
     }
   }
   session.voiceTranscriptSeq = transcriptSeq;
-  void admission.completion.finally(releaseCustody).catch(() => {});
+  void admission.completion.then(releaseCustody, releaseCustody).catch(() => {});
   void admission.completion.then(observed?.persisted, (error: unknown) => {
     session.confirmationReadiness.fail(error);
     logRelayVoiceFailure(session, "realtime relay transcript append failed", error);

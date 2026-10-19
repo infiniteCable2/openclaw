@@ -54,7 +54,7 @@ export function captureGatewayPrivateConversationAudience(input: {
   participant?: SessionParticipantIdentity;
   operatorAuthority?: AdmittedRunOperatorAuthority;
   entry?: Pick<InternalSessionEntry, "chatType" | "publicShare">;
-  assertCurrent(): void;
+  assertCurrent(this: void): void;
 }): ConversationPrivateAudience | undefined {
   const { participant, operatorAuthority, assertCurrent } = input;
   if (

@@ -35,7 +35,9 @@ export function selectContributionModelContextEntries<T extends SessionTreeEntry
   ] as const) {
     for (const frame of classifyToolUseResultPairing(view).frames) {
       for (const { sourceResult } of frame.occurrences) {
-        if (sourceResult) owners.set(sourceResult, frame.assistant);
+        if (sourceResult) {
+          owners.set(sourceResult, frame.assistant);
+        }
       }
     }
   }

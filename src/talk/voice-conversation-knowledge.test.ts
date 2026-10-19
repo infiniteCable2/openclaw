@@ -342,7 +342,9 @@ describe("native voice branch knowledge adapter", () => {
         nativeChannelId: target.sessionKey,
         participant,
         assertCurrent() {
-          if (!audienceCurrent) throw new Error("Recipient revoked");
+          if (!audienceCurrent) {
+            throw new Error("Recipient revoked");
+          }
         },
       });
       await recordVoiceConversationObservation({
@@ -365,7 +367,9 @@ describe("native voice branch knowledge adapter", () => {
       expect(() => recorded.assertCurrent()).not.toThrow();
       audienceCurrent = false;
       expect(() => recorded.assertCurrent()).toThrow("Recipient revoked");
-      if (role === "assistant") expect(mocks.participant).not.toHaveBeenCalled();
+      if (role === "assistant") {
+        expect(mocks.participant).not.toHaveBeenCalled();
+      }
       mocks.record.mockClear();
       audienceCurrent = true;
       await recordVoiceConversationObservation({

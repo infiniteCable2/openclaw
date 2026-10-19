@@ -166,7 +166,7 @@ export async function createConversationKnowledgeScenario(state: OpenClawTestSta
     stopReason = "stop",
     answerText = `${runId} answer`,
   ) => {
-    const admitted = await appendTranscriptMessage(selected, {
+    const admittedTurn = await appendTranscriptMessage(selected, {
       message: { role: "user", content: `${runId} question`, timestamp: ++clock },
     });
     const saved = await appendTranscriptMessage(selected, {
@@ -184,7 +184,7 @@ export async function createConversationKnowledgeScenario(state: OpenClawTestSta
     return {
       runId,
       assistantTranscriptIdempotencyKey: `${runId}:assistant`,
-      admission: admitted.anchor,
+      admission: admittedTurn.anchor,
     };
   };
   const read = async (

@@ -53,7 +53,9 @@ function createMockClient(params: {
       ),
     getJoinedRoomMembers: vi.fn().mockImplementation(async () => members),
     doRequest: vi.fn().mockImplementation(async (_method: string, endpoint: string) => {
-      if (Object.hasOwn(params, "roomState")) return params.roomState;
+      if (Object.hasOwn(params, "roomState")) {
+        return params.roomState;
+      }
       const roomId = decodeURIComponent(endpoint.split("/").at(-2) ?? "");
       return roomStateForTest(roomId);
     }),
@@ -271,14 +273,21 @@ describe("createDirectRoomTracker", () => {
             }
           : {},
     });
-    if (kind === "group")
+    if (kind === "group") {
       client.setMembersForTest(["@alice:example.org", "@bot:example.org", "@extra:example.org"]);
-    if (kind === "other-person")
+    }
+    if (kind === "other-person") {
       client.setMembersForTest(["@other:example.org", "@bot:example.org"]);
-    if (kind === "members-fail") client.doRequest.mockRejectedValueOnce(new Error("unavailable"));
-    if (kind === "self-fail")
+    }
+    if (kind === "members-fail") {
+      client.doRequest.mockRejectedValueOnce(new Error("unavailable"));
+    }
+    if (kind === "self-fail") {
       client.getUserId = vi.fn().mockRejectedValueOnce(new Error("unavailable"));
-    if (kind === "dm-fail") client.dms.update.mockRejectedValueOnce(new Error("unavailable"));
+    }
+    if (kind === "dm-fail") {
+      client.dms.update.mockRejectedValueOnce(new Error("unavailable"));
+    }
     await expect(
       createDirectRoomTracker(client).preparePrivateAudience(DEFAULT_DIRECT_CHECK),
     ).resolves.toBeUndefined();
@@ -433,8 +442,11 @@ describe("createDirectRoomTracker", () => {
       });
       const proof = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
       expect(proof).toBeDefined();
-      if (kind === "dispose") tracker.dispose();
-      else ownerCurrent = false;
+      if (kind === "dispose") {
+        tracker.dispose();
+      } else {
+        ownerCurrent = false;
+      }
       expect(() => proof?.assertCurrent()).toThrow("no longer current");
       ownerCurrent = true;
       await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();

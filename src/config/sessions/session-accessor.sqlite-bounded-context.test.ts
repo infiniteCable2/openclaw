@@ -120,7 +120,9 @@ it("selects an inclusive contribution range before acquiring older or later payl
     await waitForSessionTranscriptProjection(scope);
     const from = readActiveTranscriptEntryAnchor({ ...scope, entryId: "contribution-question" });
     const through = readActiveTranscriptEntryAnchor({ ...scope, entryId: "contribution-answer" });
-    if (!from || !through) throw new Error("Synthetic contribution anchors missing");
+    if (!from || !through) {
+      throw new Error("Synthetic contribution anchors missing");
+    }
     const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
     const acquired = countAcquiredTranscriptPayloadBytes(db, marker, () => {
       const context = readSessionTranscriptModelContext(scope, through, {
@@ -158,7 +160,9 @@ it("refuses missing, forged, foreign and reversed contribution anchors", async (
     const from = readActiveTranscriptEntryAnchor({ ...scope, entryId: "first" });
     const through = readActiveTranscriptEntryAnchor({ ...scope, entryId: "last" });
     const after = readActiveTranscriptEntryAnchor({ ...scope, entryId: "after" });
-    if (!from || !through || !after) throw new Error("Synthetic contribution anchors missing");
+    if (!from || !through || !after) {
+      throw new Error("Synthetic contribution anchors missing");
+    }
     const limits = { maxBytes: 2_048, maxEvents: 4 };
     expect(() => readSessionTranscriptModelContext(scope, undefined, { ...limits, from })).toThrow(
       SessionTranscriptReadFenceError,
@@ -214,7 +218,9 @@ it("refuses a contribution boundary that would detach a tool result from its nat
     const from = readActiveTranscriptEntryAnchor({ ...scope, entryId: "tool-result" });
     const question = readActiveTranscriptEntryAnchor({ ...scope, entryId: "tool-question" });
     const through = readActiveTranscriptEntryAnchor({ ...scope, entryId: "tool-answer" });
-    if (!from || !question || !through) throw new Error("Synthetic tool range anchors missing");
+    if (!from || !question || !through) {
+      throw new Error("Synthetic tool range anchors missing");
+    }
     const limits = { maxBytes: 16_384, maxEvents: 10 };
     expect(() => readSessionTranscriptModelContext(scope, through, { ...limits, from })).toThrow(
       SessionTranscriptReadFenceError,
@@ -252,7 +258,9 @@ it.each(["compaction", "reset"] as const)(
       await waitForSessionTranscriptProjection(scope);
       const from = readActiveTranscriptEntryAnchor({ ...scope, entryId: "retained-start" });
       const through = readActiveTranscriptEntryAnchor({ ...scope, entryId: "range-end" });
-      if (!from || !through) throw new Error("Synthetic retained contribution anchors missing");
+      if (!from || !through) {
+        throw new Error("Synthetic retained contribution anchors missing");
+      }
       expect(() =>
         readSessionTranscriptModelContext(scope, through, {
           from,

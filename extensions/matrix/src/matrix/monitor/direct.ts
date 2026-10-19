@@ -71,16 +71,21 @@ function privateAudienceMemberFlag(
     seen.add(key);
     const content = event.content;
     if (event.type === "m.room.history_visibility" || event.type === "m.room.join_rules") {
-      if (event.state_key !== "") return undefined;
+      if (event.state_key !== "") {
+        return undefined;
+      }
       if (event.type === "m.room.history_visibility") {
         if (
           typeof content.history_visibility !== "string" ||
           !["shared", "invited", "joined"].includes(content.history_visibility)
-        )
+        ) {
           return undefined;
+        }
         history = content.history_visibility;
       } else {
-        if (content.join_rule !== "invite" && content.join_rule !== "knock") return undefined;
+        if (content.join_rule !== "invite" && content.join_rule !== "knock") {
+          return undefined;
+        }
       }
     } else if (event.type === "m.room.member") {
       if (
@@ -92,8 +97,9 @@ function privateAudienceMemberFlag(
       }
       members.set(event.state_key, content.membership);
       if (event.state_key === selfUserId) {
-        if (content.is_direct !== undefined && typeof content.is_direct !== "boolean")
+        if (content.is_direct !== undefined && typeof content.is_direct !== "boolean") {
           return undefined;
+        }
         selfMemberFlag = typeof content.is_direct === "boolean" ? content.is_direct : null;
       }
     } else if (Object.keys(content).length > 0) {
@@ -279,8 +285,11 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
       privateAudienceRooms.clear();
     },
     invalidatePrivateAudiences: (roomId?: string): void => {
-      if (roomId === undefined) privateAudienceRooms.clear();
-      else privateAudienceRooms.delete(roomId);
+      if (roomId === undefined) {
+        privateAudienceRooms.clear();
+      } else {
+        privateAudienceRooms.delete(roomId);
+      }
     },
     invalidateRoom: (roomId: string): void => {
       privateAudienceRooms.delete(roomId);
