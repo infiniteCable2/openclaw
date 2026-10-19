@@ -1,6 +1,7 @@
 import { prepareCommandOwnerAssertion } from "../../auto-reply/command-owner-authority.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { captureChannelOperatorRunAuthority } from "../../gateway/operator-run-authority.js";
+import { DEFAULT_ACCOUNT_ID } from "../../routing/account-id.js";
 import {
   createConversationInputAdmission,
   ConversationInputAdmissionError,
@@ -99,7 +100,7 @@ export function admitChannelConversationInput(
     participant: { identity: input.identity, promptedAt: input.promptedAt },
     privateAudience: prepareBoundChannelPrivateAudience({
       channelId: scope.channelId,
-      accountId: scope.accountId,
+      accountId: scope.accountId ?? DEFAULT_ACCOUNT_ID,
       owner,
       binding: scope.binding,
       inputs: [input],
