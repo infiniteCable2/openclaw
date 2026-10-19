@@ -28,6 +28,7 @@ import { sessionPersonalProfileId } from "../../config/sessions/session-entry-pr
 import { getGatewayLocalUserIngress } from "../../gateway/local-user-ingress.js";
 import { normalizeMediaFacts } from "../../media/media-facts.js";
 import { normalizeAccountId } from "../../routing/account-id.js";
+import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import {
   isSessionPersonalBootstrapTurn,
   readSessionConversationParticipant,
@@ -379,6 +380,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   };
   const personalBootstrapEligible = isSessionPersonalBootstrapTurn(originalParticipantContext);
   const conversationParticipant = readSessionConversationParticipant(originalParticipantContext);
+  const conversationAudience = readConversationPrivateAudience(originalParticipantContext);
   const followupRun = {
     prompt: queuedBody,
     sourceTurnId: resolveReplySourceTurnId({
@@ -389,6 +391,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     }),
     personalBootstrapEligible,
     conversationParticipant,
+    conversationAudience,
     operatorAuthority: opts?.operatorAuthority,
     assertSourceCurrent: opts?.assertSourceCurrent,
     speechPresentation: opts?.speechPresentation,

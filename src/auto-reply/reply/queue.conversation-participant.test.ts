@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
+import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import {
   prepareSessionParticipantInput,
   readSessionConversationParticipant,
@@ -43,6 +44,34 @@ function run(identity: SessionParticipantIdentity = person): FollowupRun {
 }
 
 describe("original participant in native queued conversation work", () => {
+  it("retains all private recipient lifetimes and never collects an unconfirmed destination", () => {
+    const firstAssert = vi.fn();
+    const secondAssert = vi.fn();
+    const audience: ConversationPrivateAudience = {
+      agentId: "example",
+      sessionKey: "agent:example:chat",
+      channelId: "example",
+      accountId: "primary",
+      nativeChannelId: "room",
+      participant: person,
+      assertCurrent: firstAssert,
+    };
+    const first = { ...run(), conversationAudience: audience };
+    const second = { ...run(), conversationAudience: { ...audience, assertCurrent: secondAssert } };
+    const metadata = collectRuntimeMetadata([first, second]);
+    metadata.conversationAudience?.assertCurrent();
+    expect(firstAssert).toHaveBeenCalledOnce();
+    expect(secondAssert).toHaveBeenCalledOnce();
+    expect(createOverflowSummaryRetrySource(first).conversationAudience).toBe(audience);
+    expect(collectRuntimeMetadata([first, run()]).conversationAudience).toBeUndefined();
+    expect(
+      collectRuntimeMetadata([
+        first,
+        { ...second, conversationAudience: { ...audience, accountId: "other" } },
+      ]).conversationAudience,
+    ).toBeUndefined();
+    expect(resolveFollowupAuthorizationKey(first)).not.toBe(resolveFollowupAuthorizationKey(run()));
+  });
   it("keeps person identity in both collect authorization and overflow storage grouping", () => {
     const first = run();
     const other = run({ type: "profile", id: "other-person" });

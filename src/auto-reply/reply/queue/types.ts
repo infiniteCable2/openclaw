@@ -113,6 +113,7 @@ export type FollowupRun = {
   personalBootstrapEligible?: boolean;
   /** Immutable original input-person fact, process-local only; not session owner or operator authority. */
   readonly conversationParticipant?: SessionParticipantIdentity;
+  readonly conversationAudience?: import("../../../sessions/conversation-private-audience.js").ConversationPrivateAudience;
   prompt: string;
   /** Original admitted source; queued execution must not replace it with a backend run ID. */
   sourceTurnId?: string;

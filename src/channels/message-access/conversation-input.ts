@@ -13,7 +13,10 @@ import {
 } from "./conversation-input-context.js";
 import type { AdmitChannelConversationInputV1 } from "./conversation-input.types.js";
 import type { ChannelIngressHostOwner } from "./ingress-host-owner.js";
-import { selectBoundChannelParticipantInputs } from "./participant-input.js";
+import {
+  selectBoundChannelParticipantInputs,
+  prepareBoundChannelPrivateAudience,
+} from "./participant-input.js";
 
 /** Registered host owner consumes the original policy result without constructing a chat message. */
 export function admitChannelConversationInput(
@@ -94,6 +97,13 @@ export function admitChannelConversationInput(
       nativeChannelId: input.binding.nativeChannelId,
     },
     participant: { identity: input.identity, promptedAt: input.promptedAt },
+    privateAudience: prepareBoundChannelPrivateAudience({
+      channelId: scope.channelId,
+      accountId: scope.accountId,
+      owner,
+      binding: scope.binding,
+      inputs: [input],
+    }),
     principal: input.verifiedPrincipal,
     requesterProfile: requester,
     operatorAuthority,

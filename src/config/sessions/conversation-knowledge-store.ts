@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
 import { readConversationKnowledgeReports } from "./conversation-knowledge-history.js";
@@ -37,6 +38,81 @@ export type ConversationKnowledgeBranch = SessionTranscriptRuntimeTarget & {
   lifecycleRevision: string;
   root: { sessionKey: string; sessionId: string; lifecycleRevision: string };
 };
+
+/** A held native root read attests saved provenance, never source-history permission.
+ * Root report deletion is not a separate permission store: source/recipient,
+ * explicit sharing and native incarnations still decide every disclosure.
+ */
+const rootEvidenceIssuer = Symbol("native-knowledge-root-read");
+class NativeKnowledgeRootEvidence {
+  #branch: ConversationKnowledgeBranch;
+  #assertCurrent: SessionSourceAssertion;
+  #references = new Map<string, ConversationKnowledgeReference>();
+
+  constructor(
+    issuer: typeof rootEvidenceIssuer,
+    branch: ConversationKnowledgeBranch,
+    events: readonly import("./session-accessor.types.js").TranscriptEvent[],
+    assertCurrent: SessionSourceAssertion,
+  ) {
+    if (issuer !== rootEvidenceIssuer) {
+      throw new Error("Knowledge root evidence requires its native read owner");
+    }
+    this.#branch = structuredClone(branch);
+    this.#assertCurrent = assertCurrent;
+    for (const event of events) {
+      const row = asOptionalRecord(event);
+      const reference =
+        readConversationKnowledgeReceipt(row?.details) ??
+        readConversationUtteranceObservation(row?.details);
+      if (reference) {
+        this.#references.set(this.#key(reference), reference);
+      }
+    }
+    Object.freeze(this);
+  }
+
+  #key(reference: ConversationKnowledgeReference) {
+    return JSON.stringify([
+      reference.origin,
+      reference.through.generation,
+      reference.through.rawSeq,
+      reference.through.entryId,
+    ]);
+  }
+
+  static assertContribution(
+    evidence: unknown,
+    target: ConversationKnowledgeBranch,
+    reference: ConversationKnowledgeReference,
+  ): void {
+    if (typeof evidence !== "object" || evidence === null || !(#branch in evidence)) {
+      throw new Error("Personal contribution requires native root evidence");
+    }
+    evidence.#assertCurrent();
+    if (
+      target.agentId !== evidence.#branch.agentId ||
+      target.storePath !== evidence.#branch.storePath ||
+      !isDeepStrictEqual(target.root, evidence.#branch.root) ||
+      !isDeepStrictEqual(evidence.#references.get(evidence.#key(reference)), reference)
+    ) {
+      throw new Error("Personal contribution has no matching native root evidence");
+    }
+  }
+}
+Object.freeze(NativeKnowledgeRootEvidence);
+Object.freeze(NativeKnowledgeRootEvidence.prototype);
+
+export type { NativeKnowledgeRootEvidence };
+
+/** Validate through the native class brand, never through an overridable object method. */
+export function assertNativeKnowledgeRootContribution(
+  evidence: unknown,
+  target: ConversationKnowledgeBranch,
+  reference: ConversationKnowledgeReference,
+): void {
+  NativeKnowledgeRootEvidence.assertContribution(evidence, target, reference);
+}
 
 /** The admitted native reader selects metadata only; membership is never a content read grant. */
 export async function readConversationKnowledgeBranch(params: {
@@ -80,6 +156,7 @@ export async function recordConversationKnowledgeTurn(params: {
   assistantTranscriptIdempotencyKey: string;
   /** Captured from this turn's admitted configuration, never from settlement-time config. */
   sourceMode: "native" | "branches";
+  privateAudience?: ConversationKnowledgeReference["privateAudience"];
   observed?: ConversationKnowledgeFrontier[];
   signal?: AbortSignal;
 }): Promise<boolean> {
@@ -124,6 +201,7 @@ export async function recordConversationKnowledgeTurn(params: {
     branch,
     through,
     completion: { runId: params.runId },
+    privateAudience: params.privateAudience,
   });
 }
 
@@ -196,6 +274,7 @@ async function recordConversationKnowledgeReference(params: {
   through: TranscriptEntryAnchor;
   sourceMode: "native" | "branches";
   completion: { runId: string } | { kind: "utterance-observation"; role: "user" | "assistant" };
+  privateAudience?: ConversationKnowledgeReference["privateAudience"];
 }): Promise<boolean> {
   const { branch, through } = params;
   const check = () => {
@@ -211,7 +290,7 @@ async function recordConversationKnowledgeReference(params: {
       undefined,
       params.signal,
       through,
-      limits,
+      { ...limits, ...(params.privateAudience ? { from: params.privateAudience.admission } : {}) },
     );
     check();
     return readContextResult;
@@ -234,6 +313,7 @@ async function recordConversationKnowledgeReference(params: {
     ),
     through,
     ...params.completion,
+    ...(params.privateAudience ? { privateAudience: structuredClone(params.privateAudience) } : {}),
   } as const;
   if (
     !sourceContext ||
@@ -276,6 +356,9 @@ async function recordConversationKnowledgeReference(params: {
         ) {
           throw new Error("Conversation knowledge incarnation changed");
         }
+        if (params.privateAudience && source.publicShare !== undefined) {
+          return undefined;
+        }
         const sourceIdentity = {
           agentId: branch.agentId,
           sessionKey: branch.sessionKey,
@@ -292,6 +375,9 @@ async function recordConversationKnowledgeReference(params: {
           ),
           through,
           ...(params.observed ? { observed: structuredClone(params.observed) } : {}),
+          ...(params.privateAudience
+            ? { privateAudience: structuredClone(params.privateAudience) }
+            : {}),
         } as const;
         const receipt: ConversationKnowledgeReference = { ...base, ...params.completion };
         const utterance = "kind" in receipt;
@@ -322,6 +408,7 @@ async function recordConversationKnowledgeReference(params: {
             "visibility",
             "createdActor",
             "incognito",
+            "publicShare",
           ],
           expected: entry,
         });
@@ -409,7 +496,9 @@ export async function readConversationKnowledgeRoot(params: {
     );
   await validate();
   assertCurrent();
-  const result = await readConversationKnowledgeReports({
+  const result: import("./session-accessor.types.js").TranscriptEvent[] & {
+    evidence?: NativeKnowledgeRootEvidence;
+  } = await readConversationKnowledgeReports({
     target: { ...branch, ...branch.root },
     customTypes: [CONVERSATION_KNOWLEDGE_REPORT, CONVERSATION_UTTERANCE_REPORT],
     assertCurrent,
@@ -417,5 +506,8 @@ export async function readConversationKnowledgeRoot(params: {
   });
   await validate();
   assertCurrent();
+  Object.defineProperty(result, "evidence", {
+    value: new NativeKnowledgeRootEvidence(rootEvidenceIssuer, branch, result, assertCurrent),
+  });
   return result;
 }

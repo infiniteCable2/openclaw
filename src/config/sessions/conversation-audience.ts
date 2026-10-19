@@ -1,3 +1,4 @@
+import type { ConversationKnowledgeReference } from "./conversation-knowledge.js";
 import {
   participantIdentityNamespace,
   type SessionParticipantIdentity,
@@ -39,4 +40,23 @@ export function conversationKnowledgeAudienceIdentity(entry: Partial<InternalSes
     return undefined;
   }
   return conversationKnowledgeParticipantIdentity(entry.participants[0]?.identity);
+}
+
+/** A native saved contribution can attest only its exact turn, never the older session. */
+export function conversationKnowledgeContributionIdentity(
+  entry: Partial<InternalSessionEntry>,
+  source: { agentId: string; sessionKey: string },
+  contribution: ConversationKnowledgeReference | undefined,
+) {
+  if (
+    entry.publicShare !== undefined ||
+    !contribution?.privateAudience ||
+    contribution.source.agentId !== source.agentId ||
+    contribution.source.sessionKey !== source.sessionKey ||
+    contribution.source.sessionId !== entry.sessionId ||
+    contribution.source.lifecycleRevision !== entry.lifecycleRevision
+  ) {
+    return undefined;
+  }
+  return conversationKnowledgeParticipantIdentity(contribution.privateAudience.participant);
 }

@@ -178,7 +178,10 @@ export function registerMatrixMonitorEvents(params: {
   dmEnabled: boolean;
   dmPolicy: "open" | "pairing" | "allowlist" | "disabled";
   readStoreAllowFrom: () => Promise<string[]>;
-  directTracker: ReturnType<typeof createDirectRoomTracker>;
+  directTracker: Pick<
+    ReturnType<typeof createDirectRoomTracker>,
+    "invalidateRoom" | "invalidatePrivateAudiences" | "rememberInvite" | "isDirectMessage"
+  >;
   groupPolicy: "open" | "allowlist" | "disabled";
   roomsConfig?: Record<string, MatrixRoomConfig>;
   needsRoomAliasesForConfig: boolean;
@@ -428,6 +431,13 @@ export function registerMatrixMonitorEvents(params: {
 
   const onRoomEvent = (roomId: string, event: MatrixRawEvent) => {
     const eventType = event?.type ?? "unknown";
+    if (
+      eventType === "m.room.history_visibility" ||
+      eventType === "m.room.join_rules" ||
+      eventType === "m.room.third_party_invite"
+    ) {
+      directTracker.invalidatePrivateAudiences(roomId);
+    }
     if (eventType === EventType.RoomMessageEncrypted) {
       logVerboseMessage(
         `matrix: encrypted raw event room=${roomId} id=${event?.event_id ?? "unknown"}`,

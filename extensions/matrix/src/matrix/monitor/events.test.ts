@@ -128,6 +128,7 @@ function createHarness(params?: {
   );
   const sendMessage = vi.fn(async (_roomId: string, _payload: { body?: string }) => "$notice");
   const invalidateRoom = vi.fn();
+  const invalidatePrivateAudiences = vi.fn();
   const invalidateMemberDisplayName = vi.fn();
   const rememberInvite = vi.fn();
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -198,6 +199,7 @@ function createHarness(params?: {
     readStoreAllowFrom,
     directTracker: {
       invalidateRoom,
+      invalidatePrivateAudiences,
       rememberInvite,
       isDirectMessage: vi.fn(async () => false),
     },
@@ -228,6 +230,7 @@ function createHarness(params?: {
     onRoomMessage,
     sendMessage,
     invalidateRoom,
+    invalidatePrivateAudiences,
     invalidateMemberDisplayName,
     rememberInvite,
     roomEventListener,
@@ -375,6 +378,27 @@ describe("registerMatrixMonitorEvents verification routing", () => {
       "@mallory:example.org",
     );
   });
+
+  it.each([
+    { type: "m.room.history_visibility", content: { history_visibility: "world_readable" } },
+    { type: "m.room.join_rules", content: { join_rule: "public" } },
+    { type: "m.room.third_party_invite", content: { display_name: "Another reader" } },
+  ])(
+    "revokes only the affected room's private evidence when $type changes",
+    ({ type, content }) => {
+      const { invalidateRoom, invalidatePrivateAudiences, roomEventListener } = createHarness();
+      roomEventListener("!room:example.org", {
+        event_id: "$privacy-state-change",
+        sender: "@alice:example.org",
+        type,
+        state_key: "",
+        origin_server_ts: Date.now(),
+        content,
+      });
+      expect(invalidatePrivateAudiences).toHaveBeenCalledExactlyOnceWith("!room:example.org");
+      expect(invalidateRoom).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not invalidate a member display name without an authoritative state key", () => {
     const { invalidateRoom, invalidateMemberDisplayName, roomEventListener } = createHarness();

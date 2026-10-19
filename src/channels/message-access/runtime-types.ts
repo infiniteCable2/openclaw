@@ -185,6 +185,12 @@ export type ResolveChannelMessageIngressParams = {
    * Recheck current account policy and delivery ownership synchronously at use time.
    */
   childSessionPublication?: { audience: "public"; assertCurrent: () => void };
+  /** Current private recipients, independently of routing kind. The channel must
+   * prove exactly the authenticated sender and itself can receive output and
+   * revoke this evidence on membership, account, or owner changes. Not a grant
+   * to historical context; missing/unknown evidence keeps disclosure disabled.
+   */
+  privateAudience?: { assertCurrent: () => void };
   policy: ChannelIngressPolicyInput;
   /** Raw direct-message allowlist entries. */
   allowFrom?: Array<string | number> | null;

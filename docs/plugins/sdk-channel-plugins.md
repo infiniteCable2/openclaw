@@ -73,6 +73,28 @@ a canonical URL alone is not proof of anonymous access.
 
 ## Walkthrough
 
+### Private conversation recipients
+
+Ingress can supply `privateAudience: { assertCurrent }` independently of the
+routing kind. Supply it only when the transport confirms the actual recipients
+are the verified sender and the receiving account. A configured room, allowlist,
+device pairing, display name, or matching raw sender ID is not that proof.
+The host binds the evidence to the exact accepted account, agent, session and
+native conversation. Collection retains every input's lifetime and drops mixed
+or unconfirmed recipient evidence.
+
+Revoke evidence on recipient, visibility, connection-owner or account changes.
+An ordinary cache TTL must not expire a healthy long-running conversation.
+Reconnections and Gateway restarts require fresh evidence. Missing evidence
+disables implicit private-context disclosure, not ordinary message processing.
+
+This proves the current destination, not historical access. Newly attested
+contributions retain their exact native admission and terminal anchors; readers
+still require the original person, current sharing policy and matching native
+store/session incarnations. Older unconfirmed contributions stay unchanged and
+are not retroactively relabeled. Neither receipt metadata nor a root reference
+alone grants history access.
+
 <Steps>
   <a id="step-1-package-and-manifest"></a>
   <Step title="Package and manifest">

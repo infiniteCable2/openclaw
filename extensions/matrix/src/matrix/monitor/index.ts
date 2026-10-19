@@ -216,12 +216,14 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   let disposeAutoJoin = () => {};
   let disposeMonitorEvents = () => {};
   let syncLifecycle: ReturnType<typeof createMatrixMonitorSyncLifecycle> | null = null;
+  let directTracker: ReturnType<typeof createDirectRoomTracker> | undefined;
   let monitorSetupClosed = false;
   const cleanup = (mode: "persist" | "stop" = "persist"): Promise<void> => {
     if (cleanupPromise) {
       return cleanupPromise;
     }
     cleanedUp = true;
+    directTracker?.dispose();
     cleanupPromise = (async () => {
       try {
         await rtcController?.stop();
@@ -289,11 +291,13 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     }
     if (isMatrixDisconnectedSyncState(state)) {
       healthySyncSinceMs = undefined;
+      directTracker?.invalidatePrivateAudiences();
     }
   };
   const monitorRetirement = {
     closeTaskAdmission: () => {
       monitorSetupClosed = true;
+      directTracker?.dispose();
       monitorTaskRunner.close();
     },
     detachListeners: () => {
@@ -359,8 +363,11 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
         roomInfo: await getRoomInfo(roomId, { includeAliases: true }),
         rooms: roomsConfig,
       });
-    const directTracker = createDirectRoomTracker(client, {
+    directTracker = createDirectRoomTracker(client, {
       log: logVerboseMessage,
+      isCurrent: () =>
+        !cleanedUp && !monitorSetupClosed && monitorLifecycleSignal?.aborted !== true,
+      isAudienceCurrent: () => healthySyncSinceMs !== undefined,
       isExplicitlyConfiguredRoom,
       canPromoteRecentInvite,
       canPromoteUnmappedStrictRoom:

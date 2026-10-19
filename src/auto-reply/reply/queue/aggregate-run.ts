@@ -132,6 +132,7 @@ export async function runSyntheticOverflowSummary(params: {
     speechPresentation: runtimeMetadata.speechPresentation,
     personalBootstrapEligible: runtimeMetadata.personalBootstrapEligible,
     conversationParticipant: runtimeMetadata.conversationParticipant,
+    conversationAudience: runtimeMetadata.conversationAudience,
     toolsAllow: runtimeMetadata.toolsAllow,
     disableTools: runtimeMetadata.disableTools,
     queuedFollowupReplyDisposition: runtimeMetadata.queuedFollowupReplyDisposition,

@@ -94,6 +94,22 @@ Matrix thread-bound session spawns default on. Set `threadBindings.spawnSessions
 
 ## History context
 
+### Related private conversations
+
+In conversation-branches mode, a configured private Matrix room can retain its
+existing channel route and session key while contributing newly attested private
+turns. Routing classification is not a privacy decision. The Matrix monitor
+checks the complete current room state, including participants, invitations,
+history visibility and join rules, independently of configured-room DM routing.
+Publicly readable rooms and unconfirmed recipient sets do not receive this grant.
+
+Membership, visibility, join-rule or monitor changes revoke held recipient
+evidence. A Gateway restart rechecks the room; it does not reset the conversation.
+Existing histories and historical unconfirmed sender records remain intact, but
+are not automatically reclassified or copied into other branches. Speech messages
+use the same room admission as text. MatrixRTC retains its separate authenticated
+call admission and direct conversation branch.
+
 - `channels.matrix.historyLimit` controls how many recent room messages are included as `InboundHistory` when a room message triggers the agent. Falls back to `messages.groupChat.historyLimit`; effective default `0` if both are unset (disabled).
 - Matrix room history is room-only; DMs keep using normal session history.
 - Room history is pending-only: OpenClaw buffers room messages that did not trigger a reply yet, then snapshots that window when a mention or other trigger arrives.

@@ -7,6 +7,10 @@ import { bindRequesterProfile } from "../../auto-reply/requester-profile.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { captureChannelOperatorRunAuthority } from "../../gateway/operator-run-authority.js";
 import { DEFAULT_ACCOUNT_ID } from "../../routing/account-id.js";
+import {
+  bindConversationPrivateAudience,
+  collectConversationPrivateAudiences,
+} from "../../sessions/conversation-private-audience.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import { takeChannelParticipantInput } from "./admission-evidence.js";
 import { bindChildSessionPublication } from "./child-session-publication.js";
@@ -90,6 +94,13 @@ export function bindPreparedChannelParticipantInputs(
       prepareSessionParticipantInput(params.context, input.identity, input.promptedAt);
     }
   }
+  const privateAudience = prepareBoundChannelPrivateAudience({
+    ...params,
+    accountId: params.context.AccountId ?? DEFAULT_ACCOUNT_ID,
+  });
+  if (privateAudience) {
+    bindConversationPrivateAudience(params.context, privateAudience);
+  }
   // Public intent is stricter than ordinary attribution: no mixed/batched context.
   const publication = batch.length === 1 ? batch[0]?.childSessionPublication : undefined;
   if (publication?.audience === "public" && params.binding.inboundEventKind === "user_request") {
@@ -105,6 +116,52 @@ export function bindPreparedChannelParticipantInputs(
       publication.assertCurrent();
     });
   }
+  bindParticipantPrincipal(params, batch);
+}
+
+export function prepareBoundChannelPrivateAudience(
+  params: ParticipantBinding & {
+    accountId: string;
+    inputs: readonly (ChannelParticipantInput | undefined)[];
+  },
+) {
+  const batch = selectBoundChannelParticipantInputs(params);
+  if (!batch || params.binding.inboundEventKind !== "user_request") {
+    return undefined;
+  }
+  return collectConversationPrivateAudiences(
+    batch.map((input) => {
+      const proof = input.privateAudience;
+      const nativeChannelId = input.binding.nativeChannelId;
+      if (!proof || !nativeChannelId || input.identity.type !== "remote") {
+        return undefined;
+      }
+      const gateway = params.owner.resolveGatewayContext?.();
+      if (!gateway) {
+        return undefined;
+      }
+      return Object.freeze({
+        agentId: input.binding.agentId,
+        sessionKey: input.binding.sessionKey,
+        channelId: params.channelId,
+        accountId: params.accountId,
+        nativeChannelId,
+        participant: Object.freeze({ ...input.identity }),
+        assertCurrent: () => {
+          if (!params.owner.isLive() || params.owner.resolveGatewayContext?.() !== gateway) {
+            throw new Error("Private audience ingress owner is no longer current");
+          }
+          proof.assertCurrent();
+        },
+      });
+    }),
+  );
+}
+
+function bindParticipantPrincipal(
+  params: ParticipantBinding & { context: MsgContext },
+  batch: ChannelParticipantInput[],
+) {
   const principal = batch.at(-1)?.verifiedPrincipal;
   const principalKey = principal && JSON.stringify(principal);
   const gateway = params.owner.resolveGatewayContext?.();

@@ -2,8 +2,11 @@ import { isDeepStrictEqual } from "node:util";
 import {
   conversationKnowledgeAudience,
   conversationKnowledgeAudienceIdentity,
+  conversationKnowledgeParticipantIdentity,
+  conversationKnowledgeContributionIdentity,
 } from "../../config/sessions/conversation-audience.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
+import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
 import type {
   PreparedSessionSourceAuthority,
   SessionSourceAssertion,
@@ -11,6 +14,7 @@ import type {
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
+import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 
 const fields = [
   "sessionId",
@@ -21,12 +25,16 @@ const fields = [
   "publicShare",
   "participantCount",
   "participants",
+  "delivery",
 ] as const satisfies readonly (keyof InternalSessionEntry)[];
 
 /** Retain the existing native row publication; this adds no history-read permission. */
 export async function prepareConversationKnowledgeBranchFacts(params: {
   branch: ConversationKnowledgeBranch;
   getRuntimeConfig: () => OpenClawConfig;
+  destinationAudience?: ConversationPrivateAudience;
+  /** Only supplied with the corresponding native purpose-limited transcript grant. */
+  contribution?: ConversationKnowledgeReference;
 }) {
   const { branch } = params;
   const held = await prepareSessionMutationFacts({
@@ -52,6 +60,7 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
         throw new Error("Conversation knowledge branch facts have been released");
       }
       const target = held.readCurrent(params.getRuntimeConfig()).target;
+      params.destinationAudience?.assertCurrent();
       const membership = target.entry.conversationTopology;
       if (
         target.agentId !== branch.agentId ||
@@ -98,10 +107,25 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
       prepareSessionSource: prepare,
       prepareSessionSourceScope: prepare,
     });
+    const destination = params.destinationAudience;
+    const destinationIdentity =
+      destination &&
+      destination.agentId === branch.agentId &&
+      destination.sessionKey === branch.sessionKey &&
+      original.entry.publicShare === undefined &&
+      conversationKnowledgeParticipantIdentity(destination.participant);
+    const contributionIdentity = conversationKnowledgeContributionIdentity(
+      original.entry,
+      branch,
+      params.contribution,
+    );
+    const privateIdentity = destinationIdentity || contributionIdentity;
     return {
       assertCurrent,
-      audience: conversationKnowledgeAudience(original.entry),
-      audienceIdentity: conversationKnowledgeAudienceIdentity(original.entry),
+      audience: privateIdentity
+        ? ("private-direct" as const)
+        : conversationKnowledgeAudience(original.entry),
+      audienceIdentity: privateIdentity || conversationKnowledgeAudienceIdentity(original.entry),
       release,
     };
   } catch (error) {

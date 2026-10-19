@@ -174,6 +174,7 @@ type TranscriptContextValidation = {
   version?: SessionTranscriptContextVersion;
   admission?: UserTurnTranscriptAdmissionReceipt;
   through?: TranscriptEntryAnchor;
+  from?: TranscriptEntryAnchor;
   expectedAuthority?: TranscriptSourceAuthority;
 };
 
@@ -233,6 +234,23 @@ export function validateSessionTranscriptContextInDatabase(
       database,
       resolved,
       through,
+      validation.expectedAuthority,
+    );
+  }
+  if (validation.from) {
+    if (
+      !through ||
+      validation.from.generation !== through.generation ||
+      validation.from.rawSeq > through.rawSeq
+    ) {
+      throw new SessionTranscriptReadFenceError(
+        "Private contribution range changed during context read",
+      );
+    }
+    assertSessionTranscriptContextAnchorInDatabase(
+      database,
+      resolved,
+      validation.from,
       validation.expectedAuthority,
     );
   }
@@ -402,6 +420,12 @@ export function readSessionTranscriptModelContext(
   through?: TranscriptEntryAnchor,
   limits?: SessionModelContextLimits,
 ): SessionTranscriptModelContext {
+  const from = limits?.from;
+  if (from !== undefined && (!from || !through)) {
+    throw new SessionTranscriptReadFenceError(
+      "A contribution context requires both lower and upper transcript anchors",
+    );
+  }
   if (
     limits &&
     (!Number.isSafeInteger(limits.maxBytes) ||
@@ -489,7 +513,11 @@ export function readSessionTranscriptModelContext(
       };
     },
     through,
+    from,
   );
+  if (!result.found && from !== undefined) {
+    throw new SessionTranscriptReadFenceError("Contribution transcript no longer exists");
+  }
   return result.found ? result.value : { events: [] };
 }
 
@@ -518,6 +546,7 @@ function withTranscriptContextSnapshot<T>(
   scope: SessionTranscriptReadScope,
   read: (snapshot: TranscriptContextSnapshot) => T,
   through?: TranscriptEntryAnchor,
+  from?: TranscriptEntryAnchor,
 ): { found: true; value: T } | { found: false } {
   const resolved = resolveSqliteTranscriptReadScope(scope);
   return withOpenClawAgentDatabaseReadOnly(
@@ -535,24 +564,37 @@ function withTranscriptContextSnapshot<T>(
           if (through) {
             assertSessionTranscriptContextAnchorInDatabase(database, resolved, through);
           }
+          if (from !== undefined) {
+            if (
+              !through ||
+              from.generation !== through.generation ||
+              from.rawSeq > through.rawSeq
+            ) {
+              throw new SessionTranscriptReadFenceError("Invalid contribution transcript range");
+            }
+            assertSessionTranscriptContextAnchorInDatabase(database, resolved, from);
+          }
           const base = db
             .selectFrom("transcript_events")
             .where("session_id", "=", resolved.sessionId)
             .$if(fence !== undefined, (query) => query.where("seq", "<", fence!.beforeRawSeq))
             .$if(through !== undefined, (query) => query.where("seq", "<=", through!.rawSeq));
-          const header = executeSqliteQueryTakeFirstSync(
-            database.db,
-            base
-              .select(transcriptEventJsonSql(database.db).as("event_json"))
-              .where(
-                /* kysely-allow-raw: the header discriminator is owned by the transcript codec. */
-                sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`,
-                "=",
-                "session",
-              )
-              .orderBy("seq", "asc")
-              .limit(1),
-          );
+          const header =
+            from === undefined
+              ? executeSqliteQueryTakeFirstSync(
+                  database.db,
+                  base
+                    .select(transcriptEventJsonSql(database.db).as("event_json"))
+                    .where(
+                      /* kysely-allow-raw: the header discriminator is owned by the transcript codec. */
+                      sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`,
+                      "=",
+                      "session",
+                    )
+                    .orderBy("seq", "asc")
+                    .limit(1),
+                )
+              : undefined;
           const tree = scanSessionTranscriptTree(
             (function* () {
               for (const row of iterateSqliteQuerySync(
@@ -573,7 +615,7 @@ function withTranscriptContextSnapshot<T>(
               "Completed-turn anchor is outside the admitted context",
             );
           }
-          const entries = normalizeSessionContextEntryBoundaries(
+          let entries = normalizeSessionContextEntryBoundaries(
             selectSessionTranscriptTreePathNodes(tree, through?.entryId ?? tree.leafId).map(
               ({ entry, parentId }) => {
                 entry.parentId = parentId;
@@ -582,10 +624,61 @@ function withTranscriptContextSnapshot<T>(
             ),
             tree.nodes,
           );
+          if (from !== undefined) {
+            const start = entries.findIndex((entry) => entry.id === from.entryId);
+            const contextEntries = Array.from(iterateSessionContextEntries(entries));
+            if (
+              start < 0 ||
+              !contextEntries.some(({ entry }) => entry.id === from.entryId) ||
+              entries
+                .slice(start)
+                .some((entry) => entry.type === "compaction" || entry.type === "reset")
+            ) {
+              throw new SessionTranscriptReadFenceError(
+                "Contribution start is outside the selected uncompacted transcript range",
+              );
+            }
+            const selected = entries.slice(start);
+            const messages = contextEntries.flatMap(({ entry }) =>
+              entry.type === "message" ? [entry.message] : [],
+            );
+            const selectedMessages = contextEntries
+              .filter(({ entry }) => entry.seq >= from.rawSeq)
+              .flatMap(({ entry }) => (entry.type === "message" ? [entry.message] : []));
+            const originalOwners = new Map<AgentMessage, AgentMessage>();
+            const selectedOwners = new Map<AgentMessage, AgentMessage>();
+            for (const [view, owners] of [
+              [messages, originalOwners],
+              [selectedMessages, selectedOwners],
+            ] as const) {
+              for (const frame of classifyToolUseResultPairing(view).frames) {
+                for (const { sourceResult } of frame.occurrences) {
+                  if (sourceResult) owners.set(sourceResult, frame.assistant);
+                }
+              }
+            }
+            if (
+              selectedMessages.some(
+                (message) =>
+                  message.role === "toolResult" &&
+                  originalOwners.get(message) !== selectedOwners.get(message),
+              )
+            ) {
+              throw new SessionTranscriptReadFenceError(
+                "Contribution start would remove a retained tool result's owner",
+              );
+            }
+            // Navigation alone selected this exact ancestor range. Older messages,
+            // headers and compaction summaries must never become acquired payloads.
+            entries = selected;
+          }
+          const payloadBase = base.$if(from !== undefined, (query) =>
+            query.where("seq", ">=", from!.rawSeq),
+          );
           const readPayload = prepareSqliteQuerySync<ContextEntry, { event_json: string }>(
             database.db,
             (parameter) =>
-              base.select(transcriptEventJsonSql(database.db).as("event_json")).where(
+              payloadBase.select(transcriptEventJsonSql(database.db).as("event_json")).where(
                 "seq",
                 "=",
                 parameter((row) => row.seq),
@@ -603,7 +696,7 @@ function withTranscriptContextSnapshot<T>(
               const sizes = new Map<ContextEntry, number>();
               for (const batch of chunkItems(requests, MODEL_CONTEXT_PAYLOAD_BATCH_SIZE)) {
                 const { bySeq, omitCheckpoint, omission } = modelContextBatchSql(batch);
-                const query = base
+                const query = payloadBase
                   .select((eb) => {
                     const storedBytes = transcriptEventModelBytesSql(omitCheckpoint);
                     // Stored costs describe the original model view, not a transient omission notice.
@@ -639,7 +732,7 @@ function withTranscriptContextSnapshot<T>(
                 const { bySeq, omitCheckpoint, omission } = modelContextBatchSql(batch);
                 // Bound both IN lists while keeping payload selection inside the navigation snapshot.
                 // SQL removes obsolete replay/private fields before they enter JavaScript.
-                const query = base
+                const query = payloadBase
                   .select([
                     "seq",
                     projectModelContextEventSql(

@@ -61,6 +61,129 @@ function fixture(suffix = "alpha") {
   return { source, receipt, events };
 }
 
+function privateFixture() {
+  const f = fixture();
+  const receipt: ConversationKnowledgeReceipt = {
+    ...f.receipt,
+    privateAudience: {
+      participant: { type: "profile", id: "person-alpha" },
+      admission: {
+        ...f.receipt.through,
+        entryId: "question",
+        rawSeq: 2,
+        activeMessagePosition: 1,
+        effectiveParentId: f.source.sessionId,
+      },
+    },
+  };
+  return { ...f, receipt };
+}
+
+describe("private conversation contribution evidence", () => {
+  it("uses the canonical identity decoder without deriving aliases or accepting observation identities", () => {
+    const f = privateFixture();
+    expect(readConversationKnowledgeReceipt(f.receipt)).toEqual(f.receipt);
+    const privateAudience = f.receipt.privateAudience!;
+    const participant = {
+      type: "remote",
+      pluginId: "example-channel",
+      domain: "Example.invalid",
+      idKind: "user",
+      id: " Person@Example.invalid ",
+    };
+    expect(
+      readConversationKnowledgeReceipt({
+        ...f.receipt,
+        privateAudience: { ...privateAudience, participant },
+      })?.privateAudience?.participant,
+    ).toEqual(participant);
+    for (const invalid of [
+      { type: "profile", id: "" },
+      { type: "profile", id: "person-alpha", senderId: "person-alpha" },
+      { ...participant, id: undefined, senderId: participant.id },
+      { type: "agent", id: "person-alpha" },
+      {
+        type: "observation",
+        pluginId: "example-channel",
+        accountId: "account-alpha",
+        senderKind: "human",
+        id: "person-alpha",
+      },
+    ]) {
+      expect(
+        readConversationKnowledgeReceipt({
+          ...f.receipt,
+          privateAudience: { ...privateAudience, participant: invalid },
+        }),
+      ).toBeUndefined();
+    }
+  });
+
+  it("binds the admission to the identical source and generation before the terminal", () => {
+    const f = privateFixture();
+    const privateAudience = f.receipt.privateAudience!;
+    for (const patch of [
+      { agentId: "other-agent" },
+      { sessionKey: "agent:researcher:example:other" },
+      { sessionId: "other-session" },
+      { storePath: "/synthetic/other.sqlite" },
+      { generation: "replacement-generation" },
+      { rawSeq: f.receipt.through.rawSeq + 1 },
+      { rawSeq: f.receipt.through.rawSeq },
+      { rawSeq: -1 },
+      { activeMessagePosition: -1 },
+      { effectiveParentId: undefined },
+    ]) {
+      expect(
+        readConversationKnowledgeReceipt({
+          ...f.receipt,
+          privateAudience: {
+            ...privateAudience,
+            admission: { ...privateAudience.admission, ...patch },
+          },
+        }),
+      ).toBeUndefined();
+    }
+  });
+
+  it("projects a proven private exchange but never widens its backwards-discovered input batch", () => {
+    const f = privateFixture();
+    expect(isCompletedConversationKnowledge(f.receipt, f.events)).toBe(true);
+    expect(projectConversationKnowledge(f.receipt, f.events)?.text).toContain("blue example");
+    const sharedPrefix = [
+      f.events[0]!,
+      {
+        type: "message",
+        id: "shared-question",
+        message: { role: "user", content: "Shared secret." },
+      },
+      ...f.events.slice(1),
+    ];
+    expect(isCompletedConversationKnowledge(f.receipt, sharedPrefix)).toBe(false);
+    expect(projectConversationKnowledge(f.receipt, sharedPrefix)).toBeUndefined();
+    // Old receipts retain the existing contiguous-input semantics, not a new channel grant.
+    expect(projectConversationKnowledge(fixture().receipt, sharedPrefix)?.text).toContain(
+      "Shared secret.",
+    );
+  });
+
+  it("refuses a missing or later admission even when a completed replacement input survives compaction", () => {
+    const f = privateFixture();
+    const compacted = [f.events[0]!, { ...f.events[1]!, id: "replacement-question" }, f.events[2]!];
+    expect(isCompletedConversationKnowledge(f.receipt, compacted)).toBe(false);
+    expect(projectConversationKnowledge(f.receipt, compacted)).toBeUndefined();
+    const late = {
+      ...f.receipt,
+      privateAudience: {
+        ...f.receipt.privateAudience!,
+        admission: f.receipt.through,
+      },
+    };
+    expect(isCompletedConversationKnowledge(late, f.events)).toBe(false);
+    expect(projectConversationKnowledge(late, f.events)).toBeUndefined();
+  });
+});
+
 describe("native conversation knowledge references and bounded data", () => {
   it("keeps root consolidation text-free and validates its original source incarnation", () => {
     const f = fixture();
@@ -664,6 +787,29 @@ describe("committed native realtime utterance observations", () => {
     const assistant = JSON.parse(projectConversationKnowledge(f.receipt, f.events)?.text ?? "{}");
     expect(user.observations).toEqual([{ speaker: "user", text: "A spoken question." }]);
     expect(assistant.observations).toEqual([{ speaker: "assistant", text: "A spoken answer." }]);
+  });
+
+  it("allows the exact private voice anchor and refuses missing lower admission evidence", () => {
+    const f = utteranceFixture();
+    const receipt: ConversationUtteranceObservation = {
+      ...f.receipt,
+      privateAudience: {
+        participant: { type: "profile", id: "person-alpha" },
+        admission: f.receipt.through,
+      },
+    };
+    expect(readConversationUtteranceObservation(receipt)).toEqual(receipt);
+    expect(isConversationUtteranceObservation(receipt, f.events)).toBe(true);
+    expect(projectConversationKnowledge(receipt, f.events)?.text).toContain("spoken answer");
+    const missing = {
+      ...receipt,
+      privateAudience: {
+        ...receipt.privateAudience!,
+        admission: { ...receipt.through, entryId: "removed-admission", rawSeq: 1 },
+      },
+    };
+    expect(isConversationUtteranceObservation(missing, f.events)).toBe(false);
+    expect(projectConversationKnowledge(missing, f.events)).toBeUndefined();
   });
 
   it("refuses role/provenance/run mismatches and tool-bearing voice-looking data", () => {

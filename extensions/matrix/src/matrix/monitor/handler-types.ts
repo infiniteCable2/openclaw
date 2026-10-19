@@ -51,7 +51,8 @@ export type MatrixMonitorHandlerParams = {
   startupMs: number;
   dropPreStartupMessages: boolean;
   inboundDeduper?: Pick<MatrixInboundEventDeduper, "claim">;
-  directTracker: Pick<ReturnType<typeof createDirectRoomTracker>, "isDirectMessage">;
+  directTracker: Pick<ReturnType<typeof createDirectRoomTracker>, "isDirectMessage"> &
+    Partial<Pick<ReturnType<typeof createDirectRoomTracker>, "preparePrivateAudience">>;
   getRoomInfo: (
     roomId: string,
     opts?: { includeAliases?: boolean },

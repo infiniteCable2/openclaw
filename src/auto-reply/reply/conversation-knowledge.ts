@@ -39,6 +39,7 @@ import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript
 import { drainAgentRunTerminalWrites } from "../../infra/agent-run-terminal-writes.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-execution.types.js";
 import { prepareConversationKnowledgeBranchFacts } from "./conversation-knowledge-authority.js";
 import { getReplyOperationSessionReader } from "./reply-run-registry.state.js";
@@ -141,6 +142,7 @@ export function createReplyConversationKnowledgeTurn(params: {
           sessionId,
           assertCurrent: assertTurnSourceCurrent,
           originalParticipant: followupRun.conversationParticipant,
+          destinationAudience: followupRun.conversationAudience,
           getRuntimeConfig,
           signal,
         });
@@ -172,6 +174,7 @@ export function createReplyConversationKnowledgeTurn(params: {
             sessionId,
             assertCurrent: assertTurnSourceCurrent,
             originalParticipant: followupRun.conversationParticipant,
+            destinationAudience: followupRun.conversationAudience,
             getRuntimeConfig,
             signal,
             retainInHistory: {
@@ -219,17 +222,36 @@ export function createReplyConversationKnowledgeTurn(params: {
       admission.assertSourceCurrent();
       signal.throwIfAborted();
       try {
+        const proof = followupRun.conversationAudience;
+        const participant = proof?.participant;
+        const admissionAnchor = followupRun.userTurnTranscriptRecorder?.getAdmissionReceipt();
+        const privateAudience =
+          proof &&
+          participant &&
+          (participant.type === "remote" || participant.type === "profile") &&
+          admissionAnchor &&
+          proof.agentId === agentId &&
+          proof.sessionKey === reader.sessionKey &&
+          conversationKnowledgeParticipantIdentity(participant) ===
+            conversationKnowledgeParticipantIdentity(followupRun.conversationParticipant)
+            ? { participant, admission: admissionAnchor }
+            : undefined;
+        if (privateAudience) {
+          proof!.assertCurrent();
+        }
         await recordConversationKnowledgeTurn({
           reader,
           assertCurrent: composeSessionSourceAssertion([
             assertCurrent,
             admission.assertSourceCurrent,
+            ...(privateAudience ? [() => proof!.assertCurrent()] : []),
           ]),
           sessionId: terminal.sessionId,
           runId: terminal.runId,
           assistantTranscriptIdempotencyKey: terminal.assistantTranscriptIdempotencyKey,
           sourceMode,
           observed: prepared?.observed,
+          privateAudience,
           signal,
         });
       } catch (error) {
@@ -297,6 +319,7 @@ type ReplyConversationKnowledgeParams = {
   assertCurrent: SessionSourceAssertion;
   /** Host-carried participant of this actual input, never reconstructed from stored dialogue. */
   originalParticipant?: SessionParticipantIdentity;
+  destinationAudience?: ConversationPrivateAudience;
   /** A separately verified current recipient narrows disclosure; this is never a read grant. */
   expectedAudienceIdentity?: string;
   getRuntimeConfig: () => OpenClawConfig;
@@ -344,9 +367,15 @@ async function prepareReplyConversationKnowledgeInMode(
   if (!branch) {
     return undefined;
   }
+  try {
+    params.destinationAudience?.assertCurrent();
+  } catch {
+    return unavailableConversationKnowledge(params, "private-destination-audience-unconfirmed");
+  }
   const targetFacts = await prepareConversationKnowledgeBranchFacts({
     branch,
     getRuntimeConfig: params.getRuntimeConfig,
+    destinationAudience: params.destinationAudience,
   });
   // A sender's private read grant cannot authorize disclosure to a room or shared device.
   if (
@@ -461,6 +490,9 @@ async function prepareReplyConversationKnowledgeInMode(
               targetFacts.assertCurrent,
             ]),
             target: branch,
+            targetAudience: params.destinationAudience,
+            contribution: receipt,
+            rootEvidence: events.evidence,
           },
           getRuntimeConfig: params.getRuntimeConfig,
           sources: [receipt.source],
@@ -496,6 +528,7 @@ async function prepareReplyConversationKnowledgeInMode(
           lifecycleRevision: receipt.source.lifecycleRevision,
         },
         getRuntimeConfig: params.getRuntimeConfig,
+        contribution: receipt,
       });
       grant.assertCurrent();
       targetFacts.assertCurrent();
@@ -522,8 +555,11 @@ async function prepareReplyConversationKnowledgeInMode(
         },
         undefined,
         params.signal,
-        receipt.through,
-        CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
+        grant.contributionRange?.through ?? receipt.through,
+        {
+          ...CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
+          ...(grant.contributionRange ? { from: grant.contributionRange.from } : {}),
+        },
       ).catch((error: unknown) => {
         sourceAssertion();
         if (!(error instanceof SessionTranscriptReadFenceError) && !(error instanceof RangeError)) {

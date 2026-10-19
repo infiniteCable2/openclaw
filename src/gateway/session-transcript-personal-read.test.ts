@@ -176,6 +176,7 @@ describe("same-person conversation differences on native transcript read owner",
     "unknown-participant",
     "foreign-target-member",
     "foreign-source-member",
+    "destination-as-source",
   ] as const)("refuses %s without an operator or fallback grant", async (change) => {
     const f = fixture();
     if (change === "other-person") {
@@ -208,6 +209,9 @@ describe("same-person conversation differences on native transcript read owner",
     }
     if (change === "root-source") {
       f.params.sources[0]!.sessionKey = f.rootRow.canonicalKey;
+    }
+    if (change === "destination-as-source") {
+      f.params.sources[0]!.sessionKey = f.recipient.canonicalKey;
     }
     if (change === "unknown-participant") {
       f.params.personal.originalParticipant = {

@@ -74,7 +74,7 @@ export async function createConversationKnowledgeScenario(state: OpenClawTestSta
   const branch = async (
     label: string,
     participant: SessionParticipantIdentity | null = person,
-    chatType: "direct" | "group" = "direct",
+    chatType: "direct" | "group" | "channel" = "direct",
     sessionKey?: string,
   ): Promise<Branch> => {
     const selected = {
@@ -166,7 +166,7 @@ export async function createConversationKnowledgeScenario(state: OpenClawTestSta
     stopReason = "stop",
     answerText = `${runId} answer`,
   ) => {
-    await appendTranscriptMessage(selected, {
+    const admitted = await appendTranscriptMessage(selected, {
       message: { role: "user", content: `${runId} question`, timestamp: ++clock },
     });
     const saved = await appendTranscriptMessage(selected, {
@@ -181,7 +181,11 @@ export async function createConversationKnowledgeScenario(state: OpenClawTestSta
     });
     expect(saved.appended).toBe(true);
     expect(saved.anchor).toBeDefined();
-    return { runId, assistantTranscriptIdempotencyKey: `${runId}:assistant` };
+    return {
+      runId,
+      assistantTranscriptIdempotencyKey: `${runId}:assistant`,
+      admission: admitted.anchor,
+    };
   };
   const read = async (
     selected: Awaited<ReturnType<typeof claim>>,

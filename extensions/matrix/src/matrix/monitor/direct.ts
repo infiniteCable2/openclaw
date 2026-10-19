@@ -1,3 +1,4 @@
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { promoteMatrixDirectRoomCandidate } from "../direct-management.js";
 import {
   hasDirectMatrixMemberFlag,
@@ -5,6 +6,7 @@ import {
   readJoinedMatrixMembers,
 } from "../direct-room.js";
 import type { MatrixClient } from "../sdk.js";
+import { resolveMatrixSenderParticipant } from "../sender-identity.js";
 import { setBoundedMap } from "./bounded-cache.js";
 
 type DirectMessageCheck = {
@@ -16,6 +18,10 @@ type DirectMessageCheck = {
 
 type DirectRoomTrackerOptions = {
   log?: (message: string) => void;
+  /** The owning account generation, not a user's room-routing preference. */
+  isCurrent?: () => boolean;
+  /** A temporarily unhealthy sync cannot hold private audience evidence. */
+  isAudienceCurrent?: () => boolean;
   isExplicitlyConfiguredRoom?: (roomId: string) => boolean | Promise<boolean>;
   canPromoteRecentInvite?: (roomId: string) => boolean | Promise<boolean>;
   canPromoteUnmappedStrictRoom?: (roomId: string) => boolean | Promise<boolean>;
@@ -29,6 +35,90 @@ const RECENT_INVITE_TTL_MS = 30_000;
 const MAX_DM_ROOMS = 1024;
 const MAX_DM_MEMBER_FLAGS = 2048;
 
+/** The full native state response includes invitees, unlike joined_members. */
+function privateAudienceMemberFlag(
+  state: unknown,
+  selfUserId: string,
+  remoteUserId: string,
+): boolean | null | undefined {
+  if (!Array.isArray(state)) {
+    return undefined;
+  }
+  // Matrix SDK room-state defaults apply only when the complete snapshot omits an event.
+  let history = "shared";
+  let selfMemberFlag: boolean | null = null;
+  const members = new Map<string, string>();
+  const seen = new Set<string>();
+  let thirdPartyInvite = false;
+  for (const event of state) {
+    if (!isRecord(event) || typeof event.type !== "string" || typeof event.state_key !== "string") {
+      return undefined;
+    }
+    if (
+      ![
+        "m.room.member",
+        "m.room.history_visibility",
+        "m.room.join_rules",
+        "m.room.third_party_invite",
+      ].includes(event.type)
+    ) {
+      continue;
+    }
+    const key = JSON.stringify([event.type, event.state_key]);
+    if (seen.has(key) || !isRecord(event.content)) {
+      return undefined;
+    }
+    seen.add(key);
+    const content = event.content;
+    if (event.type === "m.room.history_visibility" || event.type === "m.room.join_rules") {
+      if (event.state_key !== "") return undefined;
+      if (event.type === "m.room.history_visibility") {
+        if (
+          typeof content.history_visibility !== "string" ||
+          !["shared", "invited", "joined"].includes(content.history_visibility)
+        )
+          return undefined;
+        history = content.history_visibility;
+      } else {
+        if (content.join_rule !== "invite" && content.join_rule !== "knock") return undefined;
+      }
+    } else if (event.type === "m.room.member") {
+      if (
+        !resolveMatrixSenderParticipant({ stableId: event.state_key }) ||
+        typeof content.membership !== "string" ||
+        !["join", "invite", "leave", "ban", "knock"].includes(content.membership)
+      ) {
+        return undefined;
+      }
+      members.set(event.state_key, content.membership);
+      if (event.state_key === selfUserId) {
+        if (content.is_direct !== undefined && typeof content.is_direct !== "boolean")
+          return undefined;
+        selfMemberFlag = typeof content.is_direct === "boolean" ? content.is_direct : null;
+      }
+    } else if (Object.keys(content).length > 0) {
+      thirdPartyInvite = true;
+    }
+  }
+  if (
+    !isStrictDirectMembership({
+      selfUserId,
+      remoteUserId,
+      joinedMembers: [...members]
+        .filter(([, membership]) => membership === "join")
+        .map(([id]) => id),
+    }) ||
+    (history !== "joined" &&
+      (thirdPartyInvite ||
+        [...members].some(
+          ([id, membership]) => membership === "invite" && id !== selfUserId && id !== remoteUserId,
+        )))
+  ) {
+    return undefined;
+  }
+  return selfMemberFlag;
+}
+
 export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTrackerOptions = {}) {
   const log = opts.log ?? (() => {});
   let lastDmUpdateMs = 0;
@@ -40,6 +130,36 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
   const directMemberFlagCache = new Map<string, { isDirect: boolean | null; ts: number }>();
   const recentInviteCandidates = new Map<string, { remoteUserId: string; ts: number }>();
   const locallyPromotedDirectRooms = new Map<string, { remoteUserId: string }>();
+  const privateAudienceRooms = new Map<string, { senderId: string; selfUserId?: string }>();
+  let active = true;
+
+  const isOwnerCurrent = (): boolean => {
+    try {
+      if (active && (opts.isCurrent?.() ?? true)) {
+        return true;
+      }
+    } catch {
+      // An unavailable owner cannot retain a private disclosure claim.
+    }
+    active = false;
+    privateAudienceRooms.clear();
+    return false;
+  };
+
+  const isAudienceCurrent = (): boolean => {
+    if (!isOwnerCurrent()) {
+      return false;
+    }
+    try {
+      if (opts.isAudienceCurrent?.() ?? true) {
+        return true;
+      }
+    } catch {
+      // Sync uncertainty revokes evidence without disposing the account owner.
+    }
+    privateAudienceRooms.clear();
+    return false;
+  };
 
   const ensureSelfUserId = async (): Promise<string | null> => {
     if (cachedSelfUserId) {
@@ -154,7 +274,16 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
   };
 
   return {
+    dispose: (): void => {
+      active = false;
+      privateAudienceRooms.clear();
+    },
+    invalidatePrivateAudiences: (roomId?: string): void => {
+      if (roomId === undefined) privateAudienceRooms.clear();
+      else privateAudienceRooms.delete(roomId);
+    },
     invalidateRoom: (roomId: string): void => {
+      privateAudienceRooms.delete(roomId);
       joinedMembersCache.delete(roomId);
       for (const key of directMemberFlagCache.keys()) {
         if (key.startsWith(`${roomId}\n`)) {
@@ -172,6 +301,73 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
       const invite = { remoteUserId: normalizedRemoteUserId, ts: Date.now() };
       setBoundedMap(recentInviteCandidates, roomId, invite, MAX_DM_ROOMS);
       log(`matrix: remembered invite candidate room=${roomId} sender=${normalizedRemoteUserId}`);
+    },
+    /** Privacy evidence is independent of DM routing and never promotes a configured room. */
+    preparePrivateAudience: async (
+      params: DirectMessageCheck & { senderId: string },
+    ): Promise<{ assertCurrent(): void } | undefined> => {
+      const { roomId, senderId } = params;
+      if (
+        !isAudienceCurrent() ||
+        !roomId ||
+        roomId !== roomId.trim() ||
+        !resolveMatrixSenderParticipant({ stableId: senderId })
+      ) {
+        return undefined;
+      }
+      let token = privateAudienceRooms.get(roomId);
+      if (!token || token.senderId !== senderId) {
+        token = { senderId };
+        setBoundedMap(privateAudienceRooms, roomId, token, MAX_DM_ROOMS);
+      }
+      const selected = token;
+      // Sync/membership ownership revokes evidence; a routing cache TTL cannot end a user turn.
+      const current = () => isAudienceCurrent() && privateAudienceRooms.get(roomId) === selected;
+      const deny = () => {
+        if (privateAudienceRooms.get(roomId) === selected) {
+          privateAudienceRooms.delete(roomId);
+        }
+        return undefined;
+      };
+      try {
+        // Caller hints and routing caches cannot establish a private audience.
+        const selfUserId = await client.getUserId();
+        if (
+          !current() ||
+          !resolveMatrixSenderParticipant({ stableId: selfUserId }) ||
+          senderId === selfUserId ||
+          (selected.selfUserId !== undefined && selected.selfUserId !== selfUserId) ||
+          (params.selfUserId !== undefined && params.selfUserId !== selfUserId)
+        ) {
+          return deny();
+        }
+        selected.selfUserId = selfUserId;
+        const state = await client.doRequest(
+          "GET",
+          `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state`,
+        );
+        const memberFlag = privateAudienceMemberFlag(state, selfUserId, senderId);
+        if (!current() || memberFlag === undefined || memberFlag === false) {
+          return deny();
+        }
+        if (memberFlag !== true) {
+          const updated = await client.dms.update();
+          if (!current() || !updated || !client.dms.isDm(roomId)) {
+            return deny();
+          }
+        }
+        let revoked = false;
+        return {
+          assertCurrent() {
+            if (revoked || !current()) {
+              revoked = true;
+              throw new Error("Matrix private audience is no longer current");
+            }
+          },
+        };
+      } catch {
+        return deny();
+      }
     },
     isDirectMessage: async (params: DirectMessageCheck): Promise<boolean> => {
       const { roomId, senderId } = params;

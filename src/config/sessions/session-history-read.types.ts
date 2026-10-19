@@ -11,6 +11,7 @@ import type {
 } from "./session-accessor.types.js";
 import type { SessionTranscriptAnchorFacts } from "./session-transcript-anchor-read.types.js";
 import type { SessionTranscriptWatermark } from "./session-transcript-context-version.types.js";
+import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
 export type { SessionTranscriptWatermark } from "./session-transcript-context-version.types.js";
 
@@ -36,6 +37,8 @@ export type SessionBranchSummaryReadResult =
 export type SessionModelContextLimits = {
   maxBytes: number;
   maxEvents: number;
+  /** Inclusive native contribution boundary; requires an exact upper `through` anchor. */
+  from?: TranscriptEntryAnchor;
   /** Detached model views may omit result bodies; evidence and fork readers remain strict. */
   toolResultOverflow?: "omit";
 };

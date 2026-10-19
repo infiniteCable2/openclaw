@@ -6,6 +6,7 @@ import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
+import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import type { UserChannelIdentity } from "../state/user-profiles.types.js";
 import type {
   ConversationInputAdmissionV1,
@@ -28,6 +29,7 @@ export type AdmittedConversationInput = Readonly<{
     promptedAt: number;
   }>;
   principal?: UserChannelIdentity;
+  privateAudience?: ConversationPrivateAudience;
   requesterProfile?: PreparedRequesterProfile;
   operatorAuthority?: AdmittedRunOperatorAuthority;
   /** Native command-owner assertion; absence must not become owner access. */

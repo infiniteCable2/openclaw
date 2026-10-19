@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getCommandOwnerAuthority } from "../../auto-reply/command-owner-authority.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
+import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { sessionParticipantInput } from "../../sessions/session-participant-input.js";
 import {
   claimConversationInputExecution,
@@ -29,9 +30,10 @@ const input: ConversationInputScopeV1 = {
   purpose: "user",
 };
 
-async function prepareSource() {
+async function prepareSource(withPrivateAudience = false) {
   let ownerLive = true;
   let transportLive = true;
+  let audienceLive = true;
   const gateway = {
     getRuntimeConfig: () => ({}),
     channelAdmissionAudit: createChannelAdmissionAudit({ enabled: true }),
@@ -66,6 +68,24 @@ async function prepareSource() {
     allowFrom: ["person-alpha"],
     event: { kind: "conversation" as const, authMode: "inbound" as const, mayPair: false },
     useDefaultPairingStore: false,
+    ...(withPrivateAudience
+      ? {
+          identity: {
+            resolveParticipant: () => ({
+              domain: "example.test",
+              idKind: "user-id",
+              id: "person-alpha",
+            }),
+          },
+          privateAudience: {
+            assertCurrent: () => {
+              if (!audienceLive) {
+                throw new Error("Private audience revoked");
+              }
+            },
+          },
+        }
+      : {}),
   };
   const route = withConversationBindingRouteFacts(
     { agentId: input.agentId, sessionKey: "agent:researcher:example:room-alpha" },
@@ -111,10 +131,39 @@ async function prepareSource() {
     replaceGateway: () => {
       currentGateway = { ...gateway };
     },
+    revokeAudience: () => {
+      audienceLive = false;
+    },
   };
 }
 
 describe("host channel conversation input", () => {
+  it("carries the same exact recipient evidence through native audio admission and STT projection", async () => {
+    const source = await prepareSource(true);
+    const capability = source.runtime.conversation.admitInput({ ...source, input });
+    const admitted = consumeConversationInputAdmission(capability, input);
+    claimConversationInputExecution(admitted);
+    const context = await prepareConversationReplyContext(admitted, {
+      text: "Actual spoken request",
+    });
+    const audience = readConversationPrivateAudience(context);
+    expect(audience).toMatchObject({
+      agentId: input.agentId,
+      sessionKey: source.scope.binding.sessionKey,
+      channelId: "example",
+      accountId: "primary",
+      nativeChannelId: "room-alpha",
+      participant: { type: "remote", domain: "example.test", id: "person-alpha" },
+    });
+    expect(admitted.privateAudience).toMatchObject({ participant: audience?.participant });
+    expect(getCommandOwnerAuthority(context)).toBeUndefined();
+    expect(() => audience?.assertCurrent()).not.toThrow();
+    source.revokeAudience();
+    expect(() => audience?.assertCurrent()).toThrow("Private audience revoked");
+    expect(() => admitted.privateAudience?.assertCurrent()).toThrow("Private audience revoked");
+    // Recipient loss cannot independently cancel already admitted work.
+    expect(() => admitted.assertCurrent()).not.toThrow();
+  });
   it("uses real ingress admission without promoting participant identity to operator rights", async () => {
     const source = await prepareSource();
     const capability = source.runtime.conversation.admitInput({ ...source, input });

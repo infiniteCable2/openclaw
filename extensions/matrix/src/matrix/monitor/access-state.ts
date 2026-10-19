@@ -17,6 +17,7 @@ type MatrixMonitorAccessState = {
   resolveMessageIngress: (
     contextBinding: ChannelIngressContextBinding,
     conversation?: { kind: "direct" | "channel"; id: string; threadId?: string },
+    privateAudience?: { assertCurrent(): void },
   ) => Promise<ResolvedChannelMessageIngress>;
 };
 
@@ -90,6 +91,7 @@ export async function resolveMatrixMonitorAccessState(params: {
   const resolveMessageIngress = async (
     contextBinding?: ChannelIngressContextBinding,
     conversation?: { kind: "direct" | "channel"; id: string; threadId?: string },
+    privateAudience?: { assertCurrent(): void },
   ) =>
     await ingress.message({
       subject: { stableId: params.senderId },
@@ -98,6 +100,7 @@ export async function resolveMatrixMonitorAccessState(params: {
         id: params.conversationId ?? (params.isRoom ? "matrix-room" : "matrix-dm"),
       },
       ...(contextBinding ? { contextBinding } : {}),
+      ...(contextBinding && privateAudience ? { privateAudience } : {}),
       event: {
         kind: eventKind,
         authMode: "inbound" as const,

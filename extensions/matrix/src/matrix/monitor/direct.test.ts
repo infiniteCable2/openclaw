@@ -4,6 +4,7 @@ import { EventType } from "../send/types.js";
 import { createDirectRoomTracker } from "./direct.js";
 
 type MockStateEvents = Record<string, Record<string, unknown>>;
+type MockRoomStateEvent = { type: string; state_key: string; content: Record<string, unknown> };
 
 const DEFAULT_DIRECT_CHECK = {
   roomId: "!room:example.org",
@@ -21,6 +22,7 @@ function createMockClient(params: {
   dmCacheAvailable?: boolean;
   directAccountData?: Record<string, string[]>;
   setAccountDataError?: Error;
+  roomState?: unknown;
 }) {
   let members = params.members ?? ["@alice:example.org", "@bot:example.org"];
   const stateEvents = params.stateEvents ?? {};
@@ -29,6 +31,15 @@ function createMockClient(params: {
   if (params.isDm === true) {
     dmRoomIds.add("!room:example.org");
   }
+  const roomStateForTest = (roomId = DEFAULT_DIRECT_CHECK.roomId): MockRoomStateEvent[] => [
+    { type: "m.room.history_visibility", state_key: "", content: { history_visibility: "shared" } },
+    { type: "m.room.join_rules", state_key: "", content: { join_rule: "invite" } },
+    ...members.map((id) => ({
+      type: "m.room.member",
+      state_key: id,
+      content: { membership: "join", ...stateEvents[`${roomId}|m.room.member|${id}`] },
+    })),
+  ];
   return {
     dms: {
       update: vi.fn().mockResolvedValue(params.dmCacheAvailable !== false),
@@ -41,6 +52,12 @@ function createMockClient(params: {
         eventType === EventType.Direct ? directAccountData : undefined,
       ),
     getJoinedRoomMembers: vi.fn().mockImplementation(async () => members),
+    doRequest: vi.fn().mockImplementation(async (_method: string, endpoint: string) => {
+      if (Object.hasOwn(params, "roomState")) return params.roomState;
+      const roomId = decodeURIComponent(endpoint.split("/").at(-2) ?? "");
+      return roomStateForTest(roomId);
+    }),
+    roomStateForTest,
     getRoomStateEvent: vi
       .fn()
       .mockImplementation(async (roomId: string, eventType: string, stateKey = "") => {
@@ -82,6 +99,8 @@ function createMockClient(params: {
     getAccountData: ReturnType<typeof vi.fn>;
     getJoinedRoomMembers: ReturnType<typeof vi.fn>;
     getRoomStateEvent: ReturnType<typeof vi.fn>;
+    doRequest: ReturnType<typeof vi.fn>;
+    roomStateForTest: typeof roomStateForTest;
     setAccountData: ReturnType<typeof vi.fn>;
     setMembersForTest: (members: string[]) => void;
   };
@@ -90,6 +109,370 @@ function createMockClient(params: {
 describe("createDirectRoomTracker", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("proves a configured private room without changing its channel routing", async () => {
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client, { isExplicitlyConfiguredRoom: () => true });
+    await expect(checkDefaultRoom(tracker)).resolves.toBe(false);
+    const proof = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(proof).toBeDefined();
+    expect(() => proof?.assertCurrent()).not.toThrow();
+    await expect(checkDefaultRoom(tracker)).resolves.toBe(false);
+    expect(client.getJoinedRoomMembers).not.toHaveBeenCalled();
+    expect(client.doRequest).toHaveBeenCalledWith(
+      "GET",
+      "/_matrix/client/v3/rooms/!room%3Aexample.org/state",
+    );
+    expect(client.dms.update).toHaveBeenCalledTimes(1);
+    expect(client.setAccountData).not.toHaveBeenCalled();
+  });
+
+  it("uses fresh membership instead of supplied hints or the routing cache", async () => {
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client);
+    await expect(checkDefaultRoom(tracker)).resolves.toBe(true);
+    client.setMembersForTest(["@alice:example.org", "@bot:example.org", "@extra:example.org"]);
+    await expect(
+      tracker.preparePrivateAudience({
+        ...DEFAULT_DIRECT_CHECK,
+        joinedMembers: ["@alice:example.org", "@bot:example.org"],
+      }),
+    ).resolves.toBeUndefined();
+    expect(client.getJoinedRoomMembers).toHaveBeenCalledTimes(1);
+    expect(client.doRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a positive self member flag without falling back to routing promotion", async () => {
+    const client = createMockClient({
+      stateEvents: {
+        "!room:example.org|m.room.member|@bot:example.org": { is_direct: true },
+      },
+    });
+    const tracker = createDirectRoomTracker(client);
+    expect(await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).toBeDefined();
+    expect(client.dms.update).not.toHaveBeenCalled();
+    expect(client.setAccountData).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { history: "shared", join: "invite", allowed: true },
+    { history: "invited", join: "invite", allowed: true },
+    { history: "joined", join: "invite", allowed: true },
+    { history: "shared", join: "knock", allowed: true },
+    { history: undefined, join: undefined, allowed: true },
+    { history: "world_readable", join: "invite", allowed: false },
+    { history: "unknown", join: "invite", allowed: false },
+    { history: "shared", join: "public", allowed: false },
+    { history: "joined", join: "public", allowed: false },
+    { history: "shared", join: "restricted", allowed: false },
+    { history: "shared", join: "knock_restricted", allowed: false },
+    { history: "shared", join: "private", allowed: false },
+    { history: "shared", join: "unknown", allowed: false },
+  ])(
+    "checks protected history=$history and explicit admission=$join",
+    async ({ history, join, allowed }) => {
+      const client = createMockClient({ isDm: true });
+      const state = client.roomStateForTest().filter((event) => event.type === "m.room.member");
+      if (history !== undefined)
+        state.push({
+          type: "m.room.history_visibility",
+          state_key: "",
+          content: { history_visibility: history },
+        });
+      if (join !== undefined)
+        state.push({ type: "m.room.join_rules", state_key: "", content: { join_rule: join } });
+      client.doRequest.mockResolvedValue(state);
+      const proof =
+        await createDirectRoomTracker(client).preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+      expect(Boolean(proof)).toBe(allowed);
+    },
+  );
+
+  it.each([undefined, null, {}, [null], [{ type: "m.room.member", content: {} }]])(
+    "refuses unavailable or malformed full room state %#",
+    async (roomState) => {
+      await expect(
+        createDirectRoomTracker(createMockClient({ isDm: true, roomState })).preparePrivateAudience(
+          DEFAULT_DIRECT_CHECK,
+        ),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it.each(["m.room.history_visibility", "m.room.join_rules"])(
+    "does not apply protocol defaults to a malformed explicit %s event",
+    async (type) => {
+      const client = createMockClient({ isDm: true });
+      client.doRequest.mockResolvedValue(
+        client
+          .roomStateForTest()
+          .map((event) => (event.type === type ? { ...event, content: {} } : event)),
+      );
+      await expect(
+        createDirectRoomTracker(client).preparePrivateAudience(DEFAULT_DIRECT_CHECK),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it.each(["shared", "invited", "joined"])(
+    "checks whether a third invitee can receive events with %s history",
+    async (history) => {
+      const client = createMockClient({ isDm: true });
+      const state = client
+        .roomStateForTest()
+        .map((event) =>
+          event.type === "m.room.history_visibility"
+            ? { ...event, content: { history_visibility: history } }
+            : event,
+        );
+      state.push({
+        type: "m.room.member",
+        state_key: "@invitee:example.org",
+        content: { membership: "invite" },
+      });
+      client.doRequest.mockResolvedValue(state);
+      const proof =
+        await createDirectRoomTracker(client).preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+      expect(Boolean(proof)).toBe(history === "joined");
+    },
+  );
+
+  it("does not expose shared history through an outstanding third-party invitation", async () => {
+    const client = createMockClient({ isDm: true });
+    client.doRequest.mockResolvedValue([
+      ...client.roomStateForTest(),
+      {
+        type: "m.room.third_party_invite",
+        state_key: "synthetic-invite-token",
+        content: { display_name: "Invitee" },
+      },
+    ]);
+    await expect(
+      createDirectRoomTracker(client).preparePrivateAudience(DEFAULT_DIRECT_CHECK),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    "group",
+    "other-person",
+    "unknown",
+    "negative-flag",
+    "members-fail",
+    "self-fail",
+    "dm-fail",
+  ])("refuses private audience evidence for %s", async (kind) => {
+    const client = createMockClient({
+      isDm: kind !== "unknown",
+      stateEvents:
+        kind === "negative-flag"
+          ? {
+              "!room:example.org|m.room.member|@bot:example.org": { is_direct: false },
+            }
+          : {},
+    });
+    if (kind === "group")
+      client.setMembersForTest(["@alice:example.org", "@bot:example.org", "@extra:example.org"]);
+    if (kind === "other-person")
+      client.setMembersForTest(["@other:example.org", "@bot:example.org"]);
+    if (kind === "members-fail") client.doRequest.mockRejectedValueOnce(new Error("unavailable"));
+    if (kind === "self-fail")
+      client.getUserId = vi.fn().mockRejectedValueOnce(new Error("unavailable"));
+    if (kind === "dm-fail") client.dms.update.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      createDirectRoomTracker(client).preparePrivateAudience(DEFAULT_DIRECT_CHECK),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a caller's mismatched self identity or malformed remote identity", async () => {
+    const tracker = createDirectRoomTracker(createMockClient({ isDm: true }));
+    await expect(
+      tracker.preparePrivateAudience({ ...DEFAULT_DIRECT_CHECK, selfUserId: "@other:example.org" }),
+    ).resolves.toBeUndefined();
+    await expect(
+      tracker.preparePrivateAudience({ ...DEFAULT_DIRECT_CHECK, senderId: "alice" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(["self", "state", "dm"] as const)(
+    "refuses room invalidation during the awaited %s preparation",
+    async (stage) => {
+      const client = createMockClient({ isDm: true });
+      const tracker = createDirectRoomTracker(client);
+      const invalidate = () => tracker.invalidateRoom(DEFAULT_DIRECT_CHECK.roomId);
+      if (stage === "self")
+        client.getUserId = vi.fn().mockImplementationOnce(async () => {
+          invalidate();
+          return "@bot:example.org";
+        });
+      if (stage === "state")
+        client.doRequest.mockImplementationOnce(async () => {
+          invalidate();
+          return client.roomStateForTest();
+        });
+      if (stage === "dm")
+        client.dms.update.mockImplementationOnce(async () => {
+          invalidate();
+          return true;
+        });
+      await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+    },
+  );
+
+  it("never revives a held proof after membership invalidation and restoration", async () => {
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client);
+    const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(first).toBeDefined();
+    tracker.invalidateRoom(DEFAULT_DIRECT_CHECK.roomId);
+    client.setMembersForTest(["@alice:example.org", "@bot:example.org", "@extra:example.org"]);
+    await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+    client.setMembersForTest(["@alice:example.org", "@bot:example.org"]);
+    const next = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(next).toBeDefined();
+    expect(() => next?.assertCurrent()).not.toThrow();
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
+  });
+
+  it("holds evidence through long turns but never revives an invalidated token on refresh", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-12T10:00:00Z"));
+    const tracker = createDirectRoomTracker(createMockClient({ isDm: true }));
+    const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(first).toBeDefined();
+    vi.setSystemTime(new Date("2026-03-12T11:00:00Z"));
+    expect(() => first?.assertCurrent()).not.toThrow();
+    tracker.invalidatePrivateAudiences();
+    const next = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(next).toBeDefined();
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
+    expect(() => next?.assertCurrent()).not.toThrow();
+    vi.setSystemTime(new Date("2026-03-12T10:00:00Z"));
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
+  });
+
+  it("globally revokes private audiences without changing routing caches", async () => {
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client);
+    await expect(checkDefaultRoom(tracker)).resolves.toBe(true);
+    const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(first).toBeDefined();
+    const membershipReads = client.getJoinedRoomMembers.mock.calls.length;
+    const dmReads = client.dms.update.mock.calls.length;
+    tracker.invalidatePrivateAudiences();
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
+    await expect(checkDefaultRoom(tracker)).resolves.toBe(true);
+    expect(client.getJoinedRoomMembers).toHaveBeenCalledTimes(membershipReads);
+    expect(client.dms.update).toHaveBeenCalledTimes(dmReads);
+    expect(await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).toBeDefined();
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
+  });
+
+  it("revokes a room's private evidence without revoking another room", async () => {
+    const client = createMockClient({});
+    client.dms.isDm.mockReturnValue(true);
+    const tracker = createDirectRoomTracker(client);
+    const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    const other = await tracker.preparePrivateAudience({
+      ...DEFAULT_DIRECT_CHECK,
+      roomId: "!other:example.org",
+    });
+    expect(first).toBeDefined();
+    expect(other).toBeDefined();
+    tracker.invalidatePrivateAudiences(DEFAULT_DIRECT_CHECK.roomId);
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
+    expect(() => other?.assertCurrent()).not.toThrow();
+  });
+
+  it("refuses global privacy invalidation during an awaited preparation", async () => {
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client);
+    client.doRequest.mockImplementationOnce(async () => {
+      tracker.invalidatePrivateAudiences();
+      return client.roomStateForTest();
+    });
+    await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+  });
+
+  it("allows a fresh proof after healthy sync resumes without reviving an older proof", async () => {
+    let healthy = true;
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client, { isAudienceCurrent: () => healthy });
+    const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(first).toBeDefined();
+    healthy = false;
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
+    await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+    await expect(checkDefaultRoom(tracker)).resolves.toBe(true);
+    healthy = true;
+    const next = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(next).toBeDefined();
+    expect(() => next?.assertCurrent()).not.toThrow();
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
+  });
+
+  it("refuses sync health loss while membership preparation is pending", async () => {
+    let healthy = true;
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client, { isAudienceCurrent: () => healthy });
+    client.doRequest.mockImplementationOnce(async () => {
+      healthy = false;
+      return client.roomStateForTest();
+    });
+    await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+    healthy = true;
+    expect(await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).toBeDefined();
+  });
+
+  it.each(["dispose", "owner"])(
+    "revokes held and future proofs when %s becomes inactive",
+    async (kind) => {
+      let ownerCurrent = true;
+      const tracker = createDirectRoomTracker(createMockClient({ isDm: true }), {
+        isCurrent: () => ownerCurrent,
+      });
+      const proof = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+      expect(proof).toBeDefined();
+      if (kind === "dispose") tracker.dispose();
+      else ownerCurrent = false;
+      expect(() => proof?.assertCurrent()).toThrow("no longer current");
+      ownerCurrent = true;
+      await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+    },
+  );
+
+  it("revokes an in-flight proof when its owner is disposed", async () => {
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client);
+    client.doRequest.mockImplementationOnce(async () => {
+      tracker.dispose();
+      return client.roomStateForTest();
+    });
+    await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+  });
+
+  it("revokes an evicted room proof permanently, even after that room is proved again", async () => {
+    const client = createMockClient({});
+    client.doRequest.mockImplementation(async () =>
+      client
+        .roomStateForTest()
+        .map((event) =>
+          event.type === "m.room.member" && event.state_key === "@bot:example.org"
+            ? { ...event, content: { ...event.content, is_direct: true } }
+            : event,
+        ),
+    );
+    const tracker = createDirectRoomTracker(client);
+    const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+    expect(first).toBeDefined();
+    for (let i = 0; i < 1024; i++) {
+      await tracker.preparePrivateAudience({
+        ...DEFAULT_DIRECT_CHECK,
+        roomId: `!other-${i}:example.org`,
+      });
+    }
+    expect(await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).toBeDefined();
+    expect(() => first?.assertCurrent()).toThrow("no longer current");
   });
 
   it("treats m.direct rooms as DMs", async () => {

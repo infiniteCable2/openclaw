@@ -4,8 +4,13 @@ import { resolveAgentConversationMode } from "../config/agent-conversation-mode.
 import {
   conversationKnowledgeAudienceIdentity,
   conversationKnowledgeParticipantIdentity,
+  conversationKnowledgeContributionIdentity,
 } from "../config/sessions/conversation-audience.js";
-import type { ConversationKnowledgeBranch } from "../config/sessions/conversation-knowledge-store.js";
+import type {
+  ConversationKnowledgeBranch,
+  NativeKnowledgeRootEvidence,
+} from "../config/sessions/conversation-knowledge-store.js";
+import type { ConversationKnowledgeReference } from "../config/sessions/conversation-knowledge.js";
 import { assertSessionConversationRootEntry } from "../config/sessions/session-conversation-admission.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
@@ -19,6 +24,7 @@ import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
+import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 
 export type PersonalConversationReadParams = {
@@ -27,6 +33,10 @@ export type PersonalConversationReadParams = {
     originalParticipant: SessionParticipantIdentity;
     assertCurrent: SessionSourceAssertion;
     target: ConversationKnowledgeBranch;
+    targetAudience?: ConversationPrivateAudience;
+    /** Selected native root report, not an arbitrary history range supplied by a tool. */
+    contribution?: ConversationKnowledgeReference;
+    rootEvidence?: NativeKnowledgeRootEvidence;
   };
   getRuntimeConfig(): OpenClawConfig;
   sources: readonly { agentId: string; sessionKey: string }[];
@@ -70,6 +80,10 @@ export async function preparePersonalConversationRead(params: PersonalConversati
   const participant = structuredClone(params.personal.originalParticipant);
   const selected = params.sources.map(({ agentId, sessionKey }) => ({ agentId, sessionKey }));
   const original = params.personal.assertCurrent;
+  const destination = params.personal.targetAudience;
+  const rootEvidence = params.personal.rootEvidence;
+  const contribution =
+    params.personal.contribution && structuredClone(params.personal.contribution);
   original();
   const selectedMode = resolveAgentConversationMode(params.getRuntimeConfig(), target.agentId);
   if (
@@ -86,13 +100,20 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     ].some(
       (key) => isIncognitoSessionKey(key) || parseAgentSessionKey(key)?.agentId !== target.agentId,
     ) ||
-    selected.some((source) => source.agentId !== target.agentId)
+    selected.some(
+      (source) => source.agentId !== target.agentId || source.sessionKey === target.sessionKey,
+    )
   ) {
     throw new Error(
       "Personal conversation differences require an original same-person branch source",
     );
   }
   const audienceIdentity = conversationKnowledgeParticipantIdentity(participant);
+  const validateRootEvidence = contribution?.privateAudience
+    ? (await import("../config/sessions/conversation-knowledge-store.js"))
+        .assertNativeKnowledgeRootContribution
+    : undefined;
+  original();
   type Held = Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
   type Source = Readonly<{
     agentId: string;
@@ -128,13 +149,20 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       throw refusal;
     }
     original();
+    destination?.assertCurrent();
+    if (contribution?.privateAudience) {
+      if (!rootEvidence) {
+        throw new Error("Personal contribution requires native root evidence");
+      }
+      validateRootEvidence!(rootEvidence, target, contribution);
+    }
     const cfg = params.getRuntimeConfig();
     if (resolveAgentConversationMode(cfg, target.agentId) !== selectedMode) {
       throw new Error("Personal conversation difference mode changed");
     }
     return cfg;
   };
-  const checkEntry = (entry: InternalSessionEntry, isRoot: boolean) => {
+  const checkEntry = (entry: InternalSessionEntry, isRoot: boolean, sessionKey: string) => {
     if (isRoot) {
       assertSessionConversationRootEntry(entry, target.root.sessionKey);
       if (
@@ -146,10 +174,29 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       return;
     }
     const membership = entry.conversationTopology;
+    const destinationIdentity =
+      destination &&
+      destination.agentId === target.agentId &&
+      destination.sessionKey === target.sessionKey &&
+      sessionKey === target.sessionKey &&
+      entry.publicShare === undefined &&
+      conversationKnowledgeParticipantIdentity(destination.participant);
+    const contributionIdentity =
+      sessionKey !== target.sessionKey &&
+      conversationKnowledgeContributionIdentity(
+        entry,
+        {
+          agentId: target.agentId,
+          sessionKey,
+        },
+        contribution,
+      );
     if (
       entry.incognito ||
       !entry.lifecycleRevision ||
-      conversationKnowledgeAudienceIdentity(entry) !== audienceIdentity ||
+      (destinationIdentity ||
+        contributionIdentity ||
+        conversationKnowledgeAudienceIdentity(entry)) !== audienceIdentity ||
       membership?.role !== "branch" ||
       membership.rootSessionKey !== target.root.sessionKey ||
       membership.rootSessionId !== target.root.sessionId ||
@@ -184,7 +231,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
         ) {
           throw new Error("Personal conversation source changed after admission");
         }
-        checkEntry(current.entry, read.root);
+        checkEntry(current.entry, read.root, current.canonicalKey);
         checkMembers(read.members, read.root);
       }
     } catch (error) {
@@ -222,7 +269,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     ) {
       throw new Error("Personal conversation source physical ownership changed");
     }
-    checkEntry(current.entry, root);
+    checkEntry(current.entry, root, current.canonicalKey);
     checkMembers(members, root);
     const expected = Object.freeze({
       agentId: current.agentId,
@@ -261,6 +308,20 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     if (!isDeepStrictEqual(originalRoot.readSource, originalTarget.readSource)) {
       throw new Error("Personal conversation root differs from the original physical store");
     }
+    if (contribution?.privateAudience) {
+      if (
+        selected.length !== 1 ||
+        selected[0]?.agentId !== contribution.source.agentId ||
+        selected[0]?.sessionKey !== contribution.source.sessionKey ||
+        conversationKnowledgeParticipantIdentity(contribution.privateAudience.participant) !==
+          audienceIdentity
+      ) {
+        throw new Error("Personal contribution is not the original person's selected range");
+      }
+      // The original native root read supplies held evidence; never rescan the
+      // entire root once per contribution or trust a tool-shaped receipt object.
+      policy();
+    }
     for (const request of selected) {
       const source = await hold(request, false);
       if (!isDeepStrictEqual(source.readSource, originalTarget.readSource)) {
@@ -297,6 +358,12 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     });
     return {
       sources: Object.freeze(sources),
+      contributionRange: contribution?.privateAudience
+        ? Object.freeze({
+            from: Object.freeze({ ...contribution.privateAudience.admission }),
+            through: Object.freeze({ ...contribution.through }),
+          })
+        : undefined,
       assertCurrent: composeSessionSourceAssertion([original, source]),
       release,
     };

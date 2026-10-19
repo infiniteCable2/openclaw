@@ -91,6 +91,7 @@ export function createMatrixMonitorEventsTestHarness(params: {
     readStoreAllowFrom: async () => [],
     directTracker: {
       invalidateRoom: vi.fn(),
+      invalidatePrivateAudiences: vi.fn(),
       rememberInvite: vi.fn(),
       isDirectMessage: async () => false,
     },

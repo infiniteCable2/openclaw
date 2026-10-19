@@ -230,6 +230,7 @@ export async function prepareTranscriptReadAuthority(
     });
     return {
       sources: Object.freeze(sources),
+      contributionRange: undefined,
       assertCurrent: composeSessionSourceAssertion([authority.assertCurrent, sourceAssertion]),
       release,
     };

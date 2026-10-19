@@ -181,6 +181,10 @@ export async function resolveMatrixInboundContext(config: {
     }).include,
   );
   // Thread and conversation bindings finalize the Matrix session after the access preflight.
+  const privateAudience = await handler.directTracker.preparePrivateAudience?.({
+    roomId,
+    senderId,
+  });
   const channelIngress = await resolveMessageIngress(
     {
       agentId: _route.agentId,
@@ -194,6 +198,7 @@ export async function resolveMatrixInboundContext(config: {
       id: roomId,
       threadId: threadTarget,
     },
+    privateAudience,
   );
   const ctxPayload = core.channel.inbound.buildContext({
     channelIngress,

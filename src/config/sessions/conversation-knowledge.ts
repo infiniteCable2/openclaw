@@ -9,6 +9,10 @@ import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js"
 import type { CustomMessageReport } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import { isReadableSessionMessage } from "./session-entry-codec.js";
+import {
+  readParticipantIdentity,
+  type SessionParticipantIdentity,
+} from "./session-participant-identity.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
 export const CONVERSATION_KNOWLEDGE_REPORT = "openclaw.conversation-knowledge.v1";
@@ -29,6 +33,11 @@ type ConversationKnowledgeReferenceBase = {
   origin: string;
   source: { agentId: string; sessionKey: string; sessionId: string; lifecycleRevision: string };
   through: TranscriptEntryAnchor;
+  /** Evidence of an admitted private turn range, never authority to read it. */
+  privateAudience?: {
+    participant: Extract<SessionParticipantIdentity, { type: "profile" | "remote" }>;
+    admission: TranscriptEntryAnchor;
+  };
   observed?: ConversationKnowledgeFrontier[];
 };
 
@@ -120,6 +129,55 @@ function readConversationKnowledgeReferenceBase(
       effectiveParentId: through.effectiveParentId,
     },
   };
+  if (record.privateAudience !== undefined) {
+    const audience = asOptionalRecord(record.privateAudience);
+    const participant = asOptionalRecord(audience?.participant);
+    const admission = asOptionalRecord(audience?.admission);
+    if (
+      !participant ||
+      typeof participant.id !== "string" ||
+      !admission ||
+      admission.agentId !== through.agentId ||
+      admission.sessionKey !== through.sessionKey ||
+      admission.sessionId !== through.sessionId ||
+      admission.storePath !== through.storePath ||
+      admission.generation !== through.generation ||
+      !exact(admission.entryId) ||
+      !Number.isSafeInteger(admission.rawSeq) ||
+      Number(admission.rawSeq) < 0 ||
+      Number(admission.rawSeq) > receipt.through.rawSeq ||
+      !Number.isSafeInteger(admission.activeMessagePosition) ||
+      Number(admission.activeMessagePosition) < 0 ||
+      (admission.effectiveParentId !== null && !exact(admission.effectiveParentId)) ||
+      (admission.rawSeq === through.rawSeq && admission.entryId !== through.entryId)
+    ) {
+      return undefined;
+    }
+    const { id, ...namespace } = participant;
+    let identity: SessionParticipantIdentity;
+    try {
+      identity = readParticipantIdentity(JSON.stringify(namespace), id);
+    } catch {
+      return undefined;
+    }
+    if (identity.type !== "profile" && identity.type !== "remote") {
+      return undefined;
+    }
+    receipt.privateAudience = {
+      participant: identity,
+      admission: {
+        agentId: receipt.source.agentId,
+        sessionKey: receipt.source.sessionKey,
+        sessionId: receipt.source.sessionId,
+        storePath: receipt.through.storePath,
+        generation: receipt.through.generation,
+        entryId: admission.entryId,
+        rawSeq: Number(admission.rawSeq),
+        activeMessagePosition: Number(admission.activeMessagePosition),
+        effectiveParentId: admission.effectiveParentId,
+      },
+    };
+  }
   if (record.observed !== undefined) {
     if (!Array.isArray(record.observed)) {
       return undefined;
@@ -276,6 +334,22 @@ function messageText(message: Record<string, unknown>): string {
     .join("\n");
 }
 
+/** Compaction cannot turn a missing lower admission boundary into a read grant. */
+function isWithinPrivateAudience(
+  receipt: ConversationKnowledgeReference,
+  events: readonly TranscriptEvent[],
+  start: number,
+) {
+  if (!receipt.privateAudience) {
+    return true;
+  }
+  const admission = receipt.privateAudience.admission;
+  const admissionIndex = events.findIndex(
+    (event) => asOptionalRecord(event)?.id === admission.entryId,
+  );
+  return admissionIndex >= 0 && start >= admissionIndex;
+}
+
 /** Never turn unfinished tool work, native runtime carriers, or directives into new input. */
 function completedConversationKnowledgeStart(
   receipt: ConversationKnowledgeReceipt,
@@ -313,7 +387,7 @@ function completedConversationKnowledgeStart(
       userStart = index;
     }
   }
-  if (userStart < 0) {
+  if (userStart < 0 || !isWithinPrivateAudience(receipt, events, userStart)) {
     return undefined;
   }
   const messages: AgentMessage[] = [];
@@ -360,10 +434,13 @@ export function isConversationUtteranceObservation(
   receipt: ConversationUtteranceObservation,
   events: readonly TranscriptEvent[],
 ) {
-  const event = asOptionalRecord(
-    events.find((candidate) => asOptionalRecord(candidate)?.id === receipt.through.entryId),
+  const index = events.findIndex(
+    (candidate) => asOptionalRecord(candidate)?.id === receipt.through.entryId,
   );
-  return committedVoiceRole(event) === receipt.role;
+  return (
+    committedVoiceRole(asOptionalRecord(events[index])) === receipt.role &&
+    isWithinPrivateAudience(receipt, events, index)
+  );
 }
 
 function committedVoiceRole(event: Record<string, unknown> | undefined) {

@@ -117,7 +117,7 @@ export function readSessionTranscriptModelContextAsync<T>(
   const capturedTarget = { ...target };
   const capturedAdmission = admission ? structuredClone(admission) : undefined;
   const capturedThrough = through ? structuredClone(through) : undefined;
-  const capturedLimits = limits ? { ...limits } : undefined;
+  const capturedLimits = limits ? structuredClone(limits) : undefined;
   const accept = async (
     scope: SessionTranscriptRuntimeTarget,
     context: SessionTranscriptModelContext,
@@ -135,6 +135,7 @@ export function readSessionTranscriptModelContextAsync<T>(
       version: context.version,
       admission: contextAdmission,
       through: capturedThrough,
+      from: capturedLimits?.from,
     });
     const validate = async <Value>(publish: () => Value): Promise<{ value: Value }> => {
       let accepted: { value: Value } | undefined;

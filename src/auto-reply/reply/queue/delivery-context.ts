@@ -7,6 +7,7 @@ import { combineChannelAdmissionEvidence } from "../../../channels/message-acces
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { combineGatewayLocalUserIngress } from "../../../gateway/local-user-ingress.js";
 import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
+import { collectConversationPrivateAudiences } from "../../../sessions/conversation-private-audience.js";
 import { captureConsistentConversationParticipant } from "../../../sessions/session-participant-input.js";
 import { resolveGlobalSingleton } from "../../../shared/global-singleton.js";
 import { describeToolBindings } from "../../../shared/host-tool-bindings.js";
@@ -89,6 +90,17 @@ export function resolveFollowupAuthorizationKey(run: FollowupRun): string {
   return JSON.stringify([
     resolveReplyOperatorAuthorityKey(run.operatorAuthority),
     stableStringify(run.conversationParticipant ?? null),
+    stableStringify(
+      run.conversationAudience
+        ? {
+            agentId: run.conversationAudience.agentId,
+            sessionKey: run.conversationAudience.sessionKey,
+            channelId: run.conversationAudience.channelId,
+            accountId: run.conversationAudience.accountId,
+            nativeChannelId: run.conversationAudience.nativeChannelId,
+          }
+        : null,
+    ),
     execution.senderId ?? "",
     JSON.stringify(execution.channelContext ?? null),
     stableStringify(execution.conversationToolPolicy ?? null),
@@ -311,6 +323,7 @@ type FollowupRuntimeMetadata = Pick<
   | "speechPresentation"
   | "personalBootstrapEligible"
   | "conversationParticipant"
+  | "conversationAudience"
   | "currentInboundEventKind"
   | "currentInboundAudio"
   | "currentInboundContext"
@@ -428,6 +441,9 @@ export function collectRuntimeMetadata(
     conversationParticipant: captureConsistentConversationParticipant(
       items.map((item) => item.conversationParticipant),
     ),
+    conversationAudience: collectConversationPrivateAudiences(
+      items.map((item) => item.conversationAudience),
+    ),
     assertSourceCurrent:
       sourceAssertions.length > 0 ? composeSessionSourceAssertion(sourceAssertions) : undefined,
     speechPresentation: authoritySource?.speechPresentation,
@@ -489,6 +505,7 @@ export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupR
     speechPresentation: source.speechPresentation,
     personalBootstrapEligible: source.personalBootstrapEligible,
     conversationParticipant: source.conversationParticipant,
+    conversationAudience: source.conversationAudience,
     queueAbortSignal: source.queueAbortSignal,
     transcriptPrompt: source.transcriptPrompt,
     userTurnTranscriptRecorder: source.userTurnTranscriptRecorder,
