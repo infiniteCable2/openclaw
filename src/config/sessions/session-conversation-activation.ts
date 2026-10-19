@@ -63,7 +63,13 @@ export async function prepareSessionConversationActivation(params: {
   };
   check();
   await withSessionEntriesFromStoreInWorker(
-    { ...params, env, sessionKeys: [params.sessionKey, rootSessionKey], projection: "full" },
+    {
+      ...params,
+      env,
+      sessionKeys: [params.sessionKey, rootSessionKey],
+      projection: "full",
+      includeAuthorization: true,
+    },
     async (read) => {
       check();
       read.assertCurrent();
@@ -84,9 +90,16 @@ export async function prepareSessionConversationActivation(params: {
       if (!entry) {
         return;
       }
-      if (!read.result.source) {
+      const identity = read.result.databaseIdentity;
+      if (!identity) {
         throw new Error("Conversation activation lost its admitted source");
       }
+      const readSource = {
+        agentId: read.database.agentId,
+        path: read.database.path,
+        databaseIdentity: identity.identity,
+        databaseBirthtime: identity.birthtime,
+      };
       const physical = await prepareSqliteTargetFromSessionStorePath(
         configuredStore,
         { agentId: params.agentId, env },
@@ -94,12 +107,12 @@ export async function prepareSessionConversationActivation(params: {
       );
       check();
       read.assertCurrent();
-      if (!isSameOpenClawAgentDatabasePath(read.result.source.path, physical.path)) {
+      if (!isSameOpenClawAgentDatabasePath(readSource.path, physical.path)) {
         throw new Error("Conversation activation lost its configured physical store");
       }
       const original = captureSessionEntrySourceAssertion({
         scope: { ...params, env },
-        readSource: read.result.source,
+        readSource,
         expected: entry,
         fields: ["sessionId", "lifecycleRevision"],
         assertCurrent: check,

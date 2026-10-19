@@ -153,7 +153,7 @@ describe("native completed-turn root consolidation", () => {
           }
           expect(
             await readConversationKnowledgeRoot({ branch: selected, reader, assertCurrent }),
-          ).toEqual(events);
+          ).toEqual(reports);
           const voice = appendTranscriptMessageSync(branch, {
             message: {
               role: "user",

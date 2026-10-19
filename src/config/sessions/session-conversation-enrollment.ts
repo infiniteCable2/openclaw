@@ -124,12 +124,19 @@ export async function enrollSessionConversationBranch(params: {
       env,
       sessionKeys: [sessionKey, rootSessionKey],
       projection: "full",
+      includeAuthorization: true,
     },
     async (read) => {
       assertConfigCurrent();
       originalSource();
       read.assertCurrent();
-      const source = read.result.source;
+      const identity = read.result.databaseIdentity;
+      const source = identity && {
+        agentId: read.database.agentId,
+        path: read.database.path,
+        databaseIdentity: identity.identity,
+        databaseBirthtime: identity.birthtime,
+      };
       if (
         !source ||
         source.agentId !== agentId ||

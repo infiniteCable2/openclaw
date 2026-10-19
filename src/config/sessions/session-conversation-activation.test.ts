@@ -381,7 +381,7 @@ describe("native conversation mode activation", () => {
     expect(await loadTranscriptEvents(previousRoot)).toEqual(previousHistory);
   });
 
-  it.each(["source", "root", "abort", "store", "global", "agent", "root-key"] as const)(
+  it.for(["source", "root", "abort", "store", "global", "agent", "root-key"] as const)(
     "does not finish a seed after %s changes during original-source preparation",
     async (change, { signal }) => {
       await mode("branches");
