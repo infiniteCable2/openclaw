@@ -23,7 +23,7 @@ export function bindConversationPrivateAudience(
 }
 
 export function readConversationPrivateAudience(context: object) {
-  // The symbol is installed by the host ingress binder, not by model-visible metadata.
+  // SAFETY: The symbol is installed by the host ingress binder, not by model-visible metadata.
   return Reflect.get(context, audienceInput) as ConversationPrivateAudience | undefined;
 }
 
