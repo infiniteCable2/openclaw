@@ -229,15 +229,19 @@ describe("same-person conversation differences on native transcript read owner",
   });
 
   it.each([
-    "mode-off",
+    "unenrolled-target",
+    "unenrolled-source",
     "cross-agent",
     "root-incarnation",
     "root-physical-generation",
     "target-incarnation",
   ] as const)("does not admit %s", async (change) => {
     const f = fixture();
-    if (change === "mode-off") {
-      f.setConfig({});
+    if (change === "unenrolled-target") {
+      delete f.recipient.entry.conversationTopology;
+    }
+    if (change === "unenrolled-source") {
+      delete f.source.entry.conversationTopology;
     }
     if (change === "cross-agent") {
       f.params.sources[0]!.agentId = "other-agent";
@@ -252,6 +256,23 @@ describe("same-person conversation differences on native transcript read owner",
       f.recipient.entry.sessionId = "replacement-target";
     }
     await expect(prepareTranscriptReadAuthority(f.params)).rejects.toThrow();
+    expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("retains exact same-person read authority for enrolled sessions after returning to native mode", async () => {
+    const f = fixture();
+    f.setConfig({ agents: { entries: { example: { conversationMode: "native" } } } });
+    const grant = await prepareTranscriptReadAuthority(f.params);
+    try {
+      expect(grant.sources).toMatchObject([
+        { canonicalKey: f.source.canonicalKey, sessionId: "source-a" },
+      ]);
+      expect(() => grant.assertCurrent()).not.toThrow();
+      f.setConfig({ agents: { entries: { example: { conversationMode: "branches" } } } });
+      expect(() => grant.assertCurrent()).toThrow("mode changed");
+    } finally {
+      grant.release();
+    }
     expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
   });
 
