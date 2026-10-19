@@ -22,6 +22,7 @@ import {
 import {
   acquireCompactHooksPreparedModelRuntime,
   createCompactHooksResolvedModel,
+  createCompactHooksSettingsManager,
   emptyPluginMetadataSnapshot,
   getCurrentPluginMetadataSnapshotMock,
   mockCompactHooksPluginMetadata,
@@ -224,10 +225,7 @@ const guardSessionManagerMock = vi.fn((sessionManager: Record<string, unknown>) 
   flushPendingToolResultsAsync: vi.fn(async () => undefined),
 }));
 const applyAgentCompactionSettingsFromConfigMock = vi.fn();
-const createPreparedEmbeddedAgentSettingsManagerMock = vi.fn(() => ({
-  getGlobalSettings: vi.fn(() => ({})),
-  getCompactionReserveTokens: vi.fn(() => 2_000),
-}));
+const createPreparedEmbeddedAgentSettingsManagerMock = vi.fn(createCompactHooksSettingsManager);
 export const listRegisteredPluginAgentPromptGuidanceMock = vi.fn((params?: { surface?: string }) =>
   params?.surface === "subagent"
     ? ["Subagent compact command guidance."]
@@ -558,10 +556,9 @@ export function resetCompactHooksHarnessMocks(workspaceDir: string, sessionId = 
   }));
   applyAgentCompactionSettingsFromConfigMock.mockReset();
   createPreparedEmbeddedAgentSettingsManagerMock.mockReset();
-  createPreparedEmbeddedAgentSettingsManagerMock.mockReturnValue({
-    getGlobalSettings: vi.fn(() => ({})),
-    getCompactionReserveTokens: vi.fn(() => 2_000),
-  });
+  createPreparedEmbeddedAgentSettingsManagerMock.mockReturnValue(
+    createCompactHooksSettingsManager(),
+  );
 }
 
 export async function loadCompactHooksHarness(options: { durableSession?: boolean } = {}): Promise<{

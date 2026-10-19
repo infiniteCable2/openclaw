@@ -140,6 +140,13 @@ export function createCompactHooksResolvedModel(
   };
 }
 
+export function createCompactHooksSettingsManager() {
+  return {
+    getGlobalSettings: vi.fn(() => ({})),
+    getCompactionReserveTokens: vi.fn(() => 2_000),
+  };
+}
+
 export const resolveCompactHooksApiKeyMock = vi.fn<
   typeof import("./stream-resolution.js").resolveEmbeddedAgentApiKey
 >(async ({ provider, resolvedApiKey, authStorage }) => {
