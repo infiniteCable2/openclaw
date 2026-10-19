@@ -47,7 +47,7 @@ it.each(["native", "legacy"] as const)(
       },
     });
     expect(Object.isFrozen(leaf)).toBe(true);
-    if (leaf?.type !== "message") {
+    if (leaf?.type !== "message" || leaf.message.role !== "assistant") {
       throw new Error("Greeting was not recorded as an assistant message");
     }
     expect(Object.isFrozen(leaf.message)).toBe(true);
