@@ -77,8 +77,16 @@ describe("branch communication owner pilot", () => {
             roles: {
               default: "member",
               definitions: {
-                member: { scopes: ["operator.read"], agents: ["main"] },
-                admin: { scopes: ["operator.admin"], agents: ["main"] },
+                member: {
+                  sessions: { others: "none" },
+                  scopes: ["operator.read"],
+                  agents: ["main"],
+                },
+                admin: {
+                  sessions: { others: "none" },
+                  scopes: ["operator.admin"],
+                  agents: ["main"],
+                },
               },
             },
           };
