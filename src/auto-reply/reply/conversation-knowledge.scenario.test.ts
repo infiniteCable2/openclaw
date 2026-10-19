@@ -17,6 +17,7 @@ import {
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";

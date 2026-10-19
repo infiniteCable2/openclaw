@@ -172,7 +172,9 @@ describe("branch communication owner pilot", () => {
           expect(call.sessionKey).not.toContain(":subagent:");
           expect(call.sessionKey).not.toBe(chat.sessionKey);
           const admit = async (inputId: string) => {
-            if (!transportOpen) throw new Error("Call closed");
+            if (!transportOpen) {
+              throw new Error("Call closed");
+            }
             const input = {
               agentId: "main",
               conversationId: "pilot-call",
@@ -217,7 +219,9 @@ describe("branch communication owner pilot", () => {
                 scope,
                 ingress: resolution,
                 assertCurrent() {
-                  if (!transportOpen) throw new Error("Call closed");
+                  if (!transportOpen) {
+                    throw new Error("Call closed");
+                  }
                 },
                 context: {
                   channel: "matrix",
@@ -365,7 +369,9 @@ describe("branch communication owner pilot", () => {
               expect.objectContaining({ target: room, channelCapabilities: { media: true } }),
             ]),
           });
-          if (!destination) throw new Error("No exact chat destination for the admitted call");
+          if (!destination) {
+            throw new Error("No exact chat destination for the admitted call");
+          }
           expect(destination.target).toBe(room);
           const send = createConversationsSendTool(options);
           const args = {
@@ -456,7 +462,9 @@ describe("branch communication owner pilot", () => {
           }
         } finally {
           vi.restoreAllMocks();
-          for (const release of releases.toReversed()) release();
+          for (const release of releases.toReversed()) {
+            release();
+          }
           restoreActivePluginRegistrySnapshot(registry);
           await fixture.close();
         }
