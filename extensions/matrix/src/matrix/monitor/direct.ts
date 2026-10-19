@@ -82,10 +82,8 @@ function privateAudienceMemberFlag(
           return undefined;
         }
         history = content.history_visibility;
-      } else {
-        if (content.join_rule !== "invite" && content.join_rule !== "knock") {
-          return undefined;
-        }
+      } else if (content.join_rule !== "invite" && content.join_rule !== "knock") {
+        return undefined;
       }
     } else if (event.type === "m.room.member") {
       if (

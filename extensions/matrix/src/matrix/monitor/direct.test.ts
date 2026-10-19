@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { MatrixClient } from "../sdk.js";
 import { EventType } from "../send/types.js";
 import { createDirectRoomTracker } from "./direct.js";
@@ -95,13 +95,13 @@ function createMockClient(params: {
     },
   } as unknown as MatrixClient & {
     dms: {
-      update: ReturnType<typeof vi.fn>;
+      update: Mock<MatrixClient["dms"]["update"]>;
       isDm: ReturnType<typeof vi.fn>;
     };
     getAccountData: ReturnType<typeof vi.fn>;
     getJoinedRoomMembers: ReturnType<typeof vi.fn>;
     getRoomStateEvent: ReturnType<typeof vi.fn>;
-    doRequest: ReturnType<typeof vi.fn>;
+    doRequest: Mock<MatrixClient["doRequest"]>;
     roomStateForTest: typeof roomStateForTest;
     setAccountData: ReturnType<typeof vi.fn>;
     setMembersForTest: (members: string[]) => void;
@@ -176,14 +176,16 @@ describe("createDirectRoomTracker", () => {
     async ({ history, join, allowed }) => {
       const client = createMockClient({ isDm: true });
       const state = client.roomStateForTest().filter((event) => event.type === "m.room.member");
-      if (history !== undefined)
+      if (history !== undefined) {
         state.push({
           type: "m.room.history_visibility",
           state_key: "",
           content: { history_visibility: history },
         });
-      if (join !== undefined)
+      }
+      if (join !== undefined) {
         state.push({ type: "m.room.join_rules", state_key: "", content: { join_rule: join } });
+      }
       client.doRequest.mockResolvedValue(state);
       const proof =
         await createDirectRoomTracker(client).preparePrivateAudience(DEFAULT_DIRECT_CHECK);
@@ -206,11 +208,13 @@ describe("createDirectRoomTracker", () => {
     "does not apply protocol defaults to a malformed explicit %s event",
     async (type) => {
       const client = createMockClient({ isDm: true });
-      client.doRequest.mockResolvedValue(
-        client
-          .roomStateForTest()
-          .map((event) => (event.type === type ? { ...event, content: {} } : event)),
-      );
+      const state = client.roomStateForTest();
+      for (const event of state) {
+        if (event.type === type) {
+          event.content = {};
+        }
+      }
+      client.doRequest.mockResolvedValue(state);
       await expect(
         createDirectRoomTracker(client).preparePrivateAudience(DEFAULT_DIRECT_CHECK),
       ).resolves.toBeUndefined();
@@ -221,13 +225,12 @@ describe("createDirectRoomTracker", () => {
     "checks whether a third invitee can receive events with %s history",
     async (history) => {
       const client = createMockClient({ isDm: true });
-      const state = client
-        .roomStateForTest()
-        .map((event) =>
-          event.type === "m.room.history_visibility"
-            ? { ...event, content: { history_visibility: history } }
-            : event,
-        );
+      const state = client.roomStateForTest();
+      for (const event of state) {
+        if (event.type === "m.room.history_visibility") {
+          event.content = { history_visibility: history };
+        }
+      }
       state.push({
         type: "m.room.member",
         state_key: "@invitee:example.org",
@@ -309,21 +312,24 @@ describe("createDirectRoomTracker", () => {
       const client = createMockClient({ isDm: true });
       const tracker = createDirectRoomTracker(client);
       const invalidate = () => tracker.invalidateRoom(DEFAULT_DIRECT_CHECK.roomId);
-      if (stage === "self")
+      if (stage === "self") {
         client.getUserId = vi.fn().mockImplementationOnce(async () => {
           invalidate();
           return "@bot:example.org";
         });
-      if (stage === "state")
+      }
+      if (stage === "state") {
         client.doRequest.mockImplementationOnce(async () => {
           invalidate();
           return client.roomStateForTest();
         });
-      if (stage === "dm")
+      }
+      if (stage === "dm") {
         client.dms.update.mockImplementationOnce(async () => {
           invalidate();
           return true;
         });
+      }
       await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
     },
   );
@@ -465,15 +471,15 @@ describe("createDirectRoomTracker", () => {
 
   it("revokes an evicted room proof permanently, even after that room is proved again", async () => {
     const client = createMockClient({});
-    client.doRequest.mockImplementation(async () =>
-      client
-        .roomStateForTest()
-        .map((event) =>
-          event.type === "m.room.member" && event.state_key === "@bot:example.org"
-            ? { ...event, content: { ...event.content, is_direct: true } }
-            : event,
-        ),
-    );
+    client.doRequest.mockImplementation(async () => {
+      const state = client.roomStateForTest();
+      for (const event of state) {
+        if (event.type === "m.room.member" && event.state_key === "@bot:example.org") {
+          event.content.is_direct = true;
+        }
+      }
+      return state;
+    });
     const tracker = createDirectRoomTracker(client);
     const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
     expect(first).toBeDefined();
