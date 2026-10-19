@@ -20,6 +20,7 @@ import { readAgentDeletionJournalStatusInWorker } from "../state/agent-deletion-
 import { AGENT_DATABASE_PREFLIGHT_CONCURRENCY } from "../state/openclaw-agent-db-contract.js";
 import type { OpenClawAgentDatabaseOptions } from "../state/openclaw-agent-db-contract.js";
 import {
+  createOpenClawAgentDatabasePathMatcher,
   resolveOpenClawAgentSqlitePath,
   isSameOpenClawAgentDatabasePath,
 } from "../state/openclaw-agent-db.paths.js";
@@ -37,6 +38,64 @@ export type PreparedStartupSessionDatabase = {
   assertCurrent: () => void;
 };
 
+/** Validate logical branch owners before startup can create roots or adopt history. */
+async function assertConversationBranchStoresSupported(params: {
+  cfg: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  assertCurrent?: () => void;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const agentIds = listAgentIds(params.cfg);
+  const branchAgentIds = agentIds.filter(
+    (agentId) => resolveAgentConversationMode(params.cfg, agentId) === "branches",
+  );
+  if (branchAgentIds.length === 0) {
+    return;
+  }
+  if (params.cfg.session?.scope === "global") {
+    throw new Error("Conversation branches require per-agent session scope, not global scope");
+  }
+  const assertCurrent = () => {
+    params.signal?.throwIfAborted();
+    params.assertCurrent?.();
+  };
+  const env = params.env ?? process.env;
+  const targets = [];
+  // Include native and deferred agents: either can share a branch's physical store.
+  for (const agentId of agentIds) {
+    assertCurrent();
+    const physical = await prepareSqliteTargetFromSessionStorePath(
+      resolveSessionStorePathCore(params.cfg.session?.store, { agentId, env }),
+      { agentId, env },
+      params.signal,
+    );
+    assertCurrent();
+    targets.push({ agentId, physical });
+  }
+  const isSameDatabasePath = createOpenClawAgentDatabasePathMatcher();
+  for (const target of targets) {
+    if (!branchAgentIds.includes(target.agentId)) {
+      continue;
+    }
+    if (target.physical.agentId !== target.agentId) {
+      throw new Error(
+        `Cannot start conversation branches for agent "${target.agentId}": its session database belongs to another agent. Use a dedicated agent-owned session database (omit session.store to use the default per-agent layout), or set conversationMode to "native". Existing session data has not been moved or merged.`,
+      );
+    }
+    const other = targets.find(
+      (candidate) =>
+        candidate.agentId !== target.agentId &&
+        isSameDatabasePath(candidate.physical.path, target.physical.path),
+    );
+    if (other) {
+      throw new Error(
+        `Cannot start conversation branches for agent "${target.agentId}": agents "${target.agentId}" and "${other.agentId}" resolve to the same physical session database. Shared databases are not supported in branches mode. Use dedicated per-agent databases (omit session.store for the default layout), or set conversationMode to "native". Existing session data has not been moved or merged.`,
+      );
+    }
+  }
+  assertCurrent();
+}
+
 /** Normalize legacy outcomes before readiness; retain admitted stores for later transcript repair. */
 export async function prepareGatewayStartupSessions(params: {
   cfg: OpenClawConfig;
@@ -48,6 +107,7 @@ export async function prepareGatewayStartupSessions(params: {
   log: SessionStartupMigrationLogger;
   deps?: SessionMigrationDeps;
 }): Promise<PreparedStartupSessionDatabase[]> {
+  await assertConversationBranchStoresSupported(params);
   const databases: PreparedStartupSessionDatabase[] = [];
   const retainDatabase = (database: OpenClawAgentDatabaseOptions) => {
     params.assertCurrent?.();

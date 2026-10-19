@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { resolveAgentConversationRootSessionKey } from "../config/sessions/session-conversation-root-key.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
@@ -7,6 +9,123 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayStartupSessions } from "./server-startup-session-migration.js";
 
 describe("Gateway host conversation root startup", () => {
+  it.each(["initial", "deferred"] as const)(
+    "refuses shared branch/native stores before %s startup maintenance or root creation",
+    async (phase) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const storePath = state.statePath("shared.sqlite");
+        const cfg: OpenClawConfig = {
+          agents: { entries: { main: { conversationMode: "branches" }, helper: {} } },
+          session: { store: storePath },
+        };
+        const resolveTargets = vi.fn();
+        await expect(
+          prepareGatewayStartupSessions({
+            cfg,
+            env: state.env,
+            agentIds: phase === "deferred" ? new Set(["helper"]) : undefined,
+            log: { info: vi.fn(), warn: vi.fn() },
+            deps: { resolveAllAgentSessionStoreTargetsSync: resolveTargets },
+          }),
+        ).rejects.toThrow(/same physical session database.*not supported in branches mode/);
+        expect(resolveTargets).not.toHaveBeenCalled();
+        await expect(fs.stat(storePath)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+    },
+  );
+
+  it("refuses a branch database owned by another agent even without a second configured agent", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const storePath = state.statePath("agents", "other", "agent", "openclaw-agent.sqlite");
+      const cfg: OpenClawConfig = {
+        agents: { entries: { researcher: { conversationMode: "branches" } } },
+        session: { store: storePath },
+      };
+      await expect(
+        prepareGatewayStartupSessions({
+          cfg,
+          env: state.env,
+          log: { info: vi.fn(), warn: vi.fn() },
+        }),
+      ).rejects.toThrow(/belongs to another agent.*dedicated agent-owned session database/);
+      await expect(fs.stat(storePath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("detects directory aliases before creating either branch root", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const firstDirectory = state.statePath("agents", "main", "agent");
+      const aliasDirectory = state.statePath("agents", "helper", "agent");
+      await fs.mkdir(firstDirectory, { recursive: true });
+      await fs.mkdir(path.dirname(aliasDirectory), { recursive: true });
+      await fs.symlink(firstDirectory, aliasDirectory, "junction");
+      const cfg: OpenClawConfig = {
+        agents: {
+          entries: {
+            main: { conversationMode: "branches" },
+            helper: { conversationMode: "branches" },
+          },
+        },
+      };
+      await expect(
+        prepareGatewayStartupSessions({
+          cfg,
+          env: state.env,
+          log: { info: vi.fn(), warn: vi.fn() },
+        }),
+      ).rejects.toThrow(/same physical session database/);
+      await expect(fs.readdir(firstDirectory)).resolves.toEqual([]);
+    });
+  });
+
+  it("keeps native shared-store startup unchanged", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const cfg: OpenClawConfig = {
+        agents: { entries: { main: {}, helper: {} } },
+        session: { store: state.statePath("shared.sqlite") },
+      };
+      await expect(
+        prepareGatewayStartupSessions({
+          cfg,
+          env: state.env,
+          log: { info: vi.fn(), warn: vi.fn() },
+        }),
+      ).resolves.toEqual([]);
+    });
+  });
+
+  it("accepts a fixed selector that natively partitions agents into different database files", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const storePath = state.statePath("custom", "sessions.json");
+      const cfg: OpenClawConfig = {
+        agents: {
+          entries: {
+            main: { conversationMode: "branches" },
+            helper: { conversationMode: "branches" },
+          },
+        },
+        session: { store: storePath },
+      };
+      const databases = await prepareGatewayStartupSessions({
+        cfg,
+        env: state.env,
+        log: { info: vi.fn(), warn: vi.fn() },
+      });
+      expect(databases).toHaveLength(2);
+      expect(new Set(databases.map(({ database }) => database.path)).size).toBe(2);
+      for (const agentId of ["main", "helper"]) {
+        await expect(
+          readSessionEntryReadOnlyInWorker({
+            agentId,
+            storePath,
+            env: state.env,
+            sessionKey: resolveAgentConversationRootSessionKey({ cfg, agentId }),
+          }),
+        ).resolves.toMatchObject({ conversationTopology: { role: "root" } });
+      }
+    });
+  });
+
   it.each(["initial", "deferred"] as const)(
     "admits configured branch roots before %s readiness, without creating native-mode roots",
     async (phase) => {
