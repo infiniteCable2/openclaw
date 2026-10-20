@@ -30,6 +30,34 @@ all incompatibilities without modifying the source files.
 
 Changes may stay at the same schema version only when downgraded readers remain safe. New tables qualify because older builds ignore them. An explicitly compatible column on an existing table qualifies only when its declaration is exactly one bare nullable SQLite `STRICT` datatype: `ANY`, `BLOB`, `INT`, `INTEGER`, `REAL`, or `TEXT`. The declaration cannot have a default, `NOT NULL`, a primary or unique key, a check, a reference, a collation, a generated expression, or another suffix. Constrained existing-table additions require a schema-version bump or a companion table instead.
 
+Branch-to-root conversation publication uses the additive per-agent
+`session_conversation_publications` table without changing the schema version.
+The Session owner lazily installs it and records a provenance payload,
+exact source endpoint, original native writer, and monotonic capture sequence in
+the original transcript append transaction. It stores no copied message text.
+Accumulated observed frontiers retain the existing native transport and storage
+limits; the journal adds no smaller per-turn payload cap.
+Completed turns remain candidates until their original writer accepts the exact
+terminal; direct realtime utterances become ready with their original append.
+Recovery never infers successful completion or reruns a model or task.
+
+Ready work retries with fresh source, root, privacy, and lifecycle checks.
+Ready rows preserve capture order within each source origin; unresolved candidates
+and blocked rows remain diagnostic records, not executable work. A successor
+writer cannot accept an older candidate. Root receipts deduplicate exact publication
+IDs, so an interrupted acknowledgement can retry without duplicating context.
+Confirmed publication deletes its pending row. Other rows remain until the source
+session window is deleted, using its existing cascading deletion; there is no new
+expiry sweep. Compaction and transcript replacement do not resurrect unavailable
+endpoints or convert them into delivered work.
+
+Older same-version readers ignore the table and do not perform this publication
+recovery. Binary rollback leaves original transcripts and pending rows intact;
+re-upgrade can resume eligible ready rows, but cannot invent missing acceptance
+or recover provenance that an older writer never captured. Back up the existing
+agent database normally. No historical journal backfill, new data directory, or
+configuration switch is required.
+
 Linux Node worker cleanup uses the additive `node_worker_launch_process_scopes`
 companion table. Its launch-bound `linux-subreaper` certificate records kernel
 descendant extinction independently of `node_worker_launch_cleanup.lineage_settled`.

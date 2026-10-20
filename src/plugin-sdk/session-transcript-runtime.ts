@@ -66,6 +66,7 @@ import {
   type SessionTranscriptMemoryHitKeyParams,
   type SessionTranscriptReadParams,
 } from "./session-transcript-memory-hit.js";
+import { publicTranscriptAppendOptions } from "./session-transcript-public-options.js";
 
 export type {
   TranscriptEntryAnchor,
@@ -198,7 +199,7 @@ export type SessionTranscriptTarget = SessionTranscriptIdentity & {
 };
 
 export type SessionTranscriptAppendMessageParams<TMessage> = SessionTranscriptTargetParams &
-  TranscriptMessageAppendOptions<TMessage>;
+  Omit<TranscriptMessageAppendOptions<TMessage>, "conversationPublication">;
 
 export type SessionTranscriptAppendMessagesParams<TMessage> = SessionTranscriptTargetParams & {
   config?: TranscriptMessageAppendOptions<TMessage>["config"];
@@ -206,6 +207,7 @@ export type SessionTranscriptAppendMessagesParams<TMessage> = SessionTranscriptT
   messages: readonly Omit<
     TranscriptMessageAppendOptions<TMessage>,
     | "config"
+    | "conversationPublication"
     | "cwd"
     | "parentId"
     | "preparation"
@@ -237,7 +239,10 @@ export type SessionTranscriptWriteLockParams = SessionTranscriptTargetParams & {
 
 export type SessionTranscriptWriteLockContext = {
   appendMessage: <TMessage>(
-    options: Omit<LockedTranscriptMessageAppendOptions<TMessage>, "config">,
+    options: Omit<
+      LockedTranscriptMessageAppendOptions<TMessage>,
+      "config" | "conversationPublication"
+    >,
   ) => Promise<TranscriptMessageAppendResult<TMessage> | undefined>;
   publishUpdate: (update?: TranscriptUpdatePayload) => Promise<void>;
   readEvents: () => Promise<SessionTranscriptEvent[]>;
@@ -253,6 +258,7 @@ export type SessionTranscriptWriteContext = Omit<
     options: Omit<
       LockedTranscriptMessageAppendOptions<TMessage>,
       | "config"
+      | "conversationPublication"
       | "prepareMessageAfterIdempotencyCheck"
       | "prepareMessageAfterIdempotencyCheckAsync"
       | "beforeFreshMessageCommit"
@@ -515,7 +521,7 @@ export async function appendSessionTranscriptMessageByIdentity<TMessage>(
 ): Promise<TranscriptMessageAppendResult<TMessage> | undefined> {
   return await appendTranscriptMessage(
     bindSessionTranscriptStoreScope(params, params.config),
-    params,
+    publicTranscriptAppendOptions(params),
   );
 }
 
@@ -613,7 +619,10 @@ export async function appendSessionTranscriptMessageByIdentityStrict<TMessage>(
 export async function appendSessionTranscriptMessagesByIdentity<TMessage>(
   params: SessionTranscriptAppendMessagesParams<TMessage>,
 ): Promise<TranscriptMessageAppendResult<TMessage>[]> {
-  return await appendTranscriptMessages(params, params);
+  return await appendTranscriptMessages(params, {
+    ...params,
+    messages: params.messages.map(publicTranscriptAppendOptions),
+  });
 }
 
 /**

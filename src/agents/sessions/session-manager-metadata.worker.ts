@@ -281,7 +281,11 @@ export function bindSqliteWorkerBackend(
             let projectionNeedsReconcile = false;
             const snapshot = appendTranscriptMessageSnapshotSync(
               scope,
-              { message, cwd: command.input.cwd },
+              {
+                message,
+                cwd: command.input.cwd,
+                conversationPublication: command.input.conversationPublication,
+              },
               prepared,
               {
                 messageAlreadyRedacted: true,
@@ -386,6 +390,7 @@ export function bindSqliteWorkerBackend(
                       now: Date.parse(event.timestamp),
                       cwd: message.cwd,
                       idempotencyLookup: message.idempotencyLookup,
+                      conversationPublication: message.conversationPublication,
                       ...(message.freshMessageCheck ? { beforeFreshMessageCommit } : {}),
                     },
                     prepared,

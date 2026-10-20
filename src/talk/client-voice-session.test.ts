@@ -39,6 +39,7 @@ import {
 } from "./client-voice-session.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
 import * as voiceKnowledge from "./voice-conversation-knowledge.js";
+import * as voicePublication from "./voice-conversation-publication.js";
 import { VOICE_TRANSCRIPT_MAX_UNRESOLVED } from "./voice-transcript.js";
 
 type AppendTranscriptMessage =
@@ -90,10 +91,10 @@ describe("client voice session", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("publishes the original committed voice anchor without fabricating a completed run", async () => {
+  it("records participant display facts for the exact saved voice anchor without replay credit", async () => {
     await seedSession("agent:main:branch", {}, "original-branch-revision");
     const observe = vi
-      .spyOn(voiceKnowledge, "recordVoiceConversationObservation")
+      .spyOn(voiceKnowledge, "recordVoiceConversationParticipant")
       .mockResolvedValue();
     try {
       const voiceSessionId = createOrResumeClientVoiceSession({
@@ -137,7 +138,7 @@ describe("client voice session", () => {
     }
   });
 
-  it("retains the original recipient until a saved assistant observation settles without inventing user provenance", async () => {
+  it("retains the original recipient through assistant transcript commit without inventing user provenance", async () => {
     await seedSession("agent:main:branch", {}, "original-branch-revision");
     const observing = createDeferred();
     const finish = createDeferred();
@@ -152,16 +153,17 @@ describe("client voice session", () => {
     });
     const release = vi.fn();
     const preparePrivateAudience = vi.fn(async () => ({ audience, release }));
-    const observe = vi
-      .spyOn(voiceKnowledge, "recordVoiceConversationObservation")
-      .mockImplementation(async (params) => {
-        expect(params.role).toBe("assistant");
-        expect(params.participant).toBeUndefined();
-        expect(params.destinationAudience).toBe(audience);
-        expect(release).not.toHaveBeenCalled();
-        observing.resolve();
-        await finish.promise;
-      });
+    const prepare = vi.spyOn(voicePublication, "prepareVoiceConversationPublication");
+    sessionAccessorMocks.appendTranscriptMessage.mockImplementation(async (...args) => {
+      const captured = prepare.mock.calls[0]?.[0];
+      expect(captured?.role).toBe("assistant");
+      expect(captured?.participant).toBeUndefined();
+      expect(captured?.destinationAudience).toBe(audience);
+      expect(release).not.toHaveBeenCalled();
+      observing.resolve();
+      await finish.promise;
+      return sessionAccessorMocks.actualAppendTranscriptMessage!(...args);
+    });
     const voiceSessionId = createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "main",
@@ -182,7 +184,7 @@ describe("client voice session", () => {
       await awaitGateBeforeSettlement(
         observing.promise,
         append,
-        "Saved assistant observation was not reached",
+        "Assistant transcript append was not reached",
       );
       expect(preparePrivateAudience).toHaveBeenCalledOnce();
       expect(release).not.toHaveBeenCalled();
@@ -192,7 +194,7 @@ describe("client voice session", () => {
     } finally {
       finish.resolve();
       await append.catch(() => {});
-      observe.mockRestore();
+      prepare.mockRestore();
     }
   });
 

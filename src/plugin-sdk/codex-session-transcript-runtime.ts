@@ -180,7 +180,10 @@ export async function readCodexSessionTranscriptEventsBeforeAdmission(
 export type CodexSessionTranscriptMirrorWriteLockContext =
   InternalSessionTranscriptWriteLockContext & {
     appendMessageWithMessageSequence: <TMessage>(
-      options: Omit<LockedTranscriptMessageAppendOptions<TMessage>, "config">,
+      options: Omit<
+        LockedTranscriptMessageAppendOptions<TMessage>,
+        "config" | "conversationPublication"
+      >,
     ) => Promise<{
       lifecycleRevision?: string;
       messageSeq?: number;
@@ -207,6 +210,7 @@ export type CodexSessionTranscriptMirrorWriteContext = SessionTranscriptWriteCon
     options: Omit<
       LockedTranscriptMessageAppendOptions<TMessage>,
       | "config"
+      | "conversationPublication"
       | "prepareMessageAfterIdempotencyCheck"
       | "prepareMessageAfterIdempotencyCheckAsync"
       | "beforeFreshMessageCommit"

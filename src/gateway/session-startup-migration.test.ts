@@ -48,6 +48,12 @@ import { runStartupSessionMaintenanceForTest } from "./server-startup-session-mi
 import { readSessionMessagesPageWithStatsAsync } from "./session-transcript-readers.js";
 
 const tempDirs = createTempDirTracker();
+const publication = vi.hoisted(() => ({ start: vi.fn() }));
+// The publication owner has its own recovery/lifecycle tests; this suite proves
+// the startup handoff without starting a second background writer.
+vi.mock("../config/sessions/conversation-publication-reconcile.js", () => ({
+  startConversationKnowledgePublication: publication.start,
+}));
 
 afterEach(async () => {
   await closeOpenClawAgentDatabasesAsync();
@@ -55,6 +61,7 @@ afterEach(async () => {
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   tempDirs.cleanup();
+  publication.start.mockClear();
 });
 
 function makeLog() {
@@ -217,6 +224,13 @@ describe("runStartupSessionMaintenanceForTest", () => {
           await startup;
         }
         expect(reconcileSessionTranscriptIndexes).toHaveBeenCalledOnce();
+        if (outcome === "failed") {
+          expect(publication.start).not.toHaveBeenCalled();
+        } else {
+          expect(publication.start).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ agentId: "main", path: initial.path }),
+          );
+        }
         expect(handedOff).toBe(reconciled);
         expect(
           open.mock.calls.filter(

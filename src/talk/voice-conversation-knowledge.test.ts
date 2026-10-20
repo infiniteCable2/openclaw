@@ -6,7 +6,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 const mocks = vi.hoisted(() => ({
   load: vi.fn(),
   prepare: vi.fn(),
-  record: vi.fn(),
   participant: vi.fn(),
   warn: vi.fn(),
 }));
@@ -17,10 +16,6 @@ vi.mock("../config/sessions/session-accessor.sqlite-entry-admission.js", () => (
 // mock-isolation: Borrowed-reader lifetime is tested without starting a second knowledge read owner.
 vi.mock("../auto-reply/reply/conversation-knowledge.js", () => ({
   prepareReplyConversationKnowledge: mocks.prepare,
-}));
-// mock-isolation: Capture exact observation receipts without committing transcript reports in this adapter test.
-vi.mock("../config/sessions/conversation-knowledge-store.js", () => ({
-  recordConversationUtteranceObservation: mocks.record,
 }));
 // mock-isolation: Record participant commit arguments without invoking the native SQLite participant worker.
 vi.mock("../config/sessions/session-sharing-store.async.js", () => ({
@@ -33,7 +28,7 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => ({
 
 import {
   prepareVoiceConversationKnowledge,
-  recordVoiceConversationObservation,
+  recordVoiceConversationParticipant,
 } from "./voice-conversation-knowledge.js";
 
 const config: OpenClawConfig = {
@@ -78,7 +73,6 @@ function setup(enrolled = true) {
     },
     databaseClaim: { kind: "worker", reader, assertCurrent, release },
   });
-  mocks.record.mockResolvedValue(true);
   mocks.participant.mockResolvedValue("inserted");
   const preparedRelease = vi.fn();
   mocks.prepare.mockResolvedValue({
@@ -279,41 +273,30 @@ describe("native voice branch knowledge adapter", () => {
     await prepared?.release();
   });
 
-  it("reports the actual append anchor as observation, never a completed task", async () => {
+  it("does not infer a user participant from an assistant utterance", async () => {
     const owner = setup();
-    await recordVoiceConversationObservation({
+    await recordVoiceConversationParticipant({
       anchor,
       lifecycleRevision: "row-a",
       role: "assistant",
       fresh: true,
       timestamp: 1,
-      config,
       assertCurrent: owner.assertCurrent,
     });
-    expect(mocks.record).toHaveBeenCalledExactlyOnceWith({
-      reader: owner.reader,
-      assertCurrent: owner.assertCurrent,
-      sessionId: target.sessionId,
-      anchor,
-      role: "assistant",
-      sourceMode: "branches",
-    });
-    expect(mocks.record.mock.calls[0]?.[0]).not.toHaveProperty("runId");
     expect(mocks.participant).not.toHaveBeenCalled();
-    expect(owner.release).toHaveBeenCalledOnce();
+    expect(mocks.load).not.toHaveBeenCalled();
   });
 
   it("records only genuine user participant with original row and commit fence", async () => {
     const owner = setup();
     const inputParticipant = { type: "profile" as const, id: "example-person" };
-    await recordVoiceConversationObservation({
+    await recordVoiceConversationParticipant({
       anchor,
       lifecycleRevision: "row-a",
       role: "user",
       participant: inputParticipant,
       fresh: true,
       timestamp: 42,
-      config,
       assertCurrent: owner.assertCurrent,
     });
     expect(mocks.participant).toHaveBeenCalledExactlyOnceWith(
@@ -326,88 +309,25 @@ describe("native voice branch knowledge adapter", () => {
       },
       owner.assertCurrent,
     );
-    expect(mocks.record).toHaveBeenCalledOnce();
+    expect(owner.release).toHaveBeenCalledOnce();
   });
 
-  it.each(["user", "assistant"] as const)(
-    "attests only the exact fresh provider %s occurrence and retains recipient revocation",
-    async (role) => {
-      const owner = setup();
-      let audienceCurrent = true;
-      const destinationAudience = Object.freeze({
-        agentId: target.agentId,
-        sessionKey: target.sessionKey,
-        channelId: "webchat",
-        accountId: "default",
-        nativeChannelId: target.sessionKey,
-        participant,
-        assertCurrent() {
-          if (!audienceCurrent) {
-            throw new Error("Recipient revoked");
-          }
-        },
-      });
-      await recordVoiceConversationObservation({
-        anchor,
-        lifecycleRevision: "row-a",
-        role,
-        ...(role === "user" ? { participant } : {}),
-        destinationAudience,
-        fresh: true,
-        timestamp: 42,
-        config,
-        assertCurrent: owner.assertCurrent,
-      });
-      const recorded = mocks.record.mock.calls[0]?.[0];
-      expect(recorded).toMatchObject({
-        role,
-        anchor,
-        privateAudience: { participant, admission: anchor },
-      });
-      expect(() => recorded.assertCurrent()).not.toThrow();
-      audienceCurrent = false;
-      expect(() => recorded.assertCurrent()).toThrow("Recipient revoked");
-      if (role === "assistant") {
-        expect(mocks.participant).not.toHaveBeenCalled();
-      }
-      mocks.record.mockClear();
-      audienceCurrent = true;
-      await recordVoiceConversationObservation({
-        anchor,
-        lifecycleRevision: "row-a",
-        role,
-        participant,
-        destinationAudience,
-        fresh: false,
-        timestamp: 42,
-        config,
-        assertCurrent: owner.assertCurrent,
-      });
-      expect(mocks.record.mock.calls[0]?.[0]).not.toHaveProperty("privateAudience");
-    },
-  );
-
   it.each([true, false])(
-    "native voice reports only previously enrolled sources (enrolled %s)",
+    "native voice records participants only for enrolled sources (enrolled %s)",
     async (enrolled) => {
       const owner = setup(enrolled);
-      await recordVoiceConversationObservation({
+      await recordVoiceConversationParticipant({
         anchor,
         lifecycleRevision: "row-a",
         role: "user",
         participant,
         fresh: true,
         timestamp: 1,
-        config: {},
         assertCurrent: owner.assertCurrent,
       });
       if (enrolled) {
-        expect(mocks.record).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({ sourceMode: "native", anchor, role: "user" }),
-        );
         expect(mocks.participant).toHaveBeenCalledOnce();
       } else {
-        expect(mocks.record).not.toHaveBeenCalled();
         expect(mocks.participant).not.toHaveBeenCalled();
       }
       expect(owner.release).toHaveBeenCalledOnce();
@@ -416,21 +336,20 @@ describe("native voice branch knowledge adapter", () => {
 
   it("does not double-credit participants on transcript deduplication", async () => {
     const owner = setup();
-    await recordVoiceConversationObservation({
+    await recordVoiceConversationParticipant({
       anchor,
       lifecycleRevision: "row-a",
       role: "user",
       participant: { type: "profile", id: "example-person" },
       fresh: false,
       timestamp: 42,
-      config,
       assertCurrent: owner.assertCurrent,
     });
     expect(mocks.participant).not.toHaveBeenCalled();
-    expect(mocks.record).toHaveBeenCalledOnce();
+    expect(mocks.load).not.toHaveBeenCalled();
   });
 
-  it("cannot report after source revocation during a borrowed read", async () => {
+  it("cannot record participants after source revocation during a borrowed read", async () => {
     const owner = setup();
     mocks.load.mockImplementationOnce(async () => {
       owner.revoke();
@@ -444,31 +363,31 @@ describe("native voice branch knowledge adapter", () => {
         },
       };
     });
-    await recordVoiceConversationObservation({
+    await recordVoiceConversationParticipant({
       anchor,
       lifecycleRevision: "row-a",
       role: "user",
+      participant,
       fresh: true,
       timestamp: 1,
-      config,
       assertCurrent: owner.assertCurrent,
     });
-    expect(mocks.record).not.toHaveBeenCalled();
+    expect(mocks.participant).not.toHaveBeenCalled();
     expect(owner.release).toHaveBeenCalledOnce();
     expect(mocks.warn).toHaveBeenCalledOnce();
   });
 
-  it("does not turn a report failure into a failed or retryable saved utterance", async () => {
+  it("does not turn a display failure into a failed or retryable saved utterance", async () => {
     const owner = setup();
-    mocks.record.mockRejectedValueOnce(new Error("Report refused"));
+    mocks.participant.mockRejectedValueOnce(new Error("Participant display refused"));
     await expect(
-      recordVoiceConversationObservation({
+      recordVoiceConversationParticipant({
         anchor,
         lifecycleRevision: "row-a",
-        role: "assistant",
+        role: "user",
+        participant,
         fresh: true,
         timestamp: 1,
-        config,
         assertCurrent: owner.assertCurrent,
       }),
     ).resolves.toBeUndefined();

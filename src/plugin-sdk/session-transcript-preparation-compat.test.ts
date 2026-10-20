@@ -26,12 +26,20 @@ it("retains legacy locked types and exposes preparation-only optimistic writes",
     "prepareMessageAfterIdempotencyCheckAsync",
   );
   type PreparedOptions = Parameters<SessionTranscriptWriteContext["appendMessage"]>[0];
+  expectTypeOf<Options>().not.toHaveProperty("conversationPublication");
+  expectTypeOf<SessionTranscriptAppendMessageParams<unknown>>().not.toHaveProperty(
+    "conversationPublication",
+  );
+  expectTypeOf<
+    SessionTranscriptAppendMessagesParams<unknown>["messages"][number]
+  >().not.toHaveProperty("conversationPublication");
   type PreparedSequenced = Parameters<
     CodexSessionTranscriptMirrorWriteContext["appendMessageWithMessageSequence"]
   >[0];
   expectTypeOf<PreparedSequenced>().toEqualTypeOf<PreparedOptions>();
   expectTypeOf<PreparedOptions>().not.toHaveProperty("prepareMessageAfterIdempotencyCheck");
   expectTypeOf<PreparedOptions>().not.toHaveProperty("beforeFreshMessageCommit");
+  expectTypeOf<PreparedOptions>().not.toHaveProperty("conversationPublication");
   expectTypeOf<NonNullable<PreparedOptions["preparation"]>["prepareMessage"]>().toEqualTypeOf<
     ((message: unknown) => Promise<unknown>) | undefined
   >();

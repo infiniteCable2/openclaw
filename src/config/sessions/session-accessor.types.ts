@@ -313,6 +313,8 @@ export type SessionTranscriptVisibleMessageDeltaResult = SessionTranscriptDeltaR
 >;
 
 export type TranscriptMessageAppendOptions<TMessage> = {
+  /** Internal host provenance: the original message and publication job commit together. */
+  conversationPublication?: import("./conversation-publication.types.js").ConversationPublicationIntent;
   /** Detached preparation; fresh commit compares the exact transcript version before insertion. */
   preparation?: {
     prepareMessage?: (message: TMessage) => Promise<TMessage | undefined>;

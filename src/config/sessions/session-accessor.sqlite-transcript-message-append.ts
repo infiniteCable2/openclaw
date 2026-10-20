@@ -10,6 +10,7 @@ import {
 } from "../../shared/transcript-only-openclaw-assistant.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { captureConversationPublicationInTransaction } from "./conversation-publication.kernel.js";
 import type {
   SessionTranscriptWriteScope,
   TranscriptMessageAppendOptions,
@@ -342,6 +343,15 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     message: persistedMessage,
   });
   const { anchor } = metadata;
+  if (options.conversationPublication) {
+    captureConversationPublicationInTransaction(
+      database,
+      resolved,
+      options.conversationPublication,
+      anchor,
+      persistedMessage,
+    );
+  }
   const revision = readSqliteNativeMutationRevision(database.db);
   if (pending) {
     if (pending.stageRelocation) {

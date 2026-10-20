@@ -63,6 +63,7 @@ export type InitialSessionEntryCommit = {
 };
 
 export type SessionMetadataMessageControl = {
+  conversationPublication?: import("./conversation-publication.types.js").ConversationPublicationIntent;
   pendingInput?: { facts: SessionPendingInputWorkerFacts; relocation?: string };
   freshMessageCheck?: true;
 };

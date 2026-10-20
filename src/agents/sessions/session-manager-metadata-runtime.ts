@@ -3,6 +3,7 @@ import {
   getCliHistoryWriter,
   type CliHistoryWriter,
 } from "../../config/sessions/cli-history-boundary.js";
+import { captureConversationPublication } from "../../config/sessions/conversation-publication-context.js";
 import type { IncognitoSessionActor } from "../../config/sessions/session-incognito-actor.js";
 import { toIncognitoManagerCommand } from "../../config/sessions/session-incognito-manager-contract.js";
 import type {
@@ -52,9 +53,11 @@ export async function withSessionMetadataWorker<T>(
     return await database.withMetadata(assertCurrent, operation, controls);
   }
   let cliWriter: CliHistoryWriter | undefined;
+  let publication: ReturnType<typeof captureConversationPublication>;
   const assertMetadataCurrent = () => {
     assertCurrent();
     cliWriter?.assertCurrent();
+    publication?.assertCurrent();
   };
   const admission = captureSessionMessageAdmission(assertMetadataCurrent, controls);
   const physical = "db" in database ? readOpenClawAgentDatabaseIdentity(database) : undefined;
@@ -129,9 +132,9 @@ export async function withSessionMetadataWorker<T>(
                   ) {
                     admission.publish(committed.value.pendingInputReceipt);
                   }
-                } catch (publication) {
+                } catch (publicationError) {
                   failure = new AggregateError(
-                    [cause, publication],
+                    [cause, publicationError],
                     "Acknowledged input publication failed",
                     { cause },
                   );
@@ -160,6 +163,7 @@ export async function withSessionMetadataWorker<T>(
   try {
     const value = await operation({
       execute: async (command, commandOptions) => {
+        publication = undefined;
         cliWriter = getCliHistoryWriter({ ...command.input.scope, storePath: database.path });
         assertMetadataCurrent();
         if (
@@ -175,8 +179,15 @@ export async function withSessionMetadataWorker<T>(
             },
           };
         }
-        if (command.type === "session.transcript.appendMessage") {
+        if (command.type === "session.transcript.appendMessage" && "messageJson" in command.input) {
+          publication = captureConversationPublication(
+            command.input.scope,
+            JSON.parse(command.input.messageJson),
+          );
           Object.assign(command.input, admission.control);
+          if (publication) {
+            command.input.conversationPublication = publication.intent;
+          }
         }
         if (
           command.type === "session.transcript.rewrite" &&
@@ -194,6 +205,13 @@ export async function withSessionMetadataWorker<T>(
             ...command.input.message,
             ...admission.control,
           };
+          publication = captureConversationPublication(
+            command.input.scope,
+            JSON.parse(command.input.message.messageJson),
+          );
+          if (publication) {
+            command.input.message.conversationPublication = publication.intent;
+          }
         }
         const reply = await worker.execute(command, assertMetadataCurrent, commandOptions);
         if (!reply.ok) {

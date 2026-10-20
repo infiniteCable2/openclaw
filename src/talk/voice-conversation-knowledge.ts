@@ -1,6 +1,4 @@
 import type { PreparedReplyConversationKnowledge } from "../auto-reply/reply/conversation-knowledge.js";
-import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
-import { conversationKnowledgeParticipantIdentity } from "../config/sessions/conversation-audience.js";
 import {
   participantIdentityNamespace,
   type SessionParticipantIdentity,
@@ -17,38 +15,34 @@ import type { ConversationPrivateAudience } from "../sessions/conversation-priva
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 
 const loadKnowledge = createLazyRuntimeModule(async () => {
-  const [admission, knowledge, recordObservation, participants] = await Promise.all([
+  const [admission, knowledge, participants] = await Promise.all([
     import("../config/sessions/session-accessor.sqlite-entry-admission.js"),
     import("../auto-reply/reply/conversation-knowledge.js"),
-    import("../config/sessions/conversation-knowledge-store.js").then(
-      ({ recordConversationUtteranceObservation }) => recordConversationUtteranceObservation,
-    ),
     import("../config/sessions/session-sharing-store.async.js"),
   ]);
   return {
     loadSessionEntryForAdmission: admission.loadSessionEntryForAdmission,
     prepareReplyConversationKnowledge: knowledge.prepareReplyConversationKnowledge,
-    recordConversationUtteranceObservation: recordObservation,
     recordSessionParticipant: participants.recordSessionParticipantInWorker,
   };
 });
 
 const log = createSubsystemLogger("talk/conversation-knowledge");
 
-/** Observe the exact saved speech occurrence, never completed work or an inferred human. */
-export async function recordVoiceConversationObservation(params: {
+/** Keep participant display facts after the source commit; publication was journaled atomically. */
+export async function recordVoiceConversationParticipant(params: {
   anchor: TranscriptEntryAnchor;
   lifecycleRevision: string;
   role: "user" | "assistant";
   participant?: SessionParticipantIdentity;
-  destinationAudience?: ConversationPrivateAudience;
   fresh: boolean;
   timestamp: number;
-  config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   assertCurrent: SessionSourceAssertion;
 }): Promise<void> {
-  const sourceMode = resolveAgentConversationMode(params.config, params.anchor.agentId);
+  if (params.role !== "user" || !params.participant || !params.fresh) {
+    return;
+  }
   try {
     params.assertCurrent();
     const owner = await loadKnowledge();
@@ -69,58 +63,25 @@ export async function recordVoiceConversationObservation(params: {
       if (held.entry.conversationTopology?.role !== "branch") {
         return;
       }
-      if (params.role === "user" && params.participant && params.fresh) {
-        await owner.recordSessionParticipant(
-          target,
-          {
-            identity: params.participant,
-            promptedAt: params.timestamp,
-            sessionAgentId: params.anchor.agentId,
-            expectedSession: {
-              sessionId: params.anchor.sessionId,
-              lifecycleRevision: params.lifecycleRevision,
-            },
+      await owner.recordSessionParticipant(
+        target,
+        {
+          identity: params.participant,
+          promptedAt: params.timestamp,
+          sessionAgentId: params.anchor.agentId,
+          expectedSession: {
+            sessionId: params.anchor.sessionId,
+            lifecycleRevision: params.lifecycleRevision,
           },
-          params.assertCurrent,
-        );
-      }
-      const reader =
-        "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"
-          ? held.databaseClaim.reader
-          : undefined;
-      if (!reader) {
-        return;
-      }
-      const audience = params.destinationAudience;
-      const recipient = audience?.participant;
-      const privateAudience =
-        params.fresh &&
-        audience?.agentId === params.anchor.agentId &&
-        audience.sessionKey === params.anchor.sessionKey &&
-        recipient &&
-        (recipient.type === "profile" || recipient.type === "remote") &&
-        (params.role === "assistant" ||
-          conversationKnowledgeParticipantIdentity(params.participant) ===
-            conversationKnowledgeParticipantIdentity(recipient))
-          ? { participant: recipient, admission: params.anchor }
-          : undefined;
-      await owner.recordConversationUtteranceObservation({
-        reader,
-        assertCurrent: privateAudience
-          ? composeSessionSourceAssertion([params.assertCurrent, () => audience!.assertCurrent()])
-          : params.assertCurrent,
-        sessionId: params.anchor.sessionId,
-        anchor: params.anchor,
-        role: params.role,
-        sourceMode,
-        ...(privateAudience ? { privateAudience } : {}),
-      });
+        },
+        params.assertCurrent,
+      );
     } finally {
       await held.databaseClaim.release();
     }
   } catch (error) {
     // Speech has already committed. An auxiliary report cannot replay the utterance or its work.
-    log.warn("Saved voice transcript retained; related-conversation observation unavailable.", {
+    log.warn("Saved voice transcript retained; participant display update unavailable.", {
       error: formatErrorMessage(error),
     });
   }

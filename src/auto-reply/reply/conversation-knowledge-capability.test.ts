@@ -9,6 +9,7 @@ import {
   CONVERSATION_KNOWLEDGE_REPORT,
   conversationKnowledgeOrigin,
 } from "../../config/sessions/conversation-knowledge.js";
+import { captureConversationPublication } from "../../config/sessions/conversation-publication-context.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
 import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
@@ -21,6 +22,7 @@ const source = vi.hoisted(() => ({
   history: vi.fn(),
   context: vi.fn(),
   record: vi.fn(),
+  startPublication: vi.fn(),
   drain: vi.fn(),
   seed: vi.fn(),
 }));
@@ -33,6 +35,14 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readConversationKnowledgeBranch: source.branch,
   readConversationKnowledgeRoot: source.root,
   recordConversationKnowledgeTurn: source.record,
+}));
+// mock-isolation: Verify exact durable acceptance without opening journal workers or background jobs.
+vi.mock("../../config/sessions/conversation-publication.js", () => ({
+  openConversationPublicationStore: () => ({ accept: source.record }),
+}));
+// mock-isolation: A publication wakeup must not start database work in this custody fixture.
+vi.mock("../../config/sessions/conversation-publication-reconcile.js", () => ({
+  startConversationKnowledgePublication: source.startPublication,
 }));
 // mock-isolation: Select audience facts without opening the sharing/profile storage owner.
 vi.mock("./conversation-knowledge-authority.js", async (importOriginal) => ({
@@ -62,6 +72,14 @@ beforeEach(() => {
     mock.mockReset();
   }
   source.seed.mockResolvedValue({ status: "seeded", recorded: 0, skipped: 0 });
+  source.branch.mockResolvedValue({
+    agentId: "example",
+    sessionKey: "agent:example:branch",
+    sessionId: "source-session",
+    lifecycleRevision: "source-life",
+    storePath: "/synthetic/agent.sqlite",
+    root: { sessionKey: "agent:example:root", sessionId: "root", lifecycleRevision: "root-life" },
+  });
 });
 
 async function nativeTurn(admin = false, conversationMode: "native" | "branches" = "branches") {
@@ -184,7 +202,7 @@ describe("actual native-turn knowledge ownership", () => {
     expect(source.record).not.toHaveBeenCalled();
   });
 
-  it("drains terminal writes before reporting the exact completed native occurrence", async () => {
+  it("drains terminal writes before durable acceptance, then wakes independent publication", async () => {
     const f = await nativeTurn();
     source.record.mockResolvedValue(true);
     await f.owner.record(f.result);
@@ -193,12 +211,19 @@ describe("actual native-turn knowledge ownership", () => {
       expect.objectContaining({
         runId: "source-run",
         sessionId: "source-session",
-        assistantTranscriptIdempotencyKey: "native-terminal-occurrence",
-        sourceMode: "branches",
+        idempotencyKey: "native-terminal-occurrence",
       }),
     );
     expect(source.drain.mock.invocationCallOrder[0]).toBeLessThan(
       source.record.mock.invocationCallOrder[0]!,
+    );
+    expect(source.startPublication).toHaveBeenCalledWith({
+      agentId: "example",
+      path: "/synthetic/agent.sqlite",
+      env: {},
+    });
+    expect(source.record.mock.invocationCallOrder[0]).toBeLessThan(
+      source.startPublication.mock.invocationCallOrder[0]!,
     );
     f.owner.release();
     expect(() => f.owner.assertCurrent()).toThrow("released");
@@ -233,18 +258,29 @@ describe("actual native-turn knowledge ownership", () => {
     expect(source.record).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         runId: terminal.runId,
-        assistantTranscriptEntryId: "native-saved-entry",
-        assistantTranscriptIdempotencyKey: undefined,
+        entryId: "native-saved-entry",
+        idempotencyKey: undefined,
       }),
     );
   });
 
   it("passively reports completed native work only for a previously enrolled conversation", async () => {
-    source.branch.mockResolvedValue({ sessionId: "source-session" });
     const f = await nativeTurn(false, "native");
+    const original = f.owner.withPublication(() =>
+      captureConversationPublication(
+        { agentId: "example", sessionKey: "agent:example:branch", sessionId: "source-session" },
+        { role: "assistant", stopReason: "stop", __openclaw: { runId: "source-run" } },
+      ),
+    );
+    expect(original?.intent).toMatchObject({
+      kind: "completed-turn",
+      sourceMode: "native",
+      runId: "source-run",
+      source: { lifecycleRevision: "source-life" },
+    });
     await f.owner.record(f.result);
     expect(source.record).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ sourceMode: "native", runId: "source-run" }),
+      expect.objectContaining({ runId: "source-run" }),
     );
     expect(source.history).not.toHaveBeenCalled();
   });
@@ -261,11 +297,12 @@ describe("actual native-turn knowledge ownership", () => {
     expect(source.drain).not.toHaveBeenCalled();
   });
 
-  it("does not fail or retry completed work when only the root report fails", async () => {
+  it("does not fail or retry completed work when durable acceptance is unconfirmed", async () => {
     const f = await nativeTurn();
-    source.record.mockRejectedValue(new Error("Root report unavailable"));
+    source.record.mockRejectedValue(new Error("Acceptance unavailable"));
     await expect(f.owner.record(f.result)).resolves.toBeUndefined();
     expect(source.record).toHaveBeenCalledOnce();
+    expect(source.startPublication).not.toHaveBeenCalled();
     expect(f.result.status).toBe("ok");
   });
 });
@@ -620,10 +657,17 @@ describe("native personal difference-context integration", () => {
 
   it("does not treat a real admitted administrator as the original conversation person", async () => {
     const f = await nativeTurn(true);
+    // Preparing publication reads only this turn's own enrollment. Operator
+    // authority must not grant a subsequent read of root or other-branch context.
+    expect(source.branch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ sessionId: "source-session" }),
+    );
     await f.owner.prepareSnapshot();
     expect(f.owner.fragments[0]?.text).toContain("original-participant-unconfirmed");
-    expect(source.branch).not.toHaveBeenCalled();
+    expect(source.branch).toHaveBeenCalledOnce();
+    expect(source.root).not.toHaveBeenCalled();
     expect(source.history).not.toHaveBeenCalled();
+    expect(source.context).not.toHaveBeenCalled();
   });
 
   it("never retries a refused personal source through a broader history path", async () => {

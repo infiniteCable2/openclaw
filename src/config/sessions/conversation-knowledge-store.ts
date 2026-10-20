@@ -285,7 +285,7 @@ export async function recordConversationUtteranceObservation(params: {
 }
 
 /** Shared native report transaction keeps both reference kinds under the same current source. */
-async function recordConversationKnowledgeReference(params: {
+export async function recordConversationKnowledgeReference(params: {
   reader: SessionEntryCohortReader;
   assertCurrent: SessionSourceAssertion;
   sessionId: string;
@@ -296,6 +296,8 @@ async function recordConversationKnowledgeReference(params: {
   sourceMode: "native" | "branches";
   completion: { runId: string } | { kind: "utterance-observation"; role: "user" | "assistant" };
   privateAudience?: ConversationKnowledgeReference["privateAudience"];
+  /** Durable journal identity selects an exact endpoint, not a source's latest report. */
+  publicationId?: string;
 }): Promise<boolean> {
   const { branch, through } = params;
   const check = () => {
@@ -475,8 +477,15 @@ async function recordConversationKnowledgeReference(params: {
           customTypes: [
             "kind" in receipt ? CONVERSATION_UTTERANCE_REPORT : CONVERSATION_KNOWLEDGE_REPORT,
           ],
-          receipt: { field: "origin", value: receipt.origin },
-          selectReport: (latest) => selectConversationKnowledgeReport(receipt, latest),
+          receipt: params.publicationId
+            ? { field: "publicationId", value: params.publicationId }
+            : { field: "origin", value: receipt.origin },
+          selectReport: (latest) => {
+            const report = selectConversationKnowledgeReport(receipt, latest);
+            return report && params.publicationId
+              ? { ...report, details: { ...receipt, publicationId: params.publicationId } }
+              : report;
+          },
         },
         { source },
       );

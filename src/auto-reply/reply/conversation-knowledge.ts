@@ -15,6 +15,7 @@ import {
   readConversationKnowledgeBranch,
   readConversationKnowledgeRoot,
   recordConversationKnowledgeTurn,
+  type ConversationKnowledgeBranch,
 } from "../../config/sessions/conversation-knowledge-store.js";
 import {
   combineConversationKnowledge,
@@ -26,6 +27,7 @@ import {
   selectConversationKnowledgeReceipts,
   type ConversationKnowledgeFrontier,
 } from "../../config/sessions/conversation-knowledge.js";
+import { withConversationPublicationContext } from "../../config/sessions/conversation-publication-context.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
@@ -37,9 +39,6 @@ import { readSessionTranscriptModelContextAsync } from "../../config/sessions/se
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
-import { drainAgentRunTerminalWrites } from "../../infra/agent-run-terminal-writes.js";
-import { formatErrorMessage } from "../../infra/errors.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-execution.types.js";
 import {
@@ -51,6 +50,10 @@ import {
   createConversationKnowledgeIngestion,
   type ConversationKnowledgeIngestionMaintenance,
 } from "./conversation-knowledge-ingestion.js";
+import {
+  captureReplyConversationPublication,
+  recordReplyConversationPublication,
+} from "./conversation-publication.js";
 import { getReplyOperationSessionReader } from "./reply-run-registry.state.js";
 import { resolveReplyRunTrigger } from "./reply-turn-kind.js";
 
@@ -63,8 +66,6 @@ export type PreparedReplyConversationKnowledge = {
   assertCurrent: SessionSourceAssertion;
   release(): void;
 };
-
-const log = createSubsystemLogger("auto-reply/conversation-knowledge");
 
 /** One actual native turn retains its own knowledge and reports only its saved terminal occurrence. */
 export function createReplyConversationKnowledgeTurn(params: {
@@ -90,6 +91,7 @@ export function createReplyConversationKnowledgeTurn(params: {
   let seedPending = false;
   const seedNotice = pendingConversationKnowledgeNotice();
   let sourceMode: "native" | "branches" | undefined;
+  let publicationBranch: ConversationKnowledgeBranch | undefined;
   let historyPrepared = false;
   let retainedFragments: RuntimeContextFragment[] = [];
   const selected = createDynamicSessionSourceAssertion(
@@ -149,12 +151,44 @@ export function createReplyConversationKnowledgeTurn(params: {
           signal,
         });
         seedPending = seed.status === "pending";
+        if (!seedPending) {
+          publicationBranch = await readConversationKnowledgeBranch({
+            reader,
+            sessionId,
+            assertCurrent: assertTurnSourceCurrent,
+          });
+        }
         assertCurrent();
       }
       assertCurrent();
       signal.throwIfAborted();
     },
-    async prepareSnapshot(): Promise<RuntimeContextFragment[]> {
+    withPublication<T>(run: () => T): T {
+      if (!execution) {
+        throw new Error("Conversation publication execution was not prepared");
+      }
+      return withConversationPublicationContext(
+        {
+          source: { agentId, sessionId, sessionKey: reader.sessionKey },
+          runId: execution.admission.operationalRunInstance.runId,
+          capture: () => {
+            if (!publicationBranch || !sourceMode || !execution || seedPending) {
+              return undefined;
+            }
+            return captureReplyConversationPublication({
+              followupRun,
+              branch: publicationBranch,
+              sourceMode,
+              admission: execution.admission,
+              observed: prepared?.observed,
+              assertCurrent,
+            });
+          },
+        },
+        run,
+      );
+    },
+    async prepareSnapshot(this: void): Promise<RuntimeContextFragment[]> {
       assertCurrent();
       if (!execution) {
         throw new Error("Conversation knowledge execution was not prepared");
@@ -183,7 +217,10 @@ export function createReplyConversationKnowledgeTurn(params: {
       execution.signal.throwIfAborted();
       return prepared?.fragments ?? [];
     },
-    async prepareHistory(run: RunEmbeddedAgentParams): Promise<RuntimeContextFragment[]> {
+    async prepareHistory(
+      this: void,
+      run: RunEmbeddedAgentParams,
+    ): Promise<RuntimeContextFragment[]> {
       assertCurrent();
       if (!execution || !enabled) {
         return run.runtimeContextFragments ?? [];
@@ -252,72 +289,16 @@ export function createReplyConversationKnowledgeTurn(params: {
       ];
     },
     async record(result: AgentTurnInternalResult) {
-      if (!execution) {
-        throw new Error("Conversation knowledge execution was not prepared");
-      }
-      const { admission, signal } = execution;
-      const runId = admission.operationalRunInstance.runId;
-      const terminal =
-        result.kind === "settled" && result.status === "ok"
-          ? result.result.meta.agentMeta?.terminalReceipt
-          : undefined;
-      if (
-        !enabled ||
-        seedPending ||
-        !sourceMode ||
-        !terminal ||
-        terminal.runId !== runId ||
-        terminal.sessionId !== sessionId ||
-        (!terminal.assistantTranscriptEntryId && !terminal.assistantTranscriptIdempotencyKey) ||
-        signal.aborted
-      ) {
-        return;
-      }
-      await drainAgentRunTerminalWrites(admission.operationalRunInstance);
-      admission.assertSourceCurrent();
-      signal.throwIfAborted();
-      try {
-        const proof = followupRun.conversationAudience;
-        const participant = proof?.participant;
-        const admissionAnchor = followupRun.userTurnTranscriptRecorder?.getAdmissionReceipt();
-        const privateAudience =
-          proof &&
-          participant &&
-          (participant.type === "remote" || participant.type === "profile") &&
-          admissionAnchor &&
-          proof.agentId === agentId &&
-          proof.sessionKey === reader.sessionKey &&
-          conversationKnowledgeParticipantIdentity(participant) ===
-            conversationKnowledgeParticipantIdentity(followupRun.conversationParticipant)
-            ? { participant, admission: admissionAnchor }
-            : undefined;
-        if (privateAudience) {
-          proof!.assertCurrent();
-        }
-        await recordConversationKnowledgeTurn({
-          reader,
-          assertCurrent: composeSessionSourceAssertion([
-            assertCurrent,
-            admission.assertSourceCurrent,
-            ...(privateAudience ? [() => proof!.assertCurrent()] : []),
-          ]),
-          sessionId: terminal.sessionId,
-          runId: terminal.runId,
-          assistantTranscriptEntryId: terminal.assistantTranscriptEntryId,
-          assistantTranscriptIdempotencyKey: terminal.assistantTranscriptIdempotencyKey,
-          sourceMode,
-          observed: prepared?.observed,
-          privateAudience,
-          signal,
-        });
-      } catch (error) {
-        // Consolidation cannot turn committed native work into a failed/retryable task.
-        // Output still belongs to its original live delivery authority.
-        log.warn(
-          "Completed turn retained; conversation knowledge report was not recorded. Do not repeat completed work.",
-          { runId, error: formatErrorMessage(error) },
-        );
-      }
+      await recordReplyConversationPublication({
+        result,
+        execution,
+        enabled,
+        seedPending,
+        branch: publicationBranch,
+        sessionId,
+        getEnvironment: () => reader.database.env,
+        assertCurrent,
+      });
     },
     release() {
       if (phase === "released") {

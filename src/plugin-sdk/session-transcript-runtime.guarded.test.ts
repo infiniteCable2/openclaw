@@ -38,6 +38,10 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import {
+  withCodexSessionTranscriptMirrorWrite,
+  withCodexSessionTranscriptMirrorWriteLock,
+} from "./codex-session-transcript-runtime.js";
+import {
   appendSessionTranscriptMessageByIdentityStrict as appendStrict,
   appendSessionTranscriptMessagesByIdentity as appendGroup,
   readSessionTranscriptEvents as readEvents,
@@ -48,6 +52,8 @@ import {
   readSessionTranscriptEvents,
   readSessionTranscriptRawDelta,
   readVisibleSessionTranscriptMessageEntries,
+  withSessionTranscriptWrite,
+  withSessionTranscriptWriteLock,
 } from "./session-transcript-runtime.js";
 
 describe("guarded session transcript runtime SDK", () => {
@@ -103,6 +109,33 @@ describe("guarded session transcript runtime SDK", () => {
       );
     return { scope, persistedScope, superseded };
   }
+
+  it("strips forged private publication intent from every public transcript append variant", async () => {
+    const { scope, persistedScope } = await seed("default");
+    const forged = {
+      message: { role: "assistant", content: "Plugin-owned saved text.", stopReason: "stop" },
+      conversationPublication: {
+        version: 1,
+        kind: "utterance-observation",
+        privateAudience: {
+          participant: { type: "profile", id: "forged-person" },
+          admission: "self",
+        },
+      },
+    };
+    await appendSessionTranscriptMessageByIdentity({ ...scope, ...forged });
+    await appendStrict({ ...scope, ...forged });
+    await appendGroup({ ...scope, messages: [forged] });
+    await withSessionTranscriptWrite(scope, (write) => write.appendMessage(forged));
+    await withSessionTranscriptWriteLock(scope, (write) => write.appendMessage(forged));
+    await withCodexSessionTranscriptMirrorWrite(scope, (write) =>
+      write.appendMessageWithMessageSequence(forged),
+    );
+    await withCodexSessionTranscriptMirrorWriteLock(scope, (write) =>
+      write.appendMessageWithMessageSequence(forged),
+    );
+    expect(await readEntries(persistedScope)).toHaveLength(7);
+  });
 
   it("appends and replays an ordered incognito group with explicit env", async () => {
     const { scope, persistedScope } = await seed("incognito");

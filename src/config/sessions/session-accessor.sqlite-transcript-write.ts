@@ -8,6 +8,11 @@ import {
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
+import {
+  captureConversationPublication,
+  captureConversationPublicationAppend,
+  withConversationPublicationAppends,
+} from "./conversation-publication-context.js";
 import type {
   SessionTranscriptAccessScope,
   SessionTranscriptContextVersion,
@@ -79,6 +84,7 @@ import type {
 } from "./session-accessor.types.js";
 import { captureIncognitoSessionOperation } from "./session-incognito-binding.js";
 import { SqliteTranscriptMutationConflictError } from "./session-mutation-conflict-error.js";
+import { composeSessionSourceAssertion } from "./session-source-authority.js";
 import {
   readTranscriptAppendPostimage,
   retainTranscriptAppendPostimage,
@@ -387,9 +393,10 @@ export async function appendTranscriptMessage<TMessage>(
   scope: SessionTranscriptWriteScope,
   options: TranscriptMessageAppendOptions<TMessage>,
 ): Promise<TranscriptMessageAppendResult<TMessage> | undefined> {
-  assertLegacyTranscriptPreparation(scope, options);
+  const capturedOptions = captureConversationPublicationAppend(scope, options);
+  assertLegacyTranscriptPreparation(scope, capturedOptions);
   return await withTranscriptWriteSequence(scope, (transcript) =>
-    transcript.appendMessage(options),
+    transcript.appendMessage(capturedOptions),
   );
 }
 
@@ -413,6 +420,18 @@ export function appendTranscriptMessageSnapshotSync<TMessage>(
   },
   view?: TranscriptWriteViewGuard,
 ): Result<TranscriptMessageWriteSnapshot<TMessage>, TranscriptAppendRefusal> {
+  const publication = captureConversationPublication(scope, options.message);
+  let capturedOptions = options;
+  if (publication) {
+    capturedOptions = {
+      ...options,
+      conversationPublication: publication.intent,
+      beforeFreshMessageCommit: composeSessionSourceAssertion([
+        options.beforeFreshMessageCommit,
+        publication.assertCurrent,
+      ]),
+    };
+  }
   const snapshot = runTranscriptWriteSnapshotSync(
     scope,
     (database, resolved) => {
@@ -420,8 +439,8 @@ export function appendTranscriptMessageSnapshotSync<TMessage>(
         database,
         resolved,
         workerOptions?.messageAlreadyRedacted
-          ? { ...options, messageAlreadyRedacted: true }
-          : options,
+          ? { ...capturedOptions, messageAlreadyRedacted: true }
+          : capturedOptions,
         preparedMessage,
         workerOptions,
       );
@@ -503,8 +522,10 @@ async function withHostTranscriptWriteLock<T>(
 ): Promise<T> {
   const fenced = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fenced);
+  const runCaptured = (context: SessionTranscriptWriteLockAccessorContext) =>
+    run(withConversationPublicationAppends(resolved, context));
   if (!isMainThread || !supportsOpenClawAgentDatabaseExecution(toDatabaseOptions(resolved))) {
-    return runNativeTranscriptWriteLock(fenced, run);
+    return runNativeTranscriptWriteLock(fenced, runCaptured);
   }
   const captured = captureLifecycleDatabaseScope(resolved);
   const identity = readDatabasePathIdentitySync(captured.path);
@@ -517,7 +538,7 @@ async function withHostTranscriptWriteLock<T>(
   return withWorkerTranscriptWriteLock(
     { ...fenced, ...captured, storePath: captured.path },
     { ...fenced, ...captured, storePath: captured.ownerStorePath ?? captured.path },
-    run,
+    runCaptured,
     runNativeTranscriptWriteLock,
   );
 }

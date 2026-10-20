@@ -640,30 +640,30 @@ async function executeAgentTurnOutcome(
               assertCurrent: preparedRunAdmission.assertSourceCurrent,
             },
             async (speechPresentationRun) => {
-              return executeAgentTurnInternalLoop(
-                {
-                  ...executionParams,
-                  prepareConversationContext: conversationKnowledge
-                    ? (run) => conversationKnowledge.prepareHistory(run)
-                    : undefined,
-                  prepareConversationSnapshot: conversationKnowledge
-                    ? () => conversationKnowledge.prepareSnapshot()
-                    : undefined,
-                  speechPresentationRun,
-                  runtimeContextFragments: executionParams.runtimeContextFragments,
-                },
-                runId,
-                commitTerminalOutcome,
-                prepareMcpAppModelContext,
-                preparedRunAdmission,
-                admittedRunContext,
-                deferredLifecycle,
-                compaction,
-              );
+              const execute = () =>
+                executeAgentTurnInternalLoop(
+                  {
+                    ...executionParams,
+                    prepareConversationContext: conversationKnowledge?.prepareHistory,
+                    prepareConversationSnapshot: conversationKnowledge?.prepareSnapshot,
+                    speechPresentationRun,
+                    runtimeContextFragments: executionParams.runtimeContextFragments,
+                  },
+                  runId,
+                  commitTerminalOutcome,
+                  prepareMcpAppModelContext,
+                  preparedRunAdmission,
+                  admittedRunContext,
+                  deferredLifecycle,
+                  compaction,
+                );
+              return conversationKnowledge
+                ? conversationKnowledge.withPublication(execute)
+                : execute();
             },
           );
-          // Finish the user's audio before optional root consolidation. The turn
-          // still joins publication before releasing its source and admission.
+          // Finish audio before the small durable acceptance. Root publication
+          // belongs to its independent journal lifecycle, not this delivery.
           await conversationKnowledge?.record(result);
           return result;
         } finally {

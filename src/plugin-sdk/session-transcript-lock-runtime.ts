@@ -16,6 +16,7 @@ import {
   type SessionTranscriptMemoryHitKey,
   type SessionTranscriptReadParams,
 } from "./session-transcript-memory-hit.js";
+import { publicTranscriptAppendOptions } from "./session-transcript-public-options.js";
 
 export type InternalSessionTranscriptTarget = {
   agentId: string;
@@ -31,7 +32,10 @@ export type InternalSessionTranscriptWriteLockParams = SessionTranscriptReadPara
 
 export type InternalSessionTranscriptWriteLockContext = {
   appendMessage: <TMessage>(
-    options: Omit<LockedTranscriptMessageAppendOptions<TMessage>, "config">,
+    options: Omit<
+      LockedTranscriptMessageAppendOptions<TMessage>,
+      "config" | "conversationPublication"
+    >,
   ) => Promise<TranscriptMessageAppendResult<TMessage> | undefined>;
   publishUpdate: (update?: TranscriptUpdatePayload) => Promise<void>;
   readEvents: () => Promise<unknown[]>;
@@ -87,9 +91,12 @@ export async function withProjectedSessionTranscriptWriteLock<
     readEvents: () => whileOpen(locked.readEvents),
     readMessageFacts: (query) => whileOpen(() => locked.readMessageFacts(query)),
     replaceEvents: (events) => whileOpen(() => locked.replaceEvents(events)),
-    appendMessage: (options) => whileOpen(() => locked.appendMessage(options)),
+    appendMessage: (options) =>
+      whileOpen(() => locked.appendMessage(publicTranscriptAppendOptions(options))),
     appendMessageWithMessageSequence: (options) =>
-      whileOpen(() => locked.appendMessageWithMessageSequence(options)),
+      whileOpen(() =>
+        locked.appendMessageWithMessageSequence(publicTranscriptAppendOptions(options)),
+      ),
   });
   const runOpen = async (context: TContext) => {
     try {
@@ -112,7 +119,7 @@ export async function withProjectedSessionTranscriptWriteLock<
           appendMessage: (options) =>
             whileOpen(() =>
               locked.appendMessage({
-                ...options,
+                ...publicTranscriptAppendOptions(options),
                 ...(params.config !== undefined ? { config: params.config } : {}),
               }),
             ),

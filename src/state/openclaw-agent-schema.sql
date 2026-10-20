@@ -706,6 +706,29 @@ CREATE INDEX IF NOT EXISTS idx_agent_transcript_event_parent
 CREATE INDEX IF NOT EXISTS idx_agent_transcript_event_sequence
   ON transcript_event_identities(session_id, event_type, seq DESC);
 
+CREATE TABLE IF NOT EXISTS session_conversation_publications (
+  capture_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  publication_id TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  lifecycle_revision TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
+  run_id TEXT,
+  state TEXT NOT NULL CHECK (state IN ('candidate', 'ready', 'blocked')),
+  payload_json TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  last_failure TEXT,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES session_windows(session_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_conversation_publications_ready
+  ON session_conversation_publications(state, next_attempt_at, capture_sequence);
+CREATE INDEX IF NOT EXISTS idx_agent_conversation_publications_origin
+  ON session_conversation_publications(origin, state, capture_sequence);
+
 CREATE TABLE IF NOT EXISTS context_engine_turn_outbox (
   advancement_key TEXT NOT NULL PRIMARY KEY,
   engine_id TEXT NOT NULL,

@@ -1,6 +1,8 @@
 /** Durable per-agent voice-call records for Talk continuity and mutation evidence. */
 import { randomUUID } from "node:crypto";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
+import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
+import { startConversationKnowledgePublication } from "../config/sessions/conversation-publication-reconcile.js";
 import {
   appendTranscriptMessage,
   loadSessionEntryReadOnly,
@@ -53,7 +55,8 @@ import {
   VOICE_SESSION_STALE_AFTER_MS as STALE_AFTER_MS,
   writeVoiceSessionRecordInTransaction as writeRecordInTransaction,
 } from "./client-voice-session-store.js";
-import { recordVoiceConversationObservation } from "./voice-conversation-knowledge.js";
+import { recordVoiceConversationParticipant } from "./voice-conversation-knowledge.js";
+import * as voicePublication from "./voice-conversation-publication.js";
 import { prepareVoiceTranscriptAudience } from "./voice-transcript-audience.js";
 import type { PrepareVoiceTranscriptAudience } from "./voice-transcript-audience.types.js";
 import {
@@ -372,6 +375,9 @@ function appendVoiceTranscript(
 ): Promise<void> {
   // Normalize before admission so the queued task retains only bounded text.
   const normalized = { ...params, text: normalizeVoiceTranscriptText(params.text) };
+  const sourceMode = params.config
+    ? resolveAgentConversationMode(params.config, params.agentId)
+    : undefined;
   if (!normalized.text) {
     return Promise.resolve();
   }
@@ -425,6 +431,18 @@ function appendVoiceTranscript(
             throw new Error(`agent session not found (${normalized.sessionKey})`);
           }
           const timestamp = normalized.timestamp ?? Date.now();
+          const publication = sourceMode
+            ? voicePublication.prepareVoiceConversationPublication({
+                agentId: normalized.agentId,
+                sessionKey: sessionTarget.sessionKey,
+                entry: sessionEntry,
+                sourceMode,
+                role: normalized.role,
+                participant: normalized.participant,
+                destinationAudience: normalized.destinationAudience ?? audience?.audience,
+                assertCurrent: source.assertCurrent,
+              })
+            : undefined;
           // Reserve before the fallible append. A crash can leave a conservative
           // retry requirement, but can never let close skip an accepted entry.
           source.assertCurrent();
@@ -457,37 +475,25 @@ function appendVoiceTranscript(
                 provider: record.provider ?? "realtime",
               }),
               now: timestamp,
+              ...voicePublication.voiceConversationAppendOptions(publication),
             },
           );
-          // Publish the committed row before fallible bookkeeping; a retry can deduplicate it.
-          if (confirmation) {
-            recordClientVoiceConfirmationTranscriptAppend({
-              confirmation,
-              entryId: normalized.entryId,
-              text: normalized.text,
-              appended: appended.appended,
-            });
-          }
-          if (appended.appended) {
-            await publishTranscriptUpdate(
-              { ...sessionTarget, sessionId: sessionEntry.sessionId },
-              { message: appended.message, messageId: appended.messageId },
-            );
-          }
-          if (appended.anchor && sessionEntry.lifecycleRevision && normalized.config) {
-            await recordVoiceConversationObservation({
-              anchor: appended.anchor,
-              lifecycleRevision: sessionEntry.lifecycleRevision,
-              role: normalized.role,
-              participant: normalized.participant,
-              destinationAudience: normalized.destinationAudience ?? audience?.audience,
-              fresh: appended.appended,
-              timestamp,
-              config: normalized.config,
-              env: source.options.env,
-              assertCurrent: source.assertCurrent,
-            });
-          }
+          await voicePublication.publishVoiceConversationCommit({
+            appended,
+            sessionTarget,
+            sessionEntry,
+            input: normalized,
+            source,
+            publication,
+            confirmation,
+            timestamp,
+            effects: {
+              recordClientVoiceConfirmationTranscriptAppend,
+              publishTranscriptUpdate,
+              startConversationKnowledgePublication,
+              recordVoiceConversationParticipant,
+            },
+          });
           source.assertCurrent();
           runOpenClawAgentWriteTransaction(
             (database) => {

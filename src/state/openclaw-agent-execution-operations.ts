@@ -357,6 +357,11 @@ export async function loadAgentCompoundOperations() {
   } satisfies Handlers;
 }
 
+export async function loadConversationPublicationOperations() {
+  return (await import("../config/sessions/conversation-publication.worker.js"))
+    .conversationPublicationOperations;
+}
+
 export async function loadAgentPurgeOperations() {
   const purge = await import("../config/sessions/session-agent-purge.worker.js");
   return {
@@ -686,7 +691,8 @@ export async function loadUsageCacheOperations() {
 }
 
 export type RegisteredAgentWorkerOperations = WorkerOperations<
-  Awaited<ReturnType<typeof loadUsageCacheOperations>> &
+  Awaited<ReturnType<typeof loadConversationPublicationOperations>> &
+    Awaited<ReturnType<typeof loadUsageCacheOperations>> &
     Awaited<ReturnType<typeof loadAgentTranscriptOperations>> &
     Awaited<ReturnType<typeof loadAgentTranscriptReadOperations>> &
     Awaited<ReturnType<typeof loadAgentReplacementOperations>> &

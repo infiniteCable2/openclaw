@@ -1,4 +1,5 @@
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
+import { captureConversationPublication } from "../../config/sessions/conversation-publication-context.js";
 import type {
   SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
@@ -63,6 +64,7 @@ export function appendSessionTranscriptMessage(
 export async function appendSessionTranscriptMessage(
   input: TranscriptAppendInput<TranscriptAppendMessage>,
 ): Promise<SessionTranscriptAppendResult<TranscriptAppendMessage>> {
+  const conversationPublication = captureConversationPublication(input.target, input.message);
   const readRedactPatterns = () =>
     input.config?.logging?.redactPatterns ?? readLoggingConfig()?.redactPatterns;
   let redactionRevision = getSecretRedactionRegistryRevision();
@@ -71,6 +73,7 @@ export async function appendSessionTranscriptMessage(
   Object.freeze(prepared.persistedMessage);
   const assertPrepared = () => {
     input.assertCurrent();
+    conversationPublication?.assertCurrent();
     const revision = getSecretRedactionRegistryRevision();
     const patterns = readRedactPatterns();
     if (
@@ -135,6 +138,9 @@ export async function appendSessionTranscriptMessage(
           messageJson: prepared.messageJson,
           cwd: input.cwd,
           ...admission.control,
+          ...(conversationPublication
+            ? { conversationPublication: conversationPublication.intent }
+            : {}),
         },
       });
       if (!reply.ok) {

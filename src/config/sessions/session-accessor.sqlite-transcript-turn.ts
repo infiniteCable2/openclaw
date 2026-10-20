@@ -7,6 +7,7 @@ import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { ensureSessionGoalOperationsSchema } from "../../state/openclaw-agent-goal-operations-schema.js";
+import { captureConversationPublication } from "./conversation-publication-context.js";
 import {
   applySessionGoalOperation,
   readSessionGoalOperationInDatabase,
@@ -32,7 +33,10 @@ import { readTranscriptMessageByScopedIdempotencyKey } from "./session-accessor.
 import { readWithCanonicalSessionAdmission } from "./session-canonical-key.js";
 import { captureIncognitoSessionOperation } from "./session-incognito-binding.js";
 import { SqliteTranscriptMutationConflictError } from "./session-mutation-conflict-error.js";
-import type { SessionSourceAssertion } from "./session-source-authority.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "./session-source-authority.js";
 import { completeSessionTranscriptCommit } from "./session-transcript-commit-completion.js";
 import {
   assertLegacyTranscriptPreparation,
@@ -66,7 +70,26 @@ export async function appendExpectedSessionTranscriptTurn(
         ...requestedOptions,
         messages: requestedOptions.messages.map((message) => {
           assertLegacyTranscriptPreparation(scope, message);
-          return normalizeTranscriptMessagePreparation(message);
+          const normalized = normalizeTranscriptMessagePreparation(message);
+          const publication = captureConversationPublication(
+            { ...scope, sessionId: requestedOptions.expectedSessionId },
+            message.message,
+          );
+          if (!publication) {
+            return normalized;
+          }
+          return {
+            ...normalized,
+            conversationPublication: publication.intent,
+            workerPreparation: {
+              ...normalized.workerPreparation,
+              beforeFreshMessageCommit: composeSessionSourceAssertion([
+                normalized.workerPreparation?.beforeFreshMessageCommit,
+                normalized.beforeFreshMessageCommit,
+                publication.assertCurrent,
+              ]),
+            },
+          };
         }),
       };
   if (

@@ -31,6 +31,7 @@ import { measureStartup, type GatewayStartupTrace } from "./server-startup-trace
 
 type SessionMigrationDeps = Parameters<typeof runSessionStartupMigration>[0]["deps"] & {
   reconcileSessionTranscriptIndexes?: typeof import("../config/sessions/session-transcript-reconcile.js").reconcileSessionTranscriptIndexes;
+  startConversationKnowledgePublication?: typeof import("../config/sessions/conversation-publication-reconcile.js").startConversationKnowledgePublication;
 };
 
 export type PreparedStartupSessionDatabase = {
@@ -223,10 +224,14 @@ export async function runGatewaySessionStartupMaintenance(params: {
   assertCurrent?: () => void;
   signal?: AbortSignal;
   log: SessionStartupMigrationLogger;
-  deps?: Pick<SessionMigrationDeps, "reconcileSessionTranscriptIndexes">;
+  deps?: Pick<
+    SessionMigrationDeps,
+    "reconcileSessionTranscriptIndexes" | "startConversationKnowledgePublication"
+  >;
   startupTrace?: GatewayStartupTrace;
 }): Promise<void> {
   let reconcile = params.deps?.reconcileSessionTranscriptIndexes;
+  let startPublication = params.deps?.startConversationKnowledgePublication;
   let reconciledSessions = 0;
   const outcome = await runTasksWithConcurrency({
     limit: AGENT_DATABASE_PREFLIGHT_CONCURRENCY,
@@ -252,6 +257,13 @@ export async function runGatewaySessionStartupMaintenance(params: {
           );
           assertCurrent();
           reconciledSessions += result.reconciledSessions;
+          // Restart recovery belongs to the admitted store, not to a live call
+          // or the next user message. Its native lifecycle owns background work.
+          startPublication ??= (
+            await import("../config/sessions/conversation-publication-reconcile.js")
+          ).startConversationKnowledgePublication;
+          assertCurrent();
+          startPublication({ ...database, reportPending: true });
         },
     ),
   });
