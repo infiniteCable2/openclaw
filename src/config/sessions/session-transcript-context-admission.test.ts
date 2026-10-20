@@ -23,9 +23,10 @@ describe("atomic context-preserving custom report admission", () => {
   it.each(["bytes", "events", "fits"] as const)(
     "initializes an empty recipient atomically when the admission outcome is %s",
     async (mode) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const scope = {
           agentId: "main",
+          storePath: state.statePath("agents", "main", "sessions", "sessions.json"),
           sessionKey: "agent:main:empty-context-admission",
           sessionId: "empty-context-admission",
         };
