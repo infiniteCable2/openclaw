@@ -16,6 +16,16 @@ paths are migration debt, not a pattern to extend. The
 [migration inventory](/reference/database-schemas/worker-access-inventory) separates
 candidate main-thread paths from SQL already executing in workers.
 
+Conversation publication retains one explicit compatibility exception: canonical
+synchronous transcript append records its publication intent in the same
+transaction as the message. The inventory keeps this capture operation in T1;
+the ratchet allows only its existing-payload lookup and journal insert. Its
+transitive enrollment and schema-admission checks also remain synchronous.
+Publication, acceptance, retry, acknowledgement, and journal diagnostics run in
+the agent database worker. Remove this allowance when synchronous transcript
+callers migrate; never move intent capture after commit or reinterpret it as
+worker-only merely to satisfy the ratchet.
+
 Ordinary durable entry patches use the existing agent writer by default. Reply
 settings, compaction accounting, titles, voice sessions, and bundled lifecycle
 producers carry source predicates through preparation into that writer. The worker

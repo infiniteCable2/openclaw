@@ -9,6 +9,48 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
+it("retains journal capture as T1 with only its two approved compatibility sites", () => {
+  const root = tempDirs.make("openclaw-sqlite-journal-ratchet-");
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], {
+      cwd: root,
+      stdio: "pipe",
+    });
+  const file = path.join(root, "src/config/sessions/conversation-publication.kernel.ts");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "export {};\n");
+  git("init");
+  git("add", ".");
+  git("commit", "-m", "before journal");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const capture = `function captureConversationPublicationInTransaction() {
+    const existing = executeSqliteQueryTakeFirstSync(query);
+    executeSqliteQuerySync(query);
+  }`;
+  const worker = `function acknowledgeConversationPublication() {
+    executeSqliteQuerySync(query);
+  }`;
+  fs.writeFileSync(file, capture + worker);
+  expect(inventory(root).map(({ tier, calls }) => [tier, calls.length])).toEqual([
+    ["T1", 2],
+    ["W", 1],
+  ]);
+  expect(main(root, ["--base", "HEAD"])).toBe(0);
+  for (const extra of [
+    capture.replace(
+      "executeSqliteQuerySync(query);",
+      "executeSqliteQuerySync(query); executeSqliteQuerySync(query);",
+    ),
+    capture.replace("const existing", "const unrelated"),
+    capture.replace("captureConversationPublicationInTransaction", "anotherOperation"),
+    capture + "function anotherOperation() { executeSqliteQuerySync(query); }",
+  ]) {
+    fs.writeFileSync(file, extra + worker);
+    expect(main(root, ["--base", "HEAD"])).toBe(1);
+  }
+});
+
 it("limits unadmitted mutation classification to its synchronous guarded branch", () => {
   const root = tempDirs.make("openclaw-sqlite-guard-ratchet-");
   const git = (...args: string[]) =>

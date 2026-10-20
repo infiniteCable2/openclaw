@@ -7,6 +7,32 @@ import {
   resolveRatchetBase,
 } from "./lib/shrink-ratchet.mts";
 
+// Approved compatibility debt: the released synchronous append contract must
+// persist its journal intent in the original transcript transaction. Keep these
+// calls classified T1; allow only one lookup and one insert in this operation.
+// Remove this allowance with the synchronous append contract's worker cutover.
+function compatibilityAllowance(row: ReturnType<typeof inventory>[number]): number {
+  if (row.file !== "src/config/sessions/conversation-publication.kernel.ts") {
+    return 0;
+  }
+  const capture = row.calls.filter(
+    (call) => call.operation === "captureConversationPublicationInTransaction",
+  );
+  return (
+    Number(
+      capture.some(
+        (call) =>
+          call.primitive === "executeSqliteQueryTakeFirstSync" && call.binding === "existing",
+      ),
+    ) +
+    Number(
+      capture.some(
+        (call) => call.primitive === "executeSqliteQuerySync" && call.binding === undefined,
+      ),
+    )
+  );
+}
+
 export function main(root = process.cwd(), argv = process.argv.slice(2)) {
   try {
     const args = parseRatchetArgs(argv);
@@ -18,7 +44,11 @@ export function main(root = process.cwd(), argv = process.argv.slice(2)) {
       throw new Error("SQLite worker ratchet requires a Git base commit.");
     }
     const counts = (rows: ReturnType<typeof inventory>) =>
-      new Map(rows.filter((row) => row.tier === "T1").map((row) => [row.file, row.calls.length]));
+      new Map(
+        rows
+          .filter((row) => row.tier === "T1")
+          .map((row) => [row.file, row.calls.length - compatibilityAllowance(row)]),
+      );
     const head = inventory(root, "", args.staged);
     const before = counts(inventory(root, base));
     const after = counts(head);
@@ -47,7 +77,15 @@ export function main(root = process.cwd(), argv = process.argv.slice(2)) {
     ) {
       return 1;
     }
-    console.log("SQLite worker ratchet OK: no T1 call-count growth against " + base + ".");
+    console.log(
+      "SQLite worker ratchet OK: no unapproved T1 call-count growth against " +
+        base +
+        "; bounded synchronous journal allowance: " +
+        head
+          .filter((row) => row.tier === "T1")
+          .reduce((sum, row) => sum + compatibilityAllowance(row), 0) +
+        " sites.",
+    );
     return 0;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

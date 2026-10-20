@@ -174,6 +174,30 @@ const reviewed = new Map([
 // Match lexical operation paths, not moving line numbers or whole mixed modules.
 const reviewedOperations = new Map([
   [
+    "src/config/sessions/conversation-publication.kernel.ts",
+    [
+      {
+        tier: "T1",
+        operations: ["captureConversationPublicationInTransaction"],
+        evidence:
+          "Canonical transcript append retains synchronous native/SDK callers. Journal capture shares their original transaction for atomic durability; its two direct sites have a bounded compatibility allowance in check-database-worker-ratchet.mts. Transitive enrollment/admission checks remain synchronous too. Retire the allowance when those append callers move to the worker.",
+      },
+      {
+        tier: "W",
+        operations: [
+          "acceptConversationPublicationInTransaction",
+          "readConversationPublicationReadyHeads",
+          "nextConversationPublicationAttempt",
+          "acknowledgeConversationPublication",
+          "failConversationPublication",
+          "readConversationPublicationStats",
+        ],
+        evidence:
+          "Production callers are conversation-publication.worker.ts, registered by openclaw-agent-execution.worker.ts. Journal publication, retry, acknowledgement and diagnostics execute in that worker; capture retains mixed synchronous callers.",
+      },
+    ],
+  ],
+  [
     "src/config/sessions/session-accessor.sqlite-transcript-state.ts",
     [
       {
@@ -2389,6 +2413,7 @@ export function inventory(root = defaultRoot, ref = "", staged = false) {
   const files = result.stdout
     .split("\0")
     .map((file) => (ref ? file.slice(ref.length + 1) : file))
+    .map((file) => file.split(path.sep).join("/"))
     .filter((file) => /\.(?:ts|tsx|js|mjs|mts|cts|cjs)$/.test(file) && !excluded.test(file));
   const texts = snapshot ? loadRatchetSources(root, files, ref) : null;
   const sources = parser.parseSourceFiles(
