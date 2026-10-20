@@ -46,6 +46,7 @@ it("keeps one real completed turn beyond the validation event budget pending, no
           events.push({
             type: "custom_message",
             id: `context-${index}`,
+            timestamp: "2026-01-01T00:00:01.000Z",
             parentId: index === 0 ? "long-question" : `context-${index - 1}`,
             customType: "synthetic-context",
             content: "Small context carrier.",

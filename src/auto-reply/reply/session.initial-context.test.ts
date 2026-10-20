@@ -300,7 +300,9 @@ describe("reply initialization with native copied context", () => {
         expect(next.sessionEntry.spawnedBy).toBeUndefined();
         expect(await loadTranscriptEvents(f.target)).toEqual(historyBeforeNext);
         if (retainedRoot) {
-          expect(next.sessionEntry.conversationTopology).toMatchObject({ role: "branch" });
+          expect(loadSessionEntry(f.target)).toMatchObject({
+            conversationTopology: { role: "branch" },
+          });
         }
         expect(
           (await loadTranscriptEvents(f.target)).filter((event) =>
