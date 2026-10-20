@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isMainThread } from "node:worker_threads";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { ensureConversationPublicationsSchema } from "../../state/openclaw-agent-conversation-publication-schema.js";
@@ -98,6 +99,9 @@ export function renewConversationKnowledgeAfterExactRewriteInTransaction(params:
   ): void;
 }): void {
   const { database, scope } = params;
+  if (isMainThread) {
+    throw new Error("Conversation continuity SQL requires the native transcript worker");
+  }
   if (!database.db.isTransaction) {
     throw new Error("Conversation continuity requires its original rewrite transaction");
   }
