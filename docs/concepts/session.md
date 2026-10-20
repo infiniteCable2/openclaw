@@ -113,6 +113,14 @@ shared or unconfirmed histories keep their policy and require an explicit,
 verified privacy change before receiving private differences. A current private
 message does not retroactively attest an older conversation's audience.
 
+<Warning>
+Upgrading to this branch does not migrate legacy visibility. Private cross-branch
+context will remain unavailable for affected existing conversations until their
+audience is verified and native visibility is explicitly changed to `draft`.
+Do not bulk-convert shared or unconfirmed sessions. TODO: add a Doctor check and
+an opt-in, evidence-backed migration that preserves histories and participants.
+</Warning>
+
 Branches remain independent native session lanes. Concurrent inputs to one branch
 use the existing queue/steering policy; separate branches may work concurrently.
 Stopping audio cancels playback, not an already accepted agent task. Subsequent
