@@ -32,7 +32,7 @@ type VoiceSessionInitializationParams = {
   cfg?: OpenClawConfig;
   /** Original surface classification, applied only when creating a new native row. */
   chatType?: ChatType;
-  /** Original host recipient proof; only absent branch rows can become private. */
+  /** Original host recipient proof; only new conversations can become private. */
   privateAudience?: ConversationPrivateAudience;
   deadlineAt?: number;
   assertCommitAllowed?: SessionSourceAssertion;
@@ -92,7 +92,6 @@ async function ensureConversationSession(
     return snapshot.currentEntry.sessionId;
   }
   const privateAudience = capturePrivateConversationCreationAudience({
-    cfg,
     agentId: params.agentId,
     sessionKey: params.sessionKey,
     entry: snapshot.currentEntry,

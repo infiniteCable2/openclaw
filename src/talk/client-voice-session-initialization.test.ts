@@ -126,38 +126,39 @@ function fixture() {
 describe("native Talk startup conversation membership", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("creates a draft only from exact current private audience evidence", async () => {
-    const f = fixture();
-    const audience: ConversationPrivateAudience = {
-      agentId: f.target.agentId,
-      sessionKey: f.target.sessionKey,
-      channelId: "webchat",
-      accountId: "default",
-      nativeChannelId: f.target.sessionKey,
-      participant: { type: "profile", id: "example-person" },
-      assertCurrent: vi.fn(),
-    };
-    await ensureClientVoiceAgentSessionEntry({
-      ...f.target,
-      chatType: "direct",
-      privateAudience: audience,
-    });
-    expect(f.state.current?.visibility).toBe("draft");
-    expect(audience.assertCurrent).toHaveBeenCalledTimes(2);
-    // A new live audience cannot change sharing of existing persisted history.
-    f.state.current!.visibility = "shared";
-    await ensureClientVoiceAgentSessionEntry({ ...f.target, privateAudience: audience });
-    expect(f.state.current?.visibility).toBe("shared");
-    expect(mocks.commit).toHaveBeenCalledOnce();
-  });
+  it.each(["native", "branches"] as const)(
+    "creates a draft from exact current private audience evidence in %s mode",
+    async (mode) => {
+      const f = fixture();
+      f.target.cfg.agents!.entries!.example!.conversationMode = mode;
+      const audience: ConversationPrivateAudience = {
+        agentId: f.target.agentId,
+        sessionKey: f.target.sessionKey,
+        channelId: "webchat",
+        accountId: "default",
+        nativeChannelId: f.target.sessionKey,
+        participant: { type: "profile", id: "example-person" },
+        assertCurrent: vi.fn(),
+      };
+      await ensureClientVoiceAgentSessionEntry({
+        ...f.target,
+        chatType: "direct",
+        privateAudience: audience,
+      });
+      expect(f.state.current?.visibility).toBe("draft");
+      expect(audience.assertCurrent).toHaveBeenCalledTimes(2);
+      // A new live audience cannot change sharing of existing persisted history.
+      f.state.current!.visibility = "shared";
+      await ensureClientVoiceAgentSessionEntry({ ...f.target, privateAudience: audience });
+      expect(f.state.current?.visibility).toBe("shared");
+      expect(mocks.commit).toHaveBeenCalledOnce();
+    },
+  );
 
-  it.each(["native", "wrong-agent", "wrong-target"] as const)(
+  it.each(["wrong-agent", "wrong-target"] as const)(
     "does not infer private creation for %s evidence",
     async (scenario) => {
       const f = fixture();
-      if (scenario === "native") {
-        f.target.cfg.agents!.entries!.example!.conversationMode = "native";
-      }
       await ensureClientVoiceAgentSessionEntry({
         ...f.target,
         chatType: "direct",

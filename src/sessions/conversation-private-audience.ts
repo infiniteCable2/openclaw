@@ -1,7 +1,5 @@
-import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { captureConsistentConversationParticipant } from "./session-participant-input.js";
 
@@ -31,9 +29,8 @@ export function readConversationPrivateAudience(context: object) {
   return Reflect.get(context, audienceInput) as ConversationPrivateAudience | undefined;
 }
 
-/** New branch creation only; live evidence never relabels an existing history. */
+/** New conversation privacy follows its audience in every mode; existing histories keep their policy. */
 export function capturePrivateConversationCreationAudience(params: {
-  cfg: OpenClawConfig;
   agentId: string;
   sessionKey: string;
   entry?: Pick<InternalSessionEntry, "sessionId">;
@@ -43,7 +40,6 @@ export function capturePrivateConversationCreationAudience(params: {
   if (
     params.entry !== undefined ||
     isIncognitoSessionKey(params.sessionKey) ||
-    resolveAgentConversationMode(params.cfg, params.agentId) !== "branches" ||
     audience?.agentId !== params.agentId ||
     audience.sessionKey !== params.sessionKey
   ) {

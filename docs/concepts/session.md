@@ -105,6 +105,14 @@ native work. Source mode is captured from the admitted turn, not guessed at
 settlement. Existing packet progress deduplicates repeated switches. A root's
 mere existence grants neither enrollment authority nor cross-conversation access.
 
+Private visibility is independent of conversation mode. When the original ingress
+proves the private recipient of a new conversation, creation stores native `draft`
+visibility in both modes. It remains private through `/new` and later mode changes;
+switching modes does not reset visibility or rewrite the transcript. Existing
+shared or unconfirmed histories keep their policy and require an explicit,
+verified privacy change before receiving private differences. A current private
+message does not retroactively attest an older conversation's audience.
+
 Branches remain independent native session lanes. Concurrent inputs to one branch
 use the existing queue/steering policy; separate branches may work concurrently.
 Stopping audio cancels playback, not an already accepted agent task. Subsequent

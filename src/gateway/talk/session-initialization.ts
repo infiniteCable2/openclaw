@@ -1,4 +1,3 @@
-import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ensureClientVoiceAgentSessionEntry } from "../../talk/client-voice-session.js";
@@ -25,7 +24,6 @@ export async function ensureGatewayTalkSessionEntry(
   const { client, context, cfg, target, assertCurrent } = params;
   const participant = resolveGatewayInputParticipant(client);
   const source =
-    resolveAgentConversationMode(cfg, target.agentId) === "branches" &&
     participant?.type === "profile"
       ? await createTalkOperatorRunSource({ client, context })({ assertCurrent })
       : undefined;

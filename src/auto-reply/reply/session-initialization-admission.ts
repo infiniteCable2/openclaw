@@ -76,7 +76,6 @@ export function prepareReplySessionCreation(
   const audience = target.isSystemEvent
     ? undefined
     : capturePrivateConversationCreationAudience({
-        cfg: params.cfg,
         agentId: target.agentId,
         sessionKey: target.sessionKey,
         entry,
