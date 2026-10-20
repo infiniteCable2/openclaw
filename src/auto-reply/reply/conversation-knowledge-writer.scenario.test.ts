@@ -155,7 +155,7 @@ describe("native turn packet writer custody", () => {
                 return {
                   ...current,
                   __openclaw: {
-                    ...asOptionalRecord(current.__openclaw),
+                    ...asOptionalRecord(current["__openclaw"]),
                     modelPromptProjection: { version: 1, text: "Prepared later model view." },
                   },
                 };

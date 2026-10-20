@@ -527,8 +527,8 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
       scope: resolved,
       previousGeneration,
       firstChangedSeq: rows.reduce((first, row) => Math.min(first, row.seq), Infinity),
-      rewriteRootRows: (scope, rewrites) =>
-        rewriteSqliteTranscriptEventRowsInTransaction(database, scope, rewrites),
+      rewriteRootRows: (scope, rootRewrites) =>
+        rewriteSqliteTranscriptEventRowsInTransaction(database, scope, rootRewrites),
     });
   }
 }
