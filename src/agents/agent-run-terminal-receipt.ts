@@ -12,7 +12,9 @@ export type AgentRunTerminalReceipt = {
   requested: AgentRunTerminalModelRef;
   effective: AgentRunTerminalModelRef & { responseModel: string };
   successfulToolNames: string[];
-  /** Exact saved assistant occurrence, independent of attempt terminal ownership. */
+  /** Canonical entry ID issued only after the native assistant append commits. */
+  assistantTranscriptEntryId?: string;
+  /** Deduplication key when the transcript writer used an explicitly keyed append. */
   assistantTranscriptIdempotencyKey?: string;
   /** A final reply was delivered to the external source conversation. */
   sourceReplyDelivered?: true;

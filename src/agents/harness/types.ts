@@ -154,6 +154,8 @@ export type AgentHarnessSettledTurnFinalizationResult = {
   usage?: import("../usage.js").NormalizedUsage;
   /** True when the harness already persisted the assistant into the application transcript. */
   assistantTranscriptOwned?: boolean;
+  /** Canonical entry ID from the finalizer's committed native assistant append. */
+  assistantTranscriptEntryId?: string;
   /** Exact idempotency key for the harness-owned assistant transcript row. */
   assistantTranscriptIdempotencyKey?: string;
   /** Assistant stream generation index used to correlate final reply delivery. */

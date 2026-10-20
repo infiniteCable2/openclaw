@@ -85,6 +85,7 @@ function emitLifecycleAgentEvent(
 }
 
 export function handleAgentStart(ctx: EmbeddedAgentSubscribeContext) {
+  ctx.state.assistantTranscriptEntryId = undefined;
   // A same-prompt follow-up starts another core loop under the same delivery policy.
   ctx.state.deferBlockReplyDelivery =
     typeof ctx.params.onBeforeTerminalDelivery === "function" &&
@@ -97,6 +98,7 @@ export function handleAgentEnd(
   ctx: EmbeddedAgentSubscribeContext,
   evt?: Extract<AgentSessionEvent, { type: "agent_end" }>,
 ): void | Promise<void> {
+  ctx.state.assistantTranscriptEntryId = evt?.assistantEntryId;
   ctx.state.liveEditDiffStateById.clear();
   type BeforeTerminalDeliveryDecision = void | {
     suppressTerminalDelivery?: boolean;
@@ -322,12 +324,14 @@ export function handleAgentEnd(
 
   const applyBeforeTerminalDecision = (decision: BeforeTerminalDeliveryDecision) => {
     if (decision?.suppressTerminalDelivery === true) {
+      ctx.state.assistantTranscriptEntryId = undefined;
       ctx.clearAssistantStream();
       ctx.clearDeferredBlockReplies();
       finalizeAgentEnd();
       return undefined;
     }
     if (decision?.continueCurrentTurn === true) {
+      ctx.state.assistantTranscriptEntryId = undefined;
       // Publish this checkpoint normally, but keep the run and its delivery owner
       // alive until the already-queued same-prompt follow-up settles.
       ctx.releaseDeferredReplies();

@@ -1,7 +1,9 @@
 import { setReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
+import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import type { AgentRunTerminalReceipt } from "../agent-run-terminal-receipt.js";
 import {
   externalCliDiscoveryForProviderAuth,
   loadAuthProfileStoreForRuntime,
@@ -24,6 +26,7 @@ import { resolveAuthProfileFailureReason } from "../embedded-agent-runner/run/au
 import { buildEmbeddedRunPayloads } from "../embedded-agent-runner/run/payloads.js";
 import { mergeAttemptToolMediaPayloads } from "../embedded-agent-runner/run/tool-media-payloads.js";
 import { isFailoverError } from "../failover-error.js";
+import { isProviderModelRerouted } from "../provider-model-route.js";
 import { resolveReplyExpectation } from "../reply-completion.js";
 import { recordAgentCleanupFailure } from "../run-cleanup-timeout.js";
 import { CliAuthProfilePreparationError } from "./auth-profile-preparation-error.js";
@@ -438,6 +441,7 @@ export function buildCliRunResult(params: {
   bindingFlushOk?: boolean;
   assistantTranscriptOwned?: boolean;
   assistantTranscriptIdempotencyKey?: string;
+  assistantTranscriptAnchor?: TranscriptEntryAnchor;
   usedHistoryPrompt: boolean;
   userTurnHandled: boolean;
   sessionBindingDisabled: boolean;
@@ -446,6 +450,7 @@ export function buildCliRunResult(params: {
   const {
     assistantTranscriptOwned,
     assistantTranscriptIdempotencyKey,
+    assistantTranscriptAnchor,
     bindingFlushOk,
     context,
     effectiveCliSessionId,
@@ -538,6 +543,40 @@ export function buildCliRunResult(params: {
         : (effectiveCliSessionId ?? runParams.sessionId ?? "");
   const yielded = output.yielded === true;
   const stopReason = terminalInterruption?.reason ?? (yielded ? "end_turn" : "completed");
+  const effectiveModel = {
+    provider: runParams.modelProvider ?? runParams.provider,
+    model: context.modelId,
+  };
+  const requestedModel = runParams.requesterModel ?? effectiveModel;
+  // Only the native append owner can attest the completed occurrence. Backend
+  // continuity IDs and a blocked-write/user-admission anchor are not that proof.
+  const terminalReceipt =
+    assistantTranscriptOwned === true &&
+    assistantTranscriptIdempotencyKey &&
+    assistantTranscriptAnchor?.idempotencyKey === assistantTranscriptIdempotencyKey &&
+    assistantTranscriptAnchor.sessionId === runParams.sessionId &&
+    assistantTranscriptAnchor.sessionKey === runParams.sessionKey &&
+    (runParams.agentId === undefined || assistantTranscriptAnchor.agentId === runParams.agentId) &&
+    runParams.persistAssistantTranscript === true &&
+    !runParams.isolatedCompletion &&
+    runParams.controlOperation === undefined &&
+    !runParams.abortSignal?.aborted &&
+    !terminalInterruption &&
+    !output.terminalFailure &&
+    !yielded &&
+    bindingFlushOk !== false
+      ? ({
+          runId: runParams.runId,
+          sessionId: assistantTranscriptAnchor.sessionId,
+          turnId: runParams.runId,
+          requested: requestedModel,
+          effective: { ...effectiveModel, responseModel: context.modelId },
+          successfulToolNames: [],
+          assistantTranscriptEntryId: assistantTranscriptAnchor.entryId,
+          assistantTranscriptIdempotencyKey,
+          rerouted: isProviderModelRerouted(requestedModel, effectiveModel),
+        } satisfies Omit<AgentRunTerminalReceipt, "terminalDisposition">)
+      : undefined;
 
   if (!terminalInterruption) {
     runParams.onSuccessfulAuthBinding?.({
@@ -602,6 +641,7 @@ export function buildCliRunResult(params: {
         provider: runParams.modelProvider ?? runParams.provider,
         model: context.modelId,
         ...preparedContextAgentMeta,
+        ...(terminalReceipt ? { terminalReceipt } : {}),
         usage: output.usage,
         ...(output.usage ? { lastCallUsage: output.usage } : {}),
         ...(output.diagnosticUsage ? { diagnosticUsage: output.diagnosticUsage } : {}),

@@ -76,6 +76,33 @@ it("publishes an unkeyed native call completion through the root to its private 
           }),
         ).toBe(false);
 
+        for (const stopReason of ["error", "aborted", "toolUse"]) {
+          const runId = `uncompleted-${stopReason}`;
+          await appendTranscriptMessage(call, {
+            message: { role: "user", content: "An unfinished request.", timestamp: 3 },
+          });
+          const unfinished = await appendTranscriptMessage(call, {
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Not a completed answer." }],
+              stopReason,
+              timestamp: 4,
+              __openclaw: { runId },
+            },
+          });
+          if (!unfinished.anchor) {
+            throw new Error("Expected the committed unfinished occurrence");
+          }
+          expect(
+            await recordConversationKnowledgeTurn({
+              ...callOwner,
+              runId,
+              assistantTranscriptEntryId: unfinished.anchor.entryId,
+            }),
+          ).toBe(false);
+        }
+        expect(await fixture.receipts()).toHaveLength(1);
+
         const keyed = await fixture.append(call, "keyed-next-run");
         expect(await recordConversationKnowledgeTurn({ ...callOwner, ...keyed })).toBe(true);
         expect(

@@ -153,7 +153,8 @@ export async function recordConversationKnowledgeTurn(params: {
   assertCurrent: SessionSourceAssertion;
   sessionId: string;
   runId: string;
-  assistantTranscriptIdempotencyKey: string;
+  assistantTranscriptEntryId?: string;
+  assistantTranscriptIdempotencyKey?: string;
   /** Captured from this turn's admitted configuration, never from settlement-time config. */
   sourceMode: "native" | "branches";
   privateAudience?: ConversationKnowledgeReference["privateAudience"];
@@ -172,27 +173,35 @@ export async function recordConversationKnowledgeTurn(params: {
   if (!branch) {
     return false;
   }
-  const found = await findTranscriptEvent(branch, {
-    kind: "idempotency",
-    key: params.assistantTranscriptIdempotencyKey,
-    assistant: true,
-  });
-  check();
-  const event = asOptionalRecord(found?.event);
-  const message = asOptionalRecord(event?.message);
-  if (
-    !event ||
-    typeof event.id !== "string" ||
-    message?.role !== "assistant" ||
-    message.stopReason !== "stop" ||
-    readSessionTranscriptRunId(message) !== params.runId
-  ) {
+  let entryId = params.assistantTranscriptEntryId;
+  if (params.assistantTranscriptIdempotencyKey) {
+    const found = await findTranscriptEvent(branch, {
+      kind: "idempotency",
+      key: params.assistantTranscriptIdempotencyKey,
+      assistant: true,
+      runId: params.runId,
+    });
+    check();
+    const event = asOptionalRecord(found?.event);
+    const message = asOptionalRecord(event?.message);
+    if (
+      !event ||
+      typeof event.id !== "string" ||
+      (entryId !== undefined && entryId !== event.id) ||
+      message?.role !== "assistant" ||
+      message.stopReason !== "stop" ||
+      readSessionTranscriptRunId(message) !== params.runId
+    ) {
+      return false;
+    }
+    entryId = event.id;
+  }
+  if (!entryId?.trim() || entryId !== entryId.trim()) {
     return false;
   }
-  const through = await readActiveTranscriptEntryAnchorAsync(
-    { ...branch, entryId: event.id },
-    params.signal,
-  );
+  // The exact active anchor selects one committed occurrence. The shared report
+  // owner still validates that entry's run, completion, audience range and COMMIT.
+  const through = await readActiveTranscriptEntryAnchorAsync({ ...branch, entryId }, params.signal);
   check();
   if (!through) {
     return false;

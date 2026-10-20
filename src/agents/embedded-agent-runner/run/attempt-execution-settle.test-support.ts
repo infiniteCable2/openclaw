@@ -39,6 +39,7 @@ export function createFixture(mocks: {
     getItemLifecycle: vi.fn(() => ({ startedCount: 0, completedCount: 0, activeCount: 0 })),
     getLastAssistantTextMessageIndex: vi.fn(() => undefined),
     getLastAssistantTextMessageStartIndex: vi.fn(() => undefined),
+    getAssistantTranscriptEntryId: vi.fn(() => undefined),
     getKeptAnswer: vi.fn(() => undefined),
     getLastAssistantUsage: vi.fn(() => undefined),
     getLastCompactionTokensAfter: vi.fn(() => undefined),

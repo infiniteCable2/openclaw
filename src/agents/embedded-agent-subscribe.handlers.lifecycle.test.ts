@@ -39,6 +39,35 @@ function expectEvent(onAgentEvent: ReturnType<typeof vi.fn>, data: Record<string
 }
 
 describe("embedded lifecycle", () => {
+  it("replaces committed entry identity and clears it for a new or unpersisted loop", async () => {
+    const ctx = createContext(undefined);
+    const ended = { type: "agent_end" as const, messages: [], willRetry: false };
+    await handleAgentEnd(ctx, { ...ended, assistantEntryId: "first-entry" });
+    expect(ctx.state.assistantTranscriptEntryId).toBe("first-entry");
+    await handleAgentEnd(ctx, { ...ended, assistantEntryId: "next-entry" });
+    expect(ctx.state.assistantTranscriptEntryId).toBe("next-entry");
+    handleAgentStart(ctx);
+    expect(ctx.state.assistantTranscriptEntryId).toBeUndefined();
+    await handleAgentEnd(ctx, { ...ended, assistantEntryId: "retry-entry" });
+    await handleAgentEnd(ctx, ended);
+    expect(ctx.state.assistantTranscriptEntryId).toBeUndefined();
+  });
+
+  it.each(["suppressTerminalDelivery", "continueCurrentTurn"] as const)(
+    "does not retain a draft after %s",
+    async (decision) => {
+      const ctx = createContext(undefined, {
+        onBeforeTerminalDelivery: () => ({ [decision]: true }),
+      });
+      await handleAgentEnd(ctx, {
+        type: "agent_end",
+        messages: [],
+        willRetry: false,
+        assistantEntryId: "draft-entry",
+      });
+      expect(ctx.state.assistantTranscriptEntryId).toBeUndefined();
+    },
+  );
   it("keeps identity and the same observed start time on the bus and callback", () => {
     emitAgentEventMock.mockClear();
     const onAgentEvent = vi.fn();

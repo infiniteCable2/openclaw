@@ -493,6 +493,7 @@ function buildSettledTurnFinalizationAttemptResult(input: {
     messagesSnapshot: [...settledAttempt.messagesSnapshot, result.assistant],
     assistantTexts: [text],
     assistantTranscriptOwned: result.assistantTranscriptOwned,
+    assistantTranscriptEntryId: result.assistantTranscriptEntryId,
     assistantTranscriptIdempotencyKey: result.assistantTranscriptIdempotencyKey,
     lastAssistantTextMessageIndex: result.assistantMessageIndex,
     // The separate finalization run does not publish this subscription's physical-message origin.

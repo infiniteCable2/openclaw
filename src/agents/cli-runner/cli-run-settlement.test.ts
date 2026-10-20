@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import { wrapRunWithTestPreparedAdmission } from "../admitted-run-context.test-support.js";
 import {
   acquireSessionMcpRuntime,
@@ -182,6 +183,121 @@ describe("CLI native continuity projection", () => {
       );
     },
   );
+});
+
+describe("CLI committed terminal occurrence", () => {
+  function completedParams(): Parameters<typeof buildCliRunResult>[0] {
+    const context = buildPreparedCliRunContext({
+      provider: "claude-cli",
+      agentId: "main",
+      sessionKey: "agent:main:cli-terminal",
+    });
+    context.params.modelProvider = "anthropic";
+    context.params.persistAssistantTranscript = true;
+    context.params.requesterModel = { provider: "anthropic", model: "requested-model" };
+    const anchor: TranscriptEntryAnchor = {
+      agentId: "main",
+      sessionId: context.params.sessionId,
+      sessionKey: "agent:main:cli-terminal",
+      storePath: "/tmp/example-agent.sqlite",
+      generation: "native-generation",
+      entryId: "committed-assistant",
+      rawSeq: 2,
+      effectiveParentId: "admitted-user",
+      activeMessagePosition: 1,
+      idempotencyKey: "saved-assistant",
+    };
+    return {
+      context,
+      output: { text: "Completed answer." },
+      effectiveCliSessionId: "external-backend-session",
+      bindingFlushOk: true,
+      assistantTranscriptOwned: true,
+      assistantTranscriptIdempotencyKey: anchor.idempotencyKey,
+      assistantTranscriptAnchor: anchor,
+      usedHistoryPrompt: false,
+      userTurnHandled: true,
+      sessionBindingDisabled: false,
+      preparedContextAgentMeta: {},
+    };
+  }
+
+  it("carries the actual native occurrence, independently of backend continuity", () => {
+    const params = completedParams();
+    const result = buildCliRunResult(params);
+    expect(result.meta.agentMeta?.sessionId).toBe("external-backend-session");
+    expect(result.meta.agentMeta?.terminalReceipt).toEqual({
+      runId: params.context.params.runId,
+      sessionId: params.context.params.sessionId,
+      turnId: params.context.params.runId,
+      requested: { provider: "anthropic", model: "requested-model" },
+      effective: {
+        provider: "anthropic",
+        model: params.context.modelId,
+        responseModel: params.context.modelId,
+      },
+      successfulToolNames: [],
+      assistantTranscriptEntryId: "committed-assistant",
+      assistantTranscriptIdempotencyKey: "saved-assistant",
+      rerouted: true,
+    });
+  });
+
+  it.each([
+    "no-persistence",
+    "unowned",
+    "missing-anchor",
+    "wrong-session",
+    "wrong-key",
+    "unflushed",
+    "interrupted",
+    "failed",
+    "yielded",
+    "isolated",
+    "control",
+    "aborted",
+  ] as const)("does not fabricate a completed receipt for %s", (kind) => {
+    const params = completedParams();
+    switch (kind) {
+      case "no-persistence":
+        params.context.params.persistAssistantTranscript = false;
+        break;
+      case "unowned":
+        params.assistantTranscriptOwned = false;
+        break;
+      case "missing-anchor":
+        params.assistantTranscriptAnchor = undefined;
+        break;
+      case "wrong-session":
+        params.context.params.sessionId = "another-native-session";
+        break;
+      case "wrong-key":
+        params.assistantTranscriptIdempotencyKey = "another-assistant";
+        break;
+      case "unflushed":
+        params.bindingFlushOk = false;
+        break;
+      case "interrupted":
+        params.output.terminalInterruption = { reason: "aborted" };
+        break;
+      case "failed":
+        params.output.terminalFailure = { reason: "synthetic_no_response" };
+        break;
+      case "yielded":
+        params.output.yielded = true;
+        break;
+      case "isolated":
+        params.context.params.isolatedCompletion = true;
+        break;
+      case "control":
+        params.context.params.controlOperation = "compact";
+        break;
+      case "aborted":
+        params.context.params.abortSignal = AbortSignal.abort();
+        break;
+    }
+    expect(buildCliRunResult(params).meta.agentMeta?.terminalReceipt).toBeUndefined();
+  });
 });
 
 describe.each(["anthropic", undefined])(

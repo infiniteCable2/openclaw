@@ -11,6 +11,7 @@ const ALLOWED_SETTLED_FINALIZATION_RESULT_KEYS = new Set([
   "assistant",
   "usage",
   "assistantTranscriptOwned",
+  "assistantTranscriptEntryId",
   "assistantTranscriptIdempotencyKey",
   "assistantMessageIndex",
   "diagnosticTrace",
@@ -47,6 +48,14 @@ export function assertSettledTurnFinalizationResult(
     throw new Error(
       `Settled-turn finalization returned unsuccessful stop reason: ${result.assistant.stopReason}`,
     );
+  }
+  if (
+    result.assistantTranscriptEntryId !== undefined &&
+    (typeof result.assistantTranscriptEntryId !== "string" ||
+      !result.assistantTranscriptEntryId.trim() ||
+      result.assistantTranscriptEntryId !== result.assistantTranscriptEntryId.trim())
+  ) {
+    throw new Error("Settled-turn finalization returned an invalid assistant transcript entry ID");
   }
   if (
     result.assistantMessageIndex !== undefined &&
@@ -124,6 +133,9 @@ export function projectSettledTurnFinalizationAttemptResult(
   }
   return assertSettledTurnFinalizationResult({
     assistant,
+    ...(result.assistantTranscriptEntryId
+      ? { assistantTranscriptEntryId: result.assistantTranscriptEntryId }
+      : {}),
     ...(result.attemptUsage ? { usage: result.attemptUsage } : {}),
     ...(result.assistantTranscriptOwned
       ? {

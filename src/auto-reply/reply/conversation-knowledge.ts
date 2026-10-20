@@ -221,7 +221,7 @@ export function createReplyConversationKnowledgeTurn(params: {
         !terminal ||
         terminal.runId !== runId ||
         terminal.sessionId !== sessionId ||
-        !terminal.assistantTranscriptIdempotencyKey ||
+        (!terminal.assistantTranscriptEntryId && !terminal.assistantTranscriptIdempotencyKey) ||
         signal.aborted
       ) {
         return;
@@ -256,6 +256,7 @@ export function createReplyConversationKnowledgeTurn(params: {
           ]),
           sessionId: terminal.sessionId,
           runId: terminal.runId,
+          assistantTranscriptEntryId: terminal.assistantTranscriptEntryId,
           assistantTranscriptIdempotencyKey: terminal.assistantTranscriptIdempotencyKey,
           sourceMode,
           observed: prepared?.observed,

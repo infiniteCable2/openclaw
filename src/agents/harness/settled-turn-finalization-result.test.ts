@@ -56,6 +56,23 @@ function successfulAttempt(
 }
 
 describe("assertSettledTurnFinalizationResult", () => {
+  it("preserves an exact committed entry through the narrow finalization contract", () => {
+    const result = projectSettledTurnFinalizationAttemptResult(
+      successfulAttempt({ assistantTranscriptEntryId: "committed-finalizer-entry" }),
+    );
+    expect(result.assistantTranscriptEntryId).toBe("committed-finalizer-entry");
+    expect(result.assistantTranscriptIdempotencyKey).toBeUndefined();
+    expect(assertSettledTurnFinalizationResult(result)).toBe(result);
+  });
+
+  it.each(["", " ", " padded-entry "])("rejects an invalid native entry ID %j", (entryId) => {
+    expect(() =>
+      assertSettledTurnFinalizationResult({
+        ...safeResult(),
+        assistantTranscriptEntryId: entryId,
+      }),
+    ).toThrow("invalid assistant transcript entry ID");
+  });
   it("accepts one capability-free final answer", () => {
     const result = safeResult();
     expect(assertSettledTurnFinalizationResult(result)).toBe(result);

@@ -28,6 +28,7 @@ import type { EmbeddedRunAttemptResult, EmbeddedRunAttemptTrajectoryRecorder } f
 const TEST_OPERATIONAL_RUN_INSTANCE = { runId: "run-1" };
 
 function createResultFixture(params?: {
+  assistantTranscriptEntryId?: string;
   terminal?: EmbeddedRunAttemptResult["terminal"];
   currentAttemptCompletedAssistant?: EmbeddedRunAttemptResult["currentAttemptCompletedAssistant"];
   hasSuccessfulModelResponse?: boolean;
@@ -92,6 +93,7 @@ function createResultFixture(params?: {
     messagesSnapshot: settled.messagesSnapshot,
   };
   const subscription = {
+    getAssistantTranscriptEntryId: () => params?.assistantTranscriptEntryId,
     assistantTexts: [...(params?.assistantTexts ?? [])],
     didSendDeterministicApprovalPrompt: () => false,
     didSendViaMessagingTool: () => params?.didSendViaMessagingTool ?? false,
@@ -193,6 +195,11 @@ function settledToolMessages(): EmbeddedRunAttemptResult["messagesSnapshot"] {
 }
 
 describe("attempt result projection", () => {
+  it("carries the native committed entry independently of transcript deduplication", () => {
+    const result = completeResult({ assistantTranscriptEntryId: "committed-native-entry" });
+    expect(result.assistantTranscriptEntryId).toBe("committed-native-entry");
+    expect(result.assistantTranscriptIdempotencyKey).toBeUndefined();
+  });
   it("keeps the settled result snapshot when an output hook replaces live state", () => {
     const assistant = makeAssistantMessageFixture({ content: [{ type: "text", text: "settled" }] });
     const fixture = createResultFixture({

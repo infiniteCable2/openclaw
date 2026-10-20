@@ -554,6 +554,7 @@ async function runPreparedCliAgentOwned(
           bindingFlushOk,
           assistantTranscriptOwned: assistantTranscript.owned,
           assistantTranscriptIdempotencyKey: assistantTranscript.idempotencyKey,
+          assistantTranscriptAnchor: assistantTranscript.terminalAnchor,
           usedHistoryPrompt,
           userTurnHandled,
         });

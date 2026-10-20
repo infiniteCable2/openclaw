@@ -165,6 +165,7 @@ export function prepareEmbeddedRunTerminal(input: {
       requested: requestedModelRef,
       effective: effectiveModelRef,
       successfulToolNames: resolveSuccessfulToolNames(attempt),
+      assistantTranscriptEntryId: attempt.assistantTranscriptEntryId,
       assistantTranscriptIdempotencyKey: attempt.assistantTranscriptIdempotencyKey,
       sourceReplyDelivered: resolveSourceReplyDelivery(attempt) === "delivered" ? true : undefined,
       rerouted: isProviderModelRerouted(requestedModelRef, effectiveModelRef),

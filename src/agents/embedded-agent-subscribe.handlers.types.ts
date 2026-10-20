@@ -105,6 +105,8 @@ export type CompletedAssistantAnswer = {
 /** Mutable subscription state shared by embedded-agent event handlers. */
 export type EmbeddedAgentSubscribeState = {
   assistantTexts: string[];
+  /** Replaced by each post-persistence agent_end, never inferred from streamed text. */
+  assistantTranscriptEntryId?: string;
   answerSegments: Array<{
     textEnd: number;
     messageEnd: number;

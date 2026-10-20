@@ -21,6 +21,7 @@ export function createSubscriptionMock(): SubscriptionMock {
     hasSuccessfulModelResponse: () => false,
     getLastAssistantTextMessageIndex: () => undefined,
     getLastAssistantTextMessageStartIndex: () => undefined,
+    getAssistantTranscriptEntryId: () => undefined,
     getKeptAnswer: () => undefined,
     getLatestMcpAppChannelView: () => undefined,
     getLatestMcpConnectAction: () => undefined,

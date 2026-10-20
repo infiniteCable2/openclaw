@@ -105,6 +105,21 @@ async function prepareAttempt(input: {
 }
 
 describe("prepareEmbeddedRunTerminal", () => {
+  it("preserves the native committed entry in the generic terminal receipt", async () => {
+    const prepared = await prepareAttempt({
+      attempt: attemptResult({ assistantTranscriptEntryId: "committed-native-entry" }),
+      terminalState: {
+        outcome: { reason: "completed", status: "ok", stopReason: "stop" },
+        signalOwnedInterruption: false,
+      },
+    });
+    expect(prepared.agentMeta.terminalReceipt).toMatchObject({
+      runId: "run-focused",
+      sessionId: "session-1",
+      assistantTranscriptEntryId: "committed-native-entry",
+    });
+    expect(prepared.agentMeta.terminalReceipt?.assistantTranscriptIdempotencyKey).toBeUndefined();
+  });
   it("retains a saved receipt without claiming terminal transcript ownership", async () => {
     const prepared = await prepareAttempt({
       attempt: attemptResult({
