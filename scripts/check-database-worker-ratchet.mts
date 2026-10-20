@@ -11,7 +11,10 @@ import {
 // persist its journal intent in the original transcript transaction. Keep these
 // calls classified T1; allow only one lookup and one insert in this operation.
 // Remove this allowance with the synchronous append contract's worker cutover.
-function compatibilityAllowance(row: ReturnType<typeof inventory>[number]): number {
+function compatibilityAllowance(row: {
+  file: string;
+  calls: readonly { operation: string; primitive: string; binding?: string }[];
+}): number {
   if (row.file !== "src/config/sessions/conversation-publication.kernel.ts") {
     return 0;
   }
