@@ -127,6 +127,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
   const reads: Array<{
     held: Held;
     expected: Source;
+    selectorPath: string;
     storeKey: string;
     members: string[];
     entry: InternalSessionEntry;
@@ -228,7 +229,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
         if (
           current.agentId !== expected.agentId ||
           current.canonicalKey !== expected.canonicalKey ||
-          current.storePath !== expected.storePath ||
+          current.storePath !== read.selectorPath ||
           current.storeKey !== read.storeKey ||
           !isDeepStrictEqual(current.readSource, expected.readSource) ||
           !isDeepStrictEqual([...facts.membership].toSorted(), read.members) ||
@@ -271,7 +272,6 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     if (
       current.agentId !== target.agentId ||
       current.canonicalKey !== request.sessionKey ||
-      current.storePath !== target.storePath ||
       current.readSource?.path !== target.storePath ||
       typeof current.readSource.databaseIdentity !== "string" ||
       isIncognitoSessionKey(current.canonicalKey)
@@ -283,7 +283,8 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     const expected = Object.freeze({
       agentId: current.agentId,
       canonicalKey: current.canonicalKey,
-      storePath: current.storePath,
+      // Transcript consumers require the held physical source, not its logical selector.
+      storePath: current.readSource.path,
       sessionId: current.entry.sessionId,
       lifecycleRevision: current.entry.lifecycleRevision,
       readSource: Object.freeze({ ...current.readSource }),
@@ -291,6 +292,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     reads.push({
       held,
       expected,
+      selectorPath: current.storePath,
       storeKey: current.storeKey,
       members,
       entry: structuredClone(current.entry),
