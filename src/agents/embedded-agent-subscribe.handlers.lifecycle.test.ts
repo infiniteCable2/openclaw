@@ -56,9 +56,8 @@ describe("embedded lifecycle", () => {
   it.each(["suppressTerminalDelivery", "continueCurrentTurn"] as const)(
     "does not retain a draft after %s",
     async (decision) => {
-      const ctx = createContext(undefined, {
-        onBeforeTerminalDelivery: () => ({ [decision]: true }),
-      });
+      const ctx = createContext(undefined);
+      ctx.params.onBeforeTerminalDelivery = async () => ({ [decision]: true });
       await handleAgentEnd(ctx, {
         type: "agent_end",
         messages: [],
