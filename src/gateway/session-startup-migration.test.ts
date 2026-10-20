@@ -50,7 +50,7 @@ import { readSessionMessagesPageWithStatsAsync } from "./session-transcript-read
 const tempDirs = createTempDirTracker();
 const publication = vi.hoisted(() => ({ start: vi.fn() }));
 // The publication owner has its own recovery/lifecycle tests; this suite proves
-// the startup handoff without starting a second background writer.
+// mock-isolation: Prove startup handoff without starting a second background writer.
 vi.mock("../config/sessions/conversation-publication-reconcile.js", () => ({
   startConversationKnowledgePublication: publication.start,
 }));
