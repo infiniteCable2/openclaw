@@ -24,6 +24,11 @@ type NativeHandle = SpeechSessionHandle & { [nativeControl]?: NativeControl };
 type AdmittedInput = { [admittedInput]?: AdmittedSpeechControl };
 
 export function bindNativeSpeechControl(handle: SpeechSessionHandle, control: NativeControl): void {
+  // Programmatic task injection uses the native conversation tools. This media handle
+  // does not mint a new user input on behalf of an unauthenticated caller.
+  handle.steer = async () => {
+    throw new Error("Use the admitted native conversation input to steer this session");
+  };
   Object.defineProperty(handle, nativeControl, { value: control });
 }
 

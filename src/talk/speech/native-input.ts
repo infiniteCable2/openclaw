@@ -44,6 +44,7 @@ export function createNativeSpeechInput(params: {
   getGeneration(): number;
   startWaiting(): number;
   finishWaiting(turn: number): void;
+  abortSpeechUtterance(utterance: SpeechUtterance): void;
   waitForInput(run: NativeSpeechRun, signal?: AbortSignal): void | Promise<void>;
   recordUnplayed(utterance: SpeechUtterance, text: string): void;
   onFailure(error: unknown): void;
@@ -203,7 +204,14 @@ export function createNativeSpeechInput(params: {
             }
           } else {
             // Output abort is not permission to cancel or repeat native user work.
-            utterance.finalized = true;
+            // The shared cancellation owner also clears queued audio and waiting state.
+            // A late abort from an older run must not cancel its successor's output.
+            if (lastOutput === run) {
+              params.abortSpeechUtterance(utterance);
+            } else {
+              utterance.finalized = true;
+            }
+            finalized = true;
           }
         },
       };

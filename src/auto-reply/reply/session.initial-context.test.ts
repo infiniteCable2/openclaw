@@ -29,18 +29,18 @@ afterAll(async () => {
   await state.cleanup();
 });
 
-async function fixture() {
+async function fixture(agentId = "main") {
   const id = ++nextId;
-  const storePath = state.statePath("agents", "main", "sessions", "sessions.json");
+  const storePath = state.statePath("agents", agentId, "sessions", "sessions.json");
   const source = {
-    agentId: "main",
+    agentId,
     storePath,
-    sessionKey: `agent:main:source-${id}`,
+    sessionKey: `agent:${agentId}:source-${id}`,
     sessionId: `source-${id}`,
   };
   const target = {
     ...source,
-    sessionKey: `agent:main:matrix:direct:peer-${id}`,
+    sessionKey: `agent:${agentId}:matrix:direct:peer-${id}`,
     sessionId: `target-${id}`,
   };
   await upsertSessionEntryCore(source, {
@@ -52,7 +52,7 @@ async function fixture() {
   await appendTranscriptMessage(source, {
     message: { role: "assistant", stopReason: "stop", content: "A completed source answer." },
   });
-  const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+  const database = openOpenClawAgentDatabase({ agentId, env: state.env });
   const operations = await loadAgentEntryReadOperations();
   const cohort: SessionEntryCohortResult = operations["session.entry.read"](
     {
@@ -61,7 +61,7 @@ async function fixture() {
     },
     {
       open: () => database,
-      options: { agentId: "main", path: database.path, env: state.env },
+      options: { agentId, path: database.path, env: state.env },
       admit: () => {},
       writeTransaction: () => {
         throw new Error("Synthetic context preparation cannot write");
@@ -73,7 +73,7 @@ async function fixture() {
   }
   const context = cohort.initialContext.context;
   const cfg = {
-    agents: { defaults: { workspace: state.workspaceDir } },
+    agents: { defaults: { workspace: state.workspaceDir }, entries: { [agentId]: {} } },
     session: { store: storePath, dmScope: "per-channel-peer" as const },
   };
   const ctx = finalizeInboundContext({
@@ -96,19 +96,22 @@ async function fixture() {
 
 describe("reply initialization with native copied context", () => {
   it("creates only confirmed new private branches as draft and keeps privacy through /new", async () => {
-    const f = await fixture();
+    const f = await fixture("private-init");
     const cfg = {
       ...f.cfg,
-      agents: { ...f.cfg.agents, entries: { main: { conversationMode: "branches" as const } } },
+      agents: {
+        ...f.cfg.agents,
+        entries: { [f.target.agentId]: { conversationMode: "branches" as const } },
+      },
     };
     await ensureAgentConversationRoot({
       cfg,
-      agentId: "main",
+      agentId: f.target.agentId,
       env: state.env,
       getConfig: () => cfg,
     });
     const audience = {
-      agentId: "main",
+      agentId: f.target.agentId,
       sessionKey: f.target.sessionKey,
       channelId: "matrix",
       accountId: "default",
@@ -133,7 +136,9 @@ describe("reply initialization with native copied context", () => {
       ),
       commandAuthorized: true,
     });
-    expect(reset.sessionId).not.toBe(first.sessionId);
+    expect(reset).toMatchObject({ resetTriggered: true, isNewSession: true });
+    expect(reset.sessionId).toBe(first.sessionId);
+    expect(reset.sessionEntry.lifecycleRevision).not.toBe(first.sessionEntry.lifecycleRevision);
     expect(loadSessionEntry(f.target)?.visibility).toBe("draft");
 
     // Current transport evidence cannot relabel an already shared history.
@@ -148,20 +153,23 @@ describe("reply initialization with native copied context", () => {
   });
 
   it("rechecks private creation evidence at the native commit boundary", async () => {
-    const f = await fixture();
+    const f = await fixture("private-init");
     const cfg = {
       ...f.cfg,
-      agents: { ...f.cfg.agents, entries: { main: { conversationMode: "branches" as const } } },
+      agents: {
+        ...f.cfg.agents,
+        entries: { [f.target.agentId]: { conversationMode: "branches" as const } },
+      },
     };
     await ensureAgentConversationRoot({
       cfg,
-      agentId: "main",
+      agentId: f.target.agentId,
       env: state.env,
       getConfig: () => cfg,
     });
     let checks = 0;
     bindConversationPrivateAudience(f.ctx, {
-      agentId: "main",
+      agentId: f.target.agentId,
       sessionKey: f.target.sessionKey,
       channelId: "matrix",
       accountId: "default",
@@ -221,59 +229,89 @@ describe("reply initialization with native copied context", () => {
     expect(loadSessionEntry(root)).toEqual(before);
     expect(await loadTranscriptEvents(root)).toEqual(events);
   });
-  it("uses the real ingress row and one prospective identity without a task-parent edge", async () => {
-    const f = await fixture();
-    const grant = await prepareTranscriptReadAuthority({
-      authority: createAdmittedRunOperatorAuthority({
-        profileId: GATEWAY_OWNER_PROFILE_ID,
-        scopes: ["operator.admin"],
-        assertCurrent: () => {},
-        readCurrentRoleAssignment: () => null,
-      }),
-      getRuntimeConfig: () => f.cfg,
-      sources: [f.source],
-    });
-    try {
-      const result = await initSessionState({
-        cfg: f.cfg,
-        ctx: f.ctx,
-        commandAuthorized: true,
-        initialSessionContext: {
-          agentId: "main",
-          sessionKey: f.target.sessionKey,
-          context: f.context,
-          assertCurrent: grant.assertCurrent,
-        },
+  it.each([false, true])(
+    "uses the real ingress row without a task-parent edge (retained root: %s)",
+    async (retainedRoot) => {
+      const f = await fixture(retainedRoot ? "retained-copy" : "main");
+      if (retainedRoot) {
+        const branchConfig = {
+          ...f.cfg,
+          agents: {
+            ...f.cfg.agents,
+            entries: { [f.target.agentId]: { conversationMode: "branches" as const } },
+          },
+        };
+        await ensureAgentConversationRoot({
+          cfg: branchConfig,
+          agentId: f.target.agentId,
+          env: state.env,
+          getConfig: () => branchConfig,
+        });
+      }
+      const grant = await prepareTranscriptReadAuthority({
+        authority: createAdmittedRunOperatorAuthority({
+          profileId: GATEWAY_OWNER_PROFILE_ID,
+          scopes: ["operator.admin"],
+          assertCurrent: () => {},
+          readCurrentRoleAssignment: () => null,
+        }),
+        getRuntimeConfig: () => f.cfg,
+        sources: [f.source],
       });
-      expect(result.sessionId).toBe(f.target.sessionId);
-      expect(result.sessionEntry).toMatchObject({
-        sessionId: f.target.sessionId,
-        createdActor: { type: "human", id: "target-owner" },
-        sandbox: "required",
-        forkSource: {
-          sessionKey: f.source.sessionKey,
-          sessionId: f.source.sessionId,
-          entryId: f.context.sourceThrough?.entryId,
-        },
-        totalTokensFresh: false,
-      });
-      expect(result.sessionEntry.spawnedBy).toBeUndefined();
-      expect(result.sessionEntry.parentSessionKey).toBeUndefined();
-      expect(result.sessionEntry.permissionMode).not.toBe("full");
-      expect(JSON.stringify(await loadTranscriptEvents(f.target))).toContain(
-        "A completed source answer.",
-      );
-      const next = await initSessionState({ cfg: f.cfg, ctx: f.ctx, commandAuthorized: true });
-      expect(next.sessionId).toBe(f.target.sessionId);
-      expect(
-        (await loadTranscriptEvents(f.target)).filter((event) =>
-          JSON.stringify(event).includes("A completed source answer."),
-        ),
-      ).toHaveLength(1);
-    } finally {
-      grant.release();
-    }
-  });
+      try {
+        const result = await initSessionState({
+          cfg: f.cfg,
+          ctx: f.ctx,
+          commandAuthorized: true,
+          initialSessionContext: {
+            agentId: f.target.agentId,
+            sessionKey: f.target.sessionKey,
+            context: f.context,
+            assertCurrent: grant.assertCurrent,
+          },
+        });
+        expect(result.sessionId).toBe(f.target.sessionId);
+        expect(result.sessionEntry).toMatchObject({
+          sessionId: f.target.sessionId,
+          createdActor: { type: "human", id: "target-owner" },
+          sandbox: "required",
+          forkSource: {
+            sessionKey: f.source.sessionKey,
+            sessionId: f.source.sessionId,
+            entryId: f.context.sourceThrough?.entryId,
+          },
+          totalTokensFresh: false,
+        });
+        expect(result.sessionEntry.spawnedBy).toBeUndefined();
+        expect(result.sessionEntry.parentSessionKey).toBeUndefined();
+        expect(result.sessionEntry.permissionMode).not.toBe("full");
+        expect(JSON.stringify(await loadTranscriptEvents(f.target))).toContain(
+          "A completed source answer.",
+        );
+        const beforeNext = loadSessionEntry(f.target)!;
+        const historyBeforeNext = await loadTranscriptEvents(f.target);
+        const next = await initSessionState({ cfg: f.cfg, ctx: f.ctx, commandAuthorized: true });
+        expect(next.sessionId).toBe(f.target.sessionId);
+        expect(next.sessionEntry.lifecycleRevision).toBe(beforeNext.lifecycleRevision);
+        expect(next.sessionEntry.forkSource).toEqual(beforeNext.forkSource);
+        expect(next.sessionEntry.visibility).toBe(beforeNext.visibility);
+        expect(next.sessionEntry.createdActor).toEqual(beforeNext.createdActor);
+        expect(next.sessionEntry.parentSessionKey).toBeUndefined();
+        expect(next.sessionEntry.spawnedBy).toBeUndefined();
+        expect(await loadTranscriptEvents(f.target)).toEqual(historyBeforeNext);
+        if (retainedRoot) {
+          expect(next.sessionEntry.conversationTopology).toMatchObject({ role: "branch" });
+        }
+        expect(
+          (await loadTranscriptEvents(f.target)).filter((event) =>
+            JSON.stringify(event).includes("A completed source answer."),
+          ),
+        ).toHaveLength(1);
+      } finally {
+        grant.release();
+      }
+    },
+  );
 
   it("preserves an already-created destination instead of applying a stale host seed", async () => {
     const f = await fixture();

@@ -39,6 +39,14 @@ export type ConversationKnowledgeBranch = SessionTranscriptRuntimeTarget & {
   root: { sessionKey: string; sessionId: string; lifecycleRevision: string };
 };
 
+/** The bounded source view cannot prove this occurrence; it is not an invalid occurrence. */
+export class ConversationKnowledgeSourceCapacityError extends Error {
+  constructor() {
+    super("Conversation knowledge source validation exceeds its bounded context");
+    this.name = "ConversationKnowledgeSourceCapacityError";
+  }
+}
+
 /** A held native root read attests saved provenance, never source-history permission.
  * Root report deletion is not a separate permission store: source/recipient,
  * explicit sharing and native incarnations still decide every disclosure.
@@ -401,11 +409,14 @@ async function recordConversationKnowledgeReference(params: {
         ) {
           throw new Error("Invalid conversation knowledge reference");
         }
-        if (utterance && !isConversationUtteranceObservation(receipt, sourceContext.events)) {
-          return undefined;
-        }
         // A terminal-looking assistant is insufficient if the actual stored path has unclosed work.
-        if (!utterance && !isCompletedConversationKnowledge(receipt, sourceContext.events)) {
+        const valid = utterance
+          ? isConversationUtteranceObservation(receipt, sourceContext.events)
+          : isCompletedConversationKnowledge(receipt, sourceContext.events);
+        if (!valid) {
+          if (sourceContext.truncated) {
+            throw new ConversationKnowledgeSourceCapacityError();
+          }
           return undefined;
         }
         const predicate = (

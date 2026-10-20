@@ -4,6 +4,7 @@ import { readConversationBindingRouteFacts } from "../../channels/conversation-b
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { loadReplySessionInitializationSnapshot } from "../../config/sessions/session-accessor.reset.js";
+import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
 import {
   composeSessionSourceAssertion,
@@ -16,6 +17,11 @@ import type { SessionBindingRecord } from "../../infra/outbound/session-binding-
 import { isPluginOwnedSessionBindingRecord } from "../../plugins/conversation-binding-metadata.js";
 import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { isAcpSessionKey, normalizeMainKey } from "../../routing/session-key.js";
+import {
+  capturePrivateConversationCreationAudience,
+  readConversationPrivateAudience,
+} from "../../sessions/conversation-private-audience.js";
+import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
 import type { FinalizedRuntimeMsgContext } from "../templating.js";
 import { shouldBypassAcpDispatchForCommand } from "./dispatch-acp-command-bypass.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
@@ -60,6 +66,38 @@ export type InitSessionStateAttemptContext = {
   sessionCtxForState: FinalizedRuntimeMsgContext;
   storePath: string;
 };
+
+/** Creation facts and their live recipient guard stay with initialization admission. */
+export function prepareReplySessionCreation(
+  params: InitSessionStateParams,
+  target: InitSessionStateAttemptContext,
+  entry: SessionEntry | undefined,
+) {
+  const audience = target.isSystemEvent
+    ? undefined
+    : capturePrivateConversationCreationAudience({
+        cfg: params.cfg,
+        agentId: target.agentId,
+        sessionKey: target.sessionKey,
+        entry,
+        audience: readConversationPrivateAudience(params.ctx),
+      });
+  return {
+    patch: {
+      ...(!entry && params.ctx.SessionCreation
+        ? buildSessionCreationStamp(params.ctx.SessionCreation)
+        : {}),
+      ...(audience ? { visibility: "draft" as const } : {}),
+    },
+    assertCurrent: () => {
+      audience?.assertCurrent();
+      if (!entry) {
+        params.signal?.throwIfAborted();
+        assertPreparedSkillLibrarySelection(params.ctx.SessionCreation?.skillLibrarySelections);
+      }
+    },
+  };
+}
 
 export async function resolveInitSessionStateAttemptContext(
   params: Pick<InitSessionStateParams, "cfg" | "ctx" | "assertConversationTarget">,

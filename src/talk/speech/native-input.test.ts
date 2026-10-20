@@ -84,6 +84,16 @@ function fixture() {
   };
   const finished = new Map<number, ReturnType<typeof deferred<void>>>();
   const finishWaiting = vi.fn((turn: number) => finished.get(turn)?.resolve());
+  const abortSpeechUtterance = vi.fn((utterance: SpeechUtterance) => {
+    if (!output.isCurrentSpeechUtterance(utterance)) {
+      return;
+    }
+    generation++;
+    utterance.finalized = true;
+    if (utterance.waitingTurn !== undefined) {
+      finishWaiting(utterance.waitingTurn);
+    }
+  });
   const recordUnplayed = vi.fn();
   let turn = 0;
   const owner = createNativeSpeechInput({
@@ -105,6 +115,7 @@ function fixture() {
     getGeneration: () => generation,
     startWaiting: () => ++turn,
     finishWaiting,
+    abortSpeechUtterance,
     waitForInput: () => undefined,
     recordUnplayed,
     onFailure: vi.fn(),
@@ -121,6 +132,7 @@ function fixture() {
     pending,
     output,
     finishWaiting,
+    abortSpeechUtterance,
     recordUnplayed,
     bound,
     utterances,
@@ -183,6 +195,74 @@ function fixture() {
 }
 
 describe("native speech input media ownership", () => {
+  it.for([false, true])(
+    "cancels native media, not its task (queued speech: %s)",
+    async (queued) => {
+      const f = fixture();
+      const submitted = f.owner.submit({ text: "Original request", hasOnset: false });
+      await f.waitForCall(1);
+      const binding = f.bound("run-a");
+      f.calls[0]!.onNativeRunBound?.(binding);
+      if (queued) {
+        await f.calls[0]!.onSpeakableText?.({ type: "chunk", text: "Queued speech" });
+      }
+      await f.calls[0]!.onSpeakableText?.({ type: "abort" });
+      expect(f.abortSpeechUtterance).toHaveBeenCalledExactlyOnceWith(f.utterances[0]);
+      expect(f.finishWaiting).toHaveBeenCalledWith(1);
+      expect(f.output.isCurrentSpeechUtterance(f.utterances[0]!)).toBe(false);
+      expect(binding.abortSignal.aborted).toBe(false);
+      expect(f.owner.captureRun()?.binding).toBe(binding);
+      f.pending[0]!.resolve({ kind: "reply", reply: { text: "Settled native result" } });
+      await expect(submitted).resolves.toMatchObject({ kind: "reply" });
+      expect(f.output.finalizeSpeechUtterance).not.toHaveBeenCalled();
+      expect(f.calls).toHaveLength(1);
+    },
+  );
+
+  it("cancels pending output after its latest native run settles", async () => {
+    const f = fixture();
+    const submitted = f.owner.submit({ text: "Original request", hasOnset: false });
+    await f.waitForCall(1);
+    f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+    await f.calls[0]!.onSpeakableText?.({ type: "chunk", text: "Pending speech" });
+    f.pending[0]!.resolve({ kind: "reply", reply: { text: "Pending speech" } });
+    await submitted;
+    expect(f.owner.captureRun()).toBeUndefined();
+    await f.calls[0]!.onSpeakableText?.({ type: "abort" });
+    expect(f.abortSpeechUtterance).toHaveBeenCalledExactlyOnceWith(f.utterances[0]);
+    expect(f.finishWaiting).toHaveBeenCalledWith(1);
+  });
+
+  it.for([false, true])(
+    "does not let an older native abort cancel newer output (new generation: %s)",
+    async (newGeneration) => {
+      const f = fixture();
+      const first = f.owner.submit({ text: "Original request", hasOnset: false });
+      await f.waitForCall(1);
+      f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+      await f.calls[0]!.onSpeakableText?.({ type: "chunk", text: "Old speech" });
+      if (newGeneration) {
+        f.nextGeneration();
+      }
+      const second = f.owner.submit({ text: "New request", hasOnset: false });
+      await f.waitForCall(2);
+      f.calls[1]!.onNativeRunBound?.(f.bound("run-b"));
+      await f.calls[1]!.onSpeakableText?.({ type: "chunk", text: "New speech" });
+      await f.calls[0]!.onSpeakableText?.({ type: "abort" });
+      expect(f.abortSpeechUtterance).not.toHaveBeenCalled();
+      expect(f.utterances[0]!.finalized).toBe(true);
+      expect(f.output.isCurrentSpeechUtterance(f.utterances[1]!)).toBe(true);
+      expect(f.finishWaiting).not.toHaveBeenCalledWith(2);
+      f.pending[0]!.resolve({ kind: "reply", reply: { text: "Old result" } });
+      f.pending[1]!.resolve({ kind: "reply", reply: { text: "New result" } });
+      await Promise.all([first, second]);
+      expect(f.output.finalizeSpeechUtterance).toHaveBeenCalledExactlyOnceWith(
+        f.utterances[1],
+        "New result",
+      );
+    },
+  );
+
   it.for(["steer", "followup"] as const)(
     "keeps authenticated %s on the native input and media owner",
     async (mode) => {

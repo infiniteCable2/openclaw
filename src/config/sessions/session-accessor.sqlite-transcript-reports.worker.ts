@@ -13,6 +13,7 @@ import {
   getOpenClawAgentDatabaseIfOpen,
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
+  type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
 import type { CliHistoryWriterFacts } from "./cli-history-boundary.js";
@@ -28,6 +29,7 @@ import {
   toDatabaseOptions,
   type ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope.js";
+import { ensureTranscriptHeader } from "./session-accessor.sqlite-transcript-header.js";
 import {
   appendAbortedSessionTranscriptPartialInTransaction,
   appendSelectedTranscriptReportInTransaction,
@@ -125,6 +127,29 @@ export function bindSqliteWorkerBackend(
       resolved,
       { ...resolved, ...fence },
     );
+  const deferredContextAdmission = new Error("Transcript report context admission deferred");
+  const runReportTransaction = (
+    operation: (
+      current: OpenClawAgentDatabase,
+    ) => Result<TranscriptReportCommit, TranscriptAppendRefusal>,
+  ): Result<TranscriptReportCommit, TranscriptAppendRefusal> => {
+    try {
+      return runOpenClawAgentWriteTransaction(operation, options, {
+        operationLabel: "session.transcript.report",
+      });
+    } catch (error) {
+      if (error !== deferredContextAdmission) {
+        throw error;
+      }
+      // The native transaction has rolled back the provisional header together
+      // with its staged publications. Deferral must still prove NO WRITE.
+      assertOpen();
+      if (database.db.isTransaction) {
+        throw new Error("Deferred transcript report left a transaction open");
+      }
+      return ok({ committed: false, projectionNeedsReconcile: false, deferred: true });
+    }
+  };
   let prepared:
     | {
         facts: PreparedTranscriptReport;
@@ -153,136 +178,134 @@ export function bindSqliteWorkerBackend(
           return ok(prepared.facts);
         });
       }
-      return runOpenClawAgentWriteTransaction<
-        Result<TranscriptReportCommit, TranscriptAppendRefusal>
-      >(
-        (current) => {
-          if (current.db !== database.db) {
-            throw new Error("Transcript report lost its canonical database owner");
-          }
-          admit("transaction");
-          const refusal = readRefusal();
-          if (refusal) {
-            admit("commit");
-            return err(refusal);
-          }
-          const firstSeq = target.cliWriter
-            ? (readTranscriptContextVersionInTransaction(database, resolved.sessionId).rawSeq ??
-                -1) + 1
-            : undefined;
-          let projectionNeedsReconcile = false;
-          const projection = {
-            scheduleProjectionReconcile: false as const,
-            onProjectionReconcileNeeded: () => {
-              projectionNeedsReconcile = true;
-            },
-          };
-          let abortedPartial: AbortedSessionTranscriptPartialResult | undefined;
-          if (command.type === "abortedPartial") {
-            abortedPartial = appendAbortedSessionTranscriptPartialInTransaction(
-              database,
-              resolved,
-              command.input,
-              command.input.preparedMessage,
-              projection,
-            );
-          } else if (command.type === "assistant") {
-            const facts = prepareTranscriptReportSelection(database, resolved, {
-              kind: "assistant",
-              responseId: command.input.message.responseId,
-            });
-            if (!facts.suppressed) {
-              appendSelectedTranscriptReportInTransaction(
-                database,
-                resolved,
-                facts.appendParentId,
-                command.input,
-                projection,
-                command.input.preparedMessage,
-              );
-            }
-          } else {
-            const plan = prepared;
-            prepared = undefined;
-            if (!plan || plan.facts.suppressed) {
-              throw new Error("Transcript report append requires its prepared selection");
-            }
-            const currentVersion = readTranscriptContextVersionInTransaction(
-              database,
-              resolved.sessionId,
-            );
-            if (!isDeepStrictEqual(currentVersion, plan.version)) {
-              admit("commit");
-              return ok({ committed: false, projectionNeedsReconcile: false });
-            }
-            const limits = command.input.preserveContextLimits;
-            if (limits) {
-              const snapshot = readSessionTranscriptBoundedActiveContextCore(resolved, {
-                ...limits,
-                resolvedScope: resolved,
-              });
-              const additionalBytes = Buffer.byteLength(command.input.eventJson, "utf8") + 1;
-              // Header and injected boundaries remain counted. The event count is
-              // deliberately conservative so no currently hydrated row is displaced.
-              if (
-                snapshot.events.length === 0 ||
-                snapshot.serializedBytes + additionalBytes > limits.maxBytes ||
-                snapshot.events.length + 1 > limits.maxEvents
-              ) {
-                admit("commit");
-                return ok({ committed: false, projectionNeedsReconcile: false, deferred: true });
-              }
-            }
+      return runReportTransaction((current) => {
+        if (current.db !== database.db) {
+          throw new Error("Transcript report lost its canonical database owner");
+        }
+        admit("transaction");
+        const refusal = readRefusal();
+        if (refusal) {
+          admit("commit");
+          return err(refusal);
+        }
+        const firstSeq = target.cliWriter
+          ? (readTranscriptContextVersionInTransaction(database, resolved.sessionId).rawSeq ?? -1) +
+            1
+          : undefined;
+        let projectionNeedsReconcile = false;
+        const projection = {
+          scheduleProjectionReconcile: false as const,
+          onProjectionReconcileNeeded: () => {
+            projectionNeedsReconcile = true;
+          },
+        };
+        let abortedPartial: AbortedSessionTranscriptPartialResult | undefined;
+        if (command.type === "abortedPartial") {
+          abortedPartial = appendAbortedSessionTranscriptPartialInTransaction(
+            database,
+            resolved,
+            command.input,
+            command.input.preparedMessage,
+            projection,
+          );
+        } else if (command.type === "assistant") {
+          const facts = prepareTranscriptReportSelection(database, resolved, {
+            kind: "assistant",
+            responseId: command.input.message.responseId,
+          });
+          if (!facts.suppressed) {
             appendSelectedTranscriptReportInTransaction(
               database,
               resolved,
-              plan.facts.appendParentId,
+              facts.appendParentId,
               command.input,
               projection,
+              command.input.preparedMessage,
             );
           }
-          let commitGranted = false;
-          const authorizeCommit = () => {
-            if (!commitGranted) {
-              admit("commit");
-              commitGranted = true;
-            }
-          };
-          const cliHistoryChanged =
-            target.cliWriter && firstSeq !== undefined
-              ? advanceCliHistoryBoundaryRangeInTransaction(
-                  database,
-                  resolved,
-                  {
-                    first: firstSeq,
-                    last:
-                      readTranscriptContextVersionInTransaction(database, resolved.sessionId)
-                        .rawSeq ?? -1,
-                  },
-                  target.cliWriter,
-                  authorizeCommit,
-                )
-              : false;
-          const rebound = readRefusal();
-          if (rebound) {
-            throw new SessionTranscriptWriterClaimReboundError(rebound);
+        } else {
+          const plan = prepared;
+          prepared = undefined;
+          if (!plan || plan.facts.suppressed) {
+            throw new Error("Transcript report append requires its prepared selection");
           }
-          authorizeCommit();
-          return ok({
-            committed: true,
-            projectionNeedsReconcile,
-            cliHistoryChanged,
-            ...(abortedPartial
-              ? {
-                  abortedPartial,
-                  sessionEntryChanged: !abortedPartial.skipped && abortedPartial.append.appended,
-                }
-              : {}),
-          });
-        },
-        options,
-        { operationLabel: "session.transcript.report" },
-      );
+          const currentVersion = readTranscriptContextVersionInTransaction(
+            database,
+            resolved.sessionId,
+          );
+          if (!isDeepStrictEqual(currentVersion, plan.version)) {
+            admit("commit");
+            return ok({ committed: false, projectionNeedsReconcile: false });
+          }
+          const limits = command.input.preserveContextLimits;
+          if (limits) {
+            // A first-turn recipient has no transcript yet. Initialize it
+            // under this same writer and count its real header in the budget.
+            // A deferred report rolls this initialization back atomically.
+            ensureTranscriptHeader(database, resolved, undefined, projection);
+            const snapshot = readSessionTranscriptBoundedActiveContextCore(resolved, {
+              ...limits,
+              resolvedScope: resolved,
+            });
+            const additionalBytes = Buffer.byteLength(command.input.eventJson, "utf8") + 1;
+            // Header and injected boundaries remain counted. The event count is
+            // deliberately conservative so no currently hydrated row is displaced.
+            if (
+              snapshot.events.length === 0 ||
+              snapshot.serializedBytes + additionalBytes > limits.maxBytes ||
+              snapshot.events.length + 1 > limits.maxEvents
+            ) {
+              admit("commit");
+              throw deferredContextAdmission;
+            }
+          }
+          appendSelectedTranscriptReportInTransaction(
+            database,
+            resolved,
+            plan.facts.appendParentId,
+            command.input,
+            projection,
+          );
+        }
+        let commitGranted = false;
+        const authorizeCommit = () => {
+          if (!commitGranted) {
+            admit("commit");
+            commitGranted = true;
+          }
+        };
+        const cliHistoryChanged =
+          target.cliWriter && firstSeq !== undefined
+            ? advanceCliHistoryBoundaryRangeInTransaction(
+                database,
+                resolved,
+                {
+                  first: firstSeq,
+                  last:
+                    readTranscriptContextVersionInTransaction(database, resolved.sessionId)
+                      .rawSeq ?? -1,
+                },
+                target.cliWriter,
+                authorizeCommit,
+              )
+            : false;
+        const rebound = readRefusal();
+        if (rebound) {
+          throw new SessionTranscriptWriterClaimReboundError(rebound);
+        }
+        authorizeCommit();
+        return ok({
+          committed: true,
+          projectionNeedsReconcile,
+          cliHistoryChanged,
+          ...(abortedPartial
+            ? {
+                abortedPartial,
+                sessionEntryChanged: !abortedPartial.skipped && abortedPartial.append.appended,
+              }
+            : {}),
+        });
+      });
     },
     assertSettled() {
       assertOpen();

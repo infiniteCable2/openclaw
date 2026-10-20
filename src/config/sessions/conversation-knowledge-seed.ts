@@ -7,6 +7,7 @@ import {
 } from "../../sessions/transcript-events.js";
 import { readConversationKnowledgeReports } from "./conversation-knowledge-history.js";
 import {
+  ConversationKnowledgeSourceCapacityError,
   readConversationKnowledgeBranch,
   recordConversationKnowledgeTurn,
   recordConversationUtteranceObservation,
@@ -31,11 +32,10 @@ import {
   type SessionSourcePredicate,
 } from "./session-source-authority.js";
 import { readActiveTranscriptEntryAnchorAsync } from "./session-transcript-anchor-read.js";
-import { readSessionTranscriptModelContextAsync } from "./session-transcript-context-read.js";
 import { withSessionTranscriptDeltaReader } from "./session-transcript-delta-read.js";
+import { prepareSessionTranscriptHydration } from "./session-transcript-hydration.js";
 import { isSessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
-import { readSessionTranscriptWatermarkAsync } from "./session-transcript-watermark.js";
 import type { InternalSessionEntry } from "./types.js";
 
 export const CONVERSATION_KNOWLEDGE_SEED = "openclaw.conversation-knowledge-seed.v1";
@@ -109,7 +109,8 @@ export async function ensureConversationKnowledgeSeed(params: {
   assertCurrent: SessionSourceAssertion;
   signal?: AbortSignal;
 }): Promise<{
-  status: "not-enrolled" | "already-seeded" | "seeded" | "resumed";
+  status: "not-enrolled" | "already-seeded" | "seeded" | "resumed" | "pending";
+  reason?: "source-capacity";
   recorded: number;
   skipped: number;
 }> {
@@ -176,10 +177,20 @@ export async function ensureConversationKnowledgeSeed(params: {
       receipt.source.lifecycleRevision === branch.lifecycleRevision
     );
   });
-  const through = await readSessionTranscriptWatermarkAsync(branch);
+  // Pin the complete native version before paging, including opaque navigation
+  // changes that preserve generation and sequence but advance updatedAt.
+  const metadata = prepareSessionTranscriptHydration(branch, undefined, params.signal);
+  const initial = await metadata.readMaintenance({ operation: "version" });
+  metadata.assertCurrent();
   check();
+  if (!initial.version) {
+    throw new Error("Conversation knowledge seed source version is unavailable");
+  }
+  const sourceVersion = structuredClone(initial.version);
+  const through = { generation: sourceVersion.generation, maxSeq: sourceVersion.rawSeq };
   let recorded = 0;
   let skipped = 0;
+  let pendingCapacity = false;
   // A newly admitted row can legitimately have no transcript yet. Its empty
   // version is still captured below and fenced by the native marker writer.
   if (through.generation !== null || through.maxSeq !== null) {
@@ -205,13 +216,12 @@ export async function ensureConversationKnowledgeSeed(params: {
             throw new Error("Conversation knowledge seed history changed");
           }
           if (page.requiredBytes !== undefined) {
-            if (
-              page.requiredBytes <= maxBytes ||
-              page.requiredBytes > CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxBytes
-            ) {
-              throw new Error(
-                "Conversation knowledge seed remains pending: oversized source entry",
-              );
+            if (!Number.isSafeInteger(page.requiredBytes) || page.requiredBytes <= maxBytes) {
+              throw new Error("Conversation knowledge seed byte request made no progress");
+            }
+            if (page.requiredBytes > CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxBytes) {
+              pendingCapacity = true;
+              break;
             }
             maxBytes = page.requiredBytes;
             continue;
@@ -232,16 +242,26 @@ export async function ensureConversationKnowledgeSeed(params: {
               message.stopReason === "stop" &&
               message.endTurn !== false &&
               runId &&
-              resolveTerminalAssistantTranscriptRunId(message, runId) &&
-              typeof message.idempotencyKey === "string" &&
-              message.idempotencyKey.trim()
+              resolveTerminalAssistantTranscriptRunId(message, runId)
             ) {
-              accepted = await recordConversationKnowledgeTurn({
-                ...params,
-                sourceMode: "native",
-                runId,
-                assistantTranscriptIdempotencyKey: message.idempotencyKey,
-              });
+              try {
+                accepted = await recordConversationKnowledgeTurn({
+                  ...params,
+                  sourceMode: "native",
+                  runId,
+                  assistantTranscriptEntryId: event.id,
+                  ...(typeof message.idempotencyKey === "string" && message.idempotencyKey.trim()
+                    ? { assistantTranscriptIdempotencyKey: message.idempotencyKey }
+                    : {}),
+                });
+              } catch (error) {
+                check();
+                if (!(error instanceof ConversationKnowledgeSourceCapacityError)) {
+                  throw error;
+                }
+                pendingCapacity = true;
+                break;
+              }
             } else if (
               asOptionalRecord(message.provenance)?.kind === "realtime_voice" &&
               (message.role === "user" || message.role === "assistant")
@@ -264,12 +284,21 @@ export async function ensureConversationKnowledgeSeed(params: {
                 through: anchor,
               } satisfies ConversationUtteranceObservation;
               if (isConversationUtteranceObservation(candidate, [row.event])) {
-                accepted = await recordConversationUtteranceObservation({
-                  ...params,
-                  sourceMode: "native",
-                  anchor,
-                  role: message.role,
-                });
+                try {
+                  accepted = await recordConversationUtteranceObservation({
+                    ...params,
+                    sourceMode: "native",
+                    anchor,
+                    role: message.role,
+                  });
+                } catch (error) {
+                  check();
+                  if (!(error instanceof ConversationKnowledgeSourceCapacityError)) {
+                    throw error;
+                  }
+                  pendingCapacity = true;
+                  break;
+                }
               }
             }
             check();
@@ -280,6 +309,7 @@ export async function ensureConversationKnowledgeSeed(params: {
             }
           }
           if (
+            pendingCapacity ||
             !page.hasMore ||
             (page.events.at(-1)?.seq ?? -1) >= (through.maxSeq ?? -1) ||
             page.events.length === 0
@@ -296,27 +326,21 @@ export async function ensureConversationKnowledgeSeed(params: {
     );
   }
   check();
-  const version = await readSessionTranscriptModelContextAsync(
-    branch,
-    (context) => {
-      if (context.truncated) {
-        throw new Error("Conversation knowledge seed remains pending: source exceeds seed budget");
-      }
-      return context.version;
-    },
-    undefined,
-    params.signal,
-    undefined,
-    CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
-  );
+  // Traversal, not a second bounded model-context view, proves the prefix was
+  // visited. The metadata version fences that traversal through marker COMMIT.
+  const { version } = await metadata.readMaintenance({ operation: "version" });
+  metadata.assertCurrent();
   check();
-  if (!version || version.generation !== through.generation || version.rawSeq !== through.maxSeq) {
+  if (!version || !isDeepStrictEqual(version, sourceVersion)) {
     throw new Error("Conversation knowledge seed source changed before completion");
   }
   const current = await captureSeedSources(params.reader, branch, params.assertCurrent);
   check();
   if (!isDeepStrictEqual(current, expected)) {
     throw new Error("Conversation knowledge seed authority changed");
+  }
+  if (pendingCapacity) {
+    return { status: "pending", reason: "source-capacity", recorded, skipped };
   }
   const predicates = expected.map((predicate, index) =>
     index === 0

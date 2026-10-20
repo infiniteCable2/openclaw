@@ -3,15 +3,16 @@ import {
   CONVERSATION_KNOWLEDGE_SEED,
   ensureConversationKnowledgeSeed,
 } from "./conversation-knowledge-seed.js";
+import { ConversationKnowledgeSourceCapacityError } from "./conversation-knowledge-store.js";
 import {
   conversationKnowledgeOrigin,
   CONVERSATION_KNOWLEDGE_REPORT,
+  CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
   CONVERSATION_UTTERANCE_REPORT,
 } from "./conversation-knowledge.js";
 import type { TranscriptReport } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import type { SessionEntryCohortResult } from "./session-entry-read.types.js";
-import type { SessionTranscriptModelContext } from "./session-history-read.types.js";
 import type { SessionSourceAssertion } from "./session-source-authority.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 
@@ -20,7 +21,8 @@ const mocks = vi.hoisted(() => ({
   reports: vi.fn(),
   raw: vi.fn(),
   delta: vi.fn(),
-  watermark: vi.fn(),
+  metadata: vi.fn(),
+  metadataCurrent: vi.fn(),
   context: vi.fn(),
   record: vi.fn(),
   voice: vi.fn(),
@@ -28,7 +30,8 @@ const mocks = vi.hoisted(() => ({
   append: vi.fn(),
 }));
 // mock-isolation: Exercise the bounded seed protocol without databases, workers or model execution.
-vi.mock("./conversation-knowledge-store.js", () => ({
+vi.mock("./conversation-knowledge-store.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./conversation-knowledge-store.js")>()),
   readConversationKnowledgeBranch: mocks.branch,
   recordConversationKnowledgeTurn: mocks.record,
   recordConversationUtteranceObservation: mocks.voice,
@@ -41,11 +44,14 @@ vi.mock("./conversation-knowledge-history.js", () => ({
 vi.mock("./session-transcript-delta-read.js", () => ({
   withSessionTranscriptDeltaReader: mocks.delta,
 }));
-// mock-isolation: Pin the source prefix without acquiring native storage.
-vi.mock("./session-transcript-watermark.js", () => ({
-  readSessionTranscriptWatermarkAsync: mocks.watermark,
+// mock-isolation: Supply native version facts without opening another worker owner.
+vi.mock("./session-transcript-hydration.js", () => ({
+  prepareSessionTranscriptHydration: () => ({
+    readMaintenance: mocks.metadata,
+    assertCurrent: mocks.metadataCurrent,
+  }),
 }));
-// mock-isolation: Provide bounded context-version outcomes without hydrating transcript payloads.
+// mock-isolation: Reject accidental whole-history hydration in this paginated protocol.
 vi.mock("./session-transcript-context-read.js", () => ({
   readSessionTranscriptModelContextAsync: mocks.context,
 }));
@@ -176,7 +182,7 @@ beforeEach(() => {
   mocks.reports.mockImplementation(async ({ customTypes }: { customTypes: string[] }) =>
     savedReports.filter((report) => customTypes.includes(String(report.customType))),
   );
-  mocks.watermark.mockResolvedValue({ generation: version.generation, maxSeq: version.rawSeq });
+  mocks.metadata.mockImplementation(async () => ({ version: sourceVersion }));
   mocks.raw.mockResolvedValue({
     kind: "page",
     events: [terminal, voice],
@@ -184,10 +190,9 @@ beforeEach(() => {
     hasMore: false,
   });
   mocks.delta.mockImplementation(async (_target, consume) => consume({ raw: mocks.raw }));
-  mocks.context.mockImplementation(
-    async (_target, consume: (context: SessionTranscriptModelContext) => unknown) =>
-      consume({ events: [], version: sourceVersion }),
-  );
+  mocks.context.mockImplementation(() => {
+    throw new Error("Seed must not hydrate the whole model context");
+  });
   mocks.record.mockResolvedValue(true);
   mocks.voice.mockResolvedValue(true);
   mocks.anchor.mockResolvedValue(anchor);
@@ -213,7 +218,6 @@ beforeEach(() => {
 describe("explicit native conversation history seed", () => {
   it("fences an empty native history without inventing a transcript or completed exchange", async () => {
     sourceVersion = { generation: null, rawSeq: null, updatedAt: null };
-    mocks.watermark.mockResolvedValue({ generation: null, maxSeq: null });
     expect(await ensureConversationKnowledgeSeed(params)).toEqual({
       status: "seeded",
       recorded: 0,
@@ -230,10 +234,43 @@ describe("explicit native conversation history seed", () => {
   });
 
   it("does not mark an empty source complete if a transcript appears before completion", async () => {
-    mocks.watermark.mockResolvedValue({ generation: null, maxSeq: null });
+    mocks.metadata.mockResolvedValueOnce({
+      version: { generation: null, rawSeq: null, updatedAt: null },
+    });
     await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow("source changed");
     expect(mocks.append).not.toHaveBeenCalled();
   });
+
+  it.each(["keyed", "unkeyed"] as const)(
+    "selects the exact %s terminal without inventing a private audience",
+    async (mode) => {
+      const message = {
+        ...terminal.event.message,
+        idempotencyKey: mode === "keyed" ? "saved-answer" : undefined,
+      };
+      mocks.raw.mockResolvedValueOnce({
+        kind: "page",
+        events: [{ ...terminal, event: { ...terminal.event, message } }],
+        cursor: "done",
+        hasMore: false,
+      });
+      expect((await ensureConversationKnowledgeSeed(params)).recorded).toBe(1);
+      expect(mocks.record).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          sourceMode: "native",
+          runId: "saved-run",
+          assistantTranscriptEntryId: "answer",
+          ...(mode === "keyed" ? { assistantTranscriptIdempotencyKey: "saved-answer" } : {}),
+        }),
+      );
+      const request = mocks.record.mock.calls[0]?.[0];
+      expect(request).not.toHaveProperty("privateAudience");
+      if (mode === "unkeyed") {
+        expect(request).not.toHaveProperty("assistantTranscriptIdempotencyKey");
+      }
+      expect(mocks.context).not.toHaveBeenCalled();
+    },
+  );
 
   it("records validated native occurrences in order, then persists one opaque completion marker", async () => {
     expect(await ensureConversationKnowledgeSeed(params)).toEqual({
@@ -379,6 +416,9 @@ describe("explicit native conversation history seed", () => {
     );
     expect(mocks.record).toHaveBeenCalledTimes(1);
     expect(mocks.voice).toHaveBeenCalledTimes(1);
+    expect(mocks.context).not.toHaveBeenCalled();
+    expect(mocks.metadata).toHaveBeenCalledTimes(2);
+    expect(mocks.metadata).toHaveBeenCalledWith({ operation: "version" });
   });
 
   it("skips missing native metadata and lets the recorder refuse incomplete tool work", async () => {
@@ -412,22 +452,138 @@ describe("explicit native conversation history seed", () => {
     expect(mocks.record).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["changed", "truncated"] as const)(
-    "refuses %s source completion without a marker",
-    async (mode) => {
-      mocks.context.mockImplementationOnce(async (_target, consume) =>
-        consume({
-          events: [],
-          version: mode === "changed" ? { ...version, rawSeq: 9 } : version,
-          ...(mode === "truncated" ? { truncated: true } : {}),
-        }),
-      );
-      await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow(
-        mode === "changed" ? "source changed" : "seed budget",
-      );
+  it("completes paged history larger than one model-context event window", async () => {
+    const count = CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxEvents + 1;
+    sourceVersion = { ...version, rawSeq: count };
+    const rows = Array.from({ length: count }, (_, index) => ({
+      seq: index + 1,
+      event: {
+        type: "message",
+        id: `unanswered-${index}`,
+        message: { role: "user", content: "An unanswered historical input." },
+      },
+    }));
+    mocks.raw.mockImplementation(async ({ cursor, maxEvents }) => {
+      const start = Number(cursor ?? 0);
+      const end = Math.min(start + maxEvents, rows.length);
+      return {
+        kind: "page",
+        events: rows.slice(start, end),
+        cursor: String(end),
+        hasMore: end < rows.length,
+      };
+    });
+    expect(await ensureConversationKnowledgeSeed(params)).toEqual({
+      status: "seeded",
+      recorded: 0,
+      skipped: count,
+    });
+    expect(mocks.raw).toHaveBeenCalledTimes(Math.ceil(count / 96));
+    expect(mocks.context).not.toHaveBeenCalled();
+    expect(mocks.metadata).toHaveBeenCalledTimes(2);
+    expect(savedReports).toHaveLength(1);
+  });
+
+  it("leaves an oversized single raw entry pending without a completion marker", async () => {
+    mocks.raw.mockResolvedValueOnce({
+      kind: "page",
+      events: [],
+      cursor: "oversized",
+      hasMore: true,
+      requiredBytes: CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxBytes + 1,
+    });
+    await expect(ensureConversationKnowledgeSeed(params)).resolves.toEqual({
+      status: "pending",
+      reason: "source-capacity",
+      recorded: 0,
+      skipped: 0,
+    });
+    expect(mocks.metadata).toHaveBeenCalledTimes(2);
+    expect(mocks.append).not.toHaveBeenCalled();
+  });
+
+  it("stops at a validation-capacity hole without skipping or publishing later endpoints", async () => {
+    mocks.record.mockRejectedValueOnce(new ConversationKnowledgeSourceCapacityError());
+    expect(await ensureConversationKnowledgeSeed(params)).toEqual({
+      status: "pending",
+      reason: "source-capacity",
+      recorded: 0,
+      skipped: 0,
+    });
+    expect(mocks.voice).not.toHaveBeenCalled();
+    expect(mocks.append).not.toHaveBeenCalled();
+    expect(mocks.metadata).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not classify arbitrary read or authority errors as capacity", async () => {
+    mocks.record.mockRejectedValueOnce(new RangeError("Invalid native range"));
+    await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow("Invalid native range");
+    expect(mocks.append).not.toHaveBeenCalled();
+  });
+
+  it("rechecks authority before returning a typed capacity disposition", async () => {
+    let current = true;
+    mocks.record.mockImplementationOnce(async () => {
+      current = false;
+      throw new ConversationKnowledgeSourceCapacityError();
+    });
+    await expect(
+      ensureConversationKnowledgeSeed({
+        ...params,
+        assertCurrent: () => {
+          if (!current) {
+            throw new Error("Pending seed authority revoked");
+          }
+        },
+      }),
+    ).rejects.toThrow("Pending seed authority revoked");
+    expect(mocks.append).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1_000_000, Number.NaN])(
+    "rejects invalid native byte progress %s",
+    async (requiredBytes) => {
+      mocks.raw.mockResolvedValueOnce({
+        kind: "page",
+        events: [],
+        cursor: "invalid",
+        hasMore: true,
+        requiredBytes,
+      });
+      await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow("made no progress");
       expect(mocks.append).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    { ...version, generation: "replacement-generation" },
+    { ...version, rawSeq: 9 },
+    { ...version, updatedAt: 2 },
+    undefined,
+  ])("refuses changed or missing final metadata without a marker (%j)", async (changed) => {
+    mocks.metadata.mockResolvedValueOnce({ version }).mockResolvedValueOnce({ version: changed });
+    await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow("source changed");
+    expect(mocks.append).not.toHaveBeenCalled();
+  });
+
+  it("keeps metadata source revocation fatal before writing a completion marker", async () => {
+    mocks.metadataCurrent
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error("metadata source revoked");
+      });
+    await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow(
+      "metadata source revoked",
+    );
+    expect(mocks.append).not.toHaveBeenCalled();
+  });
+
+  it("refuses missing initial metadata without traversing or completing", async () => {
+    mocks.metadata.mockResolvedValueOnce({});
+    await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow("version is unavailable");
+    expect(mocks.raw).not.toHaveBeenCalled();
+    expect(mocks.append).not.toHaveBeenCalled();
+  });
 
   it("does not acquire history or write a marker for an unenrolled session", async () => {
     mocks.branch.mockResolvedValueOnce(undefined);

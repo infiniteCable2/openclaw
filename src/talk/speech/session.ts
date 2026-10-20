@@ -417,6 +417,7 @@ export async function startSpeechSession(
         inputs,
         video,
         output: speechOutput,
+        abortSpeechUtterance,
         isStopped: () => stopped,
         getGeneration: () => outputGeneration,
         startWaiting() {
@@ -465,15 +466,6 @@ export async function startSpeechSession(
         greetingPending = false;
       },
     }),
-    ...(nativeInput
-      ? {
-          // Programmatic task injection uses the native conversation tools. This media handle
-          // does not mint a new user input on behalf of an unauthenticated caller.
-          steer: async () => {
-            throw new Error("Use the admitted native conversation input to steer this session");
-          },
-        }
-      : {}),
     getHealth: () => ({
       ...harness.getHealth({
         providerConnected: sttSession?.isConnected() ?? false,

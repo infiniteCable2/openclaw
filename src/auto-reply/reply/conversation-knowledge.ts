@@ -42,7 +42,11 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-execution.types.js";
-import { prepareConversationKnowledgeBranchFacts } from "./conversation-knowledge-authority.js";
+import {
+  pendingConversationKnowledgeNotice,
+  prepareConversationKnowledgeBranchFacts,
+  unavailableConversationKnowledge,
+} from "./conversation-knowledge-authority.js";
 import {
   createConversationKnowledgeIngestion,
   type ConversationKnowledgeIngestionMaintenance,
@@ -83,6 +87,8 @@ export function createReplyConversationKnowledgeTurn(params: {
   let execution: { admission: PreparedAgentRunAdmission; signal: AbortSignal } | undefined;
   let phase: "unprepared" | "prepared" | "released" = "unprepared";
   let enabled = false;
+  let seedPending = false;
+  const seedNotice = pendingConversationKnowledgeNotice();
   let sourceMode: "native" | "branches" | undefined;
   let historyPrepared = false;
   let retainedFragments: RuntimeContextFragment[] = [];
@@ -109,7 +115,7 @@ export function createReplyConversationKnowledgeTurn(params: {
     assertCurrent,
     get fragments(): readonly RuntimeContextFragment[] {
       assertCurrent();
-      return prepared?.fragments ?? [];
+      return seedPending ? seedNotice.fragments : (prepared?.fragments ?? []);
     },
     async prepare(admission: PreparedAgentRunAdmission, signal: AbortSignal) {
       if (phase !== "unprepared") {
@@ -136,12 +142,13 @@ export function createReplyConversationKnowledgeTurn(params: {
         // This is the actual admitted native turn, not a read-only CLI/provider
         // startup snapshot. Establish the seed even without a verified audience
         // before this source may publish its first live completion reference.
-        await ensureConversationKnowledgeSeed({
+        const seed = await ensureConversationKnowledgeSeed({
           reader,
           sessionId,
           assertCurrent: assertTurnSourceCurrent,
           signal,
         });
+        seedPending = seed.status === "pending";
         assertCurrent();
       }
       assertCurrent();
@@ -154,6 +161,10 @@ export function createReplyConversationKnowledgeTurn(params: {
       }
       if (!enabled) {
         return [];
+      }
+      execution.signal.throwIfAborted();
+      if (seedPending) {
+        return seedNotice.fragments;
       }
       // Only the actually selected read-only CLI candidate needs a preview.
       // Embedded runs retain their missing packets directly in prepareHistory.
@@ -194,6 +205,10 @@ export function createReplyConversationKnowledgeTurn(params: {
         run.sessionKey !== reader.sessionKey
       ) {
         throw new Error("Conversation knowledge native run changed its admitted recipient");
+      }
+      if (seedPending) {
+        execution.signal.throwIfAborted();
+        return seedNotice.withContext(run.runtimeContextFragments);
       }
       const { signal } = execution;
       const preview = prepared?.fragments ?? [];
@@ -248,6 +263,7 @@ export function createReplyConversationKnowledgeTurn(params: {
           : undefined;
       if (
         !enabled ||
+        seedPending ||
         !sourceMode ||
         !terminal ||
         terminal.runId !== runId ||
@@ -316,42 +332,6 @@ export function createReplyConversationKnowledgeTurn(params: {
 export type ReplyConversationKnowledgeTurn = NonNullable<
   ReturnType<typeof createReplyConversationKnowledgeTurn>
 >;
-
-/** Absence is model-visible capability data, not an invented history permission. */
-function unavailableConversationKnowledge(
-  params: {
-    assertCurrent: SessionSourceAssertion;
-    signal?: AbortSignal;
-  },
-  reason: "original-participant-unconfirmed" | "private-destination-audience-unconfirmed",
-): PreparedReplyConversationKnowledge {
-  let active = true;
-  const assertCurrent = composeSessionSourceAssertion([params.assertCurrent], (assertSource) => {
-    if (!active) {
-      throw new Error("Conversation knowledge capability has been released");
-    }
-    params.signal?.throwIfAborted();
-    assertSource();
-  });
-  return {
-    fragments: [
-      {
-        kind: "conversation-data",
-        text: JSON.stringify({
-          capability: "related-conversation-context",
-          available: false,
-          reason,
-          coverage: "Only the current conversation context is available automatically.",
-        }),
-      },
-    ],
-    observed: [],
-    assertCurrent,
-    release: () => {
-      active = false;
-    },
-  };
-}
 
 type ReplyConversationKnowledgeParams = {
   reader: SessionEntryCohortReader;

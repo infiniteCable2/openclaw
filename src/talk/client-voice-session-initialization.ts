@@ -20,7 +20,10 @@ import { resolveSessionStorePathForScope } from "../config/sessions/session-stor
 import { mergeSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSubagentSessionKey, isIncognitoSessionKey } from "../routing/session-key.js";
-import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
+import {
+  capturePrivateConversationCreationAudience,
+  type ConversationPrivateAudience,
+} from "../sessions/conversation-private-audience.js";
 
 type VoiceSessionInitializationParams = {
   agentId: string;
@@ -88,14 +91,13 @@ async function ensureConversationSession(
   if (snapshot.currentEntry?.sessionId) {
     return snapshot.currentEntry.sessionId;
   }
-  const privateAudience =
-    !snapshot.currentEntry &&
-    rootSessionKey &&
-    params.privateAudience?.agentId === params.agentId &&
-    params.privateAudience.sessionKey === params.sessionKey
-      ? params.privateAudience
-      : undefined;
-  privateAudience?.assertCurrent();
+  const privateAudience = capturePrivateConversationCreationAudience({
+    cfg,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    entry: snapshot.currentEntry,
+    audience: params.privateAudience,
+  });
   const sessionEntry = snapshot.currentEntry
     ? mergeSessionEntry(snapshot.currentEntry, { sessionId: randomUUID() })
     : mergeSessionEntry(undefined, {

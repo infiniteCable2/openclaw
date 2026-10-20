@@ -50,7 +50,6 @@ function isEligibleConversation(
     entry.spawnedBy !== undefined ||
     entry.spawnedBySessionId !== undefined ||
     entry.spawnDepth !== undefined ||
-    entry.forkSource !== undefined ||
     entry.forkedFromParent === true ||
     entry.createdVia === "spawn" ||
     entry.createdVia === "cron" ||
@@ -61,6 +60,8 @@ function isEligibleConversation(
   ) {
     return false;
   }
+  // A native initial-context copy records forkSource without a task-parent edge.
+  // That provenance alone must not prevent later native conversation activation.
   return true;
 }
 

@@ -131,7 +131,7 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("speech-confirmed waiting audio", () => {
-  it("routes real STT input through the native owner and shares its existing synthesis queue", async () => {
+  it("keeps raw controls denied while native STT owns the existing synthesis queue", async () => {
     const admitted = createDeferred<SpeechNativeInputParams>();
     const completed = createDeferred<import("../conversation-reply.js").ConversationReplyResult>();
     const nativeInput = vi.fn((input: SpeechNativeInputParams) => {
@@ -146,6 +146,13 @@ describe("speech-confirmed waiting audio", () => {
     });
     const f = await setup({ nativeInput });
     try {
+      for (const mode of ["status", "cancel", "steer", "followup"] as const) {
+        await expect(f.handle.steer({ text: "Unauthenticated addition", mode })).rejects.toThrow(
+          "Use the admitted native conversation input to steer this session",
+        );
+      }
+      expect(nativeInput).not.toHaveBeenCalled();
+      expect(f.consultAgent).not.toHaveBeenCalled();
       if (!f.callbacks.onTranscript) {
         throw new Error("Expected native speech transcript handler");
       }

@@ -36,7 +36,6 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { resolveAgentConversationRootSessionKey } from "../../config/sessions/session-conversation-root-key.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
-import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { selectSessionModelOverride } from "../../config/sessions/session-entry-selection.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
@@ -75,7 +74,6 @@ import {
   toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
 import { resolveAgentHarnessSessionContextError } from "../../sessions/agent-harness-session-key.js";
-import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { isInterSessionInputProvenance } from "../../sessions/input-provenance.js";
 import {
   isModelSelectionLocked,
@@ -94,7 +92,6 @@ import {
   classifySessionStateActor,
   registerMainSessionGroupWatch,
 } from "../../sessions/session-state-events.js";
-import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
 import {
   deliveryContextFromSession,
   sessionDeliveryOrigin,
@@ -131,6 +128,7 @@ import {
 } from "./session-init-conflict-retry.js";
 import type { SessionInitResult } from "./session-init.types.js";
 import {
+  prepareReplySessionCreation,
   prepareReplySessionInitialization,
   resolveInitializationContextSeed,
   resolveInitializationSessionReader,
@@ -717,27 +715,11 @@ async function initSessionStateAttemptLocked(
           context: deliveryContext,
           origin: baseDeliveryOrigin,
         });
-  const creationStamp =
-    !entry && ctx.SessionCreation ? buildSessionCreationStamp(ctx.SessionCreation) : undefined;
-  const privateAudience =
-    !entry &&
-    !isSystemEvent &&
-    !isIncognitoSessionKey(sessionKey) &&
-    resolveAgentConversationMode(cfg, agentId) === "branches"
-      ? readConversationPrivateAudience(ctx)
-      : undefined;
-  const privateCreation =
-    privateAudience?.agentId === agentId && privateAudience.sessionKey === sessionKey
-      ? privateAudience
-      : undefined;
-  privateCreation?.assertCurrent();
+  const creation = prepareReplySessionCreation(params, attemptContext, entry);
   let sessionEntry: SessionEntry = {
     ...baseEntry,
     ...preservedState,
-    ...creationStamp,
-    // Only the original live recipient can make a newly created branch private.
-    // A rollover or a newly enrolled historical row keeps its existing sharing.
-    ...(privateCreation ? { visibility: "draft" as const } : {}),
+    ...creation.patch,
     sessionId,
     lifecycleRevision: isNewSession ? crypto.randomUUID() : baseEntry?.lifecycleRevision,
     updatedAt: retainPendingResetMarker ? 0 : Date.now(),
@@ -828,11 +810,7 @@ async function initSessionStateAttemptLocked(
       !entry || params.assertSourceCurrent
         ? () => {
             params.assertSourceCurrent?.();
-            privateCreation?.assertCurrent();
-            if (!entry) {
-              params.signal?.throwIfAborted();
-              assertPreparedSkillLibrarySelection(ctx.SessionCreation?.skillLibrarySelections);
-            }
+            creation.assertCurrent();
           }
         : undefined,
     activeSessionKey: sessionKey,

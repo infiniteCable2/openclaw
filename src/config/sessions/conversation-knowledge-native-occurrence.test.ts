@@ -5,8 +5,113 @@ import {
   person,
 } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { recordConversationKnowledgeTurn } from "./conversation-knowledge-store.js";
+import {
+  CONVERSATION_KNOWLEDGE_SEED,
+  ensureConversationKnowledgeSeed,
+} from "./conversation-knowledge-seed.js";
+import {
+  ConversationKnowledgeSourceCapacityError,
+  recordConversationKnowledgeTurn,
+} from "./conversation-knowledge-store.js";
+import {
+  CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
+  conversationKnowledgeOrigin,
+  isCompletedConversationKnowledge,
+} from "./conversation-knowledge.js";
 import { appendTranscriptMessage, loadTranscriptEvents } from "./session-accessor.js";
+import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
+import type { TranscriptEvent } from "./session-accessor.types.js";
+import { readActiveTranscriptEntryAnchorAsync } from "./session-transcript-anchor-read.js";
+import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
+
+it("keeps one real completed turn beyond the validation event budget pending, not skipped", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "native-long-turn-seed" },
+    async (state) => {
+      const fixture = await createConversationKnowledgeScenario(state);
+      try {
+        const branch = await fixture.branch("long-turn");
+        const owner = await fixture.claim(branch);
+        const events: TranscriptEvent[] = [
+          {
+            type: "message",
+            id: "long-question",
+            parentId: null,
+            message: { role: "user", content: "Complete this long exchange.", timestamp: 1 },
+          },
+        ];
+        // Every small carrier is on the same uncompacted active path. The full
+        // exchange is valid, but the bounded native view cannot retain its user.
+        for (let index = 0; index < CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxEvents; index += 1) {
+          events.push({
+            type: "custom_message",
+            id: `context-${index}`,
+            parentId: index === 0 ? "long-question" : `context-${index - 1}`,
+            customType: "synthetic-context",
+            content: "Small context carrier.",
+            display: false,
+          });
+        }
+        events.push({
+          type: "message",
+          id: "long-answer",
+          parentId: `context-${CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxEvents - 1}`,
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "The long exchange is complete." }],
+            stopReason: "stop",
+            timestamp: 2,
+            __openclaw: { runId: "long-run" },
+          },
+        });
+        await replaceTranscriptEvents(branch, events);
+        await waitForSessionTranscriptProjection(branch);
+        const storedBefore = await loadTranscriptEvents(branch);
+        const through = await readActiveTranscriptEntryAnchorAsync({
+          ...branch,
+          entryId: "long-answer",
+        });
+        if (!through) {
+          throw new Error("Expected the real saved terminal anchor");
+        }
+        expect(
+          isCompletedConversationKnowledge(
+            {
+              version: 1,
+              sourceMode: "branches",
+              source: branch,
+              origin: conversationKnowledgeOrigin(branch),
+              runId: "long-run",
+              through,
+            },
+            storedBefore,
+          ),
+        ).toBe(true);
+        await expect(
+          recordConversationKnowledgeTurn({
+            ...owner,
+            runId: "long-run",
+            assistantTranscriptEntryId: "long-answer",
+          }),
+        ).rejects.toBeInstanceOf(ConversationKnowledgeSourceCapacityError);
+        expect(await ensureConversationKnowledgeSeed(owner)).toMatchObject({
+          status: "pending",
+          reason: "source-capacity",
+          recorded: 0,
+        });
+        expect(await fixture.receipts()).toEqual([]);
+        expect(await loadTranscriptEvents(fixture.root)).not.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ customType: CONVERSATION_KNOWLEDGE_SEED }),
+          ]),
+        );
+        expect(await loadTranscriptEvents(branch)).toEqual(storedBefore);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+});
 
 it("publishes an unkeyed native call completion through the root to its private chat", async () => {
   await withOpenClawTestState(

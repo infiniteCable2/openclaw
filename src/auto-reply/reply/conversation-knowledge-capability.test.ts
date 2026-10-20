@@ -35,7 +35,8 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   recordConversationKnowledgeTurn: source.record,
 }));
 // mock-isolation: Select audience facts without opening the sharing/profile storage owner.
-vi.mock("./conversation-knowledge-authority.js", () => ({
+vi.mock("./conversation-knowledge-authority.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./conversation-knowledge-authority.js")>()),
   prepareConversationKnowledgeBranchFacts: source.facts,
 }));
 // mock-isolation: A separately permitted read is deliberately insufficient to prove same-person disclosure.
@@ -60,6 +61,7 @@ beforeEach(() => {
   for (const mock of Object.values(source)) {
     mock.mockReset();
   }
+  source.seed.mockResolvedValue({ status: "seeded", recorded: 0, skipped: 0 });
 });
 
 async function nativeTurn(admin = false, conversationMode: "native" | "branches" = "branches") {
@@ -74,7 +76,12 @@ async function nativeTurn(admin = false, conversationMode: "native" | "branches"
     : undefined;
   const followupRun = createMockFollowupRun({
     operatorAuthority,
-    run: { agentId: "example", sessionId: "source-session", config: cfg },
+    run: {
+      agentId: "example",
+      sessionKey: "agent:example:branch",
+      sessionId: "source-session",
+      config: cfg,
+    },
   });
   const { replyOperation } = createMockReplyOperation({ sessionId: "source-session" });
   lifecycleAdmissionByOperation.set(replyOperation, { reader: unusedReader() });
@@ -139,10 +146,44 @@ async function nativeTurn(admin = false, conversationMode: "native" | "branches"
       },
     },
   };
-  return { owner, result, abort, admission, originalSource };
+  return { owner, result, abort, admission, originalSource, run: followupRun.run };
 }
 
 describe("actual native-turn knowledge ownership", () => {
+  it("continues a turn with an explicit pending notice but no related import or publication", async () => {
+    source.seed.mockResolvedValue({
+      status: "pending",
+      reason: "source-capacity",
+      recorded: 1,
+      skipped: 0,
+    });
+    const f = await nativeTurn();
+    expect(f.owner.fragments[0]?.text).toContain("catch-up is incomplete");
+    expect(await f.owner.prepareSnapshot()).toEqual(f.owner.fragments);
+    const run = {
+      ...f.run,
+      runId: "source-run",
+      prompt: "Continue this conversation.",
+      runtimeContextFragments: [...f.owner.fragments],
+    };
+    expect(await f.owner.prepareHistory(run)).toEqual(f.owner.fragments);
+    expect(await f.owner.prepareHistory(run)).toEqual(f.owner.fragments);
+    await f.owner.record(f.result);
+    expect(f.result.status).toBe("ok");
+    expect(source.root).not.toHaveBeenCalled();
+    expect(source.context).not.toHaveBeenCalled();
+    expect(source.history).not.toHaveBeenCalled();
+    expect(source.record).not.toHaveBeenCalled();
+    f.abort.abort(new Error("Pending turn retired"));
+    await expect(f.owner.prepareSnapshot()).rejects.toThrow("Pending turn retired");
+  });
+
+  it("does not convert seed authority failure into a capacity notice", async () => {
+    source.seed.mockRejectedValue(new Error("Seed source revoked"));
+    await expect(nativeTurn()).rejects.toThrow("Seed source revoked");
+    expect(source.record).not.toHaveBeenCalled();
+  });
+
   it("drains terminal writes before reporting the exact completed native occurrence", async () => {
     const f = await nativeTurn();
     source.record.mockResolvedValue(true);
@@ -579,6 +620,7 @@ describe("native personal difference-context integration", () => {
 
   it("does not treat a real admitted administrator as the original conversation person", async () => {
     const f = await nativeTurn(true);
+    await f.owner.prepareSnapshot();
     expect(f.owner.fragments[0]?.text).toContain("original-participant-unconfirmed");
     expect(source.branch).not.toHaveBeenCalled();
     expect(source.history).not.toHaveBeenCalled();

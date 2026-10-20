@@ -167,6 +167,30 @@ it("allows an explicit native-mode enrollment without activating branch routing"
   expect(await f.history()).toEqual(f.events);
 });
 
+it.each(["native", "branches"] as const)(
+  "enrolls a copied conversation in %s mode without changing history or sharing",
+  async (mode) => {
+    const f = await fixture({
+      forkSource: { sessionKey: "agent:main:original", sessionId: "original" },
+      visibility: "shared",
+    });
+    f.setMode(mode);
+    const result = await enrollSessionConversationBranch({ ...f.params, expectedMode: mode });
+    expect(result.enrolled).toBe(true);
+    expect(await f.read()).toEqual({
+      ...f.before,
+      conversationTopology: {
+        version: 1,
+        role: "branch",
+        rootSessionKey: f.rootScope.sessionKey,
+        rootSessionId: f.root.sessionId,
+        rootSessionLifecycleRevision: f.root.lifecycleRevision,
+      },
+    });
+    expect(await f.history()).toEqual(f.events);
+  },
+);
+
 it("initializes an eligible legacy lifecycle before claims, preserving all history and other fields", async () => {
   const f = await fixture({ lifecycleRevision: undefined });
   const rootBefore = await readSessionEntryReadOnlyInWorker(f.rootScope);
@@ -228,7 +252,14 @@ it.each(["reset", "source", "mode", "abort"] as const)(
 it.each([
   { parentSessionKey: "agent:main:original" },
   { spawnedBy: "agent:main:original" },
-  { forkSource: { sessionKey: "agent:main:original", sessionId: "original" } },
+  {
+    forkSource: { sessionKey: "agent:main:original", sessionId: "original" },
+    parentSessionKey: "agent:main:original",
+  },
+  {
+    forkSource: { sessionKey: "agent:main:original", sessionId: "original" },
+    forkedFromParent: true,
+  },
   { incognito: true },
   { archivedAt: 1 },
   { createdVia: "cron" },

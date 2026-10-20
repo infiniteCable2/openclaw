@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
 import {
   conversationKnowledgeAudience,
   conversationKnowledgeAudienceIdentity,
@@ -8,14 +9,68 @@ import {
 } from "../../config/sessions/conversation-audience.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
-import type {
-  PreparedSessionSourceAuthority,
-  SessionSourceAssertion,
+import {
+  composeSessionSourceAssertion,
+  type PreparedSessionSourceAuthority,
+  type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import type { PreparedReplyConversationKnowledge } from "./conversation-knowledge.js";
+
+/** Capacity deferral is explicit capability data, never a claim of completed catch-up. */
+export function pendingConversationKnowledgeNotice() {
+  const fragments: RuntimeContextFragment[] = [
+    {
+      kind: "conversation-data",
+      text: "Related-conversation catch-up is incomplete: a historical source exceeds the bounded seed capacity. Continue the current conversation normally; do not assume all related history has been incorporated or shared.",
+    },
+  ];
+  return {
+    fragments,
+    withContext(existing: readonly RuntimeContextFragment[] = []): RuntimeContextFragment[] {
+      return [...existing.filter((item) => !fragments.includes(item)), ...fragments];
+    },
+  };
+}
+
+/** Absence is model-visible capability data, not an invented history permission. */
+export function unavailableConversationKnowledge(
+  params: {
+    assertCurrent: SessionSourceAssertion;
+    signal?: AbortSignal;
+  },
+  reason: "original-participant-unconfirmed" | "private-destination-audience-unconfirmed",
+): PreparedReplyConversationKnowledge {
+  let active = true;
+  const assertCurrent = composeSessionSourceAssertion([params.assertCurrent], (assertSource) => {
+    if (!active) {
+      throw new Error("Conversation knowledge capability has been released");
+    }
+    params.signal?.throwIfAborted();
+    assertSource();
+  });
+  return {
+    fragments: [
+      {
+        kind: "conversation-data",
+        text: JSON.stringify({
+          capability: "related-conversation-context",
+          available: false,
+          reason,
+          coverage: "Only the current conversation context is available automatically.",
+        }),
+      },
+    ],
+    observed: [],
+    assertCurrent,
+    release: () => {
+      active = false;
+    },
+  };
+}
 
 const fields = [
   "sessionId",
