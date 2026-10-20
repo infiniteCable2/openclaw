@@ -83,7 +83,7 @@ export async function publishConversationPublication(params: {
       params.signal,
     );
     check();
-    if (!anchor || !isDeepStrictEqual(anchor, row.anchor)) {
+    if (!anchor || !isDeepStrictEqual(anchor, row.readRange?.through ?? row.anchor)) {
       throw new ConversationPublicationBlockedError("endpoint-unavailable");
     }
     const published = await recordConversationKnowledgeReference({
@@ -95,6 +95,7 @@ export async function publishConversationPublication(params: {
       sourceMode: row.intent.sourceMode,
       observed: row.intent.observed,
       privateAudience: row.intent.privateAudience,
+      readRange: row.readRange,
       completion:
         row.intent.kind === "completed-turn"
           ? { runId: row.intent.runId }

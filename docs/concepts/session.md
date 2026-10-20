@@ -139,6 +139,17 @@ The two reference kinds use separate progress frontiers and deduplicate within
 their actual source incarnation and transcript generation. The root stores
 neither dialogue text nor fabricated model turns.
 
+An exact-row transcript rewrite can renew the physical read anchors of an
+earlier, unchanged contribution in the same native worker transaction. The
+original occurrence, private admission, packet IDs, and progress frontiers stay
+unchanged, so already admitted observations are not copied again. Renewal requires
+an unbroken generation chain and unchanged native interval boundaries; a rewrite
+inside the contributed range, a replaced source, or an already stale reference
+does not acquire continuity merely because its message IDs still exist. Existing
+live audience and read-permission checks remain mandatory. Legacy synchronous
+writers retain conservative invalidation rather than doing additional background
+publication work on the Gateway main thread.
+
 The central embedded Reply path catches up a fixed prefix of all eligible root
 references, not just the latest four sources. It copies quoted observations into
 the recipient's native transcript in bounded packets. Each packet records its

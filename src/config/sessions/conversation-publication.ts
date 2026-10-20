@@ -44,9 +44,11 @@ export function openConversationPublicationStore(
     stats: () => execute({ type: "session.conversationPublication.stats", input: undefined }),
     acknowledge: (id: string) =>
       execute({ type: "session.conversationPublication.acknowledge", input: { id } }),
-    retry: (id: string, input: { errorCode: string; nextAttemptAt: number }) =>
-      execute({ type: "session.conversationPublication.retry", input: { id, ...input } }),
-    block: (id: string, input: { errorCode: string }) =>
+    retry: (
+      id: string,
+      input: { errorCode: string; nextAttemptAt: number; expectedGeneration?: string },
+    ) => execute({ type: "session.conversationPublication.retry", input: { id, ...input } }),
+    block: (id: string, input: { errorCode: string; expectedGeneration?: string }) =>
       execute({ type: "session.conversationPublication.block", input: { id, ...input } }),
   };
 }

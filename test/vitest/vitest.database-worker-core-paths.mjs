@@ -9,6 +9,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/config/sessions/conversation-knowledge-store.test.ts",
   "src/config/sessions/conversation-knowledge-history.test.ts",
   "src/config/sessions/conversation-knowledge-packets.test.ts",
+  "src/config/sessions/conversation-knowledge-rewrite.test.ts",
   "src/config/sessions/conversation-knowledge-scaling.benchmark.test.ts",
   "src/config/sessions/conversation-knowledge-seed.test.ts",
   "src/config/sessions/conversation-publication.test.ts",

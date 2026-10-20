@@ -33,6 +33,8 @@ type ConversationKnowledgeReferenceBase = {
   origin: string;
   source: { agentId: string; sessionKey: string; sessionId: string; lifecycleRevision: string };
   through: TranscriptEntryAnchor;
+  /** Native rewrite continuity for an unchanged range; never changes occurrence identity. */
+  readRange?: { through: TranscriptEntryAnchor; admission?: TranscriptEntryAnchor };
   /** Evidence of an admitted private turn range, never authority to read it. */
   privateAudience?: {
     participant: Extract<SessionParticipantIdentity, { type: "profile" | "remote" }>;
@@ -203,7 +205,47 @@ function readConversationKnowledgeReferenceBase(
       });
     }
   }
+  if (record.readRange !== undefined) {
+    const range = asOptionalRecord(record.readRange);
+    const renewedThrough = readRenewedKnowledgeAnchor(range?.through, receipt.through);
+    const renewedAdmission = receipt.privateAudience
+      ? readRenewedKnowledgeAnchor(range?.admission, receipt.privateAudience.admission)
+      : undefined;
+    if (
+      !range ||
+      !renewedThrough ||
+      (receipt.privateAudience
+        ? !renewedAdmission || renewedAdmission.generation !== renewedThrough.generation
+        : range.admission !== undefined)
+    ) {
+      return undefined;
+    }
+    receipt.readRange = {
+      through: renewedThrough,
+      ...(renewedAdmission ? { admission: renewedAdmission } : {}),
+    };
+  }
   return receipt;
+}
+
+/** Continuity may renew a revision, never move or widen the originally admitted interval. */
+function readRenewedKnowledgeAnchor(value: unknown, original: TranscriptEntryAnchor) {
+  const anchor = asOptionalRecord(value);
+  const fields = [
+    "agentId",
+    "sessionKey",
+    "sessionId",
+    "storePath",
+    "entryId",
+    "rawSeq",
+    "effectiveParentId",
+    "activeMessagePosition",
+  ] as const;
+  return anchor &&
+    exact(anchor.generation) &&
+    fields.every((field) => anchor[field] === original[field])
+    ? { ...original, generation: anchor.generation }
+    : undefined;
 }
 
 export function readConversationKnowledgeReceipt(

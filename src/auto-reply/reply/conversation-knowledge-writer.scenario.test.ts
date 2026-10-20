@@ -8,10 +8,12 @@ import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import { recordConversationKnowledgeTurn } from "../../config/sessions/conversation-knowledge-store.js";
 import {
+  appendTranscriptMessage,
   loadSessionEntry,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { rewritePreparedTranscriptMessageAtAnchor } from "../../config/sessions/session-message-rewrite.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge.js";
@@ -47,7 +49,13 @@ describe("native turn packet writer custody", () => {
             "stop",
             "The color is yellow.",
           );
-          expect(await recordConversationKnowledgeTurn({ ...donorOwner, ...terminal })).toBe(true);
+          expect(
+            await recordConversationKnowledgeTurn({
+              ...donorOwner,
+              ...terminal,
+              privateAudience: { participant: person, admission: terminal.admission! },
+            }),
+          ).toBe(true);
           const recipient = await fixture.branch("recipient");
           const target = await resolveAgentRunSessionTarget({
             agentId: recipient.agentId,
@@ -128,6 +136,45 @@ describe("native turn packet writer custody", () => {
                 .map(asOptionalRecord)
                 .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT),
             ).toEqual(packets);
+
+            // A later native prompt-metadata rewrite must preserve older private
+            // contributions for both an existing call and a newly admitted one.
+            const later = await appendTranscriptMessage(donor, {
+              message: { role: "user", content: "A later unrelated turn.", timestamp: Date.now() },
+            });
+            if (!later.anchor) {
+              throw new Error("Expected later native user anchor");
+            }
+            const rewritten = await rewritePreparedTranscriptMessageAtAnchor(
+              later.anchor,
+              (message) => {
+                const current = asOptionalRecord(message);
+                if (current?.role !== "user") {
+                  throw new Error("Expected original later user message");
+                }
+                return {
+                  ...current,
+                  __openclaw: {
+                    ...asOptionalRecord(current.__openclaw),
+                    modelPromptProjection: { version: 1, text: "Prepared later model view." },
+                  },
+                };
+              },
+            );
+            expect(rewritten?.generation).not.toBe(later.anchor.generation);
+            const refreshed = (await fixture.receipts())[0]!;
+            expect(refreshed.through.generation).toBe(terminal.admission!.generation);
+            expect(refreshed.readRange?.through.generation).toBe(rewritten?.generation);
+            await knowledge.prepareHistory(run);
+            expect(
+              (await loadTranscriptEvents(recipient))
+                .map(asOptionalRecord)
+                .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT),
+            ).toEqual(packets);
+            const fresh = await fixture.branch("fresh-recipient");
+            expect((await fixture.read(await fixture.claim(fresh))).text).toContain(
+              "The color is yellow.",
+            );
           } finally {
             knowledge.release();
             admission.close();

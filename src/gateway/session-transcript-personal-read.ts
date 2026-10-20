@@ -112,10 +112,11 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     );
   }
   const audienceIdentity = conversationKnowledgeParticipantIdentity(participant);
-  const validateRootEvidence = contribution?.privateAudience
-    ? (await import("../config/sessions/conversation-knowledge-store.js"))
-        .assertNativeKnowledgeRootContribution
-    : undefined;
+  const validateRootEvidence =
+    contribution?.privateAudience || contribution?.readRange
+      ? (await import("../config/sessions/conversation-knowledge-store.js"))
+          .assertNativeKnowledgeRootContribution
+      : undefined;
   original();
   type Held = Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
   type Source = Readonly<{
@@ -155,7 +156,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     }
     original();
     destination?.assertCurrent();
-    if (contribution?.privateAudience) {
+    if (contribution?.privateAudience || contribution?.readRange) {
       if (!rootEvidence) {
         throw new Error("Personal contribution requires native root evidence");
       }
@@ -336,13 +337,14 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     if (!isDeepStrictEqual(originalRoot.readSource, originalTarget.readSource)) {
       throw new Error("Personal conversation root differs from the original physical store");
     }
-    if (contribution?.privateAudience) {
+    if (contribution?.privateAudience || contribution?.readRange) {
       if (
         selected.length !== 1 ||
         selected[0]?.agentId !== contribution.source.agentId ||
         selected[0]?.sessionKey !== contribution.source.sessionKey ||
-        conversationKnowledgeParticipantIdentity(contribution.privateAudience.participant) !==
-          audienceIdentity
+        (contribution.privateAudience &&
+          conversationKnowledgeParticipantIdentity(contribution.privateAudience.participant) !==
+            audienceIdentity)
       ) {
         throw new Error("Personal contribution is not the original person's selected range");
       }
@@ -398,12 +400,22 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     });
     return {
       sources: Object.freeze(sources),
-      contributionRange: contribution?.privateAudience
-        ? Object.freeze({
-            from: Object.freeze({ ...contribution.privateAudience.admission }),
-            through: Object.freeze({ ...contribution.through }),
-          })
-        : undefined,
+      contributionRange:
+        contribution?.privateAudience || contribution?.readRange
+          ? Object.freeze({
+              ...(contribution.privateAudience
+                ? {
+                    from: Object.freeze({
+                      ...(contribution.readRange?.admission ??
+                        contribution.privateAudience.admission),
+                    }),
+                  }
+                : {}),
+              through: Object.freeze({
+                ...(contribution.readRange?.through ?? contribution.through),
+              }),
+            })
+          : undefined,
       assertCurrent: composeSessionSourceAssertion([original, source]),
       release,
     };

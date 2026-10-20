@@ -75,14 +75,15 @@ function decode(row: StoredRow): ConversationPublicationRow {
     throw new Error("Invalid conversation publication state");
   }
   // SAFETY: Only the transaction-owned receipt validators below write this private payload.
-  const { intent, anchor } = JSON.parse(row.payload_json) as Pick<
+  const { intent, anchor, readRange } = JSON.parse(row.payload_json) as Pick<
     ConversationPublicationRow,
-    "intent" | "anchor"
+    "intent" | "anchor" | "readRange"
   >;
   return {
     id: row.publication_id,
     intent,
     anchor,
+    ...(readRange ? { readRange } : {}),
     state: row.state,
     attemptCount: row.attempt_count,
     nextAttemptAt: row.next_attempt_at,
@@ -346,7 +347,13 @@ export function acknowledgeConversationPublication(database: OpenClawAgentDataba
 
 export function failConversationPublication(
   database: OpenClawAgentDatabase,
-  input: { id: string; errorCode: string; nextAttemptAt?: number; blocked: boolean },
+  input: {
+    id: string;
+    errorCode: string;
+    nextAttemptAt?: number;
+    blocked: boolean;
+    expectedGeneration?: string;
+  },
 ) {
   requireTransaction(database);
   if (
@@ -366,7 +373,21 @@ export function failConversationPublication(
         attempt_count: eb("attempt_count", "+", 1),
       }))
       .where("publication_id", "=", input.id)
-      .where("state", "=", "ready"),
+      .where("state", "=", "ready")
+      .$if(input.expectedGeneration !== undefined, (query) =>
+        query.where(
+          (eb) =>
+            eb.fn.coalesce(
+              eb.fn<string>("json_extract", [
+                "payload_json",
+                eb.val("$.readRange.through.generation"),
+              ]),
+              eb.fn<string>("json_extract", ["payload_json", eb.val("$.anchor.generation")]),
+            ),
+          "=",
+          input.expectedGeneration!,
+        ),
+      ),
   );
 }
 

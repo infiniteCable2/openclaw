@@ -44,14 +44,14 @@ export const conversationPublicationOperations = {
   "session.conversationPublication.acknowledge": (input: { id: string }, context: Context) =>
     transaction(context, (database) => acknowledgeConversationPublication(database, input.id)),
   "session.conversationPublication.retry": (
-    input: { id: string; errorCode: string; nextAttemptAt: number },
+    input: { id: string; errorCode: string; nextAttemptAt: number; expectedGeneration?: string },
     context: Context,
   ) =>
     transaction(context, (database) =>
       failConversationPublication(database, { ...input, blocked: false }),
     ),
   "session.conversationPublication.block": (
-    input: { id: string; errorCode: string },
+    input: { id: string; errorCode: string; expectedGeneration?: string },
     context: Context,
   ) =>
     transaction(context, (database) =>

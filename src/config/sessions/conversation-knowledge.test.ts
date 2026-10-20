@@ -80,6 +80,47 @@ function privateFixture() {
 }
 
 describe("private conversation contribution evidence", () => {
+  it("keeps occurrence identity while decoding only same-interval native read continuity", () => {
+    const f = privateFixture();
+    const readRange = {
+      through: { ...f.receipt.through, generation: "renewed" },
+      admission: { ...f.receipt.privateAudience!.admission, generation: "renewed" },
+    };
+    const renewed = readConversationKnowledgeReceipt({ ...f.receipt, readRange });
+    expect(renewed).toEqual({ ...f.receipt, readRange });
+    expect(renewed?.through).toEqual(f.receipt.through);
+    expect(projectConversationKnowledge(renewed!, f.events)?.text).toBe(
+      projectConversationKnowledge(f.receipt, f.events)?.text,
+    );
+    for (const patch of [
+      { entryId: "different" },
+      { rawSeq: 9 },
+      { effectiveParentId: null },
+      { activeMessagePosition: 9 },
+      { storePath: "/synthetic/another.sqlite" },
+      { sessionId: "different" },
+      { sessionKey: "agent:researcher:another" },
+      { agentId: "another" },
+      { generation: "" },
+    ]) {
+      expect(
+        readConversationKnowledgeReceipt({
+          ...f.receipt,
+          readRange: { ...readRange, through: { ...readRange.through, ...patch } },
+        }),
+      ).toBeUndefined();
+    }
+    for (const admission of [
+      undefined,
+      { ...readRange.admission, generation: "unpaired" },
+      { ...readRange.admission, rawSeq: 0 },
+    ]) {
+      expect(
+        readConversationKnowledgeReceipt({ ...f.receipt, readRange: { ...readRange, admission } }),
+      ).toBeUndefined();
+    }
+  });
+
   it("uses the canonical identity decoder without deriving aliases or accepting observation identities", () => {
     const f = privateFixture();
     expect(readConversationKnowledgeReceipt(f.receipt)).toEqual(f.receipt);

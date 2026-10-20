@@ -20,12 +20,12 @@ import { prepareSessionMutationFacts } from "../../gateway/session-sharing-prepa
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import type { PreparedReplyConversationKnowledge } from "./conversation-knowledge.js";
 
-/** Capacity deferral is explicit capability data, never a claim of completed catch-up. */
+/** Unresolved admission is explicit capability data, never a claim of completed catch-up. */
 export function pendingConversationKnowledgeNotice() {
   const fragments: RuntimeContextFragment[] = [
     {
       kind: "conversation-data",
-      text: "Related-conversation catch-up is incomplete: a historical source exceeds the bounded seed capacity. Continue the current conversation normally; do not assume all related history has been incorporated or shared.",
+      text: "Related-conversation catch-up is incomplete: an admitted source range cannot currently be verified or exceeds the available context capacity. Continue the current conversation normally; do not assume all related history has been incorporated or shared.",
     },
   ];
   return {

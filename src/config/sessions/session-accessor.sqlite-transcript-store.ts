@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isMainThread } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { getCodeModeSourceAppend } from "../../agents/transcript-code-mode-source.js";
@@ -15,6 +16,7 @@ import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { renewConversationKnowledgeAfterExactRewriteInTransaction } from "./conversation-knowledge-rewrite.js";
 import { advanceCliHistoryBoundaryInTransaction } from "./session-accessor.sqlite-cli-history-boundary.js";
 import type {
   TranscriptEvent,
@@ -449,6 +451,12 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
   if (rows.length === 0) {
     return;
   }
+  // Legacy synchronous SDK/Doctor writes retain conservative invalidation;
+  // continuity's extra metadata reads and writes belong only to the native worker.
+  const previousGeneration =
+    !isMainThread && !options.legacyTextStorage
+      ? readTranscriptGenerationInTransaction(database, resolved.sessionId)
+      : undefined;
   const rewrites = rows.map((row) => {
     const eventJson = JSON.stringify(canonicalizeTranscriptEventMedia(row.event));
     return {
@@ -513,6 +521,16 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
     }
   }
   touchTranscriptMutationInTransaction(database, resolved.sessionId);
+  if (previousGeneration) {
+    renewConversationKnowledgeAfterExactRewriteInTransaction({
+      database,
+      scope: resolved,
+      previousGeneration,
+      firstChangedSeq: rows.reduce((first, row) => Math.min(first, row.seq), Infinity),
+      rewriteRootRows: (scope, rewrites) =>
+        rewriteSqliteTranscriptEventRowsInTransaction(database, scope, rewrites),
+    });
+  }
 }
 
 function transcriptRewritePreservesProjection(beforeJson: string, afterJson: string): boolean {

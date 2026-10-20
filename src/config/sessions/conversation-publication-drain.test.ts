@@ -38,8 +38,15 @@ function fixture(rows: ConversationPublicationRow[]) {
   const store = {
     readReadyHeads: vi.fn(async () => rows),
     acknowledge: vi.fn(async (_id: string) => {}),
-    retry: vi.fn(async (_id: string, _input: { errorCode: string; nextAttemptAt: number }) => {}),
-    block: vi.fn(async (_id: string, _input: { errorCode: string }) => {}),
+    retry: vi.fn(
+      async (
+        _id: string,
+        _input: { errorCode: string; nextAttemptAt: number; expectedGeneration?: string },
+      ) => {},
+    ),
+    block: vi.fn(
+      async (_id: string, _input: { errorCode: string; expectedGeneration?: string }) => {},
+    ),
   } satisfies ConversationPublicationDrainStore;
   return {
     store,
@@ -72,6 +79,7 @@ describe("durable conversation publication drainage", () => {
     await drainConversationPublications(test);
     expect(test.store.retry).toHaveBeenCalledWith("a", {
       errorCode: "publication-failed",
+      expectedGeneration: "generation-1",
       nextAttemptAt: 11_000,
     });
     expect(test.store.acknowledge).toHaveBeenCalledExactlyOnceWith("b");
@@ -87,8 +95,22 @@ describe("durable conversation publication drainage", () => {
     test.publish.mockRejectedValue(new Error("unavailable"));
     await drainConversationPublications(test);
     expect(test.store.retry.mock.calls).toEqual([
-      ["a", { errorCode: "publication-failed", nextAttemptAt: 14_000 }],
-      ["b", { errorCode: "publication-failed", nextAttemptAt: 310_000 }],
+      [
+        "a",
+        {
+          errorCode: "publication-failed",
+          nextAttemptAt: 14_000,
+          expectedGeneration: "generation-1",
+        },
+      ],
+      [
+        "b",
+        {
+          errorCode: "publication-failed",
+          nextAttemptAt: 310_000,
+          expectedGeneration: "generation-1",
+        },
+      ],
     ]);
   });
 
@@ -98,6 +120,7 @@ describe("durable conversation publication drainage", () => {
     await drainConversationPublications(test);
     expect(test.store.block).toHaveBeenCalledExactlyOnceWith("a", {
       errorCode: "source-replaced",
+      expectedGeneration: "generation-1",
     });
     expect(test.store.acknowledge).not.toHaveBeenCalled();
     expect(test.store.retry).not.toHaveBeenCalled();

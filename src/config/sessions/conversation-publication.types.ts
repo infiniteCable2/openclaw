@@ -27,6 +27,8 @@ export type ConversationPublicationRow = {
     privateAudience?: ConversationKnowledgeReference["privateAudience"];
   };
   anchor: TranscriptEntryAnchor;
+  /** Derived physical read anchors; original occurrence identity and audience remain immutable. */
+  readRange?: ConversationKnowledgeReference["readRange"];
   state: "candidate" | "ready" | "blocked";
   attemptCount: number;
   nextAttemptAt: number;

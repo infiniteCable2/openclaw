@@ -17,8 +17,11 @@ export class ConversationPublicationBlockedError extends Error {
 export type ConversationPublicationDrainStore = {
   readReadyHeads(input: { now: number; limit: number }): Promise<ConversationPublicationRow[]>;
   acknowledge(id: string): Promise<void>;
-  retry(id: string, input: { errorCode: string; nextAttemptAt: number }): Promise<void>;
-  block(id: string, input: { errorCode: string }): Promise<void>;
+  retry(
+    id: string,
+    input: { errorCode: string; nextAttemptAt: number; expectedGeneration?: string },
+  ): Promise<void>;
+  block(id: string, input: { errorCode: string; expectedGeneration?: string }): Promise<void>;
 };
 
 /** Bounded work under the store owner, never a replay of the model or its tools. */
@@ -43,6 +46,7 @@ export async function drainConversationPublications(params: {
   params.assertCurrent();
   for (const row of rows) {
     params.assertCurrent();
+    const expectedGeneration = row.readRange?.through.generation ?? row.anchor.generation;
     try {
       await params.publish(row);
       params.assertCurrent();
@@ -53,10 +57,11 @@ export async function drainConversationPublications(params: {
       const blocked = error instanceof ConversationPublicationBlockedError;
       const errorCode = blocked ? error.code : "publication-failed";
       if (blocked) {
-        await params.store.block(row.id, { errorCode });
+        await params.store.block(row.id, { errorCode, expectedGeneration });
       } else {
         await params.store.retry(row.id, {
           errorCode,
+          expectedGeneration,
           nextAttemptAt:
             params.now() + Math.min(300_000, 1_000 * 2 ** Math.min(row.attemptCount, 9)),
         });

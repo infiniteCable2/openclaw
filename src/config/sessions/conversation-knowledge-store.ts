@@ -296,6 +296,7 @@ export async function recordConversationKnowledgeReference(params: {
   sourceMode: "native" | "branches";
   completion: { runId: string } | { kind: "utterance-observation"; role: "user" | "assistant" };
   privateAudience?: ConversationKnowledgeReference["privateAudience"];
+  readRange?: ConversationKnowledgeReference["readRange"];
   /** Durable journal identity selects an exact endpoint, not a source's latest report. */
   publicationId?: string;
 }): Promise<boolean> {
@@ -312,8 +313,13 @@ export async function recordConversationKnowledgeReference(params: {
       (context) => context,
       undefined,
       params.signal,
-      through,
-      { ...limits, ...(params.privateAudience ? { from: params.privateAudience.admission } : {}) },
+      params.readRange?.through ?? through,
+      {
+        ...limits,
+        ...(params.privateAudience
+          ? { from: params.readRange?.admission ?? params.privateAudience.admission }
+          : {}),
+      },
     );
     check();
     return readContextResult;
@@ -335,6 +341,7 @@ export async function recordConversationKnowledgeReference(params: {
       "kind" in params.completion ? params.completion.kind : undefined,
     ),
     through,
+    ...(params.readRange ? { readRange: structuredClone(params.readRange) } : {}),
     ...params.completion,
     ...(params.privateAudience ? { privateAudience: structuredClone(params.privateAudience) } : {}),
   } as const;
@@ -397,6 +404,7 @@ export async function recordConversationKnowledgeReference(params: {
             "kind" in params.completion ? params.completion.kind : undefined,
           ),
           through,
+          ...(params.readRange ? { readRange: structuredClone(params.readRange) } : {}),
           ...(params.observed ? { observed: structuredClone(params.observed) } : {}),
           ...(params.privateAudience
             ? { privateAudience: structuredClone(params.privateAudience) }
