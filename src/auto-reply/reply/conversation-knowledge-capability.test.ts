@@ -179,6 +179,25 @@ describe("actual native-turn knowledge ownership", () => {
     expect(source.record).not.toHaveBeenCalled();
   });
 
+  it("reports the native committed entry without requiring a keyed assistant append", async () => {
+    const f = await nativeTurn();
+    const terminal = f.result.result.meta.agentMeta?.terminalReceipt;
+    if (!terminal) {
+      throw new Error("Fixture terminal was not prepared");
+    }
+    delete terminal.assistantTranscriptIdempotencyKey;
+    terminal.assistantTranscriptEntryId = "native-saved-entry";
+    await f.owner.record(f.result);
+    expect(source.drain).toHaveBeenCalledWith(f.admission.operationalRunInstance);
+    expect(source.record).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        runId: terminal.runId,
+        assistantTranscriptEntryId: "native-saved-entry",
+        assistantTranscriptIdempotencyKey: undefined,
+      }),
+    );
+  });
+
   it("passively reports completed native work only for a previously enrolled conversation", async () => {
     source.branch.mockResolvedValue({ sessionId: "source-session" });
     const f = await nativeTurn(false, "native");
