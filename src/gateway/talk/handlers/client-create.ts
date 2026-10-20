@@ -16,6 +16,7 @@ import {
   type SessionSourceAssertion,
 } from "../../../config/sessions/session-source-authority.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
+import type { ConversationPrivateAudience } from "../../../sessions/conversation-private-audience.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-control-shared.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
@@ -228,12 +229,16 @@ export const createTalkClient: GatewayRequestHandler = async ({
           providerCapabilities?.handlesAgentConsult === true,
         ...(resolveAgentConversationMode(runtimeConfig, agentId) === "branches"
           ? {
-              prepareTarget: async (assertSourceCurrent: SessionSourceAssertion) => {
+              prepareTarget: async (
+                assertSourceCurrent: SessionSourceAssertion,
+                privateAudience: ConversationPrivateAudience | undefined,
+              ) => {
                 // A branch is an explicitly begun conversation attempt. Its native
                 // row must exist before the authorized Knowledge snapshot; retain
                 // that attempt even when provider startup subsequently fails.
                 startupEnsuredSessionId = await ensureClientVoiceAgentSessionEntry({
                   chatType: "direct",
+                  privateAudience,
                   ...sessionTarget,
                   cfg: runtimeConfig,
                   creation:

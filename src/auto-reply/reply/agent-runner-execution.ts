@@ -631,7 +631,7 @@ async function executeAgentTurnOutcome(
         try {
           await conversationKnowledge?.prepare(preparedRunAdmission, deferredLifecycle.signal);
           preparedRunAdmission.assertSourceCurrent();
-          return await withReplySpeechPresentation(
+          const result = await withReplySpeechPresentation(
             executionParams.followupRun.speechPresentation,
             {
               runId,
@@ -640,17 +640,17 @@ async function executeAgentTurnOutcome(
               assertCurrent: preparedRunAdmission.assertSourceCurrent,
             },
             async (speechPresentationRun) => {
-              const result = await executeAgentTurnInternalLoop(
+              return executeAgentTurnInternalLoop(
                 {
                   ...executionParams,
                   prepareConversationContext: conversationKnowledge
                     ? (run) => conversationKnowledge.prepareHistory(run)
                     : undefined,
+                  prepareConversationSnapshot: conversationKnowledge
+                    ? () => conversationKnowledge.prepareSnapshot()
+                    : undefined,
                   speechPresentationRun,
-                  runtimeContextFragments: [
-                    ...(executionParams.runtimeContextFragments ?? []),
-                    ...(conversationKnowledge?.fragments ?? []),
-                  ],
+                  runtimeContextFragments: executionParams.runtimeContextFragments,
                 },
                 runId,
                 commitTerminalOutcome,
@@ -660,10 +660,12 @@ async function executeAgentTurnOutcome(
                 deferredLifecycle,
                 compaction,
               );
-              await conversationKnowledge?.record(result);
-              return result;
             },
           );
+          // Finish the user's audio before optional root consolidation. The turn
+          // still joins publication before releasing its source and admission.
+          await conversationKnowledge?.record(result);
+          return result;
         } finally {
           try {
             await deferredLifecycle.complete();

@@ -21,6 +21,40 @@ import {
   publishNativeSpeechModelRun,
 } from "./native-consult-target.test-support.js";
 
+it.for(["status", "cancel", "steer", "followup"] as const)(
+  "public STT/TTS %s control retains original caller admission and reports idle",
+  async (mode) => {
+    installSyntheticSpeechHardware();
+    const { sessionId } = await createSpeechRelayCall();
+    const owner = testState.client;
+    try {
+      testState.client = { ...owner, connId: "another-speech-connection" };
+      expect(
+        await dispatch("talk.session.steer", { sessionId, text: "Control request", mode }),
+      ).toHaveBeenCalledWith(false, undefined, expect.any(Object));
+    } finally {
+      testState.client = owner;
+    }
+    expect(
+      await dispatch("talk.session.steer", { sessionId, text: "Control request", mode }),
+    ).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        mode,
+        active: false,
+        ...(mode === "status" ? { ok: true } : { ok: false, reason: "no_active_run" }),
+      }),
+      undefined,
+    );
+    expect(mocks.runEmbeddedAgent).not.toHaveBeenCalled();
+    expect(await dispatch("talk.session.close", { sessionId })).toHaveBeenCalledWith(
+      true,
+      { ok: true },
+      undefined,
+    );
+  },
+);
+
 it.for([false, true])(
   "native STT/TTS actual run retains its spoken confirmation gate after early commentary=%s",
   async (partial, { signal }) => {

@@ -295,6 +295,7 @@ describe("ordered native branch Knowledge scenario", () => {
                   originalParticipant: person,
                   getRuntimeConfig: () => fixture.cfg,
                   retainInHistory: {
+                    writeTarget: recipient,
                     contextLimits,
                     maintainContext: async (source) => {
                       source();
@@ -312,6 +313,7 @@ describe("ordered native branch Knowledge scenario", () => {
                 originalParticipant: person,
                 getRuntimeConfig: () => fixture.cfg,
                 retainInHistory: {
+                  writeTarget: recipient,
                   contextLimits,
                   maintainContext: async (source) => {
                     source();
@@ -354,6 +356,7 @@ describe("ordered native branch Knowledge scenario", () => {
                 originalParticipant: person,
                 getRuntimeConfig: () => fixture.cfg,
                 retainInHistory: {
+                  writeTarget: recipient,
                   contextLimits,
                   maintainContext: async (source) => {
                     source();
@@ -374,6 +377,7 @@ describe("ordered native branch Knowledge scenario", () => {
                 originalParticipant: person,
                 getRuntimeConfig: () => fixture.cfg,
                 retainInHistory: {
+                  writeTarget: recipient,
                   contextLimits,
                   maintainContext: async (source) => {
                     source();
@@ -403,6 +407,7 @@ describe("ordered native branch Knowledge scenario", () => {
                 originalParticipant: person,
                 getRuntimeConfig: () => fixture.cfg,
                 retainInHistory: {
+                  writeTarget: recipient,
                   contextLimits: { ...contextLimits, maxEvents: 2 },
                   maintainContext: async (source) => {
                     source();
@@ -418,6 +423,7 @@ describe("ordered native branch Knowledge scenario", () => {
                 originalParticipant: person,
                 getRuntimeConfig: () => fixture.cfg,
                 retainInHistory: {
+                  writeTarget: recipient,
                   contextLimits,
                   maintainContext: async (source) => {
                     source();

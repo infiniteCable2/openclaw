@@ -7,6 +7,7 @@ import {
   validateTalkSessionSteerParams,
   validateTalkSessionSubmitToolResultParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
+import { resolveAgentConversationMode } from "../../../config/agent-conversation-mode.js";
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { createLazyRuntimeModule } from "../../../shared/lazy-runtime.js";
@@ -28,7 +29,10 @@ import { gatewayClientSenderFields } from "../../server-methods/gateway-client-i
 import type { GatewayRequestHandlers, RespondFn } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
 import { resolveOperatorSessionCreation } from "../../session-creation-provenance.js";
-import { resolveGatewayInputParticipant } from "../../session-input-participant.js";
+import {
+  captureGatewayPrivateConversationAudience,
+  resolveGatewayInputParticipant,
+} from "../../session-input-participant.js";
 import { getSessionRowProjection } from "../../session-row-projection-access.js";
 import { withPreparedSessionResolve } from "../../sessions-resolve.js";
 import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
@@ -253,18 +257,39 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             requestedModel: normalizeOptionalString(params.model),
             defaultModel: transcriptionConfig.model,
           });
-          const ensuredSessionId = await ensureClientVoiceAgentSessionEntry({
-            agentId: target.agentId,
-            chatType: "direct",
-            cfg: runtimeConfig,
-            sessionKey: target.canonicalKey,
-            storePath: target.storePath,
-            creation:
-              resolveSandboxedSessionCreation(client, runtimeConfig) ??
-              resolveOperatorSessionCreation(client),
-            assertCommitAllowed: assertSourceCurrent,
-            onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
-          });
+          const participant = resolveGatewayInputParticipant(client);
+          const creationSource =
+            resolveAgentConversationMode(runtimeConfig, target.agentId) === "branches" &&
+            participant?.type === "profile"
+              ? await createTalkOperatorRunSource({ client, context })({
+                  assertCurrent: assertSourceCurrent,
+                })
+              : undefined;
+          const ensuredSessionId = await (async () => {
+            try {
+              return await ensureClientVoiceAgentSessionEntry({
+                agentId: target.agentId,
+                chatType: "direct",
+                privateAudience: captureGatewayPrivateConversationAudience({
+                  agentId: target.agentId,
+                  sessionKey: target.canonicalKey,
+                  participant,
+                  operatorAuthority: creationSource?.authority,
+                  assertCurrent: assertSourceCurrent,
+                }),
+                cfg: runtimeConfig,
+                sessionKey: target.canonicalKey,
+                storePath: target.storePath,
+                creation:
+                  resolveSandboxedSessionCreation(client, runtimeConfig) ??
+                  resolveOperatorSessionCreation(client),
+                assertCommitAllowed: assertSourceCurrent,
+                onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
+              });
+            } finally {
+              creationSource?.release();
+            }
+          })();
           const assertCurrent = () => {
             // The guarded ensure may materialize this exact previously absent
             // row. Revalidate its admitted target/id, not the absent snapshot.
@@ -379,18 +404,39 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             warn: (message) => context.logGateway.warn(`talk realtime context: ${message}`),
           });
           assertCommitAllowed();
-          const ensuredSessionId = await ensureClientVoiceAgentSessionEntry({
-            agentId,
-            chatType: "direct",
-            cfg: runtimeConfig,
-            sessionKey: target.canonicalKey,
-            storePath: target.storePath,
-            creation:
-              resolveSandboxedSessionCreation(client, runtimeConfig) ??
-              resolveOperatorSessionCreation(client),
-            assertCommitAllowed,
-            onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
-          });
+          const participant = resolveGatewayInputParticipant(client);
+          const creationSource =
+            resolveAgentConversationMode(runtimeConfig, agentId) === "branches" &&
+            participant?.type === "profile"
+              ? await createTalkOperatorRunSource({ client, context })({
+                  assertCurrent: assertCommitAllowed,
+                })
+              : undefined;
+          const ensuredSessionId = await (async () => {
+            try {
+              return await ensureClientVoiceAgentSessionEntry({
+                agentId,
+                chatType: "direct",
+                privateAudience: captureGatewayPrivateConversationAudience({
+                  agentId,
+                  sessionKey: target.canonicalKey,
+                  participant,
+                  operatorAuthority: creationSource?.authority,
+                  assertCurrent: assertCommitAllowed,
+                }),
+                cfg: runtimeConfig,
+                sessionKey: target.canonicalKey,
+                storePath: target.storePath,
+                creation:
+                  resolveSandboxedSessionCreation(client, runtimeConfig) ??
+                  resolveOperatorSessionCreation(client),
+                assertCommitAllowed,
+                onCreatedSessionCommitted: sessionMutationAuthorization?.recordCreatedSession,
+              });
+            } finally {
+              creationSource?.release();
+            }
+          })();
           const assertEnsuredTargetCurrent = () => {
             sessionMutationCommitGuard?.();
             sessionMutationAuthorization?.assertTargetCurrent({

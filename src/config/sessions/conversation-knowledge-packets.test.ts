@@ -129,6 +129,7 @@ describe("native retained conversation knowledge packets", () => {
           const originalVersion = await version();
           const partial = {
             branch,
+            writeTarget: branch,
             receipt,
             reader,
             sourceVersion: originalVersion,

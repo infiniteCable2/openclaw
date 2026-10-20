@@ -8,9 +8,12 @@ import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 import type { RealtimeTranscriptionProviderConfig } from "../../realtime-transcription/provider-types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { resolveRealtimeVoiceAgentControlIntent } from "../../talk/agent-run-control-shared.js";
 import { createClientVoiceConfirmationReadiness } from "../../talk/client-voice-confirmation-readiness.js";
+import { releaseConversationInputAdmission } from "../../talk/conversation-input-admission.js";
 import { forgetUnifiedTalkSession, getUnifiedTalkSession } from "../../talk/session-registry.js";
 import { prepareSpeechGreeting } from "../../talk/speech/greeting.js";
+import { controlAdmittedSpeechSession } from "../../talk/speech/native-control.js";
 import { prepareSpeechSession } from "../../talk/speech/preparation.js";
 import { resolveTalkSpeechAgentProfile } from "../../talk/speech/profile.js";
 import { startSpeechSession } from "../../talk/speech/session.js";
@@ -271,12 +274,33 @@ export async function createTalkSpeechRelaySession(params: {
       }
       return engine.cancelOutput(options);
     },
-    steer(options) {
+    async steer(options) {
       assertActive();
+      options.assertCurrent?.();
       if (!engine) {
         throw new Error("Talk speech session is not ready");
       }
-      return engine.steer(options);
+      const scope = {
+        agentId: params.sessionTarget.agentId,
+        conversationId: id,
+        inputId: randomUUID(),
+        purpose: "steering" as const,
+      };
+      const admission = await inputSource.admitInput({ ...scope, signal: options.signal });
+      try {
+        assertActive();
+        options.assertCurrent?.();
+        return await controlAdmittedSpeechSession(engine, {
+          admission,
+          scope,
+          text: options.text,
+          mode: resolveRealtimeVoiceAgentControlIntent(options).mode,
+          signal: options.signal,
+          assertInputCurrent: options.assertCurrent,
+        });
+      } finally {
+        releaseConversationInputAdmission(admission);
+      }
     },
     close() {
       if (closing) {
@@ -337,6 +361,16 @@ export async function createTalkSpeechRelaySession(params: {
       );
   }, SESSION_TTL_MS);
   expiryTimer.unref?.();
+  const inputSource = createGatewayTalkConversationInputSource({
+    target: params.sessionTarget,
+    conversationId: id,
+    getRuntimeConfig: params.context.getRuntimeConfig,
+    captureOperatorAuthority: params.captureOperatorAuthority ?? (async () => undefined),
+    authority: params.authority,
+    participant: params.participant,
+    assertInputCurrent: assertActive,
+    resolveGatewayContext: () => params.context,
+  });
   const bindings = createMeetingRealtimeEngineBindingsV2({
     platform: {
       id: "talk",
@@ -352,16 +386,7 @@ export async function createTalkSpeechRelaySession(params: {
       },
       session: { idPrefix: "talk", participantIdentity: () => "gateway-caller" },
     },
-    inputSource: createGatewayTalkConversationInputSource({
-      target: params.sessionTarget,
-      conversationId: id,
-      getRuntimeConfig: params.context.getRuntimeConfig,
-      captureOperatorAuthority: params.captureOperatorAuthority ?? (async () => undefined),
-      authority: params.authority,
-      participant: params.participant,
-      assertInputCurrent: assertActive,
-      resolveGatewayContext: () => params.context,
-    }),
+    inputSource,
     agentId: params.sessionTarget.agentId,
     conversationId: id,
     assertOutputCurrent: assertActive,

@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ReplySpeechRunBinding } from "../../auto-reply/reply/reply-speech-presentation.js";
+import type { RealtimeVoiceAgentControlResult } from "../agent-run-control-shared.js";
+import {
+  claimConversationInputExecution,
+  consumeConversationInputAdmission,
+  releaseConversationInputAdmission,
+} from "../conversation-input-admission.js";
 import type { ConversationReplyResult } from "../conversation-reply.js";
+import { bindAdmittedSpeechInput, type AdmittedSpeechControl } from "./native-control.js";
 import type { createSpeechOutput, SpeechUtterance } from "./output.js";
 import {
   captureSpeechPlaybackObservation,
@@ -65,6 +72,9 @@ export function createNativeSpeechInput(params: {
     inputId?: string;
     assertCurrent?: () => void;
     signal?: AbortSignal;
+    admittedControl?: AdmittedSpeechControl;
+    onQueueAccepted?: () => void;
+    onInputDisposition?: SpeechNativeInputParams["onInputDisposition"];
   }): Promise<ConversationReplyResult> => {
     input.signal?.throwIfAborted();
     input.assertCurrent?.();
@@ -97,7 +107,7 @@ export function createNativeSpeechInput(params: {
       if (params.isStopped()) {
         throw new Error("Speech input connection closed during preparation");
       }
-      const result = await params.dispatch({
+      const nativeInput: SpeechNativeInputParams = {
         sessionId: params.session.sessionId,
         requesterSessionKey: params.session.requesterSessionKey,
         inputId,
@@ -113,7 +123,12 @@ export function createNativeSpeechInput(params: {
           : {}),
         purpose: captured ? "steering" : "user",
         // A delayed decoder result cannot steer whichever replacement run is active now.
-        queueMode: captured && captured === active ? "steer" : "followup",
+        queueMode:
+          input.admittedControl?.mode === "followup"
+            ? "followup"
+            : captured && captured === active
+              ? "steer"
+              : "followup",
         args: {
           question: input.text,
           responseStyle: "Brief, natural spoken answer for a live conversation.",
@@ -122,7 +137,10 @@ export function createNativeSpeechInput(params: {
         images: visual.images,
         ...(params.video.source ? { toolBindings: { video_inspect: params.video.source } } : {}),
         transcript: [], // Native history is authoritative; do not append a copied audio log.
-        onQueueAccepted: () => input.onAccepted?.(),
+        onQueueAccepted: () => {
+          input.onAccepted?.();
+          input.onQueueAccepted?.();
+        },
         bufferReply: params.session.config.responseStreaming !== "sentence",
         onNativeRunBound(binding) {
           const utterance = params.output.createSpeechUtterance(waitingTurn);
@@ -134,6 +152,7 @@ export function createNativeSpeechInput(params: {
         },
         onInputDisposition(disposition) {
           input.onAccepted?.();
+          input.onInputDisposition?.(disposition);
           try {
             if (
               disposition.mode === "steer" &&
@@ -187,7 +206,10 @@ export function createNativeSpeechInput(params: {
             utterance.finalized = true;
           }
         },
-      } satisfies SpeechNativeInputParams);
+      };
+      const result = await params.dispatch(
+        bindAdmittedSpeechInput(nativeInput, input.admittedControl),
+      );
       if (run) {
         while (run.admissions.size > 0) {
           await Promise.all(run.admissions);
@@ -255,6 +277,101 @@ export function createNativeSpeechInput(params: {
     captureRun,
     capturePlayback,
     submit,
+    async control(input: AdmittedSpeechControl): Promise<RealtimeVoiceAgentControlResult> {
+      const captured = active;
+      const sessionKey = params.session.requesterSessionKey;
+      try {
+        input.signal?.throwIfAborted();
+        input.assertInputCurrent?.();
+        if (
+          !sessionKey ||
+          input.scope.conversationId !== params.session.sessionId ||
+          input.scope.agentId !== params.session.config.agentId
+        ) {
+          throw new Error("Speech control does not match its original conversation");
+        }
+        if (params.isStopped()) {
+          throw new Error("Speech input connection is closed");
+        }
+        if (input.mode === "status" || input.mode === "cancel" || !captured) {
+          const accepted = consumeConversationInputAdmission(input.admission, input.scope);
+          try {
+            claimConversationInputExecution(accepted);
+            if (accepted.source.sessionKey !== sessionKey) {
+              throw new Error("Speech control input belongs to a different native session");
+            }
+            const { controlRealtimeVoiceAgentRun } = await import("../agent-run-control.js");
+            input.signal?.throwIfAborted();
+            input.assertInputCurrent?.();
+            accepted.assertCurrent();
+            return await controlRealtimeVoiceAgentRun({
+              sessionKey,
+              runTarget: captured
+                ? {
+                    runId: captured.binding.runId,
+                    signal: captured.binding.abortSignal,
+                    isCurrent(sessionId) {
+                      input.signal?.throwIfAborted();
+                      input.assertInputCurrent?.();
+                      accepted.assertCurrent();
+                      if (params.isStopped() || active !== captured) {
+                        return false;
+                      }
+                      captured.binding.assertCurrent();
+                      return sessionId === undefined || sessionId === captured.binding.sessionId;
+                    },
+                  }
+                : null,
+              text: input.text,
+              mode: input.mode,
+            });
+          } finally {
+            accepted.release?.();
+          }
+        }
+        // Admission ACK is distinct from task completion. The same submit owner
+        // keeps the opaque input, queued reply and audio alive until settlement.
+        let acknowledge!: (result: RealtimeVoiceAgentControlResult) => void;
+        const acknowledged = new Promise<RealtimeVoiceAgentControlResult>((resolve) => {
+          acknowledge = resolve;
+        });
+        const result: RealtimeVoiceAgentControlResult = {
+          ok: true,
+          mode: input.mode,
+          sessionKey,
+          sessionId: captured.binding.sessionId,
+          active: true,
+          queued: true,
+          message:
+            input.mode === "followup"
+              ? "Queued that follow-up for the active OpenClaw run."
+              : "Got it. I steered the active run.",
+          speak: true,
+          show: true,
+          suppress: false,
+        };
+        const completion = submit({
+          text: input.text,
+          inputId: input.scope.inputId,
+          hasOnset: true,
+          onsetRun: captured,
+          admittedControl: input,
+          assertCurrent: input.assertInputCurrent,
+          signal: input.signal,
+          onQueueAccepted: () => acknowledge(result),
+          onInputDisposition: (disposition) => {
+            if (disposition.committed) {
+              acknowledge(result);
+            }
+          },
+        }).then(() => result);
+        void completion.catch((error: unknown) => params.onFailure(error));
+        return await Promise.race([acknowledged, completion]);
+      } finally {
+        // No-op after transfer; otherwise releases a refusal before dispatch.
+        releaseConversationInputAdmission(input.admission);
+      }
+    },
     enqueue(input: Parameters<typeof submit>[0]) {
       // Accepted native work outlives media close; this observer never aborts or retries it.
       void submit(input).catch((error: unknown) => params.onFailure(error));

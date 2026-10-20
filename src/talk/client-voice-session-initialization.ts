@@ -20,6 +20,7 @@ import { resolveSessionStorePathForScope } from "../config/sessions/session-stor
 import { mergeSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSubagentSessionKey, isIncognitoSessionKey } from "../routing/session-key.js";
+import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 
 type VoiceSessionInitializationParams = {
   agentId: string;
@@ -28,6 +29,8 @@ type VoiceSessionInitializationParams = {
   cfg?: OpenClawConfig;
   /** Original surface classification, applied only when creating a new native row. */
   chatType?: ChatType;
+  /** Original host recipient proof; only absent branch rows can become private. */
+  privateAudience?: ConversationPrivateAudience;
   deadlineAt?: number;
   assertCommitAllowed?: SessionSourceAssertion;
   /** Actual native creation publication, never a proposed ID or a reloaded row. */
@@ -85,6 +88,14 @@ async function ensureConversationSession(
   if (snapshot.currentEntry?.sessionId) {
     return snapshot.currentEntry.sessionId;
   }
+  const privateAudience =
+    !snapshot.currentEntry &&
+    rootSessionKey &&
+    params.privateAudience?.agentId === params.agentId &&
+    params.privateAudience.sessionKey === params.sessionKey
+      ? params.privateAudience
+      : undefined;
+  privateAudience?.assertCurrent();
   const sessionEntry = snapshot.currentEntry
     ? mergeSessionEntry(snapshot.currentEntry, { sessionId: randomUUID() })
     : mergeSessionEntry(undefined, {
@@ -95,6 +106,7 @@ async function ensureConversationSession(
         }),
         lifecycleRevision: randomUUID(),
         ...(params.chatType ? { chatType: params.chatType } : {}),
+        ...(privateAudience ? { visibility: "draft" as const } : {}),
       });
   const source = params.assertCommitAllowed;
   const generation = !snapshot.currentEntry
@@ -109,7 +121,10 @@ async function ensureConversationSession(
       ...(rootSessionKey ? { branchRootSessionKey: rootSessionKey } : {}),
       expectedRevision: snapshot.revision,
       sessionEntry,
-      commitGuard: assertCurrent,
+      commitGuard: () => {
+        assertCurrent();
+        privateAudience?.assertCurrent();
+      },
       // The existing generation owner binds only this creation operation's settled
       // COMMIT receipt. It updates the request's absence before later source checks.
       ...(generation

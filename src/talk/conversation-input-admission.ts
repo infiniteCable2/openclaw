@@ -137,6 +137,15 @@ class ConversationInputAdmission implements ConversationInputAdmissionV1 {
     }
     return AcceptedConversationInput.capture(input);
   }
+
+  static release(value: ConversationInputAdmissionV1): void {
+    if (!value || typeof value !== "object" || !(#input in value)) {
+      throw new ConversationInputAdmissionError();
+    }
+    const input = value.#input;
+    value.#input = undefined;
+    input?.release?.();
+  }
 }
 
 /** Host-only issuer. Public SDK contracts expose the opaque type, not this operation. */
@@ -191,6 +200,11 @@ export function consumeConversationInputAdmission(
   scope: ConversationInputScopeV1,
 ): ConsumedConversationInput {
   return ConversationInputAdmission.take(admission, scope);
+}
+
+/** A host may abandon its unconsumed input; consumed work retains its own release owner. */
+export function releaseConversationInputAdmission(admission: ConversationInputAdmissionV1): void {
+  ConversationInputAdmission.release(admission);
 }
 
 /** Host-only transfer, separate from later retries of the same native prepared run. */

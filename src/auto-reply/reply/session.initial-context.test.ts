@@ -7,8 +7,10 @@ import {
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { ensureAgentConversationRoot } from "../../config/sessions/session-conversation-root.js";
 import type { SessionEntryCohortResult } from "../../config/sessions/session-entry-read.types.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
+import { bindConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { loadAgentEntryReadOperations } from "../../state/openclaw-agent-execution-operations.js";
 import {
@@ -93,6 +95,89 @@ async function fixture() {
 }
 
 describe("reply initialization with native copied context", () => {
+  it("creates only confirmed new private branches as draft and keeps privacy through /new", async () => {
+    const f = await fixture();
+    const cfg = {
+      ...f.cfg,
+      agents: { ...f.cfg.agents, entries: { main: { conversationMode: "branches" as const } } },
+    };
+    await ensureAgentConversationRoot({
+      cfg,
+      agentId: "main",
+      env: state.env,
+      getConfig: () => cfg,
+    });
+    const audience = {
+      agentId: "main",
+      sessionKey: f.target.sessionKey,
+      channelId: "matrix",
+      accountId: "default",
+      nativeChannelId: "!private:example.test",
+      participant: {
+        type: "remote" as const,
+        pluginId: "matrix",
+        domain: "example.test",
+        idKind: "user-id" as const,
+        id: "@person:example.test",
+      },
+      assertCurrent() {},
+    };
+    bindConversationPrivateAudience(f.ctx, audience);
+    const first = await initSessionState({ cfg, ctx: f.ctx, commandAuthorized: true });
+    expect(loadSessionEntry(f.target)?.visibility).toBe("draft");
+    const reset = await initSessionState({
+      cfg,
+      ctx: finalizeInboundContext(
+        { ...f.ctx, Body: "/new", RawBody: "/new" },
+        { forceBodyForAgent: true, forceBodyForCommands: true },
+      ),
+      commandAuthorized: true,
+    });
+    expect(reset.sessionId).not.toBe(first.sessionId);
+    expect(loadSessionEntry(f.target)?.visibility).toBe("draft");
+
+    // Current transport evidence cannot relabel an already shared history.
+    for (const visibility of ["shared", undefined] as const) {
+      await upsertSessionEntryCore(f.target, {
+        ...loadSessionEntry(f.target)!,
+        visibility,
+      });
+      await initSessionState({ cfg, ctx: f.ctx, commandAuthorized: true });
+      expect(loadSessionEntry(f.target)?.visibility).toBe(visibility);
+    }
+  });
+
+  it("rechecks private creation evidence at the native commit boundary", async () => {
+    const f = await fixture();
+    const cfg = {
+      ...f.cfg,
+      agents: { ...f.cfg.agents, entries: { main: { conversationMode: "branches" as const } } },
+    };
+    await ensureAgentConversationRoot({
+      cfg,
+      agentId: "main",
+      env: state.env,
+      getConfig: () => cfg,
+    });
+    let checks = 0;
+    bindConversationPrivateAudience(f.ctx, {
+      agentId: "main",
+      sessionKey: f.target.sessionKey,
+      channelId: "matrix",
+      accountId: "default",
+      nativeChannelId: "!private:example.test",
+      participant: { type: "profile", id: "target-owner" },
+      assertCurrent() {
+        if (++checks > 1) {
+          throw new Error("Original private audience revoked");
+        }
+      },
+    });
+    await expect(initSessionState({ cfg, ctx: f.ctx, commandAuthorized: true })).rejects.toThrow(
+      "Original private audience revoked",
+    );
+    expect(loadSessionEntry(f.target)).toBeUndefined();
+  });
   it("protects a retained headless root from external input after opting out of branches", async () => {
     const f = await fixture();
     const root = { ...f.target, sessionKey: "agent:main:main" };

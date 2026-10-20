@@ -6,6 +6,7 @@ import type { prepareSessionGenerationFacts } from "../config/sessions/session-d
 import type { SessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { ensureClientVoiceAgentSessionEntry } from "./client-voice-session-initialization.js";
 
 // Isolation boundary: the real native initialization owner has separate durable
@@ -125,6 +126,85 @@ function fixture() {
 describe("native Talk startup conversation membership", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("creates a draft only from exact current private audience evidence", async () => {
+    const f = fixture();
+    const audience: ConversationPrivateAudience = {
+      agentId: f.target.agentId,
+      sessionKey: f.target.sessionKey,
+      channelId: "webchat",
+      accountId: "default",
+      nativeChannelId: f.target.sessionKey,
+      participant: { type: "profile", id: "example-person" },
+      assertCurrent: vi.fn(),
+    };
+    await ensureClientVoiceAgentSessionEntry({
+      ...f.target,
+      chatType: "direct",
+      privateAudience: audience,
+    });
+    expect(f.state.current?.visibility).toBe("draft");
+    expect(audience.assertCurrent).toHaveBeenCalledTimes(2);
+    // A new live audience cannot change sharing of existing persisted history.
+    f.state.current!.visibility = "shared";
+    await ensureClientVoiceAgentSessionEntry({ ...f.target, privateAudience: audience });
+    expect(f.state.current?.visibility).toBe("shared");
+    expect(mocks.commit).toHaveBeenCalledOnce();
+  });
+
+  it.each(["native", "wrong-agent", "wrong-target"] as const)(
+    "does not infer private creation for %s evidence",
+    async (scenario) => {
+      const f = fixture();
+      if (scenario === "native") {
+        f.target.cfg.agents!.entries!.example!.conversationMode = "native";
+      }
+      await ensureClientVoiceAgentSessionEntry({
+        ...f.target,
+        chatType: "direct",
+        privateAudience: {
+          agentId: scenario === "wrong-agent" ? "other" : f.target.agentId,
+          sessionKey: scenario === "wrong-target" ? "agent:example:other" : f.target.sessionKey,
+          channelId: "webchat",
+          accountId: "default",
+          nativeChannelId: f.target.sessionKey,
+          participant: { type: "profile", id: "example-person" },
+          assertCurrent() {},
+        },
+      });
+      expect(f.state.current?.visibility).toBeUndefined();
+    },
+  );
+
+  it("retains private audience revocation through the native creation COMMIT", async () => {
+    const f = fixture();
+    let current = true;
+    const commit = mocks.commit.getMockImplementation()!;
+    mocks.commit.mockImplementationOnce(async (params) => {
+      current = false;
+      return commit(params);
+    });
+    await expect(
+      ensureClientVoiceAgentSessionEntry({
+        ...f.target,
+        privateAudience: {
+          agentId: f.target.agentId,
+          sessionKey: f.target.sessionKey,
+          channelId: "webchat",
+          accountId: "default",
+          nativeChannelId: f.target.sessionKey,
+          participant: { type: "profile", id: "example-person" },
+          assertCurrent() {
+            if (!current) {
+              throw new Error("Private audience revoked");
+            }
+          },
+        },
+      }),
+    ).rejects.toThrow("Private audience revoked");
+    expect(f.state.current).toBeUndefined();
+    expect(f.generation.release).toHaveBeenCalledOnce();
+  });
+
   it("uses canonical branch initialization, never an unmarked generic patch or root/task spawn", async () => {
     const f = fixture();
     const sessionId = await ensureClientVoiceAgentSessionEntry(f.target);
@@ -241,6 +321,7 @@ describe("native Talk startup conversation membership", () => {
     await ensureClientVoiceAgentSessionEntry({ ...f.target, chatType: "direct" });
     const entry = mocks.commit.mock.calls[0]![0].sessionEntry;
     expect(entry.chatType).toBe("direct");
+    expect(entry.visibility).toBeUndefined();
     expect(entry.participantCount ?? 0).toBe(0);
     expect(entry.participants ?? []).toEqual([]);
   });

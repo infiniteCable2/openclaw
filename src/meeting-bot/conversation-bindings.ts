@@ -12,6 +12,7 @@ import {
   replyToConversationInput,
   type ConversationReplyParams,
 } from "../talk/conversation-reply.js";
+import { readAdmittedSpeechInput } from "../talk/speech/native-control.js";
 import { readSpeechRealtimeToolAbortSignal } from "../talk/speech/provider-continuity.js";
 import type { SpeechNativeInputParams, SpeechSessionStartParams } from "../talk/speech/types.js";
 import { prepareSpeechExpressionContext } from "../tts/expression-preparation.js";
@@ -77,10 +78,13 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
       inputId: consult.inputId ?? randomUUID(),
       purpose: consult.purpose ?? ("user" as const),
     };
-    const admission = await params.inputSource.admitInput({
-      ...scope,
-      signal: consult.abortSignal,
-    });
+    const admitted = readAdmittedSpeechInput(consult);
+    const admission =
+      admitted?.admission ??
+      (await params.inputSource.admitInput({
+        ...scope,
+        signal: consult.abortSignal,
+      }));
     const onError = (error: unknown) =>
       params.logger.warn(
         `${params.platform.logScope} speech presentation failed: ${formatErrorMessage(error)}`,

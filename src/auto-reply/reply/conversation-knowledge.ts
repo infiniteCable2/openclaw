@@ -2,6 +2,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { PreparedAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
+import type { BoundAgentRunSessionTarget } from "../../agents/run-session-target.types.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
@@ -84,6 +85,7 @@ export function createReplyConversationKnowledgeTurn(params: {
   let enabled = false;
   let sourceMode: "native" | "branches" | undefined;
   let historyPrepared = false;
+  let retainedFragments: RuntimeContextFragment[] = [];
   const selected = createDynamicSessionSourceAssertion(
     () => prepared?.assertCurrent,
     () => {
@@ -141,23 +143,50 @@ export function createReplyConversationKnowledgeTurn(params: {
           signal,
         });
         assertCurrent();
-        prepared = await prepareReplyConversationKnowledge({
-          reader,
-          sessionId,
-          assertCurrent: assertTurnSourceCurrent,
-          originalParticipant: followupRun.conversationParticipant,
-          destinationAudience: followupRun.conversationAudience,
-          getRuntimeConfig,
-          signal,
-        });
       }
       assertCurrent();
       signal.throwIfAborted();
     },
+    async prepareSnapshot(): Promise<RuntimeContextFragment[]> {
+      assertCurrent();
+      if (!execution) {
+        throw new Error("Conversation knowledge execution was not prepared");
+      }
+      if (!enabled) {
+        return [];
+      }
+      // Only the actually selected read-only CLI candidate needs a preview.
+      // Embedded runs retain their missing packets directly in prepareHistory.
+      const next = await prepareReplyConversationKnowledge({
+        reader,
+        sessionId,
+        assertCurrent: assertTurnSourceCurrent,
+        originalParticipant: followupRun.conversationParticipant,
+        destinationAudience: followupRun.conversationAudience,
+        getRuntimeConfig,
+        signal: execution.signal,
+      });
+      prepared?.release();
+      prepared = next;
+      assertCurrent();
+      execution.signal.throwIfAborted();
+      return prepared?.fragments ?? [];
+    },
     async prepareHistory(run: RunEmbeddedAgentParams): Promise<RuntimeContextFragment[]> {
       assertCurrent();
-      if (!execution || !enabled || historyPrepared) {
+      if (!execution || !enabled) {
         return run.runtimeContextFragments ?? [];
+      }
+      if (historyPrepared) {
+        // A CLI fallback's candidate-local preview must not replace or duplicate
+        // the native history already admitted by this turn.
+        return [
+          ...(run.runtimeContextFragments ?? []).filter(
+            (fragment) =>
+              !prepared?.fragments.includes(fragment) && !retainedFragments.includes(fragment),
+          ),
+          ...retainedFragments,
+        ];
       }
       if (
         run.agentId !== agentId ||
@@ -175,7 +204,7 @@ export function createReplyConversationKnowledgeTurn(params: {
       } = await import("./conversation-knowledge-maintenance.js");
       const next = await withConversationKnowledgeWriter(
         { run, assertCurrent: assertTurnSourceCurrent },
-        () =>
+        (writeTarget) =>
           prepareReplyConversationKnowledge({
             reader,
             sessionId,
@@ -185,6 +214,7 @@ export function createReplyConversationKnowledgeTurn(params: {
             getRuntimeConfig,
             signal,
             retainInHistory: {
+              writeTarget,
               contextLimits: resolveConversationKnowledgeContextLimits(run),
               maintainContext: async (sources, packetIds, pendingText) =>
                 createConversationKnowledgeMaintenance({
@@ -198,6 +228,7 @@ export function createReplyConversationKnowledgeTurn(params: {
       prepared?.release();
       prepared = next;
       historyPrepared = true;
+      retainedFragments = prepared?.fragments ?? [];
       assertCurrent();
       signal.throwIfAborted();
       return [
@@ -334,7 +365,10 @@ type ReplyConversationKnowledgeParams = {
   getRuntimeConfig: () => OpenClawConfig;
   signal?: AbortSignal;
   /** Actual native user runs retain observations; provider startup snapshots remain read-only. */
-  retainInHistory?: ConversationKnowledgeIngestionMaintenance;
+  retainInHistory?: ConversationKnowledgeIngestionMaintenance & {
+    /** Native writer selector; physical read provenance does not grant write custody. */
+    writeTarget: BoundAgentRunSessionTarget;
+  };
 };
 
 /** A root reference selects candidates, never grants access to another person's conversation. */
@@ -628,6 +662,7 @@ async function prepareReplyConversationKnowledgeInMode(
         const accepted = await ingestion?.tryPacket(part.text, () =>
           retainConversationKnowledgePacket({
             branch,
+            writeTarget: params.retainInHistory!.writeTarget,
             receipt,
             text: part.text,
             offset,

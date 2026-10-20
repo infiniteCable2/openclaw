@@ -6,6 +6,7 @@ import {
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../../talk/agent-consult-tool.js";
 import { resolveClientVoiceAgentSessionId } from "../../talk/client-voice-session.js";
 import {
@@ -26,7 +27,10 @@ export async function prepareTalkProviderConversationContext(params: {
   /** True only when this caller actually exposes native tools or provider delegation. */
   agentConsultAvailable?: boolean;
   /** Caller-owned native materialization, after original authority and before its snapshot. */
-  prepareTarget?: (assertCurrent: SessionSourceAssertion) => Promise<void>;
+  prepareTarget?: (
+    assertCurrent: SessionSourceAssertion,
+    privateAudience: ConversationPrivateAudience | undefined,
+  ) => Promise<void>;
 }) {
   const participant = params.participant && Object.freeze({ ...params.participant });
   let source: Awaited<ReturnType<TalkOperatorRunSource>>;
@@ -61,7 +65,16 @@ export async function prepareTalkProviderConversationContext(params: {
     source = await params.captureOperatorAuthority({ assertCurrent: params.assertCurrent });
     assertCurrent();
     if (params.prepareTarget) {
-      await params.prepareTarget(assertSourceCurrent);
+      await params.prepareTarget(
+        assertSourceCurrent,
+        captureGatewayPrivateConversationAudience({
+          agentId: params.target.agentId,
+          sessionKey: params.target.canonicalKey,
+          participant,
+          operatorAuthority: source?.authority,
+          assertCurrent: assertSourceCurrent,
+        }),
+      );
       assertCurrent();
     }
     const target = {

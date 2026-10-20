@@ -75,6 +75,7 @@ import {
   toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
 import { resolveAgentHarnessSessionContextError } from "../../sessions/agent-harness-session-key.js";
+import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { isInterSessionInputProvenance } from "../../sessions/input-provenance.js";
 import {
   isModelSelectionLocked,
@@ -718,10 +719,25 @@ async function initSessionStateAttemptLocked(
         });
   const creationStamp =
     !entry && ctx.SessionCreation ? buildSessionCreationStamp(ctx.SessionCreation) : undefined;
+  const privateAudience =
+    !entry &&
+    !isSystemEvent &&
+    !isIncognitoSessionKey(sessionKey) &&
+    resolveAgentConversationMode(cfg, agentId) === "branches"
+      ? readConversationPrivateAudience(ctx)
+      : undefined;
+  const privateCreation =
+    privateAudience?.agentId === agentId && privateAudience.sessionKey === sessionKey
+      ? privateAudience
+      : undefined;
+  privateCreation?.assertCurrent();
   let sessionEntry: SessionEntry = {
     ...baseEntry,
     ...preservedState,
     ...creationStamp,
+    // Only the original live recipient can make a newly created branch private.
+    // A rollover or a newly enrolled historical row keeps its existing sharing.
+    ...(privateCreation ? { visibility: "draft" as const } : {}),
     sessionId,
     lifecycleRevision: isNewSession ? crypto.randomUUID() : baseEntry?.lifecycleRevision,
     updatedAt: retainPendingResetMarker ? 0 : Date.now(),
@@ -812,6 +828,7 @@ async function initSessionStateAttemptLocked(
       !entry || params.assertSourceCurrent
         ? () => {
             params.assertSourceCurrent?.();
+            privateCreation?.assertCurrent();
             if (!entry) {
               params.signal?.throwIfAborted();
               assertPreparedSkillLibrarySelection(ctx.SessionCreation?.skillLibrarySelections);

@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
   claimConversationInputExecution,
   consumeConversationInputAdmission,
   createConversationInputAdmission,
   prepareConversationReplyContext,
+  releaseConversationInputAdmission,
   type AdmittedConversationInput,
 } from "./conversation-input-admission.js";
 import type {
@@ -55,6 +56,19 @@ function prepareInput(prepareContext?: AdmittedConversationInput["prepareContext
 }
 
 describe("native conversation input handoff", () => {
+  it.for([false, true])("releases only unconsumed admissions, transferred=%s", (transferred) => {
+    const prepared = prepareInput();
+    const release = vi.fn();
+    const admission = createConversationInputAdmission({ ...prepared.input, release });
+    const accepted = transferred ? consumeConversationInputAdmission(admission, scope) : undefined;
+    releaseConversationInputAdmission(admission);
+    releaseConversationInputAdmission(admission);
+    expect(release).toHaveBeenCalledTimes(transferred ? 0 : 1);
+    expect(() => consumeConversationInputAdmission(admission, scope)).toThrow("unavailable");
+    accepted?.release?.();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("refuses an unknown input purpose at the host issuer", () => {
     const fixture = prepareInput();
     const invalid = { ...fixture.input, scope: { ...scope } };

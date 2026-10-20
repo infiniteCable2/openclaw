@@ -1,11 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ReplySpeechRunBinding } from "../../auto-reply/reply/reply-speech-presentation.js";
+import {
+  claimConversationInputExecution,
+  consumeConversationInputAdmission,
+  createConversationInputAdmission,
+} from "../conversation-input-admission.js";
 import type { ConversationReplyResult } from "../conversation-reply.js";
+import { readAdmittedSpeechInput } from "./native-control.js";
 import { createNativeSpeechInput } from "./native-input.js";
 import type { SpeechUtterance } from "./output.js";
 import { createSpeechInputMetadata } from "./session-input-identity.js";
 import type { SpeechNativeInputParams } from "./types.js";
 import { createSpeechVideoInput } from "./video-input.js";
+
+const controlRuntime = vi.hoisted(() => ({
+  resolveActiveEmbeddedRunOwnerByRunId: vi.fn(),
+  resolveActiveReplyRunOwnerForSignal: vi.fn(),
+  resolveActiveEmbeddedRunSessionId: vi.fn(),
+  abortEmbeddedAgentRun: vi.fn(),
+}));
+
+// mock-isolation: control selection is real; this unit suite owns no embedded model runtime.
+vi.mock("../agent-run-control.runtime.js", () => ({
+  realtimeVoiceControlRuntime: controlRuntime,
+}));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -22,11 +40,20 @@ function fixture() {
   const pending: ReturnType<typeof deferred<ConversationReplyResult>>[] = [];
   const reached = new Map<number, ReturnType<typeof deferred<void>>>();
   const dispatch = vi.fn(async (input: SpeechNativeInputParams) => {
+    const control = readAdmittedSpeechInput(input);
+    const accepted = control && consumeConversationInputAdmission(control.admission, control.scope);
+    if (accepted) {
+      claimConversationInputExecution(accepted);
+    }
     calls.push(input);
     const result = deferred<ConversationReplyResult>();
     pending.push(result);
     reached.get(calls.length)?.resolve();
-    return result.promise;
+    try {
+      return await result.promise;
+    } finally {
+      accepted?.release?.();
+    }
   });
   const video = createSpeechVideoInput(undefined);
   const utterances: SpeechUtterance[] = [];
@@ -55,14 +82,21 @@ function fixture() {
     finalizeSpeechUtterance: vi.fn(),
     enqueueSpeechResult: vi.fn(),
   };
-  const finishWaiting = vi.fn();
+  const finished = new Map<number, ReturnType<typeof deferred<void>>>();
+  const finishWaiting = vi.fn((turn: number) => finished.get(turn)?.resolve());
   const recordUnplayed = vi.fn();
   let turn = 0;
   const owner = createNativeSpeechInput({
     dispatch,
     session: {
       sessionId: "connection-a",
-      config: { audioFormat: "pcm16-24khz", providers: {}, responseStreaming: "sentence" },
+      requesterSessionKey: "agent:example:call",
+      config: {
+        agentId: "example",
+        audioFormat: "pcm16-24khz",
+        providers: {},
+        responseStreaming: "sentence",
+      },
     },
     inputs: createSpeechInputMetadata(video, "connection-a"),
     video,
@@ -90,6 +124,49 @@ function fixture() {
     recordUnplayed,
     bound,
     utterances,
+    waitForFinished(turn: number) {
+      if (finishWaiting.mock.calls.some(([value]) => value === turn)) {
+        return Promise.resolve();
+      }
+      const done = finished.get(turn) ?? deferred<void>();
+      finished.set(turn, done);
+      return done.promise;
+    },
+    admitControl(mode: "status" | "cancel" | "steer" | "followup") {
+      const release = vi.fn();
+      let current = true;
+      const scope = {
+        agentId: "example",
+        conversationId: "connection-a",
+        inputId: `control-${mode}`,
+        purpose: "steering" as const,
+      };
+      return {
+        release,
+        revoke: () => {
+          current = false;
+        },
+        control: {
+          scope,
+          mode,
+          text: "An authenticated control",
+          admission: createConversationInputAdmission({
+            scope,
+            source: { channelId: "webchat", sessionKey: "agent:example:call" },
+            assertCurrent() {
+              if (!current) {
+                throw new Error("Original caller revoked");
+              }
+            },
+            assertInputCurrent() {},
+            release,
+            prepareContext(text) {
+              return { AgentId: "example", SessionKey: "agent:example:call", Body: text };
+            },
+          }),
+        },
+      };
+    },
     waitForCall(count: number) {
       if (calls.length >= count) {
         return Promise.resolve();
@@ -106,6 +183,102 @@ function fixture() {
 }
 
 describe("native speech input media ownership", () => {
+  it.for(["steer", "followup"] as const)(
+    "keeps authenticated %s on the native input and media owner",
+    async (mode) => {
+      const f = fixture();
+      const first = f.owner.submit({ text: "Original request", hasOnset: false });
+      await f.waitForCall(1);
+      f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+      const admitted = f.admitControl(mode);
+      const controlled = f.owner.control(admitted.control);
+      await f.waitForCall(2);
+      expect(f.calls[1]).toMatchObject({
+        inputId: admitted.control.scope.inputId,
+        purpose: "steering",
+        queueMode: mode,
+        args: { question: admitted.control.text },
+      });
+      f.calls[1]!.onQueueAccepted();
+      expect(await controlled).toMatchObject({ ok: true, mode, queued: true });
+      if (mode === "followup") {
+        f.calls[1]!.onInputDisposition?.({ mode: "followup", committed: false });
+        f.pending[0]!.resolve({ kind: "reply", reply: { text: "Original answer" } });
+        await first;
+        f.calls[1]!.onNativeRunBound?.(f.bound("run-b"));
+        f.pending[1]!.resolve({ kind: "reply", reply: { text: "Follow-up answer" } });
+        await f.waitForFinished(2);
+        expect(f.output.finalizeSpeechUtterance).toHaveBeenCalledWith(
+          f.utterances[1],
+          "Follow-up answer",
+        );
+      } else {
+        f.calls[1]!.onInputDisposition?.({ mode: "steer", committed: true, runId: "run-a" });
+        f.pending[1]!.resolve({ kind: "steered" });
+        f.pending[0]!.resolve({ kind: "reply", reply: { text: "Combined answer" } });
+        await first;
+      }
+      expect(admitted.release).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.for(["status", "cancel"] as const)(
+    "admits %s without manufacturing another native input",
+    async (mode) => {
+      const f = fixture();
+      const admitted = f.admitControl(mode);
+      const result = await f.owner.control(admitted.control);
+      expect(result).toMatchObject({ mode, active: false });
+      expect(f.calls).toHaveLength(0);
+      expect(admitted.release).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("rejects revoked controls before consulting another native owner", async () => {
+    const f = fixture();
+    const admitted = f.admitControl("cancel");
+    admitted.revoke();
+    await expect(f.owner.control(admitted.control)).rejects.toThrow("Original caller revoked");
+    expect(f.calls).toHaveLength(0);
+    expect(admitted.release).toHaveBeenCalledOnce();
+  });
+
+  it.for(["status", "cancel"] as const)(
+    "pins authenticated %s to the media owner's exact native run",
+    async (mode) => {
+      const f = fixture();
+      const first = f.owner.submit({ text: "Original request", hasOnset: false });
+      await f.waitForCall(1);
+      f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+      const abort = vi.fn(() => true);
+      controlRuntime.resolveActiveEmbeddedRunOwnerByRunId
+        .mockReset()
+        .mockImplementation((runId) =>
+          runId === "run-a"
+            ? { sessionId: "native-session", sessionKey: "agent:example:call", abort }
+            : undefined,
+        );
+      controlRuntime.resolveActiveEmbeddedRunSessionId.mockClear();
+      controlRuntime.abortEmbeddedAgentRun.mockClear();
+      const admitted = f.admitControl(mode);
+      expect(await f.owner.control(admitted.control)).toMatchObject({
+        ok: true,
+        mode,
+        sessionId: "native-session",
+        active: true,
+        ...(mode === "cancel" ? { aborted: true } : {}),
+      });
+      expect(abort).toHaveBeenCalledTimes(mode === "cancel" ? 1 : 0);
+      expect(controlRuntime.resolveActiveEmbeddedRunSessionId).not.toHaveBeenCalled();
+      expect(controlRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
+      expect(f.calls).toHaveLength(1);
+      expect(admitted.release).toHaveBeenCalledOnce();
+      f.pending[0]!.resolve({ kind: "reply", reply: { text: "" } });
+      await first;
+      controlRuntime.resolveActiveEmbeddedRunOwnerByRunId.mockReset();
+    },
+  );
+
   it("plays an immediate native answer without manufacturing a model run", async () => {
     const f = fixture();
     const input = f.owner.submit({ text: "A native shortcut", hasOnset: false });

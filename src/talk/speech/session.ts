@@ -13,6 +13,7 @@ import { createSpeechCancellation } from "./cancellation.js";
 import { playSpeechGreeting } from "./greeting.js";
 import { createSpeechInputOnset } from "./input-onset.js";
 import { admitLegacySpeechInput } from "./legacy-input.js";
+import { bindNativeSpeechControl } from "./native-control.js";
 import { createNativeSpeechInput } from "./native-input.js";
 import { createSpeechBargeInGate } from "./output-gate.js";
 import { createSpeechOutput, type SpeechUtterance } from "./output.js";
@@ -483,6 +484,9 @@ export async function startSpeechSession(
     }),
     stop,
   };
+  if (nativeInput) {
+    bindNativeSpeechControl(handle, nativeInput.control);
+  }
   try {
     if (params.connectionPresentation) {
       releaseConnectionPresentation = publishTalkConnectionPresentation(params.sessionId, {

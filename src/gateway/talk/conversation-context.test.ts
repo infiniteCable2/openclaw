@@ -190,8 +190,14 @@ describe("provider startup native context snapshot", () => {
         order.push("authority");
         return owner.captureOperatorAuthority(invocation);
       },
-      prepareTarget: async (assertCurrent) => {
+      prepareTarget: async (assertCurrent, privateAudience) => {
         assertCurrent();
+        expect(privateAudience).toMatchObject({
+          agentId: target.agentId,
+          sessionKey: target.canonicalKey,
+          participant,
+        });
+        privateAudience!.assertCurrent();
         order.push("native-ensure");
         mocks.sessionId.mockReturnValue("just-created-session");
         mocks.entry.mockReturnValue({ sessionId: "just-created-session", chatType: "direct" });

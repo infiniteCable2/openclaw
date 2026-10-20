@@ -87,6 +87,7 @@ export async function createConversationKnowledgeScenario(state: OpenClawTestSta
       lifecycleRevision: selected.lifecycleRevision,
       updatedAt: ++clock,
       chatType,
+      visibility: "draft",
       conversationTopology: admitSessionConversationBranch({
         agentId: selected.agentId,
         sessionKey: selected.sessionKey,

@@ -13,6 +13,7 @@ import type {
 } from "../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../config/sessions/conversation-knowledge.js";
 import { assertSessionConversationRootEntry } from "../config/sessions/session-conversation-admission.js";
+import { sessionCreatorProfileId } from "../config/sessions/session-entry-provenance.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import {
@@ -26,6 +27,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
+import { resolveSessionVisibility } from "./session-sharing-policy.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 
 export type PersonalConversationReadParams = {
@@ -175,6 +177,20 @@ export async function preparePersonalConversationRead(params: PersonalConversati
         throw new Error("Personal conversation root incarnation changed");
       }
       return false;
+    }
+    // Quoted differences become recipient history. A private transport does not
+    // hide that history from the Gateway readers of a non-draft session.
+    if (sessionKey === target.sessionKey && resolveSessionVisibility(entry) !== "draft") {
+      throw new Error("Personal conversation destination is visible to other Gateway readers");
+    }
+    const creator = sessionCreatorProfileId(entry.createdActor);
+    if (
+      sessionKey === target.sessionKey &&
+      creator &&
+      creator !== GATEWAY_OWNER_PROFILE_ID &&
+      (participant.type !== "profile" || participant.id !== creator)
+    ) {
+      throw new Error("Personal conversation destination has another Gateway profile creator");
     }
     const membership = entry.conversationTopology;
     const destinationIdentity =

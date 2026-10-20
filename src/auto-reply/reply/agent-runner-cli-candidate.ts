@@ -237,6 +237,9 @@ export async function runCliFallbackCandidate(
           turn.followupRun.run.agentId,
         );
         let droppedCliSessionReplacement = false;
+        const conversationSnapshot = await turn.prepareConversationSnapshot?.();
+        params.runAbortSignal?.throwIfAborted();
+        assertSettlementCurrent();
         await params.prepareAgentRunStart();
         assertSettlementCurrent();
         const candidateResult = await runCliAgentWithLifecycle({
@@ -351,6 +354,14 @@ export async function runCliFallbackCandidate(
               : undefined,
           runParams: {
             ...buildFallbackCandidateTurnParams(params),
+            ...(conversationSnapshot
+              ? {
+                  runtimeContextFragments: [
+                    ...(turn.runtimeContextFragments ?? []),
+                    ...conversationSnapshot,
+                  ],
+                }
+              : {}),
             ...buildReplyRunStateParams(turn.followupRun.run),
             diagnosticOwner,
             sessionId: turn.followupRun.run.sessionId,

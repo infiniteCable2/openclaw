@@ -5,6 +5,7 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { resolveEmbeddedSessionContextLimits } from "../../agents/embedded-agent-runner/run/session-context-limits.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
+import type { BoundAgentRunSessionTarget } from "../../agents/run-session-target.types.js";
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
   composeSessionSourceAssertion,
@@ -40,22 +41,36 @@ export function resolveConversationKnowledgeContextLimits(run: RunEmbeddedAgentP
 /** Bind pre-hydration writes to the actual claim admitted by the native lane. */
 export function withConversationKnowledgeWriter<T>(
   params: { run: RunEmbeddedAgentParams; assertCurrent: SessionSourceAssertion },
-  operation: () => Promise<T>,
+  operation: (target: BoundAgentRunSessionTarget) => Promise<T>,
 ): Promise<T> {
   const target = params.run.sessionTarget;
-  if (!target?.expectedWriterRunId || target.expectedWriterRunId !== params.run.runId) {
+  if (
+    !target?.agentId ||
+    !target.sessionId ||
+    !target.sessionKey ||
+    !target.storePath ||
+    !target.expectedWriterRunId ||
+    target.expectedWriterRunId !== params.run.runId
+  ) {
     throw new Error("Conversation knowledge has no admitted native writer");
   }
-  return withSessionTranscriptWriteAssertion(target, params.assertCurrent, () => {
-    const owned = getOwnedSessionTranscriptWriterFence({ sessionTarget: target });
+  const writeTarget: BoundAgentRunSessionTarget = {
+    ...target,
+    agentId: target.agentId,
+    sessionId: target.sessionId,
+    sessionKey: target.sessionKey,
+    storePath: target.storePath,
+  };
+  return withSessionTranscriptWriteAssertion(writeTarget, params.assertCurrent, () => {
+    const owned = getOwnedSessionTranscriptWriterFence({ sessionTarget: writeTarget });
     if (
       !owned ||
-      owned.expectedWriterRunId !== target.expectedWriterRunId ||
-      owned.expectedLifecycleRevision !== target.expectedLifecycleRevision
+      owned.expectedWriterRunId !== writeTarget.expectedWriterRunId ||
+      owned.expectedLifecycleRevision !== writeTarget.expectedLifecycleRevision
     ) {
       throw new Error("Conversation knowledge writer custody changed");
     }
-    return operation();
+    return operation(writeTarget);
   });
 }
 

@@ -3,6 +3,7 @@ import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.type
 import { createPluginTtsRuntimeMock } from "../plugin-sdk/test-helpers/plugin-runtime-tts-mock.js";
 import { createConversationInputAdmission } from "../talk/conversation-input-admission.js";
 import type { ConversationInputSourceV1 } from "../talk/conversation-input.types.js";
+import { bindAdmittedSpeechInput } from "../talk/speech/native-control.js";
 import {
   createMeetingRealtimeEngineBindingsV2,
   type MeetingRealtimeBindingsV2Params,
@@ -155,6 +156,54 @@ describe("original speech binding to native reply", () => {
     expect(f.ttsRelease).toHaveBeenCalledOnce();
     expect(onSpeakableText).not.toHaveBeenCalled();
   });
+
+  it.for([false, true])(
+    "consumes the original Gateway control admission, revoked=%s",
+    async (revoked) => {
+      const f = fixture();
+      const scope = {
+        agentId: "example",
+        conversationId: "example-call",
+        inputId: "authenticated-control",
+        purpose: "steering" as const,
+      };
+      const admission = await f.params.inputSource.admitInput(scope);
+      const input = bindAdmittedSpeechInput(
+        {
+          sessionId: "example-call",
+          inputId: scope.inputId,
+          purpose: scope.purpose,
+          args: { question: "An authenticated addition" },
+          transcript: [],
+          queueMode: "steer" as const,
+          bufferReply: true,
+          onNativeRunBound: vi.fn(),
+          onInputDisposition: vi.fn(),
+          onQueueAccepted: vi.fn(),
+        },
+        { admission, scope, text: "An authenticated addition", mode: "steer" },
+      );
+      mocks.getReplyFromConfig.mockResolvedValue({ text: "Combined answer" });
+      if (revoked) {
+        f.revoke();
+        await expect(
+          createMeetingRealtimeEngineBindingsV2(f.params).nativeInput(input),
+        ).rejects.toThrow("Original source revoked");
+        expect(mocks.getReplyFromConfig).not.toHaveBeenCalled();
+      } else {
+        await expect(
+          createMeetingRealtimeEngineBindingsV2(f.params).nativeInput(input),
+        ).resolves.toMatchObject({ kind: "reply" });
+        expect(mocks.getReplyFromConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ Body: "An authenticated addition" }),
+          expect.objectContaining({ queueModeOverride: "steer" }),
+          f.params.fullConfig,
+        );
+      }
+      expect(f.params.inputSource.admitInput).toHaveBeenCalledOnce();
+      expect(f.release).toHaveBeenCalledOnce();
+    },
+  );
 
   it("refuses changed connection scope before acquiring provider resources", async () => {
     const f = fixture();

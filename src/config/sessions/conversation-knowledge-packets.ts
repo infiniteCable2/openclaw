@@ -4,6 +4,11 @@ import { readConversationKnowledgeReports } from "./conversation-knowledge-histo
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "./conversation-knowledge.js";
 import { appendSessionTranscriptReport } from "./session-accessor.sqlite-transcript-reports.js";
+import type {
+  SessionTranscriptRuntimeTarget,
+  SessionTranscriptWriteScope,
+} from "./session-accessor.types.js";
+import { assertSessionEntryCohortScope } from "./session-entry-cohort-scope.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
 import { composeSessionSourceAssertion } from "./session-source-authority.js";
@@ -72,6 +77,8 @@ export async function readConversationKnowledgePacketProgress(params: {
 /** Original live source checks authorize the copy; subsequent replay is recipient history. */
 export async function retainConversationKnowledgePacket(params: {
   branch: ConversationKnowledgeBranch;
+  writeTarget: SessionTranscriptRuntimeTarget &
+    Pick<SessionTranscriptWriteScope, "expectedWriterRunId" | "expectedLifecycleRevision">;
   receipt: ConversationKnowledgeReference;
   text: string;
   offset: number;
@@ -85,6 +92,17 @@ export async function retainConversationKnowledgePacket(params: {
 }): Promise<string | undefined> {
   params.signal?.throwIfAborted();
   params.source();
+  const writeTarget = { ...params.writeTarget };
+  assertSessionEntryCohortScope(params.reader, writeTarget);
+  if (
+    writeTarget.agentId !== params.branch.agentId ||
+    writeTarget.sessionKey !== params.branch.sessionKey ||
+    writeTarget.sessionId !== params.branch.sessionId ||
+    (writeTarget.expectedLifecycleRevision !== undefined &&
+      writeTarget.expectedLifecycleRevision !== params.branch.lifecycleRevision)
+  ) {
+    throw new Error("Conversation knowledge packet writer differs from its recipient");
+  }
   const contributionId = conversationKnowledgeContributionId(params.receipt);
   const packetId = sha256Hex(JSON.stringify([contributionId, params.offset]));
   const predicate = await params.reader.withRead(
@@ -133,7 +151,7 @@ export async function retainConversationKnowledgePacket(params: {
   let deferred = false;
   const result = await appendSessionTranscriptReport(
     {
-      ...params.branch,
+      ...writeTarget,
       expectedLifecycleRevision: params.branch.lifecycleRevision,
     },
     {

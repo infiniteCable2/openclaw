@@ -197,6 +197,7 @@ async function retain(selected: Scope) {
       originalParticipant: person,
       getRuntimeConfig: () => cfg,
       retainInHistory: {
+        writeTarget: selected,
         maintainContext: async (source) => {
           source();
         },

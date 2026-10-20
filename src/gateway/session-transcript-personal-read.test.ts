@@ -56,6 +56,7 @@ function fixture() {
       lifecycleRevision,
       updatedAt: 1,
       chatType: "direct",
+      visibility: "draft",
       conversationTopology: { ...membership },
       participantCount: 1,
       participants: [{ identity: participant }],
@@ -130,6 +131,93 @@ beforeEach(() => {
 });
 
 describe("same-person conversation differences on native transcript read owner", () => {
+  it("refuses another profile's draft even when its recorded participant matches", async () => {
+    const f = fixture();
+    f.recipient.entry.createdActor = { type: "human", source: "profile", id: "person-b" };
+    await expect(prepareTranscriptReadAuthority(f.params)).rejects.toThrow(
+      "another Gateway profile creator",
+    );
+    f.recipient.entry.createdActor.id = "person-a";
+    const grant = await prepareTranscriptReadAuthority(f.params);
+    grant.release();
+  });
+  it.each(["profile", "remote"] as const)(
+    "refuses shared and default-shared %s destinations even with original private ingress",
+    async (kind) => {
+      for (const visibility of ["shared", undefined] as const) {
+        const f = fixture();
+        const participant: SessionParticipantIdentity =
+          kind === "profile"
+            ? f.params.personal.originalParticipant
+            : {
+                type: "remote",
+                pluginId: "matrix",
+                domain: "example.test",
+                idKind: "user-id",
+                id: "@person-a:example.test",
+              };
+        f.params.personal.originalParticipant = participant;
+        f.recipient.entry.participants = [{ identity: participant }];
+        f.source.entry.participants = [{ identity: participant }];
+        f.recipient.entry.visibility = visibility;
+        f.params.personal.targetAudience = {
+          agentId: f.params.personal.target.agentId,
+          sessionKey: f.recipient.canonicalKey,
+          channelId: kind === "remote" ? "matrix" : "webchat",
+          accountId: "default",
+          nativeChannelId: "private-conversation",
+          participant,
+          assertCurrent() {},
+        };
+        await expect(prepareTranscriptReadAuthority(f.params)).rejects.toThrow(
+          "destination is visible to other Gateway readers",
+        );
+        expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
+      }
+    },
+  );
+
+  it("retains private Matrix destinations and fences sharing changes at COMMIT", async () => {
+    const f = fixture();
+    const participant: SessionParticipantIdentity = {
+      type: "remote",
+      pluginId: "matrix",
+      domain: "example.test",
+      idKind: "user-id",
+      id: "@person-a:example.test",
+    };
+    f.params.personal.originalParticipant = participant;
+    f.recipient.entry.participants = [{ identity: participant }];
+    f.source.entry.participants = [{ identity: participant }];
+    f.params.personal.targetAudience = {
+      agentId: f.params.personal.target.agentId,
+      sessionKey: f.recipient.canonicalKey,
+      channelId: "matrix",
+      accountId: "default",
+      nativeChannelId: "private-conversation",
+      participant,
+      assertCurrent() {},
+    };
+    const grant = await prepareTranscriptReadAuthority(f.params);
+    try {
+      const prepared = await prepareSessionSourceAuthority(grant.assertCurrent);
+      try {
+        const destination = prepared.checks.find(
+          ({ predicate }) => predicate.sessionKey === f.recipient.storeKey,
+        );
+        expect(destination?.predicate.fields).toContain("visibility");
+        expect(destination?.predicate.expected?.visibility).toBe("draft");
+        f.recipient.entry.visibility = "shared";
+        expect(() => grant.assertCurrent()).toThrow("changed after admission");
+        expect(() => destination?.refuse({ entry: f.recipient.entry })).toThrow();
+      } finally {
+        await prepared.release?.();
+      }
+    } finally {
+      grant.release();
+    }
+  });
+
   it("allows exact private sibling reads without any operator authority and retains all native predicates", async () => {
     const f = fixture();
     f.members.get(f.recipient.canonicalKey)!.add("person-a");
