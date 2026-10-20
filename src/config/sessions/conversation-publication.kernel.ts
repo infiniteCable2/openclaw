@@ -74,7 +74,7 @@ function decode(row: StoredRow): ConversationPublicationRow {
   if (row.state !== "candidate" && row.state !== "ready" && row.state !== "blocked") {
     throw new Error("Invalid conversation publication state");
   }
-  // This private payload is written only after the transaction-owned receipt validators below.
+  // SAFETY: Only the transaction-owned receipt validators below write this private payload.
   const { intent, anchor } = JSON.parse(row.payload_json) as Pick<
     ConversationPublicationRow,
     "intent" | "anchor"
