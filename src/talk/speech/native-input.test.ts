@@ -136,12 +136,12 @@ function fixture() {
     recordUnplayed,
     bound,
     utterances,
-    waitForFinished(turn: number) {
-      if (finishWaiting.mock.calls.some(([value]) => value === turn)) {
+    waitForFinished(waitingTurn: number) {
+      if (finishWaiting.mock.calls.some(([value]) => value === waitingTurn)) {
         return Promise.resolve();
       }
-      const done = finished.get(turn) ?? deferred<void>();
-      finished.set(turn, done);
+      const done = finished.get(waitingTurn) ?? deferred<void>();
+      finished.set(waitingTurn, done);
       return done.promise;
     },
     admitControl(mode: "status" | "cancel" | "steer" | "followup") {

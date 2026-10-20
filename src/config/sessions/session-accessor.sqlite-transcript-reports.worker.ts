@@ -145,7 +145,7 @@ export function bindSqliteWorkerBackend(
       // with its staged publications. Deferral must still prove NO WRITE.
       assertOpen();
       if (database.db.isTransaction) {
-        throw new Error("Deferred transcript report left a transaction open");
+        throw new Error("Deferred transcript report left a transaction open", { cause: error });
       }
       return ok({ committed: false, projectionNeedsReconcile: false, deferred: true });
     }

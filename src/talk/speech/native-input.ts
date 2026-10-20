@@ -285,7 +285,10 @@ export function createNativeSpeechInput(params: {
     captureRun,
     capturePlayback,
     submit,
-    async control(input: AdmittedSpeechControl): Promise<RealtimeVoiceAgentControlResult> {
+    async control(
+      this: void,
+      input: AdmittedSpeechControl,
+    ): Promise<RealtimeVoiceAgentControlResult> {
       const captured = active;
       const sessionKey = params.session.requesterSessionKey;
       try {

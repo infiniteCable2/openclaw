@@ -46,8 +46,8 @@ export function bindAdmittedSpeechInput<T extends object>(
   return control ? Object.assign(input, { [admittedInput]: control }) : input;
 }
 
-export function readAdmittedSpeechInput<T extends object>(
-  input: T & AdmittedInput,
+export function readAdmittedSpeechInput(
+  input: object & AdmittedInput,
 ): AdmittedSpeechControl | undefined {
   return input[admittedInput];
 }
