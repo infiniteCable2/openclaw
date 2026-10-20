@@ -50,7 +50,6 @@ export async function createConversationKnowledgeScenario(state: OpenClawTestSta
   const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
   const cfg: OpenClawConfig = {
     agents: { entries: { main: { conversationMode: "branches" } } },
-    session: { store: database.path },
   };
   await state.writeConfig(cfg);
   const admitted = await ensureAgentConversationRoot({

@@ -48,7 +48,8 @@ function fixture() {
     canonicalKey: key,
     storeKey: key,
     storeKeys: [key],
-    storePath: target.storePath,
+    // The native Gateway retains its logical selector beside the physical source.
+    storePath: "/example/agents/example/sessions/sessions.json",
     readSource: { ...readSource },
     entry: {
       sessionId,
@@ -136,10 +137,19 @@ describe("same-person conversation differences on native transcript read owner",
     f.source.storeKey = "agent:example:actual-source-row";
     const grant = await prepareTranscriptReadAuthority(f.params);
     expect(grant.sources).toMatchObject([
-      { canonicalKey: f.source.canonicalKey, sessionId: "source-a" },
+      {
+        canonicalKey: f.source.canonicalKey,
+        sessionId: "source-a",
+        storePath: f.params.personal.target.storePath,
+      },
     ]);
     const prepared = await prepareSessionSourceAuthority(grant.assertCurrent);
     expect(prepared.checks).toHaveLength(3);
+    expect(
+      prepared.checks.every(
+        (check) => check.predicate.source.path === f.params.personal.target.storePath,
+      ),
+    ).toBe(true);
     expect(prepared.checks.map((check) => check.predicate.sessionKey)).toEqual([
       f.recipient.storeKey,
       f.rootRow.storeKey,
@@ -205,7 +215,7 @@ describe("same-person conversation differences on native transcript read owner",
       };
     }
     if (change === "different-store") {
-      f.source.storePath = "/example/other.sqlite";
+      f.source.readSource = { ...f.source.readSource!, path: "/example/other.sqlite" };
     }
     if (change === "root-source") {
       f.params.sources[0]!.sessionKey = f.rootRow.canonicalKey;
@@ -375,6 +385,9 @@ describe("same-person conversation differences on native transcript read owner",
     "input-revocation",
     "mode-revocation",
     "membership",
+    "logical-selector",
+    "physical-identity",
+    "physical-birthtime",
   ] as const)("revokes a retained purpose after %s", async (change) => {
     const f = fixture();
     const grant = await prepareTranscriptReadAuthority(f.params);
@@ -393,6 +406,15 @@ describe("same-person conversation differences on native transcript read owner",
     }
     if (change === "membership") {
       f.members.get(f.source.canonicalKey)!.add("person-b");
+    }
+    if (change === "logical-selector") {
+      f.source.storePath = "/example/other-selector.json";
+    }
+    if (change === "physical-identity") {
+      f.source.readSource = { ...f.source.readSource!, databaseIdentity: "replacement-database" };
+    }
+    if (change === "physical-birthtime") {
+      f.source.readSource = { ...f.source.readSource!, databaseBirthtime: "replacement-birthtime" };
     }
     expect(() => grant.assertCurrent()).toThrow();
     expect(() => prepared.checks.at(-1)!.refuse({ entry: f.source.entry })).toThrow();
