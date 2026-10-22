@@ -1,18 +1,29 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import path from "node:path";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import type { ReplyPayload } from "../auto-reply/reply-payload.js";
+import {
+  copyReplyPayloadMetadata,
+  setReplyPayloadMetadata,
+  type ReplyPayload,
+  type ReplySpeechOutputReceipt,
+} from "../auto-reply/reply-payload.js";
+import { clearPendingFinalDeliveryAfterSuccess } from "../auto-reply/reply/dispatch-from-config.pending-final.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import { REPLY_OPERATION_RUN_STATE } from "../auto-reply/reply/reply-operation-run-state.js";
 import type { MsgContext } from "../auto-reply/templating.js";
+import { hasMainSessionRecoveryClaim } from "../config/sessions/restart-recovery-state.js";
+import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import { settlePendingFinalDelivery } from "../infra/outbound/delivery-completion.js";
+import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import {
   consumeConversationInputAdmission,
   createConversationInputAdmission,
 } from "./conversation-input-admission.js";
 import type { ConversationInputScopeV1 } from "./conversation-input.types.js";
-import { replyToConversationInput } from "./conversation-reply.js";
+import { replyToConversationInput, type ConversationReplyParams } from "./conversation-reply.js";
 
 const mocks = vi.hoisted(() => ({ getReplyFromConfig: vi.fn(), prepareGreeting: vi.fn() }));
-// mock-isolation: The existing native reply owner is the boundary; do not start models or storage.
+// mock-isolation: Keep model execution outside this fixture; delivery cases use real SQLite owners.
 vi.mock("../auto-reply/reply/get-reply.js", () => mocks);
 // mock-isolation: The auxiliary owner has its own detached-run tests, not a user-turn dispatcher.
 vi.mock("./conversation-greeting.js", () => ({
@@ -53,7 +64,29 @@ function setup(purpose: ConversationInputScopeV1["purpose"] = "user") {
     release,
   });
   const onError = vi.fn();
-  const onSpeakableText = vi.fn();
+  const settlements: Promise<void>[] = [];
+  const releaseSettlement = vi.fn();
+  const chunks: string[] = [];
+  let outputCompletion: Promise<readonly string[] | undefined> | undefined;
+  // mock-isolation: This is the transport boundary; output.prefetch tests prove
+  // that the real owner withholds this receipt until every PCM write succeeds.
+  const onSpeakableText = vi.fn<NonNullable<ConversationReplyParams["speech"]["onSpeakableText"]>>(
+    (event) => {
+      if (event.type === "chunk") {
+        chunks.push(event.text);
+      } else if (event.type === "done") {
+        return {
+          completion:
+            outputCompletion ?? Promise.resolve(chunks.length ? [...chunks] : [event.text]),
+          trackSettlement: (settlement) => {
+            settlements.push(settlement);
+          },
+          releaseSettlement,
+        } satisfies ReplySpeechOutputReceipt;
+      }
+      return undefined;
+    },
+  );
   const params = {
     cfg: {},
     admission,
@@ -81,10 +114,19 @@ function setup(purpose: ConversationInputScopeV1["purpose"] = "user") {
     prepareContext,
     onError,
     release,
+    settlements,
+    releaseSettlement,
+    delayOutput(completion: Promise<readonly string[] | undefined>) {
+      outputCompletion = completion;
+    },
   };
 }
 
-async function present(options: InternalGetReplyOptions, text = "A complete answer.") {
+async function present(
+  options: InternalGetReplyOptions,
+  answer: string | ReplyPayload[] = "A complete answer.",
+) {
+  const payloads = typeof answer === "string" ? [{ text: answer }] : answer;
   const source = options.speechPresentation!;
   const run = source.openRun({
     runId: "actual-native-run",
@@ -93,8 +135,10 @@ async function present(options: InternalGetReplyOptions, text = "A complete answ
     assertCurrent: options.assertSourceCurrent!,
   });
   try {
-    await run.onBlockReply({ text });
-    await run.finish({ payloads: [{ text }], meta: { durationMs: 1 } });
+    for (const payload of payloads) {
+      await run.onBlockReply(payload);
+    }
+    await run.finish({ payloads, meta: { durationMs: 1 } });
   } catch (error) {
     // Match the native presentation owner's non-retrying output failure boundary.
     source.onError(error);
@@ -105,9 +149,208 @@ async function present(options: InternalGetReplyOptions, text = "A complete answ
 }
 
 describe("original conversation input through native reply", () => {
+  const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-spoken-final-");
   beforeEach(() => {
     mocks.getReplyFromConfig.mockReset();
     mocks.prepareGreeting.mockReset();
+  });
+
+  it.each([
+    { label: "immediate", queued: false, mixed: false },
+    { label: "queued", queued: true, mixed: false },
+    { label: "mixed-lane", queued: false, mixed: true },
+  ])(
+    "settles exact spoken final custody after $label native completion",
+    async ({ queued, mixed }) => {
+      const fixture = setup();
+      const storePath = path.join(sessionDirs.make(), "sessions.json");
+      const sessionKey = fixture.context.SessionKey!;
+      const sessionId = "actual-native-session";
+      const payloads = [{ text: "First sentence." }, { text: "Second sentence." }];
+      const audio = createDeferred<readonly string[] | undefined>();
+      fixture.delayOutput(audio.promise);
+      mocks.getReplyFromConfig.mockImplementation(async (_context, options) => {
+        await present(
+          options,
+          mixed
+            ? [
+                { text: "Private reasoning.", isReasoning: true },
+                { text: "Hidden notice.", isError: true },
+                ...payloads,
+              ]
+            : payloads,
+        );
+        // The real reply producer allocates pending IDs AFTER speech finishes.
+        await replaceSessionEntry(
+          { storePath, sessionKey },
+          {
+            sessionId,
+            updatedAt: 1,
+            status: "done",
+            endedAt: 1,
+            pendingFinalDelivery: {
+              kind: "replayable",
+              text: "First sentence. Second sentence.",
+              createdAt: 1,
+              intentId: "exact-intent",
+              deliveries: payloads.map((_payload, index) => ({
+                id: `delivery-${index}`,
+                state: "prepared",
+              })),
+            },
+          },
+        );
+        const normalized = payloads.map((payload, index) =>
+          setReplyPayloadMetadata(
+            copyReplyPayloadMetadata(payload, { ...payload, replyToId: "original-message" }),
+            {
+              pendingFinalDeliveryCompletion: {
+                storePath,
+                sessionKey,
+                sessionId,
+                intentId: "exact-intent",
+                deliveryId: `delivery-${index}`,
+              },
+            },
+          ),
+        );
+        if (queued) {
+          options.turnAdoptionLifecycle.onDeferred();
+          await options.onQueuedFollowupReplyBatch({
+            kind: "queued-followup",
+            runId: "actual-native-run",
+            originatingChannel: "example-channel",
+            payloads: normalized,
+            completion: { kind: "completed" },
+          });
+          return undefined;
+        }
+        return normalized;
+      });
+      expect(await replyToConversationInput(fixture.params)).toMatchObject({
+        kind: "reply",
+        reply: { delivered: true },
+      });
+      // Agent completion must not wait for paced audio, nor claim it was heard early.
+      expect(loadSessionEntry({ storePath, sessionKey })?.pendingFinalDelivery).toBeDefined();
+      expect(fixture.settlements).toHaveLength(2);
+      expect(fixture.releaseSettlement).toHaveBeenCalledOnce();
+      audio.resolve(payloads.map((payload) => payload.text));
+      await Promise.all(fixture.settlements);
+      const entry = loadSessionEntry({ storePath, sessionKey });
+      expect(entry?.pendingFinalDelivery).toBeUndefined();
+      expect(hasMainSessionRecoveryClaim(entry)).toBe(false);
+      expect(entry?.updatedAt).toBe(1);
+      expect(entry?.status).toBe("done");
+      expect(mocks.getReplyFromConfig).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])(
+    "releases the output producer when native completion has no payload (failure: %s)",
+    async (failed) => {
+      const fixture = setup();
+      mocks.getReplyFromConfig.mockImplementation(async (_context, options) => {
+        await present(options);
+        if (failed) {
+          throw new Error("Synthetic native finalization failure");
+        }
+        return undefined;
+      });
+      const result = replyToConversationInput(fixture.params);
+      if (failed) {
+        await expect(result).rejects.toThrow("Synthetic native finalization failure");
+      } else {
+        await expect(result).resolves.toMatchObject({ kind: "reply" });
+      }
+      expect(fixture.releaseSettlement).toHaveBeenCalledOnce();
+      expect(fixture.settlements).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    "failed-output",
+    "failed-playout",
+    "changed-chunks",
+    "missing-receipt",
+    "changed-text",
+    "added-media",
+    "new-intent",
+    "new-session",
+  ] as const)("preserves unproven or replacement final custody: %s", async (variant) => {
+    const fixture = setup();
+    if (variant === "failed-playout") {
+      fixture.delayOutput(Promise.resolve(undefined));
+    } else if (variant === "changed-chunks") {
+      fixture.delayOutput(Promise.resolve(["A different streamed answer."]));
+    } else if (variant === "missing-receipt") {
+      fixture.params.speech.onSpeakableText.mockImplementation(() => undefined);
+    }
+    const storePath = path.join(sessionDirs.make(), "sessions.json");
+    const sessionKey = fixture.context.SessionKey!;
+    const originalSessionId = "actual-native-session";
+    const sessionId = variant === "new-session" ? "replacement-session" : originalSessionId;
+    const intentId = variant === "new-intent" ? "replacement-intent" : "exact-intent";
+    mocks.getReplyFromConfig.mockImplementation(async (_context, options) => {
+      const payload = { text: "The final answer." };
+      if (variant === "failed-output") {
+        fixture.output.current = false;
+      }
+      await present(options, [payload]);
+      await replaceSessionEntry(
+        { storePath, sessionKey },
+        {
+          sessionId,
+          updatedAt: 1,
+          status: "done",
+          endedAt: 1,
+          pendingFinalDelivery: {
+            kind: "replayable",
+            text: "The final answer.",
+            createdAt: 1,
+            intentId,
+            deliveries: [{ id: "exact-delivery", state: "prepared" }],
+          },
+        },
+      );
+      return setReplyPayloadMetadata(
+        copyReplyPayloadMetadata(payload, {
+          ...payload,
+          ...(variant === "changed-text" ? { text: "The final answer. An unspoken notice." } : {}),
+          ...(variant === "added-media" ? { mediaUrl: "https://example.invalid/report.pdf" } : {}),
+        }),
+        {
+          pendingFinalDeliveryCompletion: {
+            storePath,
+            sessionKey,
+            sessionId: originalSessionId,
+            intentId: "exact-intent",
+            deliveryId: "exact-delivery",
+          },
+        },
+      );
+    });
+    await replyToConversationInput(fixture.params);
+    await Promise.all(fixture.settlements);
+    const entry = loadSessionEntry({ storePath, sessionKey });
+    expect(entry?.pendingFinalDelivery).toMatchObject({
+      intentId,
+      deliveries: [{ id: "exact-delivery", state: "prepared" }],
+    });
+    if (variant === "failed-output") {
+      // A later real fallback receipt completes the SAME original intent.
+      const completion = {
+        kind: "pending-final" as const,
+        storePath,
+        sessionKey,
+        sessionId,
+        intentId,
+        deliveryId: "exact-delivery",
+      };
+      await settlePendingFinalDelivery(completion, "delivered", ["prepared"]);
+      await clearPendingFinalDeliveryAfterSuccess(completion);
+      expect(hasMainSessionRecoveryClaim(loadSessionEntry({ storePath, sessionKey }))).toBe(false);
+    }
   });
 
   it("claims the real original input once and uses only the native reply owner", async () => {

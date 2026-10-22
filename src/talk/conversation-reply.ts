@@ -1,10 +1,15 @@
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
-import type { ReplyPayload } from "../auto-reply/reply-payload.js";
+import {
+  getReplyPayloadMetadata,
+  type ReplyPayload,
+  type ReplySpeechOutputReceipt,
+} from "../auto-reply/reply-payload.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import type { QueuedFollowupReplyDelivery } from "../auto-reply/reply/queue/types.js";
 import type { ReplyOperationRunState } from "../auto-reply/reply/reply-operation-run-state.js";
 import type { ReplySpeechRunBinding } from "../auto-reply/reply/reply-speech-presentation.js";
+import { hasReplySpeechDelivery } from "../auto-reply/reply/reply-speech-presentation.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { isSilentReplyText } from "../auto-reply/tokens.js";
 import {
@@ -38,6 +43,9 @@ const loadReply = createLazyRuntimeModule(async () => {
     state,
   };
 });
+const loadPendingFinal = createLazyRuntimeModule(
+  () => import("../auto-reply/reply/dispatch-from-config.pending-final.js"),
+);
 
 type SpeechPresentationParams = Parameters<typeof createReplySpeechPresentation>[0];
 type PreparedConversationSpeech = {
@@ -126,11 +134,47 @@ async function executeConversationReply(
   // A native abandonment callback can run while preprocessing is still awaited.
   // Attach rejection custody immediately, while retaining the original result below.
   void completion.catch(() => {});
+  const outputReceipts = new Set<ReplySpeechOutputReceipt>();
+  const releaseOutputReceipts = () => {
+    for (const receipt of outputReceipts) {
+      receipt.releaseSettlement();
+    }
+    outputReceipts.clear();
+  };
   const succeed = (payloads?: ReplyPayload | ReplyPayload[]) => {
     if (completed) {
       return;
     }
     completed = true;
+    try {
+      const replies = payloads === undefined ? [] : Array.isArray(payloads) ? payloads : [payloads];
+      for (const payload of replies) {
+        const receipt = getReplyPayloadMetadata(payload)?.speechDeliveryReceipt;
+        if (
+          !receipt ||
+          !hasReplySpeechDelivery(payload) ||
+          !getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion
+        ) {
+          continue;
+        }
+        const settlement = receipt.accepted
+          .then(async (accepted) => {
+            if (accepted && hasReplySpeechDelivery(payload)) {
+              const { suppressPendingFinalDelivery } = await loadPendingFinal();
+              // Speech replaces this exact channel copy, not any other delivery intent.
+              await suppressPendingFinalDelivery(payload, { preserveActivity: true });
+            }
+          })
+          .catch(() => {
+            speech.logger.warn("[talk] spoken reply settlement failed; native recovery retained");
+          });
+        receipt.output.trackSettlement(settlement);
+      }
+    } catch {
+      speech.logger.warn("[talk] spoken reply settlement setup failed; native recovery retained");
+    } finally {
+      releaseOutputReceipts();
+    }
     // Output failure must not replay successfully executed tools. The output owner already
     // recorded the failure; no generated text is returned for accidental second playback.
     resolveCompletion({
@@ -143,6 +187,7 @@ async function executeConversationReply(
       return;
     }
     completed = true;
+    releaseOutputReceipts();
     rejectCompletion(error);
   };
   const settleWithoutReply = () => {
@@ -155,6 +200,7 @@ async function executeConversationReply(
       runState.messageInjectionAborted !== true
     ) {
       completed = true;
+      releaseOutputReceipts();
       resolveCompletion({ kind: "steered" });
     } else {
       fail(new Error("Native conversation input settled without a completion receipt"));
@@ -198,6 +244,13 @@ async function executeConversationReply(
   };
   const speechPresentation = createReplySpeechPresentation({
     ...speech,
+    onOutputReceipt(receipt) {
+      if (completed) {
+        receipt.releaseSettlement();
+      } else {
+        outputReceipts.add(receipt);
+      }
+    },
     onRunBound(binding) {
       nativeRunBound = true;
       notifyDisposition("owned", true);

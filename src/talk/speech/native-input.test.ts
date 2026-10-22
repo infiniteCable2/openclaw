@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ReplySpeechOutputReceipt } from "../../auto-reply/reply-payload.js";
 import type { ReplySpeechRunBinding } from "../../auto-reply/reply/reply-speech-presentation.js";
 import {
   claimConversationInputExecution,
@@ -195,6 +196,29 @@ function fixture() {
 }
 
 describe("native speech input media ownership", () => {
+  it("returns an opaque output receipt without holding native work for paced audio", async () => {
+    const f = fixture();
+    const audio = deferred<readonly string[] | undefined>();
+    const receipt: ReplySpeechOutputReceipt = {
+      completion: audio.promise,
+      trackSettlement: vi.fn(),
+      releaseSettlement: vi.fn(),
+    };
+    f.output.finalizeSpeechUtterance.mockReturnValue(receipt);
+    const input = f.owner.submit({ text: "Original", hasOnset: false });
+    await f.waitForCall(1);
+    f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+    const actual = await f.calls[0]!.onSpeakableText?.({ type: "done", text: "Complete answer." });
+    expect(actual).toBe(receipt);
+    expect(f.output.finalizeSpeechUtterance).toHaveBeenCalledWith(
+      f.utterances[0],
+      "Complete answer.",
+      { reserveSettlement: true },
+    );
+    f.pending[0]!.resolve({ kind: "reply", reply: { text: "Complete answer.", delivered: true } });
+    await input;
+    audio.resolve(["Complete answer."]);
+  });
   it.for([false, true])(
     "cancels native media, not its task (queued speech: %s)",
     async (queued) => {

@@ -162,6 +162,8 @@ export async function prepareConversationGreeting(params: {
     const signal = params.signal ?? new AbortController().signal;
     const delivery = createRealtimeVoiceConsultSpeechDelivery({
       ...params.speech,
+      // Preparation is capture-only; it must not acquire a live output receipt.
+      onSpeakableText: undefined,
       runId,
       sessionId: identity.sessionId,
       abortSignal: signal,

@@ -1,11 +1,78 @@
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { logVerbose } from "../../globals.js";
-import type { ReplyPayload } from "../reply-payload.js";
+import {
+  getReplyPayloadMetadata,
+  setReplyPayloadMetadata,
+  type ReplyPayload,
+  type ReplySpeechOutputReceipt,
+} from "../reply-payload.js";
 import type {
   AgentTurnInternalResult,
   EmbeddedAgentRunResult,
 } from "./agent-runner-execution.types.js";
+
+function isTextOnlySpeechPayload(
+  payload: ReplyPayload,
+): payload is ReplyPayload & { text: string } {
+  return Boolean(
+    payload.text?.trim() &&
+    !payload.mediaUrl &&
+    !payload.mediaUrls?.length &&
+    !payload.attachments?.length &&
+    !payload.presentation &&
+    !payload.interactive &&
+    !payload.location &&
+    !payload.channelData &&
+    !payload.btw &&
+    !payload.delivery &&
+    !payload.fallbackText &&
+    !payload.isError &&
+    !payload.isReasoning &&
+    !payload.isCommentary &&
+    !payload.isStatusNotice &&
+    !payload.isCompactionNotice &&
+    !payload.isFallbackNotice &&
+    !getReplyPayloadMetadata(payload)?.precedingInputAnswer,
+  );
+}
+
+/** Bind exact source content to the output owner's deferred, physical delivery proof. */
+export function recordReplySpeechDelivery(
+  payload: ReplyPayload,
+  binding: Pick<ReplySpeechRunBinding, "runId" | "sessionId">,
+  output: ReplySpeechOutputReceipt,
+  accepted: Promise<boolean>,
+): void {
+  if (isTextOnlySpeechPayload(payload)) {
+    setReplyPayloadMetadata(payload, {
+      speechDeliveryReceipt: Object.freeze({
+        runId: binding.runId,
+        sessionId: binding.sessionId,
+        text: payload.text,
+        spokenText: payload.spokenText,
+        tts: getReplyPayloadMetadata(payload)?.tts,
+        output,
+        accepted,
+      }),
+    });
+  }
+}
+
+/** Reply normalization may copy metadata, but changed content cannot inherit delivery. */
+export function hasReplySpeechDelivery(payload: ReplyPayload): boolean {
+  const metadata = getReplyPayloadMetadata(payload);
+  const receipt = metadata?.speechDeliveryReceipt;
+  return Boolean(
+    receipt &&
+    (!metadata?.pendingFinalDeliveryCompletion ||
+      metadata.pendingFinalDeliveryCompletion.sessionId === receipt.sessionId) &&
+    isTextOnlySpeechPayload(payload) &&
+    receipt.text === payload.text &&
+    receipt.spokenText === payload.spokenText &&
+    receipt.tts === metadata?.tts,
+  );
+}
 
 /** Host-owned presentation only; it cannot grant input, session, or tool authority. */
 export type ReplySpeechPresentationSource = Readonly<{

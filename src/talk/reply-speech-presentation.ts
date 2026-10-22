@@ -1,21 +1,39 @@
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
+import {
+  getReplyPayloadMetadata,
+  type ReplySpeechOutputReceipt,
+} from "../auto-reply/reply-payload.js";
 import type {
   ReplySpeechPresentationSource,
   ReplySpeechRunBinding,
 } from "../auto-reply/reply/reply-speech-presentation.js";
+import { recordReplySpeechDelivery } from "../auto-reply/reply/reply-speech-presentation.js";
 import type { SpeechSegmentationProfile } from "../tts/provider-types.js";
-import type { RealtimeVoiceAgentConsultResult } from "./agent-consult-runtime.js";
+import type {
+  RealtimeVoiceAgentConsultResult,
+  RealtimeVoiceAgentConsultSpeechEvent,
+} from "./agent-consult-runtime.js";
 import {
   createRealtimeVoiceConsultSpeechDelivery,
   resolveRealtimeVoiceYieldAcknowledgment,
 } from "./agent-consult-speech-delivery.js";
+import { collectRealtimeVoiceAgentConsultVisibleText } from "./agent-consult-tool.js";
 
 /** Adapt the existing Speech delivery owner to the native reply turn; never initialize a session. */
 export function createReplySpeechPresentation(
   params: Omit<
     Parameters<typeof createRealtimeVoiceConsultSpeechDelivery>[0],
-    "runId" | "sessionId" | "abortSignal" | "assertExpressionCurrent" | "assertNotInterrupted"
+    | "runId"
+    | "sessionId"
+    | "abortSignal"
+    | "assertExpressionCurrent"
+    | "assertNotInterrupted"
+    | "onSpeakableText"
   > & {
+    onSpeakableText?: (
+      event: RealtimeVoiceAgentConsultSpeechEvent,
+    ) => void | ReplySpeechOutputReceipt | Promise<void | ReplySpeechOutputReceipt>;
+    onOutputReceipt?: (receipt: ReplySpeechOutputReceipt) => void;
     /** One stable host object per output connection, shared across its admitted inputs. */
     outputOwner?: object;
     assertOutputCurrent(): void;
@@ -48,6 +66,7 @@ export function createReplySpeechPresentation(
     openRun(binding) {
       let open = true;
       let accepting = true;
+      let outputReceipt: ReplySpeechOutputReceipt | undefined;
       const assertRunCurrent = () => {
         binding.abortSignal.throwIfAborted();
         binding.assertCurrent();
@@ -83,12 +102,26 @@ export function createReplySpeechPresentation(
         assertInputCurrent: assertAccepting,
         assertNotInterrupted: assertRunCurrent,
         onSpeakableText: params.onSpeakableText
-          ? (event) => {
+          ? async (event) => {
               // Abort releases the output even after the connection has closed.
               if (event.type !== "abort") {
                 assertOutputCurrent();
               }
-              return params.onSpeakableText!(event);
+              const receipt = await params.onSpeakableText!(event);
+              if (event.type === "done") {
+                outputReceipt = receipt || undefined;
+                if (receipt) {
+                  let retained = false;
+                  try {
+                    params.onOutputReceipt?.(receipt);
+                    retained = Boolean(params.onOutputReceipt);
+                  } finally {
+                    if (!retained) {
+                      receipt.releaseSettlement();
+                    }
+                  }
+                }
+              }
             }
           : undefined,
       });
@@ -130,6 +163,41 @@ export function createReplySpeechPresentation(
           });
           assertOutputCurrent();
           await params.onResult(presentation);
+          const payloads = (result.payloads ?? []).filter(
+            (payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer !== true,
+          );
+          // A fallback/yield acknowledgment is not proof that the model's final payloads
+          // were spoken. Retain receipts only for the exact accepted source text.
+          if (
+            outputReceipt &&
+            presentation.delivered === true &&
+            presentation.text.replaceAll(/\s+/g, " ").trim() ===
+              collectRealtimeVoiceAgentConsultVisibleText(payloads)?.replaceAll(/\s+/g, " ").trim()
+          ) {
+            const output = outputReceipt;
+            const expected = payloads
+              .filter((payload) => Boolean(collectRealtimeVoiceAgentConsultVisibleText([payload])))
+              .map((payload) => getReplyPayloadMetadata(payload)?.tts?.text ?? payload.text ?? "")
+              .join(" ")
+              .replaceAll(/\s+/g, " ")
+              .trim();
+            const accepted = output.completion.then(
+              (segments) => {
+                const submitted = segments?.join(" ").replaceAll(/\s+/g, " ").trim();
+                // Commentary may precede the final answer; never use done.text as proof
+                // that the actual synthesized chunks contained that final answer.
+                return Boolean(
+                  expected &&
+                  submitted &&
+                  (submitted === expected || submitted.endsWith(` ${expected}`)),
+                );
+              },
+              () => false,
+            );
+            payloads.forEach((payload) =>
+              recordReplySpeechDelivery(payload, binding, output, accepted),
+            );
+          }
         },
         abort() {
           accepting = false;

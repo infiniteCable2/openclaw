@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferredCore as createDeferred } from "../../shared/deferred.js";
 import type { TtsTelephonyStreamResult } from "../../tts/tts-runtime-types.js";
@@ -10,6 +11,7 @@ function createFixture(
   writeOutput: (audio: Buffer) => Promise<void>,
 ) {
   let generation = 0;
+  let stopped = false;
   const transcripts: { role: string; text: string; audioDelivery?: string }[] = [];
   const harness = {
     talk: { activeTurnId: "synthetic-turn" },
@@ -41,7 +43,7 @@ function createFixture(
     agentLogScope: "test",
     logger: { info: vi.fn(), warn, error: vi.fn() },
     getHarness: () => harness,
-    isStopped: () => false,
+    isStopped: () => stopped,
     getOutputGeneration: () => generation,
     getWaitingTurn: () => undefined,
     finishWaitingTurn: vi.fn(),
@@ -82,6 +84,9 @@ function createFixture(
       }
       return Promise.all([...activeTtsReaders].map((reader) => reader.cancel()));
     },
+    close() {
+      stopped = true;
+    },
   };
 }
 
@@ -104,6 +109,110 @@ function completeResult(audio = Buffer.alloc(4_800), release = vi.fn(async () =>
 }
 
 describe("speech output compute/playout overlap", () => {
+  it("retains drain custody when audio finishes before native pending metadata is produced", async () => {
+    const fixture = createFixture(
+      async () => completeResult(),
+      async () => undefined,
+    );
+    const utterance = fixture.output.createSpeechUtterance();
+    const receipt = fixture.output.finalizeSpeechUtterance(utterance, "A final answer.", {
+      reserveSettlement: true,
+    })!;
+    const settlement = createDeferred();
+    let drained = false;
+    const drain = fixture.output.drain().then(() => {
+      drained = true;
+    });
+    try {
+      expect(await receipt.completion).toEqual(["A final answer."]);
+      // One event-loop checkpoint allows an unreserved, already-resolved drain
+      // to finish. No wall-clock race or arbitrary timeout is used.
+      await setImmediate();
+      expect(drained).toBe(false);
+      receipt.trackSettlement(settlement.promise);
+      receipt.releaseSettlement();
+      await setImmediate();
+      expect(drained).toBe(false);
+    } finally {
+      receipt.releaseSettlement();
+      settlement.resolve();
+      await drain;
+    }
+    expect(drained).toBe(true);
+  });
+
+  it("withholds the exact utterance receipt until paced writes and owned settlements drain", async () => {
+    const gate = createDeferred();
+    const written = createDeferred();
+    const settlement = createDeferred();
+    const fixture = createFixture(
+      async () => completeResult(),
+      async () => {
+        written.resolve();
+        await gate.promise;
+      },
+    );
+    const utterance = fixture.output.createSpeechUtterance();
+    fixture.output.enqueueSpeechChunk("Actually synthesized.", utterance);
+    const receipt = fixture.output.finalizeSpeechUtterance(utterance, "A different final text.")!;
+    const completed = vi.fn();
+    void receipt.completion.then(completed);
+    receipt.trackSettlement(settlement.promise);
+    let drained = false;
+    const drain = fixture.output.drain().then(() => {
+      drained = true;
+    });
+    try {
+      await written.promise;
+      expect(completed).not.toHaveBeenCalled();
+      gate.resolve();
+      expect(await receipt.completion).toEqual(["Actually synthesized."]);
+      expect(drained).toBe(false);
+    } finally {
+      gate.resolve();
+      settlement.resolve();
+      await drain;
+    }
+    expect(drained).toBe(true);
+  });
+
+  it.each(["write-failure", "barge-in", "session-close", "empty-audio"] as const)(
+    "does not acknowledge failed, partial or closed output: %s",
+    async (variant) => {
+      const gate = createDeferred();
+      const written = createDeferred();
+      const fixture = createFixture(
+        async () =>
+          completeResult(variant === "empty-audio" ? Buffer.alloc(0) : Buffer.alloc(4_800)),
+        async () => {
+          written.resolve();
+          await gate.promise;
+          if (variant === "write-failure") {
+            throw new Error("Synthetic sink failure");
+          }
+        },
+      );
+      const utterance = fixture.output.createSpeechUtterance();
+      fixture.output.enqueueSpeechChunk("Unconfirmed output.", utterance);
+      const receipt = fixture.output.finalizeSpeechUtterance(utterance, "Unconfirmed output.")!;
+      try {
+        if (variant !== "empty-audio") {
+          await written.promise;
+          if (variant === "barge-in") {
+            await fixture.cancel();
+          }
+          if (variant === "session-close") {
+            fixture.close();
+          }
+        }
+      } finally {
+        gate.resolve();
+        await fixture.output.drain();
+      }
+      expect(await receipt.completion).toBeUndefined();
+    },
+  );
+
   it("announces an intra-result gap and drains waiting music before resumed PCM", async () => {
     const firstWritten = createDeferred();
     const gapStarted = createDeferred();

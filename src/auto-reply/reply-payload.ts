@@ -21,6 +21,16 @@ export type {
   ReplyPayloadTtsSupplement,
 } from "../shared/reply-payload.types.js";
 
+/** In-process audio-owner receipt, never a serializable channel or model flag. */
+export type ReplySpeechOutputReceipt = Readonly<{
+  /** Actual submitted segments, or undefined for failed/stale/partial output. */
+  completion: Promise<readonly string[] | undefined>;
+  /** Keep asynchronous native settlement within the output owner's drain lifetime. */
+  trackSettlement(settlement: Promise<void>): void;
+  /** Release the already-finished native reply producer after consuming its payloads. */
+  releaseSettlement(): void;
+}>;
+
 export type ReplyMediaFailureCode =
   | "file-not-found"
   | "unsupported-format"
@@ -247,6 +257,16 @@ export type ReplyPayloadMetadata = {
   blockReplySources?: readonly BlockReplySource[];
   /** Persisted assistant speech facts; never serialized into channel payloads. */
   tts?: AssistantDeliveryTtsFacts;
+  /** Exact text-only payload accepted by the live speech output owner; never a wire flag. */
+  speechDeliveryReceipt?: Readonly<{
+    runId: string;
+    sessionId: string;
+    text: string;
+    spokenText?: string;
+    tts?: AssistantDeliveryTtsFacts;
+    output: ReplySpeechOutputReceipt;
+    accepted: Promise<boolean>;
+  }>;
   /** Exact UTF-16 projection in the physical message's native speech phase, not chunk scope. */
   ttsSourceRange?: readonly [start: number, end: number];
   /** Structured message-tool speech is an explicit request, independent of auto-TTS mode. */

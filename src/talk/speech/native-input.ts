@@ -179,7 +179,7 @@ export function createNativeSpeechInput(params: {
         waitForPendingInput: (signal) => (run ? params.waitForInput(run, signal) : undefined),
         async onSpeakableText(event) {
           if (!run || params.isStopped()) {
-            return;
+            return undefined;
           }
           const utterance = run.utterance;
           if (event.type === "chunk") {
@@ -199,8 +199,11 @@ export function createNativeSpeechInput(params: {
               await Promise.all(run.admissions);
             }
             if (run.generation === params.getGeneration() && !params.isStopped()) {
-              params.output.finalizeSpeechUtterance(run.utterance, event.text);
+              const receipt = params.output.finalizeSpeechUtterance(run.utterance, event.text, {
+                reserveSettlement: true,
+              });
               finalized = true;
+              return receipt;
             }
           } else {
             // Output abort is not permission to cancel or repeat native user work.
@@ -213,6 +216,7 @@ export function createNativeSpeechInput(params: {
             }
             finalized = true;
           }
+          return undefined;
         },
       };
       const result = await params.dispatch(

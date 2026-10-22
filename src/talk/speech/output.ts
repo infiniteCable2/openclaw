@@ -1,4 +1,5 @@
 import type { ProviderLocalServiceLease } from "../../agents/provider-local-service-target.js";
+import type { ReplySpeechOutputReceipt } from "../../auto-reply/reply-payload.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { AssistantDeliveryTtsFacts } from "../../llm/types.js";
@@ -77,6 +78,18 @@ export function createSpeechOutput(params: {
   let pendingChunks = 0;
   let handoffPending = false;
   const failedReleases = new Map<() => Promise<void>, { error: unknown; reported: boolean }>();
+  const settlements = new Set<Promise<void>>();
+  const trackSettlement = (settlement: Promise<void>) => {
+    const owned = settlement.catch(() => {
+      try {
+        params.logger.warn("[talk] speech delivery settlement failed; native recovery retained");
+      } catch {
+        // A diagnostic observer cannot discard cleanup custody.
+      }
+    });
+    settlements.add(owned);
+    void owned.then(() => settlements.delete(owned));
+  };
 
   const writeOutputAudio = async (
     audio: Buffer,
@@ -324,11 +337,15 @@ export function createSpeechOutput(params: {
       });
   };
 
-  const finalizeSpeechUtterance = (utterance: SpeechUtterance, text: string | undefined) => {
+  const finalizeSpeechUtterance = (
+    utterance: SpeechUtterance,
+    text: string | undefined,
+    options?: { reserveSettlement: true },
+  ): ReplySpeechOutputReceipt | undefined => {
     const harness = params.getHarness();
     const normalized = normalizeSpeechPromptText(text);
     if (!normalized || !isCurrentSpeechUtterance(utterance)) {
-      return;
+      return undefined;
     }
     if (utterance.chunks.length === 0) {
       enqueueSpeechChunk(normalized, utterance);
@@ -342,14 +359,26 @@ export function createSpeechOutput(params: {
       final: true,
       payload: { sessionId: params.sessionId, text: normalized },
     });
-    ttsQueue = ttsQueue.then(async () => {
+    // Native final metadata is allocated after presentation returns. Reserve
+    // custody now so audio close cannot retire drain before that producer returns.
+    const producer = options?.reserveSettlement ? createDeferred() : undefined;
+    if (producer) {
+      trackSettlement(producer.promise);
+    }
+    const completion = ttsQueue.then(async () => {
       await params.waitForInput();
-      if (!isCurrentSpeechUtterance(utterance) || utterance.failed) {
-        return;
+      if (
+        !isCurrentSpeechUtterance(utterance) ||
+        utterance.failed ||
+        utterance.transcriptEntries.length === 0 ||
+        utterance.transcriptEntries.some((entry) => entry.audioDelivery !== "submitted")
+      ) {
+        return undefined;
       }
       // Only consolidate chunks that reached the sink, not a potentially
       // different final model answer which was never synthesized.
-      const submittedText = utterance.transcriptEntries.map((entry) => entry.text).join(" ");
+      const submitted = utterance.transcriptEntries.map((entry) => entry.text);
+      const submittedText = submitted.join(" ");
       speechCancellation.removeProvisionalTranscriptEntries(utterance.transcriptEntries);
       if (submittedText) {
         harness.recordTranscript("assistant", submittedText).audioDelivery = "submitted";
@@ -368,6 +397,19 @@ export function createSpeechOutput(params: {
       if (utterance.waitingTurn !== undefined) {
         params.finishWaitingTurn(utterance.waitingTurn);
       }
+      return submitted;
+    });
+    // Do not hold the native model/tool run until paced audio finishes. This
+    // captured terminal node (not the mutable queue) owns the delivery fact.
+    const receipt = completion.catch(() => {
+      params.logger.warn("[talk] speech output finalization failed; native recovery retained");
+      return undefined;
+    });
+    ttsQueue = receipt.then(() => undefined);
+    return Object.freeze({
+      completion: receipt,
+      trackSettlement,
+      releaseSettlement: () => producer?.resolve(),
     });
   };
 
@@ -395,6 +437,9 @@ export function createSpeechOutput(params: {
 
   const drain = async () => {
     await ttsQueue;
+    while (settlements.size > 0) {
+      await Promise.all(settlements);
+    }
     const unreported = [...failedReleases.values()].filter((failure) => !failure.reported);
     if (unreported.length > 0) {
       for (const failure of unreported) {

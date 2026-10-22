@@ -141,8 +141,9 @@ export type SpeechAgentConsultParams = Partial<SpeechInputIdentity> & {
   onRunControl?: (control: SpeechAgentRunControl | undefined) => void;
 };
 
-export type SpeechNativeInputParams = SpeechAgentConsultParams &
+export type SpeechNativeInputParams = Omit<SpeechAgentConsultParams, "onSpeakableText"> &
   SpeechInputIdentity & {
+    onSpeakableText?: ConversationReplyParams["speech"]["onSpeakableText"];
     /** Original connection-owned playback/onset data; never a user request or work outcome. */
     playbackObservation?: SpeechPlaybackObservation;
     bufferReply: boolean;
