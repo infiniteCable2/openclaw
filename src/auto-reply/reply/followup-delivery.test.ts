@@ -680,6 +680,108 @@ describe("resolveFollowupDeliveryDecision", () => {
 });
 
 describe("deliverFollowupDecision", () => {
+  it.each([undefined, "origin", "dispatcher", "drop"] as const)(
+    "retains completion-owner payloads instead of applying the provider route %s",
+    async (route) => {
+      const source = Object.assign(
+        vi.fn(async () => {}),
+        { ownsCompletion: () => true },
+      );
+      const laterDispatcher = vi.fn(async () => {});
+      const turn = createTurn();
+      turn.queued.queuedFollowupReplyDisposition = { kind: "deliver", deliver: source };
+      const final = { text: "Reply owned by the original connection." };
+      const progress = { text: "Working.", isCommentary: true };
+      const params = {
+        turn,
+        defaults: createDefaults(laterDispatcher),
+        runId: turn.runId,
+        runFollowup: vi.fn(async () => {}),
+      };
+      deliveryState.routeReply.mockClear();
+      deliveryState.followupRoute = route ? { route } : undefined;
+      try {
+        await deliverFollowupDecision({
+          ...params,
+          decision: { kind: "deliver", payloads: [progress] },
+          kind: "block",
+        });
+        expect(source).toHaveBeenCalledExactlyOnceWith({
+          kind: "queued-followup",
+          runId: turn.runId,
+          originatingChannel: "discord",
+          payloads: [progress],
+          completion: { kind: "progress" },
+        });
+
+        const result = await deliverFollowupDecision({
+          ...params,
+          decision: { kind: "deliver", payloads: [final] },
+        });
+        // The runner, not payload routing, emits the single terminal callback.
+        expect(result).toEqual({ kind: "completed", payloads: [final] });
+        if (result.kind === "completed") {
+          expect(result.payloads[0]).toBe(final);
+        }
+        expect(source).toHaveBeenCalledOnce();
+        expect(deliveryState.routeReply).not.toHaveBeenCalled();
+        expect(laterDispatcher).not.toHaveBeenCalled();
+      } finally {
+        deliveryState.followupRoute = undefined;
+      }
+    },
+  );
+
+  it("does not reroute failed completion-owner progress to an otherwise routable origin", async () => {
+    const source = Object.assign(
+      vi.fn(async () => {
+        throw new Error("Original connection is closed");
+      }),
+      { ownsCompletion: () => true },
+    );
+    const turn = createTurn();
+    turn.queued.queuedFollowupReplyDisposition = { kind: "deliver", deliver: source };
+    const laterDispatcher = vi.fn(async () => {});
+    deliveryState.routeReply.mockClear();
+    await expect(
+      deliverFollowupDecision({
+        decision: { kind: "deliver", payloads: [{ text: "Source-only progress." }] },
+        turn,
+        defaults: createDefaults(laterDispatcher),
+        runId: turn.runId,
+        runFollowup: vi.fn(async () => {}),
+        kind: "block",
+      }),
+    ).rejects.toThrow("Original connection is closed");
+    expect(source).toHaveBeenCalledOnce();
+    expect(deliveryState.routeReply).not.toHaveBeenCalled();
+    expect(laterDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("preserves normal origin delivery when the callback does not own completion", async () => {
+    const source = Object.assign(
+      vi.fn(async () => {}),
+      { ownsCompletion: () => false },
+    );
+    const turn = createTurn();
+    turn.queued.queuedFollowupReplyDisposition = { kind: "deliver", deliver: source };
+    const payload = { text: "Ordinary channel reply." };
+    deliveryState.routeReply.mockClear();
+    deliveryState.routeReply.mockResolvedValue({ ok: true, delivered: true });
+    const result = await deliverFollowupDecision({
+      decision: { kind: "deliver", payloads: [payload] },
+      turn,
+      defaults: createDefaults(vi.fn(async () => {})),
+      runId: turn.runId,
+      runFollowup: vi.fn(async () => {}),
+    });
+    expect(result).toEqual({ kind: "completed", payloads: [] });
+    expect(deliveryState.routeReply).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ channel: "discord", to: "channel:C1", payload }),
+    );
+    expect(source).not.toHaveBeenCalled();
+  });
+
   it("retains the event source delivery owner through progress and final settlement", async () => {
     const source = vi.fn(async () => {});
     const laterDispatcher = vi.fn(async () => {});

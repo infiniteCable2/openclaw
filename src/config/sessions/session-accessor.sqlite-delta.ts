@@ -39,7 +39,7 @@ export function readTranscriptRawDeltaInDatabase(
   resolved: ResolvedTranscriptReadScope,
   limits: SessionTranscriptRawDeltaLimits,
 ): SessionTranscriptRawDeltaResult {
-  if (limits.activePathOnly) {
+  if (limits.activePathOnly || limits.modelContextOnly) {
     const result = readCurrentProjectionSnapshot(database, resolved, (projection) =>
       readTranscriptRawDeltaFromProjection(projection, limits),
     );
@@ -66,6 +66,9 @@ export function readTranscriptRawDeltaInDatabase(
       beforeEventSeq,
       { generation: watermark.generation ?? undefined, indexedSeq: watermark.maxSeq ?? -1 },
       limits.customTypes,
+      false,
+      undefined,
+      limits.customMessageDetailsOnly,
     );
   };
   return database.db.isTransaction

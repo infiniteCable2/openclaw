@@ -7,6 +7,7 @@ import type {
   SessionTranscriptRawDeltaResult,
 } from "./session-accessor.sqlite-contract.js";
 import type { CurrentTranscriptProjection } from "./session-accessor.sqlite-projection-read.js";
+import { resolveTranscriptBoundaryWindow } from "./session-accessor.sqlite-reset-window.js";
 import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import { readSessionTranscriptHotWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
 import { normalizeVisibleMessageLimit } from "./session-accessor.sqlite-visible-cursor.js";
@@ -85,6 +86,9 @@ function bootstrapCursor(
 
 /** Host adapters validate limits before acquiring a database handle. */
 export function normalizeRawDeltaLimits(limits: SessionTranscriptRawDeltaLimits) {
+  if (limits.customMessageDetailsOnly && limits.customTypes === undefined) {
+    throw new RangeError("Report details reads require explicit custom message types");
+  }
   const maxEvents = normalizeVisibleMessageLimit(
     limits.maxEvents,
     DEFAULT_RAW_TRANSCRIPT_MAX_EVENTS,
@@ -110,6 +114,9 @@ export function readTranscriptRawDeltaFromProjection(
     database: projection.database,
     ...projection.resolved,
   })?.beforeRawSeq;
+  const modelWindow = limits.modelContextOnly
+    ? resolveTranscriptBoundaryWindow(projection, "context", beforeEventSeq)
+    : undefined;
   return readRawDeltaInTransaction(
     projection.database.db,
     projection.resolved,
@@ -119,7 +126,14 @@ export function readTranscriptRawDeltaFromProjection(
     beforeEventSeq,
     { generation: projection.generation, indexedSeq: projection.state.indexedSeq },
     limits.customTypes,
-    limits.activePathOnly,
+    limits.activePathOnly || limits.modelContextOnly,
+    limits.modelContextOnly
+      ? {
+          keptActivePositions: modelWindow?.keptActivePositions ?? [],
+          boundaryActivePosition: modelWindow?.boundaryActivePosition,
+        }
+      : undefined,
+    limits.customMessageDetailsOnly,
   );
 }
 
@@ -134,6 +148,8 @@ export function readRawDeltaInTransaction(
   snapshot?: { generation: string | undefined; indexedSeq: number },
   customTypes?: readonly string[],
   activePathOnly = false,
+  modelWindow?: { keptActivePositions: readonly number[]; boundaryActivePosition?: number },
+  customMessageDetailsOnly = false,
 ): SessionTranscriptRawDeltaResult {
   const watermark = snapshot
     ? undefined
@@ -180,6 +196,52 @@ export function readRawDeltaInTransaction(
         ),
       ),
     )
+    .$if(modelWindow !== undefined, (query) =>
+      query.where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom("session_transcript_active_events as active")
+            .select("active.event_seq")
+            .whereRef("active.session_id", "=", "transcript_events.session_id")
+            .whereRef("active.event_seq", "=", "transcript_events.seq")
+            .where((active) =>
+              modelWindow!.keptActivePositions.length > 0
+                ? active.or([
+                    active.and([
+                      active("active.context_eligible", "=", 1),
+                      active(
+                        "active.active_position",
+                        ">=",
+                        modelWindow!.boundaryActivePosition ?? 0,
+                      ),
+                    ]),
+                    active(
+                      "active.active_position",
+                      "in",
+                      active
+                        .selectFrom(
+                          // kysely-allow-raw: one bound native window avoids SQLite's variable limit.
+                          sql<{
+                            value: number;
+                          }>`json_each(${JSON.stringify(modelWindow!.keptActivePositions)})`.as(
+                            "kept",
+                          ),
+                        )
+                        .select("kept.value"),
+                    ),
+                  ])
+                : active.and([
+                    active("active.context_eligible", "=", 1),
+                    active(
+                      "active.active_position",
+                      ">=",
+                      modelWindow!.boundaryActivePosition ?? 0,
+                    ),
+                  ]),
+            ),
+        ),
+      ),
+    )
     .$if(customTypes !== undefined, (query) =>
       query
         // kysely-allow-raw: Canonical navigation metadata narrows report selection without loading bodies.
@@ -212,12 +274,24 @@ export function readRawDeltaInTransaction(
   let lastSeq = cursor.lastSeq;
   let hasMore = false;
   let requiredBytes: number | undefined;
+  // Return and charge only report metadata. Compressed rows still decode inside
+  // SQLite; quoted bodies never cross the reader boundary into catch-up again.
+  const eventJson = customMessageDetailsOnly
+    ? /* kysely-allow-raw: fixed JSON fields project authorized report metadata only. */ sql<string>`json_object(
+        'type', json_extract(${transcriptEventJsonSql(database)}, '$.type'),
+        'id', json_extract(${transcriptEventJsonSql(database)}, '$.id'),
+        'customType', json_extract(${transcriptEventJsonSql(database)}, '$.customType'),
+        'details', json_extract(${transcriptEventJsonSql(database)}, '$.details'))`
+    : transcriptEventJsonSql(database);
   if (lastSeq < maxSeq) {
     const metadataQuery = transcript
       .select([
         "seq",
         /* kysely-allow-raw: SQLite byte length avoids fetching or parsing excluded JSON. */
-        sql<number>`${transcriptEventReadBytesSql()} + 1`.as("serialized_bytes"),
+        (customMessageDetailsOnly
+          ? sql<number>`octet_length(${eventJson}) + 1`
+          : sql<number>`${transcriptEventReadBytesSql()} + 1`
+        ).as("serialized_bytes"),
       ])
       .$if(beforeEventSeq !== undefined, (query) => query.where("seq", "<", beforeEventSeq!))
       .orderBy("seq", "asc");
@@ -252,7 +326,7 @@ export function readRawDeltaInTransaction(
       : executeSqliteQuerySync(
           database,
           transcript
-            .select([transcriptEventJsonSql(database).as("event_json"), "seq"])
+            .select([eventJson.as("event_json"), "seq"])
             .where("seq", ">", cursor.lastSeq)
             .where("seq", "<=", lastSeq)
             .orderBy("seq", "asc"),

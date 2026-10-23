@@ -9,6 +9,8 @@ import { readSessionTranscriptWatermarkAsync } from "./session-transcript-waterm
 export async function readConversationKnowledgeReports(params: {
   target: SessionTranscriptRuntimeTarget;
   customTypes: readonly string[];
+  modelContextOnly?: boolean;
+  detailsOnly?: boolean;
   assertCurrent(): void;
   signal?: AbortSignal;
 }): Promise<TranscriptEvent[]> {
@@ -36,6 +38,8 @@ export async function readConversationKnowledgeReports(params: {
           maxBytes,
           customTypes: params.customTypes,
           activePathOnly: true,
+          modelContextOnly: params.modelContextOnly,
+          customMessageDetailsOnly: params.detailsOnly,
         };
         const page = await reader.raw(limits).catch(async (error: unknown) => {
           if (!isSessionTranscriptProjectionUnavailableError(error)) {

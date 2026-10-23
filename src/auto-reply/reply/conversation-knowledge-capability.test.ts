@@ -176,7 +176,7 @@ describe("actual native-turn knowledge ownership", () => {
       skipped: 0,
     });
     const f = await nativeTurn();
-    expect(f.owner.fragments[0]?.text).toContain("catch-up is incomplete");
+    expect(f.owner.fragments[0]?.text).toContain("initial-history-not-yet-verified");
     expect(await f.owner.prepareSnapshot()).toEqual(f.owner.fragments);
     const run = {
       ...f.run,

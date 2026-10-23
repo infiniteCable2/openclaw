@@ -47,6 +47,8 @@ type ResetMessageWindow = {
   boundarySeq: number;
   contextPrefixEventCount: number;
   keptMessagePositions: number[];
+  /** Native context carriers can include custom messages without a message ordinal. */
+  keptActivePositions: number[];
   contextPrefixSizeBytes: number;
   postBoundaryMessagePosition: number;
   boundaryActivePosition: number;
@@ -291,6 +293,7 @@ function findLatestResetMessageWindow(
         .limit(1),
     )?.message_position ?? projection.state.activeMessageCount;
   const keptMessagePositions: number[] = [];
+  const keptActivePositions: number[] = [];
   const includesBoundary = latestBoundary.event_type === "compaction";
   let contextPrefixEventCount = includesBoundary ? 1 : 0;
   let contextPrefixSizeBytes = includesBoundary ? boundary.sizeBytes : 0;
@@ -332,6 +335,7 @@ function findLatestResetMessageWindow(
               .onRef("event.seq", "=", "active.event_seq"),
           )
           .select([
+            "active.active_position",
             "active.message_position",
             /* kysely-allow-raw: preserve JS-readable overdepth rows for existing tool-pairing validation. */
             sql<string>`CASE WHEN json_valid(${transcriptEventNavigationSql("event")})
@@ -343,7 +347,9 @@ function findLatestResetMessageWindow(
           .where("active.session_id", "=", projection.resolved.sessionId)
           .where("active.active_position", ">=", firstKept.active_position)
           .where("active.active_position", "<", latestBoundary.active_position)
-          .where("active.message_position", "is not", null)
+          .$if(scope !== "context" || latestBoundary.event_type === "reset", (query) =>
+            query.where("active.message_position", "is not", null),
+          )
           .$if(scope === "context" && latestBoundary.event_type !== "reset", (query) =>
             query.where("active.context_eligible", "=", 1),
           )
@@ -353,6 +359,7 @@ function findLatestResetMessageWindow(
       for (const row of candidateRows) {
         try {
           candidates.push({
+            active_position: row.active_position,
             message_position: row.message_position,
             serialized_bytes: row.serialized_bytes,
             event: JSON.parse(row.event_json) as SessionTreeEntry,
@@ -372,6 +379,7 @@ function findLatestResetMessageWindow(
       // History presentation exposes user/assistant rows, while fresh-thread context
       // also retains paired tool results. The fuse stats above must cover that context.
       for (const row of keptRows) {
+        keptActivePositions.push(row.active_position);
         if (row.message_position === null || row.event.type !== "message") {
           continue;
         }
@@ -386,6 +394,7 @@ function findLatestResetMessageWindow(
     boundarySeq: latestBoundary.seq,
     contextPrefixEventCount,
     keptMessagePositions,
+    keptActivePositions,
     contextPrefixSizeBytes,
     postBoundaryMessagePosition,
     boundaryActivePosition: latestBoundary.active_position,

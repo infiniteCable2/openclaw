@@ -147,7 +147,10 @@ export async function withSessionTranscriptDeltaReader<T>(
               try {
                 return await reader.readRawDelta({ ...request, limits: { ...limits } }, signal);
               } catch (error) {
-                if (limits.activePathOnly && isSessionTranscriptProjectionUnavailableError(error)) {
+                if (
+                  (limits.activePathOnly || limits.modelContextOnly) &&
+                  isSessionTranscriptProjectionUnavailableError(error)
+                ) {
                   assertCurrent();
                   startSessionTranscriptIndexReconcile({
                     ...toDatabaseOptions(source.resolved),

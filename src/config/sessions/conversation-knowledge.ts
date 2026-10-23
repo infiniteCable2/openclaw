@@ -5,6 +5,7 @@ import {
   classifyToolUseResultPairing,
   isSyntheticMissingToolResult,
 } from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";
+import { normalizeInputProvenance } from "../../sessions/input-provenance.js";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
 import type { CustomMessageReport } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
@@ -526,7 +527,7 @@ export function projectConversationKnowledge(
   if (start === undefined) {
     return undefined;
   }
-  const rows: Array<{ speaker: "user" | "assistant"; text: string }> = [];
+  const rows: Array<{ speaker: "user" | "assistant"; text: string; routedInput: boolean }> = [];
   const previous =
     frontier?.origin === receipt.origin && frontier.generation === receipt.through.generation
       ? events.findIndex((event) => asOptionalRecord(event)?.id === frontier.throughEntryId)
@@ -562,7 +563,15 @@ export function projectConversationKnowledge(
     ) {
       const text = messageText(message);
       if (text.trim() && sawUser) {
-        rows.push({ speaker: message.role, text });
+        const provenance = normalizeInputProvenance(message.provenance);
+        rows.push({
+          speaker: message.role,
+          text,
+          routedInput:
+            message.role === "user" &&
+            provenance !== undefined &&
+            provenance.kind !== "external_user",
+        });
       }
     }
     if (record.id === receipt.through.entryId) {
@@ -614,6 +623,20 @@ export function projectConversationKnowledge(
   if (safeEnd(offset) !== offset) {
     return undefined;
   }
+  // Existing packet offsets include routed user-role carriers. Keep those
+  // coordinates stable, but never republish their payload as fresh dialogue.
+  const skipRoutedInputs = (requestedEnd: number) => {
+    let end = requestedEnd;
+    let position = 0;
+    for (const row of rows) {
+      const rowStart = position;
+      position += row.text.length;
+      if (row.routedInput && end >= rowStart && end < position) {
+        end = position;
+      }
+    }
+    return end;
+  };
   const render = (requestedEnd: number) => {
     const end = safeEnd(requestedEnd);
     let position = 0;
@@ -624,7 +647,9 @@ export function projectConversationKnowledge(
         Math.max(0, offset - rowStart),
         Math.min(row.text.length, end - rowStart),
       );
-      return position > offset && rowStart < end && text ? [{ speaker: row.speaker, text }] : [];
+      return !row.routedInput && position > offset && rowStart < end && text
+        ? [{ speaker: row.speaker, text }]
+        : [];
     });
     // Each packet remains quoted data. Only its exact consumed offset advances;
     // a source frontier is issued after the complete contribution is included.
@@ -642,10 +667,11 @@ export function projectConversationKnowledge(
       contentTruncated: omittedPrefix || end < totalChars,
       contentOffset: offset,
       contentComplete: end === totalChars,
+      ...(rows.some((row) => row.routedInput) ? { routedInputsOmitted: true } : {}),
       observations,
     });
   };
-  let end = safeEnd(Math.min(totalChars, offset + maxChars));
+  let end = safeEnd(skipRoutedInputs(Math.min(totalChars, skipRoutedInputs(offset) + maxChars)));
   let text = render(end);
   if (text.length > maxChars) {
     let low = offset;
@@ -658,7 +684,7 @@ export function projectConversationKnowledge(
         high = middle - 1;
       }
     }
-    end = safeEnd(low);
+    end = safeEnd(skipRoutedInputs(low));
     text = render(end);
   }
   if (text.length > maxChars || (end === offset && offset < totalChars)) {

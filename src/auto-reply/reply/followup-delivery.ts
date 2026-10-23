@@ -380,10 +380,14 @@ async function sendFollowupPayloads(params: {
     return [];
   }
   const deliverQueuedBatch = sourceDisposition?.deliver;
-  if (turn.queued.run.internalEventExecution) {
+  const sourceOwnsCompletion = deliverQueuedBatch?.ownsCompletion?.(originatingChannel) === true;
+  if (turn.queued.run.internalEventExecution || sourceOwnsCompletion) {
     if (!deliverQueuedBatch) {
       throw new Error("Internal event lost its originating delivery owner");
     }
+    // The source completion owner is independent of a persisted channel route.
+    // Keep final payloads for the runner's one terminal callback; a provider route
+    // hint or a failed source callback cannot authorize another delivery surface.
     if (params.kind !== "final") {
       await deliverQueuedBatch({
         kind: "queued-followup",

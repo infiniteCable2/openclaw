@@ -1,5 +1,14 @@
-import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import {
+  conversationKnowledgeCoverageNotice,
+  type ConversationKnowledgeGap,
+} from "./conversation-knowledge-status.js";
+
+export type ConversationKnowledgeMaintenanceResult = {
+  compacted: boolean;
+  complete: boolean;
+  pending?: "maintenance-deferred";
+};
 
 export type ConversationKnowledgeIngestionMaintenance = {
   contextLimits?: { maxBytes: number; maxEvents: number };
@@ -7,25 +16,32 @@ export type ConversationKnowledgeIngestionMaintenance = {
     sources: SessionSourceAssertion,
     packetIds?: readonly string[],
     pendingText?: string,
-  ): Promise<void | { compacted: boolean; complete: boolean }>;
+  ): Promise<void | ConversationKnowledgeMaintenanceResult>;
 };
 
 /** Pace imported packets while tracking which exact additions native hydration must retain. */
 export function createConversationKnowledgeIngestion(params: {
   maintenance: ConversationKnowledgeIngestionMaintenance;
   captureSources(): SessionSourceAssertion;
+  /** Native uncompacted carriers, not all historical durable-copy receipts. */
+  activePacketIds?: readonly string[];
 }) {
   let admittedChars = 0;
-  const packetIds = new Set<string>();
+  const packetIds = new Set<string>(params.activePacketIds);
   let incomplete = false;
-  let deferred = false;
+  let admissionDeferred = false;
+  let maintenanceDeferred = false;
   const maintain = async (pendingText?: string) => {
+    if (maintenanceDeferred) {
+      return { compacted: false, complete: false, pending: "maintenance-deferred" } as const;
+    }
     const result = await params.maintenance.maintainContext(
       params.captureSources(),
       [...packetIds],
       pendingText,
     );
     incomplete = result?.complete === false;
+    maintenanceDeferred = result?.pending === "maintenance-deferred";
     if (result?.compacted) {
       // The native rewrite replaces these packet carriers with the accepted summary.
       packetIds.clear();
@@ -35,22 +51,19 @@ export function createConversationKnowledgeIngestion(params: {
   };
   return {
     get incomplete() {
-      return incomplete || deferred;
+      return incomplete || admissionDeferred;
     },
-    coverageNotice(sourceUnavailable: boolean): RuntimeContextFragment[] {
-      return sourceUnavailable || incomplete || deferred
-        ? [
-            {
-              kind: "conversation-data",
-              text: "Related-conversation catch-up is incomplete: an exact source range is not available in the current native context. Do not assume all related history has been incorporated; use authorized history/search for missing detail.",
-            },
-          ]
-        : [];
+    coverageNotice(gaps: readonly ConversationKnowledgeGap[]) {
+      return conversationKnowledgeCoverageNotice({
+        gaps,
+        pending: maintenanceDeferred
+          ? "maintenance-deferred"
+          : incomplete
+            ? "context-window"
+            : undefined,
+      });
     },
     async tryPacket(text: string, write: () => Promise<string | undefined>) {
-      if (deferred) {
-        return false;
-      }
       if (admittedChars >= 24_000) {
         await maintain();
       }
@@ -58,13 +71,15 @@ export function createConversationKnowledgeIngestion(params: {
       if (id === undefined) {
         // The native writer proved NO WRITE. Compact only if the real native
         // token check, including this prospective text, requires it.
-        const result = await maintain(text);
+        // One refused addition must not starve independent, smaller contributions.
+        // Do not repeat failed maintenance for every remaining source this turn.
+        const result = admissionDeferred ? undefined : await maintain(text);
         if (result?.compacted) {
           id = await write();
         }
       }
       if (id === undefined) {
-        deferred = true;
+        admissionDeferred = true;
         return false;
       }
       packetIds.add(id);
@@ -72,8 +87,9 @@ export function createConversationKnowledgeIngestion(params: {
       return true;
     },
     async finish() {
-      // Existing history without actual catch-up uses ordinary native reply preflight.
-      if (admittedChars > 0) {
+      // Recheck native active carriers even when every source was already copied.
+      // Compacted ancestors are deliberately absent: never reimport them from sources.
+      if (packetIds.size > 0) {
         await maintain();
       }
     },

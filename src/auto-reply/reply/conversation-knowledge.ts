@@ -7,6 +7,7 @@ import { resolveAgentConversationMode } from "../../config/agent-conversation-mo
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
   conversationKnowledgeContributionId,
+  readActiveConversationKnowledgePacketIds,
   readConversationKnowledgePacketProgress,
   retainConversationKnowledgePacket,
 } from "../../config/sessions/conversation-knowledge-packets.js";
@@ -50,6 +51,7 @@ import {
   createConversationKnowledgeIngestion,
   type ConversationKnowledgeIngestionMaintenance,
 } from "./conversation-knowledge-ingestion.js";
+import { createConversationKnowledgeGapCollector } from "./conversation-knowledge-status.js";
 import {
   captureReplyConversationPublication,
   recordReplyConversationPublication,
@@ -470,6 +472,14 @@ async function prepareReplyConversationKnowledgeInMode(
     const ingestion = params.retainInHistory
       ? createConversationKnowledgeIngestion({
           maintenance: params.retainInHistory,
+          activePacketIds: await readActiveConversationKnowledgePacketIds({
+            branch,
+            assertCurrent: composeSessionSourceAssertion([
+              params.assertCurrent,
+              targetFacts.assertCurrent,
+            ]),
+            signal: params.signal,
+          }),
           captureSources: () =>
             composeSessionSourceAssertion([
               params.assertCurrent,
@@ -478,7 +488,7 @@ async function prepareReplyConversationKnowledgeInMode(
             ]),
         })
       : undefined;
-    let unresolved = false;
+    const { gaps, gap } = createConversationKnowledgeGapCollector();
     for (const receipt of selectConversationKnowledgeReceipts(
       events,
       branch.sessionId,
@@ -580,7 +590,10 @@ async function prepareReplyConversationKnowledgeInMode(
           throw error;
         }
         // Rewritten or over-budget source ranges stay unresolved, never acknowledged.
-        unresolved = true;
+        gap(
+          receipt,
+          error instanceof RangeError ? "source-range-over-capacity" : "source-range-unverified",
+        );
         return undefined;
       });
       grant.assertCurrent();
@@ -588,7 +601,10 @@ async function prepareReplyConversationKnowledgeInMode(
       targetFacts.assertCurrent();
       params.assertCurrent();
       if (!projection) {
-        drop(read);
+        // Retained diagnostics name this authorized source; keep their grant too.
+        if (!params.retainInHistory) {
+          drop(read);
+        }
         continue;
       }
       const prior = previous.find((frontier) => frontier.origin === receipt.origin);
@@ -606,7 +622,7 @@ async function prepareReplyConversationKnowledgeInMode(
         if (!part) {
           if (retained) {
             // An unavailable completed range is not a consumed range.
-            unresolved = true;
+            gap(receipt, "source-range-unverified");
           }
           break;
         }
@@ -637,6 +653,7 @@ async function prepareReplyConversationKnowledgeInMode(
           }),
         );
         if (!accepted) {
+          gap(receipt, "admission-deferred");
           break;
         }
         sourceAssertion();
@@ -648,7 +665,7 @@ async function prepareReplyConversationKnowledgeInMode(
         }
         offset = part.nextOffset;
       }
-      if (!contributed) {
+      if (!contributed && !params.retainInHistory) {
         drop(read);
       }
     }
@@ -679,7 +696,7 @@ async function prepareReplyConversationKnowledgeInMode(
     source();
     return {
       fragments: params.retainInHistory
-        ? (ingestion?.coverageNotice(unresolved) ?? [])
+        ? (ingestion?.coverageNotice(gaps) ?? [])
         : combined.text
           ? [
               {

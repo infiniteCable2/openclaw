@@ -403,6 +403,87 @@ describe("native conversation knowledge references and bounded data", () => {
     expect(projected?.text).not.toContain("sensitive");
   });
 
+  it("omits routed input carriers without suppressing genuine repeated dialogue", () => {
+    const f = fixture();
+    const events = [
+      f.events[0]!,
+      f.events[1]!,
+      {
+        type: "message",
+        id: "external-repeat",
+        message: {
+          role: "user",
+          content: "Remember the blue example.",
+          provenance: { kind: "external_user" },
+        },
+      },
+      ...["inter_session", "internal_system"].map((kind) => ({
+        type: "message",
+        id: `routed-${kind}`,
+        message: {
+          role: "user",
+          content: `Forwarded ${kind} payload.`,
+          provenance: { kind, sourceTool: "sessions_send" },
+        },
+      })),
+      {
+        type: "custom_message",
+        id: "retained-packet",
+        customType: "openclaw.conversation-knowledge-context.v1",
+        content: "Previously imported knowledge must not become new dialogue.",
+      },
+      {
+        ...f.events[2]!,
+        id: "assistant-repeat",
+      },
+      f.events[2]!,
+    ];
+    const part = projectConversationKnowledge(f.receipt, events);
+    expect(part?.complete).toBe(true);
+    const data = JSON.parse(part?.text ?? "{}");
+    expect(data.routedInputsOmitted).toBe(true);
+    expect(data.observations).toEqual([
+      { speaker: "user", text: "Remember the blue example." },
+      { speaker: "user", text: "Remember the blue example." },
+      { speaker: "assistant", text: "The example is blue." },
+      { speaker: "assistant", text: "The example is blue." },
+    ]);
+    expect(part?.text).not.toContain("Forwarded");
+    expect(part?.text).not.toContain("Previously imported");
+  });
+
+  it("preserves legacy partial offsets while skipping large routed input carriers", () => {
+    const f = fixture();
+    const forwarded = "Previously forwarded conversation data. ".repeat(1_000);
+    const events = [
+      f.events[0]!,
+      f.events[1]!,
+      {
+        type: "message",
+        id: "forwarded-input",
+        message: {
+          role: "user",
+          content: forwarded,
+          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+        },
+      },
+      f.events[2]!,
+    ];
+    // Before routed-carrier filtering, a persisted offset could land inside
+    // this payload. Its coordinate must not shift to a later real observation.
+    const oldOffset = "Remember the blue example.".length + 5_000;
+    const resumed = projectConversationKnowledge(f.receipt, events, undefined, "unknown", {
+      offset: oldOffset,
+      maxChars: 800,
+    });
+    expect(resumed?.complete).toBe(true);
+    expect(resumed?.frontier?.throughEntryId).toBe(f.receipt.through.entryId);
+    expect(JSON.parse(resumed?.text ?? "{}").contentOffset).toBe(oldOffset);
+    expect(JSON.parse(resumed?.text ?? "{}").observations).toEqual([
+      { speaker: "assistant", text: "The example is blue." },
+    ]);
+  });
+
   it("selects only data newer than the exact accepted frontier and suppresses replay", () => {
     const f = fixture();
     const first = projectConversationKnowledge(f.receipt, f.events);

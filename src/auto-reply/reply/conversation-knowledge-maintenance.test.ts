@@ -274,7 +274,7 @@ describe("conversation knowledge native maintenance", () => {
         signal: new AbortController().signal,
         assertCurrent: () => {},
       })(),
-    ).rejects.toThrow("native budget maintenance failed");
+    ).resolves.toEqual({ compacted: false, complete: false, pending: "maintenance-deferred" });
     expect(mocks.compact).toHaveBeenCalledTimes(1);
   });
 

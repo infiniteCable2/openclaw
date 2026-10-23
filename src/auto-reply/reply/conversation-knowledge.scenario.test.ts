@@ -351,6 +351,7 @@ describe("ordered native branch Knowledge scenario", () => {
               for (let index = 0; index < 7; index += 1) {
                 expect(retainedText).toContain(`donor-${index}`);
               }
+              let checkedExisting = false;
               const repeated = await prepareReplyConversationKnowledge({
                 ...owner,
                 originalParticipant: person,
@@ -358,13 +359,16 @@ describe("ordered native branch Knowledge scenario", () => {
                 retainInHistory: {
                   writeTarget: recipient,
                   contextLimits,
-                  maintainContext: async (source) => {
+                  maintainContext: async (source, activeIds) => {
                     source();
-                    throw new Error("No new knowledge packets may force history maintenance");
+                    checkedExisting = true;
+                    expect(new Set(activeIds)).toEqual(new Set(ids));
+                    return { compacted: false, complete: true };
                   },
                 },
               });
               repeated?.release();
+              expect(checkedExisting).toBe(true);
               expect(await readPackets()).toHaveLength(packets.length);
               const lateDonor = await fixture.branch("late-donor");
               const lateOwner = await fixture.claim(lateDonor);
@@ -388,12 +392,33 @@ describe("ordered native branch Knowledge scenario", () => {
               try {
                 expect(incomplete?.fragments).toEqual([
                   expect.objectContaining({
-                    text: expect.stringContaining("catch-up is incomplete"),
+                    text: expect.stringContaining('"pending":"context-window"'),
                   }),
                 ]);
                 expect(JSON.stringify(await readPackets())).toContain("late-observation");
               } finally {
                 incomplete?.release();
+              }
+              const beforeRecheck = await readPackets();
+              const rechecked = await prepareReplyConversationKnowledge({
+                ...owner,
+                originalParticipant: person,
+                getRuntimeConfig: () => fixture.cfg,
+                retainInHistory: {
+                  writeTarget: recipient,
+                  contextLimits,
+                  maintainContext: async (source, activeIds) => {
+                    source();
+                    expect(activeIds?.length).toBeGreaterThan(0);
+                    return { compacted: false, complete: false };
+                  },
+                },
+              });
+              try {
+                expect(rechecked?.fragments[0]?.text).toContain('"pending":"context-window"');
+                expect(await readPackets()).toEqual(beforeRecheck);
+              } finally {
+                rechecked?.release();
               }
               const pendingDonor = await fixture.branch("pending-window-donor");
               const pendingOwner = await fixture.claim(pendingDonor);
@@ -415,7 +440,7 @@ describe("ordered native branch Knowledge scenario", () => {
                   },
                 },
               });
-              expect(deferred?.fragments[0]?.text).toContain("catch-up is incomplete");
+              expect(deferred?.fragments[0]?.text).toContain('"reason":"admission-deferred"');
               deferred?.release();
               expect(await readPackets()).toEqual(beforeDeferred);
               const retried = await prepareReplyConversationKnowledge({

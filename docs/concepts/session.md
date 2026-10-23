@@ -160,19 +160,35 @@ not that a model understood every fact or executed an action.
 
 Before ordinary context hydration, the same native session lane checks capacity.
 When necessary, it invokes native compaction, then continues with the remaining
-packets. Compaction must produce a summary without the known partial-summary or
-no-summary fallbacks; otherwise catch-up remains pending. As with normal session
-compaction, a summary is a lossy model interpretation, not lossless retention of
-every detail. Exact source history remains subject to its own current read grants.
-Already admitted observations are recipient history and participate in later
-native compaction; they do not require repeatedly copying the source text.
+packets. Client-side summaries must not use known partial-summary or no-summary
+fallbacks; successful native no-ops and server-owned compaction do not require a
+textual summary. A recoverable maintenance failure defers supplementary history;
+ordinary reply preflight and authority checks remain mandatory. As with normal
+session compaction, a summary is a lossy model interpretation, not lossless
+retention of every detail. Exact source history keeps its current read grants.
+Already admitted observations are recipient history and are never recopied merely
+because they left the active context. Native context metadata distinguishes
+summarized ancestors from active carriers that still need hydration checks, even
+on a later turn with no new contributions. One deferred contribution does not
+prevent independent later contributions from being admitted.
 
 A reset/replaced source is not silently treated as its previous incarnation.
-An exact source range that is no longer projectable remains explicitly pending
-rather than being marked consumed. This does not reconstruct deleted history.
+An exact source range that is no longer projectable is not marked consumed.
+The model receives a concise supplementary-history status distinguishing
+unverified source ranges, source capacity and deferred admission. Authorized
+source keys and endpoint references identify gaps without implying that the
+current dialogue is invalid or granting additional history-tool access. Old
+unverified ranges need source revalidation, not a promise of success next turn.
+This does not reconstruct deleted history.
 Read-only snapshots, including provider-owned realtime startup and direct CLI
 candidates, remain bounded and identify partial coverage. They do not claim the
 embedded path's durable automatic catch-up.
+
+Projection excludes imported knowledge carriers, history-tool result bodies and
+native inter-session or internal-system user messages. Reading or forwarding
+another branch's text therefore does not automatically publish that text as new
+original user dialogue. Genuine user repetitions and actual assistant replies
+remain dialogue: semantic paraphrases are not silently removed by text matching.
 
 Original live read permissions, source incarnation, and target audience
 must all remain valid. Root membership is not authorization. Shared, unidentified,

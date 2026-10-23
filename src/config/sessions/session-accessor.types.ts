@@ -251,6 +251,10 @@ export type SessionTranscriptRawDeltaLimits = {
   customTypes?: readonly string[];
   /** Require the current native transcript path, including its compacted ancestors. */
   activePathOnly?: boolean;
+  /** Select the native model window, excluding ancestors already compacted or reset away. */
+  modelContextOnly?: boolean;
+  /** Read report identity/details without acquiring its potentially large content body. */
+  customMessageDetailsOnly?: boolean;
   /** Opaque cursor returned by a prior page or reset result. */
   cursor?: string;
   /** Maximum serialized JSONL bytes returned by this page. */

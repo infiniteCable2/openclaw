@@ -25,7 +25,12 @@ export function pendingConversationKnowledgeNotice() {
   const fragments: RuntimeContextFragment[] = [
     {
       kind: "conversation-data",
-      text: "Related-conversation catch-up is incomplete: an admitted source range cannot currently be verified or exceeds the available context capacity. Continue the current conversation normally; do not assume all related history has been incorporated or shared.",
+      text: JSON.stringify({
+        capability: "related-conversation-context",
+        state: "pending",
+        reason: "initial-history-not-yet-verified",
+        guidance: "Continue the current dialogue normally; supplementary history is not ready yet.",
+      }),
     },
   ];
   return {

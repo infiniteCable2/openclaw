@@ -67,6 +67,24 @@ describe("native conversation knowledge history catch-up", () => {
           expect(
             page.events.every((row) => asOptionalRecord(row.event)?.customType === customType),
           ).toBe(true);
+          const details = await reader.raw({
+            customTypes: ["synthetic-unrelated"],
+            modelContextOnly: true,
+            customMessageDetailsOnly: true,
+            maxBytes: 1_000,
+          });
+          expect(details.kind).toBe("page");
+          if (details.kind !== "page") {
+            throw new Error("Synthetic report metadata page missing");
+          }
+          expect(details.requiredBytes).toBeUndefined();
+          expect(details.serializedBytes).toBeLessThan(1_000);
+          expect(details.events[0]?.event).toEqual({
+            type: "custom_message",
+            id: "unrelated-large-body",
+            customType: "synthetic-unrelated",
+            details: null,
+          });
         });
         let checks = 0;
         const first = await readConversationKnowledgeReports({
@@ -101,6 +119,21 @@ describe("native conversation knowledge history catch-up", () => {
         expect(second).toHaveLength(101);
         expect(second[0]).toMatchObject({ id: "report-0" });
         expect(second.at(-1)).toMatchObject({ id: "report-100" });
+        const active = await readConversationKnowledgeReports({
+          target,
+          customTypes: [customType],
+          modelContextOnly: true,
+          detailsOnly: true,
+          assertCurrent() {},
+        });
+        expect(active).toEqual([
+          {
+            type: "custom_message",
+            id: "report-100",
+            customType,
+            details: { index: 100 },
+          },
+        ]);
         expect(
           appendTranscriptEventSync(target, {
             type: "custom_message",
@@ -130,6 +163,23 @@ describe("native conversation knowledge history catch-up", () => {
         expect(
           selectedPath.some((event) => asOptionalRecord(event)?.id === "abandoned-report"),
         ).toBe(false);
+        expect(
+          appendTranscriptEventSync(target, {
+            type: "reset",
+            id: "history-reset",
+            firstKeptEntryId: "report-101",
+          }).ok,
+        ).toBe(true);
+        expect(append(102).ok).toBe(true);
+        const afterReset = await readConversationKnowledgeReports({
+          target,
+          customTypes: [customType],
+          modelContextOnly: true,
+          detailsOnly: true,
+          assertCurrent() {},
+        });
+        // Native reset keeps conversational message tails, not custom observations.
+        expect(afterReset.map((event) => asOptionalRecord(event)?.id)).toEqual(["report-102"]);
         let reads = 0;
         await expect(
           readConversationKnowledgeReports({

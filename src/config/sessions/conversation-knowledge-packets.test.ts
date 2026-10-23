@@ -5,6 +5,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
+  readActiveConversationKnowledgePacketIds,
   readConversationKnowledgePacketProgress,
   retainConversationKnowledgePacket,
 } from "./conversation-knowledge-packets.js";
@@ -153,6 +154,10 @@ describe("native retained conversation knowledge packets", () => {
           if (typeof firstPacket?.id !== "string") {
             throw new Error("Synthetic retained packet entry missing");
           }
+          const activePacketIds = () =>
+            readActiveConversationKnowledgePacketIds({ branch, assertCurrent: authority });
+          const firstPacketId = asOptionalRecord(firstPacket.details)?.packetId;
+          expect(await activePacketIds()).toEqual([firstPacketId]);
           expect(
             appendTranscriptEventSync(branch, {
               type: "compaction",
@@ -166,6 +171,8 @@ describe("native retained conversation knowledge packets", () => {
             complete: false,
             nextOffset: 11,
           });
+          // The native compaction kept this carrier; it still needs hydration coverage.
+          expect(await activePacketIds()).toEqual([firstPacketId]);
           expect(
             appendTranscriptEventSync(source, {
               type: "compaction",
@@ -189,6 +196,19 @@ describe("native retained conversation knowledge packets", () => {
             sourceVersion: await version(),
           });
           expect(await reports()).toHaveLength(2);
+          const completedPacket = (await reports())[1];
+          const completedPacketId = asOptionalRecord(completedPacket?.details)?.packetId;
+          expect(typeof completedPacket?.id).toBe("string");
+          expect(
+            appendTranscriptEventSync(branch, {
+              type: "compaction",
+              id: "recipient-compaction-two",
+              summary: "Earlier imported facts are now summarized.",
+              firstKeptEntryId: completedPacket!.id,
+              tokensBefore: 100,
+            }).ok,
+          ).toBe(true);
+          expect(await activePacketIds()).toEqual([completedPacketId]);
           expect((await progress()).get(contributionId)).toEqual({
             complete: true,
             nextOffset: 23,

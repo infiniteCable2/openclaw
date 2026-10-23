@@ -46,6 +46,7 @@ export async function readConversationKnowledgePacketProgress(params: {
   const events = await readConversationKnowledgeReports({
     target: params.branch,
     customTypes: [CONVERSATION_KNOWLEDGE_CONTEXT],
+    detailsOnly: true,
     assertCurrent: params.assertCurrent,
     signal: params.signal,
   });
@@ -72,6 +73,31 @@ export async function readConversationKnowledgePacketProgress(params: {
     }
   }
   return progress;
+}
+
+/** Recheck only carriers still owned by native context, never their compacted ancestors. */
+export async function readActiveConversationKnowledgePacketIds(params: {
+  branch: ConversationKnowledgeBranch;
+  assertCurrent: SessionSourceAssertion;
+  signal?: AbortSignal;
+}): Promise<string[]> {
+  const events = await readConversationKnowledgeReports({
+    target: params.branch,
+    customTypes: [CONVERSATION_KNOWLEDGE_CONTEXT],
+    modelContextOnly: true,
+    detailsOnly: true,
+    assertCurrent: params.assertCurrent,
+    signal: params.signal,
+  });
+  return events.flatMap((event) => {
+    const packet = asOptionalRecord(asOptionalRecord(event)?.details);
+    return packet?.version === 1 &&
+      packet.rootSessionId === params.branch.root.sessionId &&
+      packet.rootLifecycleRevision === params.branch.root.lifecycleRevision &&
+      typeof packet.packetId === "string"
+      ? [packet.packetId]
+      : [];
+  });
 }
 
 /** Original live source checks authorize the copy; subsequent replay is recipient history. */
