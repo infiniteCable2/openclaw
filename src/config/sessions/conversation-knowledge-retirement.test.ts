@@ -119,7 +119,7 @@ async function withFixture(
     receipt: ConversationKnowledgeReceipt;
     rootKey: string;
     read: () => Promise<TranscriptEvent[]>;
-    remove: (retention?: boolean) => Promise<void | number>;
+    remove: (retention?: boolean) => Promise<void>;
   }) => Promise<void>,
 ) {
   await withOpenClawTestState(
@@ -178,11 +178,16 @@ async function withFixture(
         read: () => loadTranscriptEvents(root),
         remove: (retention = false) =>
           withSqliteSessionPageReclamation(options, (_reclaim, _assert, _options, archives) =>
-            archives.withWriter(() =>
-              retention
-                ? archives.pruneRetention({ candidates: [archive], archiveDirectory: directory })
-                : archives.deletePublished({ archive, archiveDirectory: directory }),
-            ),
+            archives.withWriter(async () => {
+              if (retention) {
+                await archives.pruneRetention({
+                  candidates: [archive],
+                  archiveDirectory: directory,
+                });
+              } else {
+                await archives.deletePublished({ archive, archiveDirectory: directory });
+              }
+            }),
           ),
       });
     },
