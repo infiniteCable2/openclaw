@@ -263,6 +263,21 @@ it.each(["hot", "empty-window", "cold", "other-archive", "wrong-generation", "wr
           );
         }
       } else if (kind === "cold") {
+        // A canonical cold copy is owned by a real session window, even when
+        // its hot events have already been evicted. Keep native FK enforcement.
+        runOpenClawAgentWriteTransaction(
+          (owner) =>
+            appendTranscriptEventInTransaction(
+              owner,
+              { ...f.options, sessionKey: f.archive.session_key, sessionId: f.archive.session_id },
+              { type: "session", id: f.archive.session_id },
+            ),
+          f.options,
+        );
+        executeSqliteQuerySync(
+          database.db,
+          db.deleteFrom("transcript_events").where("session_id", "=", f.archive.session_id),
+        );
         executeSqliteQuerySync(
           database.db,
           db.insertInto("session_transcript_cold_archives").values({
@@ -389,11 +404,15 @@ it("allows native archive pruning without requiring or manufacturing a conversat
           .where("session_id", "=", rootSessionId)
           .orderBy("seq"),
       ).rows;
-    const before = history();
+    expect(history()).not.toEqual([]);
     executeSqliteQuerySync(
       database.db,
       db.deleteFrom("session_nodes").where("session_key", "=", f.rootKey),
     );
+    // Native FK cascades remove this synthetic root's window and transcript.
+    // Establish the absent-root baseline before the archive operation under test.
+    const before = history();
+    expect(before).toEqual([]);
     await f.remove();
     expect(history()).toEqual(before);
     expect(
