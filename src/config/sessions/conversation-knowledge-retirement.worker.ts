@@ -28,17 +28,27 @@ export function retirePrunedConversationKnowledgeInTransaction(
   }
   const db = getSessionKysely(database.db);
   const hasCopy = [
-    db.selectFrom("transcript_events").select("session_id"),
-    db.selectFrom("session_windows").select("session_id"),
-    db.selectFrom("session_transcript_cold_archives").select("session_id"),
-    db.selectFrom("session_transcript_archives").select("session_id"),
-  ].some(
-    (query) =>
-      executeSqliteQuerySync(
-        database.db,
-        query.where("session_id", "=", archive.session_id).limit(1),
-      ).rows.length > 0,
-  );
+    db
+      .selectFrom("transcript_events")
+      .select("session_id")
+      .where("session_id", "=", archive.session_id)
+      .limit(1),
+    db
+      .selectFrom("session_windows")
+      .select("session_id")
+      .where("session_id", "=", archive.session_id)
+      .limit(1),
+    db
+      .selectFrom("session_transcript_cold_archives")
+      .select("session_id")
+      .where("session_id", "=", archive.session_id)
+      .limit(1),
+    db
+      .selectFrom("session_transcript_archives")
+      .select("session_id")
+      .where("session_id", "=", archive.session_id)
+      .limit(1),
+  ].some((query) => executeSqliteQuerySync(database.db, query).rows.length > 0);
   if (hasCopy) {
     return 0;
   }
