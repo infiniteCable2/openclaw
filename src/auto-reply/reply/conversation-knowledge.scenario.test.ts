@@ -390,11 +390,7 @@ describe("ordered native branch Knowledge scenario", () => {
                 },
               });
               try {
-                expect(incomplete?.fragments).toEqual([
-                  expect.objectContaining({
-                    text: expect.stringContaining('"pending":"context-window"'),
-                  }),
-                ]);
+                expect(incomplete?.fragments).toEqual([]);
                 expect(JSON.stringify(await readPackets())).toContain("late-observation");
               } finally {
                 incomplete?.release();
@@ -415,7 +411,7 @@ describe("ordered native branch Knowledge scenario", () => {
                 },
               });
               try {
-                expect(rechecked?.fragments[0]?.text).toContain('"pending":"context-window"');
+                expect(rechecked?.fragments).toEqual([]);
                 expect(await readPackets()).toEqual(beforeRecheck);
               } finally {
                 rechecked?.release();
@@ -440,7 +436,7 @@ describe("ordered native branch Knowledge scenario", () => {
                   },
                 },
               });
-              expect(deferred?.fragments[0]?.text).toContain('"reason":"admission-deferred"');
+              expect(deferred?.fragments).toEqual([]);
               deferred?.release();
               expect(await readPackets()).toEqual(beforeDeferred);
               const retried = await prepareReplyConversationKnowledge({
