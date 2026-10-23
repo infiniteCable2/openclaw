@@ -152,7 +152,7 @@ describe("ordered native branch Knowledge scenario", () => {
             expect(foreignRead.text).not.toContain("a-resumed");
             expect(foreignRead.text).not.toContain("b-two");
             const groupRead = await fixture.read(await fixture.claim(group));
-            expect(groupRead.text).toContain('"available":false');
+            expect(groupRead.text).toBe("");
           });
           await step("09 missing input person and unconfirmed audience fail closed", async () => {
             const unconfirmed = await fixture.branch("unconfirmed", null);
@@ -162,13 +162,13 @@ describe("ordered native branch Knowledge scenario", () => {
               getRuntimeConfig: () => fixture.cfg,
             });
             try {
-              expect(missing?.fragments[0]?.text).toContain("original-participant-unconfirmed");
+              expect(missing?.fragments).toEqual([]);
               expect(missing?.observed).toEqual([]);
             } finally {
               missing?.release();
             }
             const knowledge = await fixture.read(await fixture.claim(unconfirmed));
-            expect(knowledge.text).toContain("private-destination-audience-unconfirmed");
+            expect(knowledge.text).toBe("");
           });
           for (const mode of ["revoke", "replace"] as const) {
             await step(`10 ${mode} during native report preparation refuses commit`, async () => {

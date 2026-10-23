@@ -9,11 +9,11 @@ import {
   readConversationKnowledgePacketProgress,
 } from "./conversation-knowledge-packets.js";
 import { CONVERSATION_KNOWLEDGE_SEED } from "./conversation-knowledge-seed.js";
+import { selectConversationKnowledgeReceipts } from "./conversation-knowledge-selection.js";
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import {
   CONVERSATION_KNOWLEDGE_REPORT,
   conversationKnowledgeOrigin,
-  selectConversationKnowledgeReceipts,
   type ConversationKnowledgeReceipt,
 } from "./conversation-knowledge.js";
 import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";

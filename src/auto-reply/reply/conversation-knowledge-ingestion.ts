@@ -1,8 +1,4 @@
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
-import {
-  conversationKnowledgeCoverageNotice,
-  type ConversationKnowledgeGap,
-} from "./conversation-knowledge-status.js";
 
 export type ConversationKnowledgeMaintenanceResult = {
   compacted: boolean;
@@ -53,15 +49,12 @@ export function createConversationKnowledgeIngestion(params: {
     get incomplete() {
       return incomplete || admissionDeferred;
     },
-    coverageNotice(gaps: readonly ConversationKnowledgeGap[]) {
-      return conversationKnowledgeCoverageNotice({
-        gaps,
-        pending: maintenanceDeferred
-          ? "maintenance-deferred"
-          : incomplete
-            ? "context-window"
-            : undefined,
-      });
+    get pending() {
+      return maintenanceDeferred
+        ? ("maintenance-deferred" as const)
+        : incomplete
+          ? ("context-window" as const)
+          : undefined;
     },
     async tryPacket(text: string, write: () => Promise<string | undefined>) {
       if (admittedChars >= 24_000) {

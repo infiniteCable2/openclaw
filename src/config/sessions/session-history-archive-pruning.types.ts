@@ -26,11 +26,16 @@ export type SessionArchiveRetentionDelete = {
   archiveDirectory: string;
 };
 
+export type SessionPublishedArchiveDelete = {
+  archive: PublishedSessionTranscriptArchive;
+  archiveDirectory: string;
+};
+
 export type SessionArchivePruningOperations = {
   withWriter: <T>(run: () => Promise<T>) => Promise<T>;
   read: () => Promise<PublishedSessionTranscriptArchive | null>;
   readRetentionCandidates: () => Promise<PublishedSessionTranscriptArchive[]>;
   pruneRetention: (input: SessionArchiveRetentionDelete) => Promise<number>;
   removeLegacy: (filePath: string) => Promise<SessionLegacyArchiveRemovalResult>;
-  deletePublished: (archive: PublishedSessionTranscriptArchive) => Promise<void>;
+  deletePublished: (input: SessionPublishedArchiveDelete) => Promise<void>;
 };

@@ -19,12 +19,6 @@ function fixture() {
   };
 }
 
-const sourceGap = {
-  sourceSessionKey: "agent:example:branch:other",
-  throughEntryId: "synthetic-through",
-  reason: "source-range-unverified",
-} as const;
-
 describe("conversation knowledge ingestion pacing", () => {
   it("does not request compaction maintenance for unchanged history", async () => {
     const { ingestion, maintainContext, captureSources } = fixture();
@@ -41,11 +35,10 @@ describe("conversation knowledge ingestion pacing", () => {
     await ingestion.tryPacket("a".repeat(24_000), async () => "first");
     await ingestion.tryPacket("a", async () => "second");
     expect(ingestion.incomplete).toBe(true);
-    expect(ingestion.coverageNotice([])).toHaveLength(1);
+    expect(ingestion.pending).toBe("context-window");
     await ingestion.finish();
     expect(ingestion.incomplete).toBe(false);
-    expect(ingestion.coverageNotice([])).toEqual([]);
-    expect(ingestion.coverageNotice([sourceGap])).toHaveLength(1);
+    expect(ingestion.pending).toBeUndefined();
     expect(maintainContext).toHaveBeenNthCalledWith(1, source, ["first"], undefined);
     expect(maintainContext).toHaveBeenNthCalledWith(2, source, ["first", "second"], undefined);
     expect(captureSources).toHaveBeenCalledTimes(2);
@@ -70,9 +63,7 @@ describe("conversation knowledge ingestion pacing", () => {
     expect(await ingestion.tryPacket("pending quoted text", write)).toBe(false);
     expect(write).toHaveBeenCalledTimes(1);
     expect(maintainContext).toHaveBeenCalledExactlyOnceWith(source, [], "pending quoted text");
-    expect(ingestion.coverageNotice([{ ...sourceGap, reason: "admission-deferred" }])).toHaveLength(
-      1,
-    );
+    expect(ingestion.incomplete).toBe(true);
     const later = vi.fn(async () => "later");
     expect(await ingestion.tryPacket("later", later)).toBe(true);
     await ingestion.finish();
@@ -103,10 +94,7 @@ describe("conversation knowledge ingestion pacing", () => {
     for (let turn = 0; turn < 2; turn++) {
       const ingestion = create(["already-admitted"]);
       await ingestion.finish();
-      expect(JSON.parse(ingestion.coverageNotice([])[0]!.text)).toMatchObject({
-        state: "pending",
-        pending: "context-window",
-      });
+      expect(ingestion.pending).toBe("context-window");
     }
     expect(maintainContext).toHaveBeenCalledTimes(2);
     // A native compaction retires the old carrier from the active set, not its history.
@@ -129,22 +117,6 @@ describe("conversation knowledge ingestion pacing", () => {
     await ingestion.tryPacket("small enough", async () => "accepted");
     await ingestion.finish();
     expect(maintainContext).toHaveBeenCalledOnce();
-    expect(JSON.parse(ingestion.coverageNotice([])[0]!.text)).toMatchObject({
-      pending: "maintenance-deferred",
-      unresolvedRanges: 0,
-    });
-  });
-
-  it("names authorized source gaps separately from pending native capacity", () => {
-    const { ingestion } = fixture();
-    const status = JSON.parse(ingestion.coverageNotice([sourceGap, sourceGap])[0]!.text);
-    expect(status).toMatchObject({
-      state: "partial",
-      scope: "supplementary-history-only",
-      unresolvedRanges: 2,
-      gaps: [{ ...sourceGap, ranges: 2 }],
-    });
-    expect(status).not.toHaveProperty("pending");
-    expect(status.guidance).toContain("current dialogue normally");
+    expect(ingestion.pending).toBe("maintenance-deferred");
   });
 });

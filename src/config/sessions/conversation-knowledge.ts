@@ -7,6 +7,10 @@ import {
 } from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";
 import { normalizeInputProvenance } from "../../sessions/input-provenance.js";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
+import {
+  readConversationKnowledgeRetirement,
+  type ConversationKnowledgeRetirement,
+} from "./conversation-knowledge-retirement.js";
 import type { CustomMessageReport } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import { isReadableSessionMessage } from "./session-entry-codec.js";
@@ -36,6 +40,8 @@ type ConversationKnowledgeReferenceBase = {
   through: TranscriptEntryAnchor;
   /** Native rewrite continuity for an unchanged range; never changes occurrence identity. */
   readRange?: { through: TranscriptEntryAnchor; admission?: TranscriptEntryAnchor };
+  /** Not delivered: the final canonical source copy was intentionally pruned. */
+  retirement?: ConversationKnowledgeRetirement;
   /** Evidence of an admitted private turn range, never authority to read it. */
   privateAudience?: {
     participant: Extract<SessionParticipantIdentity, { type: "profile" | "remote" }>;
@@ -226,6 +232,13 @@ function readConversationKnowledgeReferenceBase(
       ...(renewedAdmission ? { admission: renewedAdmission } : {}),
     };
   }
+  const retirement = readConversationKnowledgeRetirement(
+    record.retirement,
+    receipt.readRange?.through.generation ?? receipt.through.generation,
+  );
+  if (retirement) {
+    receipt.retirement = retirement;
+  }
   return receipt;
 }
 
@@ -300,66 +313,6 @@ export function selectConversationKnowledgeReport(
     display: false,
     details: receipt,
   };
-}
-
-/** Keep every distinct admitted endpoint in report order, not only a source's latest turn. */
-export function selectConversationKnowledgeReceipts(
-  events: readonly TranscriptEvent[],
-  currentSessionId: string,
-  currentSessionKey?: string,
-  consumerMode: "native" | "branches" = "branches",
-) {
-  const selected = new Map<string, ConversationKnowledgeReference>();
-  const incarnationByKey = new Map<string, string>();
-  for (const event of events) {
-    const record = asOptionalRecord(event);
-    if (record?.type !== "custom_message") {
-      continue;
-    }
-    const receipt =
-      record.customType === CONVERSATION_KNOWLEDGE_REPORT
-        ? readConversationKnowledgeReceipt(record.details)
-        : record.customType === CONVERSATION_UTTERANCE_REPORT
-          ? readConversationUtteranceObservation(record.details)
-          : undefined;
-    if (
-      !receipt ||
-      receipt.source.sessionId === currentSessionId ||
-      receipt.source.sessionKey === currentSessionKey
-    ) {
-      continue;
-    }
-    const sourceKey = JSON.stringify([receipt.source.agentId, receipt.source.sessionKey]);
-    const incarnation = conversationKnowledgeOrigin(receipt.source);
-    const oldOrigin = incarnationByKey.get(sourceKey);
-    if (oldOrigin && oldOrigin !== incarnation) {
-      for (const [origin, previous] of selected) {
-        if (
-          previous.source.agentId === receipt.source.agentId &&
-          previous.source.sessionKey === receipt.source.sessionKey
-        ) {
-          selected.delete(origin);
-        }
-      }
-    }
-    incarnationByKey.set(sourceKey, incarnation);
-    const endpoint = JSON.stringify([
-      receipt.origin,
-      receipt.through.generation,
-      receipt.through.rawSeq,
-      receipt.through.entryId,
-    ]);
-    if (!selected.has(endpoint)) {
-      // Generations are incomparable. Keep older endpoints for explicit gap handling
-      // rather than letting compaction silently acknowledge an unread contribution.
-      selected.set(endpoint, receipt);
-    }
-  }
-  // Deduplicate and reconcile incarnations before filtering: a later duplicate
-  // cannot relabel the same saved occurrence to make it visible in native mode.
-  return [...selected.values()].filter(
-    (receipt) => consumerMode === "branches" || receipt.sourceMode === "branches",
-  );
 }
 
 function messageText(message: Record<string, unknown>): string {

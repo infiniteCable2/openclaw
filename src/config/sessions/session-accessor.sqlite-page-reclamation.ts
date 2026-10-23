@@ -210,14 +210,14 @@ export async function withSqliteSessionPageReclamation<T>(
                 ),
               assertNativeCurrent,
             ),
-          deletePublished: async (row) =>
+          deletePublished: async (input) =>
             await withSqliteSessionDatabase(
               databaseOptions,
               (database) => {
                 deletePublishedSessionArchiveInDatabase(
                   database,
                   databaseOptions,
-                  row,
+                  input,
                   assertNativeCurrent,
                 );
               },
@@ -356,12 +356,12 @@ export async function withSqliteSessionPageReclamation<T>(
                     }),
                   "session.history.archive-prune",
                 ),
-              deletePublished: (row) =>
+              deletePublished: (input) =>
                 write(
                   (worker) =>
                     worker.execute({
                       type: "session.archivePruning.deletePublished",
-                      input: row,
+                      input,
                     }),
                   "session.history.archive-prune",
                 ),

@@ -13,28 +13,24 @@ const source = vi.hoisted(() => ({
   facts: vi.fn(),
   grant: vi.fn(),
   context: vi.fn(),
+  retain: vi.fn(),
 }));
-// mock-isolation: Test retained diagnostic authority without starting transcript workers.
+// mock-isolation: Test silent source gaps without starting transcript workers.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readConversationKnowledgeBranch: source.branch,
   readConversationKnowledgeRoot: source.root,
   recordConversationKnowledgeTurn: vi.fn(),
 }));
-// mock-isolation: A source gap must not initialize native packet storage or write an observation.
+// mock-isolation: Observe packet custody without starting native packet storage.
 vi.mock("../../config/sessions/conversation-knowledge-packets.js", () => ({
   conversationKnowledgeContributionId: () => "synthetic-contribution",
   readConversationKnowledgePacketProgress: async () => new Map(),
   readActiveConversationKnowledgePacketIds: async () => [],
-  retainConversationKnowledgePacket: () => {
-    throw new Error("A source gap must never write a packet");
-  },
+  retainConversationKnowledgePacket: source.retain,
 }));
 // mock-isolation: Supply revocable facts without initializing unrelated Gateway sharing storage.
 vi.mock("./conversation-knowledge-authority.js", () => ({
   prepareConversationKnowledgeBranchFacts: source.facts,
-  pendingConversationKnowledgeNotice: () => {
-    throw new Error("Direct source preparation must not initialize a turn");
-  },
   unavailableConversationKnowledge: () => {
     throw new Error("This fixture requires an already-authorized source");
   },
@@ -60,7 +56,7 @@ vi.mock("./reply-run-registry.state.js", () => ({
     throw new Error("Direct source preparation must not acquire a reply operation");
   },
 }));
-// mock-isolation: A status must retain its existing narrow grant, never request broader access.
+// mock-isolation: A source gap must never request broader access.
 vi.mock("../../gateway/session-transcript-read-authority.js", () => ({
   prepareTranscriptReadAuthority: source.grant,
 }));
@@ -77,9 +73,9 @@ beforeEach(() => {
   }
 });
 
-describe("related-history diagnostic source custody", () => {
-  it.each(["missing-range", "unverified-exchange"] as const)(
-    "retains the authorized source behind a %s notice until the model turn settles",
+describe("related-history source custody without model status", () => {
+  it.each(["missing-range", "unverified-exchange", "admission-refused", "admitted"] as const)(
+    "retains source authority only for actual imported data (%s)",
     async (kind) => {
       const participant = { type: "profile" as const, id: "example-person" };
       const branch = {
@@ -152,8 +148,32 @@ describe("related-history diagnostic source custody", () => {
       ]);
       if (kind === "missing-range") {
         source.context.mockRejectedValue(new SessionTranscriptReadFenceError("Missing range"));
-      } else {
+      } else if (kind === "unverified-exchange") {
         source.context.mockImplementation(async (_target, consume) => consume({ events: [] }));
+      } else {
+        source.retain.mockResolvedValue(kind === "admitted" ? "saved-packet" : undefined);
+        source.context.mockImplementation(async (_target, consume) =>
+          consume({
+            version: { generation: "original", rawSeq: 2, updatedAt: 1 },
+            events: [
+              {
+                type: "message",
+                id: "question",
+                message: { role: "user", content: "The synthetic fact is blue." },
+              },
+              {
+                type: "message",
+                id: "answer",
+                message: {
+                  role: "assistant",
+                  content: "Blue, understood.",
+                  stopReason: "stop",
+                  __openclaw: { runId: "donor-run" },
+                },
+              },
+            ],
+          }),
+        );
       }
       const reader: SessionEntryCohortReader = {
         database: { agentId: branch.agentId, path: branch.storePath, env: {} },
@@ -176,10 +196,23 @@ describe("related-history diagnostic source custody", () => {
         retainInHistory: { writeTarget: branch, maintainContext: async () => {} },
       });
       try {
-        expect(prepared?.fragments[0]?.text).toContain(donor.sessionKey);
-        expect(release).not.toHaveBeenCalled();
+        expect(prepared?.fragments).toEqual([]);
+        if (kind === "admitted") {
+          expect(release).not.toHaveBeenCalled();
+        } else {
+          expect(release).toHaveBeenCalledOnce();
+        }
+        if (kind === "missing-range" || kind === "unverified-exchange") {
+          expect(source.retain).not.toHaveBeenCalled();
+        } else {
+          expect(source.retain).toHaveBeenCalledOnce();
+        }
         readable = false;
-        expect(() => prepared?.assertCurrent()).toThrow("Diagnostic source revoked");
+        if (kind === "admitted") {
+          expect(() => prepared?.assertCurrent()).toThrow("Diagnostic source revoked");
+        } else {
+          expect(() => prepared?.assertCurrent()).not.toThrow();
+        }
       } finally {
         prepared?.release();
       }

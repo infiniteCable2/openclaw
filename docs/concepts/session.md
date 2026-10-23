@@ -174,14 +174,26 @@ prevent independent later contributions from being admitted.
 
 A reset/replaced source is not silently treated as its previous incarnation.
 An exact source range that is no longer projectable is not marked consumed.
-The model receives a concise supplementary-history status distinguishing
-unverified source ranges, source capacity and deferred admission. Authorized
-source keys and endpoint references identify gaps without implying that the
-current dialogue is invalid or granting additional history-tool access. Old
-unverified ranges need source revalidation, not a promise of success next turn.
+Supplementary-history status stays in operational debug logs, never in model
+context or transcripts. Bounded diagnostics record closed reason codes, counts
+and hashed recipient/source references without dialogue text. Old unverified
+ranges need source revalidation, not a promise of success next turn. Missing
+reads, changed generations and denied access do not prove permanent data loss.
 This does not reconstruct deleted history.
+
+Only native final-archive pruning can retire an irrecoverable source obligation:
+the worker compares the complete selected archive metadata, confirms the exact
+derived file is absent, and excludes hot, cold, and other canonical copies. In
+the same transaction it records generation-bound loss evidence on the existing
+root references. Original source identity, private admission, read ranges, and
+recipient progress remain unchanged; retirement is not delivery. A malformed
+existing root refuses deletion rather than losing the only proof. Ordinary
+native-mode agents need not have a root. Synchronous legacy maintenance does not
+infer retirement, and historical missing reads remain conservative. No history
+or imported recipient content is deleted by this reference repair.
+
 Read-only snapshots, including provider-owned realtime startup and direct CLI
-candidates, remain bounded and identify partial coverage. They do not claim the
+candidates, remain bounded without model-facing coverage notices. They do not claim the
 embedded path's durable automatic catch-up.
 
 Projection excludes imported knowledge carriers, history-tool result bodies and

@@ -184,7 +184,10 @@ async function pruneCanonicalSessionTranscriptArchivesToHighWater(
         }
       }
       await timeArchivePruningAsync(diagnostics, "rowDeletionMs", () =>
-        params.archives.deletePublished(row),
+        params.archives.deletePublished({
+          archive: row,
+          archiveDirectory: params.archiveDirectory,
+        }),
       );
       if (params.checkpointGate) {
         params.checkpointGate.afterNs = process.hrtime.bigint();

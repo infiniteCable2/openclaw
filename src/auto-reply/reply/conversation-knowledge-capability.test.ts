@@ -168,7 +168,7 @@ async function nativeTurn(admin = false, conversationMode: "native" | "branches"
 }
 
 describe("actual native-turn knowledge ownership", () => {
-  it("continues a turn with an explicit pending notice but no related import or publication", async () => {
+  it("continues a pending turn without injecting status or changing existing context", async () => {
     source.seed.mockResolvedValue({
       status: "pending",
       reason: "source-capacity",
@@ -176,16 +176,16 @@ describe("actual native-turn knowledge ownership", () => {
       skipped: 0,
     });
     const f = await nativeTurn();
-    expect(f.owner.fragments[0]?.text).toContain("initial-history-not-yet-verified");
+    expect(f.owner.fragments).toEqual([]);
     expect(await f.owner.prepareSnapshot()).toEqual(f.owner.fragments);
     const run = {
       ...f.run,
       runId: "source-run",
       prompt: "Continue this conversation.",
-      runtimeContextFragments: [...f.owner.fragments],
+      runtimeContextFragments: [{ kind: "conversation-data" as const, text: "Existing context." }],
     };
-    expect(await f.owner.prepareHistory(run)).toEqual(f.owner.fragments);
-    expect(await f.owner.prepareHistory(run)).toEqual(f.owner.fragments);
+    expect(await f.owner.prepareHistory(run)).toEqual(run.runtimeContextFragments);
+    expect(await f.owner.prepareHistory(run)).toEqual(run.runtimeContextFragments);
     await f.owner.record(f.result);
     expect(f.result.status).toBe("ok");
     expect(source.root).not.toHaveBeenCalled();
@@ -321,7 +321,7 @@ function unusedReader(): SessionEntryCohortReader {
 }
 
 describe("conversation knowledge capability absence", () => {
-  it("makes missing original participant evidence explicit without reading source metadata", async () => {
+  it("keeps missing original participant evidence out of model input without reading metadata", async () => {
     const assertCurrent = vi.fn();
     const prepared = await prepareReplyConversationKnowledge({
       reader: unusedReader(),
@@ -329,17 +329,7 @@ describe("conversation knowledge capability absence", () => {
       assertCurrent,
       getRuntimeConfig: () => ({}),
     });
-    expect(prepared?.fragments).toEqual([
-      {
-        kind: "conversation-data",
-        text: JSON.stringify({
-          capability: "related-conversation-context",
-          available: false,
-          reason: "original-participant-unconfirmed",
-          coverage: "Only the current conversation context is available automatically.",
-        }),
-      },
-    ]);
+    expect(prepared?.fragments).toEqual([]);
     expect(source.branch).not.toHaveBeenCalled();
     expect(source.facts).not.toHaveBeenCalled();
     expect(source.history).not.toHaveBeenCalled();
@@ -387,7 +377,7 @@ describe("conversation knowledge capability absence", () => {
       expectedAudienceIdentity: "actual-person",
       getRuntimeConfig: () => ({}),
     });
-    expect(prepared?.fragments[0]?.text).toContain("private-destination-audience-unconfirmed");
+    expect(prepared?.fragments).toEqual([]);
     expect(release).toHaveBeenCalledOnce();
     expect(source.root).not.toHaveBeenCalled();
     expect(source.history).not.toHaveBeenCalled();
@@ -638,7 +628,7 @@ describe("native personal difference-context integration", () => {
         id: "example-person",
       },
     });
-    expect(prepared?.fragments[0]?.text).toContain("original-participant-unconfirmed");
+    expect(prepared?.fragments).toEqual([]);
     expect(source.branch).not.toHaveBeenCalled();
     expect(source.history).not.toHaveBeenCalled();
     prepared?.release();
@@ -648,7 +638,7 @@ describe("native personal difference-context integration", () => {
     const f = personalFixture();
     source.facts.mockResolvedValue({ ...f.facts, audienceIdentity: "another-person" });
     const prepared = await prepareReplyConversationKnowledge(f.params);
-    expect(prepared?.fragments[0]?.text).toContain("private-destination-audience-unconfirmed");
+    expect(prepared?.fragments).toEqual([]);
     expect(source.root).not.toHaveBeenCalled();
     expect(source.history).not.toHaveBeenCalled();
     expect(f.factsRelease).toHaveBeenCalledOnce();
@@ -663,7 +653,7 @@ describe("native personal difference-context integration", () => {
       expect.objectContaining({ sessionId: "source-session" }),
     );
     await f.owner.prepareSnapshot();
-    expect(f.owner.fragments[0]?.text).toContain("original-participant-unconfirmed");
+    expect(f.owner.fragments).toEqual([]);
     expect(source.branch).toHaveBeenCalledOnce();
     expect(source.root).not.toHaveBeenCalled();
     expect(source.history).not.toHaveBeenCalled();

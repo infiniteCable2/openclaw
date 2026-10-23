@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { selectConversationKnowledgeReceipts } from "./conversation-knowledge-selection.js";
 import {
   combineConversationKnowledge,
   CONVERSATION_KNOWLEDGE_REPORT,
@@ -9,7 +10,6 @@ import {
   readConversationKnowledgeReceipt,
   readConversationUtteranceObservation,
   isConversationUtteranceObservation,
-  selectConversationKnowledgeReceipts,
   selectConversationKnowledgeReport,
   type ConversationKnowledgeReceipt,
   type ConversationUtteranceObservation,

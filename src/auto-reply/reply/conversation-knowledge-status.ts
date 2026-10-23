@@ -1,4 +1,7 @@
-import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
+
+const log = createSubsystemLogger("auto-reply/conversation-knowledge");
 
 export type ConversationKnowledgeGap = {
   sourceSessionKey: string;
@@ -24,36 +27,37 @@ export function createConversationKnowledgeGapCollector() {
   };
 }
 
-/** Describe only authorized supplementary history, never invalidate the current dialogue. */
-export function conversationKnowledgeCoverageNotice(params: {
-  gaps: readonly ConversationKnowledgeGap[];
-  pending?: "context-window" | "maintenance-deferred";
-}): RuntimeContextFragment[] {
-  if (params.gaps.length === 0 && !params.pending) {
-    return [];
+/** Operational diagnostics only: never append status to a transcript or model context. */
+export function logConversationKnowledgeDiagnostic(params: {
+  recipient: string;
+  gaps?: readonly ConversationKnowledgeGap[];
+  pending?: "context-window" | "maintenance-deferred" | "snapshot-capacity";
+  reason?:
+    | "initial-history-not-yet-verified"
+    | "original-participant-unconfirmed"
+    | "private-destination-audience-unconfirmed";
+}) {
+  const gaps = params.gaps ?? [];
+  if ((!gaps.length && !params.pending && !params.reason) || !log.isEnabled("debug")) {
+    return;
   }
   const groups = new Map<string, ConversationKnowledgeGap & { ranges: number }>();
-  for (const gap of params.gaps) {
+  for (const gap of gaps) {
     const key = JSON.stringify([gap.sourceSessionKey, gap.reason]);
     const previous = groups.get(key);
     groups.set(key, { ...gap, ranges: (previous?.ranges ?? 0) + 1 });
   }
-  return [
-    {
-      kind: "conversation-data",
-      text: JSON.stringify({
-        capability: "related-conversation-context",
-        state: params.gaps.length > 0 ? "partial" : "pending",
-        scope: "supplementary-history-only",
-        unresolvedRanges: params.gaps.length,
-        gaps: [...groups.values()].slice(0, 3),
-        ...(groups.size > 3 ? { additionalGapGroups: groups.size - 3 } : {}),
-        ...(params.pending ? { pending: params.pending } : {}),
-        guidance:
-          "Continue the current dialogue normally. Unverified ranges need source revalidation; " +
-          "deferred additions are retried on later turns. Use already-authorized history/search " +
-          "only for relevant missing detail; do not repeatedly fetch or reinject the same history.",
-      }),
-    },
-  ];
+  log.debug("Supplementary conversation catch-up deferred", {
+    recipientHash: redactIdentifier(params.recipient),
+    unresolvedRanges: gaps.length,
+    gaps: [...groups.values()].slice(0, 3).map((gap) => ({
+      sourceHash: redactIdentifier(gap.sourceSessionKey),
+      endpointHash: redactIdentifier(gap.throughEntryId),
+      reason: gap.reason,
+      ranges: gap.ranges,
+    })),
+    ...(groups.size > 3 ? { additionalGapGroups: groups.size - 3 } : {}),
+    ...(params.pending ? { pending: params.pending } : {}),
+    ...(params.reason ? { reason: params.reason } : {}),
+  });
 }

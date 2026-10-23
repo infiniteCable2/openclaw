@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
 import {
   conversationKnowledgeAudience,
   conversationKnowledgeAudienceIdentity,
@@ -18,37 +17,19 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { logConversationKnowledgeDiagnostic } from "./conversation-knowledge-status.js";
 import type { PreparedReplyConversationKnowledge } from "./conversation-knowledge.js";
 
-/** Unresolved admission is explicit capability data, never a claim of completed catch-up. */
-export function pendingConversationKnowledgeNotice() {
-  const fragments: RuntimeContextFragment[] = [
-    {
-      kind: "conversation-data",
-      text: JSON.stringify({
-        capability: "related-conversation-context",
-        state: "pending",
-        reason: "initial-history-not-yet-verified",
-        guidance: "Continue the current dialogue normally; supplementary history is not ready yet.",
-      }),
-    },
-  ];
-  return {
-    fragments,
-    withContext(existing: readonly RuntimeContextFragment[] = []): RuntimeContextFragment[] {
-      return [...existing.filter((item) => !fragments.includes(item)), ...fragments];
-    },
-  };
-}
-
-/** Absence is model-visible capability data, not an invented history permission. */
+/** Unavailable supplementary context never changes the current model dialogue. */
 export function unavailableConversationKnowledge(
   params: {
+    sessionId: string;
     assertCurrent: SessionSourceAssertion;
     signal?: AbortSignal;
   },
   reason: "original-participant-unconfirmed" | "private-destination-audience-unconfirmed",
 ): PreparedReplyConversationKnowledge {
+  logConversationKnowledgeDiagnostic({ recipient: params.sessionId, reason });
   let active = true;
   const assertCurrent = composeSessionSourceAssertion([params.assertCurrent], (assertSource) => {
     if (!active) {
@@ -58,17 +39,7 @@ export function unavailableConversationKnowledge(
     assertSource();
   });
   return {
-    fragments: [
-      {
-        kind: "conversation-data",
-        text: JSON.stringify({
-          capability: "related-conversation-context",
-          available: false,
-          reason,
-          coverage: "Only the current conversation context is available automatically.",
-        }),
-      },
-    ],
+    fragments: [],
     observed: [],
     assertCurrent,
     release: () => {
