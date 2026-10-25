@@ -96,7 +96,7 @@ export function withConversationPublicationContext<T>(owner: PublicationOwner, r
   try {
     const result = publicationContext.run(owner, run);
     if (result instanceof Promise) {
-      // This internal generic owner preserves the caller's synchronous/async result shape.
+      // SAFETY: finally preserves the native caller's Promise value/rejection and sync/async shape.
       return result.finally(release) as T;
     }
     release();
