@@ -37,6 +37,8 @@ export type SessionTranscriptAuthority = SessionTranscriptContextVersion & {
   indexedSeq: number | null;
   activeMessageCount: number | null;
   needsRebuild: number | null;
+  /** Worker-issued exact rewrite proof, never a grant to reinterpret changed rows. */
+  unchangedPrefix?: { previousGeneration: string; beforeRawSeq: number };
 };
 export type SessionTranscriptAuthorityReceipt = SqliteCommitReceipt<
   SessionTranscriptAuthority,
@@ -226,7 +228,13 @@ function isTranscriptReceipt(value: unknown): value is SessionTranscriptAuthorit
       (row.generation !== null && typeof row.generation !== "string") ||
       (row.leafEventId !== null && typeof row.leafEventId !== "string") ||
       ![row.rawSeq, row.updatedAt, row.indexedSeq, row.activeMessageCount].every(nullableNumber) ||
-      (row.needsRebuild !== null && row.needsRebuild !== 0 && row.needsRebuild !== 1)
+      (row.needsRebuild !== null && row.needsRebuild !== 0 && row.needsRebuild !== 1) ||
+      (row.unchangedPrefix !== undefined &&
+        (!isRecord(row.unchangedPrefix) ||
+          typeof row.unchangedPrefix.previousGeneration !== "string" ||
+          !row.unchangedPrefix.previousGeneration ||
+          !Number.isSafeInteger(row.unchangedPrefix.beforeRawSeq) ||
+          Number(row.unchangedPrefix.beforeRawSeq) < 0))
     ) {
       return false;
     }

@@ -83,6 +83,8 @@ async function planDreamingCronRepair(
       ...raw,
       declarationKey: MANAGED_DREAMING_DECLARATION_KEY,
     };
+    // The unified sweep follows native ambient ownership, not a historical agent pin.
+    delete definition.agentId;
     const payload = isRecord(raw.payload) ? raw.payload : {};
     const delivery = isRecord(raw.delivery) ? raw.delivery : {};
     definition.sessionTarget = "isolated";

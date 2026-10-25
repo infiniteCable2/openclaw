@@ -1,7 +1,9 @@
 // Cron job patch tests cover applying partial updates to scheduled jobs.
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it } from "vitest";
+import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { resolveCronDeliveryPlan, resolveFailureDestination } from "../delivery-plan.js";
+import { normalizeCronJobPatch } from "../normalize.js";
 import { projectCronJobThroughStorageCodec } from "../store/row-codec.js";
 import type { CronJob, CronJobCreate, CronJobPatch } from "../types.js";
 import { applyJobPatch, createJob } from "./jobs.js";
@@ -25,6 +27,23 @@ function makeJob(overrides: Partial<CronJob> = {}): CronJob {
 }
 
 describe("applyJobPatch schedule retention", () => {
+  it("clears an explicitly undefined agent pin through native patch normalization", () => {
+    const job = makeJob({ agentId: "retired-agent", delivery: { mode: "none" } });
+    const state = structuredClone(job.state);
+    const patch = normalizeCronJobPatch({ agentId: undefined });
+    if (!patch) {
+      throw new Error("Expected a normalized agent-clearing patch");
+    }
+    expect(Object.hasOwn(patch, "agentId")).toBe(true);
+
+    applyJobPatch(job, patch, { defaultAgentId: "system-owner" });
+
+    expect(job.agentId).toBeUndefined();
+    expect(resolveCronJobEffectiveAgentId(job, "system-owner")).toBe("system-owner");
+    expect(job.state).toEqual(state);
+    expect(job.delivery).toEqual({ mode: "none" });
+  });
+
   it.each([
     { schedule: { kind: "every" as const, everyMs: 60_000 }, deleteAfterRun: false },
     { schedule: { kind: "cron" as const, expr: "0 * * * *" }, deleteAfterRun: undefined },

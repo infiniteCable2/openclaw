@@ -150,6 +150,14 @@ live audience and read-permission checks remain mandatory. Legacy synchronous
 writers retain conservative invalidation rather than doing additional background
 publication work on the Gateway main thread.
 
+An active native turn also retains committed continuity for its original user
+admission when a later metadata-only rewrite preserves the active projection.
+Only an exact previous-generation mapping for an unchanged earlier row can
+advance that admission. Steering another input cannot silently invalidate the
+original turn's next terminal; overlapping edits, missing mappings, revoked
+authority, compaction, and reset still retain their normal fences. The temporary
+subscription ends with the original run.
+
 The central embedded Reply path catches up a fixed prefix of all eligible root
 references, not just the latest four sources. It copies quoted observations into
 the recipient's native transcript in bounded packets. Each packet records its

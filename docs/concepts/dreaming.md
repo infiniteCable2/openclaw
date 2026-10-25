@@ -177,6 +177,10 @@ Light and REM phase hits recorded in SQLite-backed plugin state add a small rece
 
 When enabled, `memory-core` auto-manages one cron job for a full dreaming sweep, deduped across the primary runtime workspace and any configured agent workspaces so subagent workspace fan-out does not exclude the main agent's `DREAMS.md` and memory state.
 
+The managed job follows the scheduler's ambient system owner instead of pinning
+an agent ID. Runtime reconciliation and Doctor clear historical job-level pins;
+each workspace's phase work still uses its own agent and model.
+
 Plugin reloads preserve the managed schedule. The previous instance stops its
 background callbacks and settles pending diary publication before its replacement
 takes over, so scheduled sweeps can continue without a Gateway restart.

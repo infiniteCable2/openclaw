@@ -354,7 +354,10 @@ export function advanceTranscriptMutationAtInTransaction(
   database: OpenClawAgentDatabase,
   sessionId: string,
   value: number,
-  options: { strictly?: boolean } = {},
+  options: {
+    strictly?: boolean;
+    unchangedPrefix?: SessionTranscriptAuthority["unchangedPrefix"];
+  } = {},
 ): void {
   let transcriptUpdatedAt = Math.floor(value);
   if (!Number.isFinite(transcriptUpdatedAt) || transcriptUpdatedAt < 0) {
@@ -432,15 +435,22 @@ export function advanceTranscriptMutationAtInTransaction(
       .$assertType<SessionTranscriptAuthority>(),
   );
   if (context) {
-    publishSessionTranscriptAuthority(database, context);
+    publishSessionTranscriptAuthority(database, {
+      ...context,
+      ...(options.unchangedPrefix ? { unchangedPrefix: options.unchangedPrefix } : {}),
+    });
   }
 }
 
 export function touchTranscriptMutationInTransaction(
   database: OpenClawAgentDatabase,
   sessionId: string,
+  unchangedPrefix?: SessionTranscriptAuthority["unchangedPrefix"],
 ): void {
-  advanceTranscriptMutationAtInTransaction(database, sessionId, Date.now(), { strictly: true });
+  advanceTranscriptMutationAtInTransaction(database, sessionId, Date.now(), {
+    strictly: true,
+    unchangedPrefix,
+  });
 }
 
 export function deleteTranscriptEventsInTransaction(

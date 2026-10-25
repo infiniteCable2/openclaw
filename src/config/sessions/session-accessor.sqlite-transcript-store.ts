@@ -520,7 +520,16 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
       reconcileRewrittenTranscriptIndex(database, resolved.sessionId, rebuildSynchronously);
     }
   }
-  touchTranscriptMutationInTransaction(database, resolved.sessionId);
+  touchTranscriptMutationInTransaction(
+    database,
+    resolved.sessionId,
+    previousGeneration && projectionUnchanged
+      ? {
+          previousGeneration,
+          beforeRawSeq: rows.reduce((first, row) => Math.min(first, row.seq), Infinity),
+        }
+      : undefined,
+  );
   if (previousGeneration) {
     renewConversationKnowledgeAfterExactRewriteInTransaction({
       database,

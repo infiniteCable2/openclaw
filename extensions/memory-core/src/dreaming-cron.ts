@@ -52,10 +52,14 @@ type ManagedCronJobCreate = {
   };
 };
 
-type ManagedCronJobPatch = Partial<Omit<ManagedCronJobCreate, "declarationKey">>;
+type ManagedCronJobPatch = Partial<Omit<ManagedCronJobCreate, "declarationKey">> & {
+  /** An own undefined field clears a historical pin through the native cron patch owner. */
+  agentId?: undefined;
+};
 
 type ManagedCronJobLike = {
   id: string;
+  agentId?: string;
   declarationKey?: string;
   name?: string;
   description?: string;
@@ -128,6 +132,12 @@ function buildManagedDreamingPatch(
   desired: ManagedCronJobCreate,
 ): ManagedCronJobPatch | null {
   const patch: ManagedCronJobPatch = {};
+
+  // This global sweep uses the scheduler's ambient system owner; each workspace
+  // still runs as its own agent. A persisted pin can outlive a removed agent.
+  if (job.agentId !== undefined) {
+    patch.agentId = undefined;
+  }
 
   if (normalizeOptionalString(job.name) !== desired.name) {
     patch.name = desired.name;

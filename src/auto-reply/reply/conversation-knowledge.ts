@@ -178,20 +178,19 @@ export function createReplyConversationKnowledgeTurn(params: {
       return withConversationPublicationContext(
         {
           source: { agentId, sessionId, sessionKey: reader.sessionKey },
+          storePath: reader.database.path,
+          recorder: followupRun.userTurnTranscriptRecorder,
           runId: execution.admission.operationalRunInstance.runId,
-          capture: () => {
-            if (!publicationBranch || !sourceMode || !execution || seedPending) {
-              return undefined;
-            }
-            return captureReplyConversationPublication({
+          capture: () =>
+            captureReplyConversationPublication({
               followupRun,
               branch: publicationBranch,
               sourceMode,
-              admission: execution.admission,
+              admission: execution?.admission,
+              seedPending,
               observed: prepared?.observed,
               assertCurrent,
-            });
-          },
+            }),
         },
         run,
       );

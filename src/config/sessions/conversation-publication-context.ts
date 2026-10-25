@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
+import { retainUserTurnTranscriptContinuity } from "../../sessions/user-turn-transcript-continuity.js";
+import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { ConversationPublicationIntent } from "./conversation-publication.types.js";
 import type {
@@ -20,6 +22,8 @@ type PublicationScope = {
 
 type PublicationOwner = {
   source: PublicationScope & { agentId: string; sessionKey: string; sessionId: string };
+  storePath?: string;
+  recorder?: UserTurnTranscriptRecorder;
   runId: string;
   capture():
     | { intent: ConversationPublicationIntent; assertCurrent: SessionSourceAssertion }
@@ -78,7 +82,29 @@ export function withConversationPublicationAppends(
 
 /** Internal host custody; provider payloads and transcript metadata cannot mint this owner. */
 export function withConversationPublicationContext<T>(owner: PublicationOwner, run: () => T): T {
-  return publicationContext.run(owner, run);
+  const release = retainUserTurnTranscriptContinuity({
+    recorder: owner.recorder,
+    source: { ...owner.source, storePath: owner.storePath },
+    assertCurrent() {
+      const publication = owner.capture();
+      if (!publication) {
+        throw new Error("Conversation publication no longer owns its original admission");
+      }
+      publication.assertCurrent();
+    },
+  });
+  try {
+    const result = publicationContext.run(owner, run);
+    if (result instanceof Promise) {
+      // This internal generic owner preserves the caller's synchronous/async result shape.
+      return result.finally(release) as T;
+    }
+    release();
+    return result;
+  } catch (error) {
+    release();
+    throw error;
+  }
 }
 
 /** Capture before handing an append to a worker; the returned assertion stays on the host. */

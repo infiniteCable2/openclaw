@@ -77,13 +77,17 @@ export async function recordReplyConversationPublication(params: {
 /** Capture only original ingress proof, before the source occurrence is committed. */
 export function captureReplyConversationPublication(params: {
   followupRun: AgentTurnParams["followupRun"];
-  branch: ConversationKnowledgeBranch;
-  sourceMode: "native" | "branches";
-  admission: PreparedAgentRunAdmission;
+  branch: ConversationKnowledgeBranch | undefined;
+  sourceMode: "native" | "branches" | undefined;
+  admission: PreparedAgentRunAdmission | undefined;
+  seedPending: boolean;
   observed?: ConversationKnowledgeFrontier[];
   assertCurrent: SessionSourceAssertion;
-}): { intent: ConversationPublicationIntent; assertCurrent: SessionSourceAssertion } {
-  const { followupRun, branch } = params;
+}): { intent: ConversationPublicationIntent; assertCurrent: SessionSourceAssertion } | undefined {
+  const { followupRun, branch, admission, sourceMode } = params;
+  if (!branch || !admission || !sourceMode || params.seedPending) {
+    return undefined;
+  }
   const proof = followupRun.conversationAudience;
   const participant = proof?.participant;
   const anchor = followupRun.userTurnTranscriptRecorder?.getAdmissionReceipt();
@@ -102,20 +106,20 @@ export function captureReplyConversationPublication(params: {
     intent: {
       version: 1,
       kind: "completed-turn",
-      sourceMode: params.sourceMode,
+      sourceMode,
       source: {
         sessionKey: branch.sessionKey,
         sessionId: branch.sessionId,
         lifecycleRevision: branch.lifecycleRevision,
       },
       root: branch.root,
-      runId: params.admission.operationalRunInstance.runId,
+      runId: admission.operationalRunInstance.runId,
       observed: params.observed,
       ...(privateAudience ? { privateAudience } : {}),
     },
     assertCurrent: composeSessionSourceAssertion([
       params.assertCurrent,
-      params.admission.assertSourceCurrent,
+      admission.assertSourceCurrent,
       ...(privateAudience ? [() => proof!.assertCurrent()] : []),
     ]),
   };

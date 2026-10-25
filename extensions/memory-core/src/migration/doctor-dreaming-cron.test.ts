@@ -87,6 +87,25 @@ function createInput(
 }
 
 describe("dreaming cron Doctor selection", () => {
+  it("clears a historical agent pin while preserving the managed job and runtime state", async () => {
+    const job = makeJob("pinned-sweep", {
+      ...CANONICAL_FIELDS,
+      agentId: "retired-agent",
+      state: { nextRunAtMs: 100, lastRunAtMs: 50, consecutiveErrors: 1 },
+    });
+    const { input, inventory, repairCronJobs } = createInput([job]);
+    const before = structuredClone(inventory);
+    const definition: Record<string, unknown> = adopted(job).definition;
+    delete definition.agentId;
+
+    await dreamingCronMigration.migrateLegacyState(input);
+
+    expect(repairCronJobs).toHaveBeenCalledExactlyOnceWith(inventory, [{ job, definition }]);
+    expect(definition).not.toHaveProperty("agentId");
+    expect(definition.state).toEqual(job.definition?.state);
+    expect(inventory).toEqual(before);
+  });
+
   it.each([
     {
       label: "owner tag with an edited name",
