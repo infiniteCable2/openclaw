@@ -105,7 +105,9 @@ async function withSteeringFixture(
           const recorder = createUserTurnTranscriptRecorder({ message: input, target });
           recorder.markRuntimePersisted(committed.message, committed.anchor, { appended: true });
           await recorder.confirmSteerTargetRunIdForPersistence?.("active-run");
-          expect(recorder.getPersistedMessage?.()?.__openclaw?.steerTargetRunId).toBe("active-run");
+          expect(recorder.getPersistedMessage?.()?.["__openclaw"]?.steerTargetRunId).toBe(
+            "active-run",
+          );
         };
         await run({
           context,
@@ -124,7 +126,7 @@ async function withSteeringFixture(
             await rewritePreparedTranscriptMessageAtAnchor(anchor, (candidate) => ({
               ...asOptionalRecord(candidate),
               __openclaw: {
-                ...asOptionalRecord(asOptionalRecord(candidate)?.__openclaw),
+                ...asOptionalRecord(asOptionalRecord(candidate)?.["__openclaw"]),
                 testAnnotation: true,
               },
             }));
