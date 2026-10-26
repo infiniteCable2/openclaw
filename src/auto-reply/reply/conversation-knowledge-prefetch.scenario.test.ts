@@ -246,7 +246,8 @@ describe("native branch prefetch and model-boundary composition", () => {
             const terminal = await withSessionTranscriptWriteAssertion(
               writer,
               owner.assertCurrent,
-              () => fixture.append(recipient, runId, "stop", "The color is yellow."),
+              () =>
+                fixture.append({ ...recipient, ...writer }, runId, "stop", "The color is yellow."),
             );
             const route = { provider: model.provider, model: model.id };
             const completed: SettledAgentTurn = {
