@@ -118,12 +118,12 @@ describe("prepared conversation context dispatch", () => {
       steered.resolve();
       return true;
     });
-    let disconnect: (() => void) | void = undefined;
+    const activeResponse: { disconnect: (() => void) | void } = { disconnect: undefined };
     let requests = 0;
     streamMocks.streamSimple.mockImplementation((model, _context, options) => {
       requests++;
       if (requests === 1) {
-        disconnect = options?.onActiveResponse?.({ steer });
+        activeResponse.disconnect = options?.onActiveResponse?.({ steer });
         expect(publishInternalModelContext(options?.onActiveResponse, [])).toBe(false);
         started.resolve();
         return firstResponse;
@@ -183,7 +183,7 @@ describe("prepared conversation context dispatch", () => {
       expect(JSON.stringify(steer.mock.calls)).toContain("Additional user instruction");
       expect(JSON.stringify(steer.mock.calls)).not.toContain("Prepared observation");
     } finally {
-      disconnect?.();
+      activeResponse.disconnect?.();
       firstResponse.push({
         type: "done",
         reason: "stop",
