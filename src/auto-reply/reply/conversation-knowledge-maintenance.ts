@@ -83,6 +83,8 @@ export function createConversationKnowledgeMaintenance(params: {
   run: RunEmbeddedAgentParams;
   assertCurrent: SessionSourceAssertion;
   signal: AbortSignal;
+  /** Idle maintenance supplies native session-lane custody, including an absent writer. */
+  withWriter?: <T>(target: BoundAgentRunSessionTarget, operation: () => Promise<T>) => Promise<T>;
 }): (
   packetIds?: readonly string[],
   pendingText?: string,
@@ -110,31 +112,34 @@ export function createConversationKnowledgeMaintenance(params: {
     const { compactEmbeddedAgentSessionDirect } =
       await import("../../agents/embedded-agent-runner/compact.js");
     check();
-    const result = await withConversationKnowledgeWriter(
-      { run: { ...params.run, sessionTarget: ownedTarget }, assertCurrent: check },
-      () =>
-        withCompleteCompactionSummary(() =>
-          compactEmbeddedAgentSessionDirect({
-            ...params.run,
-            senderId: params.run.senderId ?? undefined,
-            senderName: params.run.senderName ?? undefined,
-            senderUsername: params.run.senderUsername ?? undefined,
-            senderE164: params.run.senderE164 ?? undefined,
-            sessionTarget: ownedTarget,
-            abortSignal: params.signal,
-            // Preserve the foreground tool definitions for native budget accounting.
-            // Summary generation does not execute those tools.
-            modelFallbacksOverride: [],
-            budgetPreflight: {
-              prompt: pendingText
-                ? `${params.run.prompt}\nAdditional quoted observation pending admission:\n${pendingText}`
-                : params.run.prompt,
-            },
-            trigger: "budget",
-            customInstructions: KNOWLEDGE_COMPACTION_INSTRUCTIONS,
-          }),
-        ),
-    );
+    const compact = () =>
+      withCompleteCompactionSummary(() =>
+        compactEmbeddedAgentSessionDirect({
+          ...params.run,
+          senderId: params.run.senderId ?? undefined,
+          senderName: params.run.senderName ?? undefined,
+          senderUsername: params.run.senderUsername ?? undefined,
+          senderE164: params.run.senderE164 ?? undefined,
+          sessionTarget: ownedTarget,
+          abortSignal: params.signal,
+          // Preserve the foreground tool definitions for native budget accounting.
+          // Summary generation does not execute those tools.
+          modelFallbacksOverride: [],
+          budgetPreflight: {
+            prompt: pendingText
+              ? `${params.run.prompt}\nAdditional quoted observation pending admission:\n${pendingText}`
+              : params.run.prompt,
+          },
+          trigger: "budget",
+          customInstructions: KNOWLEDGE_COMPACTION_INSTRUCTIONS,
+        }),
+      );
+    const result = params.withWriter
+      ? await params.withWriter(ownedTarget, compact)
+      : await withConversationKnowledgeWriter(
+          { run: { ...params.run, sessionTarget: ownedTarget }, assertCurrent: check },
+          compact,
+        );
     check();
     if (!result.ok) {
       // The native owner returned a settled failure, not permission to discard history.

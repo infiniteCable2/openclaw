@@ -59,7 +59,6 @@ export function createReplyConversationKnowledgeTurn(params: {
   let preparedRun: RunEmbeddedAgentParams | undefined;
   let consumedRevision = -1;
   let morePreparedPackets = false;
-  let sourceOffset = 0;
   const selected = createDynamicSessionSourceAssertion(
     () => prepared?.assertCurrent,
     () => {
@@ -314,8 +313,8 @@ export function createReplyConversationKnowledgeTurn(params: {
       try {
         recipient.owner.assertCurrent();
       } catch {
-        // An evicted cache may enroll again under still-live host evidence. Expired
-        // audience evidence cannot be revived from stored participant metadata.
+        // A retired recipient may enroll again under still-live host evidence.
+        // Expired audiences cannot be revived from stored participant metadata.
         if (publicationBranch) {
           try {
             const { prepareConversationKnowledgeRecipient } =
@@ -328,7 +327,6 @@ export function createReplyConversationKnowledgeTurn(params: {
               getRuntimeConfig,
             });
             consumedRevision = -1;
-            sourceOffset = 0;
           } catch {
             // A closed connection/cache cannot cancel already accepted work.
           }
@@ -361,16 +359,13 @@ export function createReplyConversationKnowledgeTurn(params: {
               retainedSignal,
               sourceCache: recipient!.cache,
               readyOnly: true,
-              packetBudget: 8,
-              sourceBudget: 8,
-              sourceOffset,
               canAdmitPacket: input.canAdmit,
               onPacket: (message) => messages.push(message),
               retainInHistory: {
                 writeTarget,
                 contextLimits: resolveConversationKnowledgeContextLimits(run),
                 // The upcoming native request has already supplied prospective token
-                // admission. Background knowledge never invokes a model to compact.
+                // admission. This live boundary never invokes a model to compact.
                 maintainContext: async () => ({ compacted: false, complete: true }),
               },
             }),
@@ -379,7 +374,6 @@ export function createReplyConversationKnowledgeTurn(params: {
         prepared = next;
         consumedRevision = revision;
         morePreparedPackets = next?.pendingPackets === true;
-        sourceOffset = next?.nextSourceOffset ?? 0;
       } catch {
         // Completed packet commits remain recipient history. Return their live
         // projections even if a later independent source failed; never replay tools.

@@ -95,6 +95,65 @@ describe("original speech binding to native reply", () => {
     mocks.prepareExpression.mockReset().mockResolvedValue(undefined);
   });
 
+  it("starts connection preparation without waiting or admitting a synthetic input", async () => {
+    const f = fixture();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const prepareConnection = vi.fn<NonNullable<ConversationInputSourceV1["prepareConnection"]>>(
+      () => promise,
+    );
+    f.params.inputSource = { ...f.params.inputSource, prepareConnection };
+    const bindings = createMeetingRealtimeEngineBindingsV2(f.params);
+    expect(bindings.nativeInput).toBeTypeOf("function");
+    await Promise.resolve();
+    expect(prepareConnection).toHaveBeenCalledOnce();
+    expect(f.params.inputSource.admitInput).not.toHaveBeenCalled();
+    expect(mocks.getReplyFromConfig).not.toHaveBeenCalled();
+    let closed = false;
+    const closing = bindings.connectionPreparation?.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    expect(prepareConnection.mock.calls[0]?.[0]?.signal?.aborted).toBe(true);
+    resolve();
+    await promise;
+    await closing;
+    expect(closed).toBe(true);
+  });
+
+  it("retries failed connection custody cleanup without restarting opening", async () => {
+    const f = fixture();
+    const prepareConnection = vi.fn(async () => {});
+    const closeConnection = vi.fn(async () => {});
+    closeConnection.mockRejectedValueOnce(new Error("Retained cleanup pending"));
+    f.params.inputSource = { ...f.params.inputSource, prepareConnection, closeConnection };
+    const bindings = createMeetingRealtimeEngineBindingsV2(f.params);
+    await Promise.resolve();
+    await expect(bindings.connectionPreparation?.close()).rejects.toThrow("cleanup pending");
+    await bindings.connectionPreparation?.close();
+    expect(prepareConnection).toHaveBeenCalledOnce();
+    expect(closeConnection).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps preparation failure content-free and does not disable the original input source", async () => {
+    const f = fixture();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    f.params.logger.warn = vi.fn(() => resolve());
+    f.params.inputSource = {
+      ...f.params.inputSource,
+      prepareConnection: vi.fn(async () => {
+        throw new Error("sensitive source failure");
+      }),
+    };
+    createMeetingRealtimeEngineBindingsV2(f.params);
+    await promise;
+    expect(f.params.logger.warn).toHaveBeenCalledExactlyOnceWith(
+      "Related conversation preparation deferred at connection opening",
+    );
+    expect(f.params.inputSource.admitInput).not.toHaveBeenCalled();
+    expect(mocks.getReplyFromConfig).not.toHaveBeenCalled();
+  });
+
   it("uses the original host input and native queue with no task-subagent dispatch", async () => {
     const f = fixture();
     const onRunStarted = vi.fn();

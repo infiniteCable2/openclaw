@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { withCommentaryGuidance } from "../agents/commentary-guidance.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import type { RealtimeVoiceAgentConsultResult } from "../talk/agent-consult-runtime.js";
 import {
   parseRealtimeVoiceAgentConsultArgs,
@@ -42,6 +43,31 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
   if (params.config.realtime.agentId && params.config.realtime.agentId !== params.agentId) {
     throw new Error("Speech configuration does not match the admitted agent");
   }
+  // Start without delaying providers, but transfer the promise to the real connection's close.
+  const prepare = params.inputSource.prepareConnection?.bind(params.inputSource);
+  const preparationAbort = new AbortController();
+  const preparing = prepare
+    ? runInDetachedAsyncContext(() =>
+        Promise.resolve().then(() => {
+          preparationAbort.signal.throwIfAborted();
+          return prepare({ signal: preparationAbort.signal });
+        }),
+      ).catch(() => {
+        if (!preparationAbort.signal.aborted) {
+          params.logger.warn("Related conversation preparation deferred at connection opening");
+        }
+      })
+    : Promise.resolve();
+  const connectionPreparation = prepare
+    ? {
+        cancel: () => preparationAbort.abort(),
+        async close() {
+          preparationAbort.abort();
+          await preparing;
+          await params.inputSource.closeConnection?.();
+        },
+      }
+    : undefined;
   const realtime = params.config.realtime;
   const baseTools = resolveRealtimeVoiceAgentConsultToolsAllow(realtime.toolPolicy);
   const toolsAllow =
@@ -219,6 +245,7 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
     consultAgent,
     nativeInput: (input: SpeechNativeInputParams) => dispatch(input),
     connectionPresentation: params.connectionPresentation,
+    connectionPreparation,
     tools: resolveRealtimeVoiceAgentConsultTools(realtime.toolPolicy),
     handleToolCall: (
       call: Parameters<ReturnType<typeof createMeetingRealtimeEngineBindings>["handleToolCall"]>[0],

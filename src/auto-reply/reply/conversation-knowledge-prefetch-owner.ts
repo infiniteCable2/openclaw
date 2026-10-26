@@ -26,6 +26,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
   assertCurrent(): void;
   prepare(signal: AbortSignal): Promise<void>;
   clear(): void;
+  /** Schedule recipient maintenance outside the bounded source-read leaf pool. */
+  onRequest?(signal: AbortSignal): void;
+  /** Database retirement must join accepted recipient writes as well as source reads. */
+  settle?(): Promise<void>;
 }) {
   const target = {
     ...params.target,
@@ -76,6 +80,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
     revoke();
     const attempt = (async () => {
       await wait();
+      await params.settle?.();
       params.clear();
       await execution?.release();
       execution = undefined;
@@ -112,6 +117,8 @@ export function createConversationKnowledgePrefetchOwner(params: {
           requested = false;
           try {
             check();
+            // Never check authority or start recipient work on the root publisher's stack.
+            params.onRequest?.(controller.signal);
             // Each batch releases shared capacity before a coalesced successor is queued.
             await background.enqueue(
               async (signal) => {

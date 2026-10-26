@@ -39,6 +39,79 @@ beforeEach(() => {
 });
 
 describe("recipient preparation scheduling", () => {
+  it("retains independently live same-person openings without trusting expired or different-person proofs", () => {
+    const branch = {
+      agentId: "example",
+      sessionKey: "agent:example:multi-opening",
+      sessionId: "multi-opening",
+      lifecycleRevision: "original",
+      storePath: "/synthetic/agent.sqlite",
+      root: {
+        sessionKey: "agent:example:root",
+        sessionId: "root",
+        lifecycleRevision: "original",
+      },
+    };
+    const participant = { type: "profile" as const, id: "example-person" };
+    let firstLive = true;
+    let secondLive = true;
+    const first = {
+      agentId: branch.agentId,
+      sessionKey: branch.sessionKey,
+      channelId: "webchat",
+      accountId: "default",
+      nativeChannelId: "private-opening",
+      participant,
+      assertCurrent() {
+        if (!firstLive) {
+          throw new Error("First opening closed");
+        }
+      },
+    };
+    const second = {
+      ...first,
+      assertCurrent() {
+        if (!secondLive) {
+          throw new Error("Second opening closed");
+        }
+      },
+    };
+    const register = (audience: typeof first) =>
+      prepareConversationKnowledgeRecipient({
+        branch,
+        participant,
+        audience,
+        env: {},
+        getRuntimeConfig: () => ({
+          agents: { entries: { example: { conversationMode: "branches" } } },
+        }),
+      });
+    const original = register(first);
+    const scheduled = preparation.create.mock.calls[0]![0];
+    try {
+      expect(register(second)).toBe(original);
+      expect(preparation.create).toHaveBeenCalledOnce();
+      firstLive = false;
+      expect(() => scheduled.assertCurrent()).not.toThrow();
+      expect(() =>
+        register({
+          ...second,
+          assertCurrent() {
+            throw new Error("Expired candidate");
+          },
+        }),
+      ).toThrow("Expired candidate");
+      expect(() => scheduled.assertCurrent()).not.toThrow();
+      expect(
+        register({ ...second, participant: { type: "profile", id: "another-person" } }),
+      ).toBeUndefined();
+      secondLive = false;
+      expect(() => scheduled.assertCurrent()).toThrow("no current private audience");
+    } finally {
+      scheduled.clear();
+    }
+  });
+
   it.each([false, true])(
     "retains the next source cursor without busy-retrying saturated storage (%s)",
     async (saturated) => {

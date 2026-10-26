@@ -14,6 +14,10 @@ export type ConversationInputScopeV1 = Readonly<{
 /** The transport retains its original admission owner; each input is admitted separately. */
 export type ConversationInputSourceV1 = Readonly<{
   version: 1;
+  /** Prepare an opened endpoint under its original lifetime, without admitting an input. */
+  prepareConnection?: (options?: { signal?: AbortSignal }) => Promise<void>;
+  /** Join opening work and release only this connection's retained source custody. */
+  closeConnection?: () => Promise<void>;
   admitInput: (
     input: ConversationInputScopeV1 & { signal?: AbortSignal },
   ) => Promise<ConversationInputAdmissionV1>;

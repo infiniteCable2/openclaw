@@ -144,6 +144,7 @@ export async function startSpeechSession(
     logScope: `${params.surface.logScope} ${agentLogScope}`,
     fence() {
       stopped = true;
+      params.connectionPreparation?.cancel();
       releaseConnectionPresentation?.();
       releaseConnectionPresentation = undefined;
       video.close();
@@ -162,6 +163,7 @@ export async function startSpeechSession(
     drainOutput: () => speechOutput.stopAndDrain(greetingPlayback),
     stopTransport: () => input.stop(),
     disposeTransport: () => params.transport.dispose(),
+    closeConnectionPreparation: () => params.connectionPreparation?.close() ?? Promise.resolve(),
     publishClosed: () => {
       harness.emit({
         type: "session.closed",

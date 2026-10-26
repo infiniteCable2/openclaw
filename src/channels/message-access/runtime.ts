@@ -6,6 +6,7 @@ import { prepareCommandOwnerAuthority } from "../../auto-reply/command-auth.js";
 import { DEFAULT_ACCOUNT_ID } from "../../routing/account-id.js";
 import { prepareUserChannelIdentityAuthority } from "../../state/user-channel-identity-operations.js";
 import { recordChannelIngressResolution } from "./admission-evidence.js";
+import { prepareChannelConversationConnection } from "./conversation-input-connection.js";
 import { admitChannelConversationInput } from "./conversation-input.js";
 import type { AdmitChannelConversationInputV1 } from "./conversation-input.types.js";
 import { decideChannelIngress } from "./decision.js";
@@ -143,6 +144,8 @@ export function createHostChannelIngressRuntime(owner: ChannelIngressHostOwner) 
       version: 1 as const,
       admitInput: (params: AdmitChannelConversationInputV1) =>
         admitChannelConversationInput(owner, params),
+      prepareConnection: (params: Parameters<typeof prepareChannelConversationConnection>[1]) =>
+        prepareChannelConversationConnection(owner, params),
     }),
     createResolver: (base: CreateChannelIngressResolverParams) =>
       createChannelIngressResolverForOwner(base, owner),

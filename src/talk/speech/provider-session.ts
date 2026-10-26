@@ -38,6 +38,7 @@ import {
   type SpeechRealtimeSessionConfig,
   type SpeechRealtimeToolCallParams,
   type SpeechRealtimeSessionHandle,
+  type SpeechConnectionPreparation,
 } from "./types.js";
 
 export async function startSpeechRealtimeSession(params: {
@@ -58,6 +59,7 @@ export async function startSpeechRealtimeSession(params: {
   handleToolCall: (params: SpeechRealtimeToolCallParams) => Promise<void>;
   onTalkEvent?: (event: TalkEvent) => void;
   onSession?: (session: SpeechRealtimeSessionHandle) => void;
+  connectionPreparation?: SpeechConnectionPreparation;
 }): Promise<SpeechRealtimeSessionHandle> {
   let stopped = false;
   let stopPromise: Promise<void> | undefined;
@@ -97,6 +99,7 @@ export async function startSpeechRealtimeSession(params: {
   const stop = async () => {
     if (!stopped) {
       stopped = true;
+      params.connectionPreparation?.cancel();
       realtimeReady = false;
       outputOwner.reset();
       outputQueue.stop();
@@ -131,7 +134,12 @@ export async function startSpeechRealtimeSession(params: {
       // Capture closure may unblock an admitted playback write. Disposal must
       // still wait for the exact pump/clear operations owned by this output queue.
       await outputQueue.drain();
-      if (transportStopped && !transportDisposed) {
+      try {
+        await params.connectionPreparation?.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 0 && transportStopped && !transportDisposed) {
         try {
           await params.transport.dispose();
           transportDisposed = true;

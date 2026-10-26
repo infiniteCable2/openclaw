@@ -170,22 +170,32 @@ the whole contribution. Cancellation can therefore resume from durable progress
 without duplicating admitted packets. Progress means that text was admitted,
 not that a model understood every fact or executed an action.
 
-In branch mode, a host-confirmed private recipient prepares missing observations
-in the background. Committed root updates wake its existing database-lifetime
-owner; notifications carry no dialogue or read permission. Preparation is bounded,
-coalesced, and read-only. It neither starts a model request nor writes concurrently
-into an active recipient. Disposable source and pending-packet caches are bounded;
-cache pressure defers preparation rather than acknowledging undelivered data.
+In branch mode, opening an authorized private conversation starts background
+catch-up without manufacturing a user input. Committed root updates wake its
+existing database-lifetime owner; notifications carry no dialogue or read permission.
+Source read-ahead is coalesced and read-only. Disposable caches are bounded;
+evicting cached bytes does not unregister an open recipient or acknowledge unread data.
 
-An existing embedded model request may consume a small ready batch, including at
+An idle recipient uses native session maintenance and its exclusive session lane
+to retain missing observations in chronological order. Scheduling quanta yield
+execution but do not limit total catch-up or require another interaction. Native
+context admission and prospective token accounting decide when a summary is
+needed; only the native compaction owner may compact. Catch-up creates no user
+turn, answer, tool action, or delivery. Current writer absence/presence, lifecycle,
+audience and source ranges are revalidated at native commits. Foreground work
+preempts optional idle maintenance and waits for its actual writer settlement;
+durable packet progress lets idle work resume without replaying committed additions.
+
+An existing embedded model request may consume ready observations, including at
 the next natural model step after tools. It does not wait for full freshness or
 uncached source hydration. Fresh native source/recipient authorization and exact
 range validation precede each durable packet write under the current writer.
 Append-only source growth uses native prefix proof; replacement, reset, and
 rewritten navigation remain fenced. Native prospective token accounting preserves
 the current request and response reserve. If an addition does not fit, it remains
-pending; synchronization never asks a model to compact, restarts generation, or
-creates a turn. Already admitted packets retain their positions during retries
+pending until native preflight or idle maintenance can make room; this live boundary
+never starts compaction, restarts generation, or creates a turn. There is no fixed
+eight-packet admission limit. Already admitted packets retain their positions during retries
 and live steering. New observations are quoted data, not new instructions or
 permission to repeat tools.
 They can inform subsequent model decisions within the existing task; provenance

@@ -11,6 +11,7 @@ export function createSpeechSessionLifecycle(params: {
   drainOutput: () => Promise<void>;
   stopTransport: () => Promise<void>;
   disposeTransport: () => Promise<void>;
+  closeConnectionPreparation?: () => Promise<void>;
   publishClosed: () => void;
 }) {
   let fenced = false;
@@ -22,6 +23,7 @@ export function createSpeechSessionLifecycle(params: {
     drainOutput: () => params.drainOutput(),
     stopTransport: () => params.stopTransport(),
     disposeTransport: () => params.disposeTransport(),
+    closeConnectionPreparation: () => params.closeConnectionPreparation?.(),
   };
   const pending = new Set<() => void | Promise<void>>([
     resources.closeTranscription,
@@ -29,6 +31,7 @@ export function createSpeechSessionLifecycle(params: {
     resources.drainOutput,
     resources.stopTransport,
     resources.disposeTransport,
+    resources.closeConnectionPreparation,
   ]);
 
   const stop = async () => {
@@ -59,13 +62,15 @@ export function createSpeechSessionLifecycle(params: {
       const waitingStopped = release(resources.stopWaiting);
       await release(resources.drainOutput);
       await Promise.all([captureStopped, waitingStopped]);
+      await release(resources.closeConnectionPreparation);
       // Any failed cleanup retains custody. Disposal cannot run ahead of an
       // input, transcription, waiting-playback or speech-output owner.
       if (
         !pending.has(resources.closeTranscription) &&
         !pending.has(resources.stopWaiting) &&
         !pending.has(resources.stopTransport) &&
-        !pending.has(resources.drainOutput)
+        !pending.has(resources.drainOutput) &&
+        !pending.has(resources.closeConnectionPreparation)
       ) {
         await release(resources.disposeTransport);
       }

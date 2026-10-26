@@ -98,6 +98,9 @@ export async function createTalkSpeechRelaySession(params: {
   let greetingPreparation: Awaited<ReturnType<typeof prepareSpeechSession>> | undefined;
   let closing: Promise<void> | undefined;
   let construction: Promise<void> = Promise.resolve();
+  let connectionPreparation: ReturnType<
+    typeof createMeetingRealtimeEngineBindingsV2
+  >["connectionPreparation"];
   let activeTurnId: string | undefined;
   let closeReason: "completed" | "error" = "completed";
 
@@ -323,6 +326,7 @@ export async function createTalkSpeechRelaySession(params: {
         return closing;
       }
       lifetime.abort(new Error("Talk speech session closed"));
+      connectionPreparation?.cancel();
       ready.reject(lifetime.signal.reason);
       if (expiryTimer) {
         clearTimeout(expiryTimer);
@@ -336,7 +340,7 @@ export async function createTalkSpeechRelaySession(params: {
         await construction.catch(() => {});
         // Preparation leases remain held while synthesis and accepted transcript
         // writes drain. Releasing them concurrently could unload a live provider.
-        const stopped = await Promise.allSettled([engine?.stop()]);
+        const stopped = await Promise.allSettled([engine?.stop(), connectionPreparation?.close()]);
         const engineReleased = stopped.every((result) => result.status === "fulfilled");
         const results = [
           ...stopped,
@@ -384,6 +388,7 @@ export async function createTalkSpeechRelaySession(params: {
     captureOperatorAuthority: params.captureOperatorAuthority ?? (async () => undefined),
     authority: params.authority,
     participant: params.participant,
+    connectionAbortSignal: lifetime.signal,
     assertInputCurrent: assertActive,
     resolveGatewayContext: () => params.context,
   });
@@ -431,6 +436,7 @@ export async function createTalkSpeechRelaySession(params: {
       assertCurrent: assertActive,
     },
   });
+  connectionPreparation = bindings.connectionPreparation;
   const config = {
     audioFormat: "pcm16-24khz" as const,
     inputAudioFormat: "pcm16-16khz" as const,
@@ -536,6 +542,7 @@ export async function createTalkSpeechRelaySession(params: {
         return nativeInput(consult);
       },
       connectionPresentation: bindings.connectionPresentation,
+      connectionPreparation: bindings.connectionPreparation,
       onTalkEvent: publishEvent,
     });
     assertActive();

@@ -160,76 +160,95 @@ export function createMatrixRtcConversationInputSource(
   // Reject an unavailable account or incompatible dispatch owner before the
   // controller acquires speech providers. This does not admit a synthetic input.
   selectCurrent();
+  const resolveAdmission = async (messageId?: string, inputSignal?: AbortSignal) => {
+    const conversation = runtime.channel.inbound.ingress.conversation;
+    if (!conversation || conversation.version !== 1) {
+      throw new Error("MatrixRTC requires host conversation-input admission version 1");
+    }
+    const signal =
+      callSignal && inputSignal
+        ? AbortSignal.any([callSignal, inputSignal])
+        : (inputSignal ?? callSignal);
+    signal?.throwIfAborted();
+    const selected = selectCurrent();
+    const assertCurrent = () => {
+      signal?.throwIfAborted();
+      if (selectCurrent().policyKey !== selected.policyKey) {
+        throw new Error("MatrixRTC conversation input policy changed");
+      }
+    };
+    const allowFrom = await resolveMatrixMonitorLiveUserAllowlist({
+      cfg: selected.cfg,
+      accountId,
+      entries: selected.allowlists.dmAllowFrom,
+      startupResolvedEntries,
+      runtime: runtimeEnv,
+    });
+    assertCurrent();
+    const privateAudience = await preparePrivateAudience({ roomId, senderId });
+    assertCurrent();
+    const scope = {
+      channelId: "matrix",
+      accountId,
+      rawPrincipalRef: senderId,
+      conversation: { kind: "direct" as const, id: roomId },
+      binding: {
+        agentId,
+        sessionKey: dispatchSessionKey,
+        ...(messageId !== undefined ? { messageId } : {}),
+        nativeChannelId: roomId,
+        inboundEventKind: "user_request" as const,
+      },
+    };
+    const ingress = await runtime.channel.inbound.ingress.resolve({
+      channelId: scope.channelId,
+      accountId,
+      identity: rtcIdentity,
+      subject: { stableId: senderId },
+      conversation: scope.conversation,
+      contextBinding: scope.binding,
+      privateAudience,
+      event: { kind: "conversation", authMode: "inbound", mayPair: false },
+      policy: { dmPolicy: selected.dmPolicy, groupPolicy: "disabled" },
+      accessGroups: selected.cfg.accessGroups,
+      allowFrom,
+      readStoreAllowFrom: async () => {
+        assertCurrent();
+        const entries = await runtime.channel.pairing.readAllowFromStore({
+          channel: "matrix",
+          accountId,
+          env: process.env,
+        });
+        assertCurrent();
+        return entries;
+      },
+    });
+    assertCurrent();
+    return { conversation, ingress, scope, selected, assertCurrent, signal };
+  };
   return Object.freeze({
     version: 1 as const,
-    async admitInput(input: Parameters<ConversationInputSourceV1["admitInput"]>[0]) {
-      const conversation = runtime.channel.inbound.ingress.conversation;
-      if (!conversation || conversation.version !== 1) {
-        throw new Error("MatrixRTC requires host conversation-input admission version 1");
+    async prepareConnection(options?: { signal?: AbortSignal }) {
+      const prepare = runtime.channel.inbound.ingress.conversation?.prepareConnection;
+      if (!prepare) {
+        return;
       }
+      const admitted = await resolveAdmission(undefined, options?.signal);
+      await prepare({
+        ingress: admitted.ingress,
+        scope: admitted.scope,
+        assertCurrent: admitted.assertCurrent,
+        signal: admitted.signal,
+      });
+      admitted.assertCurrent();
+    },
+    async admitInput(input: Parameters<ConversationInputSourceV1["admitInput"]>[0]) {
       const { signal: inputSignal, ...scopeInput } = input;
       if (scopeInput.agentId !== agentId || scopeInput.conversationId !== conversationId) {
         throw new Error("MatrixRTC conversation input does not match its call binding");
       }
-      const signal =
-        callSignal && inputSignal
-          ? AbortSignal.any([callSignal, inputSignal])
-          : (inputSignal ?? callSignal);
-      signal?.throwIfAborted();
-      const selected = selectCurrent();
-      const assertCurrent = () => {
-        signal?.throwIfAborted();
-        if (selectCurrent().policyKey !== selected.policyKey) {
-          throw new Error("MatrixRTC conversation input policy changed");
-        }
-      };
-      const allowFrom = await resolveMatrixMonitorLiveUserAllowlist({
-        cfg: selected.cfg,
-        accountId,
-        entries: selected.allowlists.dmAllowFrom,
-        startupResolvedEntries,
-        runtime: runtimeEnv,
-      });
-      assertCurrent();
-      const privateAudience = await preparePrivateAudience({ roomId, senderId });
-      assertCurrent();
-      const scope = {
-        channelId: "matrix",
-        accountId,
-        rawPrincipalRef: senderId,
-        conversation: { kind: "direct" as const, id: roomId },
-        binding: {
-          agentId,
-          sessionKey: dispatchSessionKey,
-          messageId: scopeInput.inputId,
-          nativeChannelId: roomId,
-          inboundEventKind: "user_request" as const,
-        },
-      };
-      const ingress = await runtime.channel.inbound.ingress.resolve({
-        channelId: scope.channelId,
-        accountId,
-        identity: rtcIdentity,
-        subject: { stableId: senderId },
-        conversation: scope.conversation,
-        contextBinding: scope.binding,
-        privateAudience,
-        event: { kind: "conversation", authMode: "inbound", mayPair: false },
-        policy: { dmPolicy: selected.dmPolicy, groupPolicy: "disabled" },
-        accessGroups: selected.cfg.accessGroups,
-        allowFrom,
-        readStoreAllowFrom: async () => {
-          assertCurrent();
-          const entries = await runtime.channel.pairing.readAllowFromStore({
-            channel: "matrix",
-            accountId,
-            env: process.env,
-          });
-          assertCurrent();
-          return entries;
-        },
-      });
-      assertCurrent();
+      const { conversation, ingress, scope, selected, assertCurrent, signal } =
+        await resolveAdmission(scopeInput.inputId, inputSignal);
       return conversation.admitInput({
         ingress,
         scope,

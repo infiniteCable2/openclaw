@@ -57,6 +57,15 @@ async function withSource(
         NonNullable<PluginRuntime["channel"]["inbound"]["ingress"]["conversation"]>["admitInput"]
       >
     >;
+    prepareConnection: ReturnType<
+      typeof vi.fn<
+        NonNullable<
+          NonNullable<
+            PluginRuntime["channel"]["inbound"]["ingress"]["conversation"]
+          >["prepareConnection"]
+        >
+      >
+    >;
     readStore: ReturnType<typeof vi.fn<PluginRuntime["channel"]["pairing"]["readAllowFromStore"]>>;
     endCall: () => void;
     retire: () => void;
@@ -92,6 +101,12 @@ async function withSource(
         const nativeResolve = native.channel.inbound.ingress.resolve;
         const resolve = vi.fn(nativeResolve);
         const admit = vi.fn(conversation.admitInput);
+        // Native initializer/recipient behavior is covered at the core registered-ingress boundary.
+        const prepareConnection = vi.fn<NonNullable<typeof conversation.prepareConnection>>(
+          async ({ assertCurrent }) => {
+            assertCurrent();
+          },
+        );
         const readStore = vi.fn<PluginRuntime["channel"]["pairing"]["readAllowFromStore"]>(
           async () => [],
         );
@@ -106,7 +121,7 @@ async function withSource(
               ingress: {
                 ...native.channel.inbound.ingress,
                 resolve,
-                conversation: { version: 1, admitInput: admit },
+                conversation: { version: 1, admitInput: admit, prepareConnection },
               },
             },
           },
@@ -173,6 +188,7 @@ async function withSource(
           nativeResolve,
           dispatchSessionKey,
           admit,
+          prepareConnection,
           readStore,
           endCall: () => {
             live = false;
@@ -190,6 +206,34 @@ async function withSource(
 afterEach(() => vi.restoreAllMocks());
 
 describe("MatrixRTC text-free conversation admission", () => {
+  it("opens and reopens through fresh original ingress without manufacturing an utterance", async () => {
+    await withSource(async ({ source, resolve, prepareConnection, admit, dispatchSessionKey }) => {
+      await source.prepareConnection?.();
+      await source.prepareConnection?.();
+      expect(resolve).toHaveBeenCalledTimes(2);
+      expect(prepareConnection).toHaveBeenCalledTimes(2);
+      expect(admit).not.toHaveBeenCalled();
+      for (const [request] of prepareConnection.mock.calls) {
+        expect(request.scope.binding.sessionKey).toBe(dispatchSessionKey);
+        expect(request.scope.binding).not.toHaveProperty("messageId");
+        expect(request).not.toHaveProperty("input");
+        expect(request).not.toHaveProperty("context");
+      }
+      expect(resolve.mock.calls[0][0].privateAudience).toBeDefined();
+      expect(resolve.mock.calls[1][0].privateAudience).not.toBe(
+        resolve.mock.calls[0][0].privateAudience,
+      );
+    });
+  });
+
+  it("does not invoke connection preparation after the original call ends", async () => {
+    await withSource(async ({ source, endCall, prepareConnection }) => {
+      endCall();
+      await expect(source.prepareConnection?.()).rejects.toThrow("Original call ended");
+      expect(prepareConnection).not.toHaveBeenCalled();
+    });
+  });
+
   it("keeps account privacy separate from audio closure and forwards the original room proof", async () => {
     await withSource(async ({ source, resolve, endCall, revokeAudience }) => {
       await source.admitInput(input);

@@ -318,6 +318,7 @@ export function registerMatrixRtcController(params: {
           logger: params.logger,
         });
 
+        call.connectionPreparation = bindings.connectionPreparation;
         call.preparation = await prepareMeetingAgentRealtimeEngine({
           config: {
             chrome: { audioFormat: "pcm16-24khz" },
@@ -570,6 +571,7 @@ export function registerMatrixRtcController(params: {
           consultAgent: bindings.consultAgent,
           nativeInput: bindings.nativeInput,
           connectionPresentation: bindings.connectionPresentation,
+          connectionPreparation: bindings.connectionPreparation,
           onSession: (engine) => {
             call.engine = engine;
             call.transport = undefined;

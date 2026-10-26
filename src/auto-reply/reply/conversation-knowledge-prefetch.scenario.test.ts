@@ -7,6 +7,7 @@ import {
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
+import { beginForegroundSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { makeProviderModelFixture } from "../../agents/test-helpers/provider-model-fixture.js";
 import {
@@ -52,10 +53,12 @@ describe("native branch prefetch and model-boundary composition", () => {
         const fixture = await createConversationKnowledgeScenario(state);
         let stopRootObservation = () => {};
         let prefetch: ReturnType<typeof prepareConversationKnowledgeRecipient>;
+        let releaseForeground = () => {};
         try {
           const donor = await fixture.branch("donor");
           const donorOwner = await fixture.claim(donor);
           const recipient = await fixture.branch("recipient");
+          releaseForeground = await beginForegroundSessionMaintenance(recipient.sessionKey);
           const target = await resolveAgentRunSessionTarget({
             ...recipient,
             config: fixture.cfg,
@@ -293,6 +296,13 @@ describe("native branch prefetch and model-boundary composition", () => {
             await prefetch.owner.wait();
             expect(prefetch.cache.peek(firstId, 0)).toBeUndefined();
             expect(prefetch.cache.peek(secondId, 0)).toBeUndefined();
+            for (let index = 0; index < 10; index++) {
+              await publish(`backlog-${index}`, `Observation number ${index} is retained.`);
+            }
+            const backlog = await refresh(true);
+            expect(backlog).toHaveLength(10);
+            expect(backlog.at(-1)?.content).toContain("Observation number 9 is retained.");
+            expect(await packets()).toHaveLength(12);
             expect(budget.compact).not.toHaveBeenCalled();
             logicalTurn.abort(new Error("Logical turn canceled"));
             expect(() => knowledge.assertCurrent()).toThrow("Logical turn canceled");
@@ -303,6 +313,7 @@ describe("native branch prefetch and model-boundary composition", () => {
           }
         } finally {
           stopRootObservation();
+          releaseForeground();
           await prefetch?.owner.close();
           await fixture.close();
         }

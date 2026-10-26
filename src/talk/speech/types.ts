@@ -58,6 +58,12 @@ export type SpeechRuntimeSurface = {
   sessionIdPrefix: string;
 };
 
+/** Opening remains nonblocking; the actual connection owns cancellation and joined cleanup. */
+export type SpeechConnectionPreparation = Readonly<{
+  cancel(): void;
+  close(): Promise<void>;
+}>;
+
 export type SpeechSessionStartParams = {
   config: SpeechSessionConfig;
   fullConfig: OpenClawConfig;
@@ -76,6 +82,7 @@ export type SpeechSessionStartParams = {
   nativeInput?: (params: SpeechNativeInputParams) => Promise<ConversationReplyResult>;
   /** Host-only presentation of this exact connection; never input or send authority. */
   connectionPresentation?: Omit<TalkConnectionPresentation, "state">;
+  connectionPreparation?: SpeechConnectionPreparation;
   initialGreeting?: PreparedSpeechGreeting;
   /** Optional device presentation hint; never changes turn or media ownership. */
   onTalkEvent?: (event: TalkEvent) => void;

@@ -17,6 +17,7 @@ export type ActiveCall = {
   joined: boolean;
   stopping: boolean;
   startup?: Promise<void>;
+  connectionPreparation?: { cancel(): void; close(): Promise<void> };
   stopPromise?: Promise<boolean>;
   cleanupError?: unknown;
   disposeListeners: () => void;
@@ -24,11 +25,22 @@ export type ActiveCall = {
 
 export async function stopCall(call: ActiveCall): Promise<void> {
   call.abort.abort();
+  call.connectionPreparation?.cancel();
   // Startup owns every handle until it settles, even after cancellation. Only
   // then can cleanup dispose a late transport or the engine that adopted it.
   await call.startup;
   call.disposeListeners();
   const errors: unknown[] = [];
+  const preparationClosed = Promise.resolve()
+    .then(() => call.connectionPreparation?.close())
+    .then(
+      () => {
+        call.connectionPreparation = undefined;
+      },
+      (error: unknown) => {
+        errors.push(error);
+      },
+    );
   try {
     if (call.engine) {
       await call.engine.stop();
@@ -44,6 +56,7 @@ export async function stopCall(call: ActiveCall): Promise<void> {
   } catch (error) {
     errors.push(error);
   }
+  await preparationClosed;
   try {
     if (call.joined) {
       if (!(await call.session.leaveRoomSession(LEAVE_TIMEOUT_MS))) {

@@ -35,4 +35,8 @@ export type AdmitChannelConversationInputV1 = {
 export type ChannelConversationInputRuntimeV1 = Readonly<{
   version: 1;
   admitInput: (params: AdmitChannelConversationInputV1) => ConversationInputAdmissionV1;
+  /** Consume fresh endpoint ingress; no message, participant observation or model turn is created. */
+  prepareConnection?: (
+    params: Omit<AdmitChannelConversationInputV1, "input" | "context">,
+  ) => Promise<void>;
 }>;
