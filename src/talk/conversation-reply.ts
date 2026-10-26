@@ -17,6 +17,7 @@ import {
   type SessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { runWithGatewayDetachedWorkContinuation } from "../process/gateway-work-admission.js";
 import type { CreateUserTurnTranscriptRecorderParams } from "../sessions/user-turn-transcript.types.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import type { RealtimeVoiceAgentConsultResult } from "./agent-consult-runtime.js";
@@ -365,59 +366,64 @@ export async function replyToConversationInput(
   };
   try {
     claimConversationInputExecution(input);
-    params.workSignal?.throwIfAborted();
-    const context = await prepareConversationReplyContext(input, { text: params.text });
-    if (params.runtimeContext) {
-      context.ChannelStructuredContext = [
-        ...(context.ChannelStructuredContext ?? []),
-        ...structuredClone(params.runtimeContext),
-      ];
-    }
-    if (params.toolBindings) {
-      context.GatewayRunToolBindings = params.toolBindings;
-    }
-    if (params.prepareSpeech) {
-      try {
-        prepared = await params.prepareSpeech();
-        input.assertCurrent();
-        params.workSignal?.throwIfAborted();
-        speech = prepared.presentation;
-      } catch (error) {
-        input.assertCurrent();
-        params.workSignal?.throwIfAborted();
-        preparationFailed = true;
+    // Accepted conversation work outlives the capture RPC/provider callback.
+    // Native continuation custody keeps its command lane live, while the
+    // outer finally still releases the consumed input if admission refuses.
+    return await runWithGatewayDetachedWorkContinuation(async () => {
+      params.workSignal?.throwIfAborted();
+      const context = await prepareConversationReplyContext(input, { text: params.text });
+      if (params.runtimeContext) {
+        context.ChannelStructuredContext = [
+          ...(context.ChannelStructuredContext ?? []),
+          ...structuredClone(params.runtimeContext),
+        ];
+      }
+      if (params.toolBindings) {
+        context.GatewayRunToolBindings = params.toolBindings;
+      }
+      if (params.prepareSpeech) {
         try {
-          params.speech.onError(error);
-        } catch {
-          // Diagnostic observers do not own accepted work or permission to replay it.
+          prepared = await params.prepareSpeech();
+          input.assertCurrent();
+          params.workSignal?.throwIfAborted();
+          speech = prepared.presentation;
+        } catch (error) {
+          input.assertCurrent();
+          params.workSignal?.throwIfAborted();
+          preparationFailed = true;
+          try {
+            params.speech.onError(error);
+          } catch {
+            // Diagnostic observers do not own accepted work or permission to replay it.
+          }
+          speech = {
+            ...params.speech,
+            onSpeakableText: undefined,
+            speechExpressionContext: undefined,
+            speakCommentary: false,
+          };
         }
-        speech = {
-          ...params.speech,
-          onSpeakableText: undefined,
-          speechExpressionContext: undefined,
-          speakCommentary: false,
+      }
+      if (input.scope.purpose === "greeting") {
+        if (preparationFailed) {
+          throw new Error("Greeting speech preparation is unavailable");
+        }
+        const { prepareConversationGreeting } = await import("./conversation-greeting.js");
+        input.assertCurrent();
+        return {
+          kind: "reply",
+          reply: await prepareConversationGreeting({
+            input,
+            context,
+            cfg: params.cfg,
+            text: params.text,
+            speech,
+            signal: params.workSignal,
+          }),
         };
       }
-    }
-    if (input.scope.purpose === "greeting") {
-      if (preparationFailed) {
-        throw new Error("Greeting speech preparation is unavailable");
-      }
-      const { prepareConversationGreeting } = await import("./conversation-greeting.js");
-      input.assertCurrent();
-      return {
-        kind: "reply",
-        reply: await prepareConversationGreeting({
-          input,
-          context,
-          cfg: params.cfg,
-          text: params.text,
-          speech,
-          signal: params.workSignal,
-        }),
-      };
-    }
-    return await executeConversationReply(params, input, context, speech, preparationFailed);
+      return await executeConversationReply(params, input, context, speech, preparationFailed);
+    }, "conversation:input");
   } finally {
     // Join both release owners; greeting cleanup still owns its failure outcome.
     await release();

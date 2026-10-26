@@ -1,6 +1,10 @@
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../test/helpers/promise.js";
 import {
   copyReplyPayloadMetadata,
   setReplyPayloadMetadata,
@@ -14,6 +18,12 @@ import type { MsgContext } from "../auto-reply/templating.js";
 import { hasMainSessionRecoveryClaim } from "../config/sessions/restart-recovery-state.js";
 import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { settlePendingFinalDelivery } from "../infra/outbound/delivery-completion.js";
+import {
+  captureGatewayRootWorkReleaseObserver,
+  getActiveGatewayRootWorkCount,
+  isGatewaySubordinateWorkAdmissionClosed,
+  tryBeginGatewayRootWorkAdmission,
+} from "../process/gateway-work-admission.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import {
   consumeConversationInputAdmission,
@@ -391,6 +401,67 @@ describe("original conversation input through native reply", () => {
     await expect(replyToConversationInput(fixture.params)).rejects.toThrow("admission");
     expect(mocks.getReplyFromConfig).toHaveBeenCalledOnce();
     expect(fixture.release).toHaveBeenCalledOnce();
+  });
+
+  it("retains accepted native work after its triggering RPC root is released", async ({
+    signal,
+  }) => {
+    const fixture = setup();
+    const baseline = getActiveGatewayRootWorkCount();
+    const entered = createDeferred();
+    const finish = createDeferred();
+    const released = createDeferred<"settled" | "reset">();
+    let stopObserving: (() => void) | undefined;
+    mocks.getReplyFromConfig.mockImplementation(async (_context, options) => {
+      const observeRelease = captureGatewayRootWorkReleaseObserver();
+      if (!observeRelease) {
+        throw new Error("Expected native conversation root release observer");
+      }
+      stopObserving = observeRelease((reason) => released.resolve(reason));
+      entered.resolve();
+      await finish.promise;
+      // This runs in the native reply's actual async context, not the test root.
+      expect(isGatewaySubordinateWorkAdmissionClosed()).toBe(false);
+      options.assertSourceCurrent?.();
+      await present(options);
+      return { text: "A complete answer." };
+    });
+    const parent = tryBeginGatewayRootWorkAdmission("test:conversation-rpc");
+    if (!parent) {
+      throw new Error("Expected admitted conversation RPC");
+    }
+    const pending: { result?: ReturnType<typeof replyToConversationInput> } = {};
+    try {
+      await parent.run(async () => {
+        const result = replyToConversationInput(fixture.params);
+        pending.result = result;
+        await withinTest(
+          awaitGateBeforeSettlement(
+            entered.promise,
+            result,
+            "Native reply settled before the model boundary",
+          ),
+          signal,
+        );
+      });
+      parent.release();
+      const result = pending.result;
+      if (!result) {
+        throw new Error("Expected started native conversation reply");
+      }
+      expect(getActiveGatewayRootWorkCount()).toBe(baseline + 1);
+      expect(fixture.release).not.toHaveBeenCalled();
+      finish.resolve();
+      expect(await withinTest(result, signal)).toMatchObject({ kind: "reply" });
+      expect(await withinTest(released.promise, signal)).toBe("settled");
+      expect(getActiveGatewayRootWorkCount()).toBe(baseline);
+      expect(fixture.release).toHaveBeenCalledOnce();
+    } finally {
+      parent.release();
+      finish.resolve();
+      await pending.result?.catch(() => undefined);
+      stopObserving?.();
+    }
   });
 
   it("retains a host failure fence alongside original authority across native fallback", async () => {

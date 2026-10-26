@@ -25,9 +25,7 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
   signal,
 }) => {
   const turnEnded = createDeferredCore();
-  let phase = "session startup";
-  const reportAbort = () => console.error(`Synthetic speech boundary stopped during ${phase}`);
-  signal.addEventListener("abort", reportAbort, { once: true });
+  void turnEnded.promise.catch(() => {});
   const finishInput = vi.fn(() => {
     expect(hardware.input).toHaveBeenLastCalledWith(audio);
     hardware.emitTranscript("Inspect the synthetic input boundary.");
@@ -56,7 +54,6 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
     }
   });
   const call = await createSpeechRelayCall();
-  console.info("Synthetic speech boundary: session created");
   expect(call.audio.supportsInputEnd).toBe(true);
   expect(
     await dispatch("talk.session.appendAudio", {
@@ -70,8 +67,6 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
     sessionId: call.sessionId,
     markName: call.readyMark,
   });
-  console.info("Synthetic speech boundary: playback ready");
-  phase = "provider input finalization";
   expect(
     await dispatch("talk.session.appendAudio", {
       sessionId: call.sessionId,
@@ -80,18 +75,11 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
     }),
   ).toHaveBeenCalledWith(true, { ok: true }, undefined);
   expect(finishInput).toHaveBeenCalledOnce();
-  console.info("Synthetic speech boundary: provider finalized input");
-  phase = "audio completion";
   await withinTest(turnEnded.promise, signal);
-  console.info("Synthetic speech boundary: output completed");
-  expect(finishInput).toHaveBeenCalledOnce();
   expect(mocks.runEmbeddedAgent).toHaveBeenCalledOnce();
   expect(hardware.close).not.toHaveBeenCalled();
   expect(getUnifiedTalkSession(call.sessionId).kind).toBe("speech-relay");
-  phase = "session close";
   await dispatch("talk.session.close", { sessionId: call.sessionId });
-  console.info("Synthetic speech boundary: session closed");
-  signal.removeEventListener("abort", reportAbort);
 });
 
 it("public STT/TTS rejects unsupported input boundaries before accepting their audio", async () => {
