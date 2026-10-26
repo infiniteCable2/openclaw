@@ -76,7 +76,7 @@ describe("speech video input snapshot ownership", () => {
     } finally {
       f.input.close();
     }
-    await expect(f.input.prepare(undefined)).rejects.toThrow("no longer active");
+    await expect(f.input.prepare(undefined)).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("revalidates earlier frame references on no-new-frame input without renewing retention", async () => {
