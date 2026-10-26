@@ -9,7 +9,7 @@ export function readConversationObservationRole(
   const record = asOptionalRecord(message);
   const role = record?.role;
   const provenance = asOptionalRecord(record?.provenance);
-  const metadata = asOptionalRecord(record?.__openclaw);
+  const metadata = asOptionalRecord(record?.["__openclaw"]);
   if (
     !record ||
     (role !== "user" && role !== "assistant") ||
@@ -66,8 +66,8 @@ export function transcriptRewritePreservesConversationObservation(
       return undefined;
     }
     const { __openclaw: _metadata, ...body } = message;
-    const metadata = asOptionalRecord(message.__openclaw);
-    if (message.__openclaw !== undefined && !metadata) {
+    const metadata = asOptionalRecord(message["__openclaw"]);
+    if (message["__openclaw"] !== undefined && !metadata) {
       return undefined;
     }
     const {

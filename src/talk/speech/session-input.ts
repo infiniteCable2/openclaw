@@ -49,7 +49,9 @@ export function createSpeechTranscriptionInput(params: {
         params.assertCurrent();
         const remaining = converter.flush();
         converter = createConverter();
-        if (remaining.byteLength > 0) session.sendAudio(remaining);
+        if (remaining.byteLength > 0) {
+          session.sendAudio(remaining);
+        }
         await finishProviderInput();
         params.assertCurrent();
       });
@@ -57,7 +59,9 @@ export function createSpeechTranscriptionInput(params: {
       try {
         await finish;
       } finally {
-        if (finishing === finish) finishing = undefined;
+        if (finishing === finish) {
+          finishing = undefined;
+        }
       }
     },
     async close() {

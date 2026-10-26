@@ -264,9 +264,13 @@ export async function createTalkSpeechRelaySession(params: {
       if (audio.byteLength % 2 !== 0) {
         throw new Error("Talk speech input requires complete PCM16 samples");
       }
-      if (audio.byteLength > 0) input(audio);
+      if (audio.byteLength > 0) {
+        input(audio);
+      }
       if (endOfInput) {
-        if (!inputOwner) throw new Error("Talk speech session is not ready");
+        if (!inputOwner) {
+          throw new Error("Talk speech session is not ready");
+        }
         await inputOwner.finishInput();
         assertActive();
       }

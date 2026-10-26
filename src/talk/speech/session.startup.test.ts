@@ -62,7 +62,9 @@ describe("speech session failed-start ownership", () => {
     const input = expectDefined(capture, "The started session must own its capture callback");
     const pcm = (value: number) => {
       const audio = Buffer.alloc(48);
-      for (let offset = 0; offset < audio.length; offset += 2) audio.writeInt16LE(value, offset);
+      for (let offset = 0; offset < audio.length; offset += 2) {
+        audio.writeInt16LE(value, offset);
+      }
       return audio;
     };
     try {
@@ -71,8 +73,9 @@ describe("speech session failed-start ownership", () => {
       const concurrent = handle.finishInput();
       await finishing.promise;
       const expected = Buffer.alloc(32);
-      for (let offset = 0; offset < expected.length; offset += 2)
+      for (let offset = 0; offset < expected.length; offset += 2) {
         expected.writeInt16LE(1_000, offset);
+      }
       expect(Buffer.concat(sendAudio.mock.calls.map(([audio]) => audio))).toEqual(expected);
       expect(finishInput).toHaveBeenCalledOnce();
       expect(() => input(pcm(2_000))).toThrow("input boundary");
@@ -81,8 +84,9 @@ describe("speech session failed-start ownership", () => {
       sendAudio.mockClear();
       input(pcm(2_000));
       await handle.finishInput();
-      for (let offset = 0; offset < expected.length; offset += 2)
+      for (let offset = 0; offset < expected.length; offset += 2) {
         expected.writeInt16LE(2_000, offset);
+      }
       expect(Buffer.concat(sendAudio.mock.calls.map(([audio]) => audio))).toEqual(expected);
       expect(finishInput).toHaveBeenCalledTimes(2);
     } finally {

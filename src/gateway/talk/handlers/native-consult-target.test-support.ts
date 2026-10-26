@@ -463,11 +463,12 @@ async function createSpeechRelayCall(params: Record<string, unknown> = {}) {
 }
 
 async function publishNativeSpeechModelRun(
-  params: RunEmbeddedAgentParams,
+  input: RunEmbeddedAgentParams,
   work?: (
     persistAssistantMessage: (message: AssistantMessage) => Promise<void>,
   ) => Promise<{ payloads: Array<{ text: string }>; meta: { durationMs: number } }>,
 ) {
+  let params = input;
   if (!params.agentId || !params.sessionKey) {
     throw new Error("The synthetic native speech run requires an explicit agent and session key");
   }

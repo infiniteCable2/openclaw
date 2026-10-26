@@ -73,7 +73,7 @@ describe("exact native operational annotation continuity", () => {
     message: {
       ...original.message,
       __openclaw: {
-        ...original.message.__openclaw,
+        ...original.message["__openclaw"],
         modelPromptProjection: { version: 1, text: "Derived model input." },
         steerTargetRunId: "target-run",
       },
@@ -93,8 +93,8 @@ describe("exact native operational annotation continuity", () => {
     { provenance: { kind: "internal_system" } },
     { role: "assistant" },
     { timestamp: 2 },
-    { __openclaw: { ...annotated.message.__openclaw, runId: "other-run" } },
-    { __openclaw: { ...annotated.message.__openclaw, beforeAgentRunBlocked: true } },
+    { __openclaw: { ...annotated.message["__openclaw"], runId: "other-run" } },
+    { __openclaw: { ...annotated.message["__openclaw"], beforeAgentRunBlocked: true } },
     { media: ["changed-media"] },
   ])("refuses other source changes %j", (patch) => {
     expect(preserves({ ...annotated, message: { ...annotated.message, ...patch } })).toBe(false);
