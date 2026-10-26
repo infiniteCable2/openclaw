@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReplySpeechOutputReceipt } from "../../auto-reply/reply-payload.js";
 import type { UserTurnOriginalInputCommit } from "../../sessions/user-turn-transcript.types.js";
 import {
   checkClientVoiceToolConfirmationPolicy,
@@ -34,7 +35,7 @@ function originalCommit(text: string): UserTurnOriginalInputCommit {
     },
   };
 }
-function fixture() {
+function fixture(outputReceipt?: ReplySpeechOutputReceipt) {
   const events: Array<{ type: string; text?: string }> = [];
   const onOutputFailure = vi.fn();
   const input: SpeechNativeInputParams = {
@@ -50,6 +51,7 @@ function fixture() {
     onInputDisposition: vi.fn(),
     onSpeakableText: (event) => {
       events.push(event);
+      return event.type === "done" ? outputReceipt : undefined;
     },
   };
   const dispatch = vi.fn<(input: SpeechNativeInputParams) => Promise<ConversationReplyResult>>();
@@ -71,7 +73,12 @@ describe("native getReply voice confirmation presentation", () => {
   it.each([false, true])(
     "keeps early commentary but replaces blocked-action narration once (partial=%s)",
     async (partial) => {
-      const f = fixture();
+      const outputReceipt: ReplySpeechOutputReceipt = {
+        completion: Promise.resolve(["Synthetic confirmation challenge"]),
+        trackSettlement: vi.fn(),
+        releaseSettlement: vi.fn(),
+      };
+      const f = fixture(outputReceipt);
       f.dispatch.mockImplementation(async (input) => {
         input.onOriginalInputCommitted?.(originalCommit("Send a message"));
         input.onRunStarted?.("actual-native-run");
@@ -86,7 +93,9 @@ describe("native getReply voice confirmation presentation", () => {
           }).allowed,
         ).toBe(false);
         await input.onSpeakableText?.({ type: "chunk", text: "The message was sent." });
-        await input.onSpeakableText?.({ type: "done", text: "The message was sent." });
+        expect(await input.onSpeakableText?.({ type: "done", text: "The message was sent." })).toBe(
+          outputReceipt,
+        );
         return { kind: "reply", reply: { text: "The message was sent.", delivered: true } };
       });
       const result = await f.run(f.input);

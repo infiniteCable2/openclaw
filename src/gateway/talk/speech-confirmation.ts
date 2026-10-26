@@ -140,8 +140,11 @@ export function createNativeSpeechConfirmation(params: {
                   // Done alone cannot append audio after early commentary.
                   try {
                     await input.onSpeakableText!({ type: "chunk", text: challenge });
-                    await input.onSpeakableText!({ type: "done", text: challenge });
+                    const receipt = await input.onSpeakableText!({ type: "done", text: challenge });
                     challengePresented = true;
+                    // The native output owner must release its reserved settlement,
+                    // even when the challenge replaces the model's narration.
+                    return receipt;
                   } catch (error) {
                     outputFailed = true;
                     try {
