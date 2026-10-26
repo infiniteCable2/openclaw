@@ -1,5 +1,4 @@
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
-import type { SessionEntry } from "../../config/sessions.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import { bindConversationPublicationInput } from "../../config/sessions/conversation-publication-context.js";
 import {
@@ -7,12 +6,13 @@ import {
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import { readMessageIdempotencyKey } from "../../config/sessions/transcript-message-identity.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 
 /** Bind before native input admission/steering, not after a model run has started. */
 export function bindReplyConversationInputPublication(params: {
   followupRun: AgentTurnParams["followupRun"];
-  entry: SessionEntry | undefined;
+  entry: InternalSessionEntry | undefined;
   sessionKey: string | undefined;
   storePath: string | undefined;
   assertCurrent: SessionSourceAssertion;

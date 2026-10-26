@@ -157,17 +157,17 @@ export function captureConversationPublicationInTransaction(
     }
   } else {
     if (
-      input.inputKey !== undefined
-        ? input.role !== "user" ||
-          !input.inputKey ||
-          input.inputKey !== readMessageIdempotencyKey(message) ||
+      intent.inputKey !== undefined
+        ? intent.role !== "user" ||
+          !intent.inputKey ||
+          intent.inputKey !== readMessageIdempotencyKey(message) ||
           readConversationObservationRole(message) !== "user"
-        : input.runId === undefined
+        : intent.runId === undefined
           ? asOptionalRecord(persisted?.provenance)?.kind !== "realtime_voice"
-          : !input.runId ||
+          : !intent.runId ||
             !sourceEntry.activeWriterRunId ||
-            readConversationObservationRole(message) !== input.role ||
-            (input.role === "assistant" && readSessionTranscriptRunId(message) !== input.runId)
+            readConversationObservationRole(message) !== intent.role ||
+            (intent.role === "assistant" && readSessionTranscriptRunId(message) !== intent.runId)
     ) {
       throw new Error("Conversation publication lost its original native run");
     }
