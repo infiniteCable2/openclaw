@@ -59,7 +59,7 @@ describe("speech session failed-start ownership", () => {
         clearOutput: async () => {},
       },
     });
-    const input = expectDefined(capture);
+    const input = expectDefined(capture, "The started session must own its capture callback");
     const pcm = (value: number) => {
       const audio = Buffer.alloc(48);
       for (let offset = 0; offset < audio.length; offset += 2) audio.writeInt16LE(value, offset);

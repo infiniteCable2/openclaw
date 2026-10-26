@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionTranscriptRuntimeScope } from "../../config/sessions/session-accessor.types.js";
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
 import type { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
@@ -175,18 +176,21 @@ describe("disposable conversation source preparation", () => {
   it("keys physical coordinates, not incidental environment objects or target key ordering", async () => {
     const cache = createConversationKnowledgeSourceCache();
     const load = vi.fn(async () => context());
-    await cache.read({ ...input(), target: { ...target, env: { EXAMPLE_ONLY: "first" } }, load });
-    await cache.read({
-      ...input(),
-      target: {
-        sessionId: target.sessionId,
-        sessionKey: target.sessionKey,
-        storePath: target.storePath,
-        agentId: target.agentId,
-        env: { EXAMPLE_ONLY: "next" },
-      },
-      load,
-    });
+    // Native read scopes may carry environment facts; the cache owns only
+    // their resolved physical coordinates, not that wider read configuration.
+    const originalScope = {
+      ...target,
+      env: { EXAMPLE_ONLY: "first" },
+    } satisfies SessionTranscriptRuntimeScope;
+    const nextScope = {
+      sessionId: target.sessionId,
+      sessionKey: target.sessionKey,
+      storePath: target.storePath,
+      agentId: target.agentId,
+      env: { EXAMPLE_ONLY: "next" },
+    } satisfies SessionTranscriptRuntimeScope;
+    await cache.read({ ...input(), target: originalScope, load });
+    await cache.read({ ...input(), target: nextScope, load });
     expect(load).toHaveBeenCalledTimes(1);
     expect(boundary.read).toHaveBeenCalledTimes(1);
     await cache.read({ ...input(), target: { ...target, sessionId: "replacement" }, load });
