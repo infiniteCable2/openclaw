@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ChannelsStatusResultSchema,
   TalkSessionCancelOutputResultSchema,
+  TalkSessionAppendAudioParamsSchema,
   WebLoginStartParamsSchema,
   WebLoginWaitParamsSchema,
 } from "./schema/channels.js";
@@ -44,6 +45,21 @@ describe("WebLoginWaitParamsSchema", () => {
         sessionKey: "2d3c49c2-5a88-4e90-9a36-264834875ecc",
       }),
     ).toBe(true);
+  });
+});
+
+describe("TalkSessionAppendAudioParamsSchema", () => {
+  const validate = Compile(TalkSessionAppendAudioParamsSchema);
+
+  it("permits empty audio only for an explicit input boundary", () => {
+    expect(validate.Check({ sessionId: "speech-1", audioBase64: "", endOfInput: true })).toBe(true);
+    expect(validate.Check({ sessionId: "speech-1", audioBase64: "AAAA", endOfInput: true })).toBe(
+      true,
+    );
+    expect(validate.Check({ sessionId: "speech-1", audioBase64: "" })).toBe(false);
+    expect(validate.Check({ sessionId: "speech-1", audioBase64: "", endOfInput: false })).toBe(
+      false,
+    );
   });
 });
 

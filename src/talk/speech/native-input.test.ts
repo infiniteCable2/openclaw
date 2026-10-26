@@ -1,3 +1,4 @@
+import { encodePngRgba } from "rastermill";
 import { describe, expect, it, vi } from "vitest";
 import type { ReplySpeechOutputReceipt } from "../../auto-reply/reply-payload.js";
 import type { ReplySpeechRunBinding } from "../../auto-reply/reply/reply-speech-presentation.js";
@@ -11,6 +12,7 @@ import { readAdmittedSpeechInput } from "./native-control.js";
 import { createNativeSpeechInput } from "./native-input.js";
 import type { SpeechUtterance } from "./output.js";
 import { createSpeechInputMetadata } from "./session-input-identity.js";
+import type { SpeechAudioTransport, SpeechVideoFrame } from "./transport.js";
 import type { SpeechNativeInputParams } from "./types.js";
 import { createSpeechVideoInput } from "./video-input.js";
 
@@ -34,7 +36,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function fixture() {
+function fixture(video = createSpeechVideoInput(undefined)) {
   let generation = 1;
   let stopped = false;
   const calls: SpeechNativeInputParams[] = [];
@@ -56,7 +58,7 @@ function fixture() {
       accepted?.release?.();
     }
   });
-  const video = createSpeechVideoInput(undefined);
+  const inputs = createSpeechInputMetadata(video, "connection-a");
   const utterances: SpeechUtterance[] = [];
   const output = {
     createSpeechUtterance: vi.fn((waitingTurn?: number): SpeechUtterance => {
@@ -109,7 +111,7 @@ function fixture() {
         responseStreaming: "sentence",
       },
     },
-    inputs: createSpeechInputMetadata(video, "connection-a"),
+    inputs,
     video,
     output,
     isStopped: () => stopped,
@@ -129,6 +131,7 @@ function fixture() {
   });
   return {
     owner,
+    inputs,
     calls,
     pending,
     output,
@@ -196,6 +199,71 @@ function fixture() {
 }
 
 describe("native speech input media ownership", () => {
+  it("refreshes late video on the next natural input and retains exact frame access", async () => {
+    const video = createSpeechVideoInput({
+      enabled: true,
+      preview: { profile: "source" },
+    });
+    const f = fixture(video);
+    let onFrame!: (frame: SpeechVideoFrame) => void;
+    const transport: SpeechAudioTransport = {
+      onFatal() {},
+      startInput() {},
+      startVideoInput(handler) {
+        onFrame = handler;
+      },
+      stop: async () => {},
+      dispose: async () => {},
+      clearOutput: async () => {},
+      writeOutput: async () => {},
+    };
+    await video.start(transport, () => {});
+    try {
+      const first = f.owner.submit({ text: "Only audio.", hasOnset: false });
+      await f.waitForCall(1);
+      expect(f.calls[0]!.args).toMatchObject({
+        context: expect.stringContaining("does not imply an active camera"),
+      });
+      const source = f.calls[0]!.toolBindings?.video_inspect;
+      expect(source).toBe(video.source);
+      f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+
+      onFrame({
+        data: encodePngRgba(new Uint8Array([10, 20, 30, 255]), 1, 1),
+        mimeType: "image/png",
+        timestampMs: Date.now(),
+      });
+      expect(f.calls).toHaveLength(1);
+      const metadata = f.inputs.capture(Date.now() - 1000, "camera-later");
+      const frameId = metadata.snapshot!.frames[0]!.id;
+      const next = f.owner.submit({ text: "What do you see?", metadata, hasOnset: false });
+      await f.waitForCall(2);
+      expect(f.calls[1]!.queueMode).toBe("steer");
+      expect(f.calls[1]!.toolBindings?.video_inspect).toBe(source);
+      expect(f.calls[1]!.args).toMatchObject({ context: expect.stringContaining(frameId) });
+      expect(f.calls[1]!.images).toHaveLength(1);
+      f.pending[1]!.resolve({ kind: "steered" });
+      await next;
+
+      // No new frame after the camera stops: revisiting does not attach a stale preview.
+      const revisit = f.owner.submit({ text: "Revisit that frame.", hasOnset: false });
+      await f.waitForCall(3);
+      expect(f.calls[2]!.args).toMatchObject({ context: expect.stringContaining(frameId) });
+      expect(f.calls[2]!.images).toEqual([]);
+      expect(video.source?.read(frameId)).toBeDefined();
+      f.pending[2]!.resolve({ kind: "steered" });
+      await revisit;
+      f.pending[0]!.resolve({ kind: "reply", reply: { text: "Complete." } });
+      await first;
+      video.close();
+      expect(() => video.source?.read(frameId)).toThrow("closed");
+    } finally {
+      for (const pending of f.pending) {
+        pending.resolve({ kind: "reply", reply: { text: "" } });
+      }
+      video.close();
+    }
+  });
   it("returns an opaque output receipt without holding native work for paced audio", async () => {
     const f = fixture();
     const audio = deferred<readonly string[] | undefined>();

@@ -14,6 +14,7 @@ export type BufferedVideoFrame = {
     afterReleaseMs: number;
   };
 };
+type VideoFrameMetadata = Omit<BufferedVideoFrame, "data">;
 type Entry = BufferedVideoFrame & { pins: number; selectedUntilMs?: number };
 export type VideoFrameSnapshot = {
   readonly frames: readonly BufferedVideoFrame[];
@@ -161,6 +162,16 @@ export function createVideoFrameBuffer(params: {
       prune(now());
       const entry = closed ? undefined : entries.find((frame) => frame.id === id);
       return entry ? { ...describe(entry), data: Buffer.from(entry.data) } : undefined;
+    },
+    /** Check retained identities without copying source pixels into context preparation. */
+    readMetadata(id: string): VideoFrameMetadata | undefined {
+      prune(now());
+      const entry = closed ? undefined : entries.find((frame) => frame.id === id);
+      if (!entry) {
+        return undefined;
+      }
+      const { data: _data, ...metadata } = describe(entry);
+      return metadata;
     },
     close() {
       closed = true;

@@ -1,5 +1,6 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { AssistantMessage } from "../../llm/types.js";
+import type { InternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import type {
   TranscriptAppendRefusal,
   TranscriptMessageAppendResult,
@@ -88,6 +89,11 @@ export type TranscriptReportCommit = {
   cliHistoryChanged?: boolean;
   abortedPartial?: AbortedSessionTranscriptPartialResult;
   sessionEntryChanged?: boolean;
+  /** Exact committed target; metadata-only wakeups never re-resolve a caller's selector. */
+  transcriptUpdate?: {
+    target: NonNullable<InternalSessionTranscriptUpdate["target"]>;
+    lifecycleRevision?: string;
+  };
 };
 
 export type TranscriptReportWorkerOperations = {

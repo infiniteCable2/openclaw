@@ -1,4 +1,65 @@
+import type { RealtimeTranscriptionSession } from "../../realtime-transcription/provider-types.js";
 import type { SpeechAudioTransport } from "./transport.js";
+
+/** Accepted capture boundaries retain the converter and provider until settlement. */
+export function createSpeechTranscriptionInput(params: {
+  createConverter(): { process(audio: Buffer): Buffer; flush(): Buffer };
+  getSession(): RealtimeTranscriptionSession | null;
+  isReady(): boolean;
+  assertCurrent(): void;
+  acceptAudio(audio: Buffer): boolean;
+}) {
+  let converter = params.createConverter();
+  let finishing: Promise<void> | undefined;
+  return {
+    get supportsInputEnd() {
+      return typeof params.getSession()?.finishInput === "function";
+    },
+    sendAudio(audio: Buffer) {
+      if (finishing) {
+        throw new Error("Talk input boundary is still being processed");
+      }
+      if (params.acceptAudio(audio)) {
+        params.getSession()?.sendAudio(converter.process(audio));
+      }
+    },
+    async finishInput() {
+      params.assertCurrent();
+      if (finishing) {
+        return finishing;
+      }
+      const session = params.getSession();
+      if (!params.isReady() || !session?.finishInput) {
+        throw new Error("Transcription provider does not support an explicit input boundary");
+      }
+      const finishProviderInput = session.finishInput.bind(session);
+      const finish = Promise.resolve().then(async () => {
+        params.assertCurrent();
+        const remaining = converter.flush();
+        converter = params.createConverter();
+        if (remaining.byteLength > 0) session.sendAudio(remaining);
+        await finishProviderInput();
+        params.assertCurrent();
+      });
+      finishing = finish;
+      try {
+        await finish;
+      } finally {
+        if (finishing === finish) finishing = undefined;
+      }
+    },
+    async close() {
+      const pending = finishing;
+      try {
+        params.getSession()?.close();
+      } finally {
+        // The original boundary caller retains its failure; cleanup joins the
+        // accepted work after provider cancellation before releasing its lease.
+        await pending?.catch(() => {});
+      }
+    },
+  };
+}
 
 /** Capture startup remains owned until teardown has joined any pending acquisition. */
 export function createSpeechSessionInput(transport: SpeechAudioTransport) {

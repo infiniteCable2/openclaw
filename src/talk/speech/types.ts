@@ -162,6 +162,8 @@ type SpeechOutputCancellationResult = {
 };
 export type SpeechSessionHandle = {
   providerId: string;
+  readonly supportsInputEnd: boolean;
+  finishInput: () => Promise<void>;
   speak: (instructions?: string) => void;
   getHealth: () => SpeechSessionHealth;
   stop: () => Promise<void>;

@@ -254,6 +254,13 @@ speech carries its own snapshots through native steering; adjacent transcript
 fragments retain normal batching. Video and PCM use independent bounded transport
 queues so a slow image consumer cannot block audio capture.
 
+Enabling a camera after an audio-only start does not create an agent request.
+The next accepted speech input carries its sampled frame IDs and the same live
+source binding. Inputs without new frames describe the configured capability
+without claiming that a camera is active, and can reference the preceding
+input's still-retained frames. Where permitted, `video_inspect` can inspect or
+save those exact frames; this context never grants additional tool access.
+
 Unselected source frames expire from the rolling buffer. Selected sources remain
 pinned while their input is queued or processed, then have a bounded follow-up
 retention window. All retained sources share the session byte cap: pinned sources

@@ -17,6 +17,7 @@ import {
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { renewConversationKnowledgeAfterExactRewriteInTransaction } from "./conversation-knowledge-rewrite.js";
+import { transcriptRewritePreservesConversationObservation } from "./conversation-observation.js";
 import { advanceCliHistoryBoundaryInTransaction } from "./session-accessor.sqlite-cli-history-boundary.js";
 import type {
   TranscriptEvent,
@@ -536,6 +537,14 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
       scope: resolved,
       previousGeneration,
       firstChangedSeq: rows.reduce((first, row) => Math.min(first, row.seq), Infinity),
+      readFirstObservationChangedSeq: () =>
+        rewrites.reduce(
+          (first, row) =>
+            transcriptRewritePreservesConversationObservation(row.expectedEventJson, row.eventJson)
+              ? first
+              : Math.min(first, row.seq),
+          Number.MAX_SAFE_INTEGER,
+        ),
       rewriteRootRows: (scope, rootRewrites) =>
         rewriteSqliteTranscriptEventRowsInTransaction(database, scope, rootRewrites),
     });

@@ -11,6 +11,7 @@ import {
 } from "../../config/sessions/conversation-knowledge.js";
 import { captureConversationPublication } from "../../config/sessions/conversation-publication-context.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
+import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
 import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
@@ -62,10 +63,8 @@ vi.mock("../../infra/agent-run-terminal-writes.js", () => ({
   drainAgentRunTerminalWrites: source.drain,
 }));
 
-import {
-  createReplyConversationKnowledgeTurn,
-  prepareReplyConversationKnowledge,
-} from "./conversation-knowledge.js";
+import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
+import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
 
 beforeEach(() => {
   for (const mock of Object.values(source)) {
@@ -82,7 +81,11 @@ beforeEach(() => {
   });
 });
 
-async function nativeTurn(admin = false, conversationMode: "native" | "branches" = "branches") {
+async function nativeTurn(
+  admin = false,
+  conversationMode: "native" | "branches" = "branches",
+  conversationParticipant?: SessionParticipantIdentity,
+) {
   const cfg = { agents: { entries: { example: { conversationMode } } } };
   const operatorAuthority = admin
     ? createAdmittedRunOperatorAuthority({
@@ -94,6 +97,7 @@ async function nativeTurn(admin = false, conversationMode: "native" | "branches"
     : undefined;
   const followupRun = createMockFollowupRun({
     operatorAuthority,
+    conversationParticipant,
     run: {
       agentId: "example",
       sessionKey: "agent:example:branch",
@@ -168,6 +172,32 @@ async function nativeTurn(admin = false, conversationMode: "native" | "branches"
 }
 
 describe("actual native-turn knowledge ownership", () => {
+  it.each(["donor", "recipient", "canceled"] as const)(
+    "contains optional snapshot failure without suppressing %s authority",
+    async (failure) => {
+      const f = await nativeTurn(false, "branches", { type: "profile", id: "example-person" });
+      source.branch.mockImplementationOnce(async () => {
+        if (failure === "recipient") {
+          f.originalSource.mockImplementation(() => {
+            throw new Error("Recipient revoked");
+          });
+        } else if (failure === "canceled") {
+          f.abort.abort(new Error("Snapshot canceled"));
+        }
+        throw new Error("Optional donor unavailable");
+      });
+      const snapshot = f.owner.prepareSnapshot();
+      if (failure === "donor") {
+        expect(await snapshot).toEqual([]);
+        expect(f.owner.fragments).toEqual([]);
+      } else {
+        await expect(snapshot).rejects.toThrow(
+          failure === "recipient" ? "Recipient revoked" : "Snapshot canceled",
+        );
+      }
+      expect(source.context).not.toHaveBeenCalled();
+    },
+  );
   it("continues a pending turn without injecting status or changing existing context", async () => {
     source.seed.mockResolvedValue({
       status: "pending",
@@ -202,27 +232,18 @@ describe("actual native-turn knowledge ownership", () => {
     expect(source.record).not.toHaveBeenCalled();
   });
 
-  it("drains terminal writes before durable acceptance, then wakes independent publication", async () => {
+  it("drains terminal writes and wakes publication without duplicating observed entries", async () => {
     const f = await nativeTurn();
     source.record.mockResolvedValue(true);
     await f.owner.record(f.result);
     expect(source.drain).toHaveBeenCalledWith(f.admission.operationalRunInstance);
-    expect(source.record).toHaveBeenCalledWith(
-      expect.objectContaining({
-        runId: "source-run",
-        sessionId: "source-session",
-        idempotencyKey: "native-terminal-occurrence",
-      }),
-    );
-    expect(source.drain.mock.invocationCallOrder[0]).toBeLessThan(
-      source.record.mock.invocationCallOrder[0]!,
-    );
+    expect(source.record).not.toHaveBeenCalled();
     expect(source.startPublication).toHaveBeenCalledWith({
       agentId: "example",
       path: "/synthetic/agent.sqlite",
       env: {},
     });
-    expect(source.record.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(source.drain.mock.invocationCallOrder[0]).toBeLessThan(
       source.startPublication.mock.invocationCallOrder[0]!,
     );
     f.owner.release();
@@ -245,7 +266,7 @@ describe("actual native-turn knowledge ownership", () => {
     expect(source.record).not.toHaveBeenCalled();
   });
 
-  it("reports the native committed entry without requiring a keyed assistant append", async () => {
+  it("wakes original-entry publication without requiring a keyed assistant append", async () => {
     const f = await nativeTurn();
     const terminal = f.result.result.meta.agentMeta?.terminalReceipt;
     if (!terminal) {
@@ -255,13 +276,8 @@ describe("actual native-turn knowledge ownership", () => {
     terminal.assistantTranscriptEntryId = "native-saved-entry";
     await f.owner.record(f.result);
     expect(source.drain).toHaveBeenCalledWith(f.admission.operationalRunInstance);
-    expect(source.record).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        runId: terminal.runId,
-        entryId: "native-saved-entry",
-        idempotencyKey: undefined,
-      }),
-    );
+    expect(source.record).not.toHaveBeenCalled();
+    expect(source.startPublication).toHaveBeenCalledOnce();
   });
 
   it("passively reports completed native work only for a previously enrolled conversation", async () => {
@@ -269,19 +285,24 @@ describe("actual native-turn knowledge ownership", () => {
     const original = f.owner.withPublication(() =>
       captureConversationPublication(
         { agentId: "example", sessionKey: "agent:example:branch", sessionId: "source-session" },
-        { role: "assistant", stopReason: "stop", __openclaw: { runId: "source-run" } },
+        {
+          role: "assistant",
+          content: "A saved answer.",
+          stopReason: "stop",
+          __openclaw: { runId: "source-run" },
+        },
       ),
     );
     expect(original?.intent).toMatchObject({
-      kind: "completed-turn",
+      kind: "utterance-observation",
+      role: "assistant",
       sourceMode: "native",
       runId: "source-run",
       source: { lifecycleRevision: "source-life" },
     });
     await f.owner.record(f.result);
-    expect(source.record).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ runId: "source-run" }),
-    );
+    expect(source.record).not.toHaveBeenCalled();
+    expect(source.startPublication).toHaveBeenCalledOnce();
     expect(source.history).not.toHaveBeenCalled();
   });
 
@@ -297,12 +318,12 @@ describe("actual native-turn knowledge ownership", () => {
     expect(source.drain).not.toHaveBeenCalled();
   });
 
-  it("does not fail or retry completed work when durable acceptance is unconfirmed", async () => {
+  it("does not require a second durable acceptance for already observed native messages", async () => {
     const f = await nativeTurn();
     source.record.mockRejectedValue(new Error("Acceptance unavailable"));
     await expect(f.owner.record(f.result)).resolves.toBeUndefined();
-    expect(source.record).toHaveBeenCalledOnce();
-    expect(source.startPublication).not.toHaveBeenCalled();
+    expect(source.record).not.toHaveBeenCalled();
+    expect(source.startPublication).toHaveBeenCalledOnce();
     expect(f.result.status).toBe("ok");
   });
 });

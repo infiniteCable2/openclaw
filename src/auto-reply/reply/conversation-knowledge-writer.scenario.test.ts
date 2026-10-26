@@ -16,7 +16,7 @@ import {
 import { rewritePreparedTranscriptMessageAtAnchor } from "../../config/sessions/session-message-rewrite.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge.js";
+import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
 import {
   createConversationKnowledgeScenario,
   person,

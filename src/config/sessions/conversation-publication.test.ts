@@ -1,11 +1,22 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   createConversationKnowledgeScenario,
   person,
 } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
+import { bindReplyConversationInputPublication } from "../../auto-reply/reply/conversation-publication-input.js";
+import { createMockFollowupRun } from "../../auto-reply/reply/test-helpers.js";
+import {
+  attachRuntimeUserTurnTranscriptRecorder,
+  withRuntimeUserTurnTranscriptRecorder,
+} from "../../sessions/user-turn-transcript-runtime-context.js";
+import { confirmPersistedSteerTargetRunId } from "../../sessions/user-turn-transcript-updates.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { buildPersistedVoiceMessage } from "../../talk/voice-transcript.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { selectConversationKnowledgeReceipts } from "./conversation-knowledge-selection.js";
 import { readConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
+import { projectConversationKnowledge } from "./conversation-knowledge.js";
+import { withConversationPublicationContext } from "./conversation-publication-context.js";
 import {
   startConversationKnowledgePublication,
   waitForConversationKnowledgePublication,
@@ -15,8 +26,13 @@ import type { ConversationPublicationIntent } from "./conversation-publication.t
 import {
   appendTranscriptMessage,
   loadTranscriptEvents,
+  loadSessionEntry,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
+
+const wake = vi.hoisted(() => vi.fn());
+// mock-isolation: Inspect original COMMIT/wakeup ordering before explicitly draining the real journal.
+vi.mock("./conversation-publication-wakeup.js", () => ({ wakeConversationPublication: wake }));
 
 // Real native append and worker transactions prove atomic provenance, exact acceptance,
 // recovery, and FIFO. No model/provider execution or transcript task replay is involved.
@@ -232,6 +248,205 @@ it("journals native terminals atomically and settles only the exact accepted can
             { state: "blocked", count: 2 },
           ]),
         );
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+});
+
+it("publishes original input, steered input and commentary before final completion without recopying them", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "early-conversation-publication" },
+    async (state) => {
+      wake.mockClear();
+      const fixture = await createConversationKnowledgeScenario(state);
+      try {
+        const source = await fixture.branch("early-original");
+        const owner = await fixture.claim(source);
+        const branch = await readConversationKnowledgeBranch(owner);
+        const entry = loadSessionEntry(source);
+        if (!branch || !entry) {
+          throw new Error("Expected the original enrolled branch");
+        }
+        let current = true;
+        const assertCurrent = () => {
+          owner.assertCurrent();
+          if (!current) {
+            throw new Error("Original audience revoked");
+          }
+        };
+        const makeInput = (key: string, text: string) => {
+          const recorder = createUserTurnTranscriptRecorder({
+            input: { text, idempotencyKey: key },
+            target: { ...source, sessionEntry: entry, config: fixture.cfg },
+          });
+          const followupRun = createMockFollowupRun({
+            userTurnTranscriptRecorder: recorder,
+            conversationParticipant: person,
+            conversationAudience: {
+              ...source,
+              channelId: "matrix",
+              accountId: "example",
+              nativeChannelId: "example-room",
+              participant: person,
+              assertCurrent,
+            },
+            run: { ...source, config: fixture.cfg },
+          });
+          bindReplyConversationInputPublication({ followupRun, entry, ...source, assertCurrent });
+          return recorder;
+        };
+        const first = makeInput("input-one", "Remember the blue circle.");
+        const savedFirst = await first.persistApproved();
+        expect(savedFirst?.admission).toBeDefined();
+        const target = { agentId: source.agentId, path: source.storePath, env: source.env };
+        const journal = openConversationPublicationStore({ ...target, assertCurrent });
+        expect(await journal.stats()).toEqual([{ state: "ready", count: 1 }]);
+        expect(wake).toHaveBeenCalled();
+        await first.captureModelPromptProjection?.(
+          "A derived prompt, not the original utterance.",
+          assertCurrent,
+        );
+        const [projectedInput] = await journal.readReadyHeads({ now: Date.now(), limit: 8 });
+        expect(projectedInput?.readRange?.through.generation).toBe(
+          first.getAdmissionReceipt()?.generation,
+        );
+        expect(projectedInput?.anchor.generation).not.toBe(first.getAdmissionReceipt()?.generation);
+        const beforeRollback = await loadTranscriptEvents(source);
+        const wakesBeforeRollback = wake.mock.calls.length;
+        await expect(
+          appendTranscriptMessage(source, {
+            message: {
+              role: "user",
+              content: "Wrong original identity.",
+              idempotencyKey: "other-input",
+              timestamp: 2,
+            },
+            conversationPublication: {
+              version: 1,
+              kind: "utterance-observation",
+              role: "user",
+              inputKey: "different-input",
+              sourceMode: "branches",
+              source,
+              root: branch.root,
+              privateAudience: { participant: person, admission: "self" },
+            },
+          }),
+        ).rejects.toThrow("original native");
+        expect(await loadTranscriptEvents(source)).toEqual(beforeRollback);
+        expect(await journal.stats()).toEqual([{ state: "ready", count: 1 }]);
+        expect(wake).toHaveBeenCalledTimes(wakesBeforeRollback);
+        await upsertSessionEntryCore(source, { activeWriterRunId: "writer-one" });
+        const second = makeInput("input-two", "Also remember the green square.");
+        if (!second.message) {
+          throw new Error("Expected the steered original input");
+        }
+        const assistantIntent: ConversationPublicationIntent = {
+          version: 1,
+          kind: "utterance-observation",
+          role: "assistant",
+          runId: "run-one",
+          sourceMode: "branches",
+          source,
+          root: branch.root,
+          privateAudience: { participant: person, admission: savedFirst!.admission },
+        };
+        await withConversationPublicationContext(
+          {
+            source,
+            recorder: first,
+            runId: "run-one",
+            capture: () => ({
+              intent: {
+                ...assistantIntent,
+                privateAudience: { participant: person, admission: first.getAdmissionReceipt()! },
+              },
+              assertCurrent,
+            }),
+          },
+          async () => {
+            const runtimeMessage = attachRuntimeUserTurnTranscriptRecorder(second.message!, second);
+            const savedSecond = await withRuntimeUserTurnTranscriptRecorder(runtimeMessage, () =>
+              appendTranscriptMessage(source, { message: runtimeMessage }),
+            );
+            expect(savedSecond.anchor).toBeDefined();
+            await confirmPersistedSteerTargetRunId({
+              admission: { ...savedSecond.anchor!, logicalTurnId: "input-two", role: "user" },
+              targetRunId: "run-one",
+            });
+            await appendTranscriptMessage(source, {
+              message: {
+                role: "user",
+                content: "A reflected observation, not a fresh request.",
+                idempotencyKey: "mirror-one",
+                provenance: { kind: "inter_session" },
+                timestamp: 3,
+              },
+            });
+            expect(await journal.stats()).toEqual([{ state: "ready", count: 2 }]);
+            const commentary = {
+              role: "assistant",
+              stopReason: "toolUse",
+              endTurn: false,
+              content: [
+                { type: "text", text: "I am checking both shapes." },
+                { type: "thinking", thinking: "Private reasoning." },
+                {
+                  type: "toolCall",
+                  id: "call-one",
+                  name: "example",
+                  arguments: { private: "value" },
+                },
+              ],
+              timestamp: 3,
+              __openclaw: { runId: "run-one" },
+            };
+            await appendTranscriptMessage(source, { message: commentary });
+            expect(await journal.stats()).toEqual([{ state: "ready", count: 3 }]);
+            const beforeRevoked = await loadTranscriptEvents(source);
+            current = false;
+            await expect(
+              appendTranscriptMessage(source, {
+                message: { ...commentary, idempotencyKey: "revoked" },
+              }),
+            ).rejects.toThrow("revoked");
+            expect(await loadTranscriptEvents(source)).toEqual(beforeRevoked);
+            current = true;
+            await appendTranscriptMessage(source, {
+              message: {
+                role: "assistant",
+                content: "Both shapes are noted.",
+                stopReason: "stop",
+                timestamp: 4,
+                __openclaw: { runId: "run-one" },
+              },
+            });
+          },
+        );
+        expect(await journal.stats()).toEqual([{ state: "ready", count: 4 }]);
+        startConversationKnowledgePublication(target);
+        await waitForConversationKnowledgePublication(target);
+        const receipts = selectConversationKnowledgeReceipts(
+          await loadTranscriptEvents(fixture.root),
+          "other",
+        );
+        expect(receipts).toHaveLength(4);
+        expect(receipts.every((receipt) => "kind" in receipt)).toBe(true);
+        const events = await loadTranscriptEvents(source);
+        const observations = receipts.flatMap((receipt) => {
+          const projected = projectConversationKnowledge(receipt, events);
+          return JSON.parse(projected?.text ?? "{}").observations;
+        });
+        expect(observations).toEqual([
+          { speaker: "user", text: "Remember the blue circle." },
+          { speaker: "user", text: "Also remember the green square." },
+          { speaker: "assistant", text: "I am checking both shapes." },
+          { speaker: "assistant", text: "Both shapes are noted." },
+        ]);
+        expect(JSON.stringify(observations)).not.toMatch(/Private reasoning|private|toolCall/);
+        expect(await journal.stats()).toEqual([]);
       } finally {
         await fixture.close();
       }

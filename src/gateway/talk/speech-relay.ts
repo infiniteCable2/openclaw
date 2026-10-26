@@ -45,7 +45,7 @@ export type TalkSpeechRelaySession = {
   id: string;
   connId: string;
   sessionTarget: PreparedTalkSessionTarget;
-  appendAudio(audioBase64: string): void;
+  appendAudio(audioBase64: string, endOfInput?: boolean): Promise<void>;
   acknowledgeMark(markName: string): void;
   cancelOutput: SpeechSessionHandle["cancelOutput"];
   steer: SpeechSessionHandle["steer"];
@@ -243,21 +243,33 @@ export async function createTalkSpeechRelaySession(params: {
     id,
     connId: params.connId,
     sessionTarget: params.sessionTarget,
-    appendAudio(audioBase64) {
+    async appendAudio(audioBase64, endOfInput) {
       assertActive();
       if (!readyAcknowledged || !input) {
         throw new Error(
           "Talk speech playback must acknowledge the readyMark before capture starts",
         );
       }
+      const inputOwner = engine;
+      if (endOfInput && !inputOwner?.supportsInputEnd) {
+        throw new Error("Talk speech transcription provider does not support endOfInput");
+      }
       if (audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
         throw new Error("Talk speech audio frame is too large");
       }
-      const audio = decodeTalkRelayAudioBase64(audioBase64, "Talk speech");
+      const audio =
+        audioBase64 === "" && endOfInput
+          ? Buffer.alloc(0)
+          : decodeTalkRelayAudioBase64(audioBase64, "Talk speech");
       if (audio.byteLength % 2 !== 0) {
         throw new Error("Talk speech input requires complete PCM16 samples");
       }
-      input(audio);
+      if (audio.byteLength > 0) input(audio);
+      if (endOfInput) {
+        if (!inputOwner) throw new Error("Talk speech session is not ready");
+        await inputOwner.finishInput();
+        assertActive();
+      }
     },
     acknowledgeMark(markName) {
       assertActive();
@@ -540,6 +552,7 @@ export async function createTalkSpeechRelaySession(params: {
     audio: {
       inputEncoding: "pcm16",
       inputSampleRateHz: 16000,
+      supportsInputEnd: engine?.supportsInputEnd === true,
       outputEncoding: "pcm16",
       outputSampleRateHz: 24000,
     },

@@ -70,3 +70,41 @@ it("selects observed progress only from the current origin's latest completed re
     ),
   ).toEqual([]);
 });
+
+it("keeps original assistant observation progress without borrowing a user's or a voice-only report", () => {
+  const current = receipt("current");
+  const other = receipt("other");
+  const observed = [
+    {
+      origin: other.origin,
+      generation: other.through.generation,
+      throughRawSeq: other.through.rawSeq,
+      throughEntryId: other.through.entryId,
+    },
+  ];
+  const { runId: _runId, ...base } = current;
+  const observation = {
+    ...base,
+    origin: conversationKnowledgeOrigin(base.source, "utterance-observation"),
+    kind: "utterance-observation",
+    role: "assistant",
+    observed,
+  };
+  const report = (details: unknown) => ({
+    type: "custom_message",
+    customType: CONVERSATION_UTTERANCE_REPORT,
+    details,
+  });
+  const events = [report(observation), report({ ...observation, role: "user", observed: [] })];
+  expect(selectConversationKnowledgeObserved(events, current.source)).toEqual(observed);
+  const { observed: _observed, ...voice } = observation;
+  expect(selectConversationKnowledgeObserved([...events, report(voice)], current.source)).toEqual(
+    observed,
+  );
+  expect(
+    selectConversationKnowledgeObserved(
+      [...events, report({ ...observation, observed: [] })],
+      current.source,
+    ),
+  ).toEqual([]);
+});

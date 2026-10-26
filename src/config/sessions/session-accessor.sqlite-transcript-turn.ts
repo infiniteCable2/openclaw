@@ -7,7 +7,10 @@ import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { ensureSessionGoalOperationsSchema } from "../../state/openclaw-agent-goal-operations-schema.js";
-import { captureConversationPublication } from "./conversation-publication-context.js";
+import {
+  captureConversationPublication,
+  publishConversationPublicationCommit,
+} from "./conversation-publication-context.js";
 import {
   applySessionGoalOperation,
   readSessionGoalOperationInDatabase,
@@ -145,13 +148,24 @@ export async function appendExpectedSessionTranscriptTurn(
       );
     })
   ) {
-    return appendSessionTurnInWorker(resolved, options, context, (messages) =>
+    const result = await appendSessionTurnInWorker(resolved, options, context, (messages) =>
       appendExpectedSessionTranscriptTurn(
         { ...scope, storePath: resolved.path, env: resolved.env },
         { ...options, messages },
         true,
       ),
     );
+    if (options.messages.some((message) => message.conversationPublication)) {
+      for (const appended of result.appendedMessages) {
+        const publication = options.messages.find(
+          (message) =>
+            readMessageIdempotencyKey(message.message) ===
+              readMessageIdempotencyKey(appended.message) && message.conversationPublication,
+        )?.conversationPublication;
+        publishConversationPublicationCommit(scope, publication, appended);
+      }
+    }
+    return result;
   }
   if (incognito) {
     throw new Error("Actor transcript turns require preparation outside the transaction");

@@ -1,6 +1,7 @@
 // Transient user-turn transcript context carried through runtime queues.
 import type { AgentMessage } from "../../packages/agent-core/src/types.js";
 import { createMessageInjectionAuthority } from "../auto-reply/reply/message-injection-authority.js";
+import { withConversationPublicationInput } from "../config/sessions/conversation-publication-context.js";
 import type {
   PersistedUserTurnMessage,
   UserTurnTranscriptRecorder,
@@ -117,7 +118,8 @@ export function withRuntimeUserTurnTranscriptRecorder<T>(
         return true;
       })
     : undefined;
-  const persist = () => append(beforeFreshMessageCommit);
+  const persist = () =>
+    withConversationPublicationInput(recorder, () => append(beforeFreshMessageCommit));
   return recorder?.withPendingInput ? recorder.withPendingInput(persist) : persist();
 }
 

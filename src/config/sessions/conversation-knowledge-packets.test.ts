@@ -22,12 +22,14 @@ import {
   upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { loadSessionEntryForAdmission } from "./session-accessor.sqlite-entry-admission.js";
-import type { SessionSourceAssertion } from "./session-source-authority.js";
+import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
+import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 import { readSessionTranscriptModelContextAsync } from "./session-transcript-context-read.js";
+import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
 import { withSessionTranscriptWriteAssertion } from "./transcript-write-context.js";
 
 describe("native retained conversation knowledge packets", () => {
-  it("persists partial progress exactly once across compaction and refuses replaced source authority", async () => {
+  it("retains append-preserved source progress across compaction and refuses replaced authority", async () => {
     await withOpenClawTestState(
       { scenario: "minimal", label: "knowledge-packets" },
       async (state) => {
@@ -128,6 +130,34 @@ describe("native retained conversation knowledge packets", () => {
             .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT);
         try {
           const originalVersion = await version();
+          // A later source turn must not invalidate an already prepared observation.
+          expect(
+            appendTranscriptMessageSync(source, {
+              message: { role: "user", content: "A later source question.", timestamp: 3 },
+            }).ok,
+          ).toBe(true);
+          const exactSource = await reader.withRead(
+            { sessionKeys: [source.sessionKey, branch.sessionKey] },
+            authority,
+            (facts) =>
+              ({
+                source: facts.source,
+                sessionKey: source.sessionKey,
+                fields: ["sessionId", "lifecycleRevision"],
+                expected: facts.entries.find((row) => row.sessionKey === source.sessionKey)?.entry,
+                transcript: { sessionId: source.sessionId, version: originalVersion },
+              }) satisfies SessionSourcePredicate,
+          );
+          // Other source consumers keep their exact-version contract unless they opt in.
+          expect(readSessionSourceValidation(database, [exactSource]).refusedSource?.index).toBe(0);
+          expect(
+            readSessionSourceValidation(database, [
+              {
+                ...exactSource,
+                transcript: { ...exactSource.transcript, consistency: "prefix" },
+              },
+            ]).refusedSource,
+          ).toBeUndefined();
           const partial = {
             branch,
             writeTarget: branch,
@@ -189,7 +219,9 @@ describe("native retained conversation knowledge packets", () => {
             text: " Second fact.",
             complete: true,
           };
-          await expect(retainConversationKnowledgePacket(completion)).rejects.toThrow();
+          await expect(retainConversationKnowledgePacket(completion)).rejects.toThrow(
+            SessionTranscriptReadFenceError,
+          );
           expect(await reports()).toHaveLength(1);
           await retainConversationKnowledgePacket({
             ...completion,

@@ -174,6 +174,16 @@ microphone bytes nor a locally created output track count as playback readiness.
 Capture and audio delivery are gated until acknowledgment; preparation leases
 remain held until the session closes.
 
+When `audio.supportsInputEnd` is true in the create result, a capture client may
+end an utterance with `talk.session.appendAudio({ sessionId, audioBase64: "",
+endOfInput: true })`. The same request may carry the last real audio chunk;
+audio is appended before its boundary. Await that request before sending the
+next utterance. Empty audio without `endOfInput: true` is invalid. Providers
+without explicit input-boundary support reject the marker before accepting
+its audio. This signal finalizes retained real input through the native speech
+owner; it does not close the call, assert speech recognition, or bypass native
+admission. Missing transport data and disconnect remain cancellation conditions.
+
 Clients with echo-isolated capture and reversible playback gating may negotiate
 both `isolated-input` and `output-gate` in `capabilities`. The client must apply
 the `outputGate` events (`normal`, `duck`, `paused`) to playback. Omitting these

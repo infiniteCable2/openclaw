@@ -121,12 +121,12 @@ export function bindSqliteWorkerBackend(
     }
     assertTransactionUsable(database.db);
   };
-  const readRefusal = () =>
-    resolveTranscriptAppendRefusal(
-      readSessionEntryRow(database, resolved.sessionKey, "list")?.entry,
-      resolved,
-      { ...resolved, ...fence },
-    );
+  let lifecycleRevision: string | undefined;
+  const readRefusal = () => {
+    const entry = readSessionEntryRow(database, resolved.sessionKey, "list")?.entry;
+    lifecycleRevision = entry?.lifecycleRevision;
+    return resolveTranscriptAppendRefusal(entry, resolved, { ...resolved, ...fence });
+  };
   const deferredContextAdmission = new Error("Transcript report context admission deferred");
   const runReportTransaction = (
     operation: (
@@ -200,6 +200,7 @@ export function bindSqliteWorkerBackend(
           },
         };
         let abortedPartial: AbortedSessionTranscriptPartialResult | undefined;
+        let transcriptChanged = false;
         if (command.type === "abortedPartial") {
           abortedPartial = appendAbortedSessionTranscriptPartialInTransaction(
             database,
@@ -214,7 +215,7 @@ export function bindSqliteWorkerBackend(
             responseId: command.input.message.responseId,
           });
           if (!facts.suppressed) {
-            appendSelectedTranscriptReportInTransaction(
+            transcriptChanged = appendSelectedTranscriptReportInTransaction(
               database,
               resolved,
               facts.appendParentId,
@@ -259,7 +260,7 @@ export function bindSqliteWorkerBackend(
               throw deferredContextAdmission;
             }
           }
-          appendSelectedTranscriptReportInTransaction(
+          transcriptChanged = appendSelectedTranscriptReportInTransaction(
             database,
             resolved,
             plan.facts.appendParentId,
@@ -298,6 +299,19 @@ export function bindSqliteWorkerBackend(
           committed: true,
           projectionNeedsReconcile,
           cliHistoryChanged,
+          ...(transcriptChanged
+            ? {
+                transcriptUpdate: {
+                  target: {
+                    agentId: resolved.agentId,
+                    storePath: resolved.path,
+                    sessionKey: resolved.sessionKey,
+                    sessionId: resolved.sessionId,
+                  },
+                  lifecycleRevision,
+                },
+              }
+            : {}),
           ...(abortedPartial
             ? {
                 abortedPartial,

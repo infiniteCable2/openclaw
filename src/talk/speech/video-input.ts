@@ -20,6 +20,8 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
   const controller = new AbortController();
   const onsets = new Map<string, { startedAtMs: number; anchor?: VideoFrameSnapshot }>();
   const mergeKey = Symbol("speech-video-input");
+  // References only, bounded by one prepared input; the buffer remains the retention owner.
+  let referencedIds: string[] = [];
   let closed = false;
   const source = buffer
     ? createVideoFrameSource(
@@ -165,19 +167,43 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
       snapshot: VideoFrameSnapshot | undefined,
       signal?: AbortSignal,
     ): Promise<{ images: ImageContent[]; context?: string }> {
-      if (!snapshot) {
-        return { images: [] };
-      }
       const activeSignal = signal
         ? AbortSignal.any([signal, controller.signal])
         : controller.signal;
       const assertCurrent = () => {
         activeSignal.throwIfAborted();
-        if (closed || !snapshots.has(snapshot)) {
+        if (closed || (snapshot && !snapshots.has(snapshot))) {
           throw new Error("Video input snapshot is no longer active");
         }
       };
       assertCurrent();
+      const accessContext =
+        "Live frame access is enabled for this session; this does not imply an active camera. " +
+        "If video_inspect is available, use frameId with info for current retention, frames with profile detail/source to revisit, or save to keep a workspace image. " +
+        "Unpinned frames may expire or be evicted under memory pressure; session close removes all live frames. Saved workspace images are independent of the live buffer.";
+      if (!snapshot) {
+        if (!buffer) {
+          return { images: [] };
+        }
+        const retained = referencedIds.flatMap((id) => {
+          const frame = buffer.readMetadata(id);
+          return frame ? [frame] : [];
+        });
+        referencedIds = retained.map((frame) => frame.id);
+        return {
+          images: [],
+          context:
+            accessContext +
+            " No video frames were sampled for this input. " +
+            (retained.length
+              ? "Previously referenced frames still retained: " +
+                retained
+                  .map((frame) => `${frame.id} at ${new Date(frame.timestampMs).toISOString()}`)
+                  .join("; ") +
+                "."
+              : "No previously referenced frame is currently retained."),
+        };
+      }
       const images: ImageContent[] = [];
       const deliveredIds: string[] = [];
       let unavailable = 0;
@@ -205,6 +231,7 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
           unavailable++;
         }
       }
+      referencedIds = snapshot.frames.map((frame) => frame.id);
       return {
         images,
         context:
@@ -220,7 +247,8 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
           (unavailable
             ? `${unavailable} frame preview(s) unavailable. Do not claim inspection of missing previews. `
             : "") +
-          "Retention is not guaranteed: unpinned frames may be evicted sooner under memory pressure and all live frames disappear when the session closes. If video_inspect is available, request frameId with info for current retention, frames with profile detail/source to revisit it, or save to keep a workspace image independent of the live buffer. Expired frames are unavailable.",
+          "Retention is not guaranteed. " +
+          accessContext,
       };
     },
     close() {
@@ -234,6 +262,7 @@ export function createSpeechVideoInput(config: SpeechVideoConfig | undefined) {
         snapshot.release();
       }
       buffer?.close();
+      referencedIds = [];
     },
   };
 }

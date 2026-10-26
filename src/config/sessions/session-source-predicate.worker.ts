@@ -2,10 +2,15 @@ import { isDeepStrictEqual } from "node:util";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { selectConversationRowsFromDatabase } from "./session-accessor.sqlite-conversation-read.js";
 import { readExactSessionEntryRowValidated } from "./session-accessor.sqlite-entry-read.js";
+import { validateSessionTranscriptContextInDatabase } from "./session-accessor.sqlite-model-context.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import type { SessionEntryPatchCommit } from "./session-entry-patch.types.js";
 import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
-import type { SessionSourceValidation } from "./session-source-authority.js";
+import type {
+  SessionSourcePredicate,
+  SessionSourceValidation,
+} from "./session-source-authority.js";
+import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 export function readSessionSourceValidation(
@@ -63,11 +68,7 @@ export function readSessionSourceValidation(
       source.fields.some((field) => !isDeepStrictEqual(entry?.[field], source.expected?.[field])) ||
       matching?.length === 0 ||
       (members !== undefined && !isDeepStrictEqual(members, source.members)) ||
-      (source.transcript &&
-        !isDeepStrictEqual(
-          { ...readTranscriptContextVersionInTransaction(database, source.transcript.sessionId) },
-          source.transcript.version,
-        ))
+      !matchesTranscript(database, source)
     ) {
       return { ...validation, refusedSource: { index, facts: { entry, members } } };
     }
@@ -76,4 +77,38 @@ export function readSessionSourceValidation(
     }
   }
   return validation;
+}
+
+function matchesTranscript(
+  database: Parameters<typeof readExactSessionEntryRowValidated>[0],
+  source: SessionSourcePredicate,
+): boolean {
+  if (!source.transcript) {
+    return true;
+  }
+  if (source.transcript.consistency !== "prefix") {
+    return isDeepStrictEqual(
+      { ...readTranscriptContextVersionInTransaction(database, source.transcript.sessionId) },
+      source.transcript.version,
+    );
+  }
+  try {
+    validateSessionTranscriptContextInDatabase(
+      { db: database.db, path: source.source.path },
+      {
+        agentId: database.agentId,
+        path: source.source.path,
+        sessionKey: source.sessionKey,
+        sessionId: source.transcript.sessionId,
+      },
+      { version: source.transcript.version },
+      "prefix",
+    );
+    return true;
+  } catch (error) {
+    if (!(error instanceof SessionTranscriptReadFenceError)) {
+      throw error;
+    }
+    return false;
+  }
 }

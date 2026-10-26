@@ -8,6 +8,7 @@ import type { ModelFallbackRouteResolution } from "../../model-fallback.types.js
 import type { PreparedModelRuntimePluginGeneration } from "../../prepared-model-runtime.types.js";
 import type { BoundAgentRunSessionTarget } from "../../run-session-target.types.js";
 import type { CompactionRequestBudget } from "../../sessions/compaction/request-budget.js";
+import type { CustomMessage } from "../../sessions/messages.js";
 import type { SystemAgentToolOptions } from "../../tools/system-agent-tool.js";
 import type { DeferredEmbeddedRunLifecycleOwner } from "./deferred-lifecycle-owner.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
@@ -39,6 +40,12 @@ export type CompactionAccountingFact = Readonly<
 >;
 
 export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
+  /** Admit only prepared observations at an existing foreground model boundary. */
+  refreshConversationContext?: (request: {
+    signal?: AbortSignal;
+    /** Reserve native request capacity before committing an observation. */
+    canAdmit: (message: CustomMessage) => boolean;
+  }) => Promise<CustomMessage[]>;
   /** Replace transient fragments after host-owned admission in native lanes, before hydration. */
   prepareConversationContext?: (
     run: RunEmbeddedAgentParams,
@@ -85,7 +92,10 @@ export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
 };
 
 export type EmbeddedRunAttemptInternalParams = EmbeddedRunAttemptParams &
-  Pick<RunEmbeddedAgentInternalParams, "onContextAccountingEvent" | "onCompactionRequestBudget"> & {
+  Pick<
+    RunEmbeddedAgentInternalParams,
+    "onContextAccountingEvent" | "onCompactionRequestBudget" | "refreshConversationContext"
+  > & {
     /** The dispatch owner already selected this target, including any compaction successor. */
     preparedSessionTarget?: {
       readonly target: Readonly<BoundAgentRunSessionTarget & SessionTranscriptTargetBinding>;

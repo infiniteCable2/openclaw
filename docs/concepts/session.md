@@ -99,7 +99,7 @@ changed source prefixes are not acknowledged as complete.
 Switching back to `native` restores normal routing and leaves the internal root
 separate. Previously enrolled native conversations may catch up authorized
 branch-origin contributions; they do not automatically share newly produced
-native dialogue with one another. Their completed turns can publish passive
+native dialogue with one another. Their committed original messages can publish passive
 native-origin references, so re-enabling `branches` can catch up the intervening
 native work. Source mode is captured from the admitted turn, not guessed at
 settlement. Existing packet progress deduplicates repeated switches. A root's
@@ -127,14 +127,18 @@ Stopping audio cancels playback, not an already accepted agent task. Subsequent
 spoken input is persisted through native reply admission; a late transcript
 cannot steer a replacement backend merely because its session key matches.
 
-After a successful native user turn, the root records a bounded, text-free receipt
-pointing to the exact committed source occurrence. At the next turn, an eligible
-private branch can receive bounded, quoted differences from readable sibling
-branches. A completed-turn receipt quotes only its validated exchange; earlier
-interrupted work is not promoted into completed knowledge. Provider-owned realtime
-voice uses a distinct `utterance-observation` reference to the exact committed
-native transcript anchor. These observations quote persisted spoken dialogue,
-not consultation prompts or tool work, and never imply that a task completed.
+Each eligible original user message and saved assistant text message is journaled
+with its native transcript append. Publication starts asynchronously after commit,
+without waiting for the answer or task to finish. A steered input retains its own
+original admission rather than borrowing the running input's audience. The root
+records bounded, text-free `utterance-observation` references to exact committed
+occurrences. These quote saved dialogue, including commentary, not streamed tokens,
+hidden reasoning, consultation prompts or tool payloads; an intention is not proof
+that an action completed. Provider-owned realtime voice uses the same observation
+contract. An eligible private sibling can receive bounded, quoted differences at
+its next natural model step. Historical completed-turn receipts remain readable
+and quote only their validated exchanges; new terminal settlement does not publish
+another copy of messages already journaled independently.
 The two reference kinds use separate progress frontiers and deduplicate within
 their actual source incarnation and transcript generation. The root stores
 neither dialogue text nor fabricated model turns.
@@ -166,14 +170,32 @@ the whole contribution. Cancellation can therefore resume from durable progress
 without duplicating admitted packets. Progress means that text was admitted,
 not that a model understood every fact or executed an action.
 
-Before ordinary context hydration, the same native session lane checks capacity.
-When necessary, it invokes native compaction, then continues with the remaining
-packets. Client-side summaries must not use known partial-summary or no-summary
-fallbacks; successful native no-ops and server-owned compaction do not require a
-textual summary. A recoverable maintenance failure defers supplementary history;
-ordinary reply preflight and authority checks remain mandatory. As with normal
-session compaction, a summary is a lossy model interpretation, not lossless
-retention of every detail. Exact source history keeps its current read grants.
+In branch mode, a host-confirmed private recipient prepares missing observations
+in the background. Committed root updates wake its existing database-lifetime
+owner; notifications carry no dialogue or read permission. Preparation is bounded,
+coalesced, and read-only. It neither starts a model request nor writes concurrently
+into an active recipient. Disposable source and pending-packet caches are bounded;
+cache pressure defers preparation rather than acknowledging undelivered data.
+
+An existing embedded model request may consume a small ready batch, including at
+the next natural model step after tools. It does not wait for full freshness or
+uncached source hydration. Fresh native source/recipient authorization and exact
+range validation precede each durable packet write under the current writer.
+Append-only source growth uses native prefix proof; replacement, reset, and
+rewritten navigation remain fenced. Native prospective token accounting preserves
+the current request and response reserve. If an addition does not fit, it remains
+pending; synchronization never asks a model to compact, restarts generation, or
+creates a turn. Already admitted packets retain their positions during retries
+and live steering. New observations are quoted data, not new instructions or
+permission to repeat tools.
+They can inform subsequent model decisions within the existing task; provenance
+does not make them semantically inert or authorize a different task.
+
+Ordinary reply preflight, authority checks, and native compaction remain in charge
+of the actual dialogue. Previously enrolled native-mode continuity retains its
+existing pre-hydration maintenance path. As with normal session compaction, a
+summary is a lossy model interpretation, not lossless retention of every detail.
+Exact source history keeps its current read grants.
 Already admitted observations are recipient history and are never recopied merely
 because they left the active context. Native context metadata distinguishes
 summarized ancestors from active carriers that still need hydration checks, even

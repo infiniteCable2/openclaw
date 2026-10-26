@@ -64,6 +64,46 @@ describe("speech video input snapshot ownership", () => {
     f.input.close();
   });
 
+  it("describes the current live source before late camera input without inventing frames", async () => {
+    const f = fixture();
+    try {
+      await f.input.start(f.transport, vi.fn());
+      const prepared = await f.input.prepare(undefined);
+      expect(prepared.images).toEqual([]);
+      expect(prepared.context).toContain("does not imply an active camera");
+      expect(prepared.context).toContain("video_inspect");
+      expect(prepared.context).toContain("No previously referenced frame is currently retained");
+    } finally {
+      f.input.close();
+    }
+    await expect(f.input.prepare(undefined)).rejects.toThrow("no longer active");
+  });
+
+  it("revalidates earlier frame references on no-new-frame input without renewing retention", async () => {
+    const f = fixture();
+    try {
+      await f.input.start(f.transport, vi.fn());
+      f.frame();
+      const snapshot = f.input.capture(Date.now())!;
+      const id = snapshot.frames[0]!.id;
+      await f.input.prepare(snapshot);
+      snapshot.release();
+      vi.setSystemTime(Date.now() + 1000);
+      const revisiting = await f.input.prepare(undefined);
+      expect(revisiting.images).toEqual([]);
+      expect(revisiting.context).toContain("No video frames were sampled for this input");
+      expect(revisiting.context).toContain(id);
+      expect(f.input.source?.read(id)).toBeDefined();
+      vi.setSystemTime(Date.now() + 900_000);
+      const expired = await f.input.prepare(undefined);
+      expect(expired.context).not.toContain(id);
+      expect(expired.context).toContain("No previously referenced frame is currently retained");
+      expect(f.input.source?.read(id)).toBeUndefined();
+    } finally {
+      f.input.close();
+    }
+  });
+
   it("materializes native image parts and context from the exact registered snapshot", async () => {
     const f = fixture();
     try {

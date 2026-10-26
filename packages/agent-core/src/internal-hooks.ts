@@ -1,3 +1,4 @@
+import type { Message, StreamOptions } from "@openclaw/llm-core";
 import type {
   AgentLoopConfig,
   AfterToolOutcomeContext,
@@ -58,6 +59,34 @@ const steeringQueueObserverByCallback = new WeakMap<
   InternalSteeringGetter,
   InternalSteeringQueueObserver
 >();
+
+type InternalActiveResponseCallback = NonNullable<StreamOptions["onActiveResponse"]>;
+type InternalModelContextReceiver = (messages: readonly Message[]) => boolean;
+const modelContextReceiverByCallback = new WeakMap<
+  InternalActiveResponseCallback,
+  InternalModelContextReceiver
+>();
+
+/** Bind the final request projection to its exact, still-unopened response. */
+export function attachInternalModelContextReceiver(
+  callback: InternalActiveResponseCallback,
+  receive: InternalModelContextReceiver,
+): () => void {
+  modelContextReceiverByCallback.set(callback, receive);
+  return () => {
+    if (modelContextReceiverByCallback.get(callback) === receive) {
+      modelContextReceiverByCallback.delete(callback);
+    }
+  };
+}
+
+/** Native stream preparation may append context after the loop's initial conversion. */
+export function publishInternalModelContext(
+  callback: InternalActiveResponseCallback | undefined,
+  messages: readonly Message[],
+): boolean {
+  return callback ? (modelContextReceiverByCallback.get(callback)?.(messages) ?? false) : false;
+}
 
 export type InternalToolExecutionPreparation =
   | {

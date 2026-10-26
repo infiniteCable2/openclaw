@@ -9,7 +9,10 @@ import {
 } from "../../infra/sqlite-worker-identity.js";
 import type { SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
 import { isIncognitoSessionKey, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
-import { attachSessionTranscriptRunId } from "../../sessions/transcript-events.js";
+import {
+  attachSessionTranscriptRunId,
+  emitSessionTranscriptUpdate,
+} from "../../sessions/transcript-events.js";
 import {
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
@@ -51,6 +54,7 @@ import type {
   AbortedSessionTranscriptPartial,
   AbortedSessionTranscriptPartialResult,
   TranscriptReport,
+  TranscriptReportCommit,
   TranscriptReportContextAdmission,
   TranscriptReportWorkerOperations,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
@@ -260,11 +264,7 @@ async function withReportWorker<T>(
   run: (
     operation: Pick<SqliteWorkerStore<TranscriptReportWorkerOperations>, "execute">,
     assertCurrent: () => void,
-    publish: (result: {
-      projectionNeedsReconcile: boolean;
-      cliHistoryChanged?: boolean;
-      sessionEntryChanged?: boolean;
-    }) => void,
+    publish: (result: TranscriptReportCommit) => void,
   ) => Promise<Result<T, TranscriptAppendRefusal>>,
   sessionEntryCurrent?: SessionEntryCurrentCheck,
   incognito?: IncognitoTranscriptReportBinding,
@@ -447,6 +447,7 @@ async function withReportWorker<T>(
                 worker.run(
                   (operation) =>
                     run(operation, assertCurrent, (publication) => {
+                      assertCurrent();
                       if (publication.cliHistoryChanged || publication.sessionEntryChanged) {
                         publishSessionEntryWorkerMetadataInvalidation({
                           agentId: resolved.agentId,
@@ -460,6 +461,9 @@ async function withReportWorker<T>(
                           ...options,
                           preferredSessionId: resolved.sessionId,
                         });
+                      }
+                      if (publication.transcriptUpdate) {
+                        emitSessionTranscriptUpdate(publication.transcriptUpdate);
                       }
                     }),
                   assertCurrent,

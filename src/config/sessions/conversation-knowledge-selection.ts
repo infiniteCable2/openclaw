@@ -10,7 +10,7 @@ import {
 } from "./conversation-knowledge.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
 
-/** The current origin's latest completed report owns its observed progress, even when empty. */
+/** Current native assistant reports own observed progress, independently of task completion. */
 export function selectConversationKnowledgeObserved(
   events: readonly TranscriptEvent[],
   source: ConversationKnowledgeReference["source"],
@@ -18,11 +18,20 @@ export function selectConversationKnowledgeObserved(
   const currentOrigin = conversationKnowledgeOrigin(source);
   for (let index = events.length - 1; index >= 0; index--) {
     const record = asOptionalRecord(events[index]);
+    if (record?.type !== "custom_message") {
+      continue;
+    }
     const receipt =
-      record?.type === "custom_message" && record.customType === CONVERSATION_KNOWLEDGE_REPORT
+      record.customType === CONVERSATION_KNOWLEDGE_REPORT
         ? readConversationKnowledgeReceipt(record.details)
-        : undefined;
-    if (receipt?.origin === currentOrigin) {
+        : record.customType === CONVERSATION_UTTERANCE_REPORT
+          ? readConversationUtteranceObservation(record.details)
+          : undefined;
+    if (
+      receipt &&
+      conversationKnowledgeOrigin(receipt.source) === currentOrigin &&
+      (!("kind" in receipt) || (receipt.role === "assistant" && receipt.observed !== undefined))
+    ) {
       return receipt.observed ?? [];
     }
   }

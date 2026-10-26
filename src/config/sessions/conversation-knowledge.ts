@@ -11,6 +11,7 @@ import {
   readConversationKnowledgeRetirement,
   type ConversationKnowledgeRetirement,
 } from "./conversation-knowledge-retirement.js";
+import { readConversationObservationRole } from "./conversation-observation.js";
 import type { CustomMessageReport } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import { isReadableSessionMessage } from "./session-entry-codec.js";
@@ -425,7 +426,7 @@ export function isCompletedConversationKnowledge(
   return completedConversationKnowledgeStart(receipt, events) !== undefined;
 }
 
-/** Only the exact committed realtime utterance is data; adjacent tool work is never implied. */
+/** Only the exact committed original occurrence is data; adjacent tool work is never implied. */
 export function isConversationUtteranceObservation(
   receipt: ConversationUtteranceObservation,
   events: readonly TranscriptEvent[],
@@ -434,26 +435,26 @@ export function isConversationUtteranceObservation(
     (candidate) => asOptionalRecord(candidate)?.id === receipt.through.entryId,
   );
   return (
-    committedVoiceRole(asOptionalRecord(events[index])) === receipt.role &&
+    committedConversationRole(asOptionalRecord(events[index])) === receipt.role &&
     isWithinPrivateAudience(receipt, events, index)
   );
 }
 
-function committedVoiceRole(event: Record<string, unknown> | undefined) {
-  const message = asOptionalRecord(event?.message);
-  const provenance = asOptionalRecord(message?.provenance);
-  const role = message?.role;
-  return event?.type === "message" &&
-    message &&
-    (role === "user" || role === "assistant") &&
-    provenance?.kind === "realtime_voice" &&
-    provenance.sourceChannel === "talk" &&
-    (role !== "assistant" || (message.api === "realtime" && message.stopReason === "stop")) &&
-    !readSessionTranscriptRunId(message) &&
-    (!Array.isArray(message.content) ||
-      message.content.every((block) => asOptionalRecord(block)?.type === "text"))
-    ? role
-    : undefined;
+function committedConversationRole(event: Record<string, unknown> | undefined) {
+  return event?.type === "message" ? readConversationObservationRole(event.message) : undefined;
+}
+
+/** A completed observed frontier covers only comparable endpoints of its original source. */
+export function isConversationKnowledgeReferenceObserved(
+  receipt: ConversationKnowledgeReference,
+  frontier: ConversationKnowledgeFrontier | undefined,
+): boolean {
+  return (
+    frontier !== undefined &&
+    frontier.origin === receipt.origin &&
+    frontier.generation === receipt.through.generation &&
+    frontier.throughRawSeq >= receipt.through.rawSeq
+  );
 }
 
 export function projectConversationKnowledge(
@@ -463,12 +464,7 @@ export function projectConversationKnowledge(
   sourceAudience: "private-direct" | "shared" | "unknown" = "unknown",
   options: { maxChars?: number; offset?: number } = {},
 ) {
-  if (
-    frontier &&
-    frontier.origin === receipt.origin &&
-    frontier.generation === receipt.through.generation &&
-    frontier.throughRawSeq >= receipt.through.rawSeq
-  ) {
+  if (isConversationKnowledgeReferenceObserved(receipt, frontier)) {
     return undefined;
   }
   const utterance = "kind" in receipt;
@@ -502,7 +498,7 @@ export function projectConversationKnowledge(
     if (record?.type !== "message" || !message) {
       continue;
     }
-    if (utterance && !committedVoiceRole(record)) {
+    if (utterance && !committedConversationRole(record)) {
       continue;
     }
     if (message.role === "user") {

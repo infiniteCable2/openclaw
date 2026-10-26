@@ -29,7 +29,7 @@ type TalkSpeechRelayRecord = {
   id: string;
   connId: string;
   sessionTarget: TalkSessionStorageTarget;
-  appendAudio(audioBase64: string): void;
+  appendAudio(audioBase64: string, endOfInput?: boolean): Promise<void>;
   acknowledgeMark(markName: string): void;
   cancelOutput: SpeechSessionHandle["cancelOutput"];
   steer: SpeechSessionHandle["steer"];

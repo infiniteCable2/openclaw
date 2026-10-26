@@ -146,8 +146,7 @@ async function executeAgentTurnInternalLoop(
     run.authProfileId = err.authProfileId;
     run.authProfileIdSource = err.authProfileId ? err.authProfileIdSource : undefined;
     run.autoFallbackPrimaryProbe = undefined;
-    // Keep runtime paired with the error's model/auth winner even if the
-    // active in-memory session snapshot lags the persisted directive write.
+    // Keep the error's model/auth winner even if the in-memory directive is stale.
     liveModelSwitchRuntimeEntry = { agentRuntimeOverride: err.agentRuntimeOverride };
   };
 
@@ -589,16 +588,16 @@ async function executeAgentTurnOutcome(
             : undefined,
           executionParams.followupRun.run.internalEventExecution?.assertCurrent,
         ]);
-        const conversationKnowledge =
+        const knowledgeModule =
           resolveReplyRunTrigger(executionParams) === "user"
-            ? (await import("./conversation-knowledge.js")).createReplyConversationKnowledgeTurn({
-                turn: executionParams,
-                originalSource,
-                getRuntimeConfig: () =>
-                  resolveQueuedReplyRuntimeConfig(executionParams.followupRun.run.config),
-              })
+            ? await import("./conversation-knowledge-turn.js")
             : undefined;
-        const runSource = conversationKnowledge?.assertCurrent ?? originalSource;
+        const conversationKnowledge = knowledgeModule?.createReplyConversationKnowledgeTurn({
+          turn: executionParams,
+          originalSource,
+          getRuntimeConfig: () =>
+            resolveQueuedReplyRuntimeConfig(executionParams.followupRun.run.config),
+        });
         const preparedRunAdmission = prepareChannelRunAdmission({
           sourceContext: executionParams.followupRun.run,
           cfg: resolveQueuedReplyRuntimeConfig(executionParams.followupRun.run.config),
@@ -609,7 +608,7 @@ async function executeAgentTurnOutcome(
           operatorAuthority: executionParams.followupRun.operatorAuthority,
           evidence: executionParams.followupRun.channelAdmissionEvidence,
           gatewayLocalUserIngress: executionParams.followupRun.gatewayLocalUserIngress,
-          assertSourceCurrent: runSource,
+          assertSourceCurrent: conversationKnowledge?.assertCurrent ?? originalSource,
           onAdmitted: (context) => {
             bindGatewayContextResolver(context, gatewayContextResolver);
             admittedRunContext.current = context;
@@ -645,9 +644,9 @@ async function executeAgentTurnOutcome(
                   {
                     ...executionParams,
                     prepareConversationContext: conversationKnowledge?.prepareHistory,
+                    refreshConversationContext: conversationKnowledge?.refreshPrepared,
                     prepareConversationSnapshot: conversationKnowledge?.prepareSnapshot,
                     speechPresentationRun,
-                    runtimeContextFragments: executionParams.runtimeContextFragments,
                   },
                   runId,
                   commitTerminalOutcome,
@@ -662,8 +661,7 @@ async function executeAgentTurnOutcome(
                 : execute();
             },
           );
-          // Finish audio before the small durable acceptance. Root publication
-          // belongs to its independent journal lifecycle, not this delivery.
+          // Finish audio before durable acceptance; the independent journal owns publication.
           await conversationKnowledge?.record(result);
           return result;
         } finally {

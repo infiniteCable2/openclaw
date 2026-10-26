@@ -3,6 +3,8 @@ import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/
 import {
   CONVERSATION_KNOWLEDGE_REPORT,
   conversationKnowledgeOrigin,
+  readConversationKnowledgeReceipt,
+  projectConversationKnowledge,
 } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
@@ -14,6 +16,15 @@ const source = vi.hoisted(() => ({
   grant: vi.fn(),
   context: vi.fn(),
   retain: vi.fn(),
+  anchors: vi.fn(),
+  contribution: vi.fn(),
+  progress: vi.fn(),
+}));
+const preparationYield = vi.hoisted(() => vi.fn());
+// mock-isolation: Control the native cooperative boundary without scheduling media or timers.
+vi.mock("node:timers/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:timers/promises")>()),
+  setImmediate: preparationYield,
 }));
 // mock-isolation: Test silent source gaps without starting transcript workers.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
@@ -23,8 +34,14 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
 }));
 // mock-isolation: Observe packet custody without starting native packet storage.
 vi.mock("../../config/sessions/conversation-knowledge-packets.js", () => ({
-  conversationKnowledgeContributionId: () => "synthetic-contribution",
-  readConversationKnowledgePacketProgress: async () => new Map(),
+  createConversationKnowledgePacketReport: ({ text }: { text: string }) => ({
+    customType: "synthetic-knowledge-packet",
+    content: text,
+    display: false,
+    details: { packetId: "synthetic-packet" },
+  }),
+  conversationKnowledgeContributionId: source.contribution,
+  readConversationKnowledgePacketProgress: source.progress,
   readActiveConversationKnowledgePacketIds: async () => [],
   retainConversationKnowledgePacket: source.retain,
 }));
@@ -64,20 +81,29 @@ vi.mock("../../gateway/session-transcript-read-authority.js", () => ({
 vi.mock("../../config/sessions/session-transcript-context-read.js", () => ({
   readSessionTranscriptModelContextAsync: source.context,
 }));
+// mock-isolation: Prepared ranges use native proof results, never real transcript workers here.
+vi.mock("../../config/sessions/session-transcript-anchor-read.js", () => ({
+  readSessionTranscriptAnchorsAsync: source.anchors,
+}));
 
+import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
 
 beforeEach(() => {
   for (const mock of Object.values(source)) {
     mock.mockReset();
   }
+  source.contribution.mockReturnValue("synthetic-contribution");
+  source.progress.mockImplementation(async () => new Map());
+  preparationYield.mockReset().mockResolvedValue(undefined);
 });
 
 describe("related-history source custody without model status", () => {
-  it.each(["missing-range", "unverified-exchange", "admission-refused", "admitted"] as const)(
-    "retains source authority only for actual imported data (%s)",
+  it.each(["admission", "preparation", "saturated"] as const)(
+    "keeps large earlier contributions from starving later sources (%s)",
     async (kind) => {
       const participant = { type: "profile" as const, id: "example-person" };
+      const audienceIdentity = conversationKnowledgeParticipantIdentity(participant);
       const branch = {
         agentId: "example",
         sessionKey: "agent:example:recipient",
@@ -90,90 +116,135 @@ describe("related-history source custody without model status", () => {
           lifecycleRevision: "original",
         },
       };
-      const donor = {
-        agentId: branch.agentId,
-        sessionKey: "agent:example:donor",
-        sessionId: "donor",
-        lifecycleRevision: "original",
-      };
-      const audience = conversationKnowledgeParticipantIdentity(participant);
-      const release = vi.fn();
-      const targetRelease = vi.fn();
-      let readable = true;
-      const assertSource = () => {
-        if (!readable) {
-          throw new Error("Diagnostic source revoked");
-        }
-      };
-      source.branch.mockResolvedValue(branch);
-      source.facts
-        .mockResolvedValueOnce({
-          audience: "private-direct",
-          audienceIdentity: audience,
-          assertCurrent() {},
-          release: targetRelease,
-        })
-        .mockResolvedValueOnce({
-          audience: "private-direct",
-          audienceIdentity: audience,
-          assertCurrent: assertSource,
-          release: vi.fn(),
+      const receipts = ["large", "small"].map((id) => {
+        const donor = {
+          agentId: branch.agentId,
+          sessionKey: `agent:example:${id}`,
+          sessionId: id,
+          lifecycleRevision: "original",
+        };
+        const receipt = readConversationKnowledgeReceipt({
+          version: 1 as const,
+          sourceMode: "branches" as const,
+          source: donor,
+          origin: conversationKnowledgeOrigin(donor),
+          runId: `${id}-run`,
+          through: {
+            ...donor,
+            storePath: branch.storePath,
+            generation: "original",
+            entryId: `${id}-answer`,
+            rawSeq: 2,
+            activeMessagePosition: 1,
+            effectiveParentId: `${id}-question`,
+          },
         });
-      source.grant.mockResolvedValue({
-        sources: [{ ...donor, canonicalKey: donor.sessionKey, storePath: branch.storePath }],
-        assertCurrent: assertSource,
-        release,
+        if (!receipt) {
+          throw new Error("Synthetic fairness receipt is invalid");
+        }
+        return receipt;
       });
-      source.root.mockResolvedValue([
-        {
+      source.branch.mockResolvedValue(branch);
+      source.root.mockResolvedValue(
+        receipts.map((details) => ({
           type: "custom_message",
           customType: CONVERSATION_KNOWLEDGE_REPORT,
-          details: {
-            version: 1,
-            sourceMode: "branches",
-            source: donor,
-            origin: conversationKnowledgeOrigin(donor),
-            runId: "donor-run",
-            through: {
-              ...donor,
-              storePath: branch.storePath,
-              generation: "original",
-              entryId: "answer",
-              rawSeq: 2,
-              activeMessagePosition: 1,
-              effectiveParentId: "question",
+          details,
+        })),
+      );
+      source.contribution.mockImplementation((receipt) => receipt.through.entryId);
+      source.facts.mockImplementation(async () => ({
+        audience: "private-direct",
+        audienceIdentity,
+        assertCurrent() {},
+        release() {},
+      }));
+      source.grant.mockImplementation(async ({ sources }) => ({
+        sources: sources.map((donor: (typeof receipts)[number]["source"]) => ({
+          ...donor,
+          canonicalKey: donor.sessionKey,
+          storePath: branch.storePath,
+        })),
+        assertCurrent() {},
+        release() {},
+      }));
+      source.anchors.mockImplementation(async (_target, _selection, _signal, consume) => {
+        consume({ contextValidated: true });
+      });
+      const progress = new Map<string, { complete: boolean; nextOffset: number }>();
+      source.progress.mockImplementation(async () => new Map(progress));
+      source.retain.mockImplementation(async (packet) => {
+        progress.set(packet.receipt.through.entryId, {
+          complete: packet.complete,
+          nextOffset: packet.nextOffset,
+        });
+        return "saved-packet";
+      });
+      source.context.mockImplementation(async (target, consume) => {
+        const receipt = receipts.find(
+          (candidate) => candidate.source.sessionId === target.sessionId,
+        )!;
+        return consume({
+          version: { generation: "original", rawSeq: 2, updatedAt: 1 },
+          events: [
+            {
+              type: "message",
+              id: `${receipt.source.sessionId}-question`,
+              message: {
+                role: "user",
+                content: "Synthetic source observation. ".repeat(receipt === receipts[0] ? 500 : 1),
+              },
             },
-          },
-        },
-      ]);
-      if (kind === "missing-range") {
-        source.context.mockRejectedValue(new SessionTranscriptReadFenceError("Missing range"));
-      } else if (kind === "unverified-exchange") {
-        source.context.mockImplementation(async (_target, consume) => consume({ events: [] }));
-      } else {
-        source.retain.mockResolvedValue(kind === "admitted" ? "saved-packet" : undefined);
-        source.context.mockImplementation(async (_target, consume) =>
-          consume({
-            version: { generation: "original", rawSeq: 2, updatedAt: 1 },
-            events: [
-              {
-                type: "message",
-                id: "question",
-                message: { role: "user", content: "The synthetic fact is blue." },
+            {
+              type: "message",
+              id: receipt.through.entryId,
+              message: {
+                role: "assistant",
+                content: "Understood.",
+                stopReason: "stop",
+                __openclaw: { runId: receipt.runId },
               },
-              {
-                type: "message",
-                id: "answer",
-                message: {
-                  role: "assistant",
-                  content: "Blue, understood.",
-                  stopReason: "stop",
-                  __openclaw: { runId: "donor-run" },
+            },
+          ],
+        });
+      });
+      const cache = createConversationKnowledgeSourceCache(
+        kind === "saturated" ? 4_500 : undefined,
+      );
+      const stage = vi.spyOn(cache, "stage");
+      for (const receipt of kind === "admission" ? receipts : []) {
+        const large = receipt === receipts[0];
+        cache.stage(receipt.through.entryId, 0, {
+          part: {
+            origin: receipt.origin,
+            text: `${receipt.source.sessionId} observation`,
+            complete: !large,
+            nextOffset: large ? 10 : undefined,
+            frontier: large
+              ? undefined
+              : {
+                  origin: receipt.origin,
+                  generation: receipt.through.generation,
+                  throughRawSeq: receipt.through.rawSeq,
+                  throughEntryId: receipt.through.entryId,
                 },
-              },
-            ],
-          }),
-        );
+          },
+          version: { generation: "original", rawSeq: 2, updatedAt: 1 },
+          through: receipt.through,
+        });
+        if (large) {
+          cache.stage(receipt.through.entryId, 10, {
+            part: {
+              origin: receipt.origin,
+              text: "Further large observation",
+              complete: false,
+              nextOffset: 20,
+              frontier: undefined,
+            },
+            version: { generation: "original", rawSeq: 2, updatedAt: 1 },
+            through: receipt.through,
+          });
+        }
       }
       const reader: SessionEntryCohortReader = {
         database: { agentId: branch.agentId, path: branch.storePath, env: {} },
@@ -182,42 +253,379 @@ describe("related-history source custody without model status", () => {
         storePaths: [branch.storePath],
         assertCurrent() {},
         async withRead() {
-          throw new Error("A source gap must never write a packet");
+          throw new Error("Mock packet admission owns this boundary");
         },
       };
-      const prepared = await prepareReplyConversationKnowledge({
+      const common = {
         reader,
         sessionId: branch.sessionId,
         assertCurrent() {},
         originalParticipant: participant,
         getRuntimeConfig: () => ({
-          agents: { entries: { example: { conversationMode: "branches" } } },
+          agents: { entries: { example: { conversationMode: "branches" as const } } },
         }),
-        retainInHistory: { writeTarget: branch, maintainContext: async () => {} },
+        readyOnly: kind === "admission",
+        sourceCache: cache,
+        ...(kind === "admission"
+          ? {
+              packetBudget: 1,
+              retainInHistory: { writeTarget: branch, maintainContext: async () => {} },
+            }
+          : { preparationOnly: true, sourceBudget: 8 }),
+      };
+      const first = await prepareReplyConversationKnowledge(common);
+      if (kind !== "admission") {
+        try {
+          expect(source.retain).not.toHaveBeenCalled();
+          expect(stage.mock.calls.slice(0, 2).map(([id]) => id)).toEqual([
+            "large-answer",
+            "large-answer",
+          ]);
+          if (kind === "saturated") {
+            expect(stage.mock.results.map((result) => result.value)).toEqual([true, false]);
+            expect(first?.preparationSaturated).toBe(true);
+            expect(first?.nextSourceOffset).toBe(0);
+          } else {
+            expect(cache.peek("small-answer", 0)).toBeDefined();
+            expect(stage.mock.calls.map(([id]) => id)).toEqual([
+              "large-answer",
+              "large-answer",
+              "small-answer",
+            ]);
+            expect(first?.preparationSaturated).toBe(false);
+          }
+        } finally {
+          first?.release();
+        }
+        return;
+      }
+      try {
+        expect(first?.pendingPackets).toBe(true);
+        expect(first?.nextSourceOffset).toBe(1);
+        expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
+          "large-answer",
+        ]);
+      } finally {
+        first?.release();
+      }
+      const second = await prepareReplyConversationKnowledge({
+        ...common,
+        sourceOffset: first?.nextSourceOffset,
       });
       try {
-        expect(prepared?.fragments).toEqual([]);
-        if (kind === "admitted") {
-          expect(release).not.toHaveBeenCalled();
-        } else {
-          expect(release).toHaveBeenCalledOnce();
-        }
-        if (kind === "missing-range" || kind === "unverified-exchange") {
-          expect(source.retain).not.toHaveBeenCalled();
-        } else {
-          expect(source.retain).toHaveBeenCalledOnce();
-        }
-        readable = false;
-        if (kind === "admitted") {
-          expect(() => prepared?.assertCurrent()).toThrow("Diagnostic source revoked");
-        } else {
-          expect(() => prepared?.assertCurrent()).not.toThrow();
-        }
+        expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
+          "large-answer",
+          "small-answer",
+        ]);
+        expect(second?.nextSourceOffset).toBe(0);
+        expect(source.context).not.toHaveBeenCalled();
       } finally {
-        prepared?.release();
+        second?.release();
       }
-      expect(release).toHaveBeenCalledOnce();
-      expect(targetRelease).toHaveBeenCalledOnce();
     },
   );
+  it.each([
+    "missing-range",
+    "unverified-exchange",
+    "admission-refused",
+    "admitted",
+    "prepare-only",
+    "prepare-yield",
+    "prepare-yield-revoked",
+    "prepare-yield-canceled",
+    "ready-empty",
+    "ready-admitted",
+    "ready-stale",
+    "capacity-deferred",
+    "source-changed",
+    "snapshot-observed",
+  ] as const)("retains source authority only for actual imported data (%s)", async (kind) => {
+    const participant = { type: "profile" as const, id: "example-person" };
+    const branch = {
+      agentId: "example",
+      sessionKey: "agent:example:recipient",
+      sessionId: "recipient",
+      lifecycleRevision: "original",
+      storePath: "/synthetic/agent.sqlite",
+      root: {
+        sessionKey: "agent:example:root",
+        sessionId: "root",
+        lifecycleRevision: "original",
+      },
+    };
+    const donor = {
+      agentId: branch.agentId,
+      sessionKey: "agent:example:donor",
+      sessionId: "donor",
+      lifecycleRevision: "original",
+    };
+    const audience = conversationKnowledgeParticipantIdentity(participant);
+    const release = vi.fn();
+    const targetRelease = vi.fn();
+    let readable = true;
+    const cancellation = new AbortController();
+    const assertSource = () => {
+      if (!readable) {
+        throw new Error("Diagnostic source revoked");
+      }
+    };
+    source.branch.mockResolvedValue(branch);
+    source.facts
+      .mockResolvedValueOnce({
+        audience: "private-direct",
+        audienceIdentity: audience,
+        assertCurrent() {},
+        release: targetRelease,
+      })
+      .mockResolvedValueOnce({
+        audience: "private-direct",
+        audienceIdentity: audience,
+        assertCurrent: assertSource,
+        release: vi.fn(),
+      });
+    source.grant.mockResolvedValue({
+      sources: [{ ...donor, canonicalKey: donor.sessionKey, storePath: branch.storePath }],
+      assertCurrent: assertSource,
+      release,
+    });
+    source.root.mockResolvedValue([
+      {
+        type: "custom_message",
+        customType: CONVERSATION_KNOWLEDGE_REPORT,
+        details: {
+          version: 1,
+          sourceMode: "branches",
+          source: donor,
+          origin: conversationKnowledgeOrigin(donor),
+          runId: "donor-run",
+          through: {
+            ...donor,
+            storePath: branch.storePath,
+            generation: "original",
+            entryId: "answer",
+            rawSeq: 2,
+            activeMessagePosition: 1,
+            effectiveParentId: "question",
+          },
+        },
+      },
+    ]);
+    if (kind === "snapshot-observed") {
+      const reports = await source.root();
+      const receipt = readConversationKnowledgeReceipt(reports[0].details)!;
+      source.root.mockResolvedValue([
+        ...reports,
+        {
+          type: "custom_message",
+          customType: CONVERSATION_KNOWLEDGE_REPORT,
+          details: {
+            ...receipt,
+            source: branch,
+            origin: conversationKnowledgeOrigin(branch),
+            runId: "recipient-run",
+            through: {
+              ...receipt.through,
+              ...branch,
+              entryId: "recipient-answer",
+            },
+            observed: [
+              {
+                origin: receipt.origin,
+                generation: receipt.through.generation,
+                throughRawSeq: receipt.through.rawSeq,
+                throughEntryId: receipt.through.entryId,
+              },
+            ],
+          },
+        },
+      ]);
+    }
+    if (kind === "missing-range") {
+      source.context.mockRejectedValue(new SessionTranscriptReadFenceError("Missing range"));
+    } else if (kind === "unverified-exchange") {
+      source.context.mockImplementation(async (_target, consume) => consume({ events: [] }));
+    } else {
+      source.retain.mockResolvedValue(
+        kind === "admitted" || kind === "ready-admitted" ? "saved-packet" : undefined,
+      );
+      if (kind === "source-changed") {
+        source.retain.mockRejectedValue(new SessionTranscriptReadFenceError("Source changed"));
+      }
+      source.context.mockImplementation(async (_target, consume) =>
+        consume({
+          version: { generation: "original", rawSeq: 2, updatedAt: 1 },
+          events: [
+            {
+              type: "message",
+              id: "question",
+              message: {
+                role: "user",
+                content: "The synthetic fact is blue.".repeat(
+                  kind.startsWith("prepare-yield") ? 400 : 1,
+                ),
+              },
+            },
+            {
+              type: "message",
+              id: "answer",
+              message: {
+                role: "assistant",
+                content: "Blue, understood.",
+                stopReason: "stop",
+                __openclaw: { runId: "donor-run" },
+              },
+            },
+          ],
+        }),
+      );
+    }
+    const reader: SessionEntryCohortReader = {
+      database: { agentId: branch.agentId, path: branch.storePath, env: {} },
+      logicalAgentId: branch.agentId,
+      sessionKey: branch.sessionKey,
+      storePaths: [branch.storePath],
+      assertCurrent() {},
+      async withRead() {
+        throw new Error("A source gap must never write a packet");
+      },
+    };
+    const readyOnly =
+      kind.startsWith("ready-") || kind === "capacity-deferred" || kind === "snapshot-observed";
+    const cache = createConversationKnowledgeSourceCache();
+    const stage = vi.spyOn(cache, "stage");
+    if (kind.startsWith("prepare-yield")) {
+      preparationYield.mockImplementationOnce(async (_value, options) => {
+        expect(options.signal).toBe(cancellation.signal);
+        expect(stage).toHaveBeenCalledOnce();
+        if (kind === "prepare-yield-revoked") {
+          readable = false;
+        } else if (kind === "prepare-yield-canceled") {
+          cancellation.abort(new Error("Synthetic preparation canceled"));
+        }
+      });
+    }
+    if (readyOnly && kind !== "ready-empty") {
+      const reports = await source.root();
+      const receipt = readConversationKnowledgeReceipt(reports[0].details)!;
+      const context = await source.context(undefined, (value: unknown) => value);
+      const part = projectConversationKnowledge(
+        receipt,
+        context.events,
+        undefined,
+        "private-direct",
+      )!;
+      expect(
+        cache.stage("synthetic-contribution", 0, {
+          part,
+          version: context.version,
+          through: receipt.through,
+        }),
+      ).toBe(true);
+      source.context.mockClear();
+    }
+    source.anchors.mockImplementation(async (_target, _selection, _signal, consume) => {
+      if (kind === "ready-stale") {
+        throw new SessionTranscriptReadFenceError("Stale prepared range");
+      }
+      consume({ contextValidated: true });
+    });
+    const packets: unknown[] = [];
+    const preparation = prepareReplyConversationKnowledge({
+      reader,
+      sessionId: branch.sessionId,
+      assertCurrent() {},
+      originalParticipant: participant,
+      signal: cancellation.signal,
+      getRuntimeConfig: () => ({
+        agents: { entries: { example: { conversationMode: "branches" } } },
+      }),
+      ...(kind.startsWith("prepare-")
+        ? { preparationOnly: true, sourceCache: cache }
+        : kind !== "snapshot-observed"
+          ? {
+              retainInHistory: { writeTarget: branch, maintainContext: async () => {} },
+            }
+          : {}),
+      ...(readyOnly
+        ? {
+            readyOnly: true,
+            sourceCache: cache,
+            canAdmitPacket: () => kind !== "capacity-deferred",
+            onPacket: (packet: unknown) => packets.push(packet),
+          }
+        : {}),
+    });
+    if (kind === "prepare-yield-revoked" || kind === "prepare-yield-canceled") {
+      await expect(preparation).rejects.toThrow(
+        kind === "prepare-yield-revoked"
+          ? "Diagnostic source revoked"
+          : "Synthetic preparation canceled",
+      );
+      expect(preparationYield).toHaveBeenCalledOnce();
+      expect(stage).toHaveBeenCalledOnce();
+      expect(source.retain).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+      expect(targetRelease).toHaveBeenCalledOnce();
+      return;
+    }
+    const prepared = await preparation;
+    try {
+      expect(prepared?.fragments).toEqual([]);
+      if (kind === "admitted" || kind === "ready-empty" || kind === "snapshot-observed") {
+        expect(release).not.toHaveBeenCalled();
+      } else {
+        expect(release).toHaveBeenCalledOnce();
+      }
+      if (
+        [
+          "missing-range",
+          "unverified-exchange",
+          "prepare-only",
+          "prepare-yield",
+          "ready-empty",
+          "ready-stale",
+          "capacity-deferred",
+          "snapshot-observed",
+        ].includes(kind)
+      ) {
+        expect(source.retain).not.toHaveBeenCalled();
+      } else {
+        expect(source.retain).toHaveBeenCalledOnce();
+      }
+      if (readyOnly) {
+        expect(source.context).not.toHaveBeenCalled();
+        expect(packets).toHaveLength(kind === "ready-admitted" ? 1 : 0);
+      }
+      if (kind === "snapshot-observed") {
+        expect(source.grant).not.toHaveBeenCalled();
+        expect(source.anchors).not.toHaveBeenCalled();
+        expect(cache.peek("synthetic-contribution", 0)).toBeDefined();
+      }
+      if (kind === "prepare-only") {
+        expect(cache.peek("synthetic-contribution", 0)).toBeDefined();
+      }
+      if (kind === "prepare-yield") {
+        expect(preparationYield).toHaveBeenCalledTimes(2);
+        expect(stage).toHaveBeenCalledTimes(2);
+      }
+      if (kind === "ready-stale") {
+        expect(cache.peek("synthetic-contribution", 0)).toBeUndefined();
+      }
+      if (kind === "capacity-deferred" || kind === "ready-stale" || kind === "source-changed") {
+        expect(prepared?.pendingPackets).toBe(true);
+      }
+      readable = false;
+      if (kind === "admitted") {
+        expect(() => prepared?.assertCurrent()).toThrow("Diagnostic source revoked");
+      } else {
+        expect(() => prepared?.assertCurrent()).not.toThrow();
+      }
+    } finally {
+      prepared?.release();
+    }
+    expect(release).toHaveBeenCalledTimes(
+      kind === "ready-empty" || kind === "snapshot-observed" ? 0 : 1,
+    );
+    expect(targetRelease).toHaveBeenCalledOnce();
+  });
 });

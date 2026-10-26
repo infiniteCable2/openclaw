@@ -11,10 +11,15 @@ import type {
   AssistantMessage,
   AssistantMessageEvent,
   Context,
+  Message,
   ToolResultMessage,
+  StreamOptions,
 } from "@openclaw/llm-core";
 import { uuidv7 } from "./harness/session/uuid.js";
-import { copyInternalToolResultState } from "./internal-hooks.js";
+import {
+  attachInternalModelContextReceiver,
+  copyInternalToolResultState,
+} from "./internal-hooks.js";
 import {
   type AgentCoreStreamRuntimeDeps,
   resolveAgentCoreStreamFn,
@@ -149,6 +154,7 @@ export async function streamAgentResponse(
     return config.convertToLlm(normalizeCoreContextMessages(transformed));
   };
   const llmMessages = await convertMessages(sourceMessages);
+  let requestMessages: readonly Message[] = llmMessages;
   let requestPrefix: string | undefined;
 
   const llmContext: Context = {
@@ -177,15 +183,31 @@ export async function streamAgentResponse(
     }
   };
   const steering = createStreamSteering(config, executionSignal, async (pending) => {
-    requestPrefix ??= JSON.stringify(llmMessages);
+    requestPrefix ??= JSON.stringify(requestMessages);
     const projected = await convertMessages([...sourceMessages, ...pending], executionSignal);
     // Live input can only append to the active request. Pruning or rewriting
     // its prefix needs ordinary queued delivery through a fresh request.
-    if (JSON.stringify(projected.slice(0, llmMessages.length)) !== requestPrefix) {
+    if (JSON.stringify(projected.slice(0, requestMessages.length)) !== requestPrefix) {
       return [];
     }
-    return projected.slice(llmMessages.length);
+    return projected.slice(requestMessages.length);
   });
+  const onActiveResponse: NonNullable<StreamOptions["onActiveResponse"]> = (control) => {
+    // Once a provider accepts live input, its prefix cannot change underneath it.
+    releaseModelContextReceiver();
+    return steering.onActiveResponse(control);
+  };
+  const releaseModelContextReceiver = attachInternalModelContextReceiver(
+    onActiveResponse,
+    (messages) => {
+      if (executionSignal.aborted) {
+        return false;
+      }
+      requestMessages = messages === llmMessages ? llmMessages : [...messages];
+      requestPrefix = undefined;
+      return true;
+    },
+  );
   const executedIds = new Set<string>();
   const batches: ExecutedToolCallBatch[] = [];
   let executions = Promise.resolve();
@@ -260,7 +282,7 @@ export async function streamAgentResponse(
       ...config,
       apiKey: resolvedApiKey,
       signal: executionSignal,
-      onActiveResponse: steering.onActiveResponse,
+      onActiveResponse,
       asyncToolExecution: true,
     });
 
@@ -430,6 +452,7 @@ export async function streamAgentResponse(
       runtime,
     );
   } finally {
+    releaseModelContextReceiver();
     executionAbort.abort(new Error("Model response closed"));
     await executions;
     await steering.finish();

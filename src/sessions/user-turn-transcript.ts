@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { withConversationPublicationInput } from "../config/sessions/conversation-publication-context.js";
 import {
   bindSessionPendingInputSources,
   persistSessionTranscriptTurn,
@@ -455,9 +456,9 @@ export function createUserTurnTranscriptRecorder(
           });
         // Collection can resolve its media lazily during admission. Bind custody
         // here too so the canonical append always consumes the exact sources.
-        return await (pendingInput
-          ? withSessionPendingInputPersistence(pendingInput, persist)
-          : persist());
+        return await withConversationPublicationInput(recorder, () =>
+          pendingInput ? withSessionPendingInputPersistence(pendingInput, persist) : persist(),
+        );
       };
       const lateMediaMessage =
         sentToProvider || runtimePersisted || persistedResult

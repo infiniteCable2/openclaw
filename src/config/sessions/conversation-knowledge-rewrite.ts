@@ -93,6 +93,8 @@ export function renewConversationKnowledgeAfterExactRewriteInTransaction(params:
   scope: ResolvedTranscriptScope;
   previousGeneration: string;
   firstChangedSeq: number;
+  /** Exact writer proof: named operational annotations alone do not change observed dialogue. */
+  readFirstObservationChangedSeq?(): number;
   rewriteRootRows(
     scope: ResolvedTranscriptScope,
     rows: Array<{ event: TranscriptEvent; expectedEventJson: string; seq: number }>,
@@ -127,7 +129,11 @@ export function renewConversationKnowledgeAfterExactRewriteInTransaction(params:
   }
   assertSessionConversationRootEntry(root, topology.rootSessionKey);
   const rootScope = { ...scope, sessionKey: topology.rootSessionKey, sessionId: root.sessionId };
-  const renew = (reference: ReferenceRange & Pick<ConversationKnowledgeReference, "source">) => {
+  let firstObservationChangedSeq: number | undefined;
+  const renew = (
+    reference: ReferenceRange &
+      Pick<ConversationKnowledgeReference, "source"> & { kind?: "utterance-observation" },
+  ) => {
     if (
       reference.source.agentId !== scope.agentId ||
       reference.source.sessionKey !== scope.sessionKey ||
@@ -146,7 +152,11 @@ export function renewConversationKnowledgeAfterExactRewriteInTransaction(params:
     return deriveConversationKnowledgeReadRange({
       reference,
       previousGeneration: params.previousGeneration,
-      firstChangedSeq: params.firstChangedSeq,
+      firstChangedSeq:
+        reference.kind === "utterance-observation"
+          ? (firstObservationChangedSeq ??=
+              params.readFirstObservationChangedSeq?.() ?? params.firstChangedSeq)
+          : params.firstChangedSeq,
       through: read(reference.through),
       admission: reference.privateAudience && read(reference.privateAudience.admission),
     });
@@ -228,6 +238,7 @@ export function renewConversationKnowledgeAfterExactRewriteInTransaction(params:
       through: payload.anchor,
       privateAudience: payload.intent.privateAudience,
       readRange: payload.readRange,
+      ...(payload.intent.kind === "utterance-observation" ? { kind: payload.intent.kind } : {}),
     });
     if (readRange) {
       executeSqliteQuerySync(

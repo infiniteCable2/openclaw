@@ -18,7 +18,14 @@ export type ConversationPublicationIntent = {
   observed?: ConversationKnowledgeFrontier[];
 } & (
   | { kind: "completed-turn"; runId: string }
-  | { kind: "utterance-observation"; role: "user" | "assistant" }
+  | {
+      kind: "utterance-observation";
+      role: "user" | "assistant";
+      /** Native run custody; absent only for the existing realtime voice producer. */
+      runId?: string;
+      /** Exact native recorder input; independent of any model run or active writer. */
+      inputKey?: string;
+    }
 );
 
 export type ConversationPublicationRow = {

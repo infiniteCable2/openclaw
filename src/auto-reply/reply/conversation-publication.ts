@@ -3,20 +3,16 @@ import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeFrontier } from "../../config/sessions/conversation-knowledge.js";
 import { startConversationKnowledgePublication } from "../../config/sessions/conversation-publication-reconcile.js";
-import { openConversationPublicationStore } from "../../config/sessions/conversation-publication.js";
 import type { ConversationPublicationIntent } from "../../config/sessions/conversation-publication.types.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
+import { readMessageIdempotencyKey } from "../../config/sessions/transcript-message-identity.js";
 import { drainAgentRunTerminalWrites } from "../../infra/agent-run-terminal-writes.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-execution.types.js";
 
-const log = createSubsystemLogger("sessions/conversation-publication");
-const knowledgeLog = createSubsystemLogger("auto-reply/conversation-knowledge");
-
-/** Audio has settled; accept only the original successful terminal after its writes drain. */
+/** Terminal settlement wakes recovery; original entries were already journaled independently. */
 export async function recordReplyConversationPublication(params: {
   result: AgentTurnInternalResult;
   execution?: { admission: PreparedAgentRunAdmission; signal: AbortSignal };
@@ -52,26 +48,13 @@ export async function recordReplyConversationPublication(params: {
   await drainAgentRunTerminalWrites(admission.operationalRunInstance);
   admission.assertSourceCurrent();
   signal.throwIfAborted();
-  try {
-    await acceptReplyConversationPublication({
-      branch,
-      env: params.getEnvironment(),
-      assertCurrent: composeSessionSourceAssertion([
-        params.assertCurrent,
-        admission.assertSourceCurrent,
-      ]),
-      runId: terminal.runId,
-      entryId: terminal.assistantTranscriptEntryId,
-      idempotencyKey: terminal.assistantTranscriptIdempotencyKey,
-    });
-  } catch {
-    // Consolidation cannot turn committed native work into a failed/retryable task.
-    // Output still belongs to its original live delivery authority.
-    knowledgeLog.warn(
-      "Completed turn retained; conversation publication acceptance remains unconfirmed. Do not repeat completed work.",
-      { runId, errorCode: "publication-acceptance-unconfirmed" },
-    );
-  }
+  params.assertCurrent();
+  // No completed-turn reference recopies entries already published as observations.
+  startConversationKnowledgePublication({
+    agentId: branch.agentId,
+    path: branch.storePath,
+    env: params.getEnvironment(),
+  });
 }
 
 /** Capture only original ingress proof, before the source occurrence is committed. */
@@ -83,6 +66,7 @@ export function captureReplyConversationPublication(params: {
   seedPending: boolean;
   observed?: ConversationKnowledgeFrontier[];
   assertCurrent: SessionSourceAssertion;
+  role?: "user" | "assistant";
 }): { intent: ConversationPublicationIntent; assertCurrent: SessionSourceAssertion } | undefined {
   const { followupRun, branch, admission, sourceMode } = params;
   if (!branch || !admission || !sourceMode || params.seedPending) {
@@ -95,17 +79,18 @@ export function captureReplyConversationPublication(params: {
     proof &&
     participant &&
     (participant.type === "remote" || participant.type === "profile") &&
-    anchor &&
+    (anchor || params.role === "user") &&
     proof.agentId === branch.agentId &&
     proof.sessionKey === branch.sessionKey &&
     conversationKnowledgeParticipantIdentity(participant) ===
       conversationKnowledgeParticipantIdentity(followupRun.conversationParticipant)
-      ? { participant, admission: anchor }
+      ? { participant, admission: params.role === "user" ? ("self" as const) : anchor! }
       : undefined;
   return {
     intent: {
       version: 1,
-      kind: "completed-turn",
+      kind: "utterance-observation",
+      role: params.role ?? "assistant",
       sourceMode,
       source: {
         sessionKey: branch.sessionKey,
@@ -113,8 +98,14 @@ export function captureReplyConversationPublication(params: {
         lifecycleRevision: branch.lifecycleRevision,
       },
       root: branch.root,
-      runId: admission.operationalRunInstance.runId,
-      observed: params.observed,
+      ...(params.role === "user"
+        ? {
+            inputKey:
+              readMessageIdempotencyKey(followupRun.userTurnTranscriptRecorder?.message) ??
+              undefined,
+          }
+        : { runId: admission.operationalRunInstance.runId }),
+      observed: params.observed ?? [],
       ...(privateAudience ? { privateAudience } : {}),
     },
     assertCurrent: composeSessionSourceAssertion([
@@ -123,38 +114,4 @@ export function captureReplyConversationPublication(params: {
       ...(privateAudience ? [() => proof!.assertCurrent()] : []),
     ]),
   };
-}
-
-/** A successful result upgrades only its exact original append candidate, never new provenance. */
-export async function acceptReplyConversationPublication(params: {
-  branch: ConversationKnowledgeBranch;
-  runId: string;
-  entryId?: string;
-  idempotencyKey?: string;
-  env?: NodeJS.ProcessEnv;
-  assertCurrent: SessionSourceAssertion;
-}): Promise<void> {
-  const { branch } = params;
-  const target = { agentId: branch.agentId, path: branch.storePath, env: params.env };
-  const accepted = await openConversationPublicationStore({
-    ...target,
-    assertCurrent: params.assertCurrent,
-  }).accept({
-    sessionKey: branch.sessionKey,
-    sessionId: branch.sessionId,
-    lifecycleRevision: branch.lifecycleRevision,
-    runId: params.runId,
-    entryId: params.entryId,
-    idempotencyKey: params.idempotencyKey,
-  });
-  if (accepted === undefined) {
-    log.warn(
-      "Exact conversation completion candidate unavailable; completed work must not be repeated.",
-      {
-        agentId: branch.agentId,
-        errorCode: "completion-candidate-unavailable",
-      },
-    );
-  }
-  startConversationKnowledgePublication(target);
 }

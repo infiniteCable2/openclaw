@@ -378,9 +378,9 @@ export function appendSelectedTranscriptReportInTransaction(
   report: SelectedTranscriptReport,
   projection?: { scheduleProjectionReconcile: false; onProjectionReconcileNeeded: () => void },
   preparedMessage?: PreparedTranscriptMessageAppend<AssistantMessage & { responseId: string }>,
-): void {
+): boolean {
   if (report.kind === "assistant") {
-    appendTranscriptMessageInTransaction(
+    const committed = appendTranscriptMessageInTransaction(
       database,
       resolved,
       {
@@ -391,7 +391,7 @@ export function appendSelectedTranscriptReportInTransaction(
       preparedMessage,
       projection,
     );
-    return;
+    return committed?.result.appended === true;
   }
   ensureTranscriptHeader(database, resolved, undefined, projection);
   const event: unknown = JSON.parse(report.eventJson);
@@ -402,4 +402,5 @@ export function appendSelectedTranscriptReportInTransaction(
   if (!appended) {
     throw new Error("Session transcript report was not appended");
   }
+  return true;
 }

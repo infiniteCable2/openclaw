@@ -16,7 +16,12 @@ export type SessionSourcePredicate = {
   fields: (keyof SessionEntry)[];
   expected: Partial<SessionEntry> | undefined;
   members?: readonly string[];
-  transcript?: { sessionId: string; version: SessionTranscriptContextVersion };
+  transcript?: {
+    sessionId: string;
+    version: SessionTranscriptContextVersion;
+    /** Detached observations may retain their proven unchanged prefix across later appends. */
+    consistency?: "prefix";
+  };
   conversationAlternatives?: readonly (readonly SessionSourceConversationPredicate[])[];
 };
 

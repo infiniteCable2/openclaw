@@ -447,7 +447,11 @@ export async function recordConversationKnowledgeReference(params: {
           expected: entry,
         });
         const sourcePredicate = predicate(branch.sessionKey, source);
-        sourcePredicate.transcript = { sessionId: branch.sessionId, version: sourceVersion };
+        sourcePredicate.transcript = {
+          sessionId: branch.sessionId,
+          version: sourceVersion,
+          consistency: "prefix",
+        };
         const predicates = [sourcePredicate, predicate(branch.root.sessionKey, root)];
         return { branch, receipt, predicates };
       },

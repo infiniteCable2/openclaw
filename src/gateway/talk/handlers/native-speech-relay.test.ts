@@ -21,6 +21,116 @@ import {
   publishNativeSpeechModelRun,
 } from "./native-consult-target.test-support.js";
 
+it("public STT/TTS input boundary finalizes real audio through native consultation without closing the call", async ({
+  signal,
+}) => {
+  const turnEnded = createDeferredCore();
+  const finishInput = vi.fn(() => {
+    expect(hardware.input).toHaveBeenLastCalledWith(audio);
+    hardware.emitTranscript("Inspect the synthetic input boundary.");
+  });
+  const hardware = installSyntheticSpeechHardware({ finishInput });
+  const audio = Buffer.alloc(640, 3);
+  mocks.runEmbeddedAgent.mockImplementation(publishNativeSpeechModelRun);
+  vi.mocked(context.broadcastToConnIds).mockImplementation((_name, payload) => {
+    if (
+      isRecord(payload) &&
+      isRecord(payload.talkEvent) &&
+      payload.talkEvent.type === "turn.ended"
+    ) {
+      turnEnded.resolve();
+    }
+  });
+  const call = await createSpeechRelayCall();
+  expect(call.audio.supportsInputEnd).toBe(true);
+  expect(
+    await dispatch("talk.session.appendAudio", {
+      sessionId: call.sessionId,
+      audioBase64: "",
+      endOfInput: true,
+    }),
+  ).toHaveBeenCalledWith(false, undefined, expect.any(Object));
+  expect(finishInput).not.toHaveBeenCalled();
+  await dispatch("talk.session.acknowledgeMark", {
+    sessionId: call.sessionId,
+    markName: call.readyMark,
+  });
+  expect(
+    await dispatch("talk.session.appendAudio", {
+      sessionId: call.sessionId,
+      audioBase64: audio.toString("base64"),
+      endOfInput: true,
+    }),
+  ).toHaveBeenCalledWith(true, { ok: true }, undefined);
+  await withinTest(turnEnded.promise, signal);
+  expect(finishInput).toHaveBeenCalledOnce();
+  expect(mocks.runEmbeddedAgent).toHaveBeenCalledOnce();
+  expect(hardware.close).not.toHaveBeenCalled();
+  expect(getUnifiedTalkSession(call.sessionId).kind).toBe("speech-relay");
+  await dispatch("talk.session.close", { sessionId: call.sessionId });
+});
+
+it("public STT/TTS rejects unsupported input boundaries before accepting their audio", async () => {
+  const hardware = installSyntheticSpeechHardware();
+  const call = await createSpeechRelayCall();
+  expect(call.audio.supportsInputEnd).toBe(false);
+  await dispatch("talk.session.acknowledgeMark", {
+    sessionId: call.sessionId,
+    markName: call.readyMark,
+  });
+  expect(
+    await dispatch("talk.session.appendAudio", {
+      sessionId: call.sessionId,
+      audioBase64: Buffer.alloc(640).toString("base64"),
+      endOfInput: true,
+    }),
+  ).toHaveBeenCalledWith(
+    false,
+    undefined,
+    expect.objectContaining({ message: expect.stringContaining("endOfInput") }),
+  );
+  expect(hardware.input).not.toHaveBeenCalled();
+  await dispatch("talk.session.close", { sessionId: call.sessionId });
+});
+
+it("public STT/TTS fences a pending input boundary when its call closes", async ({ signal }) => {
+  const finishing = createDeferredCore();
+  const release = createDeferredCore();
+  const hardware = installSyntheticSpeechHardware({
+    finishInput: () => {
+      finishing.resolve();
+      return release.promise;
+    },
+  });
+  const call = await createSpeechRelayCall();
+  await dispatch("talk.session.acknowledgeMark", {
+    sessionId: call.sessionId,
+    markName: call.readyMark,
+  });
+  const pending = dispatch("talk.session.appendAudio", {
+    sessionId: call.sessionId,
+    audioBase64: "",
+    endOfInput: true,
+  });
+  await withinTest(finishing.promise, signal);
+  const closing = dispatch("talk.session.close", { sessionId: call.sessionId });
+  try {
+    await withinTest(hardware.closeStarted.promise, signal);
+    expect(hardware.releaseStt).not.toHaveBeenCalled();
+    expect(hardware.releaseTts).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+  }
+  expect(await withinTest(closing, signal)).toHaveBeenCalledWith(true, { ok: true }, undefined);
+  expect(await withinTest(pending, signal)).toHaveBeenCalledWith(
+    false,
+    undefined,
+    expect.any(Object),
+  );
+  expect(hardware.close).toHaveBeenCalledOnce();
+  expect(mocks.runEmbeddedAgent).not.toHaveBeenCalled();
+});
+
 it.for(["status", "cancel", "steer", "followup"] as const)(
   "public STT/TTS %s control retains original caller admission and reports idle",
   async (mode) => {

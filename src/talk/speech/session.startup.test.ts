@@ -12,6 +12,85 @@ import type { SpeechRealtimeSessionHandle } from "./types.js";
 import * as waitingAudio from "./waiting-audio.js";
 
 describe("speech session failed-start ownership", () => {
+  it("flushes each capture boundary once and starts the next input with fresh converter state", async () => {
+    const finishing = createDeferredCore();
+    const finished = createDeferredCore();
+    const sendAudio = vi.fn<(audio: Buffer) => void>();
+    const finishInput = vi.fn(async () => {
+      finishing.resolve();
+      await finished.promise;
+    });
+    let capture: ((audio: Buffer) => void) | undefined;
+    const provider: RealtimeTranscriptionProviderPlugin = {
+      id: "boundary-test",
+      label: "Boundary test",
+      isConfigured: () => true,
+      resolveInputAudioFormat: () => "pcm16-16khz",
+      createSession: () => ({
+        connect: async () => {},
+        sendAudio,
+        finishInput,
+        close() {},
+        isConnected: () => true,
+      }),
+    };
+    const handle = await startSpeechSession({
+      config: {
+        audioFormat: "pcm16-24khz",
+        transcriptionProvider: provider.id,
+        providers: { [provider.id]: {} },
+      },
+      fullConfig: {},
+      // SAFETY: This capture-only fixture never invokes TTS or the plugin runtime.
+      runtime: {} as PluginRuntime,
+      surface: { displayName: "Test", logScope: "test", sessionIdPrefix: "test" },
+      sessionId: "input-boundaries",
+      providers: [provider],
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      consultAgent: async () => ({ text: "unused" }),
+      transport: {
+        onFatal() {},
+        startInput(onAudio) {
+          capture = onAudio;
+        },
+        stop: async () => {},
+        dispose: async () => {},
+        writeOutput: async () => {},
+        clearOutput: async () => {},
+      },
+    });
+    const input = expectDefined(capture);
+    const pcm = (value: number) => {
+      const audio = Buffer.alloc(48);
+      for (let offset = 0; offset < audio.length; offset += 2) audio.writeInt16LE(value, offset);
+      return audio;
+    };
+    try {
+      input(pcm(1_000));
+      const first = handle.finishInput();
+      const concurrent = handle.finishInput();
+      await finishing.promise;
+      const expected = Buffer.alloc(32);
+      for (let offset = 0; offset < expected.length; offset += 2)
+        expected.writeInt16LE(1_000, offset);
+      expect(Buffer.concat(sendAudio.mock.calls.map(([audio]) => audio))).toEqual(expected);
+      expect(finishInput).toHaveBeenCalledOnce();
+      expect(() => input(pcm(2_000))).toThrow("input boundary");
+      finished.resolve();
+      await Promise.all([first, concurrent]);
+      sendAudio.mockClear();
+      input(pcm(2_000));
+      await handle.finishInput();
+      for (let offset = 0; offset < expected.length; offset += 2)
+        expected.writeInt16LE(2_000, offset);
+      expect(Buffer.concat(sendAudio.mock.calls.map(([audio]) => audio))).toEqual(expected);
+      expect(finishInput).toHaveBeenCalledTimes(2);
+    } finally {
+      finished.resolve();
+      await handle.stop();
+    }
+  });
+
   it.each(["waiting abort", "capture abort", "capture rejection", "capture stop"] as const)(
     "fences provider startup and joins capture ownership after %s",
     async (stage) => {

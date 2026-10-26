@@ -130,6 +130,7 @@ export type AgentTurnParams = ReplyAgentTurnContext & {
   /** Bounded native observations prepared by this executing turn, never queued as user input. */
   runtimeContextFragments?: RuntimeContextFragment[];
   prepareConversationContext?: import("../../agents/embedded-agent-runner/run/internal-params.js").RunEmbeddedAgentInternalParams["prepareConversationContext"];
+  refreshConversationContext?: import("../../agents/embedded-agent-runner/run/internal-params.js").RunEmbeddedAgentInternalParams["refreshConversationContext"];
   /** Read-only observations are acquired only for an admitted direct CLI candidate. */
   prepareConversationSnapshot?: () => Promise<RuntimeContextFragment[]>;
   /** Opened once by the actual execution owner, never an ingress or queue-drain default. */

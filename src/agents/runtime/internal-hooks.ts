@@ -10,6 +10,7 @@ export {
   getInternalToolResultProvenance,
   getInternalToolExecutionPreparer,
   getInternalToolTurnCompletion,
+  publishInternalModelContext,
   setInternalBeforeToolBatch,
   setInternalToolTurnCompletion,
   type InternalBeforeToolBatchHook,

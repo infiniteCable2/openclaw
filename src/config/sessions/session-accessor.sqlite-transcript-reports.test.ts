@@ -105,6 +105,96 @@ function transcriptSnapshot(db: DatabaseSync) {
 }
 
 describe("SQLite report payload selection", () => {
+  it("publishes exact metadata only for a newly committed report, not deduplication or deferral", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await seedReports();
+      const onUpdate = vi.fn();
+      onTestFinished(onInternalSessionTranscriptUpdate(onUpdate));
+      const report = {
+        kind: "custom" as const,
+        customTypes: ["new-status"],
+        selectReport: (latest: unknown) =>
+          latest
+            ? undefined
+            : { customType: "new-status", content: "new observation", display: false },
+      };
+      await expect(appendSessionTranscriptReport(scope, report)).resolves.toEqual({
+        ok: true,
+        value: undefined,
+      });
+      expect(onUpdate).toHaveBeenCalledOnce();
+      expect(onUpdate.mock.calls[0]?.[0]).toMatchObject({
+        target: {
+          agentId: scope.agentId,
+          storePath: openOpenClawAgentDatabase({ agentId: scope.agentId }).path,
+          sessionKey: scope.sessionKey,
+          sessionId: scope.sessionId,
+        },
+      });
+      expect(onUpdate.mock.calls[0]?.[0]).not.toHaveProperty("message");
+      expect((await loadTranscriptEvents(scope)).at(-1)).toMatchObject({
+        type: "custom_message",
+        content: "new observation",
+      });
+      await appendSessionTranscriptReport(scope, report);
+      expect(onUpdate).toHaveBeenCalledOnce();
+      const committedEvents = await loadTranscriptEvents(scope);
+      const onDeferred = vi.fn();
+      await appendSessionTranscriptReport(
+        scope,
+        {
+          kind: "custom",
+          customTypes: ["over-capacity"],
+          selectReport: () => ({
+            customType: "over-capacity",
+            content: "deferred",
+            display: false,
+          }),
+        },
+        {
+          contextAdmission: {
+            // The current history fits; only the proposed extra event must be deferred.
+            limits: { maxBytes: 1_000_000, maxEvents: committedEvents.length },
+            onDeferred,
+          },
+        },
+      );
+      expect(onDeferred).toHaveBeenCalledOnce();
+      expect(onUpdate).toHaveBeenCalledOnce();
+      expect((await loadTranscriptEvents(scope)).at(-1)).toMatchObject({
+        type: "custom_message",
+        content: "new observation",
+      });
+    });
+  });
+
+  it("does not publish an assistant report already owned by an inactive transcript branch", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const message = { ...assistant, idempotencyKey: "report-once" };
+      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+      await replaceTranscriptEvents(scope, [
+        { type: "session", id: scope.sessionId, version: CURRENT_SESSION_VERSION },
+        { type: "message", id: "root", parentId: null, message: { role: "user", content: body } },
+        { type: "message", id: "old-answer", parentId: "root", message },
+        {
+          type: "message",
+          id: "new-branch",
+          parentId: "root",
+          message: { role: "user", content: "A separate continuation" },
+        },
+      ]);
+      const db = openOpenClawAgentDatabase({ agentId: scope.agentId }).db;
+      const before = transcriptSnapshot(db);
+      const onUpdate = vi.fn();
+      onTestFinished(onInternalSessionTranscriptUpdate(onUpdate));
+      await expect(
+        appendSessionTranscriptReport(scope, { kind: "assistant", message }),
+      ).resolves.toMatchObject({ ok: true });
+      expect(transcriptSnapshot(db)).toEqual(before);
+      expect(onUpdate).not.toHaveBeenCalled();
+    });
+  });
+
   it("reserves a report with its original identity and environment before later writes", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       await seedReports();

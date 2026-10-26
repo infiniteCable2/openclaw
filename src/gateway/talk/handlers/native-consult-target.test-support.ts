@@ -341,7 +341,9 @@ async function createRelayCall(params: Record<string, unknown> = {}) {
   return { sessionId, target: record.sessionTarget };
 }
 
-function installSyntheticSpeechHardware(options: { connect?: Promise<void> } = {}) {
+function installSyntheticSpeechHardware(
+  options: { connect?: Promise<void>; finishInput?: () => void | Promise<void> } = {},
+) {
   let request: RealtimeTranscriptionSessionCreateRequest | undefined;
   let connected = false;
   let closed = false;
@@ -352,10 +354,12 @@ function installSyntheticSpeechHardware(options: { connect?: Promise<void> } = {
   const releaseStream = vi.fn(async () => undefined);
   const streamStarted = createDeferredCore();
   const connectStarted = createDeferredCore();
+  const closeStarted = createDeferredCore();
   const input = vi.fn<(audio: Buffer) => void>();
   const close = vi.fn(() => {
     closed = true;
     connected = false;
+    closeStarted.resolve();
   });
   const output = Buffer.alloc(960, 17);
   const provider: RealtimeTranscriptionProviderPlugin = {
@@ -374,6 +378,7 @@ function installSyntheticSpeechHardware(options: { connect?: Promise<void> } = {
           connected = !closed;
         },
         sendAudio: input,
+        ...(options.finishInput ? { finishInput: options.finishInput } : {}),
         close,
         isConnected: () => connected,
       };
@@ -423,6 +428,7 @@ function installSyntheticSpeechHardware(options: { connect?: Promise<void> } = {
     releaseStream,
     streamStarted,
     connectStarted,
+    closeStarted,
     emitTranscript: (text: string) => {
       if (!request) {
         throw new Error("Expected native speech provider session");
@@ -443,7 +449,11 @@ async function createSpeechRelayCall(params: Record<string, unknown> = {}) {
     ...params,
   });
   expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
-  const result = respond.mock.calls[0]![1] as { sessionId: string; readyMark: string };
+  const result = respond.mock.calls[0]![1] as {
+    sessionId: string;
+    readyMark: string;
+    audio: { supportsInputEnd: boolean };
+  };
   const record = getUnifiedTalkSession(result.sessionId);
   if (record.kind !== "speech-relay") {
     throw new Error("Expected native STT/TTS speech relay");

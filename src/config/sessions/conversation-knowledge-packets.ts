@@ -4,6 +4,7 @@ import { readConversationKnowledgeReports } from "./conversation-knowledge-histo
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "./conversation-knowledge.js";
 import { appendSessionTranscriptReport } from "./session-accessor.sqlite-transcript-reports.js";
+import type { CustomMessageReportAppend } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type {
   SessionTranscriptRuntimeTarget,
   SessionTranscriptWriteScope,
@@ -13,6 +14,7 @@ import type { SessionEntryCohortReader } from "./session-entry-read-runtime.type
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
 import { composeSessionSourceAssertion } from "./session-source-authority.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
+import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
 
 export const CONVERSATION_KNOWLEDGE_CONTEXT = "openclaw.conversation-knowledge-context.v1";
 export const CONVERSATION_KNOWLEDGE_NOTICE =
@@ -36,6 +38,41 @@ export function conversationKnowledgeContributionId(
 }
 
 export type ConversationKnowledgePacketProgress = { complete: boolean; nextOffset: number };
+
+type ConversationKnowledgePacketReportInput = {
+  branch: ConversationKnowledgeBranch;
+  receipt: ConversationKnowledgeReference;
+  text: string;
+  offset: number;
+  nextOffset: number;
+  complete: boolean;
+};
+
+/** Live hydration and durable admission use the same quoted-data envelope and receipt identity. */
+export function createConversationKnowledgePacketReport(
+  params: ConversationKnowledgePacketReportInput,
+) {
+  const contributionId = conversationKnowledgeContributionId(params.receipt);
+  const packetId = sha256Hex(JSON.stringify([contributionId, params.offset]));
+  return {
+    customType: CONVERSATION_KNOWLEDGE_CONTEXT,
+    display: false,
+    content: `${CONVERSATION_KNOWLEDGE_NOTICE}\n${params.text}`,
+    details: {
+      version: 1,
+      packetId,
+      contributionId,
+      rootSessionId: params.branch.root.sessionId,
+      rootLifecycleRevision: params.branch.root.lifecycleRevision,
+      source: params.receipt.source,
+      through: params.receipt.through,
+      offset: params.offset,
+      nextOffset: params.nextOffset,
+      complete: params.complete,
+      coverage: "durably-admitted-observation-not-proof-of-task-execution",
+    },
+  } satisfies CustomMessageReportAppend;
+}
 
 /** Admission, not semantic comprehension. Native history/compaction retains the admitted text. */
 export async function readConversationKnowledgePacketProgress(params: {
@@ -101,21 +138,17 @@ export async function readActiveConversationKnowledgePacketIds(params: {
 }
 
 /** Original live source checks authorize the copy; subsequent replay is recipient history. */
-export async function retainConversationKnowledgePacket(params: {
-  branch: ConversationKnowledgeBranch;
-  writeTarget: SessionTranscriptRuntimeTarget &
-    Pick<SessionTranscriptWriteScope, "expectedWriterRunId" | "expectedLifecycleRevision">;
-  receipt: ConversationKnowledgeReference;
-  text: string;
-  offset: number;
-  nextOffset: number;
-  complete: boolean;
-  reader: SessionEntryCohortReader;
-  sourceVersion: SessionTranscriptContextVersion;
-  source: SessionSourceAssertion;
-  signal?: AbortSignal;
-  contextLimits?: { maxBytes: number; maxEvents: number };
-}): Promise<string | undefined> {
+export async function retainConversationKnowledgePacket(
+  params: ConversationKnowledgePacketReportInput & {
+    writeTarget: SessionTranscriptRuntimeTarget &
+      Pick<SessionTranscriptWriteScope, "expectedWriterRunId" | "expectedLifecycleRevision">;
+    reader: SessionEntryCohortReader;
+    sourceVersion: SessionTranscriptContextVersion;
+    source: SessionSourceAssertion;
+    signal?: AbortSignal;
+    contextLimits?: { maxBytes: number; maxEvents: number };
+  },
+): Promise<string | undefined> {
   params.signal?.throwIfAborted();
   params.source();
   const writeTarget = { ...params.writeTarget };
@@ -129,8 +162,8 @@ export async function retainConversationKnowledgePacket(params: {
   ) {
     throw new Error("Conversation knowledge packet writer differs from its recipient");
   }
-  const contributionId = conversationKnowledgeContributionId(params.receipt);
-  const packetId = sha256Hex(JSON.stringify([contributionId, params.offset]));
+  const report = createConversationKnowledgePacketReport(params);
+  const { packetId } = report.details;
   const predicate = await params.reader.withRead(
     { sessionKeys: [params.receipt.source.sessionKey, params.branch.sessionKey] },
     params.source,
@@ -154,7 +187,11 @@ export async function retainConversationKnowledgePacket(params: {
         sessionKey: params.receipt.source.sessionKey,
         fields: ["sessionId", "lifecycleRevision"],
         expected: donor,
-        transcript: { sessionId: donor.sessionId, version: params.sourceVersion },
+        transcript: {
+          sessionId: donor.sessionId,
+          version: params.sourceVersion,
+          consistency: "prefix",
+        },
       } satisfies SessionSourcePredicate;
     },
   );
@@ -167,7 +204,7 @@ export async function retainConversationKnowledgePacket(params: {
           {
             predicate,
             refuse: (): never => {
-              throw new Error("Knowledge packet source anchor changed");
+              throw new SessionTranscriptReadFenceError("Knowledge packet source anchor changed");
             },
           },
         ],
@@ -184,27 +221,7 @@ export async function retainConversationKnowledgePacket(params: {
       kind: "custom",
       customTypes: [CONVERSATION_KNOWLEDGE_CONTEXT],
       receipt: { field: "packetId", value: packetId },
-      selectReport: (latest) =>
-        latest
-          ? undefined
-          : {
-              customType: CONVERSATION_KNOWLEDGE_CONTEXT,
-              display: false,
-              content: `${CONVERSATION_KNOWLEDGE_NOTICE}\n${params.text}`,
-              details: {
-                version: 1,
-                packetId,
-                contributionId,
-                rootSessionId: params.branch.root.sessionId,
-                rootLifecycleRevision: params.branch.root.lifecycleRevision,
-                source: params.receipt.source,
-                through: params.receipt.through,
-                offset: params.offset,
-                nextOffset: params.nextOffset,
-                complete: params.complete,
-                coverage: "durably-admitted-observation-not-proof-of-task-execution",
-              },
-            },
+      selectReport: (latest) => (latest ? undefined : report),
     },
     {
       source,

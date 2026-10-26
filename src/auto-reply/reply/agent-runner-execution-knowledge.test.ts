@@ -16,7 +16,7 @@ import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 
 const knowledge = vi.hoisted(() => ({ create: vi.fn() }));
 // mock-isolation: This execution-lifetime fixture supplies knowledge receipts without transcript workers.
-vi.mock("./conversation-knowledge.js", () => ({
+vi.mock("./conversation-knowledge-turn.js", () => ({
   createReplyConversationKnowledgeTurn: knowledge.create,
 }));
 

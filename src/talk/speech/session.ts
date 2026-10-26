@@ -20,7 +20,7 @@ import { createSpeechOutput, type SpeechUtterance } from "./output.js";
 import type { SpeechPlaybackSnapshot } from "./playback-observation.js";
 import { createSpeechSessionControls } from "./session-controls.js";
 import { createSpeechInputMetadata } from "./session-input-identity.js";
-import { createSpeechSessionInput } from "./session-input.js";
+import { createSpeechSessionInput, createSpeechTranscriptionInput } from "./session-input.js";
 import { createSpeechSessionLifecycle } from "./session-lifecycle.js";
 import type { SpeechStreamCancellation } from "./stream-cleanup.js";
 import {
@@ -77,10 +77,6 @@ export async function startSpeechSession(
   });
   const sttInputFormat =
     resolved.provider.resolveInputAudioFormat?.(resolved.providerConfig) ?? "g711-ulaw-8khz";
-  const sttAudioConverter = createSpeechSttAudioConverter(
-    params.config.inputAudioFormat ?? params.config.audioFormat,
-    sttInputFormat,
-  );
   const waitingAudio = await prepareSpeechWaitingAudio(
     params.config.waitingAudio,
     params.config.audioFormat,
@@ -95,6 +91,17 @@ export async function startSpeechSession(
       );
     }
   };
+  const transcriptionInput = createSpeechTranscriptionInput({
+    createConverter: () =>
+      createSpeechSttAudioConverter(
+        params.config.inputAudioFormat ?? params.config.audioFormat,
+        sttInputFormat,
+      ),
+    getSession: () => sttSession,
+    isReady: () => realtimeReady,
+    assertCurrent: assertStarting,
+    acceptAudio: (audio) => harness.recordInputAudio(audio),
+  });
   const waiting = createSpeechWaitingController({
     playback: createSpeechWaitingAudioPlayback({
       audio: waitingAudio,
@@ -156,7 +163,7 @@ export async function startSpeechSession(
       harness.finishOutputAudio("stopped");
       harness.endTurn("stopped");
     },
-    closeTranscription: () => sttSession?.close(),
+    closeTranscription: () => transcriptionInput.close(),
     stopWaiting: () => waiting.stop(),
     drainOutput: () => speechOutput.stopAndDrain(greetingPlayback),
     stopTransport: () => input.stop(),
@@ -448,6 +455,10 @@ export async function startSpeechSession(
 
   const handle: SpeechSessionHandle = {
     providerId: resolved.provider.id,
+    get supportsInputEnd() {
+      return transcriptionInput.supportsInputEnd;
+    },
+    finishInput: () => transcriptionInput.finishInput(),
     speak: speechOutput.enqueueSpeakText,
     ...createSpeechSessionControls({
       harness,
@@ -681,10 +692,7 @@ export async function startSpeechSession(
         if (stopped || !realtimeReady || audio.byteLength === 0) {
           return;
         }
-        if (!harness.recordInputAudio(audio)) {
-          return;
-        }
-        sttSession?.sendAudio(sttAudioConverter.process(audio));
+        transcriptionInput.sendAudio(audio);
       },
       assertStarting,
       () => video.start(params.transport, assertStarting),

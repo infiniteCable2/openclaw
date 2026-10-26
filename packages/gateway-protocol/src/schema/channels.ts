@@ -298,11 +298,22 @@ export const TalkSessionCreateParamsSchema = closedObject({
   ttlMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 3600000 })),
 });
 
-export const TalkSessionAppendAudioParamsSchema = closedObject({
+const talkSessionAppendAudioProperties = {
   sessionId: NonEmptyString,
-  audioBase64: NonEmptyString,
   timestamp: Type.Optional(Type.Number()),
-});
+};
+export const TalkSessionAppendAudioParamsSchema = Type.Union([
+  closedObject({
+    ...talkSessionAppendAudioProperties,
+    audioBase64: NonEmptyString,
+    endOfInput: Type.Optional(Type.Boolean()),
+  }),
+  closedObject({
+    ...talkSessionAppendAudioProperties,
+    audioBase64: Type.Literal(""),
+    endOfInput: Type.Literal(true),
+  }),
+]);
 
 /** Cancels currently streaming Talk output without necessarily ending the turn. */
 export const TalkSessionCancelOutputParamsSchema = closedObject({

@@ -3,7 +3,10 @@ import {
   getCliHistoryWriter,
   type CliHistoryWriter,
 } from "../../config/sessions/cli-history-boundary.js";
-import { captureConversationPublication } from "../../config/sessions/conversation-publication-context.js";
+import {
+  captureConversationPublication,
+  publishConversationPublicationCommit,
+} from "../../config/sessions/conversation-publication-context.js";
 import type { IncognitoSessionActor } from "../../config/sessions/session-incognito-actor.js";
 import { toIncognitoManagerCommand } from "../../config/sessions/session-incognito-manager-contract.js";
 import type {
@@ -216,6 +219,21 @@ export async function withSessionMetadataWorker<T>(
         const reply = await worker.execute(command, assertMetadataCurrent, commandOptions);
         if (!reply.ok) {
           throw new SessionTranscriptWriterClaimReboundError(reply.refusal);
+        }
+        if (
+          publication &&
+          reply.value &&
+          typeof reply.value === "object" &&
+          "snapshot" in reply.value &&
+          reply.value.snapshot.ok &&
+          reply.value.snapshot.value.result &&
+          "anchor" in reply.value.snapshot.value.result
+        ) {
+          publishConversationPublicationCommit(
+            command.input.scope,
+            publication.intent,
+            reply.value.snapshot.value.result,
+          );
         }
         if (
           reply.value &&

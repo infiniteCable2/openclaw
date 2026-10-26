@@ -67,6 +67,11 @@ export type RealtimeTranscriptionSessionCreateRequest = RealtimeTranscriptionSes
 export type RealtimeTranscriptionSession = {
   connect(): Promise<void>;
   sendAudio(audio: Buffer): void;
+  /**
+   * Finalize retained real audio at an explicit capture boundary, not disconnect.
+   * close() must cancel/unblock outstanding finish work so teardown can join it.
+   */
+  finishInput?(): void | Promise<void>;
   close(): void;
   isConnected(): boolean;
 };

@@ -1,0 +1,107 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const preparation = vi.hoisted(() => ({
+  prepare: vi.fn(),
+  load: vi.fn(),
+  owner: { assertCurrent: vi.fn(), request: vi.fn(), close: vi.fn() },
+  create: vi.fn(),
+}));
+// mock-isolation: Exercise recipient scheduling without starting background database resources.
+vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
+  createConversationKnowledgePrefetchOwner: preparation.create,
+}));
+// mock-isolation: The scheduler needs only a current worker-backed recipient claim.
+vi.mock("../../config/sessions/session-accessor.sqlite-entry-admission.js", () => ({
+  loadSessionEntryForAdmission: preparation.load,
+}));
+// mock-isolation: Packet capacity and source fairness are covered at the real preparation boundary.
+vi.mock("./conversation-knowledge.js", () => ({
+  prepareReplyConversationKnowledge: preparation.prepare,
+}));
+// mock-isolation: This boundary only schedules packets; cache/native range proofs have focused tests.
+vi.mock("./conversation-knowledge-source-cache.js", () => ({
+  createConversationKnowledgeSourceCache: () => ({ clear: vi.fn() }),
+}));
+// mock-isolation: Keep process-global recipient retention private to this test module.
+vi.mock("../../shared/global-singleton.js", () => ({
+  resolveGlobalSingleton: (_key: symbol, create: () => unknown) => create(),
+}));
+
+import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
+
+beforeEach(() => {
+  preparation.prepare.mockReset();
+  preparation.load.mockReset();
+  preparation.create.mockReset().mockReturnValue(preparation.owner);
+  for (const mock of Object.values(preparation.owner)) {
+    mock.mockReset();
+  }
+});
+
+describe("recipient preparation scheduling", () => {
+  it.each([false, true])(
+    "retains the next source cursor without busy-retrying saturated storage (%s)",
+    async (saturated) => {
+      const branch = {
+        agentId: "example",
+        sessionKey: `agent:example:recipient-${saturated}`,
+        sessionId: `recipient-${saturated}`,
+        lifecycleRevision: "original",
+        storePath: "/synthetic/agent.sqlite",
+        root: {
+          sessionKey: "agent:example:root",
+          sessionId: "root",
+          lifecycleRevision: "original",
+        },
+      };
+      const participant = { type: "profile" as const, id: "example-person" };
+      const release = vi.fn();
+      const claimRelease = vi.fn();
+      preparation.load.mockResolvedValue({
+        entry: { sessionId: branch.sessionId, lifecycleRevision: branch.lifecycleRevision },
+        databaseClaim: {
+          kind: "worker",
+          reader: {},
+          assertCurrent() {},
+          release: claimRelease,
+        },
+      });
+      preparation.prepare.mockResolvedValue({
+        nextSourceOffset: 3,
+        preparationSaturated: saturated,
+        release,
+      });
+      const recipient = prepareConversationKnowledgeRecipient({
+        branch,
+        participant,
+        audience: {
+          agentId: branch.agentId,
+          sessionKey: branch.sessionKey,
+          channelId: "example-channel",
+          accountId: "example-account",
+          nativeChannelId: "example-recipient",
+          participant,
+          assertCurrent() {},
+        },
+        env: {},
+        getRuntimeConfig: () => ({
+          agents: { entries: { example: { conversationMode: "branches" } } },
+        }),
+      });
+      expect(recipient).toBeDefined();
+      const scheduled = preparation.create.mock.calls[0]![0];
+      const signal = new AbortController().signal;
+      await scheduled.prepare(signal);
+      expect(preparation.owner.request).toHaveBeenCalledTimes(saturated ? 0 : 1);
+      expect(release).toHaveBeenCalledOnce();
+      expect(claimRelease).toHaveBeenCalledOnce();
+      preparation.owner.request.mockClear();
+      await scheduled.prepare(signal);
+      expect(preparation.prepare.mock.calls[1]![0]).toMatchObject({
+        sourceOffset: 3,
+        preparationOnly: true,
+      });
+      expect(preparation.owner.request).toHaveBeenCalledTimes(saturated ? 0 : 1);
+    },
+  );
+});

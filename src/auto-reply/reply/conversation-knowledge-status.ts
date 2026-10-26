@@ -34,6 +34,7 @@ export function logConversationKnowledgeDiagnostic(params: {
   pending?: "context-window" | "maintenance-deferred" | "snapshot-capacity";
   reason?:
     | "initial-history-not-yet-verified"
+    | "preparation-deferred"
     | "original-participant-unconfirmed"
     | "private-destination-audience-unconfirmed";
 }) {

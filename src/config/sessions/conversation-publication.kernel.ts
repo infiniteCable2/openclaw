@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isMainThread } from "node:worker_threads";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
@@ -6,6 +7,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
+import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
 import { ensureConversationPublicationsSchema } from "../../state/openclaw-agent-conversation-publication-schema.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
@@ -16,6 +18,8 @@ import {
   readConversationKnowledgeReceipt,
   readConversationUtteranceObservation,
 } from "./conversation-knowledge.js";
+import { readConversationObservationRole } from "./conversation-observation.js";
+import { wakeConversationPublication } from "./conversation-publication-wakeup.js";
 import type {
   ConversationPublicationAcceptance,
   ConversationPublicationIntent,
@@ -26,6 +30,7 @@ import type { ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js
 import { readTranscriptMessageByScopedIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
 import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
+import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 
 const TABLE = "session_conversation_publications";
 type JournalDatabase = Pick<DB, typeof TABLE>;
@@ -151,6 +156,21 @@ export function captureConversationPublicationInTransaction(
       throw new Error("Conversation publication candidate is not its admitted terminal");
     }
   } else {
+    if (
+      input.inputKey !== undefined
+        ? input.role !== "user" ||
+          !input.inputKey ||
+          input.inputKey !== readMessageIdempotencyKey(message) ||
+          readConversationObservationRole(message) !== "user"
+        : input.runId === undefined
+          ? asOptionalRecord(persisted?.provenance)?.kind !== "realtime_voice"
+          : !input.runId ||
+            !sourceEntry.activeWriterRunId ||
+            readConversationObservationRole(message) !== input.role ||
+            (input.role === "assistant" && readSessionTranscriptRunId(message) !== input.runId)
+    ) {
+      throw new Error("Conversation publication lost its original native run");
+    }
     const receipt = readConversationUtteranceObservation({
       ...candidate,
       kind: intent.kind,
@@ -168,7 +188,7 @@ export function captureConversationPublicationInTransaction(
         },
       ])
     ) {
-      throw new Error("Conversation publication is not its original voice occurrence");
+      throw new Error("Conversation publication is not its original dialogue occurrence");
     }
   }
   const id = sha256Hex(JSON.stringify([origin, anchor.generation, anchor.entryId]));
@@ -204,6 +224,28 @@ export function captureConversationPublicationInTransaction(
       created_at: Date.now(),
     }),
   );
+  if (
+    isMainThread &&
+    input.kind === "utterance-observation" &&
+    (input.inputKey !== undefined || input.runId !== undefined)
+  ) {
+    // Released synchronous SDK writers already own this transaction. Wake only
+    // after its actual COMMIT; worker callers publish their returned commit fact.
+    if (
+      !stageSqliteTransactionState(database.db, {
+        stage: () => undefined,
+        commit: () =>
+          wakeConversationPublication({
+            agentId: scope.agentId,
+            path: database.path,
+            env: scope.env,
+          }),
+        rollback: () => undefined,
+      })
+    ) {
+      throw new Error("Conversation publication requires managed commit settlement");
+    }
+  }
   return id;
 }
 

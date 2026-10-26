@@ -561,6 +561,9 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
     validateTalkSessionAppendAudioParams,
     async ({ params, respond, client }) => {
       const session = getUnifiedTalkSession(params.sessionId);
+      if (params.endOfInput && session.kind !== "speech-relay") {
+        throw new Error("endOfInput requires an STT/TTS speech relay session");
+      }
       if (session.kind === "realtime-relay") {
         const connId = requireUnifiedTalkSessionConn(session, client?.connId);
         await sendTalkRealtimeRelayAudio({
@@ -578,7 +581,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         });
       } else if (session.kind === "speech-relay") {
         requireUnifiedTalkSessionConn(session, client?.connId);
-        session.appendAudio(params.audioBase64);
+        await session.appendAudio(params.audioBase64, params.endOfInput);
       } else {
         respondInvalidRequest(
           respond,

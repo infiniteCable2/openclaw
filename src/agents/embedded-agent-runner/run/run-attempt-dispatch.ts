@@ -662,6 +662,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     requireExplicitMessageTarget: params.requireExplicitMessageTarget,
     internalEvents: params.internalEvents,
     runtimeContextFragments: params.runtimeContextFragments,
+    refreshConversationContext: params.refreshConversationContext,
     bootstrapPromptWarningSignaturesSeen: input.bootstrapPromptWarningSignaturesSeen,
     bootstrapPromptWarningSignature: input.bootstrapPromptWarningSignaturesSeen.at(-1),
     suppressNextUserMessagePersistence,

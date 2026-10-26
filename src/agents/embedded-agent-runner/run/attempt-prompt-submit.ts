@@ -2,6 +2,7 @@ import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { ImageContent } from "../../../llm/types.js";
 import type { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js";
 import type { Agent, AgentMessage } from "../../runtime/index.js";
+import { publishInternalModelContext } from "../../runtime/internal-hooks.js";
 import { buildSessionsYieldContextMessage } from "../../sessions-yield-context.js";
 import { agentSessionQueuePromptContext } from "../../sessions/agent-session-prompting.js";
 import {
@@ -9,8 +10,10 @@ import {
   type CompactionRequestBudget,
 } from "../../sessions/compaction/request-budget.js";
 import type { AgentSession } from "../../sessions/index.js";
+import { convertToLlm, type CustomMessage } from "../../sessions/messages.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { ackPendingAgentSteeringItems } from "../../subagents/registry/subagent-registry.js";
+import { log } from "../logger.js";
 import {
   declarePromptHistoryRewrite,
   recordAggregateTruncation,
@@ -30,8 +33,13 @@ import {
   stripSessionsYieldArtifacts,
 } from "./attempt-sessions-yield.js";
 import { waitForEmbeddedAbortSettle } from "./attempt-subscription-cleanup.js";
+import type { RunEmbeddedAgentInternalParams } from "./internal-params.js";
 import { wrapStreamFnWithMessageTransform } from "./message-transform-stream-wrapper.js";
 import { isMidTurnPrecheckSignal, type MidTurnPrecheckRequest } from "./midturn-precheck.js";
+import {
+  createConversationContextCapacity,
+  createPreparedConversationContextProjection,
+} from "./prepared-conversation-context.js";
 import type { RuntimeContextCustomMessage } from "./runtime-context-prompt.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
@@ -76,6 +84,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
   appendContext?: string;
   contextTokenBudget: number;
   compactionRequestBudget?: CompactionRequestBudget;
+  refreshConversationContext?: RunEmbeddedAgentInternalParams["refreshConversationContext"];
   images: ImageContent[];
   leasedSteering?: SteeringLease;
   modelPrompt: string;
@@ -131,7 +140,23 @@ export async function submitEmbeddedAttemptPrompt(input: {
   const installProviderPromptHistoryTransform = (): (() => void) => {
     const baseStreamFn = activeSession.agent.streamFn;
     const basePrepareNextTurn = activeSession.agent.prepareNextTurnWithContext;
-    const lateUpdates: RuntimeContextCustomMessage[] = [];
+    const baseTransformContext = activeSession.agent.transformContext;
+    const conversationProjection = input.refreshConversationContext
+      ? createPreparedConversationContextProjection(activeSession)
+      : undefined;
+    const projectPreparedContext: NonNullable<Agent["transformContext"]> = async (
+      messages,
+      signal,
+    ) => {
+      const projected = conversationProjection?.project(messages) ?? messages;
+      return baseTransformContext
+        ? await baseTransformContext.call(activeSession.agent, projected, signal)
+        : projected;
+    };
+    if (conversationProjection) {
+      activeSession.agent.transformContext = projectPreparedContext;
+    }
+    const lateUpdates: CustomMessage[] = [];
     const prepareNextTurn: NonNullable<Agent["prepareNextTurnWithContext"]> = async (
       turn,
       signal,
@@ -217,6 +242,44 @@ export async function submitEmbeddedAttemptPrompt(input: {
         const { tools, systemPrompt } = readRestoredContext();
         requestContext = { ...requestContext, tools, systemPrompt };
       }
+      if (foregroundRequest && conversationProjection && input.refreshConversationContext) {
+        const boundary = conversationProjection.capture();
+        let capacity: ReturnType<typeof createConversationContextCapacity> | undefined;
+        const canAdmit = (message: CustomMessage) => {
+          const budget = input.compactionRequestBudget;
+          if (!budget) {
+            return false;
+          }
+          // Most boundaries have no new prepared packets. Do not rescan the
+          // request until a producer actually asks to reserve an addition.
+          capacity ??= createConversationContextCapacity({
+            ...requestContext,
+            contextWindow: input.contextTokenBudget,
+            reserveTokens: budget.reserveTokens,
+          });
+          return capacity(message);
+        };
+        try {
+          // The recipient's current native writer commits only prepared packets.
+          // This boundary never waits for source hydration or starts compaction.
+          const packets = await input.refreshConversationContext({
+            signal: options?.signal,
+            canAdmit,
+          });
+          assertRequestCurrent();
+          const added = conversationProjection.install(packets, boundary);
+          if (added.length > 0) {
+            lateUpdates.push(...added);
+            requestContext = {
+              ...requestContext,
+              messages: [...requestContext.messages, ...convertToLlm(added)],
+            };
+          }
+        } catch {
+          assertRequestCurrent();
+          log.warn("Optional conversation context refresh deferred; foreground request continues.");
+        }
+      }
       if (foregroundRequest && !primaryRequestObserved) {
         primaryRequestObserved = true;
         input.onPrimaryModelRequest?.(requestContext.tools ?? []);
@@ -225,6 +288,9 @@ export async function submitEmbeddedAttemptPrompt(input: {
       if (foregroundRequest) {
         projectionRecorder?.markSentToProvider?.();
       }
+      // Steering deltas must be relative to the actual submitted prefix, not
+      // the loop's earlier conversion before native request preparation.
+      publishInternalModelContext(options?.onActiveResponse, requestContext.messages);
       const stream = await baseStreamFn(model, requestContext, options);
       // Pre-prompt compaction has not consumed the deferred answer.
       if (foregroundRequest) {
@@ -259,6 +325,9 @@ export async function submitEmbeddedAttemptPrompt(input: {
       }
       if (activeSession.agent.streamFn === providerPromptStreamFn) {
         activeSession.agent.streamFn = baseStreamFn;
+      }
+      if (activeSession.agent.transformContext === projectPreparedContext) {
+        activeSession.agent.transformContext = baseTransformContext;
       }
     };
   };

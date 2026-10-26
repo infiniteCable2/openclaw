@@ -1,5 +1,8 @@
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
-import { captureConversationPublication } from "../../config/sessions/conversation-publication-context.js";
+import {
+  captureConversationPublication,
+  publishConversationPublicationCommit,
+} from "../../config/sessions/conversation-publication-context.js";
 import type {
   SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
@@ -163,6 +166,11 @@ export async function appendSessionTranscriptMessage(
         version: snapshot.value.after,
         lifecycleRevision: snapshot.value.lifecycleRevision,
       };
+      publishConversationPublicationCommit(
+        input.target,
+        conversationPublication?.intent,
+        snapshot.value.result,
+      );
       admission.publish(reply.value.pendingInputReceipt);
       assertCurrent();
       if (reply.value.projectionNeedsReconcile) {

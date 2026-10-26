@@ -124,6 +124,7 @@ export function buildFallbackCandidateTurnParams(params: AgentFallbackCandidateC
     currentInboundEventKind: turn.followupRun.currentInboundEventKind,
     currentInboundContext: turn.followupRun.currentInboundContext,
     runtimeContextFragments: turn.runtimeContextFragments,
+    refreshConversationContext: turn.refreshConversationContext,
     extraSystemPrompt: withCommentaryGuidance(
       [turn.followupRun.run.extraSystemPrompt, speech?.guidance].filter(Boolean).join("\n\n") ||
         undefined,
