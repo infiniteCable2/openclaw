@@ -118,7 +118,7 @@ describe("prepared conversation context dispatch", () => {
       steered.resolve();
       return true;
     });
-    let disconnect: (() => void) | void;
+    let disconnect: (() => void) | void = undefined;
     let requests = 0;
     streamMocks.streamSimple.mockImplementation((model, _context, options) => {
       requests++;
