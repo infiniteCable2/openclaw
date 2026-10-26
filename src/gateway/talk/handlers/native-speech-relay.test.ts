@@ -39,6 +39,17 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
     if (
       isRecord(payload) &&
       isRecord(payload.talkEvent) &&
+      payload.talkEvent.type === "session.error"
+    ) {
+      turnEnded.reject(
+        new Error("Synthetic input boundary failed before audio completion", {
+          cause: vi.mocked(context.logGateway.warn).mock.calls,
+        }),
+      );
+    }
+    if (
+      isRecord(payload) &&
+      isRecord(payload.talkEvent) &&
       payload.talkEvent.type === "turn.ended"
     ) {
       turnEnded.resolve();
