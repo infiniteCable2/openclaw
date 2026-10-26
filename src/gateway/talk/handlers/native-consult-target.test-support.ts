@@ -471,6 +471,7 @@ async function publishNativeSpeechModelRun(
   if (!params.agentId || !params.sessionKey) {
     throw new Error("The synthetic native speech run requires an explicit agent and session key");
   }
+  const { agentId, sessionKey } = params;
   const admitted = await resolvePreparedRunAdmission({ ...params, runtimeKind: "embedded" });
   const assertAdmitted = resolveAdmittedRunActiveAssertion(admitted, params.abortSignal);
   const assertCurrent = () => {
@@ -495,8 +496,8 @@ async function publishNativeSpeechModelRun(
   const handle = createEmbeddedRunHandle({ runId: params.runId });
   await withGatewayToolCallerIdentity(
     {
-      agentId: params.agentId,
-      sessionKey: params.sessionKey,
+      agentId,
+      sessionKey,
       operationalRunInstance: admitted.operationalRunInstance,
       embeddedRunToolAuthorityBinding: () => ({
         source: "attempt",
