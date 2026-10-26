@@ -356,6 +356,7 @@ it("publishes original input, steered input and commentary before final completi
         await withConversationPublicationContext(
           {
             source,
+            storePath: source.storePath,
             recorder: first,
             runId: "run-one",
             capture: () => ({
@@ -372,10 +373,14 @@ it("publishes original input, steered input and commentary before final completi
               appendTranscriptMessage(source, { message: runtimeMessage }),
             );
             expect(savedSecond.anchor).toBeDefined();
-            await confirmPersistedSteerTargetRunId({
+            const beforeSteerGeneration = first.getAdmissionReceipt()?.generation;
+            const steered = await confirmPersistedSteerTargetRunId({
               admission: { ...savedSecond.anchor!, logicalTurnId: "input-two", role: "user" },
               targetRunId: "run-one",
             });
+            expect(steered).toBeDefined();
+            expect(first.getAdmissionReceipt()?.generation).toBe(steered!.admission.generation);
+            expect(first.getAdmissionReceipt()?.generation).not.toBe(beforeSteerGeneration);
             await appendTranscriptMessage(source, {
               message: {
                 role: "user",
