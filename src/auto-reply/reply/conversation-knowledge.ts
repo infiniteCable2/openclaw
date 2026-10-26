@@ -78,6 +78,8 @@ type ReplyConversationKnowledgeParams = {
   expectedAudienceIdentity?: string;
   getRuntimeConfig: () => OpenClawConfig;
   signal?: AbortSignal;
+  /** Retained context follows the turn lifetime, not a completed model response. */
+  retainedSignal?: AbortSignal;
   sourceCache?: ConversationKnowledgeSourceCache;
   /** Read/authorize ahead without modifying the recipient or asking a model to compact. */
   preparationOnly?: boolean;
@@ -131,6 +133,7 @@ async function prepareReplyConversationKnowledgeInMode(
   }
   const branch = await readConversationKnowledgeBranch(params);
   params.assertCurrent();
+  params.signal?.throwIfAborted();
   if (!branch) {
     return undefined;
   }
@@ -632,10 +635,11 @@ async function prepareReplyConversationKnowledgeInMode(
         if (!active) {
           throw new Error("Conversation knowledge read has been released");
         }
-        params.signal?.throwIfAborted();
+        (params.retainedSignal ?? params.signal)?.throwIfAborted();
         check();
       },
     );
+    params.signal?.throwIfAborted();
     source();
     return {
       pendingPackets,

@@ -374,6 +374,27 @@ describe("conversation knowledge capability absence", () => {
     prepared?.release();
   });
 
+  it("keeps unavailable context valid after response completion, but not turn cancellation", async () => {
+    const response = new AbortController();
+    const turn = new AbortController();
+    const prepared = await prepareReplyConversationKnowledge({
+      reader: unusedReader(),
+      sessionId: "synthetic-current-session",
+      assertCurrent() {},
+      getRuntimeConfig: () => ({}),
+      signal: AbortSignal.any([response.signal, turn.signal]),
+      retainedSignal: turn.signal,
+    });
+    expect(prepared).toBeDefined();
+    response.abort(new Error("Model response closed"));
+    expect(() => prepared?.assertCurrent()).not.toThrow();
+    expect(prepared?.fragments).toEqual([]);
+    turn.abort(new Error("Original input retired"));
+    expect(() => prepared?.assertCurrent()).toThrow("Original input retired");
+    prepared?.release();
+    expect(source.branch).not.toHaveBeenCalled();
+  });
+
   it("refuses startup disclosure when the actual recipient differs from the stored target person", async () => {
     source.branch.mockResolvedValue({
       agentId: "example",
@@ -585,6 +606,28 @@ function personalFixture(sourceMode: "native" | "branches" = "branches") {
 }
 
 describe("native personal difference-context integration", () => {
+  it("does not finish preparation after its response was canceled while the turn remains live", async () => {
+    const f = personalFixture();
+    const response = new AbortController();
+    const turn = new AbortController();
+    source.context.mockImplementationOnce(
+      async (_target: unknown, consume: (value: { events: unknown[] }) => unknown) => {
+        response.abort(new Error("Preparation canceled"));
+        return consume({ events: [] });
+      },
+    );
+    await expect(
+      prepareReplyConversationKnowledge({
+        ...f.params,
+        signal: AbortSignal.any([response.signal, turn.signal]),
+        retainedSignal: turn.signal,
+      }),
+    ).rejects.toThrow("Preparation canceled");
+    expect(turn.signal.aborted).toBe(false);
+    expect(f.grantRelease).toHaveBeenCalledOnce();
+    expect(f.factsRelease).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["native", "branches"] as const)(
     "native enrolled consumers accept only branch-origin context (source %s)",
     async (sourceMode) => {

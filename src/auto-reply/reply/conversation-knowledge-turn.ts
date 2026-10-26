@@ -342,9 +342,10 @@ export function createReplyConversationKnowledgeTurn(params: {
       const messages: CustomMessage[] = [];
       const { resolveConversationKnowledgeContextLimits, withConversationKnowledgeWriter } =
         await import("./conversation-knowledge-maintenance.js");
+      const retainedSignal = execution.signal;
       const signal = input.signal
-        ? AbortSignal.any([execution.signal, input.signal])
-        : execution.signal;
+        ? AbortSignal.any([retainedSignal, input.signal])
+        : retainedSignal;
       try {
         const next = await withConversationKnowledgeWriter(
           { run, assertCurrent: assertTurnSourceCurrent },
@@ -357,6 +358,7 @@ export function createReplyConversationKnowledgeTurn(params: {
               destinationAudience: followupRun.conversationAudience,
               getRuntimeConfig,
               signal,
+              retainedSignal,
               sourceCache: recipient!.cache,
               readyOnly: true,
               packetBudget: 8,

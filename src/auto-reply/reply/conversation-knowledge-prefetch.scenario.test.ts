@@ -1,10 +1,14 @@
+import { createAssistantMessageEventStream } from "@openclaw/llm-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
+import { streamAgentResponse } from "../../../packages/agent-core/src/agent-stream-response.js";
 import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
+import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
+import { makeProviderModelFixture } from "../../agents/test-helpers/provider-model-fixture.js";
 import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
@@ -22,6 +26,7 @@ import { withSessionTranscriptWriteAssertion } from "../../config/sessions/trans
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
 import {
@@ -163,8 +168,9 @@ describe("native branch prefetch and model-boundary composition", () => {
           if (!knowledge) {
             throw new Error("Expected actual native knowledge turn");
           }
+          const logicalTurn = new AbortController();
           try {
-            await knowledge.prepare(admission, signal);
+            await knowledge.prepare(admission, AbortSignal.any([signal, logicalTurn.signal]));
             const run = {
               ...followupRun.run,
               runId,
@@ -184,12 +190,94 @@ describe("native branch prefetch and model-boundary composition", () => {
             expect(await refresh(false)).toEqual([]);
             expect(prefetch.cache.revision).toBe(revision);
             expect(await packets()).toEqual([]);
-            const first = await refresh(true);
+            const model = makeProviderModelFixture({
+              id: "test-model",
+              provider: "openai",
+              api: "openai-responses",
+              baseUrl: "https://model.example.test/v1",
+            });
+            const response: {
+              signal?: AbortSignal;
+              packets: Awaited<ReturnType<typeof knowledge.refreshPrepared>>;
+            } = { packets: [] };
+            const answer = makeAgentAssistantMessage({
+              content: [{ type: "text", text: "The color is yellow." }],
+            });
+            // Keep the actual response-local cancellation owner: successful Core
+            // cleanup must not revoke the longer-lived native turn or its grants.
+            await streamAgentResponse(
+              { systemPrompt: "Synthetic response lifecycle.", messages: [] },
+              { model, convertToLlm: () => [] },
+              logicalTurn.signal,
+              () => {},
+              [],
+              async () => {
+                throw new Error("Unexpected synthetic tool execution");
+              },
+              (message) => message,
+              async (_model, _context, options) => {
+                const requestSignal = options?.signal;
+                if (!requestSignal) {
+                  throw new Error("Expected actual response-local cancellation");
+                }
+                response.signal = requestSignal;
+                response.packets = await withSessionTranscriptWriteAssertion(
+                  writer,
+                  owner.assertCurrent,
+                  () => knowledge.refreshPrepared({ signal: requestSignal, canAdmit: () => true }),
+                );
+                const stream = createAssistantMessageEventStream();
+                stream.push({ type: "done", reason: "stop", message: answer });
+                stream.end();
+                return stream;
+              },
+            );
+            expect(response.signal?.aborted).toBe(true);
+            expect(response.signal?.reason).toMatchObject({ message: "Model response closed" });
+            expect(() => knowledge.assertCurrent()).not.toThrow();
+            admission.assertSourceCurrent();
+            const first = response.packets;
             expect(first).toHaveLength(1);
             expect(first[0]?.content).toContain("The color is yellow.");
             expect(await packets()).toHaveLength(1);
             await prefetch.owner.wait();
             expect(prefetch.cache.peek(firstId, 0)).toBeUndefined();
+
+            const terminal = await withSessionTranscriptWriteAssertion(
+              writer,
+              owner.assertCurrent,
+              () => fixture.append(recipient, runId, "stop", "The color is yellow."),
+            );
+            const route = { provider: model.provider, model: model.id };
+            const completed: SettledAgentTurn = {
+              kind: "settled",
+              status: "ok",
+              resolved: route,
+              fallback: { exhausted: false, attempts: [] },
+              autoCompactionCount: 0,
+              didLogHeartbeatStrip: false,
+              result: {
+                payloads: [{ text: "The color is yellow." }],
+                meta: {
+                  durationMs: 0,
+                  agentMeta: {
+                    sessionId: recipient.sessionId,
+                    ...route,
+                    terminalReceipt: {
+                      runId,
+                      sessionId: recipient.sessionId,
+                      turnId: "prefetch-native-turn",
+                      requested: route,
+                      effective: { ...route, responseModel: route.model },
+                      successfulToolNames: [],
+                      rerouted: false,
+                      assistantTranscriptIdempotencyKey: terminal.assistantTranscriptIdempotencyKey,
+                    },
+                  },
+                },
+              },
+            };
+            await knowledge.record(completed);
             expect(await refresh(true)).toEqual([]);
 
             const secondId = await publish("second-observation", "The shape is a triangle.");
@@ -205,6 +293,8 @@ describe("native branch prefetch and model-boundary composition", () => {
             expect(prefetch.cache.peek(firstId, 0)).toBeUndefined();
             expect(prefetch.cache.peek(secondId, 0)).toBeUndefined();
             expect(budget.compact).not.toHaveBeenCalled();
+            logicalTurn.abort(new Error("Logical turn canceled"));
+            expect(() => knowledge.assertCurrent()).toThrow("Logical turn canceled");
           } finally {
             knowledge.release();
             admission.close();

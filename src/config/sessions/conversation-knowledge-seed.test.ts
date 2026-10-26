@@ -114,6 +114,7 @@ const anchor = {
 const assertCurrent: SessionSourceAssertion = Object.assign(() => {}, {
   prepareSessionSource: async () => ({ assertCurrent: () => {}, checks: [] }),
 });
+let projectRead: (facts: SessionEntryCohortResult) => SessionEntryCohortResult;
 const reader: SessionEntryCohortReader = {
   database: { agentId: branch.agentId, path: branch.storePath, env: {} },
   sessionKey: branch.sessionKey,
@@ -141,7 +142,7 @@ const reader: SessionEntryCohortReader = {
       lifecycleTimestamps: {},
       members: {},
     } satisfies SessionEntryCohortResult;
-    return consume(facts, assertSource);
+    return consume(projectRead(facts), assertSource);
   },
 };
 const params = { reader, sessionId: branch.sessionId, assertCurrent };
@@ -176,6 +177,7 @@ let sourceVersion: SessionTranscriptContextVersion;
 
 beforeEach(() => {
   Object.values(mocks).forEach((mock) => mock.mockReset());
+  projectRead = (facts) => facts;
   savedReports = [];
   sourceVersion = version;
   mocks.branch.mockResolvedValue(branch);
@@ -362,6 +364,80 @@ describe("explicit native conversation history seed", () => {
       }),
     ).rejects.toThrow("completed seed permission revoked");
   });
+
+  it.each(["seeded", "already-seeded"] as const)(
+    "accepts concurrent activity metadata changes at the awaited %s boundary",
+    async (status) => {
+      if (status === "already-seeded") {
+        await ensureConversationKnowledgeSeed(params);
+      }
+      mocks.append.mockClear();
+      mocks.reports.mockImplementationOnce(async ({ customTypes }: { customTypes: string[] }) => {
+        await Promise.resolve();
+        projectRead = (facts) => ({
+          ...facts,
+          entries: facts.entries.map((row) => ({
+            ...row,
+            entry: row.entry && { ...row.entry, updatedAt: 2, totalTokens: 42 },
+          })),
+        });
+        return savedReports.filter((report) => customTypes.includes(String(report.customType)));
+      });
+      await expect(ensureConversationKnowledgeSeed(params)).resolves.toMatchObject({ status });
+      expect(mocks.append).toHaveBeenCalledTimes(status === "seeded" ? 1 : 0);
+    },
+  );
+
+  it.each(["seeded", "already-seeded"] as const)(
+    "still rejects real authority changes at the awaited %s boundary",
+    async (status) => {
+      for (const change of ["lifecycle", "audience", "members", "physical-source"] as const) {
+        projectRead = (facts) => facts;
+        savedReports = [];
+        if (status === "already-seeded") {
+          await ensureConversationKnowledgeSeed(params);
+        }
+        mocks.append.mockClear();
+        mocks.reports.mockImplementationOnce(async ({ customTypes }: { customTypes: string[] }) => {
+          await Promise.resolve();
+          projectRead = (facts) => ({
+            ...facts,
+            ...(change === "physical-source"
+              ? { source: { ...facts.source, databaseIdentity: "replaced-identity" } }
+              : {}),
+            ...(change === "members"
+              ? {
+                  members: {
+                    ...facts.members,
+                    [branch.sessionKey]: [
+                      { identityId: "other-person", addedBy: "synthetic-owner", addedAt: 2 },
+                    ],
+                  },
+                }
+              : {}),
+            entries: facts.entries.map((row) => ({
+              ...row,
+              entry:
+                row.sessionKey !== branch.sessionKey || !row.entry
+                  ? row.entry
+                  : {
+                      ...row.entry,
+                      ...(change === "lifecycle" ? { lifecycleRevision: "replacement" } : {}),
+                      ...(change === "audience" ? { chatType: "group" as const } : {}),
+                    },
+            })),
+          });
+          return savedReports.filter((report) => customTypes.includes(String(report.customType)));
+        });
+        await expect(ensureConversationKnowledgeSeed(params)).rejects.toThrow(
+          change === "lifecycle"
+            ? "Conversation knowledge seed enrollment changed"
+            : "Conversation knowledge seed authority changed",
+        );
+        expect(mocks.append).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("never marks a partially failed traversal complete and lets a later attempt retry", async () => {
     mocks.voice.mockRejectedValueOnce(new Error("source revoked"));

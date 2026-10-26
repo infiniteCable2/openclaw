@@ -94,7 +94,16 @@ async function captureSeedSources(
             source: facts.source,
             sessionKey,
             fields: [...fields],
-            expected: structuredClone(sessionKey === branch.sessionKey ? source : root),
+            // Host rechecks and native COMMIT must compare the same authority,
+            // not unrelated activity/usage metadata changed by concurrent work.
+            expected: structuredClone(
+              Object.fromEntries(
+                fields.map((field) => [
+                  field,
+                  (sessionKey === branch.sessionKey ? source : root)[field],
+                ]),
+              ),
+            ),
             members: facts.members?.[sessionKey]?.map((member) => member.identityId) ?? [],
           }) satisfies SessionSourcePredicate,
       );

@@ -26,16 +26,18 @@ export function unavailableConversationKnowledge(
     sessionId: string;
     assertCurrent: SessionSourceAssertion;
     signal?: AbortSignal;
+    retainedSignal?: AbortSignal;
   },
   reason: "original-participant-unconfirmed" | "private-destination-audience-unconfirmed",
 ): PreparedReplyConversationKnowledge {
+  params.signal?.throwIfAborted();
   logConversationKnowledgeDiagnostic({ recipient: params.sessionId, reason });
   let active = true;
   const assertCurrent = composeSessionSourceAssertion([params.assertCurrent], (assertSource) => {
     if (!active) {
       throw new Error("Conversation knowledge capability has been released");
     }
-    params.signal?.throwIfAborted();
+    (params.retainedSignal ?? params.signal)?.throwIfAborted();
     assertSource();
   });
   return {
