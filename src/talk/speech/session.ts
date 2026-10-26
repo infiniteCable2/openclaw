@@ -500,7 +500,7 @@ export async function startSpeechSession(
     sttSession = resolved.provider.createSession({
       cfg: params.fullConfig,
       providerConfig: resolved.providerConfig,
-      inputAudioFormat: sttInputFormat,
+      inputAudioFormat: transcriptionInput.providerAudioFormat,
       onSpeechStart: () => {
         if (stopped) {
           return;

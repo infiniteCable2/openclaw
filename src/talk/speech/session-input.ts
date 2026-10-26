@@ -23,6 +23,7 @@ export function createSpeechTranscriptionInput(params: {
   let converter = createConverter();
   let finishing: Promise<void> | undefined;
   return {
+    providerAudioFormat,
     get supportsInputEnd() {
       return typeof params.getSession()?.finishInput === "function";
     },
