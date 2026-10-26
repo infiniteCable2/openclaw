@@ -109,8 +109,8 @@ describe("registered channel connection preparation", () => {
       await open();
       expect(mocks.ensureSession).toHaveBeenCalledOnce();
       expect(mocks.openRecipient).toHaveBeenCalledOnce();
-      const initialization = mocks.ensureSession.mock.calls[0][0];
-      const registration = mocks.openRecipient.mock.calls[0][0];
+      const initialization = mocks.ensureSession.mock.calls[0]![0];
+      const registration = mocks.openRecipient.mock.calls[0]![0];
       expect(initialization).toMatchObject({
         agentId: "researcher",
         sessionKey: scope.binding.sessionKey,
@@ -125,7 +125,7 @@ describe("registered channel connection preparation", () => {
       expect(registration).not.toHaveProperty("context");
       expect(initialization.privateAudience).toBe(registration.audience);
       expect(mocks.ensureSession.mock.invocationCallOrder[0]).toBeLessThan(
-        mocks.openRecipient.mock.invocationCallOrder[0],
+        mocks.openRecipient.mock.invocationCallOrder[0]!,
       );
       revoke();
       expect(() => registration.audience.assertCurrent()).toThrow("Connection closed");
@@ -155,7 +155,8 @@ describe("registered channel connection preparation", () => {
   it("retains registry and configuration fences in the background audience", async () => {
     await fixture(async ({ open, retire, config }) => {
       await open();
-      const audience = mocks.openRecipient.mock.calls[0][0].audience;
+      expect(mocks.openRecipient).toHaveBeenCalledOnce();
+      const audience = mocks.openRecipient.mock.calls[0]![0].audience;
       config.agents = { entries: { researcher: { conversationMode: "native" } } };
       expect(() => audience.assertCurrent()).toThrow();
       config.agents = { entries: { researcher: { conversationMode: "branches" } } };

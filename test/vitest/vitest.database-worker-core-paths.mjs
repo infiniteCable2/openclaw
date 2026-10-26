@@ -650,6 +650,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/run/attempt-prompt-submit.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-prompt-submit.conversation-context.test.ts",
   "src/auto-reply/reply/conversation-knowledge-prefetch.scenario.test.ts",
+  "src/auto-reply/reply/conversation-knowledge-idle.scenario.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-prompt-submit.projections.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-session-boundary.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-session-boundary.orphan.test.ts",
