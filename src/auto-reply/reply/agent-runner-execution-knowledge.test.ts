@@ -63,6 +63,9 @@ function fixture(provider = "anthropic", model = "claude") {
     assertCurrent,
     release,
     prepare,
+    withPublication<T>(run: () => T): T {
+      return run();
+    },
     prepareSnapshot,
     prepareHistory,
     record,
