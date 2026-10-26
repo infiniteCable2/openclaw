@@ -6,6 +6,7 @@ import {
   resolvePreparedRunAdmission,
 } from "../../../agents/admitted-run-context.js";
 import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
+import { claimAgentSessionWriter } from "../../../agents/embedded-agent-runner/run/session-bootstrap.js";
 import {
   clearActiveEmbeddedRun,
   setActiveEmbeddedRun,
@@ -476,6 +477,21 @@ async function publishNativeSpeechModelRun(
     params.abortSignal?.throwIfAborted();
     assertAdmitted?.();
   };
+  // Replacing the embedded model runner also bypasses its lane controller.
+  // Retain that owner's real durable writer claim and captured fence before
+  // lifecycle callbacks or synthetic model messages can write the transcript.
+  const writerClaim = await claimAgentSessionWriter(params);
+  assertCurrent();
+  if (writerClaim) {
+    params = {
+      ...params,
+      sessionTarget: {
+        ...params.sessionTarget,
+        expectedLifecycleRevision: writerClaim.expectedLifecycleRevision,
+        expectedWriterRunId: writerClaim.expectedWriterRunId,
+      },
+    };
+  }
   const handle = createEmbeddedRunHandle({ runId: params.runId });
   await withGatewayToolCallerIdentity(
     {
