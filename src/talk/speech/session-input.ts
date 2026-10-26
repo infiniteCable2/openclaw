@@ -1,15 +1,26 @@
 import type { RealtimeTranscriptionSession } from "../../realtime-transcription/provider-types.js";
+import { createSpeechSttAudioConverter, type SpeechInputAudioFormat } from "./audio-format.js";
+import type { resolveSpeechTranscriptionProvider } from "./support.js";
 import type { SpeechAudioTransport } from "./transport.js";
 
 /** Accepted capture boundaries retain the converter and provider until settlement. */
 export function createSpeechTranscriptionInput(params: {
-  createConverter(): { process(audio: Buffer): Buffer; flush(): Buffer };
+  inputAudioFormat: SpeechInputAudioFormat;
+  transcription: Pick<
+    ReturnType<typeof resolveSpeechTranscriptionProvider>,
+    "provider" | "providerConfig"
+  >;
   getSession(): RealtimeTranscriptionSession | null;
   isReady(): boolean;
   assertCurrent(): void;
   acceptAudio(audio: Buffer): boolean;
 }) {
-  let converter = params.createConverter();
+  const { provider, providerConfig } = params.transcription;
+  const providerAudioFormat =
+    provider.resolveInputAudioFormat?.(providerConfig) ?? "g711-ulaw-8khz";
+  const createConverter = () =>
+    createSpeechSttAudioConverter(params.inputAudioFormat, providerAudioFormat);
+  let converter = createConverter();
   let finishing: Promise<void> | undefined;
   return {
     get supportsInputEnd() {
@@ -36,7 +47,7 @@ export function createSpeechTranscriptionInput(params: {
       const finish = Promise.resolve().then(async () => {
         params.assertCurrent();
         const remaining = converter.flush();
-        converter = params.createConverter();
+        converter = createConverter();
         if (remaining.byteLength > 0) session.sendAudio(remaining);
         await finishProviderInput();
         params.assertCurrent();

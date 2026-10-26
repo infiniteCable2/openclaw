@@ -8,7 +8,6 @@ import {
 } from "../realtime-session-harness.js";
 import type { RealtimeVoiceTranscriptEntry } from "../session-log-runtime.js";
 import { publishTalkConnectionPresentation } from "../session-registry.js";
-import { createSpeechSttAudioConverter } from "./audio-format.js";
 import { createSpeechCancellation } from "./cancellation.js";
 import { playSpeechGreeting } from "./greeting.js";
 import { createSpeechInputOnset } from "./input-onset.js";
@@ -75,8 +74,6 @@ export async function startSpeechSession(
     fullConfig: params.fullConfig,
     providers: params.providers,
   });
-  const sttInputFormat =
-    resolved.provider.resolveInputAudioFormat?.(resolved.providerConfig) ?? "g711-ulaw-8khz";
   const waitingAudio = await prepareSpeechWaitingAudio(
     params.config.waitingAudio,
     params.config.audioFormat,
@@ -92,11 +89,8 @@ export async function startSpeechSession(
     }
   };
   const transcriptionInput = createSpeechTranscriptionInput({
-    createConverter: () =>
-      createSpeechSttAudioConverter(
-        params.config.inputAudioFormat ?? params.config.audioFormat,
-        sttInputFormat,
-      ),
+    inputAudioFormat: params.config.inputAudioFormat ?? params.config.audioFormat,
+    transcription: resolved,
     getSession: () => sttSession,
     isReady: () => realtimeReady,
     assertCurrent: assertStarting,
