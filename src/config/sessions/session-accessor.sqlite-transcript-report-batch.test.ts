@@ -1,10 +1,11 @@
 import { MessageChannel } from "node:worker_threads";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { withSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import { runWithSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
+import { resolveZstdCodec } from "../../infra/zstd-codec.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -23,7 +24,9 @@ import {
 import {
   prepareCustomTranscriptReport,
   prepareTranscriptReportBatchSelection,
-  prepareTranscriptReportSelection,
+  readReportBranch,
+  readReportEvent,
+  transcriptReportBatchReceiptKey,
 } from "./session-accessor.sqlite-transcript-reports.kernel.js";
 import type { PreparedTranscriptReportBatchEntry } from "./session-accessor.sqlite-transcript-reports.types.js";
 import {
@@ -231,7 +234,7 @@ it("observes a full receipt batch with one reverse scan and one body read per re
               ? "branch"
               : sql.includes('as "event_json"') &&
                   sql.includes('from "transcript_events"') &&
-                  sql.includes('"seq" =')
+                  (sql.includes('"seq" =') || sql.includes('"seq" in'))
                 ? "payload"
                 : sql.includes('select "active_position", "context_eligible"') &&
                     sql.includes('from "session_transcript_active_events"')
@@ -275,7 +278,7 @@ it("observes a full receipt batch with one reverse scan and one body read per re
   );
 });
 
-it("selects a bounded batch from one recipient branch and reads each matching old body at most once", async () => {
+it("streams one canonical receipt selection for missing and existing batches across a large ledger", async () => {
   await withOpenClawTestState(
     { scenario: "minimal", label: "report-batch-scaling" },
     async (state) => {
@@ -288,7 +291,7 @@ it("selects a bounded batch from one recipient branch and reads each matching ol
         env: state.env,
       };
       await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-      for (const count of [10, 100, 213, 300]) {
+      for (const count of [10, 100, 213, 300, 600]) {
         await replaceTranscriptEvents(scope, [
           { type: "session", id: scope.sessionId, version: CURRENT_SESSION_VERSION },
           ...Array.from({ length: count }, (_, index) => ({
@@ -318,25 +321,24 @@ it("selects a bounded batch from one recipient branch and reads each matching ol
               ? "branch"
               : sql.includes('as "event_json"') &&
                   sql.includes('from "transcript_events"') &&
-                  sql.includes('"seq" =')
+                  (sql.includes('"seq" =') || sql.includes('"seq" in'))
                 ? "payload"
                 : null,
           );
         const legacy = observe();
         const legacyStarted = performance.now();
-        for (const entry of batch) {
-          expect(
-            prepareTranscriptReportSelection(database, resolved, {
-              kind: "custom",
-              customTypes: [customType],
-              receipt: entry.receipt,
-            }),
-          ).toMatchObject({
-            appendParentId: `old-${count - 1}`,
-            latest: undefined,
-            suppressed: false,
-          });
+        // The former batch algorithm selected the same canonical branch, then
+        // issued one decoded payload query per matching historical report.
+        const oldBranch = readReportBranch(database, scope.sessionId);
+        for (const entry of oldBranch.path) {
+          if (entry.type === "custom_message" && entry.customType === customType) {
+            expect(readReportEvent(database, scope.sessionId, entry.seq)?.details).toEqual({
+              packetId: entry.id,
+            });
+          }
         }
+        expect(legacy.counts.payload).toBe(count);
+        expect(legacy.rowCounts.payload).toBe(count);
         const oldFacts = {
           queries: { ...legacy.counts },
           rows: { ...legacy.rowCounts },
@@ -344,6 +346,11 @@ it("selects a bounded batch from one recipient branch and reads each matching ol
           ms: performance.now() - legacyStarted,
         };
         legacy.restore();
+        const codec = resolveZstdCodec();
+        if (!codec) {
+          throw new Error("Native compressed-ledger coverage requires the runtime zstd codec");
+        }
+        const decode = vi.spyOn(codec, "decompress");
         const counter = observe();
         const started = performance.now();
         try {
@@ -351,7 +358,9 @@ it("selects a bounded batch from one recipient branch and reads each matching ol
           expect(selected.appendParentId).toBe(`old-${count - 1}`);
           expect([...selected.existing]).toEqual([]);
           expect(counter.counts.branch).toBeLessThanOrEqual(2);
-          expect(counter.counts.payload).toBeLessThanOrEqual(count);
+          expect(counter.counts.payload).toBe(1);
+          expect(counter.rowCounts.payload).toBe(count);
+          expect(decode).toHaveBeenCalledTimes(Number(stored?.compressed));
           expect(counter.rowCounts.branch).toBeLessThanOrEqual(count + 2);
           console.info(
             JSON.stringify({
@@ -363,13 +372,24 @@ it("selects a bounded batch from one recipient branch and reads each matching ol
                 queries: counter.counts,
                 rows: counter.rowCounts,
                 bytes: counter.textBytes,
+                decompressions: decode.mock.calls.length,
                 ms: performance.now() - started,
               },
               rss: process.memoryUsage().rss,
             }),
           );
+          const duplicates = batch
+            .slice(0, Math.min(32, count))
+            .map((_, index) => prepared(`old-${index}`));
+          expect(
+            prepareTranscriptReportBatchSelection(database, resolved, duplicates).existing,
+          ).toEqual(new Set(duplicates.map(transcriptReportBatchReceiptKey)));
+          expect(counter.counts.payload).toBe(2);
+          expect(counter.rowCounts.payload).toBe(count * 2);
+          expect(decode).toHaveBeenCalledTimes(Number(stored?.compressed) * 2);
         } finally {
           counter.restore();
+          decode.mockRestore();
         }
       }
     },
