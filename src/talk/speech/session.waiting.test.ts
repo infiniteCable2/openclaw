@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import type { ReplySpeechOutputReceipt } from "../../auto-reply/reply-payload.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 import type { RealtimeTranscriptionSessionCreateRequest } from "../../realtime-transcription/provider-types.js";
@@ -145,6 +146,7 @@ describe("speech-confirmed waiting audio", () => {
       return completed.promise;
     });
     const f = await setup({ nativeInput });
+    let receipt: ReplySpeechOutputReceipt | undefined;
     try {
       for (const mode of ["status", "cancel", "steer", "followup"] as const) {
         await expect(f.handle.steer({ text: "Unauthenticated addition", mode })).rejects.toThrow(
@@ -164,16 +166,24 @@ describe("speech-confirmed waiting audio", () => {
       await f.readerStarted.promise;
       f.audio().enqueue(Uint8Array.from([1, 0, 2, 0]));
       f.audio().close();
-      await input.onSpeakableText?.({ type: "done", text: "Native spoken answer." });
+      receipt =
+        (await input.onSpeakableText?.({ type: "done", text: "Native spoken answer." })) ||
+        undefined;
+      if (!receipt) {
+        throw new Error("Expected native speech output receipt");
+      }
+      // The native conversation owner releases this producer after consuming its reply.
+      receipt.releaseSettlement();
       completed.resolve({
         kind: "reply",
         reply: { text: "Native spoken answer.", delivered: true },
       });
-      await vi.advanceTimersByTimeAsync(0);
+      expect(await receipt.completion).toEqual(["Native spoken answer."]);
       expect(f.synthesis).toHaveBeenCalledOnce();
       expect(f.writeOutput).toHaveBeenCalled();
       expect(nativeInput).toHaveBeenCalledOnce();
     } finally {
+      receipt?.releaseSettlement();
       completed.resolve({ kind: "reply", reply: { text: "" } });
       await f.close();
     }

@@ -156,7 +156,10 @@ describe("meeting native input steering", () => {
     try {
       f.say("Check the light.", "initial-input");
       await f.drain();
-      expect(f.consult).toMatchObject({ inputId: "initial-input", purpose: "user" });
+      expect(f.consult).toMatchObject({
+        inputId: '["speech","steering","initial-input"]',
+        purpose: "user",
+      });
       const assertCurrent = vi.fn();
       const signal = new AbortController().signal;
       const steering = f.handle.steer({
@@ -434,7 +437,7 @@ describe("meeting native input steering", () => {
       f.say("C", "c");
       await f.drain();
       expect(next?.args).toMatchObject({ question: "B\nC" });
-      expect(next).toMatchObject({ inputId: "b", purpose: "user" });
+      expect(next).toMatchObject({ inputId: '["speech","steering","b"]', purpose: "user" });
       expect(f.control).not.toHaveBeenCalled();
       expect(f.tts).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ text: "Results A, B and C" }),
@@ -456,7 +459,7 @@ describe("meeting native input steering", () => {
       expect(f.control).toHaveBeenCalledExactlyOnceWith(
         "Also check the printer.",
         expect.any(Function),
-        { inputId: "b", purpose: "steering", images: [] },
+        { inputId: '["speech","steering","b"]', purpose: "steering", images: [] },
       );
       expect(f.consult.abortSignal?.aborted).toBe(false);
       f.admitted.resolve(accepted);
@@ -558,7 +561,7 @@ describe("meeting native input steering", () => {
       f.admitted.resolve({ ...accepted, ok: false, queued: false, reason: "no_active_run" });
       await f.drain();
       expect(f.control).toHaveBeenCalledExactlyOnceWith("Check the printer.", undefined, {
-        inputId: "rejected-input",
+        inputId: '["speech","steering","rejected-input"]',
         purpose: "steering",
         images: [],
       });
@@ -571,7 +574,10 @@ describe("meeting native input steering", () => {
       await f.drain();
       expect(f.consultAgent).toHaveBeenCalledTimes(2);
       expect(next?.args).toMatchObject({ question: "Check the printer.\nAlso check the paper." });
-      expect(next).toMatchObject({ inputId: "rejected-input", purpose: "user" });
+      expect(next).toMatchObject({
+        inputId: '["speech","steering","rejected-input"]',
+        purpose: "user",
+      });
       expect(next?.transcript).toContainEqual(
         expect.objectContaining({
           role: "assistant",
