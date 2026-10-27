@@ -265,6 +265,9 @@ export async function submitEmbeddedAttemptPrompt(input: {
           const packets = await input.refreshConversationContext({
             signal: options?.signal,
             canAdmit,
+            contextIdentity:
+              activeSession.messages.findLast((message) => message.role === "compactionSummary") ??
+              activeSession,
           });
           assertRequestCurrent();
           const added = conversationProjection.install(packets, boundary);

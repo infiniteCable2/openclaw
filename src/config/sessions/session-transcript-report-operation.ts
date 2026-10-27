@@ -117,6 +117,9 @@ async function withIncognitoReportWorker<T>(
         input: TranscriptReportWorkerOperations[Key]["input"],
       ) => Promise<TranscriptReportWorkerOperations[Key]["output"]>;
     } = {
+      observe: async () => {
+        throw new Error("Receipt observations require a durable native transcript target");
+      },
       appendBatch: async () => {
         throw new Error("Batch reports require a durable native transcript target");
       },

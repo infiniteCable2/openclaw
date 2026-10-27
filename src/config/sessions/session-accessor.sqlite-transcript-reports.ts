@@ -33,6 +33,8 @@ import type {
   TranscriptReportContextAdmission,
   TranscriptReportBatchEntry,
   TranscriptReportBatchProgress,
+  TranscriptReportReceiptQuery,
+  TranscriptReportReceiptObservation,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transcript-write-guard.js";
@@ -208,6 +210,39 @@ export async function readLatestSessionTranscriptReport(
     },
     undefined,
     binding,
+  );
+}
+
+/** Read bounded producer-owned receipt carriers without changing the current prompt-history fence. */
+export async function readSessionTranscriptReportReceipts(
+  scope: SessionTranscriptWriteScope,
+  reports: readonly TranscriptReportReceiptQuery[],
+  options?: { source?: SessionSourceAssertion },
+): Promise<Result<TranscriptReportReceiptObservation[], TranscriptAppendRefusal>> {
+  if (!reports.length || reports.length > MAX_TRANSCRIPT_REPORT_BATCH_SIZE) {
+    throw new Error("Transcript receipt observation exceeds its scheduling quantum");
+  }
+  if (captureIncognitoSessionOperation(scope) || isProcessHeldTranscript(scope)) {
+    throw new Error("Receipt observations require a durable native transcript target");
+  }
+  const selected = reports.map((query) => {
+    if (!query.customType.trim() || !query.receipt.field.trim() || !query.receipt.value.trim()) {
+      throw new Error("Transcript receipt observation requires exact nonempty selectors");
+    }
+    return { customType: query.customType, receipt: { ...query.receipt } };
+  });
+  return withReportWorker(
+    scope,
+    "read",
+    async (operation, assertCurrent) => {
+      assertCurrent();
+      const result = await operation.execute({ type: "observe", input: { reports: selected } });
+      assertCurrent();
+      return result;
+    },
+    undefined,
+    undefined,
+    options?.source,
   );
 }
 

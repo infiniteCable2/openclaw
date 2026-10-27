@@ -175,6 +175,23 @@ const voice = {
 let savedReports: Array<Record<string, unknown>>;
 let sourceVersion: SessionTranscriptContextVersion;
 
+function setCopiedPrefixEndpoint(entryId: string) {
+  projectRead = (facts) => ({
+    ...facts,
+    entries: facts.entries.map((row) =>
+      row.sessionKey === branch.sessionKey
+        ? {
+            ...row,
+            entry: {
+              ...sourceEntry,
+              forkSource: { sessionKey: "agent:example:donor", sessionId: "donor", entryId },
+            },
+          }
+        : row,
+    ),
+  });
+}
+
 beforeEach(() => {
   Object.values(mocks).forEach((mock) => mock.mockReset());
   projectRead = (facts) => facts;
@@ -495,6 +512,68 @@ describe("explicit native conversation history seed", () => {
     expect(mocks.context).not.toHaveBeenCalled();
     expect(mocks.metadata).toHaveBeenCalledTimes(2);
     expect(mocks.metadata).toHaveBeenCalledWith({ operation: "version" });
+  });
+
+  it("skips a copied prefix across pages and its compaction ancestor before publishing the child tail", async () => {
+    setCopiedPrefixEndpoint("copied-end");
+    mocks.raw
+      .mockReset()
+      .mockResolvedValueOnce({
+        kind: "page",
+        events: [
+          { ...terminal, seq: 1, event: { ...terminal.event, id: "older-donor-answer" } },
+          { ...voice, seq: 2, event: { ...voice.event, id: "donor-voice" } },
+        ],
+        cursor: "copy-continuation",
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        kind: "page",
+        // The native active path includes compacted ancestors; a model-window
+        // read alone would not establish the original copy boundary.
+        events: [
+          { ...terminal, event: { ...terminal.event, id: "copied-end" } },
+          { seq: 4, event: { type: "compaction", id: "summary", summary: "Copied context." } },
+          voice,
+          { ...terminal, seq: 6 },
+        ],
+        cursor: "done",
+        hasMore: false,
+      });
+    expect(await ensureConversationKnowledgeSeed(params)).toEqual({
+      status: "seeded",
+      recorded: 2,
+      skipped: 0,
+    });
+    expect(mocks.raw).toHaveBeenCalledTimes(2);
+    expect(mocks.raw).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ cursor: "copy-continuation", activePathOnly: true }),
+    );
+    expect(mocks.record).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ assistantTranscriptEntryId: "answer", runId: "saved-run" }),
+    );
+    expect(mocks.voice).toHaveBeenCalledOnce();
+    expect(mocks.anchor).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ entryId: "voice" }),
+      undefined,
+    );
+    expect(savedReports).toHaveLength(1);
+    expect(mocks.context).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unavailable inherited endpoint pending without publishing or acknowledging its prefix", async () => {
+    setCopiedPrefixEndpoint("lost-copy-end");
+    expect(await ensureConversationKnowledgeSeed(params)).toEqual({
+      status: "pending",
+      recorded: 0,
+      skipped: 0,
+    });
+    expect(mocks.metadata).toHaveBeenCalledTimes(2);
+    expect(mocks.record).not.toHaveBeenCalled();
+    expect(mocks.voice).not.toHaveBeenCalled();
+    expect(mocks.append).not.toHaveBeenCalled();
+    expect(savedReports).toEqual([]);
   });
 
   it("skips missing native metadata and lets the recorder refuse incomplete tool work", async () => {

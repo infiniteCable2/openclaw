@@ -37,6 +37,7 @@ import {
   prepareTranscriptReportSelection,
   reparentTranscriptReportBatchEntry,
   transcriptReportBatchReceiptKey,
+  observeTranscriptReportReceipts,
 } from "./session-accessor.sqlite-transcript-reports.kernel.js";
 import type {
   AbortedSessionTranscriptPartialResult,
@@ -165,6 +166,17 @@ export function bindSqliteWorkerBackend(
   const backend: SqliteWorkerBackend<TranscriptReportWorkerOperations> = {
     execute(command) {
       assertOpen();
+      if (command.type === "observe") {
+        return runSqliteDeferredTransactionSync(database.db, () => {
+          if (target.sourcePredicates) {
+            admit("transaction");
+          }
+          const refusal = readRefusal();
+          return refusal
+            ? err(refusal)
+            : ok(observeTranscriptReportReceipts(database, resolved, command.input.reports));
+        });
+      }
       if (command.type === "prepare") {
         return runSqliteDeferredTransactionSync<
           Result<PreparedTranscriptReport, TranscriptAppendRefusal>

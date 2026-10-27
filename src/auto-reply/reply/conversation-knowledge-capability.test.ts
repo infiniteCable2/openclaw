@@ -12,6 +12,7 @@ import {
 import { captureConversationPublication } from "../../config/sessions/conversation-publication-context.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
+import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
 import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
@@ -35,6 +36,12 @@ vi.mock("../../config/sessions/conversation-knowledge-seed.js", () => ({
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readConversationKnowledgeBranch: source.branch,
   readConversationKnowledgeRoot: source.root,
+  readPreparedConversationKnowledgeRoot: () => {
+    throw new Error("This capability fixture must not consume a prepared recipient manifest");
+  },
+  issuePreparedKnowledgeRootCandidates: () => {
+    throw new Error("This capability fixture must not prepare recipient manifests");
+  },
   recordConversationKnowledgeTurn: source.record,
 }));
 // mock-isolation: Verify exact durable acceptance without opening journal workers or background jobs.
@@ -726,7 +733,12 @@ describe("native personal difference-context integration", () => {
 
   it("never retries a refused personal source through a broader history path", async () => {
     const f = personalFixture();
-    source.history.mockRejectedValue(new Error("Personal source is not private"));
+    source.history.mockRejectedValue(
+      new SessionMutationAuthorizationChangedError({
+        code: "FORBIDDEN",
+        message: "Personal source is not private",
+      }),
+    );
     const prepared = await prepareReplyConversationKnowledge(f.params);
     expect(source.history).toHaveBeenCalledOnce();
     expect(source.history.mock.calls[0]?.[0]).toHaveProperty("purpose", "conversation-differences");

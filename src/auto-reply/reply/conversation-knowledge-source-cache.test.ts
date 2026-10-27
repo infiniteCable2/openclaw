@@ -288,4 +288,18 @@ describe("disposable conversation source preparation", () => {
       expect(cache.peek("other", 0)?.part.text).toBe("Independent observation.");
     },
   );
+
+  it("removes retired candidates so they cannot occupy every prepared manifest slot", async () => {
+    const cache = createConversationKnowledgeSourceCache();
+    await cache.read({ ...input(), load: async () => context() });
+    for (let offset = 0; offset < 40; offset++) {
+      cache.stage(`retired-${offset}`, 0, packet());
+    }
+    cache.stage("current", 0, packet("Current observation."));
+    cache.retainContributions(new Set(["current"]));
+    expect(cache.preparedContributionIds(32)).toEqual(["current"]);
+    expect(cache.preparedPackets(32)).toEqual([{ contributionId: "current", offset: 0 }]);
+    expect(cache.hasContribution("source-contribution")).toBe(false);
+    expect(cache.peek("current", 0)?.part.text).toBe("Current observation.");
+  });
 });

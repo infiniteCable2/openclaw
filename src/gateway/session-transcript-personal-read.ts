@@ -27,8 +27,17 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
+import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import { resolveSessionVisibility } from "./session-sharing-policy.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
+
+/** An explicit native policy refusal, distinct from unavailable facts or worker failures. */
+export class PersonalConversationReadRefusedError extends SessionMutationAuthorizationChangedError {
+  constructor(message: string) {
+    super({ code: "FORBIDDEN", message });
+    this.name = "PersonalConversationReadRefusedError";
+  }
+}
 
 export type PersonalConversationReadParams = {
   purpose: "conversation-differences";
@@ -107,7 +116,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       (source) => source.agentId !== target.agentId || source.sessionKey === target.sessionKey,
     )
   ) {
-    throw new Error(
+    throw new PersonalConversationReadRefusedError(
       "Personal conversation differences require an original same-person branch source",
     );
   }
@@ -149,7 +158,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
   };
   const policy = () => {
     if (!active) {
-      throw new Error("Personal conversation read has been released");
+      throw new PersonalConversationReadRefusedError(
+        "Personal conversation read has been released",
+      );
     }
     if (revoked) {
       throw refusal;
@@ -158,13 +169,17 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     destination?.assertCurrent();
     if (contribution?.privateAudience || contribution?.readRange) {
       if (!rootEvidence) {
-        throw new Error("Personal contribution requires native root evidence");
+        throw new PersonalConversationReadRefusedError(
+          "Personal contribution requires native root evidence",
+        );
       }
       validateRootEvidence!(rootEvidence, target, contribution);
     }
     const cfg = params.getRuntimeConfig();
     if (resolveAgentConversationMode(cfg, target.agentId) !== selectedMode) {
-      throw new Error("Personal conversation difference mode changed");
+      throw new PersonalConversationReadRefusedError(
+        "Personal conversation difference mode changed",
+      );
     }
     return cfg;
   };
@@ -175,14 +190,18 @@ export async function preparePersonalConversationRead(params: PersonalConversati
         entry.sessionId !== target.root.sessionId ||
         entry.lifecycleRevision !== target.root.lifecycleRevision
       ) {
-        throw new Error("Personal conversation root incarnation changed");
+        throw new PersonalConversationReadRefusedError(
+          "Personal conversation root incarnation changed",
+        );
       }
       return false;
     }
     // Quoted differences become recipient history. A private transport does not
     // hide that history from the Gateway readers of a non-draft session.
     if (sessionKey === target.sessionKey && resolveSessionVisibility(entry) !== "draft") {
-      throw new Error("Personal conversation destination is visible to other Gateway readers");
+      throw new PersonalConversationReadRefusedError(
+        "Personal conversation destination is visible to other Gateway readers",
+      );
     }
     const creator = sessionCreatorProfileId(entry.createdActor);
     if (
@@ -191,7 +210,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       creator !== GATEWAY_OWNER_PROFILE_ID &&
       (participant.type !== "profile" || participant.id !== creator)
     ) {
-      throw new Error("Personal conversation destination has another Gateway profile creator");
+      throw new PersonalConversationReadRefusedError(
+        "Personal conversation destination has another Gateway profile creator",
+      );
     }
     const membership = entry.conversationTopology;
     const destinationIdentity =
@@ -222,7 +243,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       membership.rootSessionId !== target.root.sessionId ||
       membership.rootSessionLifecycleRevision !== target.root.lifecycleRevision
     ) {
-      throw new Error("Personal conversation source audience or root is not the original person's");
+      throw new PersonalConversationReadRefusedError(
+        "Personal conversation source audience or root is not the original person's",
+      );
     }
     return destinationIdentity === audienceIdentity || contributionIdentity === audienceIdentity;
   };
@@ -231,7 +254,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       !root &&
       members.some((member) => participant.type !== "profile" || member !== participant.id)
     ) {
-      throw new Error("Personal conversation has another explicitly shared reader");
+      throw new PersonalConversationReadRefusedError(
+        "Personal conversation has another explicitly shared reader",
+      );
     }
   };
   const assertCurrent = () => {
@@ -256,7 +281,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
               !isDeepStrictEqual(current.entry[field], read.entry[field]),
           )
         ) {
-          throw new Error("Personal conversation source changed after admission");
+          throw new PersonalConversationReadRefusedError(
+            "Personal conversation source changed after admission",
+          );
         }
         checkEntry(current.entry, read.root, current.canonicalKey);
         checkMembers(read.members, read.root);
@@ -293,7 +320,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       typeof current.readSource.databaseIdentity !== "string" ||
       isIncognitoSessionKey(current.canonicalKey)
     ) {
-      throw new Error("Personal conversation source physical ownership changed");
+      throw new PersonalConversationReadRefusedError(
+        "Personal conversation source physical ownership changed",
+      );
     }
     const attested = checkEntry(current.entry, root, current.canonicalKey);
     checkMembers(members, root);
@@ -328,14 +357,18 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       originalTarget.sessionId !== target.sessionId ||
       originalTarget.lifecycleRevision !== target.lifecycleRevision
     ) {
-      throw new Error("Personal destination is not the original input incarnation");
+      throw new PersonalConversationReadRefusedError(
+        "Personal destination is not the original input incarnation",
+      );
     }
     const originalRoot = await hold(
       { agentId: target.agentId, sessionKey: target.root.sessionKey },
       true,
     );
     if (!isDeepStrictEqual(originalRoot.readSource, originalTarget.readSource)) {
-      throw new Error("Personal conversation root differs from the original physical store");
+      throw new PersonalConversationReadRefusedError(
+        "Personal conversation root differs from the original physical store",
+      );
     }
     if (contribution?.privateAudience || contribution?.readRange) {
       if (
@@ -346,7 +379,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
           conversationKnowledgeParticipantIdentity(contribution.privateAudience.participant) !==
             audienceIdentity)
       ) {
-        throw new Error("Personal contribution is not the original person's selected range");
+        throw new PersonalConversationReadRefusedError(
+          "Personal contribution is not the original person's selected range",
+        );
       }
       // The original native root read supplies held evidence; never rescan the
       // entire root once per contribution or trust a tool-shaped receipt object.
@@ -355,7 +390,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     for (const request of selected) {
       const source = await hold(request, false);
       if (!isDeepStrictEqual(source.readSource, originalTarget.readSource)) {
-        throw new Error("Personal conversation sources do not share the original physical store");
+        throw new PersonalConversationReadRefusedError(
+          "Personal conversation sources do not share the original physical store",
+        );
       }
       sources.push(source);
     }
@@ -373,7 +410,11 @@ export async function preparePersonalConversationRead(params: PersonalConversati
         checks: reads.map((read) => {
           const current = read.attested ? read.held.readCurrent(policy()).target.entry : read.entry;
           if (read.attested && !hasOnlyConversationAgentActorChanges(read.entry, current)) {
-            refuse(new Error("Personal conversation recipients changed during source preparation"));
+            refuse(
+              new PersonalConversationReadRefusedError(
+                "Personal conversation recipients changed during source preparation",
+              ),
+            );
           }
           return {
             predicate: {
@@ -389,7 +430,11 @@ export async function preparePersonalConversationRead(params: PersonalConversati
               members: [...read.members],
             },
             refuse: () =>
-              refuse(new Error("Personal conversation read facts changed before commit")),
+              refuse(
+                new PersonalConversationReadRefusedError(
+                  "Personal conversation read facts changed before commit",
+                ),
+              ),
           };
         }),
       };

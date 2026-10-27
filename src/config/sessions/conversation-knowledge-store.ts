@@ -17,9 +17,11 @@ import {
   type ConversationKnowledgeReference,
 } from "./conversation-knowledge.js";
 import { appendSessionTranscriptReport } from "./session-accessor.sqlite-transcript-reports.js";
-import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
+import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "./session-accessor.sqlite-transcript-reports.types.js";
+import type { SessionTranscriptRuntimeTarget, TranscriptEvent } from "./session-accessor.types.js";
 import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
@@ -54,19 +56,23 @@ export class ConversationKnowledgeSourceCapacityError extends Error {
 const rootEvidenceIssuer = Symbol("native-knowledge-root-read");
 class NativeKnowledgeRootEvidence {
   #branch: ConversationKnowledgeBranch;
+  #source: CapturedSessionEntryReadSource;
   #assertCurrent: SessionSourceAssertion;
   #references = new Map<string, ConversationKnowledgeReference>();
+  #events = new Map<string, TranscriptEvent>();
 
   constructor(
     issuer: typeof rootEvidenceIssuer,
     branch: ConversationKnowledgeBranch,
-    events: readonly import("./session-accessor.types.js").TranscriptEvent[],
+    source: CapturedSessionEntryReadSource,
+    events: readonly TranscriptEvent[],
     assertCurrent: SessionSourceAssertion,
   ) {
     if (issuer !== rootEvidenceIssuer) {
       throw new Error("Knowledge root evidence requires its native read owner");
     }
     this.#branch = structuredClone(branch);
+    this.#source = structuredClone(source);
     this.#assertCurrent = assertCurrent;
     for (const event of events) {
       const row = asOptionalRecord(event);
@@ -74,7 +80,9 @@ class NativeKnowledgeRootEvidence {
         readConversationKnowledgeReceipt(row?.details) ??
         readConversationUtteranceObservation(row?.details);
       if (reference) {
-        this.#references.set(this.#key(reference), reference);
+        const key = this.#key(reference);
+        this.#references.set(key, structuredClone(reference));
+        this.#events.set(key, structuredClone(event));
       }
     }
     Object.freeze(this);
@@ -107,11 +115,132 @@ class NativeKnowledgeRootEvidence {
       throw new Error("Personal contribution has no matching native root evidence");
     }
   }
+
+  static prepareCandidates(
+    evidence: unknown,
+    references: readonly ConversationKnowledgeReference[],
+    maxBytes: number,
+  ): PreparedKnowledgeRootCandidates {
+    if (typeof evidence !== "object" || evidence === null || !(#branch in evidence)) {
+      throw new Error("Prepared contributions require native root evidence");
+    }
+    evidence.#assertCurrent();
+    if (
+      !Number.isSafeInteger(maxBytes) ||
+      maxBytes < 0 ||
+      references.length > MAX_TRANSCRIPT_REPORT_BATCH_SIZE
+    ) {
+      throw new RangeError("Prepared root candidates exceed their bounded manifest");
+    }
+    const events = new Map<string, TranscriptEvent>();
+    for (const reference of references) {
+      const key = evidence.#key(reference);
+      if (!isDeepStrictEqual(evidence.#references.get(key), reference)) {
+        throw new Error("Prepared contribution has no matching native root evidence");
+      }
+      events.set(key, evidence.#events.get(key)!);
+    }
+    evidence.#assertCurrent();
+    return new PreparedKnowledgeRootCandidates(
+      rootEvidenceIssuer,
+      evidence.#branch,
+      evidence.#source,
+      [...events.values()],
+      maxBytes,
+    );
+  }
 }
 Object.freeze(NativeKnowledgeRootEvidence);
 Object.freeze(NativeKnowledgeRootEvidence.prototype);
 
 export type { NativeKnowledgeRootEvidence };
+
+/** Immutable native provenance only. No reader, execution lease or disclosure grant is retained. */
+class PreparedKnowledgeRootCandidates {
+  #branch: ConversationKnowledgeBranch;
+  #source: CapturedSessionEntryReadSource;
+  #events: TranscriptEvent[];
+  #byteLength: number;
+
+  constructor(
+    issuer: typeof rootEvidenceIssuer,
+    branch: ConversationKnowledgeBranch,
+    source: CapturedSessionEntryReadSource,
+    events: readonly TranscriptEvent[],
+    maxBytes: number,
+  ) {
+    if (issuer !== rootEvidenceIssuer) {
+      throw new Error("Prepared contributions require their native root issuer");
+    }
+    this.#branch = structuredClone(branch);
+    this.#source = structuredClone(source);
+    this.#events = structuredClone([...events]);
+    this.#byteLength = Buffer.byteLength(
+      JSON.stringify({ branch: this.#branch, source: this.#source, events: this.#events }),
+    );
+    if (this.#byteLength > maxBytes) {
+      throw new RangeError("Prepared root candidates exceed their bounded manifest");
+    }
+    Object.freeze(this);
+  }
+
+  get byteLength(): number {
+    return this.#byteLength;
+  }
+
+  static async read(params: KnowledgeRootReadParams & { manifest: unknown }) {
+    const { manifest } = params;
+    if (typeof manifest !== "object" || manifest === null || !(#branch in manifest)) {
+      throw new Error("Prepared contributions require a native candidate manifest");
+    }
+    const check = () => {
+      params.signal?.throwIfAborted();
+      params.reader.assertCurrent();
+      params.assertCurrent();
+    };
+    check();
+    if (
+      params.branch.agentId !== manifest.#branch.agentId ||
+      params.branch.storePath !== manifest.#branch.storePath ||
+      params.branch.sessionKey !== manifest.#branch.sessionKey ||
+      params.branch.sessionId !== manifest.#branch.sessionId ||
+      params.branch.lifecycleRevision !== manifest.#branch.lifecycleRevision ||
+      !isDeepStrictEqual(params.branch.root, manifest.#branch.root)
+    ) {
+      throw new Error("Prepared conversation root or recipient changed");
+    }
+    const source = await readValidatedKnowledgeRootSource(params);
+    check();
+    if (!isDeepStrictEqual(source, manifest.#source)) {
+      throw new Error("Prepared conversation root physical source changed");
+    }
+    return attachNativeKnowledgeRootEvidence(
+      params.branch,
+      source,
+      structuredClone(manifest.#events),
+      check,
+    );
+  }
+}
+Object.freeze(PreparedKnowledgeRootCandidates);
+Object.freeze(PreparedKnowledgeRootCandidates.prototype);
+export type { PreparedKnowledgeRootCandidates };
+
+/** Select exact immutable receipt wrappers while the original native root read is still current. */
+export function issuePreparedKnowledgeRootCandidates(
+  evidence: unknown,
+  references: readonly ConversationKnowledgeReference[],
+  options: { maxBytes: number },
+): PreparedKnowledgeRootCandidates {
+  return NativeKnowledgeRootEvidence.prepareCandidates(evidence, references, options.maxBytes);
+}
+
+/** Rebind provenance to a fresh recipient read; actual source/audience grants remain separate. */
+export function readPreparedConversationKnowledgeRoot(
+  params: KnowledgeRootReadParams & { manifest: PreparedKnowledgeRootCandidates },
+) {
+  return PreparedKnowledgeRootCandidates.read(params);
+}
 
 /** Validate through the native class brand, never through an overridable object method. */
 export function assertNativeKnowledgeRootContribution(
@@ -509,50 +638,73 @@ export async function recordConversationKnowledgeReference(params: {
     });
 }
 
-/** Host reads only opaque receipt references from its infrastructure root, never source dialogue. */
-export async function readConversationKnowledgeRoot(params: {
+type KnowledgeRootReadParams = {
   branch: ConversationKnowledgeBranch;
   reader: SessionEntryCohortReader;
   assertCurrent: SessionSourceAssertion;
   signal?: AbortSignal;
-}) {
+};
+
+/** Both full reads and prepared candidates use the same native enrollment checks. */
+async function readValidatedKnowledgeRootSource(params: KnowledgeRootReadParams) {
   const { branch, reader, assertCurrent, signal } = params;
-  const validate = () =>
-    reader.withRead(
-      { sessionKeys: [branch.sessionKey, branch.root.sessionKey] },
+  signal?.throwIfAborted();
+  return reader.withRead(
+    { sessionKeys: [branch.sessionKey, branch.root.sessionKey] },
+    assertCurrent,
+    (read) => {
+      signal?.throwIfAborted();
+      const current = read.entries.find((row) => row.sessionKey === branch.sessionKey)?.entry;
+      const root = read.entries.find((row) => row.sessionKey === branch.root.sessionKey)?.entry;
+      assertSessionConversationRootEntry(root, branch.root.sessionKey);
+      if (
+        current?.sessionId !== branch.sessionId ||
+        current.lifecycleRevision !== branch.lifecycleRevision ||
+        root.sessionId !== branch.root.sessionId ||
+        root.lifecycleRevision !== branch.root.lifecycleRevision ||
+        current.conversationTopology?.role !== "branch" ||
+        current.conversationTopology.rootSessionKey !== branch.root.sessionKey ||
+        current.conversationTopology.rootSessionId !== root.sessionId ||
+        current.conversationTopology.rootSessionLifecycleRevision !== root.lifecycleRevision
+      ) {
+        throw new Error("Conversation knowledge root changed");
+      }
+      return structuredClone(read.source);
+    },
+  );
+}
+
+function attachNativeKnowledgeRootEvidence(
+  branch: ConversationKnowledgeBranch,
+  source: CapturedSessionEntryReadSource,
+  events: TranscriptEvent[],
+  assertCurrent: SessionSourceAssertion,
+) {
+  const result: TranscriptEvent[] & { evidence?: NativeKnowledgeRootEvidence } = events;
+  Object.defineProperty(result, "evidence", {
+    value: new NativeKnowledgeRootEvidence(
+      rootEvidenceIssuer,
+      branch,
+      source,
+      result,
       assertCurrent,
-      (read) => {
-        const current = read.entries.find((row) => row.sessionKey === branch.sessionKey)?.entry;
-        const root = read.entries.find((row) => row.sessionKey === branch.root.sessionKey)?.entry;
-        assertSessionConversationRootEntry(root, branch.root.sessionKey);
-        if (
-          current?.sessionId !== branch.sessionId ||
-          current.lifecycleRevision !== branch.lifecycleRevision ||
-          root.sessionId !== branch.root.sessionId ||
-          root.lifecycleRevision !== branch.root.lifecycleRevision ||
-          current.conversationTopology?.role !== "branch" ||
-          current.conversationTopology.rootSessionKey !== branch.root.sessionKey ||
-          current.conversationTopology.rootSessionId !== root.sessionId ||
-          current.conversationTopology.rootSessionLifecycleRevision !== root.lifecycleRevision
-        ) {
-          throw new Error("Conversation knowledge root changed");
-        }
-      },
-    );
-  await validate();
+    ),
+  });
+  return result;
+}
+
+/** Host reads only opaque receipt references from its infrastructure root, never source dialogue. */
+export async function readConversationKnowledgeRoot(params: KnowledgeRootReadParams) {
+  const { branch, assertCurrent, signal } = params;
+  await readValidatedKnowledgeRootSource(params);
   assertCurrent();
-  const result: import("./session-accessor.types.js").TranscriptEvent[] & {
-    evidence?: NativeKnowledgeRootEvidence;
-  } = await readConversationKnowledgeReports({
+  const result = await readConversationKnowledgeReports({
     target: { ...branch, ...branch.root },
     customTypes: [CONVERSATION_KNOWLEDGE_REPORT, CONVERSATION_UTTERANCE_REPORT],
     assertCurrent,
     signal,
   });
-  await validate();
+  const source = await readValidatedKnowledgeRootSource(params);
   assertCurrent();
-  Object.defineProperty(result, "evidence", {
-    value: new NativeKnowledgeRootEvidence(rootEvidenceIssuer, branch, result, assertCurrent),
-  });
-  return result;
+  return attachNativeKnowledgeRootEvidence(branch, source, result, assertCurrent);
 }

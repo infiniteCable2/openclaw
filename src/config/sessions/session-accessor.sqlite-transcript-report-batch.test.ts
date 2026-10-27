@@ -2,6 +2,7 @@ import { MessageChannel } from "node:worker_threads";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { withSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import { runWithSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import {
@@ -15,17 +16,25 @@ import {
   replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
-import { appendSessionTranscriptReportBatch } from "./session-accessor.sqlite-transcript-reports.js";
+import {
+  appendSessionTranscriptReportBatch,
+  readSessionTranscriptReportReceipts,
+} from "./session-accessor.sqlite-transcript-reports.js";
 import {
   prepareCustomTranscriptReport,
   prepareTranscriptReportBatchSelection,
   prepareTranscriptReportSelection,
+  observeTranscriptReportReceipts,
 } from "./session-accessor.sqlite-transcript-reports.kernel.js";
 import type { PreparedTranscriptReportBatchEntry } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { bindSqliteWorkerBackend } from "./session-accessor.sqlite-transcript-reports.worker.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
+import { readActiveTranscriptEntryAnchorAsync } from "./session-transcript-anchor-read.js";
+import { runWithSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
+import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
+import { withSessionTranscriptWriteAssertion } from "./transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "./version.js";
 
 afterEach(() => {
@@ -57,6 +66,212 @@ function prepared(id: string): PreparedTranscriptReportBatchEntry {
     receipt: entry.receipt,
   };
 }
+
+it("observes exact known carriers independently of the prompt fence without reviving compacted reports", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "report-carrier-observation" },
+    async (state) => {
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const scope = {
+        agentId: "main",
+        sessionKey: "agent:main:receipt-observation",
+        sessionId: "receipt-observation",
+        storePath: database.path,
+        env: state.env,
+      };
+      await upsertSessionEntryCore(scope, {
+        sessionId: scope.sessionId,
+        lifecycleRevision: "receipt-life",
+        activeWriterRunId: "receipt-run",
+        updatedAt: 1,
+      });
+      const header = { type: "session", id: scope.sessionId, version: CURRENT_SESSION_VERSION };
+      const current = {
+        type: "message",
+        id: "current-user",
+        parentId: null,
+        message: { role: "user", content: "Current request", timestamp: 1 },
+      };
+      const carrier = {
+        type: "custom_message",
+        id: "known-carrier",
+        parentId: "current-user",
+        ...report("known").report,
+      };
+      const kept = {
+        type: "message",
+        id: "kept-message",
+        parentId: "known-carrier",
+        message: { role: "assistant", content: "Kept answer", timestamp: 2 },
+      };
+      await replaceTranscriptEvents(scope, [header, current, carrier, kept]);
+      await waitForSessionTranscriptProjection(scope);
+      const anchor = await readActiveTranscriptEntryAnchorAsync({ ...scope, entryId: current.id });
+      if (!anchor) {
+        throw new Error("Expected native user boundary");
+      }
+      const admission = { ...anchor, role: "user" as const, logicalTurnId: "receipt-turn" };
+      const writer = {
+        ...scope,
+        expectedLifecycleRevision: "receipt-life",
+        expectedWriterRunId: "receipt-run",
+      };
+      const queries = ["known", "absent"].map((id) => ({
+        customType,
+        receipt: { field: "packetId", value: id },
+      }));
+      const observe = () =>
+        withSessionTranscriptWriteAssertion(
+          writer,
+          () => {},
+          () =>
+            runWithSessionTranscriptReadFence(admission, () =>
+              readSessionTranscriptReportReceipts(writer, queries),
+            ),
+        );
+      const before = await loadTranscriptEvents(scope);
+      expect(await observe()).toMatchObject({
+        ok: true,
+        value: [
+          {
+            status: "active-model",
+            eventId: carrier.id,
+            report: { content: "Synthetic fact known.", details: { packetId: "known" } },
+          },
+          { status: "missing" },
+        ],
+      });
+      expect(await loadTranscriptEvents(scope)).toEqual(before);
+      await withSessionTranscriptWriteAssertion(
+        writer,
+        () => {},
+        async () => {
+          const manager = await SessionManager.openAsync(writer);
+          await manager.appendCompactionAsync(
+            "Earlier observations are retained in this native summary.",
+            kept.id,
+            100,
+          );
+        },
+      );
+      await waitForSessionTranscriptProjection(scope);
+      expect(await observe()).toMatchObject({
+        ok: true,
+        value: [{ status: "historical", eventId: carrier.id }, { status: "missing" }],
+      });
+      await upsertSessionEntryCore(scope, {
+        sessionId: scope.sessionId,
+        lifecycleRevision: "receipt-life",
+        activeWriterRunId: "replacement-run",
+        updatedAt: 2,
+      });
+      await expect(observe()).rejects.toThrow();
+    },
+  );
+});
+
+it("observes a full receipt batch with one reverse scan and one body read per relevant entry", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "report-observation-scaling" },
+    async (state) => {
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const scope = {
+        agentId: "main",
+        sessionKey: "agent:main:observation-scaling",
+        sessionId: "observation-scaling",
+        storePath: database.path,
+        env: state.env,
+      };
+      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+      for (const count of [30, 300]) {
+        await replaceTranscriptEvents(scope, [
+          { type: "session", id: scope.sessionId, version: CURRENT_SESSION_VERSION },
+          ...Array.from({ length: count }, (_, index) => [
+            {
+              type: "custom_message",
+              id: `known-${index}`,
+              parentId: index === 0 ? null : `unrelated-${index - 1}`,
+              customType,
+              content: `Canonical body ${index}. ${"synthetic payload ".repeat(index % 2 === 0 ? 10 : 400)}`,
+              display: false,
+              details: {
+                packetId: index === 0 || index === count - 1 ? "packet-zero" : `packet-${index}`,
+                ...(index === count - 1 ? { contributionId: "latest-contribution" } : {}),
+              },
+            },
+            {
+              type: "custom_message",
+              id: `unrelated-${index}`,
+              parentId: `known-${index}`,
+              customType: "unrelated-observation",
+              content: "Unrelated body must not be selected. ".repeat(400),
+              display: false,
+            },
+          ]).flat(),
+        ]);
+        await waitForSessionTranscriptProjection(scope);
+        // Duplicate selectors and two different receipt fields resolve to ONE
+        // latest canonical carrier. Missing IDs force the complete reverse scan.
+        const queries = [
+          { customType, receipt: { field: "packetId", value: "packet-zero" } },
+          { customType, receipt: { field: "packetId", value: "packet-zero" } },
+          { customType, receipt: { field: "contributionId", value: "latest-contribution" } },
+          ...Array.from({ length: 29 }, (_, index) => ({
+            customType,
+            receipt: { field: "packetId", value: `missing-${index}` },
+          })),
+        ];
+        const counter = trackSqliteStatementExecutions(
+          database.db,
+          ["branch", "payload", "membership"],
+          (sql) =>
+            sql.includes('as "report_json"') && sql.includes('from "transcript_events"')
+              ? "branch"
+              : sql.includes('as "event_json"') &&
+                  sql.includes('from "transcript_events"') &&
+                  sql.includes('"seq" =')
+                ? "payload"
+                : sql.includes('select "active_position", "context_eligible"') &&
+                    sql.includes('from "session_transcript_active_events"')
+                  ? "membership"
+                  : null,
+        );
+        const started = performance.now();
+        try {
+          const observed = observeTranscriptReportReceipts(
+            database,
+            { ...scope, path: database.path },
+            queries,
+          );
+          expect(observed.slice(0, 3)).toMatchObject(
+            Array.from({ length: 3 }, () => ({
+              status: "active-model",
+              eventId: `known-${count - 1}`,
+              report: { content: expect.stringContaining(`Canonical body ${count - 1}.`) },
+            })),
+          );
+          expect(observed.slice(3).every((entry) => entry.status === "missing")).toBe(true);
+          expect(counter.counts.branch).toBeLessThanOrEqual(2);
+          expect(counter.counts.payload).toBe(count);
+          expect(counter.counts.membership).toBe(1);
+          console.info(
+            JSON.stringify({
+              benchmark: "native-report-observation",
+              historyEvents: count * 2,
+              queryCount: queries.length,
+              queries: counter.counts,
+              rows: counter.rowCounts,
+              ms: performance.now() - started,
+              rss: process.memoryUsage().rss,
+            }),
+          );
+        } finally {
+          counter.restore();
+        }
+      }
+    },
+  );
+});
 
 it("selects a bounded batch from one recipient branch and reads each matching old body at most once", async () => {
   await withOpenClawTestState(

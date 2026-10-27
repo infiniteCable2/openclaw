@@ -43,6 +43,8 @@ export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
   /** Admit only prepared observations at an existing foreground model boundary. */
   refreshConversationContext?: (request: {
     signal?: AbortSignal;
+    /** Opaque hydrated attempt/compaction boundary; ordinary tool steps reuse it. */
+    contextIdentity?: object;
     /** Reserve native request capacity before committing an observation. */
     canAdmit: (message: CustomMessage) => boolean;
   }) => Promise<CustomMessage[]>;

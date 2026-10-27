@@ -1,4 +1,3 @@
-import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
 import type { BoundAgentRunSessionTarget } from "../../agents/run-session-target.types.js";
@@ -9,19 +8,11 @@ import {
   createConversationKnowledgePacketReport,
   conversationKnowledgeContributionId,
   readActiveConversationKnowledgePacketIds,
-  readConversationKnowledgePacketProgress,
   retainConversationKnowledgePackets,
   type ConversationKnowledgePacketAdmission,
 } from "../../config/sessions/conversation-knowledge-packets.js";
-import {
-  selectConversationKnowledgeObserved,
-  selectConversationKnowledgeReceipts,
-} from "../../config/sessions/conversation-knowledge-selection.js";
-import {
-  readConversationKnowledgeBranch,
-  readConversationKnowledgeRoot,
-  recordConversationKnowledgeTurn,
-} from "../../config/sessions/conversation-knowledge-store.js";
+import { selectConversationKnowledgeReceipts } from "../../config/sessions/conversation-knowledge-selection.js";
+import { recordConversationKnowledgeTurn } from "../../config/sessions/conversation-knowledge-store.js";
 import {
   combineConversationKnowledge,
   isConversationKnowledgeReferenceObserved,
@@ -38,10 +29,7 @@ import {
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
-import {
-  prepareConversationKnowledgeBranchFacts,
-  unavailableConversationKnowledge,
-} from "./conversation-knowledge-authority.js";
+import { unavailableConversationKnowledge } from "./conversation-knowledge-authority.js";
 import {
   createConversationKnowledgeIngestion,
   type ConversationKnowledgeIngestionMaintenance,
@@ -49,6 +37,11 @@ import {
 import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 import {
   createConversationKnowledgeSourceReader,
+  observePreparedConversationKnowledgePackets,
+  publishPreparedConversationKnowledgeRoot,
+  readConversationKnowledgeInputs,
+  prepareConversationKnowledgeTarget,
+  stageConversationKnowledgeSource,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
 import {
@@ -126,7 +119,10 @@ async function prepareReplyConversationKnowledgeInMode(
 ): Promise<PreparedReplyConversationKnowledge | undefined> {
   params.assertCurrent();
   params.signal?.throwIfAborted();
-  const expectedAudienceIdentity = params.expectedAudienceIdentity;
+  const manifest = params.readyOnly ? params.sourceCache?.preparedRoot : undefined;
+  if (params.readyOnly && !manifest) {
+    return undefined;
+  }
   const originalParticipant = params.originalParticipant
     ? structuredClone(params.originalParticipant)
     : undefined;
@@ -135,33 +131,14 @@ async function prepareReplyConversationKnowledgeInMode(
   if (!originalParticipant || !participantIdentity) {
     return unavailableConversationKnowledge(params, "original-participant-unconfirmed");
   }
-  const branch = await readConversationKnowledgeBranch(params);
-  params.assertCurrent();
-  params.signal?.throwIfAborted();
-  if (!branch) {
+  const target = await prepareConversationKnowledgeTarget({ ...params, participantIdentity });
+  if (!target) {
     return undefined;
   }
-  try {
-    params.destinationAudience?.assertCurrent();
-  } catch {
-    return unavailableConversationKnowledge(params, "private-destination-audience-unconfirmed");
+  if (target.kind === "unavailable") {
+    return target.unavailable;
   }
-  const targetFacts = await prepareConversationKnowledgeBranchFacts({
-    branch,
-    getRuntimeConfig: params.getRuntimeConfig,
-    destinationAudience: params.destinationAudience,
-  });
-  // A sender's private read grant cannot authorize disclosure to a room or shared device.
-  if (
-    targetFacts.audience !== "private-direct" ||
-    !targetFacts.audienceIdentity ||
-    targetFacts.audienceIdentity !== participantIdentity ||
-    (expectedAudienceIdentity !== undefined &&
-      targetFacts.audienceIdentity !== expectedAudienceIdentity)
-  ) {
-    targetFacts.release();
-    return unavailableConversationKnowledge(params, "private-destination-audience-unconfirmed");
-  }
+  const { branch, targetFacts } = target;
   const reads: ConversationKnowledgeHeldSource[] = [];
   const drop = (read: (typeof reads)[number]) => {
     const index = reads.indexOf(read);
@@ -217,22 +194,22 @@ async function prepareReplyConversationKnowledgeInMode(
   try {
     params.assertCurrent();
     targetFacts.assertCurrent();
-    const events = await readConversationKnowledgeRoot({ ...params, branch });
-    targetFacts.assertCurrent();
-    params.assertCurrent();
-    const previous = selectConversationKnowledgeObserved(events, branch);
+    const inputs = await readConversationKnowledgeInputs({
+      ...params,
+      branch,
+      manifest,
+      retainInHistory: Boolean(params.retainInHistory),
+      assertCurrent: composeSessionSourceAssertion([
+        params.assertCurrent,
+        targetFacts.assertCurrent,
+      ]),
+    });
+    if (!inputs) {
+      release();
+      return undefined;
+    }
+    const { events, previous, retained } = inputs;
     const parts: NonNullable<ReturnType<typeof projectConversationKnowledge>>[] = [];
-    const retained =
-      params.retainInHistory || params.preparationOnly
-        ? await readConversationKnowledgePacketProgress({
-            branch,
-            assertCurrent: composeSessionSourceAssertion([
-              params.assertCurrent,
-              targetFacts.assertCurrent,
-            ]),
-            signal: params.signal,
-          })
-        : undefined;
     const ingestion = params.retainInHistory
       ? createConversationKnowledgeIngestion({
           maintenance: params.retainInHistory,
@@ -334,6 +311,27 @@ async function prepareReplyConversationKnowledgeInMode(
       branch.sessionKey,
       mode,
     );
+    if (params.preparationOnly) {
+      // Definite retirements/incarnation changes must not leave obsolete staged
+      // slots ahead of every current candidate in the bounded prepared manifest.
+      params.sourceCache?.retainContributions(
+        new Set(receipts.map(conversationKnowledgeContributionId)),
+      );
+    }
+    const observedPackets =
+      params.readyOnly && params.sourceCache && params.retainInHistory
+        ? await observePreparedConversationKnowledgePackets({
+            branch,
+            receipts,
+            cache: params.sourceCache,
+            writeTarget: params.retainInHistory.writeTarget,
+            signal: params.signal,
+            assertCurrent: composeSessionSourceAssertion([
+              params.assertCurrent,
+              targetFacts.assertCurrent,
+            ]),
+          })
+        : undefined;
     const startIndex = params.sourceCursor
       ? Math.max(
           0,
@@ -379,7 +377,10 @@ async function prepareReplyConversationKnowledgeInMode(
         nextSourceCursor = contributionId;
         break;
       }
-      if (params.readyOnly && !params.sourceCache?.hasContribution(contributionId)) {
+      if (
+        params.readyOnly &&
+        params.sourceCache?.firstPreparedOffset(contributionId) === undefined
+      ) {
         continue;
       }
       if (params.sourceBudget !== undefined && sources >= params.sourceBudget) {
@@ -403,9 +404,13 @@ async function prepareReplyConversationKnowledgeInMode(
           receipts[index + 1],
           params.sourceBudget === undefined || sources < params.sourceBudget,
         );
-      const staged = params.readyOnly
-        ? params.sourceCache?.peek(contributionId, admitted?.nextOffset ?? 0)
+      const stagedOffset = params.readyOnly
+        ? params.sourceCache?.firstPreparedOffset(contributionId)
         : undefined;
+      const staged =
+        params.readyOnly && stagedOffset !== undefined
+          ? params.sourceCache?.peek(contributionId, stagedOffset)
+          : undefined;
       let stagedValid = false;
       if (
         staged &&
@@ -510,39 +515,17 @@ async function prepareReplyConversationKnowledgeInMode(
       grant.assertCurrent();
       facts.assertCurrent();
       if (params.preparationOnly) {
-        let offset = admitted?.nextOffset ?? 0;
-        let saturated = false;
-        for (let preparedPackets = 0; preparedPackets < 2; preparedPackets++) {
-          sourceAssertion();
-          const part = projectConversationKnowledge(
-            receipt,
-            projection.events,
-            undefined,
-            facts.audience,
-            { offset },
-          );
-          if (!part || !projection.version || !params.sourceCache) {
-            break;
-          }
-          if (
-            !params.sourceCache.stage(contributionId, offset, {
-              part,
-              version: projection.version,
-              through,
-              from,
-            })
-          ) {
-            saturated = true;
-            break;
-          }
-          if (part.frontier || part.nextOffset === undefined || part.nextOffset <= offset) {
-            break;
-          }
-          offset = part.nextOffset;
-          // Preparation shares the live media event loop; a source may span many packets.
-          await setImmediate(undefined, { signal: params.signal });
-          params.signal?.throwIfAborted();
-        }
+        const saturated = await stageConversationKnowledgeSource({
+          receipt,
+          projection,
+          audience: facts.audience,
+          offset: admitted?.nextOffset ?? 0,
+          through,
+          from,
+          assertCurrent: sourceAssertion,
+          signal: params.signal,
+          cache: params.sourceCache,
+        });
         drop(read);
         if (saturated) {
           preparationSaturated = true;
@@ -551,7 +534,7 @@ async function prepareReplyConversationKnowledgeInMode(
         }
         continue;
       }
-      let offset = admitted?.nextOffset ?? 0;
+      let offset = stagedOffset ?? admitted?.nextOffset ?? 0;
       let contributed = false;
       let yieldedContribution = false;
       for (;;) {
@@ -601,9 +584,13 @@ async function prepareReplyConversationKnowledgeInMode(
           nextOffset: part.nextOffset ?? offset,
           complete: part.complete,
         });
+        if (observedPackets && !observedPackets.readyPacketIds.has(report.details.packetId)) {
+          pendingPackets = true;
+          break;
+        }
         const message: CustomMessage = {
           role: "custom",
-          ...report,
+          ...(observedPackets?.activeCarriers.get(report.details.packetId) ?? report),
           timestamp: Date.now(),
         };
         if (params.canAdmitPacket && !params.canAdmitPacket(message)) {
@@ -661,6 +648,13 @@ async function prepareReplyConversationKnowledgeInMode(
       }
     }
     await flushPackets();
+    if (params.preparationOnly && params.sourceCache) {
+      publishPreparedConversationKnowledgeRoot({
+        evidence: events.evidence,
+        receipts,
+        cache: params.sourceCache,
+      });
+    }
     const combined = combineConversationKnowledge(parts);
     logConversationKnowledgeDiagnostic({
       recipient: branch.sessionId,

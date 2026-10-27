@@ -3,7 +3,10 @@ import type { SessionParticipantIdentity } from "../config/sessions/session-part
 import { prepareSessionSourceAuthority } from "../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SessionSharingTarget } from "./session-sharing-policy.js";
-import type { PersonalConversationReadParams } from "./session-transcript-personal-read.js";
+import {
+  PersonalConversationReadRefusedError,
+  type PersonalConversationReadParams,
+} from "./session-transcript-personal-read.js";
 
 const mocks = vi.hoisted(() => ({ prepare: vi.fn() }));
 // mock-isolation: Exercise the actual native read API without starting a database worker or Gateway.
@@ -134,12 +137,25 @@ describe("same-person conversation differences on native transcript read owner",
   it("refuses another profile's draft even when its recorded participant matches", async () => {
     const f = fixture();
     f.recipient.entry.createdActor = { type: "human", source: "profile", id: "person-b" };
-    await expect(prepareTranscriptReadAuthority(f.params)).rejects.toThrow(
-      "another Gateway profile creator",
-    );
+    const denied = prepareTranscriptReadAuthority(f.params);
+    await expect(denied).rejects.toBeInstanceOf(PersonalConversationReadRefusedError);
+    await expect(denied).rejects.toThrow("another Gateway profile creator");
     f.recipient.entry.createdActor.id = "person-a";
     const grant = await prepareTranscriptReadAuthority(f.params);
     grant.release();
+  });
+  it("preserves a transient facts failure and allows a fresh native read after recovery", async () => {
+    const f = fixture();
+    const failure = new Error("Synthetic facts worker unavailable");
+    mocks.prepare.mockImplementationOnce(f.prepare).mockRejectedValueOnce(failure);
+    await expect(prepareTranscriptReadAuthority(f.params)).rejects.toBe(failure);
+    expect(failure).not.toBeInstanceOf(PersonalConversationReadRefusedError);
+    expect(f.releases).toHaveLength(1);
+    expect(f.releases[0]).toHaveBeenCalledOnce();
+    const grant = await prepareTranscriptReadAuthority(f.params);
+    expect(grant.sources).toHaveLength(1);
+    grant.release();
+    expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
   });
   it.each(["profile", "remote"] as const)(
     "refuses shared and default-shared %s destinations even with original private ingress",

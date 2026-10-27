@@ -1,6 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createAssistantMessageEventStream } from "@openclaw/llm-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { streamAgentResponse } from "../../../packages/agent-core/src/agent-stream-response.js";
 import {
   createOperationalRunInstanceRef,
@@ -21,14 +22,8 @@ import { createCompactionRequestBudget } from "../../agents/sessions/compaction/
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { makeProviderModelFixture } from "../../agents/test-helpers/provider-model-fixture.js";
-import {
-  CONVERSATION_KNOWLEDGE_CONTEXT,
-  conversationKnowledgeContributionId,
-} from "../../config/sessions/conversation-knowledge-packets.js";
-import {
-  readConversationKnowledgeBranch,
-  recordConversationKnowledgeTurn,
-} from "../../config/sessions/conversation-knowledge-store.js";
+import * as knowledgePacketReads from "../../config/sessions/conversation-knowledge-packets.js";
+import * as knowledgeStoreReads from "../../config/sessions/conversation-knowledge-store.js";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
@@ -56,6 +51,10 @@ vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
 }));
 
 registerAgentSessionLoopTestLifecycle();
+
+const { CONVERSATION_KNOWLEDGE_CONTEXT, conversationKnowledgeContributionId } =
+  knowledgePacketReads;
+const { readConversationKnowledgeBranch, recordConversationKnowledgeTurn } = knowledgeStoreReads;
 
 describe("native branch prefetch and model-boundary composition", () => {
   it("prepares idle history on committed roots without recipient writes or model maintenance", async () => {
@@ -231,6 +230,33 @@ describe("native branch prefetch and model-boundary composition", () => {
     scenario: "response-close" | "outer-retry",
     { signal }: { signal: AbortSignal },
   ) {
+    const foregroundPhase = new AsyncLocalStorage<boolean>();
+    const foregroundReads = { root: 0, progress: 0 };
+    const readRoot = knowledgeStoreReads.readConversationKnowledgeRoot;
+    const readProgress = knowledgePacketReads.readConversationKnowledgePacketProgress;
+    // Observe the real owners. Background preparation has detached async custody
+    // and may scan; only reads inherited from this foreground refresh are counted.
+    const rootRead = vi
+      .spyOn(knowledgeStoreReads, "readConversationKnowledgeRoot")
+      .mockImplementation((...args) => {
+        if (foregroundPhase.getStore()) {
+          foregroundReads.root++;
+        }
+        return readRoot(...args);
+      });
+    const progressRead = vi
+      .spyOn(knowledgePacketReads, "readConversationKnowledgePacketProgress")
+      .mockImplementation((...args) => {
+        if (foregroundPhase.getStore()) {
+          foregroundReads.progress++;
+        }
+        return readProgress(...args);
+      });
+    onTestFinished(() => {
+      rootRead.mockRestore();
+      progressRead.mockRestore();
+      foregroundPhase.disable();
+    });
     await withOpenClawTestState(
       { scenario: "minimal", label: "knowledge-prefetch-native" },
       async (state) => {
@@ -355,6 +381,8 @@ describe("native branch prefetch and model-boundary composition", () => {
           if (!knowledge) {
             throw new Error("Expected actual native knowledge turn");
           }
+          const refreshReady = (request: Parameters<typeof knowledge.refreshPrepared>[0]) =>
+            foregroundPhase.run(true, () => knowledge.refreshPrepared(request));
           const logicalTurn = new AbortController();
           try {
             await knowledge.prepare(admission, AbortSignal.any([signal, logicalTurn.signal]));
@@ -432,7 +460,7 @@ describe("native branch prefetch and model-boundary composition", () => {
                       contextWindow: 100_000,
                       reserveTokens: 1_024,
                     }),
-                    refreshConversationContext: (request) => knowledge.refreshPrepared(request),
+                    refreshConversationContext: refreshReady,
                     promptActiveSession: (prompt, options) => session.prompt(prompt, options),
                   }),
                 );
@@ -447,11 +475,12 @@ describe("native branch prefetch and model-boundary composition", () => {
                 ),
               ).toHaveLength(1);
               expect(budget.compact).not.toHaveBeenCalled();
+              expect(foregroundReads).toEqual({ root: 0, progress: 0 });
               return;
             }
             const refresh = (canAdmit: boolean) =>
               withSessionTranscriptWriteAssertion(writer, owner.assertCurrent, () =>
-                knowledge.refreshPrepared({ signal, canAdmit: () => canAdmit }),
+                refreshReady({ signal, canAdmit: () => canAdmit }),
               );
             const revision = prefetch.cache.revision;
             expect(await refresh(false)).toEqual([]);
@@ -491,7 +520,7 @@ describe("native branch prefetch and model-boundary composition", () => {
                 response.packets = await withSessionTranscriptWriteAssertion(
                   writer,
                   owner.assertCurrent,
-                  () => knowledge.refreshPrepared({ signal: requestSignal, canAdmit: () => true }),
+                  () => refreshReady({ signal: requestSignal, canAdmit: () => true }),
                 );
                 const stream = createAssistantMessageEventStream();
                 stream.push({ type: "done", reason: "stop", message: answer });
@@ -568,6 +597,7 @@ describe("native branch prefetch and model-boundary composition", () => {
             expect(backlog.at(-1)?.content).toContain("Observation number 9 is retained.");
             expect(await packets()).toHaveLength(12);
             expect(budget.compact).not.toHaveBeenCalled();
+            expect(foregroundReads).toEqual({ root: 0, progress: 0 });
             logicalTurn.abort(new Error("Logical turn canceled"));
             expect(() => knowledge.assertCurrent()).toThrow("Logical turn canceled");
           } finally {

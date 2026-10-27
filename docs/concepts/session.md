@@ -187,6 +187,13 @@ model session lane nor writes recipient history, initializes a model runtime,
 compacts dialogue, or sends a response. A new opening rebuilds disposable preparation
 from the existing root and durable packet receipts.
 
+The foreground consumes only a bounded prepared candidate view. Native provenance
+is rebound to the current recipient and physical database; source and audience
+permissions are still checked freshly. This does not enumerate the full root or
+all recipient receipts before a model request. Exact native receipt observations
+distinguish active carriers, historical carriers and missing evidence, so a retry
+can recover an accepted observation without resurrecting compacted content.
+
 An existing embedded model request may consume ready observations, including at
 the next natural model step after tools. It does not wait for full freshness or
 uncached source hydration. Fresh native source/recipient authorization and exact
@@ -201,6 +208,11 @@ and live steering. New observations are quoted data, not new instructions or
 permission to repeat tools.
 They can inform subsequent model decisions within the existing task; provenance
 does not make them semantically inert or authorize a different task.
+
+Late additive admission currently uses the embedded legacy context-engine boundary.
+Other configured context engines retain ownership of their assembled window; the
+host does not append prepared branch observations after their assembly. Automatic
+live admission for those engines requires an integration with their own contract.
 
 Ordinary reply preflight, authority checks, and native compaction remain in charge
 of the actual dialogue. Previously enrolled native-mode continuity retains its

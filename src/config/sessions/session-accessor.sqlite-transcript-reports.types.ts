@@ -42,6 +42,22 @@ export type TranscriptReportReceiptSelection = {
   value: string;
 };
 
+export type TranscriptReportReceiptQuery = {
+  customType: string;
+  receipt: TranscriptReportReceiptSelection;
+};
+
+/** Host observation of an exact carrier; absence never proves it was summarized. */
+export type TranscriptReportReceiptObservation = TranscriptReportReceiptQuery &
+  (
+    | { status: "missing" }
+    | {
+        status: "active-model" | "historical";
+        eventId: string;
+        report: CustomMessageReportAppend;
+      }
+  );
+
 /** Exact append-if-absent reports; arbitrary host selectors retain the single-report API. */
 export type TranscriptReportBatchEntry = {
   report: CustomMessageReportAppend;
@@ -121,6 +137,10 @@ export type TranscriptReportBatchCommit = TranscriptReportCommit &
   Pick<TranscriptReportBatchProgress, "accepted" | "appended">;
 
 export type TranscriptReportWorkerOperations = {
+  observe: {
+    input: { reports: TranscriptReportReceiptQuery[] };
+    output: Result<TranscriptReportReceiptObservation[], TranscriptAppendRefusal>;
+  };
   appendBatch: {
     input: {
       reports: PreparedTranscriptReportBatchEntry[];

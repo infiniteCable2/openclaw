@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { PreparedKnowledgeRootCandidates } from "../../config/sessions/conversation-knowledge-store.js";
 import type { projectConversationKnowledge } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
@@ -22,12 +23,18 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
   >();
   const staged = new Map<
     string,
-    { value: PreparedConversationKnowledgePacket; bytes: number; contributionId: string }
+    {
+      value: PreparedConversationKnowledgePacket;
+      bytes: number;
+      contributionId: string;
+      offset: number;
+    }
   >();
   let bytes = 0;
   let stagedBytes = 0;
   let revision = 0;
   let clearEpoch = 0;
+  let preparedRoot: PreparedKnowledgeRootCandidates | undefined;
   const remove = (key: string) => {
     const old = entries.get(key);
     if (old) {
@@ -49,6 +56,58 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
   return {
     get revision() {
       return revision;
+    },
+    get preparedRoot() {
+      return preparedRoot;
+    },
+    get maxPreparedRootBytes() {
+      return maxBytes;
+    },
+    setPreparedRoot(value: PreparedKnowledgeRootCandidates) {
+      if (value.byteLength > maxBytes) {
+        throw new RangeError("Prepared conversation provenance exceeds its cache budget");
+      }
+      // Provenance shares the disposable raw-byte budget; pending packets retain
+      // their independent budget so preparing a manifest cannot evict unsent text.
+      for (const key of entries.keys()) {
+        if (bytes + value.byteLength <= maxBytes) {
+          break;
+        }
+        remove(key);
+      }
+      preparedRoot = value;
+      // A foreground read can observe staged bytes before this proof publishes.
+      // Publishing readiness must wake the next boundary even without new text.
+      revision++;
+    },
+    preparedPackets(limit: number) {
+      const selected: Array<{ contributionId: string; offset: number }> = [];
+      for (const { contributionId, offset } of staged.values()) {
+        if (selected.length >= limit) {
+          break;
+        }
+        selected.push({ contributionId, offset });
+      }
+      return selected;
+    },
+    firstPreparedOffset(id: string) {
+      let first: number | undefined;
+      for (const entry of staged.values()) {
+        if (entry.contributionId === id && (first === undefined || entry.offset < first)) {
+          first = entry.offset;
+        }
+      }
+      return first;
+    },
+    preparedContributionIds(limit: number) {
+      const ids = new Set<string>();
+      for (const { contributionId } of staged.values()) {
+        if (ids.size >= limit) {
+          break;
+        }
+        ids.add(contributionId);
+      }
+      return [...ids];
     },
     hasContribution(id: string) {
       return (
@@ -78,7 +137,7 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       if (size > maxBytes - stagedBytes) {
         return false;
       }
-      staged.set(key, { value: structuredClone(value), bytes: size, contributionId: id });
+      staged.set(key, { value: structuredClone(value), bytes: size, contributionId: id, offset });
       stagedBytes += size;
       revision++;
       return true;
@@ -104,11 +163,24 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       }
       invalidateStaged(id);
     },
+    retainContributions(current: ReadonlySet<string>) {
+      for (const [key, entry] of entries) {
+        if (!current.has(entry.contributionId)) {
+          remove(key);
+        }
+      }
+      for (const id of new Set([...staged.values()].map((entry) => entry.contributionId))) {
+        if (!current.has(id)) {
+          invalidateStaged(id);
+        }
+      }
+    },
     clear() {
       entries.clear();
       staged.clear();
       bytes = 0;
       stagedBytes = 0;
+      preparedRoot = undefined;
       revision++;
       clearEpoch++;
     },
@@ -179,10 +251,11 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       params.signal?.throwIfAborted();
       const size = Buffer.byteLength(JSON.stringify(value));
       // Cache capacity changes only preparation cost, never delivered knowledge coverage.
-      if (value.version && size <= maxBytes && epoch === clearEpoch) {
+      const rawLimit = maxBytes - (preparedRoot?.byteLength ?? 0);
+      if (value.version && size <= rawLimit && epoch === clearEpoch) {
         remove(key);
         for (const oldKey of entries.keys()) {
-          if (bytes + size <= maxBytes) {
+          if (bytes + size <= rawLimit) {
             break;
           }
           remove(oldKey);

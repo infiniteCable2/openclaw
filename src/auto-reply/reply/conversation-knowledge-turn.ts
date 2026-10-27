@@ -1,14 +1,17 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { PreparedAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
 import type { CustomMessage } from "../../agents/sessions/messages.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
+import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import { ensureConversationKnowledgeSeed } from "../../config/sessions/conversation-knowledge-seed.js";
 import {
   readConversationKnowledgeBranch,
   type ConversationKnowledgeBranch,
 } from "../../config/sessions/conversation-knowledge-store.js";
 import { withConversationPublicationContext } from "../../config/sessions/conversation-publication-context.js";
+import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
 import {
   composeSessionSourceAssertion,
   createDynamicSessionSourceAssertion,
@@ -59,6 +62,11 @@ export function createReplyConversationKnowledgeTurn(params: {
   let preparedRun: RunEmbeddedAgentParams | undefined;
   let consumedRevision = -1;
   let morePreparedPackets = false;
+  // These are receipts accepted by this logical turn, not another durable cursor
+  // or a copy of source history. Native carrier observation owns replay eligibility.
+  const acceptedPackets = new Map<string, number>();
+  let replayContext: object | undefined;
+  let replayPending: string[] = [];
   const selected = createDynamicSessionSourceAssertion(
     () => prepared?.assertCurrent,
     () => {
@@ -302,6 +310,7 @@ export function createReplyConversationKnowledgeTurn(params: {
       this: void,
       input: {
         signal?: AbortSignal;
+        contextIdentity?: object;
         canAdmit: (message: CustomMessage) => boolean;
       },
     ): Promise<CustomMessage[]> {
@@ -334,7 +343,11 @@ export function createReplyConversationKnowledgeTurn(params: {
         return [];
       }
       const revision = recipient.cache.revision;
-      if (revision === consumedRevision && !morePreparedPackets) {
+      if (input.contextIdentity && input.contextIdentity !== replayContext) {
+        replayContext = input.contextIdentity;
+        replayPending = [...acceptedPackets.keys()];
+      }
+      if (revision === consumedRevision && !morePreparedPackets && replayPending.length === 0) {
         return [];
       }
       const messages: CustomMessage[] = [];
@@ -345,6 +358,52 @@ export function createReplyConversationKnowledgeTurn(params: {
         ? AbortSignal.any([retainedSignal, input.signal])
         : retainedSignal;
       try {
+        if (replayPending.length) {
+          const { readSessionTranscriptReportReceipts } =
+            await import("../../config/sessions/session-accessor.sqlite-transcript-reports.js");
+          const requested = replayPending.slice(0, MAX_TRANSCRIPT_REPORT_BATCH_SIZE);
+          const observed = await withConversationKnowledgeWriter(
+            { run, assertCurrent: assertTurnSourceCurrent },
+            (writeTarget) =>
+              readSessionTranscriptReportReceipts(
+                writeTarget,
+                requested.map((id) => ({
+                  customType: CONVERSATION_KNOWLEDGE_CONTEXT,
+                  receipt: { field: "packetId", value: id },
+                })),
+                { source: assertTurnSourceCurrent },
+              ),
+          );
+          assertCurrent();
+          signal.throwIfAborted();
+          if (!observed.ok) {
+            return messages;
+          }
+          for (const carrier of observed.value) {
+            const id = carrier.receipt.value;
+            if (carrier.status === "historical") {
+              // The canonical native window affirmatively excludes this carrier.
+              // Its compaction/reset owns the result; do not resurrect the old text.
+              acceptedPackets.delete(id);
+            } else if (carrier.status === "active-model") {
+              const message: CustomMessage = {
+                role: "custom",
+                ...carrier.report,
+                timestamp: acceptedPackets.get(id) ?? Date.now(),
+              };
+              if (!input.canAdmit(message)) {
+                return messages;
+              }
+              messages.push(message);
+            }
+            // A missing carrier stays unresolved in acceptedPackets. Retry it at
+            // another real attempt boundary, never infer compaction from absence.
+            replayPending.shift();
+          }
+          if (replayPending.length) {
+            return messages;
+          }
+        }
         const next = await withConversationKnowledgeWriter(
           { run, assertCurrent: assertTurnSourceCurrent },
           (writeTarget) =>
@@ -360,7 +419,13 @@ export function createReplyConversationKnowledgeTurn(params: {
               sourceCache: recipient!.cache,
               readyOnly: true,
               canAdmitPacket: input.canAdmit,
-              onPacket: (message) => messages.push(message),
+              onPacket: (message) => {
+                const id = asOptionalRecord(message.details)?.packetId;
+                if (typeof id === "string") {
+                  acceptedPackets.set(id, message.timestamp);
+                }
+                messages.push(message);
+              },
               retainInHistory: {
                 writeTarget,
                 contextLimits: resolveConversationKnowledgeContextLimits(run),
@@ -410,6 +475,8 @@ export function createReplyConversationKnowledgeTurn(params: {
         return;
       }
       phase = "released";
+      acceptedPackets.clear();
+      replayPending = [];
       prepared?.release();
     },
   };

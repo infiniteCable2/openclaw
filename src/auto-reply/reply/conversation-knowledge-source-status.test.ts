@@ -7,12 +7,18 @@ import {
   readConversationKnowledgeReceipt,
   projectConversationKnowledge,
 } from "../../config/sessions/conversation-knowledge.js";
+import type { TranscriptReportReceiptQuery } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
+import type { TranscriptEvent } from "../../config/sessions/session-accessor.types.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
+import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 
 const source = vi.hoisted(() => ({
   branch: vi.fn(),
   root: vi.fn(),
+  preparedRoot: vi.fn(),
+  issueRoot: vi.fn(),
+  observe: vi.fn(),
   facts: vi.fn(),
   grant: vi.fn(),
   context: vi.fn(),
@@ -30,18 +36,27 @@ vi.mock("node:timers/promises", async (importOriginal) => ({
   setImmediate: preparationYield,
 }));
 // mock-isolation: Test silent source gaps without starting transcript workers.
+// This storage-owner boundary issues its unit manifest; native provenance brands
+// and rebinding are exercised independently in the root-candidates tests.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readConversationKnowledgeBranch: source.branch,
   readConversationKnowledgeRoot: source.root,
+  readPreparedConversationKnowledgeRoot: source.preparedRoot,
+  issuePreparedKnowledgeRootCandidates: source.issueRoot,
   recordConversationKnowledgeTurn: vi.fn(),
 }));
 // mock-isolation: Observe packet custody without starting native packet storage.
 vi.mock("../../config/sessions/conversation-knowledge-packets.js", () => ({
+  CONVERSATION_KNOWLEDGE_CONTEXT: "openclaw.conversation-knowledge-context.v1",
   createConversationKnowledgePacketReport: source.report,
   conversationKnowledgeContributionId: source.contribution,
   readConversationKnowledgePacketProgress: source.progress,
   readActiveConversationKnowledgePacketIds: async () => [],
   retainConversationKnowledgePackets: source.retain,
+}));
+// mock-isolation: Exact native receipt observations replace only storage I/O.
+vi.mock("../../config/sessions/session-accessor.sqlite-transcript-reports.js", () => ({
+  readSessionTranscriptReportReceipts: source.observe,
 }));
 // mock-isolation: Supply revocable facts without initializing unrelated Gateway sharing storage.
 vi.mock("./conversation-knowledge-authority.js", () => ({
@@ -94,14 +109,36 @@ beforeEach(() => {
   }
   source.contribution.mockReturnValue("synthetic-contribution");
   source.progress.mockImplementation(async () => new Map());
-  source.report.mockImplementation(({ text }: { text: string }) => ({
-    customType: "synthetic-knowledge-packet",
-    content: text,
-    display: false,
-    details: { packetId: "synthetic-packet" },
-  }));
+  source.issueRoot.mockImplementation(() => Object.freeze({ byteLength: 128 }));
+  source.observe.mockImplementation(
+    async (_target, queries: readonly TranscriptReportReceiptQuery[]) => ({
+      ok: true,
+      value: queries.map((query) => ({ ...query, status: "missing" })),
+    }),
+  );
+  source.report.mockImplementation(
+    ({
+      text,
+      receipt,
+      offset,
+    }: {
+      text: string;
+      receipt: { through: { entryId: string } };
+      offset: number;
+    }) => ({
+      customType: "synthetic-knowledge-packet",
+      content: text,
+      display: false,
+      details: { packetId: `${receipt.through.entryId}:${offset}` },
+    }),
+  );
   preparationYield.mockReset().mockResolvedValue(undefined);
 });
+
+function setRootReports(events: TranscriptEvent[]) {
+  source.root.mockResolvedValue(events);
+  source.preparedRoot.mockResolvedValue(events);
+}
 
 describe("related-history source custody without model status", () => {
   it.each(["admission", "unavailable", "removed-cursor", "preparation", "saturated"] as const)(
@@ -151,7 +188,7 @@ describe("related-history source custody without model status", () => {
         return receipt;
       });
       source.branch.mockResolvedValue(branch);
-      source.root.mockResolvedValue(
+      setRootReports(
         receipts.map((details) => ({
           type: "custom_message",
           customType: CONVERSATION_KNOWLEDGE_REPORT,
@@ -268,6 +305,9 @@ describe("related-history source custody without model status", () => {
           });
         }
       }
+      if (admission) {
+        cache.setPreparedRoot(source.issueRoot());
+      }
       const reader: SessionEntryCohortReader = {
         database: { agentId: branch.agentId, path: branch.storePath, env: {} },
         logicalAgentId: branch.agentId,
@@ -342,9 +382,14 @@ describe("related-history source custody without model status", () => {
         first?.release();
       }
       if (kind === "unavailable") {
-        source.grant.mockRejectedValueOnce(new Error("Original source is no longer readable"));
+        source.grant.mockRejectedValueOnce(
+          new SessionMutationAuthorizationChangedError({
+            code: "FORBIDDEN",
+            message: "Original source is no longer readable",
+          }),
+        );
       } else if (kind === "removed-cursor") {
-        source.root.mockResolvedValue([
+        setRootReports([
           {
             type: "custom_message",
             customType: CONVERSATION_KNOWLEDGE_REPORT,
@@ -384,7 +429,7 @@ describe("related-history source custody without model status", () => {
       }
       // An earlier source can retire between quanta. Resume by contribution ID,
       // not the old index, without skipping the now-first remaining source.
-      source.root.mockResolvedValue([
+      setRootReports([
         {
           type: "custom_message",
           customType: CONVERSATION_KNOWLEDGE_REPORT,
@@ -422,6 +467,7 @@ describe("related-history source custody without model status", () => {
     "prepare-yield-canceled",
     "ready-empty",
     "ready-admitted",
+    "ready-historical",
     "ready-stale",
     "capacity-deferred",
     "source-changed",
@@ -484,7 +530,7 @@ describe("related-history source custody without model status", () => {
       assertCurrent: assertSource,
       release,
     });
-    source.root.mockResolvedValue([
+    setRootReports([
       {
         type: "custom_message",
         customType: CONVERSATION_KNOWLEDGE_REPORT,
@@ -527,7 +573,7 @@ describe("related-history source custody without model status", () => {
           },
         });
       }
-      source.root.mockResolvedValue(lookaheadReports);
+      setRootReports(lookaheadReports);
       source.contribution.mockImplementation((reference) => reference.through.entryId);
       source.grant.mockImplementation(async () => {
         assertSource();
@@ -582,7 +628,7 @@ describe("related-history source custody without model status", () => {
     if (kind === "snapshot-observed") {
       const reports = await source.root();
       const receipt = readConversationKnowledgeReceipt(reports[0].details)!;
-      source.root.mockResolvedValue([
+      setRootReports([
         ...reports,
         {
           type: "custom_message",
@@ -695,7 +741,27 @@ describe("related-history source custody without model status", () => {
         }),
       ).toBe(true);
       source.context.mockClear();
+      cache.setPreparedRoot(source.issueRoot());
     }
+    if (kind === "ready-historical") {
+      source.observe.mockImplementation(
+        async (_target, queries: readonly TranscriptReportReceiptQuery[]) => ({
+          ok: true,
+          value: queries.map((query) => ({
+            ...query,
+            status: "historical",
+            eventId: "historical-native-packet",
+            report: {
+              customType: query.customType,
+              content: "An observation already retained by native compaction.",
+              display: false,
+              details: { packetId: query.receipt.value },
+            },
+          })),
+        }),
+      );
+    }
+    source.root.mockClear();
     source.anchors.mockImplementation(async (_target, _selection, _signal, consume) => {
       if (kind === "ready-stale") {
         throw new SessionTranscriptReadFenceError("Stale prepared range");
@@ -752,9 +818,30 @@ describe("related-history source custody without model status", () => {
       return;
     }
     const prepared = await preparation;
+    if (kind === "ready-empty") {
+      expect(prepared).toBeUndefined();
+      for (const operation of [
+        source.branch,
+        source.facts,
+        source.root,
+        source.preparedRoot,
+        source.observe,
+        source.grant,
+        source.context,
+        source.contextBatch,
+        source.anchors,
+        source.retain,
+        release,
+        targetRelease,
+      ]) {
+        expect(operation).not.toHaveBeenCalled();
+      }
+      expect(packets).toEqual([]);
+      return;
+    }
     try {
       expect(prepared?.fragments).toEqual([]);
-      if (kind === "admitted" || kind === "ready-empty" || kind === "snapshot-observed") {
+      if (kind === "admitted" || kind === "ready-historical" || kind === "snapshot-observed") {
         expect(release).not.toHaveBeenCalled();
       } else {
         expect(release).toHaveBeenCalledTimes(
@@ -767,7 +854,7 @@ describe("related-history source custody without model status", () => {
           "unverified-exchange",
           "prepare-only",
           "prepare-yield",
-          "ready-empty",
+          "ready-historical",
           "ready-stale",
           "capacity-deferred",
           "snapshot-observed",
@@ -780,6 +867,7 @@ describe("related-history source custody without model status", () => {
         expect(source.retain).toHaveBeenCalledOnce();
       }
       if (readyOnly) {
+        expect(source.root).not.toHaveBeenCalled();
         expect(source.context).not.toHaveBeenCalled();
         expect(source.contextBatch).not.toHaveBeenCalled();
         expect(packets).toHaveLength(kind === "ready-admitted" ? 1 : 0);
@@ -788,6 +876,11 @@ describe("related-history source custody without model status", () => {
         expect(source.grant).not.toHaveBeenCalled();
         expect(source.anchors).not.toHaveBeenCalled();
         expect(cache.peek("synthetic-contribution", 0)).toBeDefined();
+      }
+      if (kind === "ready-historical") {
+        expect(source.grant).not.toHaveBeenCalled();
+        expect(source.anchors).not.toHaveBeenCalled();
+        expect(cache.peek("synthetic-contribution", 0)).toBeUndefined();
       }
       if (kind === "prepare-only") {
         expect(cache.peek("synthetic-contribution", 0)).toBeDefined();
@@ -828,7 +921,7 @@ describe("related-history source custody without model status", () => {
       prepared?.release();
     }
     expect(release).toHaveBeenCalledTimes(
-      kind === "ready-empty" || kind === "snapshot-observed"
+      kind === "ready-historical" || kind === "snapshot-observed"
         ? 0
         : lookaheadRevoked
           ? kind === "queued-lookahead-revoked"

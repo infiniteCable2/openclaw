@@ -1,13 +1,34 @@
-import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-packets.js";
-import type {
-  ConversationKnowledgeBranch,
-  NativeKnowledgeRootEvidence,
+import { setImmediate } from "node:timers/promises";
+import {
+  CONVERSATION_KNOWLEDGE_CONTEXT,
+  conversationKnowledgeContributionId,
+  createConversationKnowledgePacketReport,
+  readConversationKnowledgePacketProgress,
+} from "../../config/sessions/conversation-knowledge-packets.js";
+import { selectConversationKnowledgeObserved } from "../../config/sessions/conversation-knowledge-selection.js";
+import {
+  issuePreparedKnowledgeRootCandidates,
+  readConversationKnowledgeRoot,
+  readConversationKnowledgeBranch,
+  readPreparedConversationKnowledgeRoot,
+  type PreparedKnowledgeRootCandidates,
+  type ConversationKnowledgeBranch,
+  type NativeKnowledgeRootEvidence,
 } from "../../config/sessions/conversation-knowledge-store.js";
 import {
   CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
+  projectConversationKnowledge,
   type ConversationKnowledgeReference,
 } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptModelContextRangeResult } from "../../config/sessions/session-accessor.sqlite-model-context.js";
+import { readSessionTranscriptReportReceipts } from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
+import {
+  MAX_TRANSCRIPT_REPORT_BATCH_SIZE,
+  type CustomMessageReportAppend,
+} from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
+import type { SessionTranscriptWriteScope } from "../../config/sessions/session-accessor.types.js";
+import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
+import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
@@ -18,10 +39,15 @@ import {
   readSessionTranscriptModelContextsAsync,
 } from "../../config/sessions/session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
+import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
-import { prepareConversationKnowledgeBranchFacts } from "./conversation-knowledge-authority.js";
+import {
+  prepareConversationKnowledgeBranchFacts,
+  unavailableConversationKnowledge,
+} from "./conversation-knowledge-authority.js";
 import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 
 export type ConversationKnowledgeHeldSource = {
@@ -29,6 +55,209 @@ export type ConversationKnowledgeHeldSource = {
   facts?: Awaited<ReturnType<typeof prepareConversationKnowledgeBranchFacts>>;
   origin?: string;
 };
+
+/** Confirm the actual private recipient before any cross-conversation source is selected. */
+export async function prepareConversationKnowledgeTarget(params: {
+  reader: SessionEntryCohortReader;
+  sessionId: string;
+  assertCurrent: SessionSourceAssertion;
+  signal?: AbortSignal;
+  retainedSignal?: AbortSignal;
+  destinationAudience?: ConversationPrivateAudience;
+  expectedAudienceIdentity?: string;
+  participantIdentity: string;
+  getRuntimeConfig(): OpenClawConfig;
+}) {
+  const branch = await readConversationKnowledgeBranch(params);
+  params.assertCurrent();
+  params.signal?.throwIfAborted();
+  if (!branch) {
+    return undefined;
+  }
+  try {
+    params.destinationAudience?.assertCurrent();
+  } catch {
+    return {
+      kind: "unavailable" as const,
+      unavailable: unavailableConversationKnowledge(
+        params,
+        "private-destination-audience-unconfirmed",
+      ),
+    };
+  }
+  const targetFacts = await prepareConversationKnowledgeBranchFacts({
+    branch,
+    getRuntimeConfig: params.getRuntimeConfig,
+    destinationAudience: params.destinationAudience,
+  });
+  // A private source grant does not authorize disclosure to a room or shared device.
+  if (
+    targetFacts.audience !== "private-direct" ||
+    !targetFacts.audienceIdentity ||
+    targetFacts.audienceIdentity !== params.participantIdentity ||
+    (params.expectedAudienceIdentity !== undefined &&
+      targetFacts.audienceIdentity !== params.expectedAudienceIdentity)
+  ) {
+    targetFacts.release();
+    return {
+      kind: "unavailable" as const,
+      unavailable: unavailableConversationKnowledge(
+        params,
+        "private-destination-audience-unconfirmed",
+      ),
+    };
+  }
+  return { kind: "ready" as const, branch, targetFacts };
+}
+
+/** Prepare two disposable segments per source quantum without retaining its grants. */
+export async function stageConversationKnowledgeSource(params: {
+  receipt: ConversationKnowledgeReference;
+  projection: SessionTranscriptModelContext;
+  audience: Parameters<typeof projectConversationKnowledge>[3];
+  offset: number;
+  through: TranscriptEntryAnchor;
+  from?: TranscriptEntryAnchor;
+  assertCurrent: SessionSourceAssertion;
+  signal?: AbortSignal;
+  cache?: ConversationKnowledgeSourceCache;
+}): Promise<boolean> {
+  let offset = params.offset;
+  for (let count = 0; count < 2; count++) {
+    params.assertCurrent();
+    const part = projectConversationKnowledge(
+      params.receipt,
+      params.projection.events,
+      undefined,
+      params.audience,
+      { offset },
+    );
+    if (!part || !params.projection.version || !params.cache) {
+      break;
+    }
+    if (
+      !params.cache.stage(conversationKnowledgeContributionId(params.receipt), offset, {
+        part,
+        version: params.projection.version,
+        through: params.through,
+        from: params.from,
+      })
+    ) {
+      return true;
+    }
+    if (part.frontier || part.nextOffset === undefined || part.nextOffset <= offset) {
+      break;
+    }
+    offset = part.nextOffset;
+    await setImmediate(undefined, { signal: params.signal });
+    params.signal?.throwIfAborted();
+  }
+  return false;
+}
+
+/** Only background/legacy readers enumerate history; live boundaries rebind bounded provenance. */
+export async function readConversationKnowledgeInputs(params: {
+  branch: ConversationKnowledgeBranch;
+  reader: SessionEntryCohortReader;
+  assertCurrent: SessionSourceAssertion;
+  signal?: AbortSignal;
+  readyOnly?: boolean;
+  preparationOnly?: boolean;
+  retainInHistory: boolean;
+  manifest?: PreparedKnowledgeRootCandidates;
+}) {
+  if (params.readyOnly && !params.manifest) {
+    return undefined;
+  }
+  const events = params.manifest
+    ? await readPreparedConversationKnowledgeRoot({ ...params, manifest: params.manifest })
+    : await readConversationKnowledgeRoot(params);
+  params.assertCurrent();
+  params.signal?.throwIfAborted();
+  const retained =
+    (params.retainInHistory && !params.readyOnly) || params.preparationOnly
+      ? await readConversationKnowledgePacketProgress(params)
+      : undefined;
+  return { events, retained, previous: selectConversationKnowledgeObserved(events, params.branch) };
+}
+
+/** Publish immutable provenance while the original background read is still current. */
+export function publishPreparedConversationKnowledgeRoot(params: {
+  evidence: NativeKnowledgeRootEvidence | undefined;
+  receipts: readonly ConversationKnowledgeReference[];
+  cache: ConversationKnowledgeSourceCache;
+}) {
+  const ready = new Set(params.cache.preparedContributionIds(MAX_TRANSCRIPT_REPORT_BATCH_SIZE));
+  params.cache.setPreparedRoot(
+    issuePreparedKnowledgeRootCandidates(
+      params.evidence,
+      params.receipts.filter((receipt) => ready.has(conversationKnowledgeContributionId(receipt))),
+      { maxBytes: params.cache.maxPreparedRootBytes },
+    ),
+  );
+}
+
+/** An old cached packet is not permission to resurrect native compacted history. */
+export async function observePreparedConversationKnowledgePackets(params: {
+  branch: ConversationKnowledgeBranch;
+  receipts: readonly ConversationKnowledgeReference[];
+  cache: ConversationKnowledgeSourceCache;
+  writeTarget: SessionTranscriptWriteScope;
+  assertCurrent: SessionSourceAssertion;
+  signal?: AbortSignal;
+}) {
+  const readyPacketIds = new Set<string>();
+  const activeCarriers = new Map<string, CustomMessageReportAppend>();
+  const byId = new Map(
+    params.receipts.map((receipt) => [conversationKnowledgeContributionId(receipt), receipt]),
+  );
+  const candidates = params.cache
+    .preparedPackets(MAX_TRANSCRIPT_REPORT_BATCH_SIZE)
+    .flatMap((slot) => {
+      const receipt = byId.get(slot.contributionId);
+      if (!receipt) {
+        return [];
+      }
+      const report = createConversationKnowledgePacketReport({
+        branch: params.branch,
+        receipt,
+        text: "",
+        offset: slot.offset,
+        nextOffset: slot.offset,
+        complete: false,
+      });
+      return [{ ...slot, packetId: report.details.packetId }];
+    });
+  if (!candidates.length) {
+    return { readyPacketIds, activeCarriers };
+  }
+  const current = await readSessionTranscriptReportReceipts(
+    params.writeTarget,
+    candidates.map(({ packetId }) => ({
+      customType: CONVERSATION_KNOWLEDGE_CONTEXT,
+      receipt: { field: "packetId", value: packetId },
+    })),
+    { source: params.assertCurrent },
+  );
+  params.assertCurrent();
+  params.signal?.throwIfAborted();
+  if (!current.ok) {
+    throw new Error("Conversation receipt observation was refused", { cause: current.error });
+  }
+  for (const observation of current.value) {
+    readyPacketIds.add(observation.receipt.value);
+    if (observation.status === "active-model") {
+      activeCarriers.set(observation.receipt.value, observation.report);
+    } else if (observation.status === "historical") {
+      const slot = candidates.find((candidate) => candidate.packetId === observation.receipt.value);
+      if (slot) {
+        // Positive native receipt/window proof, never absence or a cached inference.
+        params.cache.consume(slot.contributionId, slot.offset);
+      }
+    }
+  }
+  return { readyPacketIds, activeCarriers };
+}
 
 /**
  * Prepare native source grants and hydrate only the current and adjacent range.
@@ -70,12 +299,17 @@ export function createConversationKnowledgeSourceReader(params: {
         getRuntimeConfig: params.getRuntimeConfig,
         sources: [receipt.source],
       });
-    } catch {
+    } catch (error) {
       // A hidden, removed or now-unreadable source does not become a discovery result.
       params.assertCurrent();
       targetFacts.assertCurrent();
       params.signal?.throwIfAborted();
       params.sourceCache?.invalidateContribution(contributionId);
+      if (!(error instanceof SessionMutationAuthorizationChangedError)) {
+        // Unavailable facts and worker failures must reach the background owner's
+        // bounded retry instead of silently settling this source as prepared.
+        throw error;
+      }
       return undefined;
     }
     const read: (typeof reads)[number] = { grant };

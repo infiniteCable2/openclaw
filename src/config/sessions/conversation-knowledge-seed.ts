@@ -200,6 +200,11 @@ export async function ensureConversationKnowledgeSeed(params: {
   let recorded = 0;
   let skipped = 0;
   let pendingCapacity = false;
+  const inheritedSource = asOptionalRecord(
+    expected.find((predicate) => predicate.sessionKey === branch.sessionKey)?.expected.forkSource,
+  );
+  let inheritedEndpointPending =
+    typeof inheritedSource?.entryId === "string" ? inheritedSource.entryId : undefined;
   // A newly admitted row can legitimately have no transcript yet. Its empty
   // version is still captured below and fenced by the native marker writer.
   if (through.generation !== null || through.maxSeq !== null) {
@@ -240,6 +245,14 @@ export async function ensureConversationKnowledgeSeed(params: {
               break;
             }
             const event = asOptionalRecord(row.event);
+            // Native copies retain the donor's run metadata. Its exact copied
+            // endpoint is fenced above; only the child's subsequent tail is ours.
+            if (inheritedEndpointPending !== undefined) {
+              if (event?.id === inheritedEndpointPending) {
+                inheritedEndpointPending = undefined;
+              }
+              continue;
+            }
             const message = asOptionalRecord(event?.message);
             if (event?.type !== "message" || !message || typeof event.id !== "string") {
               continue;
@@ -350,6 +363,11 @@ export async function ensureConversationKnowledgeSeed(params: {
   }
   if (pendingCapacity) {
     return { status: "pending", reason: "source-capacity", recorded, skipped };
+  }
+  if (inheritedEndpointPending !== undefined) {
+    // A rewritten path may no longer contain the recorded copy boundary. Never
+    // acknowledge traversal or relabel donor history when that boundary is lost.
+    return { status: "pending", recorded, skipped };
   }
   const predicates = expected.map((predicate, index) =>
     index === 0
