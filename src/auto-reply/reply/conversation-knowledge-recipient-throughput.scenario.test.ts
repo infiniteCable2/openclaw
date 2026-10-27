@@ -77,9 +77,9 @@ const recipientLedgerEvents = simulationInteger(
 );
 const observationRepeat = simulationInteger(
   "OPENCLAW_TEST_KNOWLEDGE_OBSERVATION_REPEAT",
-  8,
+  10_000,
   1,
-  12_000,
+  60_000,
 );
 
 it("prepares long-source observations while idle and consumes them once through the admitted writer", async ({
@@ -384,15 +384,7 @@ it("prepares long-source observations while idle and consumes them once through 
             branch.sessionKey,
           ).map(conversationKnowledgeContributionId),
         );
-        const withinNativeManifest = expectedContributions.size <= MAX_TRANSCRIPT_REPORT_BATCH_SIZE;
-        if (withinNativeManifest) {
-          expect(readyContributions).toEqual(expectedContributions);
-        } else {
-          // Larger simulations roll the existing bounded provenance window after
-          // admission; cached future bytes are not claimed as current grants.
-          expect(readyContributions.size).toBe(MAX_TRANSCRIPT_REPORT_BATCH_SIZE);
-          expect([...readyContributions].every((id) => expectedContributions.has(id))).toBe(true);
-        }
+        expect(readyContributions).toEqual(expectedContributions);
         batch.mockClear();
         const { replyOperation } = createMockReplyOperation({
           key: recipient.sessionKey,
@@ -496,7 +488,6 @@ it("prepares long-source observations while idle and consumes them once through 
               idlePreparedPackets,
               idlePreparedBytes,
               immediatelyProvenContributions: readyContributions.size,
-              withinNativeManifest,
               boundaryCount,
               boundaryTrace,
               admissionMs,
@@ -587,14 +578,10 @@ it("prepares long-source observations while idle and consumes them once through 
           boundaryCount,
           "all contributions must finish through bounded native boundaries",
         ).toBeLessThan(512);
-        if (withinNativeManifest) {
-          expect(
-            boundaryCount,
-            "fully staged data must drain near the native receipt quantum",
-          ).toBeLessThanOrEqual(
-            Math.ceil(idlePreparedPackets / MAX_TRANSCRIPT_REPORT_BATCH_SIZE) + 1,
-          );
-        }
+        expect(
+          boundaryCount,
+          "fully staged data fitting the native token budget must drain at one model boundary",
+        ).toBe(1);
         expect(packets.length).toBeGreaterThanOrEqual(markers.length + 1);
         expect(
           new Set(packets.map((packet) => asOptionalRecord(packet!.details)?.contributionId)),
@@ -652,12 +639,17 @@ it("prepares long-source observations while idle and consumes them once through 
         const batchCalls = batch.mock.calls.length;
         expect(batchCalls).toBeGreaterThan(0);
         expect(
-          batch.mock.calls.every(([, entries]) => entries.length > 0 && entries.length <= 32),
+          batch.mock.calls.every(
+            ([, entries]) =>
+              entries.length > 0 && entries.length <= MAX_TRANSCRIPT_REPORT_BATCH_SIZE,
+          ),
         ).toBe(true);
         expect(reads.foreground.root).toBe(0);
         expect(reads.foreground.progress).toBe(0);
         expect(reads.foreground.observe).toBeGreaterThan(0);
-        expect(reads.foreground.maxObserveQueries).toBeLessThanOrEqual(32);
+        expect(reads.foreground.maxObserveQueries).toBeLessThanOrEqual(
+          MAX_TRANSCRIPT_REPORT_BATCH_SIZE,
+        );
         expect(reads.foreground.missing).toBeGreaterThanOrEqual(packets.length);
         await admit();
         expect(batch).toHaveBeenCalledTimes(batchCalls);

@@ -166,6 +166,33 @@ function fixture() {
 beforeEach(() => boundary.reports.mockReset());
 
 describe("prepared native knowledge root candidates", () => {
+  it("prepares more than one SQL batch of exact references within its byte budget", async () => {
+    const f = fixture();
+    const references = Array.from({ length: 33 }, (_, index) => ({
+      ...f.receipt,
+      through: { ...f.receipt.through, entryId: `answer-${index}`, rawSeq: index + 3 },
+    }));
+    boundary.reports.mockResolvedValue(
+      references.map((details, index) => ({ ...f.events[0], id: `root-${index}`, details })),
+    );
+    const root = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    const manifest = issuePreparedKnowledgeRootCandidates(root.evidence, references, {
+      maxBytes: 128_000,
+    });
+    const rebound = await readPreparedConversationKnowledgeRoot({
+      ...f,
+      manifest,
+      assertCurrent() {},
+    });
+    expect(rebound).toHaveLength(33);
+    assertNativeKnowledgeRootContribution(rebound.evidence, f.branch, references[32]!);
+    expect(() =>
+      issuePreparedKnowledgeRootCandidates(root.evidence, references, {
+        maxBytes: manifest.byteLength - 1,
+      }),
+    ).toThrow(RangeError);
+  });
+
   it("accounts for an actual manifest while evicting raw bytes and preserves pending packets", async () => {
     const f = fixture();
     const root = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
@@ -291,13 +318,6 @@ describe("prepared native knowledge root candidates", () => {
         { maxBytes: 32_000 },
       ),
     ).toThrow("matching native root evidence");
-    expect(() =>
-      issuePreparedKnowledgeRootCandidates(
-        root.evidence,
-        Array.from({ length: 33 }, () => f.receipt),
-        { maxBytes: 32_000 },
-      ),
-    ).toThrow(RangeError);
     for (const maxBytes of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
       expect(() =>
         issuePreparedKnowledgeRootCandidates(root.evidence, [f.receipt], { maxBytes }),
