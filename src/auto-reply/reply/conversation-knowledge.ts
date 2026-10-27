@@ -269,6 +269,7 @@ async function prepareReplyConversationKnowledgeInMode(
     let preparationSaturated = false;
     let sources = 0;
     let batchBlocked = false;
+    const committedReads = new Set<(typeof reads)[number]>();
     const queuedPackets: Array<{
       admission: ConversationKnowledgePacketAdmission;
       message: CustomMessage;
@@ -316,7 +317,8 @@ async function prepareReplyConversationKnowledgeInMode(
           }
           return { accepted: 0, appended: 0, deferred: true, packetIds: [] };
         });
-      for (const { admission, message } of batch.slice(0, result.accepted)) {
+      for (const { admission, message, read } of batch.slice(0, result.accepted)) {
+        committedReads.add(read);
         params.onPacket?.(message);
         params.sourceCache?.consume(
           conversationKnowledgeContributionId(admission.receipt),
@@ -813,8 +815,9 @@ async function prepareReplyConversationKnowledgeInMode(
     });
     for (const read of reads.toReversed()) {
       if (
-        !params.retainInHistory &&
-        !parts.slice(0, combined.includedCount).some((part) => part.origin === read.origin)
+        params.retainInHistory
+          ? !committedReads.has(read)
+          : !parts.slice(0, combined.includedCount).some((part) => part.origin === read.origin)
       ) {
         drop(read);
       }
