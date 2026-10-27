@@ -110,7 +110,7 @@ export async function prepareConversationKnowledgeTarget(params: {
   return { kind: "ready" as const, branch, targetFacts };
 }
 
-/** Prepare two disposable segments per source quantum without retaining its grants. */
+/** Fill disposable segments from one authorized projection, bounded by the shared cache budget. */
 export async function stageConversationKnowledgeSource(params: {
   receipt: ConversationKnowledgeReference;
   projection: SessionTranscriptModelContext;
@@ -123,7 +123,7 @@ export async function stageConversationKnowledgeSource(params: {
   cache?: ConversationKnowledgeSourceCache;
 }): Promise<boolean> {
   let offset = params.offset;
-  for (let count = 0; count < 2; count++) {
+  for (;;) {
     params.assertCurrent();
     const part = projectConversationKnowledge(
       params.receipt,
@@ -208,6 +208,7 @@ export async function observePreparedConversationKnowledgePackets(params: {
 }) {
   const readyPacketIds = new Set<string>();
   const activeCarriers = new Map<string, CustomMessageReportAppend>();
+  const contributions = new Set<string>();
   const byId = new Map(
     params.receipts.map((receipt) => [conversationKnowledgeContributionId(receipt), receipt]),
   );
@@ -229,7 +230,7 @@ export async function observePreparedConversationKnowledgePackets(params: {
       return [{ ...slot, packetId: report.details.packetId }];
     });
   if (!candidates.length) {
-    return { readyPacketIds, activeCarriers };
+    return { readyPacketIds, activeCarriers, contributions };
   }
   const current = await readSessionTranscriptReportReceipts(
     params.writeTarget,
@@ -244,6 +245,9 @@ export async function observePreparedConversationKnowledgePackets(params: {
   if (!current.ok) {
     throw new Error("Conversation receipt observation was refused", { cause: current.error });
   }
+  for (const candidate of candidates) {
+    contributions.add(candidate.contributionId);
+  }
   for (const observation of current.value) {
     readyPacketIds.add(observation.receipt.value);
     if (observation.status === "active-model") {
@@ -256,7 +260,7 @@ export async function observePreparedConversationKnowledgePackets(params: {
       }
     }
   }
-  return { readyPacketIds, activeCarriers };
+  return { readyPacketIds, activeCarriers, contributions };
 }
 
 /**

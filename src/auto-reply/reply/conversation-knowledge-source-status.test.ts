@@ -885,8 +885,12 @@ describe("related-history source custody without model status", () => {
         expect(cache.peek("synthetic-contribution", 0)).toBeDefined();
       }
       if (kind === "prepare-yield") {
-        expect(preparationYield).toHaveBeenCalledTimes(2);
-        expect(stage).toHaveBeenCalledTimes(2);
+        expect(stage.mock.calls.length).toBeGreaterThan(2);
+        expect(stage.mock.calls.at(-1)?.[2].part.complete).toBe(true);
+        expect(preparationYield).toHaveBeenCalledTimes(stage.mock.calls.length - 1);
+        for (let index = 1; index < stage.mock.calls.length; index++) {
+          expect(stage.mock.calls[index]![1]).toBe(stage.mock.calls[index - 1]![2].part.nextOffset);
+        }
       }
       if (kind === "ready-stale") {
         expect(cache.peek("synthetic-contribution", 0)).toBeUndefined();

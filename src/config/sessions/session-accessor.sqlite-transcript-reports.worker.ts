@@ -285,14 +285,17 @@ export function bindSqliteWorkerBackend(
     execute(command) {
       assertOpen();
       if (command.type === "observe") {
-        return runSqliteDeferredTransactionSync(database.db, () => {
+        return runSqliteDeferredTransactionSync<
+          Result<TranscriptReportReceiptObservation[], TranscriptAppendRefusal>
+        >(database.db, () => {
           if (target.sourcePredicates) {
             admit("transaction");
           }
           const refusal = readRefusal();
-          return refusal
-            ? err(refusal)
-            : ok(observeTranscriptReportReceipts(database, resolved, command.input.reports));
+          if (refusal) {
+            return err(refusal);
+          }
+          return ok(observeTranscriptReportReceipts(database, resolved, command.input.reports));
         });
       }
       if (command.type === "prepare") {

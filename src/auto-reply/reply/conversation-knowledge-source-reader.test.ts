@@ -1,7 +1,14 @@
 import path from "node:path";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
+import { readSessionTranscriptReportReceipts } from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
+import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
+import {
+  readSessionTranscriptModelContextAsync,
+  readSessionTranscriptModelContextsAsync,
+} from "../../config/sessions/session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
@@ -10,6 +17,7 @@ import { createConversationKnowledgePrefetchOwner } from "./conversation-knowled
 import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 import {
   createConversationKnowledgeSourceReader,
+  stageConversationKnowledgeSource,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
 
@@ -276,5 +284,116 @@ describe("source grant failure recovery", () => {
     });
     await expect(f.reader.take(f.receipt)).rejects.toBe(cancellation);
     expect(boundary.facts).not.toHaveBeenCalled();
+  });
+});
+
+describe("bounded authorized source preparation", () => {
+  function longSource() {
+    const { receipt } = fixture();
+    const question = "Keep this complete synthetic observation.";
+    const answer = "A long synthetic observation with a plant 🌿. ".repeat(4_000);
+    const projection: SessionTranscriptModelContext = {
+      version: { generation: receipt.through.generation, rawSeq: 2, updatedAt: 1 },
+      events: [
+        {
+          type: "message",
+          id: "question",
+          message: { role: "user", content: question, timestamp: 1 },
+        },
+        {
+          type: "message",
+          id: "answer",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: answer }],
+            stopReason: "stop",
+            timestamp: 2,
+            __openclaw: { runId: receipt.runId },
+          },
+        },
+      ],
+    };
+    return { receipt, projection, text: question + answer };
+  }
+
+  it("fills beyond two segments, stops at its byte budget, and preserves the exact source prefix", async () => {
+    const source = longSource();
+    const maxBytes = 32 * 1024;
+    const cache = createConversationKnowledgeSourceCache(maxBytes);
+    const request = {
+      ...source,
+      audience: "private-direct" as const,
+      offset: 0,
+      through: source.receipt.through,
+      assertCurrent() {},
+      cache,
+    };
+    expect(await stageConversationKnowledgeSource(request)).toBe(true);
+    const slots = cache.preparedPackets(100);
+    expect(slots.length).toBeGreaterThan(2);
+    expect(slots.length).toBeLessThan(100);
+    let offset = 0;
+    let text = "";
+    let bytes = 0;
+    const prepared = slots.map((slot) => {
+      expect(slot).toEqual({ contributionId: source.receipt.origin, offset });
+      const packet = cache.peek(slot.contributionId, slot.offset)!;
+      expect(packet.through).toEqual(source.receipt.through);
+      expect(packet.version).toEqual(source.projection.version);
+      expect(packet.part.complete).toBe(false);
+      const content = asOptionalRecord(JSON.parse(packet.part.text));
+      expect(content?.contentOffset).toBe(offset);
+      expect(Array.isArray(content?.observations)).toBe(true);
+      for (const observation of content!.observations as unknown[]) {
+        const row = asOptionalRecord(observation);
+        expect(typeof row?.text).toBe("string");
+        if (typeof row?.text === "string") {
+          text += row.text;
+        }
+      }
+      expect(packet.part.nextOffset).toBeGreaterThan(offset);
+      offset = packet.part.nextOffset!;
+      expect(text).toBe(source.text.slice(0, offset));
+      bytes += Buffer.byteLength(JSON.stringify(packet));
+      return packet;
+    });
+    expect(bytes).toBeLessThanOrEqual(maxBytes);
+    expect(cache.peek(source.receipt.origin, offset)).toBeUndefined();
+    expect(await stageConversationKnowledgeSource(request)).toBe(true);
+    expect(slots.map((slot) => cache.peek(slot.contributionId, slot.offset))).toEqual(prepared);
+    expect(boundary.grant).not.toHaveBeenCalled();
+    expect(readSessionTranscriptModelContextAsync).not.toHaveBeenCalled();
+    expect(readSessionTranscriptModelContextsAsync).not.toHaveBeenCalled();
+    expect(readSessionTranscriptReportReceipts).not.toHaveBeenCalled();
+  });
+
+  it("honors cancellation at the first cooperative segment yield", async () => {
+    const source = longSource();
+    const cache = createConversationKnowledgeSourceCache(32 * 1024);
+    const controller = new AbortController();
+    const cancellation = new Error("Synthetic preparation cancelled");
+    const originalStage = cache.stage.bind(cache);
+    vi.spyOn(cache, "stage").mockImplementation((...args) => {
+      const staged = originalStage(...args);
+      queueMicrotask(() => controller.abort(cancellation));
+      return staged;
+    });
+    await expect(
+      stageConversationKnowledgeSource({
+        ...source,
+        audience: "private-direct",
+        offset: 0,
+        through: source.receipt.through,
+        assertCurrent: () => controller.signal.throwIfAborted(),
+        signal: controller.signal,
+        cache,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError", cause: cancellation });
+    expect(cache.stage).toHaveBeenCalledOnce();
+    expect(cache.preparedPackets(100)).toEqual([
+      { contributionId: source.receipt.origin, offset: 0 },
+    ]);
+    expect(boundary.grant).not.toHaveBeenCalled();
+    expect(readSessionTranscriptReportReceipts).not.toHaveBeenCalled();
   });
 });

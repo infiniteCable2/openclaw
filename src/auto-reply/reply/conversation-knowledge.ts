@@ -17,10 +17,7 @@ import {
   projectConversationKnowledge,
 } from "../../config/sessions/conversation-knowledge.js";
 import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
-import {
-  composeSessionSourceAssertion,
-  type SessionSourceAssertion,
-} from "../../config/sessions/session-source-authority.js";
+import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { unavailableConversationKnowledge } from "./conversation-knowledge-authority.js";
 import { createConversationKnowledgeIngestion } from "./conversation-knowledge-ingestion.js";
@@ -310,6 +307,9 @@ async function prepareReplyConversationKnowledgeInMode(
       params.assertCurrent();
       targetFacts.assertCurrent();
       const contributionId = conversationKnowledgeContributionId(receipt);
+      if (observedPackets && !observedPackets.contributions.has(contributionId)) {
+        continue;
+      }
       const prior = previous.find((frontier) => frontier.origin === receipt.origin);
       if (
         !params.retainInHistory &&

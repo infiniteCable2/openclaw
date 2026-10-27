@@ -12,6 +12,7 @@ import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
 } from "../../config/sessions/conversation-knowledge-packets.js";
+import { selectConversationKnowledgeReceipts } from "../../config/sessions/conversation-knowledge-selection.js";
 import * as knowledgeStoreReads from "../../config/sessions/conversation-knowledge-store.js";
 import {
   readConversationKnowledgeBranch,
@@ -24,6 +25,7 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import * as reportStorage from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
+import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
@@ -285,6 +287,68 @@ it("prepares long-source observations while idle and consumes them once through 
         const preparationMs = performance.now() - started;
         expect(await loadTranscriptEvents(recipient)).toEqual(before);
         expect(budget.compact).not.toHaveBeenCalled();
+        const receipts = await fixture.receipts();
+        const expectedContributions = new Set(receipts.map(conversationKnowledgeContributionId));
+        const idleSlots = prefetch.cache.preparedPackets(Number.MAX_SAFE_INTEGER);
+        expect(new Set(idleSlots.map((slot) => slot.contributionId))).toEqual(
+          expectedContributions,
+        );
+        let idlePreparedBytes = 0;
+        let idlePreparedPackets = 0;
+        for (const receipt of receipts) {
+          const id = conversationKnowledgeContributionId(receipt);
+          let offset = 0;
+          let complete = false;
+          const visited = new Set<number>();
+          for (let count = 0; count <= idleSlots.length; count++) {
+            expect(visited.has(offset), "idle staged offsets must not cycle").toBe(false);
+            visited.add(offset);
+            const staged = prefetch.cache.peek(id, offset);
+            if (!staged) {
+              throw new Error(`Idle preparation did not finish contribution ${id} at ${offset}`);
+            }
+            expect(staged.through.entryId).toBe(receipt.through.entryId);
+            idlePreparedBytes += Buffer.byteLength(JSON.stringify(staged));
+            idlePreparedPackets++;
+            if (staged.part.complete) {
+              expect(staged.part.frontier).toBeDefined();
+              complete = true;
+              break;
+            }
+            expect(staged.part.nextOffset).toBeGreaterThan(offset);
+            offset = staged.part.nextOffset!;
+          }
+          expect(complete, "idle source preparation must reach its final segment").toBe(true);
+          expect(visited.size).toBe(idleSlots.filter((slot) => slot.contributionId === id).length);
+        }
+        expect(idlePreparedPackets).toBe(idleSlots.length);
+        expect(idlePreparedBytes).toBeLessThanOrEqual(prefetch.cache.maxPreparedRootBytes);
+        const manifest = prefetch.cache.preparedRoot;
+        if (!manifest) {
+          throw new Error("Idle preparation must publish its native root provenance");
+        }
+        const preparedRoot = await knowledgeStoreReads.readPreparedConversationKnowledgeRoot({
+          ...recipientClaim,
+          branch,
+          manifest,
+          signal,
+        });
+        const readyContributions = new Set(
+          selectConversationKnowledgeReceipts(
+            preparedRoot,
+            branch.sessionId,
+            branch.sessionKey,
+          ).map(conversationKnowledgeContributionId),
+        );
+        const withinNativeManifest = expectedContributions.size <= MAX_TRANSCRIPT_REPORT_BATCH_SIZE;
+        if (withinNativeManifest) {
+          expect(readyContributions).toEqual(expectedContributions);
+        } else {
+          // Larger simulations roll the existing bounded provenance window after
+          // admission; cached future bytes are not claimed as current grants.
+          expect(readyContributions.size).toBe(MAX_TRANSCRIPT_REPORT_BATCH_SIZE);
+          expect([...readyContributions].every((id) => expectedContributions.has(id))).toBe(true);
+        }
         batch.mockClear();
         const { replyOperation } = createMockReplyOperation({
           key: recipient.sessionKey,
@@ -354,8 +418,6 @@ it("prepares long-source observations while idle and consumes them once through 
                 event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT &&
                 !ledgerPacketIds.has(String(asOptionalRecord(event.details)?.packetId)),
             );
-        const receipts = await fixture.receipts();
-        const expectedContributions = new Set(receipts.map(conversationKnowledgeContributionId));
         let boundaryCount = 0;
         let admissionMs = 0;
         let continuationWaitMs = 0;
@@ -398,6 +460,14 @@ it("prepares long-source observations while idle and consumes them once through 
           boundaryCount,
           "all contributions must finish through bounded native boundaries",
         ).toBeLessThan(512);
+        if (withinNativeManifest) {
+          expect(
+            boundaryCount,
+            "fully staged data must drain near the native receipt quantum",
+          ).toBeLessThanOrEqual(
+            Math.ceil(idlePreparedPackets / MAX_TRANSCRIPT_REPORT_BATCH_SIZE) + 1,
+          );
+        }
         expect(packets.length).toBeGreaterThanOrEqual(markers.length + 1);
         expect(
           new Set(packets.map((packet) => asOptionalRecord(packet!.details)?.contributionId)),
@@ -476,6 +546,10 @@ it("prepares long-source observations while idle and consumes them once through 
               compactionCalls: budget.compact.mock.calls.length,
               setupMs,
               preparationMs,
+              idlePreparedPackets,
+              idlePreparedBytes,
+              immediatelyProvenContributions: readyContributions.size,
+              withinNativeManifest,
               boundaryCount,
               admissionMs,
               maxAdmissionMs,
