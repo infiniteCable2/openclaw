@@ -244,16 +244,16 @@ export function readRawDeltaInTransaction(
     )
     .$if(customTypes !== undefined, (query) =>
       query
-        // kysely-allow-raw: Canonical navigation metadata narrows report selection without loading bodies.
         .where(
-          sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`,
+          /* kysely-allow-raw: Fixed navigation field narrows reports without loading bodies. */ sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`,
           "=",
           "custom_message",
         )
-        // kysely-allow-raw: Types are bound values; existing read authority still owns the full scope.
-        .where(sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.customType')`, "in", [
-          ...(customTypes ?? []),
-        ]),
+        .where(
+          /* kysely-allow-raw: Fixed navigation field; selected types remain bound values. */ sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.customType')`,
+          "in",
+          [...(customTypes ?? [])],
+        ),
     );
   const frontier = snapshot ? snapshot.indexedSeq : watermark?.maxSeq;
   const maxSeq = Math.min(
@@ -287,10 +287,9 @@ export function readRawDeltaInTransaction(
     const metadataQuery = transcript
       .select([
         "seq",
-        /* kysely-allow-raw: SQLite byte length avoids fetching or parsing excluded JSON. */
         (customMessageDetailsOnly
-          ? sql<number>`octet_length(${eventJson}) + 1`
-          : sql<number>`${transcriptEventReadBytesSql()} + 1`
+          ? /* kysely-allow-raw: Charge only the fixed authorized metadata projection. */ sql<number>`octet_length(${eventJson}) + 1`
+          : /* kysely-allow-raw: Canonical native bytes plus the existing record delimiter. */ sql<number>`${transcriptEventReadBytesSql()} + 1`
         ).as("serialized_bytes"),
       ])
       .$if(beforeEventSeq !== undefined, (query) => query.where("seq", "<", beforeEventSeq!))
