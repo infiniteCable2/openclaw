@@ -195,28 +195,30 @@ it("retains exact accepted prefixes, duplicate receipts and canonical parents ac
       ]);
       const admissions: string[] = [];
       let rejectCommit = false;
-      const backend = runWithSqliteWorkerStateContext({ environment: state.env }, () =>
-        bindSqliteWorkerBackend(
-          {
-            resolved: {
-              agentId: scope.agentId,
-              sessionId: scope.sessionId,
-              sessionKey: scope.sessionKey,
-              path: database.path,
+      const backend = runWithSqliteWorkerStateContext(
+        { environment: { ...state.env, OPENCLAW_STATE_DIR: state.stateDir } },
+        () =>
+          bindSqliteWorkerBackend(
+            {
+              resolved: {
+                agentId: scope.agentId,
+                sessionId: scope.sessionId,
+                sessionKey: scope.sessionKey,
+                path: database.path,
+              },
+              fence: {},
             },
-            fence: {},
-          },
-          {
-            database: database.db,
-            databasePath: database.path,
-            admit(stage) {
-              admissions.push(stage);
-              if (stage === "commit" && rejectCommit) {
-                throw new Error("Synthetic host commit refusal");
-              }
+            {
+              database: database.db,
+              databasePath: database.path,
+              admit(stage) {
+                admissions.push(stage);
+                if (stage === "commit" && rejectCommit) {
+                  throw new Error("Synthetic host commit refusal");
+                }
+              },
             },
-          },
-        ),
+          ),
       );
       const { port1, port2 } = new MessageChannel();
       const run = (ids: string[], maxEvents: number) =>

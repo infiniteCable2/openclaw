@@ -97,6 +97,7 @@ describe("recipient preparation scheduling", () => {
           agentId: branch.agentId,
           sessionKey: branch.sessionKey,
           channelId: "example-channel",
+          accountId: "default",
           nativeChannelId: "private-recipient",
           participant,
           assertCurrent() {},

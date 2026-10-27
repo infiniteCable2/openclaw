@@ -4,10 +4,12 @@ import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { VoiceSessionLookup } from "../../talk/client-voice-session-store.js";
 import type { ArchivedSessionEvictionQuery } from "./disk-budget.types.js";
+import type { SessionBranchSummaryReadRequest } from "./session-accessor.sqlite-branches.js";
 import type {
   SessionTranscriptRawDeltaLimits,
   SessionTranscriptVisibleMessageDeltaLimits,
 } from "./session-accessor.sqlite-contract.js";
+import type { SessionIdentityEvidenceIdentity } from "./session-accessor.sqlite-entry-availability.js";
 import type { SessionTranscriptModelContextRange } from "./session-accessor.sqlite-model-context.js";
 import type {
   ResolvedTranscriptReadScope,
@@ -17,6 +19,7 @@ import type {
   SessionTranscriptReadScope,
   SessionTranscriptRuntimeTarget,
 } from "./session-accessor.types.js";
+import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import type {
   SessionModelContextLimits,
   SessionTranscriptEventMatch,
@@ -24,6 +27,20 @@ import type {
 import type { SessionTranscriptAnchorSelection } from "./session-transcript-anchor-read.kernel.js";
 import type { SessionTranscriptSearchParams } from "./session-transcript-search.types.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
+
+export type SessionBranchSummaryWorkerInput = {
+  kind: "branch-summaries";
+  database: SessionBranchSummaryReadRequest["database"];
+  request: Omit<SessionBranchSummaryReadRequest, "database">;
+};
+
+export type SessionIdentityEvidenceWorkerInput = {
+  kind: "session-identity-evidence";
+  database: { agentId: string; path: string };
+  env: NodeJS.ProcessEnv;
+  identities: readonly SessionIdentityEvidenceIdentity[];
+  continuation?: CanonicalSessionReaderContinuation;
+};
 
 type BoardReadWorkerInput<Kind extends string, Operation extends keyof BoardReadOperations> = {
   kind: Kind;

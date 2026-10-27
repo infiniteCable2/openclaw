@@ -42,19 +42,13 @@ import type {
   SessionPendingArchivesWorkerInput,
   SessionArchivePruningWorkerInput,
 } from "./session-accessor.sqlite-archive-types.js";
-import type {
-  SessionBranchSummaryReadRequest,
-  SessionBranchSummaryReadResult,
-} from "./session-accessor.sqlite-branches.js";
+import type { SessionBranchSummaryReadResult } from "./session-accessor.sqlite-branches.js";
 import type {
   TranscriptEvent,
   SessionTranscriptRawDeltaResult,
   SessionTranscriptVisibleMessageDeltaResult,
 } from "./session-accessor.sqlite-contract.js";
-import type {
-  SessionIdentityEvidenceIdentity,
-  SessionIdentityEvidenceResult,
-} from "./session-accessor.sqlite-entry-availability.js";
+import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
 import type {
   LifecycleArtifactCleanupRequest,
   LifecycleArtifactCleanupWorkerResult,
@@ -151,6 +145,8 @@ import type { SessionTranscriptWorkerReadError } from "./session-transcript-work
 import type {
   BoardSnapshotWorkerInput,
   BoardWidgetDocumentWorkerInput,
+  SessionBranchSummaryWorkerInput,
+  SessionIdentityEvidenceWorkerInput,
   SessionHistoricalEvictionCandidatesWorkerInput,
   SessionArchivedEvictionCandidatesWorkerInput,
   SessionTranscriptMatchWorkerInput,
@@ -325,20 +321,6 @@ type SessionStoreTargetWorkerInput = {
 type SessionTargetInventoryWorkerInput = {
   kind: "session-target-inventory";
   request: SessionStoreTargetInventoryRequest;
-};
-
-type SessionIdentityEvidenceWorkerInput = {
-  kind: "session-identity-evidence";
-  database: { agentId: string; path: string };
-  env: NodeJS.ProcessEnv;
-  identities: readonly SessionIdentityEvidenceIdentity[];
-  continuation?: CanonicalSessionReaderContinuation;
-};
-
-type SessionBranchSummaryWorkerInput = {
-  kind: "branch-summaries";
-  database: SessionBranchSummaryReadRequest["database"];
-  request: Omit<SessionBranchSummaryReadRequest, "database">;
 };
 
 export type SessionHistoryWorkerInput =

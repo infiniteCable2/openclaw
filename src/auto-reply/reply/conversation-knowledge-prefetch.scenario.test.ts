@@ -127,6 +127,7 @@ describe("native branch prefetch and model-boundary composition", () => {
               agentId: branch.agentId,
               sessionKey: branch.sessionKey,
               channelId: "example-channel",
+              accountId: "default",
               nativeChannelId: "synthetic-private-recipient",
               participant: person,
               assertCurrent: recipientOwner.assertCurrent,

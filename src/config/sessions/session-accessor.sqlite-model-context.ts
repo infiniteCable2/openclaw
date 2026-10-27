@@ -3,10 +3,8 @@ import { sql, type AliasableExpression } from "kysely";
 import {
   iterateSessionContextEntries,
   iterateSessionContextMessages,
-  projectSessionEntryMessage,
 } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
-  classifyToolUseResultPairing,
   isSyntheticMissingToolResult,
   SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY,
 } from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";
@@ -48,9 +46,19 @@ import type {
   SessionModelContextLimits,
   SessionTranscriptModelContext,
 } from "./session-history-read.types.js";
-import { assertSessionModelContextBatchBudget } from "./session-model-context-batch-limits.js";
+import {
+  readSessionTranscriptModelContextRanges,
+  readTranscriptNavigationEntries,
+  type SessionTranscriptModelContextRange,
+  type SessionTranscriptModelContextRangeResult,
+} from "./session-model-context-batch-reader.js";
 import { projectModelContextEventSql } from "./session-model-context-projection.js";
 import { selectContributionModelContextEntries } from "./session-model-context-range.js";
+import {
+  selectBoundedModelRequests,
+  type ContextEntry,
+  type ModelContextRequest,
+} from "./session-model-context-selection.js";
 import {
   resolveSqliteSessionTranscriptReadFence,
   runWithSessionTranscriptReadFence,
@@ -65,19 +73,10 @@ import {
 } from "./transcript-payload.js";
 import {
   scanSessionTranscriptTree,
-  scanSessionTranscriptNavigation,
   selectSessionTranscriptTreePathNodes,
-  visitSessionTranscriptTreePathNodes,
-  type SessionTranscriptTreeNode,
 } from "./transcript-tree.js";
 
-type ContextEntry = SessionTreeEntry & { seq: number };
 export type { SessionModelContextLimits } from "./session-history-read.types.js";
-type ModelContextRequest = {
-  entry: ContextEntry;
-  omitCheckpoint: boolean;
-  toolResultOmission?: string;
-};
 type TranscriptContextSnapshot = {
   header: TranscriptEvent;
   entries: ContextEntry[];
@@ -264,145 +263,6 @@ export function validateSessionTranscriptContextInDatabase(
   }
 }
 
-/** Select an owned suffix before SQLite payloads can enter JavaScript or cross a worker. */
-function selectBoundedModelRequests(
-  requests: ModelContextRequest[],
-  readSizes: TranscriptContextSnapshot["readModelEntrySizes"],
-  limits: SessionModelContextLimits,
-): ModelContextRequest[] {
-  const boundary = requests.find(
-    ({ entry }) => entry.type === "compaction" || entry.type === "reset",
-  );
-  const candidates = requests.filter((request) => request !== boundary);
-  const sizingCandidates = candidates.slice(-limits.maxEvents);
-  const sizes = readSizes(boundary ? [boundary, ...sizingCandidates] : sizingCandidates);
-  let bytes = boundary ? sizes.get(boundary.entry)! : 0;
-  let events = boundary ? 1 : 0;
-  if (bytes > limits.maxBytes || events > limits.maxEvents) {
-    throw new RangeError("Required session context boundary exceeds the model-context limit");
-  }
-  let cut = candidates.length;
-  for (const request of sizingCandidates.toReversed()) {
-    const size = sizes.get(request.entry)!;
-    if (bytes + size > limits.maxBytes || events + 1 > limits.maxEvents) {
-      break;
-    }
-    bytes += size;
-    events += 1;
-    cut -= 1;
-  }
-  if (cut === 0) {
-    return requests;
-  }
-  const messages = candidates.flatMap(({ entry }) => {
-    const message = entry.type === "message" ? entry.message : projectSessionEntryMessage(entry);
-    return message ? [message] : [];
-  });
-  const positions = new Map<AgentMessage, number>();
-  for (const [index, { entry }] of candidates.entries()) {
-    if (entry.type === "message") {
-      positions.set(entry.message, index);
-    }
-  }
-  const original = classifyToolUseResultPairing(messages);
-  const owners = new Map<AgentMessage, AgentMessage>();
-  // Occurrence ownership, including displaced results, forbids cuts through a tool frame.
-  // Frames are ordered by their assistant, so advancing the cut needs only one pass.
-  for (const frame of original.frames) {
-    const start = positions.get(frame.assistant)!;
-    for (const occurrence of frame.occurrences) {
-      if (occurrence.sourceResult) {
-        owners.set(occurrence.sourceResult, frame.assistant);
-        const end = positions.get(occurrence.sourceResult)!;
-        if (start < cut && cut <= end) {
-          cut = end + 1;
-        }
-      }
-    }
-  }
-  let selected = candidates.slice(cut);
-  if (selected.length === 0 && limits.toolResultOverflow === "omit") {
-    // Retain the newest historical request and close its suffix over displaced results.
-    // The currently admitted user is supplied separately by native runtime callers.
-    let start = candidates.findLastIndex(
-      ({ entry }) => entry.type === "message" && entry.message.role === "user",
-    );
-    if (start < 0) {
-      start = candidates.length - 1;
-    }
-    for (const frame of original.frames.toReversed()) {
-      if (
-        frame.occurrences.some(
-          ({ sourceResult }) => sourceResult && positions.get(sourceResult)! >= start,
-        )
-      ) {
-        start = Math.min(start, positions.get(frame.assistant)!);
-      }
-    }
-    const required = candidates.slice(start);
-    if (required.length + (boundary ? 1 : 0) <= limits.maxEvents) {
-      const requiredSizes = readSizes(boundary ? [boundary, ...required] : required);
-      let requiredBytes = [...requiredSizes.values()].reduce((total, size) => total + size, 0);
-      const omissions = required.flatMap((request) => {
-        const { entry } = request;
-        if (entry.type !== "message" || entry.message.role !== "toolResult") {
-          return [];
-        }
-        const message = entry.message;
-        return [
-          {
-            ...request,
-            toolResultOmission:
-              `Tool result body omitted from this bounded context: ${JSON.stringify(message.toolName)} ` +
-              `(call ${JSON.stringify(message.toolCallId)}), original model-context event ${requiredSizes.get(entry)!} bytes. ` +
-              "The full result remains in the session transcript. Do not infer its outcome or repeat the operation from this notice.",
-          },
-        ];
-      });
-      const omittedSizes = readSizes(omissions);
-      const savings = (request: ModelContextRequest) =>
-        requiredSizes.get(request.entry)! - omittedSizes.get(request.entry)!;
-      const replacements = new Map<ContextEntry, ModelContextRequest>();
-      for (const omission of omissions.toSorted((a, b) => savings(b) - savings(a))) {
-        if (requiredBytes <= limits.maxBytes) {
-          break;
-        }
-        const saved = savings(omission);
-        if (saved > 0) {
-          replacements.set(omission.entry, omission);
-          requiredBytes -= saved;
-        }
-      }
-      if (requiredBytes <= limits.maxBytes) {
-        selected = required.map((request) => replacements.get(request.entry) ?? request);
-      }
-    }
-  }
-  if (selected.length === 0) {
-    throw new RangeError(
-      "The latest messages exceed this session's context limit. Start a new session with a brief summary to continue.",
-    );
-  }
-  const selectedMessages = selected.flatMap(({ entry }) =>
-    entry.type === "message" ? [entry.message] : [],
-  );
-  // Removing an older repeated ID must not turn an ambiguous result into a different call's result.
-  const selectedOwners = new Map<AgentMessage, AgentMessage>();
-  for (const frame of classifyToolUseResultPairing(selectedMessages).frames) {
-    for (const occurrence of frame.occurrences) {
-      if (occurrence.sourceResult) {
-        selectedOwners.set(occurrence.sourceResult, frame.assistant);
-      }
-    }
-  }
-  for (const message of selectedMessages) {
-    if (message.role === "toolResult" && owners.get(message) !== selectedOwners.get(message)) {
-      throw new RangeError("Session context limit would change tool-result ownership");
-    }
-  }
-  return boundary ? [boundary, ...selected] : selected;
-}
-
 function modelContextBatchSql(requests: readonly ModelContextRequest[]) {
   const bySeq = new Map(requests.map(({ entry }) => [entry.seq, entry]));
   const omitted = requests.flatMap(({ entry, omitCheckpoint }) =>
@@ -431,120 +291,19 @@ export function readSessionTranscriptModelContext(
   return readModelContext(scope, through, limits);
 }
 
-export type SessionTranscriptModelContextRange = {
-  through: TranscriptEntryAnchor;
-  limits: SessionModelContextLimits;
-};
-
-export type SessionTranscriptModelContextRangeResult =
-  | { ok: true; context: SessionTranscriptModelContext }
-  | { ok: false; reason: "source-range-unverified" | "source-range-over-capacity" };
+export type {
+  SessionTranscriptModelContextRange,
+  SessionTranscriptModelContextRangeResult,
+} from "./session-model-context-batch-reader.js";
 
 /** Two historical ranges share navigation only inside this exact SQLite read snapshot. */
 export function readSessionTranscriptModelContexts(
   scope: SessionTranscriptReadScope,
   ranges: readonly SessionTranscriptModelContextRange[],
 ): SessionTranscriptModelContextRangeResult[] {
-  assertSessionModelContextBatchBudget(ranges);
-  if (ranges.length === 0) {
-    return [];
-  }
-  const resolved = resolveSqliteTranscriptReadScope(scope);
-  const result = withOpenClawAgentDatabaseReadOnly(
-    (database) =>
-      runSqliteDeferredTransactionSync(
-        database.db,
-        () => {
-          const ordered = ranges
-            .map((range, index) => ({ range, index }))
-            .toSorted((a, b) => a.range.through.rawSeq - b.range.through.rawSeq);
-          const results: SessionTranscriptModelContextRangeResult[] = [];
-          const nodes: SessionTranscriptTreeNode<ContextEntry>[] = [];
-          const byId = new Map<string, SessionTranscriptTreeNode<ContextEntry>>();
-          let next = 0;
-          const finish = () => {
-            const { range, index } = ordered[next++]!;
-            try {
-              if (!byId.has(range.through.entryId)) {
-                throw new SessionTranscriptReadFenceError(
-                  "Completed-turn anchor is outside the admitted context",
-                );
-              }
-              const path: SessionTranscriptTreeNode<ContextEntry>[] = [];
-              const valid = visitSessionTranscriptTreePathNodes(
-                byId,
-                range.through.entryId,
-                new Set(),
-                (node) => path.push(node),
-              );
-              const entries = normalizeSessionContextEntryBoundaries(
-                valid
-                  ? path.toReversed().map(({ entry, parentId }) => ({ ...entry, parentId }))
-                  : [],
-                nodes,
-              );
-              results[index] = {
-                ok: true,
-                context: readModelContext(scope, range.through, range.limits, {
-                  database,
-                  entries,
-                }),
-              };
-            } catch (error) {
-              if (
-                !(error instanceof SessionTranscriptReadFenceError) &&
-                !(error instanceof RangeError)
-              ) {
-                throw error;
-              }
-              results[index] = {
-                ok: false,
-                reason:
-                  error instanceof RangeError
-                    ? "source-range-over-capacity"
-                    : "source-range-unverified",
-              };
-            }
-          };
-          const fence = resolveSqliteSessionTranscriptReadFence({ database, ...resolved });
-          const navigation = readTranscriptNavigationEntries(
-            database,
-            resolved,
-            ordered.at(-1)!.range.through,
-            fence,
-          );
-          // Resolve an endpoint before a later control or duplicate ID can affect its prefix.
-          scanSessionTranscriptNavigation(
-            (function* () {
-              for (const entry of navigation) {
-                while (next < ordered.length && ordered[next]!.range.through.rawSeq < entry.seq) {
-                  finish();
-                }
-                yield entry;
-              }
-            })(),
-            {
-              byId,
-              addNode: (node) => nodes.push(node),
-              resetDescendantIds: new Set(),
-              invalidLeafControlIds: new Set(),
-            },
-          );
-          while (next < ordered.length) {
-            finish();
-          }
-          return results;
-        },
-        { operationLabel: "session context range batch read" },
-      ),
-    toDatabaseOptions(resolved),
+  return readSessionTranscriptModelContextRanges(scope, ranges, (database, entries, range) =>
+    readModelContext(scope, range.through, range.limits, { database, entries }),
   );
-  return result.found
-    ? result.value
-    : ranges.map<SessionTranscriptModelContextRangeResult>(() => ({
-        ok: false,
-        reason: "source-range-unverified",
-      }));
 }
 
 function readModelContext(
@@ -710,30 +469,6 @@ function withTranscriptContextSnapshot<T>(
         { operationLabel: "session context snapshot read" },
       ),
     toDatabaseOptions(resolved),
-  );
-}
-
-function readTranscriptNavigationEntries(
-  database: Pick<OpenClawAgentDatabase, "db">,
-  resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
-  through?: TranscriptEntryAnchor,
-  fence?: ReturnType<typeof resolveSqliteSessionTranscriptReadFence>,
-): ContextEntry[] {
-  return Array.from(
-    iterateSqliteQuerySync(
-      database.db,
-      getSessionKysely(database.db)
-        .selectFrom("transcript_events")
-        .select(["seq", transcriptEventModelNavigationSql().as("navigation_json")])
-        .where("session_id", "=", resolved.sessionId)
-        .$if(fence !== undefined, (q) => q.where("seq", "<", fence!.beforeRawSeq))
-        .$if(through !== undefined, (q) => q.where("seq", "<=", through!.rawSeq))
-        .orderBy("seq", "asc"),
-    ),
-    (row) => {
-      // SAFETY: Codec-owned navigation retains canonical discriminants and parent links.
-      return { ...(JSON.parse(row.navigation_json) as SessionTreeEntry), seq: row.seq };
-    },
   );
 }
 

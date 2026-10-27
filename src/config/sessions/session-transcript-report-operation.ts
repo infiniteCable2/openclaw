@@ -1,0 +1,443 @@
+import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { ok, type Result } from "@openclaw/normalization-core/result";
+import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import {
+  assertExistingDatabaseIdentity,
+  readDatabasePathIdentitySync,
+} from "../../infra/sqlite-worker-identity.js";
+import type { SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
+import { isIncognitoSessionKey } from "../../routing/session-key.js";
+import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
+import { openOpenClawAgentSqliteWorkerStore } from "../../state/openclaw-agent-worker-store.js";
+import { getCliHistoryWriter } from "./cli-history-boundary.js";
+import type {
+  SessionTranscriptWriteScope,
+  TranscriptAppendRefusal,
+} from "./session-accessor.sqlite-contract.js";
+import { publishSessionEntryWorkerMetadataInvalidation } from "./session-accessor.sqlite-entry-cache.js";
+import { prepareSessionEntryReplacementDatabase } from "./session-accessor.sqlite-replacement-worker.js";
+import {
+  captureLifecycleDatabaseScope,
+  assertSqliteTranscriptWriteIdentity,
+  prepareSqliteScope,
+  resolveSqliteScope,
+  resolveSqliteTranscriptScope,
+  resolveSqliteWriteAdmissionScope,
+  runExclusiveSqliteSessionWrite,
+  toDatabaseOptions,
+} from "./session-accessor.sqlite-scope.js";
+import type {
+  TranscriptReportCommit,
+  TranscriptReportWorkerOperations,
+} from "./session-accessor.sqlite-transcript-reports.types.js";
+import type { TranscriptReportWorkerTarget } from "./session-accessor.sqlite-transcript-reports.worker.js";
+import { assertSessionEntryCurrentAdmission } from "./session-entry-current-admission.js";
+import type { SessionEntryCurrentCheck } from "./session-entry-current.types.js";
+import type { IncognitoSessionActor } from "./session-incognito-actor.js";
+import type { IncognitoSessionAuthority } from "./session-incognito-contract.js";
+import type { IncognitoTranscriptOperations } from "./session-incognito-transcript-contract.js";
+import {
+  acceptSessionSourceValidation,
+  prepareSessionSourceAuthority,
+  type PreparedSessionSourceAuthority,
+  type SessionSourceAssertion,
+  type SessionSourceValidation,
+} from "./session-source-authority.js";
+import {
+  assertSessionStoreReadCandidate,
+  captureSessionStoreCandidateIdentities,
+} from "./session-store-read-candidates.js";
+import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
+import {
+  reconcileSessionTranscriptIndexes,
+  startSessionTranscriptIndexReconcile,
+} from "./session-transcript-reconcile.js";
+import { settleReportOperation } from "./session-transcript-report-settlement.js";
+import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
+import {
+  captureOwnedTranscriptWriteAssertion,
+  SessionTranscriptWriterClaimReboundError,
+  withOwnedSessionTranscriptWriterFence,
+} from "./transcript-write-context.js";
+
+export type IncognitoTranscriptReportBinding = {
+  actor: IncognitoSessionActor;
+  authority: IncognitoSessionAuthority;
+};
+
+/** Inactive composition: routing must supply the already captured actor at activation. */
+async function withIncognitoReportWorker<T>(
+  scope: SessionTranscriptWriteScope,
+  binding: IncognitoTranscriptReportBinding,
+  run: Parameters<typeof withReportWorker<T>>[2],
+): Promise<Result<T, TranscriptAppendRefusal>> {
+  const { actor, authority: source } = binding;
+  const fenced = withOwnedSessionTranscriptWriterFence({
+    ...scope,
+    env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
+  });
+  assertSqliteTranscriptWriteIdentity(fenced);
+  if (!isIncognitoSessionKey(fenced.sessionKey)) {
+    throw new Error("An incognito report requires an incognito session key");
+  }
+  const resolved = resolveSqliteTranscriptScope(fenced);
+  if (resolved.agentId !== actor.agentId || resolved.path !== actor.path) {
+    throw new Error("Transcript report differs from its retained incognito actor");
+  }
+  const assertOwned = captureOwnedTranscriptWriteAssertion(fenced);
+  const assertCurrent = () => {
+    actor.assertCurrent();
+    source.assertCurrent();
+    assertOwned();
+  };
+  assertCurrent();
+  const authority: IncognitoSessionAuthority = {
+    assertCurrent,
+    authorize: (stage, facts) => source.authorize?.(stage, facts),
+  };
+  const target = {
+    sessionKey: resolved.sessionKey,
+    sessionId: resolved.sessionId,
+    fence: {
+      expectedLifecycleRevision: fenced.expectedLifecycleRevision,
+      expectedWriterRunId: fenced.expectedWriterRunId,
+    },
+  };
+  const settled = await actor.sessions.withSharedState(async () => {
+    let prepared:
+      | IncognitoTranscriptOperations["session.report.append"]["input"]["prepared"]
+      | undefined;
+    let reconcile = false;
+    const commands: {
+      [Key in keyof TranscriptReportWorkerOperations]: (
+        input: TranscriptReportWorkerOperations[Key]["input"],
+      ) => Promise<TranscriptReportWorkerOperations[Key]["output"]>;
+    } = {
+      appendBatch: async () => {
+        throw new Error("Batch reports require a durable native transcript target");
+      },
+      prepare: async (selection) => {
+        prepared = undefined;
+        const selectionResult = await actor.sessions.transcript(authority, {
+          type: "session.report.prepare",
+          input: { ...target, selection },
+        });
+        if (!selectionResult.ok) {
+          return selectionResult;
+        }
+        prepared = selectionResult.value.prepared;
+        return ok(selectionResult.value.facts);
+      },
+      append: (report) => {
+        if (!prepared) {
+          throw new Error("Incognito report append requires its prepared selection");
+        }
+        return actor.sessions.transcript(authority, {
+          type: "session.report.append",
+          input: { ...target, prepared, report },
+        });
+      },
+      assistant: (report) =>
+        actor.sessions.transcript(authority, {
+          type: "session.report.assistant",
+          input: { ...target, report },
+        }),
+      abortedPartial: (report) =>
+        actor.sessions.transcript(authority, {
+          type: "session.report.abortedPartial",
+          input: { ...target, report },
+        }),
+    };
+    const result = await settleReportOperation(
+      () =>
+        run(
+          { execute: ({ type, input }) => commands[type](input) },
+          assertCurrent,
+          (publication) => {
+            // The actor installs committed entry facts before returning its receipt.
+            reconcile ||= publication.projectionNeedsReconcile;
+          },
+        ),
+      async () => {
+        if (reconcile) {
+          await reconcileSessionTranscriptIndexes(
+            {
+              agentId: actor.agentId,
+              path: actor.path,
+              env: fenced.env,
+              preferredSessionId: target.sessionId,
+            },
+            {
+              actor,
+              authority,
+              target: { ...target, lifecycleRevision: fenced.expectedLifecycleRevision },
+            },
+          );
+        }
+      },
+    );
+    if (!result.ok && fenced.expectedWriterRunId !== undefined) {
+      throw new SessionTranscriptWriterClaimReboundError(result.error);
+    }
+    return result;
+  });
+  assertCurrent();
+  actor.assertReadable();
+  return settled;
+}
+
+export async function withReportWorker<T>(
+  scope: SessionTranscriptWriteScope,
+  kind: "read" | "append",
+  run: (
+    operation: Pick<SqliteWorkerStore<TranscriptReportWorkerOperations>, "execute">,
+    assertCurrent: () => void,
+    publish: (result: TranscriptReportCommit) => void,
+  ) => Promise<Result<T, TranscriptAppendRefusal>>,
+  sessionEntryCurrent?: SessionEntryCurrentCheck,
+  incognito?: IncognitoTranscriptReportBinding,
+  sourceAssertion?: SessionSourceAssertion,
+): Promise<Result<T, TranscriptAppendRefusal>> {
+  if (incognito) {
+    if (sourceAssertion) {
+      throw new Error("Composed report sources require a durable native transcript target");
+    }
+    if (sessionEntryCurrent) {
+      throw new Error("A file session source cannot authorize an incognito transcript report");
+    }
+    try {
+      return await withIncognitoReportWorker(scope, incognito, run);
+    } catch (error) {
+      if (error instanceof Error && error.name === "SyntaxError") {
+        throw new SyntaxError(error.message, { cause: error });
+      }
+      throw error;
+    }
+  }
+  // Preserve the logical target for live authority and pin the physical owner before yielding.
+  const fenced = withOwnedSessionTranscriptWriterFence({
+    ...scope,
+    ...(scope.storePath ? { storePath: path.resolve(scope.storePath) } : {}),
+    env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
+  });
+  const assertOwned = captureOwnedTranscriptWriteAssertion(fenced);
+  assertSqliteTranscriptWriteIdentity(fenced);
+  assertOwned();
+  const source = sessionEntryCurrent?.source;
+  const storePath =
+    fenced.storePath ??
+    resolveOpenClawAgentSqlitePath(toDatabaseOptions(resolveSqliteScope(fenced)));
+  const candidates = captureSessionStoreReadCandidates(storePath);
+  const identities = captureSessionStoreCandidateIdentities(candidates);
+  const sourceIdentity = source ? readDatabasePathIdentitySync(source.path) : undefined;
+  const assertSourceCurrent = () => {
+    if (!source) {
+      return;
+    }
+    assertExistingDatabaseIdentity(
+      source.path,
+      `file:${source.databaseIdentity}`,
+      source.databaseBirthtime,
+    );
+  };
+  assertSourceCurrent();
+  const targetScope = { ...fenced, storePath };
+  const admission = resolveSqliteWriteAdmissionScope(targetScope);
+  let composedSource: PreparedSessionSourceAuthority | undefined;
+  const prepare = async () => {
+    const resolved = captureLifecycleDatabaseScope({
+      ...(await prepareSqliteScope(targetScope)),
+      sessionId: fenced.sessionId,
+    });
+    if (admission && resolved.path !== admission.path) {
+      throw new Error("Transcript report preparation changed its reserved database path");
+    }
+    const databaseOptions = toDatabaseOptions(resolved);
+    const options = { ...databaseOptions, path: resolveOpenClawAgentSqlitePath(databaseOptions) };
+    const physicalPath = assertSessionStoreReadCandidate(options.path, candidates);
+    if (
+      source &&
+      (resolved.sessionKey !== source.sessionKey ||
+        databaseOptions.agentId !== source.agentId ||
+        physicalPath !== sourceIdentity?.canonicalPath)
+    ) {
+      throw new Error("Transcript report target differs from its session source restriction");
+    }
+    const identity = identities.get(physicalPath) ?? readDatabasePathIdentitySync(options.path);
+    if (!identities.has(physicalPath) && identity.key.startsWith("file:")) {
+      throw new Error("Transcript report target appeared after source capture");
+    }
+    const assertTargetCurrent = () => {
+      assertSourceCurrent();
+      assertSessionStoreReadCandidate(options.path, candidates);
+      if (identity.key.startsWith("file:")) {
+        assertExistingDatabaseIdentity(options.path, identity.key, identity.birthtime);
+      }
+      assertOwned();
+      (composedSource?.assertPreparedCurrent ?? composedSource?.assertCurrent)?.();
+    };
+    assertTargetCurrent();
+    const operate = async () => {
+      assertTargetCurrent();
+      const execution = captureOpenClawAgentDatabaseExecution(
+        options,
+        identity.key.startsWith("file:")
+          ? {
+              expectedIdentity: {
+                kind: "file",
+                physicalIdentity: identity.key.slice("file:".length),
+                nativeLocation: identity.canonicalPath,
+                birthtime: identity.birthtime,
+              },
+            }
+          : { expectedCreationIdentity: identity },
+      );
+      const cliWriter =
+        kind === "append"
+          ? getCliHistoryWriter({ ...resolved, storePath: resolveOpenClawAgentSqlitePath(options) })
+          : undefined;
+      const assertCurrent = () => {
+        execution.assertCurrent();
+        assertTargetCurrent();
+        cliWriter?.assertCurrent();
+      };
+      const { env: _env, ...workerResolved } = resolved;
+      const target: TranscriptReportWorkerTarget = {
+        resolved: workerResolved,
+        sessionEntryCurrentSource: sessionEntryCurrent?.source,
+        ...(composedSource
+          ? {
+              sourcePredicates: structuredClone(
+                composedSource.checks.map(({ predicate }) => predicate),
+              ),
+            }
+          : {}),
+        ...(cliWriter
+          ? {
+              cliWriter: {
+                runId: cliWriter.runId,
+                authFingerprint: cliWriter.authFingerprint,
+                lifecycleRevision: cliWriter.lifecycleRevision,
+              },
+            }
+          : {}),
+        fence: {
+          expectedLifecycleRevision: fenced.expectedLifecycleRevision,
+          expectedWriterRunId: fenced.expectedWriterRunId,
+        },
+      };
+      try {
+        const result = await settleReportOperation(
+          async () => {
+            await prepareSessionEntryReplacementDatabase(options, assertCurrent, execution);
+            assertCurrent();
+            const databaseIdentity = execution.fileIdentity?.physicalIdentity;
+            if (!databaseIdentity) {
+              throw new Error("Transcript report has no prepared native database identity");
+            }
+            const worker =
+              await openOpenClawAgentSqliteWorkerStore<TranscriptReportWorkerOperations>(
+                options,
+                { execution },
+                {
+                  moduleUrl: resolveRuntimeWorkerUrl(
+                    runtimeProcessEntrypoints.sessionTranscriptReports,
+                  ),
+                  input: target,
+                  assertAdmission: (request) => {
+                    if (request.stage !== "transaction" && request.stage !== "commit") {
+                      return request;
+                    }
+                    const admitted = assertSessionEntryCurrentAdmission(
+                      request,
+                      sessionEntryCurrent,
+                    );
+                    if (composedSource) {
+                      if (
+                        !isRecord(admitted.facts) ||
+                        !isRecord(admitted.facts.reportSourceValidation)
+                      ) {
+                        throw new Error("Transcript report omitted its composed source validation");
+                      }
+                      acceptSessionSourceValidation(
+                        composedSource,
+                        // SAFETY: This pinned report worker publishes readSessionSourceValidation's return value.
+                        admitted.facts.reportSourceValidation as SessionSourceValidation,
+                      );
+                      composedSource.assertCurrent();
+                    }
+                    return admitted;
+                  },
+                },
+              );
+            return settleReportOperation(
+              () =>
+                worker.run(
+                  (operation) =>
+                    run(operation, assertCurrent, (publication) => {
+                      assertCurrent();
+                      if (publication.cliHistoryChanged || publication.sessionEntryChanged) {
+                        publishSessionEntryWorkerMetadataInvalidation({
+                          agentId: resolved.agentId,
+                          storePath: execution.path,
+                          databaseIdentity,
+                          sessionKey: resolved.sessionKey,
+                        });
+                      }
+                      if (publication.projectionNeedsReconcile) {
+                        startSessionTranscriptIndexReconcile({
+                          ...options,
+                          preferredSessionId: resolved.sessionId,
+                        });
+                      }
+                      if (publication.transcriptUpdate) {
+                        emitSessionTranscriptUpdate(publication.transcriptUpdate);
+                      }
+                    }),
+                  assertCurrent,
+                ),
+              () => worker.close(),
+            );
+          },
+          () => execution.release(),
+        );
+        if (!result.ok && fenced.expectedWriterRunId !== undefined) {
+          throw new SessionTranscriptWriterClaimReboundError(result.error);
+        }
+        return result;
+      } catch (error) {
+        // Preserve the stored-JSON error contract across the broker serialization boundary.
+        if (error instanceof Error && error.name === "SyntaxError") {
+          throw new SyntaxError(error.message, { cause: error });
+        }
+        throw error;
+      }
+    };
+    return admission
+      ? operate()
+      : runExclusiveSqliteSessionWrite(resolved, operate, "session.transcript.report");
+  };
+  return settleReportOperation(
+    async () => {
+      if (sourceAssertion) {
+        if (!sourceAssertion.prepareSessionSource) {
+          throw new Error("Composed report sources require worker-prepared authority");
+        }
+        composedSource = await prepareSessionSourceAuthority(sourceAssertion);
+        if (composedSource.nativeSource || composedSource.hasOpaqueCheck) {
+          throw new Error("Composed report sources require worker-prepared authority");
+        }
+      }
+      return admission
+        ? runExclusiveSqliteSessionWrite(admission, prepare, "session.transcript.report")
+        : prepare();
+    },
+    async () => {
+      await composedSource?.release?.();
+    },
+  );
+}
