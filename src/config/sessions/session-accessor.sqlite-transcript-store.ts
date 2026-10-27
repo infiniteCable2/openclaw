@@ -87,7 +87,7 @@ type TranscriptAppendOptions = {
   touchMutation?: boolean;
 };
 
-type TranscriptAppendCursor = {
+export type TranscriptAppendCursor = {
   initialized?: boolean;
   readIdentity?: ReturnType<typeof createTranscriptIdentityReader>;
   nextSeq?: number;

@@ -475,8 +475,15 @@ it("retains exact accepted prefixes, duplicate receipts and canonical parents ac
         ]);
         const tail = asOptionalRecord(committed.at(-1));
         expect(tail?.parentId).toBe(asOptionalRecord(committed.at(-2))?.id);
+        const committedVersion = readTranscriptContextVersionInTransaction(
+          database,
+          scope.sessionId,
+        );
         rejectCommit = true;
         expect(() => run(["refused-a", "refused-b"], 20)).toThrow("Synthetic host commit refusal");
+        expect(readTranscriptContextVersionInTransaction(database, scope.sessionId)).toEqual(
+          committedVersion,
+        );
         expect(await loadTranscriptEvents(scope)).toEqual(committed);
         expect(admissions.filter((stage) => stage === "commit")).toHaveLength(4);
       } finally {

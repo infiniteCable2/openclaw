@@ -33,7 +33,10 @@ import type {
   PreparedTranscriptReportBatchEntry,
   TranscriptReport,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
-import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
+import {
+  appendTranscriptEventInTransaction,
+  type TranscriptAppendCursor,
+} from "./session-accessor.sqlite-transcript-store.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import {
   assertCurrentSessionTranscriptHeader,
@@ -451,8 +454,13 @@ export function appendSelectedTranscriptReportInTransaction(
   resolved: ResolvedTranscriptScope,
   appendParentId: string | null,
   report: SelectedTranscriptReport,
-  projection?: { scheduleProjectionReconcile: false; onProjectionReconcileNeeded: () => void },
+  projection?: {
+    scheduleProjectionReconcile: false;
+    onProjectionReconcileNeeded: () => void;
+    touchMutation?: boolean;
+  },
   preparedMessage?: PreparedTranscriptMessageAppend<AssistantMessage & { responseId: string }>,
+  cursor?: TranscriptAppendCursor,
 ): boolean {
   if (report.kind === "assistant") {
     const committed = appendTranscriptMessageInTransaction(
@@ -468,12 +476,17 @@ export function appendSelectedTranscriptReportInTransaction(
     );
     return committed?.result.appended === true;
   }
-  ensureTranscriptHeader(database, resolved, undefined, projection);
+  if (!cursor?.initialized) {
+    ensureTranscriptHeader(database, resolved, undefined, projection);
+  }
   const event: unknown = JSON.parse(report.eventJson);
-  const appended = appendTranscriptEventInTransaction(database, resolved, event, {
-    ...projection,
-    eventJson: report.eventJson,
-  });
+  const appended = appendTranscriptEventInTransaction(
+    database,
+    resolved,
+    event,
+    { ...projection, eventJson: report.eventJson },
+    cursor,
+  );
   if (!appended) {
     throw new Error("Session transcript report was not appended");
   }

@@ -54,7 +54,11 @@ import type {
   TranscriptReportReceiptObservation,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "./session-accessor.sqlite-transcript-reports.types.js";
-import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
+import {
+  readTranscriptContextVersionInTransaction,
+  touchTranscriptMutationInTransaction,
+} from "./session-accessor.sqlite-transcript-state.js";
+import type { TranscriptAppendCursor } from "./session-accessor.sqlite-transcript-store.js";
 import { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transcript-write-guard.js";
 import { requestSessionEntryCurrentAdmission } from "./session-entry-current-admission.worker.js";
 import type { SessionEntryCurrentSource } from "./session-entry-current.types.js";
@@ -341,6 +345,7 @@ export function bindSqliteWorkerBackend(
               let projectionNeedsReconcile = false;
               const projection = {
                 scheduleProjectionReconcile: false as const,
+                touchMutation: false,
                 onProjectionReconcileNeeded: () => {
                   projectionNeedsReconcile = true;
                 },
@@ -355,6 +360,8 @@ export function bindSqliteWorkerBackend(
               let accepted = 0;
               let appended = 0;
               let deferred = false;
+              // Same transaction and recipient only: reuse the native batch cursor.
+              const cursor: TranscriptAppendCursor = {};
               for (const report of reports) {
                 const selected = reparentTranscriptReportBatchEntry(report, appendParentId);
                 const receiptKey = transcriptReportBatchReceiptKey(report);
@@ -397,11 +404,16 @@ export function bindSqliteWorkerBackend(
                   appendParentId,
                   selected,
                   projection,
+                  undefined,
+                  cursor,
                 );
                 appendParentId = selected.eventId;
                 selection.existing.add(receiptKey);
                 accepted++;
                 appended++;
+              }
+              if (appended > 0) {
+                touchTranscriptMutationInTransaction(database, resolved.sessionId);
               }
               let commitGranted = false;
               const authorizeCommit = () => {
