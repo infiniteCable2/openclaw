@@ -25,8 +25,13 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import * as reportStorage from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
-import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
+import {
+  MAX_TRANSCRIPT_REPORT_BATCH_SIZE,
+  type TranscriptReportWorkerOperations,
+} from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
+import * as sourceAuthority from "../../config/sessions/session-source-authority.js";
 import * as transcriptAnchors from "../../config/sessions/session-transcript-anchor-read.js";
+import * as reportOperation from "../../config/sessions/session-transcript-report-operation.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import * as transcriptReadAuthority from "../../gateway/session-transcript-read-authority.js";
@@ -99,8 +104,117 @@ it("prepares long-source observations while idle and consumes them once through 
         grant: newSpan(),
         branchFacts: newSpan(),
         anchors: newSpan(),
+        reportBeforeCallback: newSpan(),
+        reportCallback: newSpan(),
+        reportAfterCallback: newSpan(),
+        reportAppendExecute: newSpan(),
+        reportOtherExecute: newSpan(),
+        reportAssert: newSpan(),
+        reportPublish: newSpan(),
+        reportSourcePrepare: newSpan(),
+        reportSourceAccept: newSpan(),
       });
       const spans = { outsideRefresh: newSpans(), foreground: newSpans() };
+      const spanFor = (kind: keyof ReturnType<typeof newSpans>) =>
+        (foreground.getStore() ? spans.foreground : spans.outsideRefresh)[kind];
+      const recordSpan = (kind: keyof ReturnType<typeof newSpans>, started: number) => {
+        const span = spanFor(kind);
+        const elapsed = performance.now() - started;
+        span.calls++;
+        span.ms += elapsed;
+        span.maxMs = Math.max(span.maxMs, elapsed);
+      };
+      const reportOwner = new AsyncLocalStorage<boolean>();
+      const withReportWorker = reportOperation.withReportWorker;
+      const reportWorker = vi
+        .spyOn(reportOperation, "withReportWorker")
+        .mockImplementation((scope, kind, run, ...rest) => {
+          if (kind !== "append") {
+            return withReportWorker(scope, kind, run, ...rest);
+          }
+          return reportOwner.run(true, async () => {
+            const started = performance.now();
+            let callbackFinished: number | undefined;
+            try {
+              return await withReportWorker(
+                scope,
+                kind,
+                async (operation, assertCurrent, publish) => {
+                  recordSpan("reportBeforeCallback", started);
+                  const execute = operation.execute;
+                  const timedExecute: typeof operation.execute = <
+                    Key extends keyof TranscriptReportWorkerOperations,
+                  >(
+                    command: { type: Key; input: TranscriptReportWorkerOperations[Key]["input"] },
+                    options?: { signal?: AbortSignal },
+                  ) =>
+                    timed(
+                      command.type === "appendBatch" ? "reportAppendExecute" : "reportOtherExecute",
+                      () => execute(command, options),
+                    );
+                  const execution = vi.spyOn(operation, "execute").mockImplementation(timedExecute);
+                  const callbackStarted = performance.now();
+                  const measureSync = <T>(
+                    name: "reportAssert" | "reportPublish",
+                    invoke: () => T,
+                  ) => {
+                    const began = performance.now();
+                    try {
+                      return invoke();
+                    } finally {
+                      recordSpan(name, began);
+                    }
+                  };
+                  try {
+                    return await run(
+                      operation,
+                      () => measureSync("reportAssert", assertCurrent),
+                      (publication) => measureSync("reportPublish", () => publish(publication)),
+                    );
+                  } finally {
+                    recordSpan("reportCallback", callbackStarted);
+                    callbackFinished = performance.now();
+                    execution.mockRestore();
+                  }
+                },
+                ...rest,
+              );
+            } finally {
+              recordSpan(
+                callbackFinished === undefined ? "reportBeforeCallback" : "reportAfterCallback",
+                callbackFinished ?? started,
+              );
+            }
+          });
+        });
+      const prepareSource = sourceAuthority.prepareSessionSourceAuthority;
+      const reportSource = vi
+        .spyOn(sourceAuthority, "prepareSessionSourceAuthority")
+        .mockImplementation((...args) => {
+          if (!reportOwner.getStore()) {
+            return prepareSource(...args);
+          }
+          const span = spanFor("reportSourcePrepare");
+          return timed("reportSourcePrepare", () => prepareSource(...args)).then((prepared) => {
+            span.entries += prepared.checks.length;
+            return prepared;
+          });
+        });
+      const acceptSource = sourceAuthority.acceptSessionSourceValidation;
+      const reportAccepted = vi
+        .spyOn(sourceAuthority, "acceptSessionSourceValidation")
+        .mockImplementation((...args) => {
+          if (!reportOwner.getStore()) {
+            return acceptSource(...args);
+          }
+          const started = performance.now();
+          spanFor("reportSourceAccept").entries += args[0].checks.length;
+          try {
+            return acceptSource(...args);
+          } finally {
+            recordSpan("reportSourceAccept", started);
+          }
+        });
       const timed = async <T>(
         kind: keyof ReturnType<typeof newSpans>,
         run: () => Promise<T>,
@@ -526,7 +640,7 @@ it("prepares long-source observations while idle and consumes them once through 
               reads,
               spans,
               timingSemantics:
-                "inclusive nested spans; outsideRefresh includes setup and detached preparation; do not sum overlapping owners",
+                "inclusive nested spans; report phase spans cover append owners only; reportExecute includes native admission/IPC/SQL; reportBeforeCallback includes source preparation/binding; reportAfterCallback includes settlement/cleanup; outsideRefresh includes setup and detached preparation; do not sum overlapping owners",
               harnessRssBefore: rssBefore,
               harnessRssAfter: process.memoryUsage().rss,
               processLifetimePeakRssKiB: process.resourceUsage().maxRSS,
@@ -705,6 +819,9 @@ it("prepares long-source observations while idle and consumes them once through 
         grantRead.mockRestore();
         factsRead.mockRestore();
         anchorRead.mockRestore();
+        reportWorker.mockRestore();
+        reportSource.mockRestore();
+        reportAccepted.mockRestore();
         await prefetch?.owner.close();
         await fixture.close();
       }
