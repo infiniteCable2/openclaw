@@ -1,4 +1,7 @@
-import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import {
+  emitSessionTranscriptUpdate,
+  type InternalSessionTranscriptUpdate,
+} from "../../sessions/transcript-events.js";
 import type {
   SessionLifecycleArchivedTranscript,
   SessionTranscriptWriteScope,
@@ -9,11 +12,16 @@ import type { SessionEntryReadSource } from "./session-entry-read-source.types.j
 
 // Outward notifications happen only after the owning SQLite mutation commits.
 
+/** Preserve an already committed target without resolving another storage selector. */
+export function publishCommittedTranscriptUpdate(update: InternalSessionTranscriptUpdate): void {
+  emitSessionTranscriptUpdate(update);
+}
+
 export function emitArchivedTranscriptUpdates(
   archivedTranscripts: readonly SessionLifecycleArchivedTranscript[],
 ): void {
   for (const archived of archivedTranscripts) {
-    emitSessionTranscriptUpdate({ sessionFile: archived.archivedPath });
+    publishCommittedTranscriptUpdate({ sessionFile: archived.archivedPath });
   }
 }
 
@@ -23,7 +31,7 @@ export async function publishTranscriptUpdate(
   readSource?: SessionEntryReadSource,
 ): Promise<void> {
   const resolved = resolveSqliteTranscriptScope(scope, readSource);
-  emitSessionTranscriptUpdate({
+  publishCommittedTranscriptUpdate({
     ...update,
     agentId: resolved.agentId,
     sessionKey: resolved.sessionKey,

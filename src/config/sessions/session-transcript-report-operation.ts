@@ -9,7 +9,6 @@ import {
 } from "../../infra/sqlite-worker-identity.js";
 import type { SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
-import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { openOpenClawAgentSqliteWorkerStore } from "../../state/openclaw-agent-worker-store.js";
@@ -19,6 +18,7 @@ import type {
   TranscriptAppendRefusal,
 } from "./session-accessor.sqlite-contract.js";
 import { publishSessionEntryWorkerMetadataInvalidation } from "./session-accessor.sqlite-entry-cache.js";
+import { publishCommittedTranscriptUpdate } from "./session-accessor.sqlite-events.js";
 import { prepareSessionEntryReplacementDatabase } from "./session-accessor.sqlite-replacement-worker.js";
 import {
   captureLifecycleDatabaseScope,
@@ -398,7 +398,7 @@ export async function withReportWorker<T>(
                         });
                       }
                       if (publication.transcriptUpdate) {
-                        emitSessionTranscriptUpdate(publication.transcriptUpdate);
+                        publishCommittedTranscriptUpdate(publication.transcriptUpdate);
                       }
                     }),
                   assertCurrent,
