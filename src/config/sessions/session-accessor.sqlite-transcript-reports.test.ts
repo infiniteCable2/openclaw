@@ -2,8 +2,13 @@ import { copyFileSync, readFileSync, renameSync } from "node:fs";
 import { symlink } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { MessageChannel } from "node:worker_threads";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
+import { withSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
+import { runWithSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import type { AssistantMessage } from "../../llm/types.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { resetSecretRedactionRegistryForTest } from "../../logging/secret-redaction-registry.test-support.js";
@@ -19,11 +24,19 @@ import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   appendSessionTranscriptReport,
+  appendTranscriptEventSync,
+  appendTranscriptMessageSync,
   loadTranscriptEvents,
   replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { appendAbortedSessionTranscriptPartial } from "./session-accessor.sqlite-transcript-reports.js";
+import { prepareCustomTranscriptReport } from "./session-accessor.sqlite-transcript-reports.kernel.js";
+import { bindSqliteWorkerBackend } from "./session-accessor.sqlite-transcript-reports.worker.js";
+import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
+import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
+import type { SessionSourcePredicate } from "./session-source-authority.js";
+import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 import { prepareTranscriptPayload } from "./transcript-payload.js";
 import { CURRENT_SESSION_VERSION } from "./version.js";
 
@@ -54,6 +67,189 @@ const assistant = {
   timestamp: 1,
 } satisfies AssistantMessage;
 const selected = { customType: "status", content: body, details: { selected: true } };
+
+it("reuses only one report operation's unchanged prefix proof while rechecking source authority", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "report-prefix-proof" },
+    async (state) => {
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const source = {
+        agentId: "main",
+        env: state.env,
+        storePath: database.path,
+        sessionKey: "agent:main:proof-source",
+        sessionId: "proof-source",
+      };
+      const target = {
+        ...source,
+        sessionKey: "agent:main:proof-target",
+        sessionId: "proof-target",
+      };
+      const sourceEntry = {
+        sessionId: source.sessionId,
+        lifecycleRevision: "original",
+        updatedAt: 1,
+      };
+      await upsertSessionEntryCore(source, sourceEntry);
+      await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+      await replaceTranscriptEvents(source, [
+        { type: "session", id: source.sessionId, version: CURRENT_SESSION_VERSION },
+        ...Array.from({ length: 32 }, (_, index) => ({
+          type: "message",
+          id: `source-${index}`,
+          parentId: index === 0 ? null : `source-${index - 1}`,
+          message: { role: "user", content: `Synthetic fact ${index}.` },
+        })),
+      ]);
+      const predicate: SessionSourcePredicate = {
+        source: captureSessionEntryReadSource(database, undefined),
+        sessionKey: source.sessionKey,
+        fields: ["sessionId", "lifecycleRevision"],
+        expected: sourceEntry,
+        transcript: {
+          sessionId: source.sessionId,
+          version: readTranscriptContextVersionInTransaction(database, source.sessionId),
+          consistency: "prefix",
+        },
+      };
+      const admissions: string[] = [];
+      let rejectCommit = false;
+      const backend = runWithSqliteWorkerStateContext(
+        { environment: { ...state.env, OPENCLAW_STATE_DIR: state.stateDir } },
+        () =>
+          bindSqliteWorkerBackend(
+            {
+              resolved: {
+                agentId: target.agentId,
+                sessionId: target.sessionId,
+                sessionKey: target.sessionKey,
+                path: database.path,
+              },
+              fence: {},
+              sourcePredicates: [predicate],
+            },
+            {
+              database: database.db,
+              databasePath: database.path,
+              admit(stage, restrict) {
+                admissions.push(stage);
+                restrict?.({ stage, facts: {} }, (request) => {
+                  const facts = asOptionalRecord(request.facts);
+                  if (asOptionalRecord(facts?.reportSourceValidation)?.refusedSource) {
+                    throw new Error("source authority refused");
+                  }
+                  if (stage === "commit" && rejectCommit) {
+                    throw new Error("host commit refused");
+                  }
+                });
+              },
+            },
+          ),
+      );
+      const counter = trackSqliteStatementExecutions(database.db, ["prefix"], (statement) =>
+        statement.startsWith('select "seq", ') &&
+        statement.includes('as "navigation_json" from "transcript_events"') &&
+        statement.endsWith('order by "seq" asc')
+          ? "prefix"
+          : null,
+      );
+      const { port1, port2 } = new MessageChannel();
+      let appendParentId: string | null = null;
+      const prepare = () => {
+        const result = withSqliteWorkerOperationAdmission({ port: port1 }, () =>
+          backend.execute({ type: "prepare", input: { kind: "custom", customTypes: ["proof"] } }),
+        );
+        if (result.ok && "appendParentId" in result.value) {
+          appendParentId = result.value.appendParentId;
+        }
+        return result;
+      };
+      const append = () =>
+        withSqliteWorkerOperationAdmission({ port: port1 }, () =>
+          backend.execute({
+            type: "append",
+            input: prepareCustomTranscriptReport(
+              {
+                customType: "proof",
+                content: "Retained synthetic fact.",
+                display: false,
+              },
+              appendParentId,
+            ),
+          }),
+        );
+      const sourceAppend = () =>
+        expect(
+          appendTranscriptMessageSync(source, {
+            message: { role: "user", content: "A later source fact.", timestamp: Date.now() },
+          }).ok,
+        ).toBe(true);
+      try {
+        // An unchanged exact version already needs no navigation scan.
+        expect(prepare().ok).toBe(true);
+        expect(append()).toMatchObject({ ok: true, value: { committed: true } });
+        expect(counter.counts.prefix).toBe(0);
+        sourceAppend();
+        // Red control: the native unscoped validator repeats the expensive proof each time.
+        for (let index = 0; index < 3; index++) {
+          expect(readSessionSourceValidation(database, [predicate]).refusedSource).toBeUndefined();
+        }
+        expect(counter.counts.prefix).toBe(3);
+        const rowsPerProof = counter.rowCounts.prefix / 3;
+        expect(rowsPerProof).toBeGreaterThanOrEqual(34);
+        const before = counter.counts.prefix;
+        admissions.length = 0;
+        expect(prepare().ok).toBe(true);
+        expect(append()).toMatchObject({ ok: true, value: { committed: true } });
+        expect(counter.counts.prefix - before).toBe(1);
+        expect(admissions).toEqual(["transaction", "transaction", "commit"]);
+        expect(counter.rowCounts.prefix).toBe(4 * rowsPerProof);
+
+        // Another packet must establish its own proof, even with the same source version.
+        expect(prepare().ok).toBe(true);
+        expect(counter.counts.prefix).toBe(before + 2);
+        sourceAppend();
+        const beforeChangedAppend = counter.counts.prefix;
+        expect(append()).toMatchObject({ ok: true, value: { committed: true } });
+        expect(counter.counts.prefix - beforeChangedAppend).toBe(1);
+
+        // Host refusal rolls back the write and discards the operation's positive proof.
+        expect(prepare().ok).toBe(true);
+        rejectCommit = true;
+        expect(append).toThrow("host commit refused");
+        rejectCommit = false;
+        const beforeRetry = counter.counts.prefix;
+        expect(prepare().ok).toBe(true);
+        expect(counter.counts.prefix - beforeRetry).toBe(1);
+        expect(append()).toMatchObject({ ok: true, value: { committed: true } });
+
+        // A matching transcript proof never authorizes a changed source lifecycle.
+        expect(prepare().ok).toBe(true);
+        await upsertSessionEntryCore(source, { ...sourceEntry, lifecycleRevision: "replacement" });
+        expect(append).toThrow("source authority refused");
+        await upsertSessionEntryCore(source, sourceEntry);
+        expect(prepare().ok).toBe(true);
+        expect(
+          appendTranscriptEventSync(source, {
+            type: "reset",
+            id: "source-reset",
+            timestamp: new Date().toISOString(),
+            reason: "new",
+          }).ok,
+        ).toBe(true);
+        expect(append).toThrow("source authority refused");
+        backend.assertSettled?.();
+        await backend.close();
+        expect(prepare).toThrow("domain is closed");
+      } finally {
+        counter.restore();
+        port1.close();
+        port2.close();
+        await backend.close();
+      }
+    },
+  );
+});
 
 async function seedReports(stopReason: AssistantMessage["stopReason"] = assistant.stopReason) {
   await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });

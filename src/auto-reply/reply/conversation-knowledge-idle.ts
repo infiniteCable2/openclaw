@@ -201,7 +201,7 @@ async function runIdleConversationKnowledgeDetached(
                         )?.entry;
                         const topology = entry?.conversationTopology;
                         // Closed reasons identify the failed fence without session or user data.
-                        const reject = (
+                        function reject(
                           reason:
                             | "database-path"
                             | "session-incarnation"
@@ -211,16 +211,16 @@ async function runIdleConversationKnowledgeDetached(
                             | "pending-delivery"
                             | "branch-role"
                             | "root-incarnation",
-                        ): never => {
+                        ): never {
                           throw new Error(
                             `Idle conversation knowledge recipient ownership changed: ${reason}`,
                           );
-                        };
+                        }
                         if (facts.source.path !== branch.storePath) {
                           reject("database-path");
                         }
                         if (!entry || entry.sessionId !== branch.sessionId) {
-                          return reject("session-incarnation");
+                          reject("session-incarnation");
                         }
                         if (entry.lifecycleRevision !== expectedOwner.lifecycleRevision) {
                           reject("lifecycle-revision");
@@ -235,7 +235,7 @@ async function runIdleConversationKnowledgeDetached(
                           reject("pending-delivery");
                         }
                         if (topology?.role !== "branch") {
-                          return reject("branch-role");
+                          reject("branch-role");
                         }
                         if (
                           topology.rootSessionKey !== branch.root.sessionKey ||

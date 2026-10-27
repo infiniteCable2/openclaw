@@ -202,7 +202,7 @@ export function prepareConversationKnowledgeRecipient(params: {
       // Only disposable read-ahead is LRU-bounded. An open recipient's idle
       // catch-up remains registered even when its prepared cache is cold.
       if (![...recipients.keys()].slice(-16).includes(key)) {
-        return;
+        return false;
       }
       const startedAt = performance.now();
       const held = await loadSessionEntryForAdmission(
@@ -224,7 +224,7 @@ export function prepareConversationKnowledgeRecipient(params: {
           held.entry?.sessionId !== branch.sessionId ||
           held.entry.lifecycleRevision !== branch.lifecycleRevision
         ) {
-          return;
+          return false;
         }
         const { prepareReplyConversationKnowledge } = await import("./conversation-knowledge.js");
         owner.assertCurrent();

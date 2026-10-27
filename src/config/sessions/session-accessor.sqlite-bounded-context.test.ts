@@ -2,7 +2,6 @@ import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
-import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import {
@@ -21,7 +20,10 @@ import {
   readSessionTranscriptMessageEventPage,
   readSessionTranscriptBoundedMessageTailPage,
 } from "./session-accessor.sqlite-active-events.js";
-import { withBoundedContextScope } from "./session-accessor.sqlite-bounded-context.test-support.js";
+import {
+  countAcquiredTranscriptPayloadBytes,
+  withBoundedContextScope,
+} from "./session-accessor.sqlite-bounded-context.test-support.js";
 import {
   readActiveTranscriptStats,
   readSessionTranscriptHistoryEventById,
@@ -295,85 +297,6 @@ function readHistory(
     offset: 0,
   });
 }
-
-function countAcquiredTranscriptPayloadBytes(
-  db: ReturnType<typeof openOpenClawAgentDatabase>["db"],
-  marker: string,
-  read: () => void,
-): number {
-  clearNodeSqliteKyselyCacheForDatabase(db);
-  const prepare = db.prepare.bind(db);
-  const restoreStatements: Array<() => void> = [];
-  let acquiredBytes = 0;
-  const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((query) => {
-    const statement = prepare(query);
-    const iterate = statement.iterate.bind(statement);
-    // Observe SQLite result acquisition, including payloads rejected before JSON.parse.
-    const iterateSpy = vi.spyOn(statement, "iterate").mockImplementation(function* (...params) {
-      for (const row of iterate(...params)) {
-        for (const value of Object.values(row)) {
-          if (typeof value === "string" && value.includes(marker)) {
-            acquiredBytes += Buffer.byteLength(value);
-          }
-        }
-        yield row;
-      }
-      return undefined;
-    });
-    restoreStatements.push(() => iterateSpy.mockRestore());
-    return statement;
-  });
-  try {
-    read();
-  } finally {
-    prepareSpy.mockRestore();
-    for (const restore of restoreStatements) {
-      restore();
-    }
-  }
-  return acquiredBytes;
-}
-
-it("sizes bounded context without acquiring message payloads, including header and cutoff budgets", async () => {
-  await withBoundedContextScope(async (scope) => {
-    const marker = "synthetic-context-sizing-payload:";
-    await persistSessionTranscriptTurn(scope, {
-      messages: [
-        transcriptMessage("old", null, { role: "user", content: marker + "x".repeat(8192) }),
-        transcriptMessage("new", "old", { role: "assistant", content: marker }),
-      ],
-      touchSessionEntry: false,
-    });
-    const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
-    const full = readSessionTranscriptBoundedActiveContextCore(scope, {
-      maxBytes: 16_384,
-      maxEvents: 10,
-    });
-    const headerBytes = Buffer.byteLength(JSON.stringify(full.events[0])) + 1;
-    for (const limits of [
-      { maxBytes: 16_384, maxEvents: 10 },
-      { maxBytes: 16_384, maxEvents: 1 },
-      { maxBytes: 1024, maxEvents: 10 },
-      { maxBytes: headerBytes, maxEvents: 10 },
-    ]) {
-      const context = readSessionTranscriptBoundedActiveContextCore(scope, limits);
-      const acquiredBytes = countAcquiredTranscriptPayloadBytes(db, marker, () => {
-        expect(readSessionTranscriptBoundedActiveContextUsageCore(scope, limits)).toEqual({
-          eventCount: context.events.length,
-          serializedBytes: context.serializedBytes,
-          truncated: context.truncated,
-        });
-      });
-      expect(acquiredBytes).toBe(0);
-    }
-    expect(() =>
-      readSessionTranscriptBoundedActiveContextUsageCore(scope, {
-        maxBytes: headerBytes - 1,
-        maxEvents: 10,
-      }),
-    ).toThrow(RangeError);
-  });
-});
 
 it("enforces context count and byte budgets and releases rejected reads for later appends", async () => {
   await withBoundedContextScope(async (scope) => {

@@ -72,6 +72,7 @@ export const databaseWorkerCoreTestFiles = [
   "test/e2e/qa-lab/runtime/gateway-codex-delivery-cache.test.ts",
   "src/channels/feedback-reflection.worker.test.ts",
   "src/config/sessions/session-accessor.sqlite-bounded-context.test.ts",
+  "src/config/sessions/session-accessor.sqlite-bounded-context-usage.test.ts",
   "src/gateway/server-methods/chat-transcript-persistence.mirrors.test.ts",
   "src/gateway/server-methods/chat-transcript-persistence.generated-media.test.ts",
   "src/gateway/chat-display-projection.media.test.ts",

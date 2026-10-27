@@ -47,7 +47,7 @@ import { requestSessionEntryCurrentAdmission } from "./session-entry-current-adm
 import type { SessionEntryCurrentSource } from "./session-entry-current.types.js";
 import { assertCapturedSessionEntryReadSource } from "./session-entry-read-source.js";
 import type { SessionSourcePredicate } from "./session-source-authority.js";
-import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
+import { createSessionSourceValidationScope } from "./session-source-predicate.worker.js";
 import { SessionTranscriptWriterClaimReboundError } from "./transcript-write-context.js";
 
 export type TranscriptReportWorkerTarget = {
@@ -87,13 +87,14 @@ export function bindSqliteWorkerBackend(
   if (!database || database.db !== context.database || database.path !== context.databasePath) {
     throw new Error("Transcript report lost its canonical database owner");
   }
+  const sourceValidation = createSessionSourceValidationScope(database);
   const admit = (stage: "transaction" | "commit") => {
     const predicates = target.sourcePredicates;
     for (const predicate of predicates ?? []) {
       // Native source predicates are atomic only inside this same physical store.
       assertCapturedSessionEntryReadSource(predicate.source, database);
     }
-    const validation = predicates && readSessionSourceValidation(database, predicates);
+    const validation = predicates && sourceValidation.read(predicates);
     context.admit(stage, (request, dispatch) => {
       if (validation && !isRecord(request.facts)) {
         throw new Error("Transcript report admission omitted its database facts");
@@ -156,7 +157,7 @@ export function bindSqliteWorkerBackend(
         version: SessionTranscriptContextVersion;
       }
     | undefined;
-  return {
+  const backend: SqliteWorkerBackend<TranscriptReportWorkerOperations> = {
     execute(command) {
       assertOpen();
       if (command.type === "prepare") {
@@ -330,6 +331,31 @@ export function bindSqliteWorkerBackend(
     close() {
       closed = true;
       prepared = undefined;
+      sourceValidation.clear();
+    },
+  };
+  return {
+    ...backend,
+    execute(command) {
+      // Only one successful prepare may lend proofs to its immediately following append.
+      if (command.type !== "append") {
+        sourceValidation.clear();
+      }
+      try {
+        const result = backend.execute(command);
+        if (!result.ok || ("suppressed" in result.value && result.value.suppressed)) {
+          sourceValidation.clear();
+        }
+        return result;
+      } catch (error) {
+        sourceValidation.clear();
+        prepared = undefined;
+        throw error;
+      } finally {
+        if (command.type !== "prepare") {
+          sourceValidation.clear();
+        }
+      }
     },
   };
 }
