@@ -75,6 +75,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/config/sessions/session-accessor.sqlite-bounded-context-usage.test.ts",
   "src/config/sessions/session-accessor.sqlite-model-context-batch.test.ts",
   "src/config/sessions/session-accessor.sqlite-transcript-report-batch.test.ts",
+  "src/config/sessions/session-accessor.sqlite-transcript-report-cursor.test.ts",
   "src/auto-reply/reply/conversation-knowledge-recipient-throughput.scenario.test.ts",
   "src/gateway/server-methods/chat-transcript-persistence.mirrors.test.ts",
   "src/gateway/server-methods/chat-transcript-persistence.generated-media.test.ts",

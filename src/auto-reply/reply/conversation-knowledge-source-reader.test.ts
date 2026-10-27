@@ -327,8 +327,9 @@ describe("bounded authorized source preparation", () => {
       through: source.receipt.through,
       assertCurrent() {},
       cache,
+      expectedConsumptionRevision: cache.consumptionRevision,
     };
-    expect(await stageConversationKnowledgeSource(request)).toBe(true);
+    expect(await stageConversationKnowledgeSource(request)).toBe("cache-full");
     const slots = cache.preparedPackets(100);
     expect(slots.length).toBeGreaterThan(2);
     expect(slots.length).toBeLessThan(100);
@@ -359,11 +360,95 @@ describe("bounded authorized source preparation", () => {
     });
     expect(bytes).toBeLessThanOrEqual(maxBytes);
     expect(cache.peek(source.receipt.origin, offset)).toBeUndefined();
-    expect(await stageConversationKnowledgeSource(request)).toBe(true);
+    expect(await stageConversationKnowledgeSource(request)).toBe("cache-full");
     expect(slots.map((slot) => cache.peek(slot.contributionId, slot.offset))).toEqual(prepared);
     expect(boundary.grant).not.toHaveBeenCalled();
     expect(readSessionTranscriptModelContextAsync).not.toHaveBeenCalled();
     expect(readSessionTranscriptModelContextsAsync).not.toHaveBeenCalled();
+    expect(readSessionTranscriptReportReceipts).not.toHaveBeenCalled();
+  });
+
+  it("does not stage stale progress after a packet is consumed before preparation", async () => {
+    const source = longSource();
+    const cache = createConversationKnowledgeSourceCache(32 * 1024);
+    const expectedConsumptionRevision = cache.consumptionRevision;
+    // The native recipient can admit this packet before the preparer has staged it.
+    cache.consume(source.receipt.origin, 0);
+    const stage = vi.spyOn(cache, "stage");
+    const result = await stageConversationKnowledgeSource({
+      ...source,
+      audience: "private-direct",
+      offset: 0,
+      through: source.receipt.through,
+      assertCurrent() {},
+      cache,
+      expectedConsumptionRevision,
+    });
+    expect(stage).not.toHaveBeenCalled();
+    expect(cache.preparedPackets(100)).toEqual([]);
+    expect(result).toBe("recipient-advanced");
+    expect(readSessionTranscriptReportReceipts).not.toHaveBeenCalled();
+  });
+
+  it("stops the old preparer at its cooperative yield after foreground consumption", async () => {
+    const source = longSource();
+    const cache = createConversationKnowledgeSourceCache(32 * 1024);
+    const request = {
+      ...source,
+      audience: "private-direct" as const,
+      offset: 0,
+      through: source.receipt.through,
+      assertCurrent() {},
+      cache,
+      expectedConsumptionRevision: cache.consumptionRevision,
+    };
+    await stageConversationKnowledgeSource(request);
+    const initial = cache.preparedPackets(100);
+    expect(initial.length).toBeGreaterThan(2);
+    const acceptedPrefix = initial.slice(0, 2);
+    const pending = initial.slice(2);
+    const pendingPackets = pending.map((slot) => cache.peek(slot.contributionId, slot.offset));
+    const originalStage = cache.stage.bind(cache);
+    vi.spyOn(cache, "stage").mockImplementationOnce((...args) => {
+      const staged = originalStage(...args);
+      // The foreground native batch accepted two already-prepared packets while
+      // the old producer still holds the progress snapshot preceding that batch.
+      queueMicrotask(() => {
+        for (const slot of acceptedPrefix) {
+          cache.consume(slot.contributionId, slot.offset);
+        }
+      });
+      return staged;
+    });
+    const result = await stageConversationKnowledgeSource(request);
+    for (const slot of acceptedPrefix) {
+      expect(cache.peek(slot.contributionId, slot.offset)).toBeUndefined();
+    }
+    expect(cache.preparedPackets(100)).toEqual(pending);
+    expect(pending.map((slot) => cache.peek(slot.contributionId, slot.offset))).toEqual(
+      pendingPackets,
+    );
+    expect(cache.stage).toHaveBeenCalledOnce();
+    expect(result).toBe("recipient-advanced");
+    // Reusing the stale captured progress cannot resurrect the accepted prefix.
+    expect(await stageConversationKnowledgeSource(request)).toBe("recipient-advanced");
+    expect(cache.stage).toHaveBeenCalledOnce();
+    // Only a new quantum with freshly read native progress may prepare its suffix.
+    expect(
+      await stageConversationKnowledgeSource({
+        ...request,
+        offset: pending[0]!.offset,
+        expectedConsumptionRevision: cache.consumptionRevision,
+      }),
+    ).toBe("cache-full");
+    for (const slot of acceptedPrefix) {
+      expect(cache.peek(slot.contributionId, slot.offset)).toBeUndefined();
+    }
+    expect(cache.firstPreparedOffset(source.receipt.origin)).toBe(pending[0]!.offset);
+    expect(pending.map((slot) => cache.peek(slot.contributionId, slot.offset))).toEqual(
+      pendingPackets,
+    );
+    expect(boundary.grant).not.toHaveBeenCalled();
     expect(readSessionTranscriptReportReceipts).not.toHaveBeenCalled();
   });
 
@@ -387,6 +472,7 @@ describe("bounded authorized source preparation", () => {
         assertCurrent: () => controller.signal.throwIfAborted(),
         signal: controller.signal,
         cache,
+        expectedConsumptionRevision: cache.consumptionRevision,
       }),
     ).rejects.toMatchObject({ name: "AbortError", cause: cancellation });
     expect(cache.stage).toHaveBeenCalledOnce();
