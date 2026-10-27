@@ -328,7 +328,34 @@ it("prepares long-source observations while idle and consumes them once through 
           throw new Error("Expected native prepared recipient");
         }
         await prefetch.owner.wait();
-        const preparationMs = performance.now() - started;
+        const firstPreparationMs = performance.now() - started;
+        let livePublicationMs = 0;
+        if (simulation) {
+          // The live recipient is already idle/open. New commits alone must
+          // prepare fresh facts behind its backlog, without a user/model turn.
+          const publishedAt = performance.now();
+          for (let live = 0; live < 6; live++) {
+            const index = markers.length;
+            const marker = `CHAT_MARKER_${String(index).padStart(2, "0")}`;
+            markers.push(marker);
+            const terminal = await fixture.append(
+              chat,
+              `throughput-chat-${index}`,
+              "stop",
+              `A newly published observation during an open conversation: ${marker}.`,
+            );
+            expect(
+              await recordConversationKnowledgeTurn({
+                ...chatClaim,
+                ...terminal,
+                privateAudience: { participant: person, admission: terminal.admission! },
+              }),
+            ).toBe(true);
+          }
+          livePublicationMs = performance.now() - publishedAt;
+          await prefetch.owner.wait();
+        }
+        const preparationMs = performance.now() - started - livePublicationMs;
         expect(await loadTranscriptEvents(recipient)).toEqual(before);
         expect(budget.compact).not.toHaveBeenCalled();
         const receipts = await fixture.receipts();
@@ -485,6 +512,9 @@ it("prepares long-source observations while idle and consumes them once through 
               compactionCalls: budget.compact.mock.calls.length,
               setupMs,
               preparationMs,
+              firstPreparationMs,
+              livePublicationMs,
+              idleLiveContributions: simulation ? 6 : 0,
               idlePreparedPackets,
               idlePreparedBytes,
               immediatelyProvenContributions: readyContributions.size,
