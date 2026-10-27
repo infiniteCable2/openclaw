@@ -334,7 +334,7 @@ export function bindSqliteWorkerBackend(
             committed: false,
             accepted: duplicatePrefix,
             appended: 0,
-            deferred: true,
+            deferred: true as const,
             projectionNeedsReconcile: false,
           });
         }

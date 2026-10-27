@@ -54,7 +54,11 @@ describe("native ingestion-budget compaction dispatch", () => {
         role: "toolResult" as const,
         toolCallId: "large",
         toolName: "synthetic",
-        content: [{ type: "text" as const, text: "x".repeat(700_000) }],
+        // Native tool pressure floors text at two chars/token, then adds 20%
+        // safety. At 230k chars its overflow remains comfortably smaller than
+        // the reduction to the native 32k live-result cap. 700k instead needs
+        // compaction as well and cannot exercise the truncate-only route.
+        content: [{ type: "text" as const, text: "x".repeat(230_000) }],
         isError: false,
         timestamp: 1,
       },

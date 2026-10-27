@@ -131,7 +131,7 @@ export async function readSessionTranscriptModelContextsAsync<T>(
   };
   return withSessionTranscriptReadSource(
     captured,
-    async (scope) => {
+    async () => {
       // Process-held histories keep their native single-read authority owner.
       const contexts: SessionTranscriptModelContextRangeResult[] = [];
       for (const range of requests) {
@@ -163,7 +163,7 @@ export async function readSessionTranscriptModelContextsAsync<T>(
           });
         }
       }
-      return accept(scope, contexts, () => signal?.throwIfAborted());
+      return accept(captured, contexts, () => signal?.throwIfAborted());
     },
     async ({ scope, expectedIdentity, assertCurrent }) => {
       const selected = { ...scope, sessionKey: captured.sessionKey };
