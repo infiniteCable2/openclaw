@@ -27,6 +27,7 @@ import {
   createConversationKnowledgeMaintenance,
   resolveConversationKnowledgeContextLimits,
 } from "./conversation-knowledge-maintenance.js";
+import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
 
 /** A scheduling quantum, not a limit on a recipient's historical catch-up. */
@@ -48,6 +49,7 @@ type IdleConversationKnowledgeParams = {
   /** Data-only model/profile template; no execution or delivery callback is retained. */
   run?: RunEmbeddedAgentParams;
   signal?: AbortSignal;
+  sourceCache?: ConversationKnowledgeSourceCache;
 };
 
 /** Release every acquired resource without replacing an earlier operation failure. */
@@ -198,21 +200,49 @@ async function runIdleConversationKnowledgeDetached(
                           (row) => row.sessionKey === branch.sessionKey,
                         )?.entry;
                         const topology = entry?.conversationTopology;
+                        // Closed reasons identify the failed fence without session or user data.
+                        const reject = (
+                          reason:
+                            | "database-path"
+                            | "session-incarnation"
+                            | "lifecycle-revision"
+                            | "writer"
+                            | "incognito"
+                            | "pending-delivery"
+                            | "branch-role"
+                            | "root-incarnation",
+                        ): never => {
+                          throw new Error(
+                            `Idle conversation knowledge recipient ownership changed: ${reason}`,
+                          );
+                        };
+                        if (facts.source.path !== branch.storePath) {
+                          reject("database-path");
+                        }
+                        if (!entry || entry.sessionId !== branch.sessionId) {
+                          return reject("session-incarnation");
+                        }
+                        if (entry.lifecycleRevision !== expectedOwner.lifecycleRevision) {
+                          reject("lifecycle-revision");
+                        }
+                        if (entry.activeWriterRunId !== expectedOwner.activeWriterRunId) {
+                          reject("writer");
+                        }
+                        if (entry.incognito) {
+                          reject("incognito");
+                        }
+                        if (entry.pendingFinalDelivery) {
+                          reject("pending-delivery");
+                        }
+                        if (topology?.role !== "branch") {
+                          return reject("branch-role");
+                        }
                         if (
-                          facts.source.path !== branch.storePath ||
-                          entry?.sessionId !== branch.sessionId ||
-                          entry.lifecycleRevision !== expectedOwner.lifecycleRevision ||
-                          entry.activeWriterRunId !== expectedOwner.activeWriterRunId ||
-                          entry.incognito ||
-                          entry.pendingFinalDelivery ||
-                          topology?.role !== "branch" ||
                           topology.rootSessionKey !== branch.root.sessionKey ||
                           topology.rootSessionId !== branch.root.sessionId ||
                           topology.rootSessionLifecycleRevision !== branch.root.lifecycleRevision
                         ) {
-                          throw new Error(
-                            "Idle conversation knowledge recipient ownership changed",
-                          );
+                          reject("root-incarnation");
                         }
                         currentEntry = entry;
                       });
@@ -271,8 +301,8 @@ async function runIdleConversationKnowledgeDetached(
                             },
                           );
                         };
-                        let sourceOffset = 0;
-                        const unproductiveOffsets = new Set<number>();
+                        let sourceCursor: string | undefined;
+                        const unproductiveCursors = new Set<string | undefined>();
                         return await runWithIdleCleanup(
                           owner.signal,
                           () =>
@@ -301,7 +331,8 @@ async function runIdleConversationKnowledgeDetached(
                                     signal: owner.signal,
                                     sourceBudget: IDLE_KNOWLEDGE_BATCH,
                                     packetBudget: IDLE_KNOWLEDGE_BATCH,
-                                    sourceOffset,
+                                    sourceCursor,
+                                    sourceCache: params.sourceCache,
                                     onPacket: () => admittedPackets++,
                                     retainInHistory: {
                                       writeTarget,
@@ -344,16 +375,16 @@ async function runIdleConversationKnowledgeDetached(
                                       if (!prepared?.pendingPackets) {
                                         return { status: "settled", admittedPackets };
                                       }
-                                      const nextOffset = prepared.nextSourceOffset ?? 0;
+                                      const nextCursor = prepared.nextSourceCursor;
                                       if (admittedPackets === before) {
-                                        unproductiveOffsets.add(sourceOffset);
-                                        if (unproductiveOffsets.has(nextOffset)) {
+                                        unproductiveCursors.add(sourceCursor);
+                                        if (unproductiveCursors.has(nextCursor)) {
                                           return { status: "pending", admittedPackets };
                                         }
                                       } else {
-                                        unproductiveOffsets.clear();
+                                        unproductiveCursors.clear();
                                       }
-                                      sourceOffset = nextOffset;
+                                      sourceCursor = nextCursor;
                                       return undefined;
                                     },
                                     () => prepared?.release(),

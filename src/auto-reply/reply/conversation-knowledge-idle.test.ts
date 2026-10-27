@@ -10,6 +10,7 @@ import type { ConversationPrivateAudience } from "../../sessions/conversation-pr
 import { captureAsyncWorkTracker, getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { createDeferredCore as createDeferred } from "../../shared/deferred.js";
 import { runIdleConversationKnowledge } from "./conversation-knowledge-idle.js";
+import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 
 const boundary = vi.hoisted(() => ({
   load: vi.fn(),
@@ -185,20 +186,20 @@ describe("idle related-conversation hydration", () => {
 
   it("continues chronological catch-up past a scheduling quantum without another input", async () => {
     const f = fixture();
-    const offsets: number[] = [];
+    const cursors: (string | undefined)[] = [];
     boundary.prepare.mockImplementation(async (request) => {
-      offsets.push(request.sourceOffset);
-      const count = request.sourceOffset === 0 ? 32 : 3;
+      cursors.push(request.sourceCursor);
+      const count = request.sourceCursor === undefined ? 32 : 3;
       for (let index = 0; index < count; index++) {
         request.onPacket();
       }
-      return { pendingPackets: count === 32, nextSourceOffset: 32, release() {} };
+      return { pendingPackets: count === 32, nextSourceCursor: "next-contribution", release() {} };
     });
     await expect(runIdleConversationKnowledge(f.params)).resolves.toEqual({
       status: "settled",
       admittedPackets: 35,
     });
-    expect(offsets).toEqual([0, 32]);
+    expect(cursors).toEqual([undefined, "next-contribution"]);
   });
 
   it("resolves the current session model when opening a recipient without any turn profile", async () => {
@@ -228,10 +229,75 @@ describe("idle related-conversation hydration", () => {
       throw new Error("Unexpected admission after writer replacement");
     });
     await expect(runIdleConversationKnowledge(f.params)).rejects.toThrow(
-      "recipient ownership changed",
+      "recipient ownership changed: writer",
     );
     expect(boundary.prepare).not.toHaveBeenCalled();
     expect(f.entry.activeWriterRunId).toBe("new-foreground-writer");
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["session-incarnation", { sessionId: "replacement" }],
+    ["lifecycle-revision", { lifecycleRevision: "replacement" }],
+    ["incognito", { incognito: true }],
+    ["pending-delivery", { pendingFinalDelivery: { kind: "replayable", text: "held" } }],
+    ["branch-role", { conversationTopology: undefined }],
+  ] as const)("classifies %s without admitting stale ownership", async (reason, change) => {
+    const f = fixture();
+    boundary.admission.mockImplementation(async (request) => {
+      Object.assign(f.entry, change);
+      await request.assertAllowed();
+      throw new Error("Unexpected admission after ownership change");
+    });
+    await expect(runIdleConversationKnowledge(f.params)).rejects.toThrow(
+      `recipient ownership changed: ${reason}`,
+    );
+    expect(boundary.prepare).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a changed root while preserving the recipient incarnation", async () => {
+    const f = fixture();
+    boundary.admission.mockImplementation(async (request) => {
+      const topology = f.entry.conversationTopology;
+      if (topology?.role !== "branch") {
+        throw new Error("Expected branch fixture");
+      }
+      topology.rootSessionLifecycleRevision = "replacement";
+      await request.assertAllowed();
+      throw new Error("Unexpected admission after root replacement");
+    });
+    await expect(runIdleConversationKnowledge(f.params)).rejects.toThrow(
+      "recipient ownership changed: root-incarnation",
+    );
+    expect(boundary.prepare).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a database path change without leaking it in the diagnostic", async () => {
+    const f = fixture();
+    boundary.admission.mockImplementation(async (request) => {
+      f.branch.storePath = path.resolve("test-state/replacement.sqlite");
+      await request.assertAllowed();
+      throw new Error("Unexpected admission after database replacement");
+    });
+    await expect(runIdleConversationKnowledge(f.params)).rejects.toThrow(
+      /^Idle conversation knowledge recipient ownership changed: database-path$/,
+    );
+    expect(boundary.prepare).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
+  it("shares prepared source bytes while retaining the recipient admission checks", async () => {
+    const f = fixture();
+    const sourceCache = createConversationKnowledgeSourceCache();
+    await expect(runIdleConversationKnowledge({ ...f.params, sourceCache })).resolves.toMatchObject(
+      {
+        status: "settled",
+      },
+    );
+    expect(boundary.prepare.mock.calls[0]![0].sourceCache).toBe(sourceCache);
+    expect(boundary.admission).toHaveBeenCalledOnce();
     expect(f.release).toHaveBeenCalledOnce();
   });
 
@@ -250,11 +316,11 @@ describe("idle related-conversation hydration", () => {
     expect(f.admissionRelease).toHaveBeenCalledOnce();
   });
 
-  it("keeps failed admission pending without cycling through offsets forever", async () => {
+  it("keeps failed admission pending without cycling through cursors forever", async () => {
     const f = fixture();
     boundary.prepare.mockImplementation(async (request) => ({
       pendingPackets: true,
-      nextSourceOffset: request.sourceOffset === 0 ? 32 : 0,
+      nextSourceCursor: request.sourceCursor === undefined ? "next-contribution" : undefined,
       release() {},
     }));
     await expect(runIdleConversationKnowledge(f.params)).resolves.toEqual({

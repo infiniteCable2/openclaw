@@ -62,7 +62,7 @@ export type PreparedReplyConversationKnowledge = {
   assertCurrent: SessionSourceAssertion;
   release(): void;
   pendingPackets?: boolean;
-  nextSourceOffset?: number;
+  nextSourceCursor?: string;
   /** Disposable preparation must await a new wakeup when pending packet storage is full. */
   preparationSaturated?: boolean;
 };
@@ -87,7 +87,8 @@ type ReplyConversationKnowledgeParams = {
   readyOnly?: boolean;
   packetBudget?: number;
   sourceBudget?: number;
-  sourceOffset?: number;
+  /** Existing contribution identity; positional indexes shift when sources retire. */
+  sourceCursor?: string;
   canAdmitPacket?: (message: CustomMessage) => boolean;
   onPacket?: (message: CustomMessage) => void;
   /** Actual native user runs retain observations; provider startup snapshots remain read-only. */
@@ -247,7 +248,7 @@ async function prepareReplyConversationKnowledgeInMode(
     const { gaps, gap } = createConversationKnowledgeGapCollector();
     let packets = 0;
     let pendingPackets = false;
-    let nextSourceOffset = 0;
+    let nextSourceCursor: string | undefined;
     let preparationSaturated = false;
     let sources = 0;
     const receipts = selectConversationKnowledgeReceipts(
@@ -256,7 +257,15 @@ async function prepareReplyConversationKnowledgeInMode(
       branch.sessionKey,
       mode,
     );
-    for (let index = params.sourceOffset ?? 0; index < receipts.length; index++) {
+    const startIndex = params.sourceCursor
+      ? Math.max(
+          0,
+          receipts.findIndex(
+            (receipt) => conversationKnowledgeContributionId(receipt) === params.sourceCursor,
+          ),
+        )
+      : 0;
+    for (let index = startIndex; index < receipts.length; index++) {
       const receipt = receipts[index]!;
       params.signal?.throwIfAborted();
       params.assertCurrent();
@@ -276,7 +285,7 @@ async function prepareReplyConversationKnowledgeInMode(
       }
       if (params.packetBudget !== undefined && packets >= params.packetBudget) {
         pendingPackets = true;
-        nextSourceOffset = index;
+        nextSourceCursor = contributionId;
         break;
       }
       if (params.readyOnly && !params.sourceCache?.hasContribution(contributionId)) {
@@ -284,7 +293,7 @@ async function prepareReplyConversationKnowledgeInMode(
       }
       if (params.sourceBudget !== undefined && sources >= params.sourceBudget) {
         pendingPackets = true;
-        nextSourceOffset = index;
+        nextSourceCursor = contributionId;
         break;
       }
       sources++;
@@ -492,13 +501,14 @@ async function prepareReplyConversationKnowledgeInMode(
         drop(read);
         if (saturated) {
           preparationSaturated = true;
-          nextSourceOffset = index;
+          nextSourceCursor = contributionId;
           break;
         }
         continue;
       }
       let offset = admitted?.nextOffset ?? 0;
       let contributed = false;
+      let yieldedContribution = false;
       for (;;) {
         sourceAssertion();
         const ready = params.readyOnly
@@ -603,11 +613,18 @@ async function prepareReplyConversationKnowledgeInMode(
         offset = part.nextOffset;
         if (params.packetBudget !== undefined && packets >= params.packetBudget) {
           pendingPackets = true;
+          yieldedContribution = true;
           break;
         }
       }
       if (!contributed || (params.retainInHistory && params.readyOnly)) {
         drop(read);
+      }
+      if (yieldedContribution) {
+        // The quantum ended inside this source. Its durable packet offset owns
+        // the continuation; advancing to the next receipt would skip its tail.
+        nextSourceCursor = contributionId;
+        break;
       }
     }
     await ingestion?.finish();
@@ -643,7 +660,7 @@ async function prepareReplyConversationKnowledgeInMode(
     source();
     return {
       pendingPackets,
-      nextSourceOffset,
+      nextSourceCursor,
       preparationSaturated,
       fragments: params.retainInHistory
         ? []

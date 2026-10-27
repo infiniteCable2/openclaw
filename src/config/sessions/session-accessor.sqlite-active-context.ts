@@ -174,18 +174,52 @@ function readUnindexedLogicalParents(
   return parents;
 }
 
+type BoundedActiveContextOptions = {
+  maxBytes: number;
+  maxEvents: number;
+  ignoreReadFence?: boolean;
+  readOnly?: boolean;
+  resolvedScope?: ResolvedTranscriptReadScope;
+  onRead?: (projection: CurrentTranscriptProjection) => void;
+};
+
+type BoundedActiveContextUsage = {
+  eventCount: number;
+  serializedBytes: number;
+  truncated: boolean;
+};
+
 /** Reads one byte-bounded active branch without materializing abandoned transcript history. */
 export function readSessionTranscriptBoundedActiveContextCore(
   scope: SessionTranscriptReadScope,
-  options: {
-    maxBytes: number;
-    maxEvents: number;
-    ignoreReadFence?: boolean;
-    readOnly?: boolean;
-    resolvedScope?: ResolvedTranscriptReadScope;
-    onRead?: (projection: CurrentTranscriptProjection) => void;
-  },
+  options: BoundedActiveContextOptions,
 ): SessionTranscriptBoundedActiveContext {
+  return readBoundedActiveContext(scope, options, "full");
+}
+
+/** Uses the same selection and read fence without acquiring selected message payloads. */
+export function readSessionTranscriptBoundedActiveContextUsageCore(
+  scope: SessionTranscriptReadScope,
+  options: Omit<BoundedActiveContextOptions, "onRead">,
+): BoundedActiveContextUsage {
+  return readBoundedActiveContext(scope, options, "usage");
+}
+
+function readBoundedActiveContext(
+  scope: SessionTranscriptReadScope,
+  options: BoundedActiveContextOptions,
+  mode: "full",
+): SessionTranscriptBoundedActiveContext;
+function readBoundedActiveContext(
+  scope: SessionTranscriptReadScope,
+  options: Omit<BoundedActiveContextOptions, "onRead">,
+  mode: "usage",
+): BoundedActiveContextUsage;
+function readBoundedActiveContext(
+  scope: SessionTranscriptReadScope,
+  options: BoundedActiveContextOptions,
+  mode: "full" | "usage",
+): SessionTranscriptBoundedActiveContext | BoundedActiveContextUsage {
   const maxBytes = normalizeVisibleMessageLimit(
     options.maxBytes,
     DEFAULT_VISIBLE_MESSAGE_MAX_BYTES,
@@ -198,7 +232,9 @@ export function readSessionTranscriptBoundedActiveContextCore(
     MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
     "maxEvents",
   );
-  const read = (projection: CurrentTranscriptProjection): SessionTranscriptBoundedActiveContext => {
+  const read = (
+    projection: CurrentTranscriptProjection,
+  ): SessionTranscriptBoundedActiveContext | BoundedActiveContextUsage => {
     const db = getActiveTranscriptKysely(projection.database);
     const fence = options.ignoreReadFence
       ? undefined
@@ -352,6 +388,9 @@ export function readSessionTranscriptBoundedActiveContextCore(
       }
     }
     const payloadSequences = header ? [header.seq, ...contextSequences] : contextSequences;
+    if (mode === "usage") {
+      return { eventCount: payloadSequences.length, serializedBytes, truncated };
+    }
     // One payload read follows all byte decisions; header-first ordering also supports migrated mirrors.
     const payloads = new Map<number, TranscriptEvent>(
       (payloadSequences.length === 0

@@ -17,7 +17,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
 import type { CliHistoryWriterFacts } from "./cli-history-boundary.js";
-import { readSessionTranscriptBoundedActiveContextCore } from "./session-accessor.sqlite-active-context.js";
+import { readSessionTranscriptBoundedActiveContextUsageCore } from "./session-accessor.sqlite-active-context.js";
 import { advanceCliHistoryBoundaryRangeInTransaction } from "./session-accessor.sqlite-cli-history-boundary.js";
 import type {
   SessionTranscriptWriteScope,
@@ -244,7 +244,7 @@ export function bindSqliteWorkerBackend(
             // under this same writer and count its real header in the budget.
             // A deferred report rolls this initialization back atomically.
             ensureTranscriptHeader(database, resolved, undefined, projection);
-            const snapshot = readSessionTranscriptBoundedActiveContextCore(resolved, {
+            const snapshot = readSessionTranscriptBoundedActiveContextUsageCore(resolved, {
               ...limits,
               resolvedScope: resolved,
             });
@@ -252,9 +252,9 @@ export function bindSqliteWorkerBackend(
             // Header and injected boundaries remain counted. The event count is
             // deliberately conservative so no currently hydrated row is displaced.
             if (
-              snapshot.events.length === 0 ||
+              snapshot.eventCount === 0 ||
               snapshot.serializedBytes + additionalBytes > limits.maxBytes ||
-              snapshot.events.length + 1 > limits.maxEvents
+              snapshot.eventCount + 1 > limits.maxEvents
             ) {
               admit("commit");
               throw deferredContextAdmission;

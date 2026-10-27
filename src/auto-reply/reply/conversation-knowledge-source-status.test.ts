@@ -99,9 +99,10 @@ beforeEach(() => {
 });
 
 describe("related-history source custody without model status", () => {
-  it.each(["admission", "preparation", "saturated"] as const)(
-    "keeps large earlier contributions from starving later sources (%s)",
+  it.each(["admission", "unavailable", "removed-cursor", "preparation", "saturated"] as const)(
+    "resumes ordered contributions without starving later readable sources (%s)",
     async (kind) => {
+      const admission = kind === "admission" || kind === "unavailable" || kind === "removed-cursor";
       const participant = { type: "profile" as const, id: "example-person" };
       const audienceIdentity = conversationKnowledgeParticipantIdentity(participant);
       const branch = {
@@ -212,7 +213,7 @@ describe("related-history source custody without model status", () => {
         kind === "saturated" ? 4_500 : undefined,
       );
       const stage = vi.spyOn(cache, "stage");
-      for (const receipt of kind === "admission" ? receipts : []) {
+      for (const receipt of admission ? receipts : []) {
         const large = receipt === receipts[0];
         cache.stage(receipt.through.entryId, 0, {
           part: {
@@ -237,9 +238,14 @@ describe("related-history source custody without model status", () => {
             part: {
               origin: receipt.origin,
               text: "Further large observation",
-              complete: false,
+              complete: true,
               nextOffset: 20,
-              frontier: undefined,
+              frontier: {
+                origin: receipt.origin,
+                generation: receipt.through.generation,
+                throughRawSeq: receipt.through.rawSeq,
+                throughEntryId: receipt.through.entryId,
+              },
             },
             version: { generation: "original", rawSeq: 2, updatedAt: 1 },
             through: receipt.through,
@@ -264,9 +270,9 @@ describe("related-history source custody without model status", () => {
         getRuntimeConfig: () => ({
           agents: { entries: { example: { conversationMode: "branches" as const } } },
         }),
-        readyOnly: kind === "admission",
+        readyOnly: admission,
         sourceCache: cache,
-        ...(kind === "admission"
+        ...(admission
           ? {
               packetBudget: 1,
               retainInHistory: { writeTarget: branch, maintainContext: async () => {} },
@@ -274,7 +280,7 @@ describe("related-history source custody without model status", () => {
           : { preparationOnly: true, sourceBudget: 8 }),
       };
       const first = await prepareReplyConversationKnowledge(common);
-      if (kind !== "admission") {
+      if (!admission) {
         try {
           expect(source.retain).not.toHaveBeenCalled();
           expect(stage.mock.calls.slice(0, 2).map(([id]) => id)).toEqual([
@@ -284,7 +290,7 @@ describe("related-history source custody without model status", () => {
           if (kind === "saturated") {
             expect(stage.mock.results.map((result) => result.value)).toEqual([true, false]);
             expect(first?.preparationSaturated).toBe(true);
-            expect(first?.nextSourceOffset).toBe(0);
+            expect(first?.nextSourceCursor).toBe("large-answer");
           } else {
             expect(cache.peek("small-answer", 0)).toBeDefined();
             expect(stage.mock.calls.map(([id]) => id)).toEqual([
@@ -301,26 +307,72 @@ describe("related-history source custody without model status", () => {
       }
       try {
         expect(first?.pendingPackets).toBe(true);
-        expect(first?.nextSourceOffset).toBe(1);
+        expect(first?.nextSourceCursor).toBe("large-answer");
         expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
           "large-answer",
         ]);
       } finally {
         first?.release();
       }
+      if (kind === "unavailable") {
+        source.grant.mockRejectedValueOnce(new Error("Original source is no longer readable"));
+      } else if (kind === "removed-cursor") {
+        source.root.mockResolvedValue([
+          {
+            type: "custom_message",
+            customType: CONVERSATION_KNOWLEDGE_REPORT,
+            details: receipts[1],
+          },
+        ]);
+      }
       const second = await prepareReplyConversationKnowledge({
         ...common,
-        sourceOffset: first?.nextSourceOffset,
+        sourceCursor: first?.nextSourceCursor,
+      });
+      try {
+        if (kind !== "admission") {
+          expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
+            "large-answer",
+            "small-answer",
+          ]);
+          expect(second?.nextSourceCursor).toBeUndefined();
+          expect(second?.pendingPackets).toBe(false);
+          expect(source.context).not.toHaveBeenCalled();
+          return;
+        }
+        expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
+          "large-answer",
+          "large-answer",
+        ]);
+        expect(second?.nextSourceCursor).toBe("small-answer");
+        expect(source.context).not.toHaveBeenCalled();
+      } finally {
+        second?.release();
+      }
+      // An earlier source can retire between quanta. Resume by contribution ID,
+      // not the old index, without skipping the now-first remaining source.
+      source.root.mockResolvedValue([
+        {
+          type: "custom_message",
+          customType: CONVERSATION_KNOWLEDGE_REPORT,
+          details: receipts[1],
+        },
+      ]);
+      const third = await prepareReplyConversationKnowledge({
+        ...common,
+        sourceCursor: second?.nextSourceCursor,
       });
       try {
         expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
           "large-answer",
+          "large-answer",
           "small-answer",
         ]);
-        expect(second?.nextSourceOffset).toBe(0);
+        expect(third?.nextSourceCursor).toBeUndefined();
+        expect(third?.pendingPackets).toBe(false);
         expect(source.context).not.toHaveBeenCalled();
       } finally {
-        second?.release();
+        third?.release();
       }
     },
   );

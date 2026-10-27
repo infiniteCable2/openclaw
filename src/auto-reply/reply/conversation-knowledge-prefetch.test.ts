@@ -140,7 +140,7 @@ describe("recipient preparation scheduling", () => {
         },
       });
       preparation.prepare.mockResolvedValue({
-        nextSourceOffset: 3,
+        nextSourceCursor: "pending-contribution",
         preparationSaturated: saturated,
         release,
       });
@@ -164,17 +164,17 @@ describe("recipient preparation scheduling", () => {
       expect(recipient).toBeDefined();
       const scheduled = preparation.create.mock.calls[0]![0];
       const signal = new AbortController().signal;
-      await scheduled.prepare(signal);
-      expect(preparation.owner.request).toHaveBeenCalledTimes(saturated ? 0 : 1);
+      expect(await scheduled.prepare(signal)).toBe(!saturated);
+      expect(preparation.owner.request).not.toHaveBeenCalled();
       expect(release).toHaveBeenCalledOnce();
       expect(claimRelease).toHaveBeenCalledOnce();
       preparation.owner.request.mockClear();
-      await scheduled.prepare(signal);
+      expect(await scheduled.prepare(signal)).toBe(!saturated);
       expect(preparation.prepare.mock.calls[1]![0]).toMatchObject({
-        sourceOffset: 3,
+        sourceCursor: "pending-contribution",
         preparationOnly: true,
       });
-      expect(preparation.owner.request).toHaveBeenCalledTimes(saturated ? 0 : 1);
+      expect(preparation.owner.request).not.toHaveBeenCalled();
     },
   );
 });

@@ -115,7 +115,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     assertCurrent: () => void selectAudience(),
   });
   const cache = createConversationKnowledgeSourceCache();
-  let sourceOffset = 0;
+  let sourceCursor: string | undefined;
   let idleRequested = false;
   let idleRequestRevision = 0;
   let idleCompletion: Promise<void> | undefined;
@@ -148,6 +148,7 @@ export function prepareConversationKnowledgeRecipient(params: {
           getRuntimeConfig: () => params.getRuntimeConfig(),
           run: params.run,
           signal,
+          sourceCache: cache,
         });
         log.debug("Related-history idle admission settled", {
           recipientHash: redactIdentifier(branch.sessionId),
@@ -239,19 +240,17 @@ export function prepareConversationKnowledgeRecipient(params: {
           sourceCache: cache,
           preparationOnly: true,
           sourceBudget: 8,
-          sourceOffset,
+          sourceCursor,
         });
-        sourceOffset = prepared?.nextSourceOffset ?? 0;
+        sourceCursor = prepared?.nextSourceCursor;
         log.debug("Related-history source preparation settled", {
           recipientHash: redactIdentifier(branch.sessionId),
           elapsedMs: Math.round(performance.now() - startedAt),
-          nextSourceOffset: sourceOffset,
+          hasContinuation: sourceCursor !== undefined,
           saturated: prepared?.preparationSaturated === true,
         });
-        if (sourceOffset > 0 && !prepared?.preparationSaturated) {
-          owner.request();
-        }
         prepared?.release();
+        return sourceCursor !== undefined && !prepared?.preparationSaturated;
       } finally {
         await held.databaseClaim.release();
       }

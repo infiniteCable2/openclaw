@@ -23,6 +23,7 @@ export function createConversationKnowledgeIngestion(params: {
   activePacketIds?: readonly string[];
 }) {
   let admittedChars = 0;
+  let admittedSinceMaintenance = false;
   const packetIds = new Set<string>(params.activePacketIds);
   let incomplete = false;
   let admissionDeferred = false;
@@ -43,6 +44,7 @@ export function createConversationKnowledgeIngestion(params: {
       packetIds.clear();
     }
     admittedChars = 0;
+    admittedSinceMaintenance = false;
     return result;
   };
   return {
@@ -77,12 +79,13 @@ export function createConversationKnowledgeIngestion(params: {
       }
       packetIds.add(id);
       admittedChars += text.length;
+      admittedSinceMaintenance = true;
       return true;
     },
     async finish() {
-      // Recheck native active carriers even when every source was already copied.
-      // Compacted ancestors are deliberately absent: never reimport them from sources.
-      if (packetIds.size > 0) {
+      // Unchanged history belongs to the foreground's native budget preflight.
+      // Check this pass's admitted additions, retaining all active carrier IDs.
+      if (admittedSinceMaintenance) {
         await maintain();
       }
     },

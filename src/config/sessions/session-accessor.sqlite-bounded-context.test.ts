@@ -12,7 +12,10 @@ import {
   loadTranscriptEventsSync,
   readTranscriptStatsSync,
 } from "./session-accessor.js";
-import { readSessionTranscriptBoundedActiveContextCore } from "./session-accessor.sqlite-active-context.js";
+import {
+  readSessionTranscriptBoundedActiveContextCore,
+  readSessionTranscriptBoundedActiveContextUsageCore,
+} from "./session-accessor.sqlite-active-context.js";
 import {
   readRecentSessionTranscriptActiveEvents,
   readSessionTranscriptMessageEventPage,
@@ -331,6 +334,47 @@ function countAcquiredTranscriptPayloadBytes(
   return acquiredBytes;
 }
 
+it("sizes bounded context without acquiring message payloads, including header and cutoff budgets", async () => {
+  await withBoundedContextScope(async (scope) => {
+    const marker = "synthetic-context-sizing-payload:";
+    await persistSessionTranscriptTurn(scope, {
+      messages: [
+        transcriptMessage("old", null, { role: "user", content: marker + "x".repeat(8192) }),
+        transcriptMessage("new", "old", { role: "assistant", content: marker }),
+      ],
+      touchSessionEntry: false,
+    });
+    const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
+    const full = readSessionTranscriptBoundedActiveContextCore(scope, {
+      maxBytes: 16_384,
+      maxEvents: 10,
+    });
+    const headerBytes = Buffer.byteLength(JSON.stringify(full.events[0])) + 1;
+    for (const limits of [
+      { maxBytes: 16_384, maxEvents: 10 },
+      { maxBytes: 16_384, maxEvents: 1 },
+      { maxBytes: 1024, maxEvents: 10 },
+      { maxBytes: headerBytes, maxEvents: 10 },
+    ]) {
+      const context = readSessionTranscriptBoundedActiveContextCore(scope, limits);
+      const acquiredBytes = countAcquiredTranscriptPayloadBytes(db, marker, () => {
+        expect(readSessionTranscriptBoundedActiveContextUsageCore(scope, limits)).toEqual({
+          eventCount: context.events.length,
+          serializedBytes: context.serializedBytes,
+          truncated: context.truncated,
+        });
+      });
+      expect(acquiredBytes).toBe(0);
+    }
+    expect(() =>
+      readSessionTranscriptBoundedActiveContextUsageCore(scope, {
+        maxBytes: headerBytes - 1,
+        maxEvents: 10,
+      }),
+    ).toThrow(RangeError);
+  });
+});
+
 it("enforces context count and byte budgets and releases rejected reads for later appends", async () => {
   await withBoundedContextScope(async (scope) => {
     const append = (id: string, parent: string | null, content = id) =>
@@ -551,6 +595,16 @@ it("retains the latest boundary and counts earlier resets before a truncated tai
     expect(context.events.at(-1)).toMatchObject({ parentId: "middle" });
     expect(context.opaqueParents.get("middle")).toBe("summary");
     expect(context.boundaryCount).toBe(2);
+    expect(
+      readSessionTranscriptBoundedActiveContextUsageCore(scope, {
+        maxBytes: 2048,
+        maxEvents: 1,
+      }),
+    ).toEqual({
+      eventCount: 3,
+      serializedBytes: context.serializedBytes,
+      truncated: context.truncated,
+    });
   });
 });
 
@@ -798,6 +852,16 @@ it("keeps later unindexed feedback payloads outside an admitted context read", a
             "imported-user",
           ]);
           expect(context.activeLeafEntryId).toBe("imported-user");
+          expect(
+            readSessionTranscriptBoundedActiveContextUsageCore(scope, {
+              maxBytes: 1024,
+              maxEvents: 10,
+            }),
+          ).toEqual({
+            eventCount: context.events.length,
+            serializedBytes: context.serializedBytes,
+            truncated: context.truncated,
+          });
         },
       );
     });

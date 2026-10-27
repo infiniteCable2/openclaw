@@ -83,23 +83,37 @@ describe("conversation knowledge ingestion pacing", () => {
     expect(ingestion.incomplete).toBe(false);
   });
 
-  it("rechecks existing active carriers on a later unchanged turn without copying them again", async () => {
-    const maintainContext = vi.fn(async () => ({ compacted: false, complete: false }));
+  it("does not rehydrate existing active carriers until new data is admitted", async () => {
+    const maintainContext = vi.fn(async () => ({ compacted: false, complete: true }));
+    const source = vi.fn();
+    const captureSources = vi.fn(() => source);
     const create = (activePacketIds: string[]) =>
       createConversationKnowledgeIngestion({
         maintenance: { maintainContext },
-        captureSources: () => () => {},
+        captureSources,
         activePacketIds,
       });
     for (let turn = 0; turn < 2; turn++) {
       const ingestion = create(["already-admitted"]);
       await ingestion.finish();
-      expect(ingestion.pending).toBe("context-window");
+      expect(ingestion.pending).toBeUndefined();
     }
-    expect(maintainContext).toHaveBeenCalledTimes(2);
-    // A native compaction retires the old carrier from the active set, not its history.
     await create([]).finish();
-    expect(maintainContext).toHaveBeenCalledTimes(2);
+    expect(maintainContext).not.toHaveBeenCalled();
+    expect(captureSources).not.toHaveBeenCalled();
+
+    const ingestion = create(["already-admitted"]);
+    const write = vi.fn(async () => "newly-admitted");
+    expect(await ingestion.tryPacket("new observation", write)).toBe(true);
+    expect(write).toHaveBeenCalledOnce();
+    await ingestion.finish();
+    expect(maintainContext).toHaveBeenCalledExactlyOnceWith(
+      source,
+      ["already-admitted", "newly-admitted"],
+      undefined,
+    );
+    await ingestion.finish();
+    expect(maintainContext).toHaveBeenCalledOnce();
   });
 
   it("does not repeat failed maintenance for each later source", async () => {

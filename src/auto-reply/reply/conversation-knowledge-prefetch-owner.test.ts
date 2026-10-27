@@ -113,6 +113,29 @@ afterEach(async () => {
 });
 
 describe("conversation knowledge prefetch lifecycle", () => {
+  it("continues source pages without restarting idle admission and preserves new root wakeups", async () => {
+    const onRequest = vi.fn();
+    let pages = 0;
+    const prepare = vi.fn(async () => {
+      pages++;
+      if (pages === 2) {
+        rootUpdate();
+      }
+      return pages < 4;
+    });
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      assertCurrent() {},
+      clear() {},
+      prepare,
+      onRequest,
+    });
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(4);
+    expect(onRequest).toHaveBeenCalledTimes(2);
+    await owner.close();
+  });
+
   it("starts detached and nonblocking, then coalesces exact root notifications", async () => {
     const context = new AsyncLocalStorage<string>();
     const observed: Array<string | undefined> = [];

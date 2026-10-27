@@ -24,7 +24,8 @@ type PrefetchTarget = {
 export function createConversationKnowledgePrefetchOwner(params: {
   target: PrefetchTarget;
   assertCurrent(): void;
-  prepare(signal: AbortSignal): Promise<void>;
+  /** True continues disposable read-ahead; it is not a new root/input notification. */
+  prepare(signal: AbortSignal): Promise<void | boolean>;
   clear(): void;
   /** Schedule recipient maintenance outside the bounded source-read leaf pool. */
   onRequest?(signal: AbortSignal): void;
@@ -42,6 +43,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
   let unregister = () => {};
   let unsubscribe = () => {};
   let requested = false;
+  let admissionRequested = false;
   let completion: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
   const reportedFailures = new Set<string>();
@@ -60,6 +62,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
   const revoke = () => {
     controller.abort();
     requested = false;
+    admissionRequested = false;
     unsubscribe();
     try {
       params.clear();
@@ -118,16 +121,20 @@ export function createConversationKnowledgePrefetchOwner(params: {
           try {
             check();
             // Never check authority or start recipient work on the root publisher's stack.
-            params.onRequest?.(controller.signal);
+            if (admissionRequested) {
+              admissionRequested = false;
+              params.onRequest?.(controller.signal);
+            }
             // Each batch releases shared capacity before a coalesced successor is queued.
             await background.enqueue(
               async (signal) => {
                 check();
                 signal.throwIfAborted();
-                await params.prepare(signal);
+                const more = await params.prepare(signal);
                 signal.throwIfAborted();
                 check();
                 reportedFailures.delete("preparation-deferred");
+                requested ||= more === true;
               },
               { abortSignal: controller.signal },
             );
@@ -168,6 +175,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
     }
     // Committed-root publishers only mark work; even authority checks run off their stack.
     requested = true;
+    admissionRequested = true;
     schedule();
   };
 
