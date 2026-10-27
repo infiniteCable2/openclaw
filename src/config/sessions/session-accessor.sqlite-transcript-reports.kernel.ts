@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { asOptionalRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
-import { iterateSqliteQuerySync, sqliteStringSet } from "../../infra/kysely-sync.js";
+import {
+  encodeSqliteStringSet,
+  iterateSqliteQuerySync,
+  sqliteStringSetEntries,
+} from "../../infra/kysely-sync.js";
 import type { AssistantMessage } from "../../llm/types.js";
 import {
   readSessionTranscriptRunId,
@@ -158,6 +162,12 @@ export function readReportEvent(
   selection: number | readonly number[],
 ): ReportEventRow["event"] | IterableIterator<ReportEventRow> {
   const selected = typeof selection === "number" ? [selection] : selection;
+  if (selected.some((seq) => !Number.isSafeInteger(seq))) {
+    throw new Error("Transcript report selection requires exact integer sequences");
+  }
+  const sequences = sqliteStringSetEntries(encodeSqliteStringSet(selected.map(String))).as(
+    "requested",
+  );
   const rows = (function* () {
     for (const row of iterateSqliteQuerySync(
       database.db,
@@ -165,7 +175,11 @@ export function readReportEvent(
         .selectFrom("transcript_events")
         .select(["seq", transcriptEventJsonSql(database.db).as("event_json")])
         .where("session_id", "=", sessionId)
-        .where("seq", "in", sqliteStringSet(selected.map(String))),
+        .where("seq", "in", (eb) =>
+          eb
+            .selectFrom(sequences)
+            .select((requested) => requested.cast<number>("requested.value", "integer").as("seq")),
+        ),
     )) {
       yield { seq: row.seq, event: asOptionalRecord(JSON.parse(row.event_json)) };
     }
