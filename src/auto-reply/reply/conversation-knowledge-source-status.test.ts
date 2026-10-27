@@ -355,11 +355,14 @@ describe("related-history source custody without model status", () => {
             expect(first?.nextSourceCursor).toBe("large-answer");
           } else {
             expect(cache.peek("small-answer", 0)).toBeDefined();
-            expect(stage.mock.calls.map(([id]) => id)).toEqual([
-              "large-answer",
-              "large-answer",
-              "small-answer",
-            ]);
+            const large = stage.mock.calls.slice(0, -1);
+            expect(large.length).toBeGreaterThan(2);
+            expect(large.every(([id]) => id === "large-answer")).toBe(true);
+            expect(large.at(-1)?.[2].part.complete).toBe(true);
+            expect(stage.mock.calls.at(-1)?.[0]).toBe("small-answer");
+            for (let index = 1; index < large.length; index++) {
+              expect(large[index]![1]).toBe(large[index - 1]![2].part.nextOffset);
+            }
             expect(first?.preparationSaturated).toBe(false);
           }
         } finally {
