@@ -66,6 +66,7 @@ export async function startSpeechRealtimeSession(params: {
   let bridgeClosed = false;
   let transportStopped = false;
   let transportDisposed = false;
+  let connectionPreparationClosed = params.connectionPreparation === undefined;
   let closedPublished = false;
   let closeReason = "stopped";
   // Fatal transport callbacks can stop the session before its bridge exists.
@@ -134,12 +135,15 @@ export async function startSpeechRealtimeSession(params: {
       // Capture closure may unblock an admitted playback write. Disposal must
       // still wait for the exact pump/clear operations owned by this output queue.
       await outputQueue.drain();
-      try {
-        await params.connectionPreparation?.close();
-      } catch (error) {
-        failures.push(error);
+      if (!connectionPreparationClosed) {
+        try {
+          await params.connectionPreparation?.close();
+          connectionPreparationClosed = true;
+        } catch (error) {
+          failures.push(error);
+        }
       }
-      if (failures.length === 0 && transportStopped && !transportDisposed) {
+      if (connectionPreparationClosed && transportStopped && !transportDisposed) {
         try {
           await params.transport.dispose();
           transportDisposed = true;

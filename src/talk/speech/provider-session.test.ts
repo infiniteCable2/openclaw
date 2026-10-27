@@ -13,6 +13,7 @@ type PendingWrite = {
 
 async function createEngineFixture(options?: {
   handleToolCall?: (params: SpeechRealtimeToolCallParams) => Promise<void>;
+  connectionPreparation?: Parameters<typeof startSpeechRealtimeSession>[0]["connectionPreparation"];
 }) {
   let callbacks: RealtimeVoiceBridgeCreateRequest | undefined;
   let onHumanBargeIn: ((audio: Buffer) => boolean) | undefined;
@@ -83,6 +84,7 @@ async function createEngineFixture(options?: {
     consultAgent: vi.fn(async () => ({ text: "unused" })),
     fullConfig: {} as never,
     handleToolCall: options?.handleToolCall ?? vi.fn(async () => {}),
+    connectionPreparation: options?.connectionPreparation,
     logger,
     sessionId: "meeting-1",
     surface: {
@@ -161,6 +163,42 @@ async function createEngineFixture(options?: {
 }
 
 describe("meeting realtime engine output ownership", () => {
+  it("retains transport while connection preparation cleanup is pending or failed, then retries", async () => {
+    const entered = createDeferredCore();
+    const pending = createDeferredCore();
+    const preparation = { cancel: vi.fn(), close: vi.fn(async () => {}) };
+    preparation.close.mockImplementationOnce(async () => {
+      entered.resolve();
+      await pending.promise;
+    });
+    const fixture = await createEngineFixture({ connectionPreparation: preparation });
+    const closing = fixture.handle.stop();
+    try {
+      await entered.promise;
+      expect(preparation.cancel).toHaveBeenCalledOnce();
+      expect(fixture.stopTransport).toHaveBeenCalledOnce();
+      expect(fixture.disposeTransport).not.toHaveBeenCalled();
+      pending.reject(new Error("Connection preparation still owned"));
+      await expect(closing).rejects.toThrow("Speech realtime resources did not close");
+      expect(fixture.disposeTransport).not.toHaveBeenCalled();
+      expect(fixture.handle.getHealth().recentTalkEvents.map((event) => event.type)).not.toContain(
+        "session.closed",
+      );
+      await fixture.handle.stop();
+      expect(preparation.close).toHaveBeenCalledTimes(2);
+      expect(preparation.cancel).toHaveBeenCalledOnce();
+      expect(fixture.closeBridge).toHaveBeenCalledOnce();
+      expect(fixture.stopTransport).toHaveBeenCalledOnce();
+      expect(fixture.disposeTransport).toHaveBeenCalledOnce();
+      await fixture.handle.stop();
+      expect(preparation.close).toHaveBeenCalledTimes(2);
+    } finally {
+      pending.resolve();
+      await closing.catch(() => {});
+      await fixture.handle.stop();
+    }
+  });
+
   it.each(["write", "clear"] as const)(
     "keeps native transport custody until its admitted %s finishes",
     async (operation) => {
