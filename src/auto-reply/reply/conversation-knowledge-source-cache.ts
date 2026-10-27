@@ -33,6 +33,7 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
   let bytes = 0;
   let stagedBytes = 0;
   let revision = 0;
+  let consumptionRevision = 0;
   let clearEpoch = 0;
   let preparedRoot: PreparedKnowledgeRootCandidates | undefined;
   const remove = (key: string) => {
@@ -56,6 +57,9 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
   return {
     get revision() {
       return revision;
+    },
+    get consumptionRevision() {
+      return consumptionRevision;
     },
     get preparedRoot() {
       return preparedRoot;
@@ -147,6 +151,9 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       return value && structuredClone(value);
     },
     consume(id: string, offset: number) {
+      // A native commit can advance a packet that was never staged here. Any
+      // in-flight preparation must reread durable progress before staging more.
+      consumptionRevision++;
       const key = stagedKey(id, offset);
       const old = staged.get(key);
       if (old) {
@@ -183,6 +190,7 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       preparedRoot = undefined;
       revision++;
       clearEpoch++;
+      consumptionRevision++;
     },
     async read(params: {
       contributionId: string;

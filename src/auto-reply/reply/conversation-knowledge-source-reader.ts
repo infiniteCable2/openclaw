@@ -121,10 +121,15 @@ export async function stageConversationKnowledgeSource(params: {
   assertCurrent: SessionSourceAssertion;
   signal?: AbortSignal;
   cache?: ConversationKnowledgeSourceCache;
-}): Promise<boolean> {
+  expectedConsumptionRevision: number | undefined;
+}): Promise<"complete" | "cache-full" | "recipient-advanced"> {
   let offset = params.offset;
   for (;;) {
     params.assertCurrent();
+    params.signal?.throwIfAborted();
+    if (params.cache && params.cache.consumptionRevision !== params.expectedConsumptionRevision) {
+      return "recipient-advanced";
+    }
     const part = projectConversationKnowledge(
       params.receipt,
       params.projection.events,
@@ -143,7 +148,7 @@ export async function stageConversationKnowledgeSource(params: {
         from: params.from,
       })
     ) {
-      return true;
+      return "cache-full";
     }
     if (part.frontier || part.nextOffset === undefined || part.nextOffset <= offset) {
       break;
@@ -152,7 +157,7 @@ export async function stageConversationKnowledgeSource(params: {
     await setImmediate(undefined, { signal: params.signal });
     params.signal?.throwIfAborted();
   }
-  return false;
+  return "complete";
 }
 
 /** Only background/legacy readers enumerate history; live boundaries rebind bounded provenance. */

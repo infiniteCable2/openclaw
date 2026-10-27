@@ -66,6 +66,9 @@ async function prepareReplyConversationKnowledgeInMode(
 ): Promise<PreparedReplyConversationKnowledge | undefined> {
   params.assertCurrent();
   params.signal?.throwIfAborted();
+  // Capture before the first source/receipt await: foreground admission may
+  // advance while this disposable preparation still holds older progress.
+  const preparationConsumptionRevision = params.sourceCache?.consumptionRevision;
   const manifest = params.readyOnly ? params.sourceCache?.preparedRoot : undefined;
   if (params.readyOnly && !manifest) {
     return undefined;
@@ -465,7 +468,7 @@ async function prepareReplyConversationKnowledgeInMode(
       grant.assertCurrent();
       facts.assertCurrent();
       if (params.preparationOnly) {
-        const saturated = await stageConversationKnowledgeSource({
+        const preparation = await stageConversationKnowledgeSource({
           receipt,
           projection,
           audience: facts.audience,
@@ -475,10 +478,11 @@ async function prepareReplyConversationKnowledgeInMode(
           assertCurrent: sourceAssertion,
           signal: params.signal,
           cache: params.sourceCache,
+          expectedConsumptionRevision: preparationConsumptionRevision,
         });
         drop(read);
-        if (saturated) {
-          preparationSaturated = true;
+        if (preparation !== "complete") {
+          preparationSaturated = preparation === "cache-full";
           nextSourceCursor = contributionId;
           break;
         }

@@ -241,6 +241,22 @@ describe("disposable conversation source preparation", () => {
     expect(cache.hasContribution("next")).toBe(false);
   });
 
+  it("fences in-flight preparation on every consumption and clear, including absent slots", () => {
+    const cache = createConversationKnowledgeSourceCache();
+    expect(cache.consumptionRevision).toBe(0);
+    cache.stage("source-contribution", 0, packet());
+    expect(cache.consumptionRevision).toBe(0);
+    cache.consume("source-contribution", 10);
+    expect(cache.consumptionRevision).toBe(1);
+    expect(cache.peek("source-contribution", 0)).toEqual(packet());
+    cache.consume("source-contribution", 0);
+    expect(cache.consumptionRevision).toBe(2);
+    cache.consume("source-contribution", 0);
+    expect(cache.consumptionRevision).toBe(3);
+    cache.clear();
+    expect(cache.consumptionRevision).toBe(4);
+  });
+
   it("invalidates every raw range and staged offset of exactly one contribution", async () => {
     const cache = createConversationKnowledgeSourceCache();
     await cache.read({ ...input(), load: async () => context() });
