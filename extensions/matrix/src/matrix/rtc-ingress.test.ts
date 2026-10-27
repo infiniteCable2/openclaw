@@ -219,9 +219,9 @@ describe("MatrixRTC text-free conversation admission", () => {
         expect(request).not.toHaveProperty("input");
         expect(request).not.toHaveProperty("context");
       }
-      expect(resolve.mock.calls[0][0].privateAudience).toBeDefined();
-      expect(resolve.mock.calls[1][0].privateAudience).not.toBe(
-        resolve.mock.calls[0][0].privateAudience,
+      expect(resolve.mock.calls[0]![0].privateAudience).toBeDefined();
+      expect(resolve.mock.calls[1]![0].privateAudience).not.toBe(
+        resolve.mock.calls[0]![0].privateAudience,
       );
     });
   });
