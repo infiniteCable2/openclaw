@@ -19,10 +19,162 @@ import {
   isCompletedConversationKnowledge,
 } from "./conversation-knowledge.js";
 import { appendTranscriptMessage, loadTranscriptEvents } from "./session-accessor.js";
+import {
+  commitReplySessionInitialization,
+  loadReplySessionInitializationSnapshot,
+} from "./session-accessor.reset.js";
+import {
+  buildForkedChildTranscriptEvents,
+  resolveParentForkSourceTranscript,
+} from "./session-accessor.sqlite-parent-fork.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
+import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
+import type { PreparedInitialSessionContext } from "./session-initial-context.js";
+import type {
+  PreparedSessionSourceAuthority,
+  SessionSourceAssertion,
+} from "./session-source-authority.js";
 import { readActiveTranscriptEntryAnchorAsync } from "./session-transcript-anchor-read.js";
+import { prepareSessionTranscriptHydration } from "./session-transcript-hydration.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
+
+it("seeds only a copied child's own tail, not its natively inherited completed prefix", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "native-copied-prefix-seed" },
+    async (state) => {
+      const fixture = await createConversationKnowledgeScenario(state);
+      try {
+        const donor = await fixture.branch("copied-prefix-donor");
+        const donorOwner = await fixture.claim(donor);
+        const terminal = await fixture.append(donor, "original-donor-run");
+        expect(
+          await recordConversationKnowledgeTurn({
+            ...donorOwner,
+            ...terminal,
+            privateAudience: { participant: person, admission: terminal.admission! },
+          }),
+        ).toBe(true);
+        const child = {
+          ...donor,
+          sessionKey: "agent:main:copied-prefix-child",
+          sessionId: "copied-prefix-child",
+          lifecycleRevision: "copied-prefix-child-life",
+        };
+        const snapshot = await loadReplySessionInitializationSnapshot(child);
+        await withSessionEntryReadOnlyInWorker(
+          donor,
+          () => {},
+          async (read, owner) => {
+            if (!read.ok) {
+              throw read.error;
+            }
+            if (!read.value || !owner.source || typeof owner.source.databaseIdentity !== "string") {
+              throw new Error("Expected the actual donor's admitted native read source");
+            }
+            const hydration = await prepareSessionTranscriptHydration(donor).read();
+            if (hydration.kind !== "full") {
+              throw new Error("Expected the native donor transcript");
+            }
+            const selected = resolveParentForkSourceTranscript(
+              hydration.snapshot.events,
+              "last-completed",
+            );
+            if (!selected?.leafId) {
+              throw new Error("Expected the donor's completed prefix");
+            }
+            const sourceThrough = await readActiveTranscriptEntryAnchorAsync({
+              ...donor,
+              entryId: selected.leafId,
+            });
+            if (!sourceThrough) {
+              throw new Error("Expected the exact inherited source endpoint");
+            }
+            const context: PreparedInitialSessionContext = {
+              source: { ...owner.source, databaseIdentity: owner.source.databaseIdentity },
+              sourceSessionKey: donor.sessionKey,
+              sourceEntry: {
+                sessionId: read.value.sessionId,
+                lifecycleRevision: read.value.lifecycleRevision,
+              },
+              sourceVersion: hydration.snapshot.version,
+              sourceThrough,
+              targetSessionId: child.sessionId,
+              events: buildForkedChildTranscriptEvents({
+                parentSessionFile: donor.sessionKey,
+                source: selected,
+                targetSessionId: child.sessionId,
+              }),
+            };
+            // The storage test retains the actual native read owner and its source
+            // predicates. It does not forge forkSource or bypass the creation worker.
+            const contextSourceAuthority: SessionSourceAssertion = Object.assign(
+              () => owner.assertCurrent(),
+              {
+                prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
+                  assertCurrent: owner.assertCurrent,
+                  checks: [
+                    {
+                      predicate: {
+                        source: context.source,
+                        sessionKey: donor.sessionKey,
+                        fields: [
+                          "sessionId",
+                          "lifecycleRevision",
+                          "createdActor",
+                          "visibility",
+                          "incognito",
+                        ],
+                        expected: read.value,
+                      },
+                      refuse: (): never => {
+                        throw new Error("Synthetic donor read witness changed");
+                      },
+                    },
+                  ],
+                }),
+              },
+            );
+            expect(
+              await commitReplySessionInitialization({
+                ...child,
+                activeSessionKey: child.sessionKey,
+                expectedRevision: snapshot.revision,
+                commitGuard: owner.assertCurrent,
+                contextSourceAuthority,
+                initialContext: context,
+                branchRootSessionKey: fixture.root.sessionKey,
+                sessionEntry: {
+                  sessionId: child.sessionId,
+                  lifecycleRevision: child.lifecycleRevision,
+                  updatedAt: Date.now(),
+                  chatType: "direct",
+                  visibility: "draft",
+                },
+              }),
+            ).toMatchObject({ ok: true });
+          },
+        );
+        const childOwner = await fixture.claim(child);
+        await fixture.append(child, "new-child-run");
+        const before = await loadTranscriptEvents(child);
+        expect(JSON.stringify(before)).toContain("original-donor-run answer");
+        expect(await ensureConversationKnowledgeSeed(childOwner)).toMatchObject({
+          status: "seeded",
+          recorded: 1,
+        });
+        const reports = await fixture.receipts();
+        expect(reports.map((receipt) => [receipt.source.sessionId, receipt.runId])).toEqual([
+          [donor.sessionId, "original-donor-run"],
+          [child.sessionId, "new-child-run"],
+        ]);
+        expect(await loadTranscriptEvents(child)).toEqual(before);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+});
 
 it("keeps one real completed turn beyond the validation event budget pending, not skipped", async () => {
   await withOpenClawTestState(

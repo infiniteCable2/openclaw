@@ -86,6 +86,28 @@ afterEach(() => {
 });
 
 describe("runEmbeddedAttemptPromptPhase", () => {
+  it.each([undefined, "legacy", "custom-engine"])(
+    "keeps additive prepared history within the legacy engine contract (%s)",
+    async (engineId) => {
+      const f = createFixture();
+      const refresh = vi.fn(async () => []);
+      f.input.attempt.refreshConversationContext = refresh;
+      if (engineId) {
+        f.input.activeContextEngine = {
+          info: { id: engineId, name: engineId, ownsCompaction: true },
+          ingest: async () => ({ ingested: true }),
+          assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
+          compact: async () => ({ ok: true, compacted: false }),
+        };
+      }
+      await runEmbeddedAttemptPromptPhase(f.input, f.promptState);
+      const submitted = mocks.submitPrompt.mock.calls[0]?.[0] as PromptSubmissionCall;
+      expect(submitted.refreshConversationContext).toBe(
+        engineId === "custom-engine" ? undefined : refresh,
+      );
+      expect(refresh).not.toHaveBeenCalled();
+    },
+  );
   it.each([false, true])(
     "wires final Decision withdrawal with in-history updates %s",
     async (inHistorySystemUpdates) => {

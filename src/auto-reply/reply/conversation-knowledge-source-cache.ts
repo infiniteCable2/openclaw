@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { projectConversationKnowledge } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
@@ -36,6 +37,15 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
     }
   };
   const stagedKey = (id: string, offset: number) => JSON.stringify([id, offset]);
+  const invalidateStaged = (id: string) => {
+    for (const [key, entry] of staged) {
+      if (entry.contributionId === id) {
+        staged.delete(key);
+        stagedBytes -= entry.bytes;
+        revision++;
+      }
+    }
+  };
   return {
     get revision() {
       return revision;
@@ -49,8 +59,20 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
     /** Pending packets have their own bounded budget and never evict earlier unsent packets. */
     stage(id: string, offset: number, value: PreparedConversationKnowledgePacket): boolean {
       const key = stagedKey(id, offset);
-      if (staged.has(key)) {
-        return true;
+      const existing = staged.get(key);
+      const previous =
+        existing?.value ?? [...staged.values()].find((entry) => entry.contributionId === id)?.value;
+      if (previous) {
+        if (
+          !isDeepStrictEqual(previous.through, value.through) ||
+          !isDeepStrictEqual(previous.from, value.from)
+        ) {
+          // A proven source rewrite may renew anchors without changing contribution
+          // identity. Retire its old offsets together, never mix two physical ranges.
+          invalidateStaged(id);
+        } else if (existing) {
+          return true;
+        }
       }
       const size = Buffer.byteLength(JSON.stringify(value));
       if (size > maxBytes - stagedBytes) {
@@ -80,13 +102,7 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
           remove(key);
         }
       }
-      for (const [key, entry] of staged) {
-        if (entry.contributionId === id) {
-          staged.delete(key);
-          stagedBytes -= entry.bytes;
-          revision++;
-        }
-      }
+      invalidateStaged(id);
     },
     clear() {
       entries.clear();

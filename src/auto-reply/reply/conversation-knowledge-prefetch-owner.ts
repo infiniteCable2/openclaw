@@ -11,6 +11,8 @@ import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agen
 
 const log = createSubsystemLogger("conversation-knowledge");
 const background = createBackgroundWorkOwner({ owner: "conversation-knowledge", maxConcurrent: 1 });
+const RETRY_MIN_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
 
 type PrefetchTarget = {
   agentId: string;
@@ -28,12 +30,6 @@ export function createConversationKnowledgePrefetchOwner(params: {
   /** True continues disposable read-ahead; it is not a new root/input notification. */
   prepare(signal: AbortSignal): Promise<void | boolean>;
   clear(): void;
-  /** Schedule recipient maintenance outside the bounded source-read leaf pool. */
-  onRequest?(signal: AbortSignal): void;
-  /** Committed recipient metadata may release a deferred admission, without rereading sources. */
-  onRecipientChange?(signal: AbortSignal): void | Promise<void>;
-  /** Database retirement must join accepted recipient writes as well as source reads. */
-  settle?(): Promise<void>;
 }) {
   const target = {
     ...params.target,
@@ -47,10 +43,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
   let unsubscribe = () => {};
   let unsubscribeRecipient = () => {};
   let requested = false;
-  let recipientRequested = false;
-  let admissionRequested = false;
   let completion: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryDelayMs = RETRY_MIN_MS;
   const reportedFailures = new Set<string>();
 
   const check = () => {
@@ -64,11 +60,16 @@ export function createConversationKnowledgePrefetchOwner(params: {
       log.warn("Related-history background preparation remains deferred.", { errorCode });
     }
   };
+  const cancelRetry = () => {
+    if (retryTimer !== undefined) {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    }
+  };
   const revoke = () => {
     controller.abort();
+    cancelRetry();
     requested = false;
-    recipientRequested = false;
-    admissionRequested = false;
     unsubscribe();
     unsubscribeRecipient();
     try {
@@ -90,7 +91,6 @@ export function createConversationKnowledgePrefetchOwner(params: {
     revoke();
     const attempt = (async () => {
       await wait();
-      await params.settle?.();
       params.clear();
       await execution?.release();
       execution = undefined;
@@ -117,42 +117,44 @@ export function createConversationKnowledgePrefetchOwner(params: {
       throw error;
     }
   };
+  const retry = () => {
+    if (retryTimer !== undefined || controller.signal.aborted) {
+      return;
+    }
+    // Silence after a transient read failure must not strand an open recipient.
+    // This owns one future wakeup, not accepted work that wait()/close() must join.
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      requested = true;
+      schedule();
+    }, retryDelayMs);
+    retryTimer.unref?.();
+    retryDelayMs = Math.min(RETRY_MAX_MS, retryDelayMs * 2);
+  };
   const schedule = () => {
     if (completion || controller.signal.aborted) {
       return;
     }
     const pending = runInDetachedAsyncContext(() =>
       Promise.resolve().then(async () => {
-        while ((requested || recipientRequested) && !controller.signal.aborted) {
-          const prepareRequested = requested;
+        while (requested && !controller.signal.aborted) {
           requested = false;
           try {
             check();
-            if (recipientRequested) {
-              recipientRequested = false;
-              await params.onRecipientChange?.(controller.signal);
-              check();
-            }
-            // Never check authority or start recipient work on the root publisher's stack.
-            if (admissionRequested) {
-              admissionRequested = false;
-              params.onRequest?.(controller.signal);
-            }
             // Each batch releases shared capacity before a coalesced successor is queued.
-            if (prepareRequested) {
-              await background.enqueue(
-                async (signal) => {
-                  check();
-                  signal.throwIfAborted();
-                  const more = await params.prepare(signal);
-                  signal.throwIfAborted();
-                  check();
-                  reportedFailures.delete("preparation-deferred");
-                  requested ||= more === true;
-                },
-                { abortSignal: controller.signal },
-              );
-            }
+            await background.enqueue(
+              async (signal) => {
+                check();
+                signal.throwIfAborted();
+                const more = await params.prepare(signal);
+                signal.throwIfAborted();
+                check();
+                reportedFailures.delete("preparation-deferred");
+                retryDelayMs = RETRY_MIN_MS;
+                requested ||= more === true;
+              },
+              { abortSignal: controller.signal },
+            );
           } catch {
             if (controller.signal.aborted) {
               return;
@@ -163,8 +165,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
               stop();
               return;
             }
-            // A new notification may retry; no timer or model request is manufactured.
             warn("preparation-deferred");
+            if (!requested) {
+              retry();
+            }
           }
         }
       }),
@@ -174,7 +178,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
         completion = undefined;
       }
       // Preserve a wakeup delivered between the final loop check and settlement.
-      if ((requested || recipientRequested) && !controller.signal.aborted) {
+      if (requested && !controller.signal.aborted) {
         schedule();
       }
     });
@@ -189,16 +193,8 @@ export function createConversationKnowledgePrefetchOwner(params: {
       return;
     }
     // Committed-root publishers only mark work; even authority checks run off their stack.
+    cancelRetry();
     requested = true;
-    admissionRequested = true;
-    schedule();
-  };
-  const requestRecipientCheck = () => {
-    if (controller.signal.aborted) {
-      return;
-    }
-    // Row publishers only coalesce a wakeup; native facts/authority are read off their stack.
-    recipientRequested = true;
     schedule();
   };
 
@@ -238,7 +234,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
         change.storePath &&
         path.resolve(change.storePath) === target.storePath
       ) {
-        requestRecipientCheck();
+        request();
       }
     });
   } catch (error) {
@@ -250,5 +246,5 @@ export function createConversationKnowledgePrefetchOwner(params: {
     throw error;
   }
   request();
-  return { request, requestRecipientCheck, close, assertCurrent, wait };
+  return { request, close, assertCurrent, wait };
 }

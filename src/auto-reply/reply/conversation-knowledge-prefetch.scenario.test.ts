@@ -2,14 +2,23 @@ import { createAssistantMessageEventStream } from "@openclaw/llm-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { streamAgentResponse } from "../../../packages/agent-core/src/agent-stream-response.js";
-import { withinTest } from "../../../test/helpers/promise.js";
 import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
-import type { CompactEmbeddedAgentSessionRuntimeParams } from "../../agents/embedded-agent-runner/compact.types.js";
+import { submitEmbeddedAttemptPrompt } from "../../agents/embedded-agent-runner/run/attempt-prompt-submit.js";
+import { createBaseInput } from "../../agents/embedded-agent-runner/run/attempt-prompt-submit.test-support.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
 import { beginForegroundSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
+import {
+  createAssistant,
+  createAssistantResultStream,
+  createTestSession,
+  registerAgentSessionLoopTestLifecycle,
+  streamMocks,
+} from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
+import { createCompactionRequestBudget } from "../../agents/sessions/compaction/request-budget.js";
+import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { makeProviderModelFixture } from "../../agents/test-helpers/provider-model-fixture.js";
 import {
@@ -25,14 +34,12 @@ import {
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
-import { createDeferredCore } from "../../shared/deferred.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
-import * as idleKnowledge from "./conversation-knowledge-idle.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
 import {
@@ -48,158 +55,182 @@ vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
   compactEmbeddedAgentSessionDirect: budget.compact,
 }));
 
+registerAgentSessionLoopTestLifecycle();
+
 describe("native branch prefetch and model-boundary composition", () => {
-  it("resumes from native pending-final-clear without another input or root publication", async ({
-    signal,
-  }) => {
+  it("prepares idle history on committed roots without recipient writes or model maintenance", async () => {
     await withOpenClawTestState(
-      { scenario: "minimal", label: "knowledge-native-delivery-resume" },
+      { scenario: "minimal", label: "knowledge-idle-readiness" },
       async (state) => {
         const fixture = await createConversationKnowledgeScenario(state);
-        const firstAttemptSettled = createDeferredCore();
-        const copied = createDeferredCore();
-        const actualIdle = idleKnowledge.runIdleConversationKnowledge;
-        // Observe real native completion; no result, custody or storage behavior is replaced.
-        const idle = vi
-          .spyOn(idleKnowledge, "runIdleConversationKnowledge")
-          .mockImplementation(async (params) => {
-            try {
-              return await actualIdle(params);
-            } finally {
-              firstAttemptSettled.resolve();
-            }
-          });
-        budget.compact.mockImplementation(
-          async (params: CompactEmbeddedAgentSessionRuntimeParams) => {
-            params.budgetPreflight?.onDecision?.(true);
-            return { ok: true, compacted: false, reason: "within native budget" };
-          },
-        );
-        let stopObservation = () => {};
         let prefetch: ReturnType<typeof prepareConversationKnowledgeRecipient>;
+        let stopObservation = () => {};
+        budget.compact.mockClear();
         try {
-          const donor = await fixture.branch("delivery-donor");
-          const recipient = await fixture.branch("delivery-recipient");
+          const chat = await fixture.branch("earlier-chat");
+          const previousCall = await fixture.branch("previous-call");
+          const recipient = await fixture.branch("idle-recipient");
+          const chatOwner = await fixture.claim(chat);
+          const callOwner = await fixture.claim(previousCall);
+          const publish = async (
+            source: typeof chat,
+            owner: typeof chatOwner,
+            id: string,
+            text: string,
+          ) => {
+            const terminal = await fixture.append(source, id, "stop", text);
+            expect(
+              await recordConversationKnowledgeTurn({
+                ...owner,
+                ...terminal,
+                privateAudience: { participant: person, admission: terminal.admission! },
+              }),
+            ).toBe(true);
+            const receipt = (await fixture.receipts()).find((value) => value.runId === id);
+            if (!receipt) {
+              throw new Error("Expected committed native source contribution");
+            }
+            return conversationKnowledgeContributionId(receipt);
+          };
+          const earlier: string[] = [];
+          for (let index = 0; index < 9; index++) {
+            earlier.push(
+              await publish(
+                chat,
+                chatOwner,
+                `earlier-chat-${index}`,
+                `Earlier chat fact ${index}.`,
+              ),
+            );
+          }
+          const fresh = await publish(chat, chatOwner, "fresh-chat", "The chat codeword is amber.");
+          const priorCall = await publish(
+            previousCall,
+            callOwner,
+            "prior-call",
+            "The previous call codeword is violet.",
+          );
+          const pendingFinalDelivery = {
+            kind: "transport-only" as const,
+            intentId: "synthetic-intent",
+            deliveries: [{ id: "synthetic-delivery", state: "queued" as const }],
+            createdAt: Date.now(),
+          };
           await upsertSessionEntryCore(recipient, {
             ...loadSessionEntry(recipient)!,
-            pendingFinalDelivery: {
-              kind: "transport-only",
-              intentId: "synthetic-intent",
-              deliveries: [
-                { id: "synthetic-delivery", state: "delivered" },
-                { id: "synthetic-sibling", state: "queued" },
-              ],
-              createdAt: Date.now(),
-            },
+            pendingFinalDelivery,
           });
-          const donorOwner = await fixture.claim(donor);
-          const terminal = await fixture.append(
-            donor,
-            "delivery-observation",
-            "stop",
-            "The recovered observation is amber.",
-          );
-          expect(
-            await recordConversationKnowledgeTurn({
-              ...donorOwner,
-              ...terminal,
-              privateAudience: { participant: person, admission: terminal.admission! },
-            }),
-          ).toBe(true);
-          const recipientOwner = await fixture.claim(recipient);
-          const branch = await readConversationKnowledgeBranch(recipientOwner);
+          const before = await loadTranscriptEvents(recipient);
+          const entryBefore = loadSessionEntry(recipient)!;
+          const claim = await fixture.claim(recipient);
+          const branch = await readConversationKnowledgeBranch(claim);
           if (!branch) {
-            throw new Error("Expected native recipient membership");
+            throw new Error("Expected actual native recipient membership");
           }
+          let firstOpeningLive = true;
+          let secondOpeningLive = true;
           let rootUpdates = 0;
+          let recipientUpdates = 0;
           stopObservation = onInternalSessionTranscriptUpdate((update) => {
             if (update.target?.sessionId === branch.root.sessionId) {
               rootUpdates++;
             }
             if (update.target?.sessionId === recipient.sessionId) {
-              copied.resolve();
+              recipientUpdates++;
             }
           });
-          prefetch = prepareConversationKnowledgeRecipient({
+          const audience: ConversationPrivateAudience = {
+            agentId: branch.agentId,
+            sessionKey: branch.sessionKey,
+            channelId: "matrix",
+            accountId: "default",
+            nativeChannelId: "synthetic-private-idle-recipient",
+            participant: person,
+            assertCurrent() {
+              claim.assertCurrent();
+              if (!firstOpeningLive) {
+                throw new Error("First native opening closed");
+              }
+            },
+          };
+          const request = {
             branch,
             participant: person,
-            audience: {
-              agentId: branch.agentId,
-              sessionKey: branch.sessionKey,
-              channelId: "example-channel",
-              accountId: "default",
-              nativeChannelId: "synthetic-private-recipient",
-              participant: person,
-              assertCurrent: recipientOwner.assertCurrent,
-            },
+            audience,
             env: state.env,
             getRuntimeConfig: () => fixture.cfg,
-          });
+          };
+          prefetch = prepareConversationKnowledgeRecipient(request);
           if (!prefetch) {
-            throw new Error("Expected eligible recipient");
+            throw new Error("Expected eligible native idle recipient");
           }
-          await withinTest(firstAttemptSettled.promise, signal);
-          expect(
-            (await loadTranscriptEvents(recipient)).some(
-              (event) => asOptionalRecord(event)?.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
-            ),
-          ).toBe(false);
-          const clear = () =>
-            applySessionEntryOperation(
-              recipient,
-              {
-                kind: "pending-final-clear",
-                sessionId: recipient.sessionId,
-                intentId: "synthetic-intent",
-                now: Date.now(),
-              },
-              { skipMaintenance: true, takeCacheOwnership: true, workerGuard: {} },
-            );
-          await clear();
-          expect(loadSessionEntry(recipient)?.pendingFinalDelivery).toBeDefined();
-          expect(
-            (await loadTranscriptEvents(recipient)).some(
-              (event) => asOptionalRecord(event)?.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
-            ),
-          ).toBe(false);
-          await applySessionEntryOperation(
-            recipient,
-            {
-              kind: "pending-final-settle",
-              settlement: {
-                sessionId: recipient.sessionId,
-                intentId: "synthetic-intent",
-                deliveryId: "synthetic-sibling",
-                state: "delivered",
-                expectedStates: ["queued"],
-              },
-            },
-            { skipMaintenance: true, takeCacheOwnership: true, workerGuard: {} },
+          await prefetch.owner.wait();
+          for (const [index, id] of earlier.entries()) {
+            expect(prefetch.cache.peek(id, 0)?.part.text).toContain(`Earlier chat fact ${index}.`);
+          }
+          expect(prefetch.cache.peek(fresh, 0)?.part.text).toContain("The chat codeword is amber.");
+          expect(prefetch.cache.peek(priorCall, 0)?.part.text).toContain(
+            "The previous call codeword is violet.",
           );
-          await clear();
-          expect(loadSessionEntry(recipient)?.pendingFinalDelivery).toBeUndefined();
-          await withinTest(copied.promise, signal);
-          const packets = (await loadTranscriptEvents(recipient))
-            .map(asOptionalRecord)
-            .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT);
-          expect(packets).toHaveLength(1);
-          expect(packets[0]?.content).toContain("The recovered observation is amber.");
+          expect(await loadTranscriptEvents(recipient)).toEqual(before);
+          expect(loadSessionEntry(recipient)).toEqual(entryBefore);
           expect(rootUpdates).toBe(0);
-          expect(idle).toHaveBeenCalledTimes(2);
+          expect(recipientUpdates).toBe(0);
+          expect(budget.compact).not.toHaveBeenCalled();
+
+          const secondAudience: ConversationPrivateAudience = {
+            ...audience,
+            assertCurrent() {
+              claim.assertCurrent();
+              if (!secondOpeningLive) {
+                throw new Error("Second native opening closed");
+              }
+            },
+          };
+          expect(
+            prepareConversationKnowledgeRecipient({ ...request, audience: secondAudience }),
+          ).toBe(prefetch);
+          firstOpeningLive = false;
+          await prefetch.owner.wait();
+          const later = await publish(
+            chat,
+            chatOwner,
+            "later-chat",
+            "The later codeword is emerald.",
+          );
+          // Only the source's native commit wakes this already idle recipient.
+          await prefetch.owner.wait();
+          expect(prefetch.cache.peek(later, 0)?.part.text).toContain(
+            "The later codeword is emerald.",
+          );
+          expect(rootUpdates).toBeGreaterThan(0);
+          expect(recipientUpdates).toBe(0);
+          expect(await loadTranscriptEvents(recipient)).toEqual(before);
+          expect(loadSessionEntry(recipient)?.pendingFinalDelivery).toEqual(pendingFinalDelivery);
+          const revision = prefetch.cache.revision;
+          prefetch.owner.request();
+          await prefetch.owner.wait();
+          expect(prefetch.cache.revision).toBe(revision);
+          expect(budget.compact).not.toHaveBeenCalled();
+          secondOpeningLive = false;
+          expect(() => prefetch!.owner.assertCurrent()).toThrow();
+          await prefetch.owner.close();
+          expect(prefetch.cache.peek(later, 0)).toBeUndefined();
+          await publish(chat, chatOwner, "after-close", "This fact has no open recipient.");
+          expect(await loadTranscriptEvents(recipient)).toEqual(before);
         } finally {
           stopObservation();
           await prefetch?.owner.close();
-          idle.mockRestore();
-          budget.compact.mockReset();
           await fixture.close();
         }
       },
     );
   });
 
-  it("warms on committed roots and consumes only ready packets under the existing native writer", async ({
-    signal,
-  }) => {
+  async function consumeWithNativeWriter(
+    scenario: "response-close" | "outer-retry",
+    { signal }: { signal: AbortSignal },
+  ) {
     await withOpenClawTestState(
       { scenario: "minimal", label: "knowledge-prefetch-native" },
       async (state) => {
@@ -338,6 +369,86 @@ describe("native branch prefetch and model-boundary composition", () => {
               knowledge.prepareHistory(run),
             );
             expect(await packets()).toEqual([]);
+            if (scenario === "outer-retry") {
+              // The actual native recorder commits one canonical user row. Both
+              // fresh attempts read before that same row; packet receipts remain
+              // durable even when the first synthetic provider fails afterward.
+              const recorder = createUserTurnTranscriptRecorder({
+                target: writer,
+                input: { text: "Which color?" },
+                assertOriginalInputCommit: owner.assertCurrent,
+              });
+              await withSessionTranscriptWriteAssertion(writer, owner.assertCurrent, () =>
+                recorder.persistApproved({ expectedSessionId: recipient.sessionId }),
+              );
+              const currentInput = recorder.getAdmissionReceipt();
+              expect(currentInput).toBeDefined();
+              if (!currentInput) {
+                throw new Error("Expected real native current-user admission");
+              }
+              const requests: unknown[] = [];
+              const model = makeProviderModelFixture({
+                id: "test-model",
+                provider: "test-provider",
+                api: "openai-responses",
+                baseUrl: "https://model.example.test/v1",
+              });
+              streamMocks.streamSimple.mockImplementation((activeModel, context) => {
+                requests.push(structuredClone(context.messages));
+                const first = requests.length === 1;
+                return createAssistantResultStream({
+                  ...createAssistant(
+                    activeModel,
+                    first ? [] : [{ type: "text", text: "Yellow." }],
+                    first ? "error" : "stop",
+                  ),
+                  ...(first ? { errorMessage: "503 synthetic provider failure" } : {}),
+                });
+              });
+              for (let attemptIndex = 0; attemptIndex < 2; attemptIndex++) {
+                const manager = await SessionManager.openModelContextAsync(writer, {
+                  admission: currentInput,
+                  signal,
+                });
+                expect(JSON.stringify(manager.buildSessionContext().messages)).not.toContain(
+                  "The color is yellow.",
+                );
+                const { session } = await createTestSession({ model, sessionManager: manager });
+                await withSessionTranscriptWriteAssertion(writer, owner.assertCurrent, () =>
+                  submitEmbeddedAttemptPrompt({
+                    ...createBaseInput(),
+                    attempt: {
+                      sessionId: recipient.sessionId,
+                      userTurnTranscriptRecorder: recorder,
+                    },
+                    activeSession: session,
+                    contextTokenBudget: 100_000,
+                    modelPrompt: "Which color?",
+                    transcriptPrompt: "Which color?",
+                    prependContext: undefined,
+                    appendContext: undefined,
+                    assertHostActive: () => admission.assertSourceCurrent(),
+                    compactionRequestBudget: createCompactionRequestBudget({
+                      contextWindow: 100_000,
+                      reserveTokens: 1_024,
+                    }),
+                    refreshConversationContext: (request) => knowledge.refreshPrepared(request),
+                    promptActiveSession: (prompt, options) => session.prompt(prompt, options),
+                  }),
+                );
+                expect(await packets()).toHaveLength(1);
+              }
+              expect(requests).toHaveLength(2);
+              expect(JSON.stringify(requests[0])).toContain("The color is yellow.");
+              expect(JSON.stringify(requests[1])).toContain("The color is yellow.");
+              expect(
+                (await loadTranscriptEvents(recipient)).filter(
+                  (event) => asOptionalRecord(asOptionalRecord(event)?.message)?.role === "user",
+                ),
+              ).toHaveLength(1);
+              expect(budget.compact).not.toHaveBeenCalled();
+              return;
+            }
             const refresh = (canAdmit: boolean) =>
               withSessionTranscriptWriteAssertion(writer, owner.assertCurrent, () =>
                 knowledge.refreshPrepared({ signal, canAdmit: () => canAdmit }),
@@ -472,5 +583,9 @@ describe("native branch prefetch and model-boundary composition", () => {
         }
       },
     );
-  });
+  }
+  it.each(["response-close", "outer-retry"] as const)(
+    "consumes ready packets with the native writer (%s)",
+    consumeWithNativeWriter,
+  );
 });

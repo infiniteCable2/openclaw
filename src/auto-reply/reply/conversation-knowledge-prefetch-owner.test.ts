@@ -111,21 +111,20 @@ afterEach(async () => {
     await resource.close();
   }
   expect(resources.size).toBe(0);
+  vi.useRealTimers();
 });
 
 describe("conversation knowledge prefetch lifecycle", () => {
-  it("coalesces committed recipient metadata off the publisher stack without rewarming sources", async () => {
+  it("coalesces committed recipient metadata into detached data preparation", async () => {
     const context = new AsyncLocalStorage<string>();
-    const onRecipientChange = vi.fn(async () => {
+    const prepare = vi.fn(async () => {
       expect(context.getStore()).toBeUndefined();
     });
-    const prepare = vi.fn(async () => {});
     const owner = createConversationKnowledgePrefetchOwner({
       target,
       assertCurrent() {},
       clear() {},
       prepare,
-      onRecipientChange,
     });
     await owner.wait();
     const change = {
@@ -137,27 +136,25 @@ describe("conversation knowledge prefetch lifecycle", () => {
     context.run("delivery-publisher", () => {
       sessionChanges.emit(change);
       sessionChanges.emit(change);
-      expect(onRecipientChange).not.toHaveBeenCalled();
+      expect(prepare).toHaveBeenCalledOnce();
     });
     await owner.wait();
-    expect(onRecipientChange).toHaveBeenCalledOnce();
-    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledTimes(2);
     sessionChanges.emit({ ...change, scope: "transcript" });
     sessionChanges.emit({ ...change, scope: "runtime" });
     sessionChanges.emit({ ...change, agentId: "other" });
     sessionChanges.emit({ ...change, storePath: path.resolve("other.sqlite") });
     sessionChanges.emit({ ...change, sessionKey: target.root.sessionKey });
     await owner.wait();
-    expect(onRecipientChange).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledTimes(2);
     await owner.close();
     sessionChanges.emit(change);
-    owner.requestRecipientCheck();
+    owner.request();
     await owner.wait();
-    expect(onRecipientChange).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledTimes(2);
   });
 
-  it("continues source pages without restarting idle admission and preserves new root wakeups", async () => {
-    const onRequest = vi.fn();
+  it("continues source pages and preserves new root wakeups", async () => {
     let pages = 0;
     const prepare = vi.fn(async () => {
       pages++;
@@ -171,17 +168,15 @@ describe("conversation knowledge prefetch lifecycle", () => {
       assertCurrent() {},
       clear() {},
       prepare,
-      onRequest,
     });
     await owner.wait();
     expect(prepare).toHaveBeenCalledTimes(4);
-    expect(onRequest).toHaveBeenCalledTimes(2);
     await owner.close();
   });
 
   it("does not revive revoked recipient authority from a committed delivery notification", async () => {
     let live = true;
-    const onRecipientChange = vi.fn();
+    const prepare = vi.fn(async () => {});
     const owner = createConversationKnowledgePrefetchOwner({
       target,
       assertCurrent() {
@@ -190,8 +185,7 @@ describe("conversation knowledge prefetch lifecycle", () => {
         }
       },
       clear() {},
-      prepare: async () => {},
-      onRecipientChange,
+      prepare,
     });
     await owner.wait();
     live = false;
@@ -204,7 +198,7 @@ describe("conversation knowledge prefetch lifecycle", () => {
       }),
     ).not.toThrow();
     await owner.close();
-    expect(onRecipientChange).not.toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledOnce();
   });
 
   it("starts detached and nonblocking, then coalesces exact root notifications", async () => {
@@ -285,7 +279,8 @@ describe("conversation knowledge prefetch lifecycle", () => {
     expect(boundary.enqueue).toHaveBeenCalledTimes(2);
   });
 
-  it("defers a read failure until another event without erasing valid cached ranges", async () => {
+  it("retries a read failure without erasing valid cached ranges", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const f = fixture();
     f.prepare.mockRejectedValueOnce(new Error("synthetic source changed"));
     await f.owner.wait();
@@ -294,7 +289,7 @@ describe("conversation knowledge prefetch lifecycle", () => {
     expect(boundary.warn).toHaveBeenCalledWith(expect.any(String), {
       errorCode: "preparation-deferred",
     });
-    rootUpdate();
+    await vi.advanceTimersByTimeAsync(1_000);
     await f.owner.wait();
     expect(f.prepare).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(boundary.warn.mock.calls)).not.toContain("synthetic source changed");

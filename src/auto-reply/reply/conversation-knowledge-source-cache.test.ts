@@ -268,4 +268,24 @@ describe("disposable conversation source preparation", () => {
     );
     expect(cache.peek("source-contribution", 10)?.part.text).toBe("Newly prepared source range.");
   });
+
+  it.each([0, 20])(
+    "replaces a rewritten range at offset %s without its old continuation",
+    (offset) => {
+      const cache = createConversationKnowledgeSourceCache();
+      cache.stage("source-contribution", 0, packet("Earlier source range."));
+      cache.stage("source-contribution", 10, packet("Earlier source continuation."));
+      cache.stage("other", 0, packet("Independent observation."));
+      const renewed = packet("Revalidated source range.");
+      renewed.through = { ...renewed.through, generation: "rewritten-generation" };
+      renewed.version = { ...renewed.version, generation: "rewritten-generation" };
+      expect(cache.stage("source-contribution", offset, renewed)).toBe(true);
+      expect(cache.peek("source-contribution", offset)).toEqual(renewed);
+      expect(cache.peek("source-contribution", 10)).toBeUndefined();
+      if (offset !== 0) {
+        expect(cache.peek("source-contribution", 0)).toBeUndefined();
+      }
+      expect(cache.peek("other", 0)?.part.text).toBe("Independent observation.");
+    },
+  );
 });

@@ -411,7 +411,12 @@ export async function runEmbeddedAttemptPromptPhase(
         activeSession,
         contextTokenBudget: promptContext.contextTokenBudget,
         compactionRequestBudget,
-        refreshConversationContext: attempt.refreshConversationContext,
+        // Custom engines own their assembled window. This additive hook is
+        // supported only by legacy; it cannot bypass a selected custom engine.
+        refreshConversationContext:
+          !activeContextEngine || activeContextEngine.info.id === "legacy"
+            ? attempt.refreshConversationContext
+            : undefined,
         images: imageResult.images,
         ...(leasedSteering ? { leasedSteering } : {}),
         modelPrompt: promptContext.promptForModel,

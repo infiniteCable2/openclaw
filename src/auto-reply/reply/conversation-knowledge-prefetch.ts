@@ -1,5 +1,4 @@
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
-import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
@@ -8,7 +7,6 @@ import type { SessionParticipantIdentity } from "../../config/sessions/session-p
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
-import { runInDetachedAsyncContext } from "../../shared/detached-async-context.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
 import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
@@ -24,14 +22,13 @@ const recipients = resolveGlobalSingleton(
   () => new Map<string, Recipient>(),
 );
 
-/** Warm active readers and maintain idle history only under a host-confirmed private audience. */
+/** Prepare authorized source data without acquiring a model session or changing its history. */
 export function prepareConversationKnowledgeRecipient(params: {
   branch: ConversationKnowledgeBranch;
   participant?: SessionParticipantIdentity;
   audience?: ConversationPrivateAudience;
   env: NodeJS.ProcessEnv;
   getRuntimeConfig(): OpenClawConfig;
-  run?: RunEmbeddedAgentParams;
 }): Recipient | undefined {
   const { branch, audience: incomingAudience } = params;
   const participant = params.participant && Object.freeze({ ...params.participant });
@@ -116,10 +113,6 @@ export function prepareConversationKnowledgeRecipient(params: {
   });
   const cache = createConversationKnowledgeSourceCache();
   let sourceCursor: string | undefined;
-  let idleRequested = false;
-  let idleRequestRevision = 0;
-  let waitingForRecipientDelivery = false;
-  let idleCompletion: Promise<void> | undefined;
   const checkAudience = () => {
     audience.assertCurrent();
     if (resolveAgentConversationMode(params.getRuntimeConfig(), branch.agentId) !== "branches") {
@@ -127,69 +120,6 @@ export function prepareConversationKnowledgeRecipient(params: {
     }
   };
   checkAudience();
-  const requestIdle = (signal: AbortSignal) => {
-    idleRequested = true;
-    idleRequestRevision++;
-    if (idleCompletion) {
-      return;
-    }
-    let attemptedRevision = idleRequestRevision;
-    const work = runInDetachedAsyncContext(async () => {
-      const { runIdleConversationKnowledge } = await import("./conversation-knowledge-idle.js");
-      while (idleRequested && !signal.aborted) {
-        idleRequested = false;
-        waitingForRecipientDelivery = false;
-        attemptedRevision = idleRequestRevision;
-        checkAudience();
-        const startedAt = performance.now();
-        const result = await runIdleConversationKnowledge({
-          branch,
-          participant: participant!,
-          audience: audience!,
-          env: params.env,
-          getRuntimeConfig: () => params.getRuntimeConfig(),
-          run: params.run,
-          signal,
-          sourceCache: cache,
-        });
-        log.debug("Related-history idle admission settled", {
-          recipientHash: redactIdentifier(branch.sessionId),
-          elapsedMs: Math.round(performance.now() - startedAt),
-          admittedPackets: result.admittedPackets,
-          status: result.status,
-          preempted: result.preempted === true,
-        });
-        if (result.waitingFor === "recipient-delivery") {
-          waitingForRecipientDelivery = true;
-          // The native clear may have committed before the deferred result arrived.
-          // Check once now, then wait for actual committed recipient metadata.
-          owner.requestRecipientCheck();
-        }
-        // A new preemptible owner waits for the foreground turn to finish. Read,
-        // capacity and authorization failures never become a busy retry loop.
-        idleRequested ||= result.preempted === true;
-      }
-    });
-    const settled = work
-      .catch(() => {
-        // A failed import/read must wait for a genuinely new wakeup, rather
-        // than replaying the request that just failed forever.
-        idleRequested = idleRequestRevision > attemptedRevision;
-        if (!signal.aborted) {
-          log.warn("Related-history idle admission deferred; retained progress will resume.");
-        }
-      })
-      .finally(() => {
-        if (idleCompletion === settled) {
-          idleCompletion = undefined;
-        }
-        // Preserve a wakeup delivered during the final settlement microtask.
-        if (idleRequested && !signal.aborted) {
-          requestIdle(signal);
-        }
-      });
-    idleCompletion = settled;
-  };
   const owner = createConversationKnowledgePrefetchOwner({
     target: { ...branch, env: params.env },
     assertCurrent: checkAudience,
@@ -200,44 +130,7 @@ export function prepareConversationKnowledgeRecipient(params: {
         recipients.delete(key);
       }
     },
-    onRequest: requestIdle,
-    async onRecipientChange(signal) {
-      if (!waitingForRecipientDelivery) {
-        return;
-      }
-      const held = await loadSessionEntryForAdmission(
-        { ...branch, env: params.env },
-        { signal, assertCurrent: owner.assertCurrent },
-      );
-      try {
-        owner.assertCurrent();
-        held.databaseClaim.assertCurrent();
-        signal.throwIfAborted();
-        if (
-          held.entry?.sessionId !== branch.sessionId ||
-          held.entry.lifecycleRevision !== branch.lifecycleRevision ||
-          held.entry.pendingFinalDelivery
-        ) {
-          return;
-        }
-        // This notification grants no write custody. A new idle owner rereads every fence.
-        waitingForRecipientDelivery = false;
-        requestIdle(signal);
-      } finally {
-        await held.databaseClaim.release();
-      }
-    },
-    settle: async () => {
-      for (let pending = idleCompletion; pending; pending = idleCompletion) {
-        await pending;
-      }
-    },
     async prepare(signal) {
-      // Only disposable read-ahead is LRU-bounded. An open recipient's idle
-      // catch-up remains registered even when its prepared cache is cold.
-      if (![...recipients.keys()].slice(-16).includes(key)) {
-        return false;
-      }
       const startedAt = performance.now();
       const held = await loadSessionEntryForAdmission(
         { ...branch, env: params.env },
@@ -292,9 +185,5 @@ export function prepareConversationKnowledgeRecipient(params: {
   });
   const recipient = { owner, cache, retainAudience };
   recipients.set(key, recipient);
-  // Evict bytes, not live synchronization: old open branches still follow roots.
-  for (const cold of [...recipients.values()].slice(0, -16)) {
-    cold.cache.clear();
-  }
   return recipient;
 }

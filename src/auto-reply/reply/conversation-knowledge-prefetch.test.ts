@@ -1,14 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferredCore } from "../../shared/deferred.js";
 
 const preparation = vi.hoisted(() => ({
   prepare: vi.fn(),
-  idle: vi.fn(),
   load: vi.fn(),
   owner: {
     assertCurrent: vi.fn(),
     request: vi.fn(),
-    requestRecipientCheck: vi.fn(),
     close: vi.fn(),
   },
   create: vi.fn(),
@@ -25,10 +22,6 @@ vi.mock("../../config/sessions/session-accessor.sqlite-entry-admission.js", () =
 vi.mock("./conversation-knowledge.js", () => ({
   prepareReplyConversationKnowledge: preparation.prepare,
 }));
-// mock-isolation: Control a settled native delivery deferral; real row events are covered in the scenario test.
-vi.mock("./conversation-knowledge-idle.js", () => ({
-  runIdleConversationKnowledge: preparation.idle,
-}));
 // mock-isolation: This boundary only schedules packets; cache/native range proofs have focused tests.
 vi.mock("./conversation-knowledge-source-cache.js", () => ({
   createConversationKnowledgeSourceCache: () => ({ clear: vi.fn() }),
@@ -42,7 +35,6 @@ import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-
 
 beforeEach(() => {
   preparation.prepare.mockReset();
-  preparation.idle.mockReset();
   preparation.load.mockReset();
   preparation.create.mockReset().mockReturnValue(preparation.owner);
   for (const mock of Object.values(preparation.owner)) {
@@ -51,54 +43,36 @@ beforeEach(() => {
 });
 
 describe("recipient preparation scheduling", () => {
-  it.each([false, true])(
-    "resumes a native delivery wait without new root/source work (clear raced=%s)",
-    async (clearRaced) => {
-      const branch = {
-        agentId: "example",
-        sessionKey: `agent:example:delivery-race-${clearRaced}`,
-        sessionId: `delivery-race-${clearRaced}`,
-        lifecycleRevision: "original",
-        storePath: "/synthetic/agent.sqlite",
-        root: {
-          sessionKey: "agent:example:root",
-          sessionId: "root",
-          lifecycleRevision: "original",
-        },
-      };
-      const participant = { type: "profile" as const, id: "example-person" };
-      const deferredObserved = createDeferredCore();
-      const resumed = createDeferredCore();
-      let pending = true;
-      const release = vi.fn();
-      preparation.load.mockImplementation(async () => ({
-        entry: {
-          sessionId: branch.sessionId,
-          lifecycleRevision: branch.lifecycleRevision,
-          ...(pending ? { pendingFinalDelivery: { kind: "transport-only" } } : {}),
-        },
-        databaseClaim: { assertCurrent() {}, release },
-      }));
-      preparation.idle
-        .mockImplementationOnce(async () => {
-          // Native delivery clearing can commit while the first attempt is settling.
-          pending = !clearRaced;
-          return { status: "pending", admittedPackets: 0, waitingFor: "recipient-delivery" };
-        })
-        .mockImplementationOnce(async () => {
-          resumed.resolve();
-          return { status: "settled", admittedPackets: 1 };
-        });
-      preparation.owner.requestRecipientCheck.mockImplementation(() => deferredObserved.resolve());
+  it("prepares every open recipient rather than starving readers outside the newest sixteen", async () => {
+    const participant = { type: "profile" as const, id: "example-person" };
+    const release = vi.fn();
+    preparation.load.mockImplementation(async (target) => ({
+      entry: { sessionId: target.sessionId, lifecycleRevision: "original" },
+      databaseClaim: { kind: "worker", reader: {}, assertCurrent() {}, release },
+    }));
+    preparation.prepare.mockImplementation(async () => ({ release() {} }));
+    const registrations = Array.from({ length: 20 }, (_, index) => {
+      const sessionKey = `agent:example:open-reader-${index}`;
       const recipient = prepareConversationKnowledgeRecipient({
-        branch,
+        branch: {
+          agentId: "example",
+          sessionKey,
+          sessionId: `open-reader-${index}`,
+          lifecycleRevision: "original",
+          storePath: "/synthetic/agent.sqlite",
+          root: {
+            sessionKey: "agent:example:root",
+            sessionId: "root",
+            lifecycleRevision: "original",
+          },
+        },
         participant,
         audience: {
-          agentId: branch.agentId,
-          sessionKey: branch.sessionKey,
+          agentId: "example",
+          sessionKey,
           channelId: "example-channel",
           accountId: "default",
-          nativeChannelId: "private-recipient",
+          nativeChannelId: `private-reader-${index}`,
           participant,
           assertCurrent() {},
         },
@@ -107,31 +81,25 @@ describe("recipient preparation scheduling", () => {
           agents: { entries: { example: { conversationMode: "branches" } } },
         }),
       });
-      const scheduled = preparation.create.mock.calls[0]![0];
-      const signal = new AbortController().signal;
-      try {
-        scheduled.onRequest(signal);
-        await deferredObserved.promise;
-        expect(preparation.idle).toHaveBeenCalledOnce();
-        await scheduled.onRecipientChange(signal);
-        if (!clearRaced) {
-          // A queued/delivered marker still present is not native clear authority.
-          expect(preparation.idle).toHaveBeenCalledOnce();
-          pending = false;
-          await scheduled.onRecipientChange(signal);
-        }
-        await resumed.promise;
-        expect(preparation.idle).toHaveBeenCalledTimes(2);
-        expect(preparation.prepare).not.toHaveBeenCalled();
-        expect(preparation.owner.request).not.toHaveBeenCalled();
-        expect(release).toHaveBeenCalledTimes(clearRaced ? 1 : 2);
-      } finally {
-        await scheduled.settle();
-        scheduled.clear();
-        expect(recipient).toBeDefined();
+      expect(recipient).toBeDefined();
+      return preparation.create.mock.calls.at(-1)![0];
+    });
+    const signal = new AbortController().signal;
+    try {
+      for (const registration of registrations) {
+        await registration.prepare(signal);
       }
-    },
-  );
+      expect(preparation.prepare).toHaveBeenCalledTimes(20);
+      expect(release).toHaveBeenCalledTimes(20);
+      expect(preparation.prepare.mock.calls.map(([input]) => input.sessionId)).toEqual(
+        Array.from({ length: 20 }, (_, index) => `open-reader-${index}`),
+      );
+    } finally {
+      for (const registration of registrations) {
+        registration.clear();
+      }
+    }
+  });
 
   it("retains independently live same-person openings without trusting expired or different-person proofs", () => {
     const branch = {
