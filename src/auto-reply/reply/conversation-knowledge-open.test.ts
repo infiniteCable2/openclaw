@@ -64,9 +64,11 @@ function fixture() {
       target: branch,
       participant,
       audience,
-      getRuntimeConfig: () => ({
-        agents: { entries: { example: { conversationMode: "branches" as const } } },
-      }),
+      getRuntimeConfig() {
+        return {
+          agents: { entries: { [this.target.agentId]: { conversationMode: "branches" as const } } },
+        };
+      },
     },
   };
 }
@@ -89,8 +91,11 @@ describe("opening a private conversation recipient", () => {
       participant: params.participant,
       audience: params.audience,
       env: reader.database.env,
-      getRuntimeConfig: params.getRuntimeConfig,
+      getRuntimeConfig: expect.any(Function),
     });
+    expect(boundary.register.mock.calls[0]![0].getRuntimeConfig()).toEqual(
+      params.getRuntimeConfig(),
+    );
     expect(boundary.seed.mock.invocationCallOrder[0]).toBeLessThan(
       boundary.register.mock.invocationCallOrder[0]!,
     );

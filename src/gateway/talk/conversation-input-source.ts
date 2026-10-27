@@ -240,7 +240,7 @@ export function createGatewayTalkConversationInputSource(input: {
             },
             participant: params.participant,
             audience,
-            getRuntimeConfig: params.getRuntimeConfig,
+            getRuntimeConfig: () => params.getRuntimeConfig(),
             signal,
           });
           audience.assertCurrent();

@@ -92,7 +92,7 @@ export async function openConversationKnowledgeRecipient(params: {
       participant,
       audience,
       env: reader.database.env,
-      getRuntimeConfig: params.getRuntimeConfig,
+      getRuntimeConfig: () => params.getRuntimeConfig(),
     });
   } finally {
     await held.databaseClaim.release();

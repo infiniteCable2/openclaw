@@ -50,33 +50,70 @@ type IdleConversationKnowledgeParams = {
   signal?: AbortSignal;
 };
 
+/** Release every acquired resource without replacing an earlier operation failure. */
+async function withIdleResourceCleanup<T>(
+  operation: () => T | Promise<T>,
+  cleanup: () => void | Promise<void>,
+  onCleanupFailure: () => void,
+): Promise<T> {
+  let outcome: { value: T } | { error: unknown };
+  try {
+    outcome = { value: await operation() };
+  } catch (error) {
+    outcome = { error };
+  }
+  try {
+    await cleanup();
+  } catch (cleanupError) {
+    onCleanupFailure();
+    if ("error" in outcome) {
+      throw new AggregateError(
+        [outcome.error, cleanupError],
+        "Idle maintenance operation and cleanup failed",
+        { cause: outcome.error },
+      );
+    }
+    throw cleanupError;
+  }
+  if ("error" in outcome) {
+    throw outcome.error;
+  }
+  return outcome.value;
+}
+
 /** Retain custody after native result delivery until all accepted cleanup settles. */
 async function runWithIdleCleanup<T>(
   signal: AbortSignal,
-  failures: Set<unknown>,
   operation: () => Promise<T>,
+  onCleanupFailure: () => void,
 ): Promise<T> {
+  const failures = new Set<unknown>();
   const work = new AsyncWorkScope(failures);
   const abort = () => work.beginClose(signal.reason);
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) {
     abort();
   }
-  try {
-    return await work.run(operation);
-  } finally {
-    try {
-      await AsyncWorkScope.runWhenAllIdle(
-        () => [work],
-        () => work.drain(),
-      );
-      if (failures.size) {
-        throw new AggregateError(failures, "Idle maintenance cleanup failed");
+  return withIdleResourceCleanup(
+    () => work.run(operation),
+    async () => {
+      try {
+        await AsyncWorkScope.runWhenAllIdle(
+          () => [work],
+          () => work.drain(),
+        );
+        if (failures.size === 1) {
+          throw failures.values().next().value;
+        }
+        if (failures.size) {
+          throw new AggregateError(failures, "Idle maintenance cleanup failed");
+        }
+      } finally {
+        signal.removeEventListener("abort", abort);
       }
-    } finally {
-      signal.removeEventListener("abort", abort);
-    }
-  }
+    },
+    onCleanupFailure,
+  );
 }
 
 /** Update an idle recipient without inheriting a turn or replacing its writer. */
@@ -96,6 +133,9 @@ async function runIdleConversationKnowledgeDetached(
   const generation = getAgentEventLifecycleGeneration();
   let admittedPackets = 0;
   let cleanupFailed = false;
+  const markCleanupFailed = () => {
+    cleanupFailed = true;
+  };
   const interrupted = new AbortController();
   const owner = createSessionMaintenanceOwner({
     sessionKey: branch.sessionKey,
@@ -133,220 +173,211 @@ async function runIdleConversationKnowledgeDetached(
                   { ...branch, env: params.env },
                   { signal: owner.signal, assertCurrent: check },
                 );
-                try {
-                  check();
-                  const reader =
-                    "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"
-                      ? held.databaseClaim.reader
-                      : undefined;
-                  if (!reader || !held.entry) {
-                    throw new Error("Idle conversation knowledge has no native recipient reader");
-                  }
-                  let currentEntry = held.entry;
-                  const expectedOwner = {
-                    lifecycleRevision: branch.lifecycleRevision,
-                    activeWriterRunId: held.entry.activeWriterRunId,
-                  };
-                  const source = composeSessionSourceAssertion([
-                    check,
-                    () => held.databaseClaim.assertCurrent(),
-                  ]);
-                  const validate = () =>
-                    reader.withRead({ sessionKeys: [branch.sessionKey] }, source, (facts) => {
-                      const entry = facts.entries.find(
-                        (row) => row.sessionKey === branch.sessionKey,
-                      )?.entry;
-                      const topology = entry?.conversationTopology;
-                      if (
-                        facts.source.path !== branch.storePath ||
-                        entry?.sessionId !== branch.sessionId ||
-                        entry.lifecycleRevision !== expectedOwner.lifecycleRevision ||
-                        entry.activeWriterRunId !== expectedOwner.activeWriterRunId ||
-                        entry.incognito ||
-                        entry.pendingFinalDelivery ||
-                        topology?.role !== "branch" ||
-                        topology.rootSessionKey !== branch.root.sessionKey ||
-                        topology.rootSessionId !== branch.root.sessionId ||
-                        topology.rootSessionLifecycleRevision !== branch.root.lifecycleRevision
-                      ) {
-                        throw new Error("Idle conversation knowledge recipient ownership changed");
-                      }
-                      currentEntry = entry;
-                    });
-                  const admission = await beginSessionWorkAdmission({
-                    scope: branch.storePath,
-                    identities: [branch.sessionKey, branch.sessionId],
-                    storeWriterIdentities: [branch.sessionKey],
-                    signal: owner.signal,
-                    assertAllowed: validate,
-                    onInterrupt: (reason) => interrupted.abort(reason),
-                  });
-                  // Native compaction returns its result before its tracked cleanup
-                  // tails. Keep those descendants inside this lane's custody too.
-                  const cleanupFailures = new Set<unknown>();
-                  try {
-                    source();
-                    const writeTarget = {
-                      agentId: branch.agentId,
-                      sessionId: branch.sessionId,
-                      sessionKey: branch.sessionKey,
-                      storePath: branch.storePath,
-                      expectedLifecycleRevision: expectedOwner.lifecycleRevision,
-                      expectedWriterRunId: expectedOwner.activeWriterRunId,
-                      // An absent writer is also an exact fence, not permission to borrow one.
-                      expectedOwner,
-                    };
-                    const withWriter = async <T>(
-                      target: BoundAgentRunSessionTarget,
-                      operation: () => Promise<T>,
-                    ): Promise<T> => {
-                      source();
-                      if (
-                        target.agentId !== writeTarget.agentId ||
-                        target.sessionId !== writeTarget.sessionId ||
-                        target.sessionKey !== writeTarget.sessionKey ||
-                        target.storePath !== writeTarget.storePath ||
-                        target.expectedLifecycleRevision !==
-                          writeTarget.expectedLifecycleRevision ||
-                        target.expectedWriterRunId !== writeTarget.expectedWriterRunId
-                      ) {
-                        throw new Error("Idle conversation knowledge writer target changed");
-                      }
-                      await validate();
-                      source();
-                      return withOwnedSessionTranscriptWrites(
-                        {
-                          sessionTarget: writeTarget,
-                          sessionReader: reader,
-                          assertCommitAllowed: source,
-                          withTranscriptWrite: async (write) => await write(),
-                        },
-                        async () => {
-                          const result = await operation();
-                          source();
-                          return result;
-                        },
-                      );
-                    };
-                    let sourceOffset = 0;
-                    const unproductiveOffsets = new Set<number>();
-                    return await runWithIdleCleanup(owner.signal, cleanupFailures, () =>
-                      admission.run(() =>
-                        withWriter<IdleConversationKnowledgeResult>(writeTarget, async () => {
-                          const run: RunEmbeddedAgentParams = {
-                            ...resolveIdleConversationKnowledgeProfile({
-                              branch,
-                              entry: currentEntry,
-                              cfg: params.getRuntimeConfig(),
-                              run: params.run,
-                            }),
-                            sessionTarget: writeTarget,
-                          };
-                          for (;;) {
-                            source();
-                            const before = admittedPackets;
-                            const prepared = await prepareReplyConversationKnowledge({
-                              reader,
-                              sessionId: branch.sessionId,
-                              assertCurrent: source,
-                              originalParticipant: participant,
-                              destinationAudience: audience,
-                              expectedAudienceIdentity: identity,
-                              getRuntimeConfig: params.getRuntimeConfig,
-                              signal: owner.signal,
-                              sourceBudget: IDLE_KNOWLEDGE_BATCH,
-                              packetBudget: IDLE_KNOWLEDGE_BATCH,
-                              sourceOffset,
-                              onPacket: () => admittedPackets++,
-                              retainInHistory: {
-                                writeTarget,
-                                contextLimits: resolveConversationKnowledgeContextLimits(run),
-                                maintainContext: (sources, ids, text) =>
-                                  enqueueCommandInLane(
-                                    resolveGlobalLane(run.lane, run),
-                                    async () => {
-                                      source();
-                                      // A summary-local scope cannot wait on its own
-                                      // ingestion ancestors in the outer session scope.
-                                      return await runWithIdleCleanup(
-                                        owner.signal,
-                                        cleanupFailures,
-                                        () =>
-                                          createConversationKnowledgeMaintenance({
-                                            run,
-                                            signal: owner.signal,
-                                            assertCurrent: composeSessionSourceAssertion([
-                                              source,
-                                              sources,
-                                            ]),
-                                            withWriter,
-                                          })(ids, text),
-                                      );
-                                    },
-                                    {
-                                      priority: "background",
-                                      abortSignal: owner.signal,
-                                      sessionTarget: writeTarget,
-                                    },
-                                  ),
-                              },
-                            });
-                            try {
-                              source();
-                              if (!prepared?.pendingPackets) {
-                                return { status: "settled", admittedPackets };
-                              }
-                              const nextOffset = prepared.nextSourceOffset ?? 0;
-                              if (admittedPackets === before) {
-                                unproductiveOffsets.add(sourceOffset);
-                                if (unproductiveOffsets.has(nextOffset)) {
-                                  return { status: "pending", admittedPackets };
-                                }
-                              } else {
-                                unproductiveOffsets.clear();
-                              }
-                              sourceOffset = nextOffset;
-                            } finally {
-                              try {
-                                prepared?.release();
-                              } catch (error) {
-                                cleanupFailed = true;
-                                throw error;
-                              }
-                            }
-                            // Yield between quanta, but finish without needing another user turn.
-                            await setImmediate(undefined, { signal: owner.signal });
-                            source();
-                          }
-                        }),
-                      ),
-                    );
-                  } finally {
-                    try {
-                      if (cleanupFailures.size) {
-                        cleanupFailed = true;
-                        throw new AggregateError(
-                          cleanupFailures,
-                          "Idle maintenance cleanup failed",
-                        );
-                      }
-                    } finally {
-                      try {
-                        admission.release();
-                      } catch (error) {
-                        cleanupFailed = true;
-                        throw error;
-                      }
+                return withIdleResourceCleanup(
+                  async () => {
+                    check();
+                    const reader =
+                      "kind" in held.databaseClaim && held.databaseClaim.kind === "worker"
+                        ? held.databaseClaim.reader
+                        : undefined;
+                    if (!reader || !held.entry) {
+                      throw new Error("Idle conversation knowledge has no native recipient reader");
                     }
-                  }
-                } finally {
-                  try {
-                    await held.databaseClaim.release();
-                  } catch (error) {
-                    cleanupFailed = true;
-                    throw error;
-                  }
-                }
+                    let currentEntry = held.entry;
+                    const expectedOwner = {
+                      lifecycleRevision: branch.lifecycleRevision,
+                      activeWriterRunId: held.entry.activeWriterRunId,
+                    };
+                    const source = composeSessionSourceAssertion([
+                      check,
+                      () => held.databaseClaim.assertCurrent(),
+                    ]);
+                    const validate = () =>
+                      reader.withRead({ sessionKeys: [branch.sessionKey] }, source, (facts) => {
+                        const entry = facts.entries.find(
+                          (row) => row.sessionKey === branch.sessionKey,
+                        )?.entry;
+                        const topology = entry?.conversationTopology;
+                        if (
+                          facts.source.path !== branch.storePath ||
+                          entry?.sessionId !== branch.sessionId ||
+                          entry.lifecycleRevision !== expectedOwner.lifecycleRevision ||
+                          entry.activeWriterRunId !== expectedOwner.activeWriterRunId ||
+                          entry.incognito ||
+                          entry.pendingFinalDelivery ||
+                          topology?.role !== "branch" ||
+                          topology.rootSessionKey !== branch.root.sessionKey ||
+                          topology.rootSessionId !== branch.root.sessionId ||
+                          topology.rootSessionLifecycleRevision !== branch.root.lifecycleRevision
+                        ) {
+                          throw new Error(
+                            "Idle conversation knowledge recipient ownership changed",
+                          );
+                        }
+                        currentEntry = entry;
+                      });
+                    const admission = await beginSessionWorkAdmission({
+                      scope: branch.storePath,
+                      identities: [branch.sessionKey, branch.sessionId],
+                      storeWriterIdentities: [branch.sessionKey],
+                      signal: owner.signal,
+                      assertAllowed: validate,
+                      onInterrupt: (reason) => interrupted.abort(reason),
+                    });
+                    // Native compaction returns its result before its tracked cleanup
+                    // tails. Keep those descendants inside this lane's custody too.
+                    return withIdleResourceCleanup(
+                      async () => {
+                        source();
+                        const writeTarget = {
+                          agentId: branch.agentId,
+                          sessionId: branch.sessionId,
+                          sessionKey: branch.sessionKey,
+                          storePath: branch.storePath,
+                          expectedLifecycleRevision: expectedOwner.lifecycleRevision,
+                          expectedWriterRunId: expectedOwner.activeWriterRunId,
+                          // An absent writer is also an exact fence, not permission to borrow one.
+                          expectedOwner,
+                        };
+                        const withWriter = async <T>(
+                          target: BoundAgentRunSessionTarget,
+                          operation: () => Promise<T>,
+                        ): Promise<T> => {
+                          source();
+                          if (
+                            target.agentId !== writeTarget.agentId ||
+                            target.sessionId !== writeTarget.sessionId ||
+                            target.sessionKey !== writeTarget.sessionKey ||
+                            target.storePath !== writeTarget.storePath ||
+                            target.expectedLifecycleRevision !==
+                              writeTarget.expectedLifecycleRevision ||
+                            target.expectedWriterRunId !== writeTarget.expectedWriterRunId
+                          ) {
+                            throw new Error("Idle conversation knowledge writer target changed");
+                          }
+                          await validate();
+                          source();
+                          return withOwnedSessionTranscriptWrites(
+                            {
+                              sessionTarget: writeTarget,
+                              sessionReader: reader,
+                              assertCommitAllowed: source,
+                              withTranscriptWrite: async (write) => await write(),
+                            },
+                            async () => {
+                              const result = await operation();
+                              source();
+                              return result;
+                            },
+                          );
+                        };
+                        let sourceOffset = 0;
+                        const unproductiveOffsets = new Set<number>();
+                        return await runWithIdleCleanup(
+                          owner.signal,
+                          () =>
+                            admission.run(() =>
+                              withWriter<IdleConversationKnowledgeResult>(writeTarget, async () => {
+                                const run: RunEmbeddedAgentParams = {
+                                  ...resolveIdleConversationKnowledgeProfile({
+                                    branch,
+                                    entry: currentEntry,
+                                    cfg: params.getRuntimeConfig(),
+                                    run: params.run,
+                                  }),
+                                  sessionTarget: writeTarget,
+                                };
+                                for (;;) {
+                                  source();
+                                  const before = admittedPackets;
+                                  const prepared = await prepareReplyConversationKnowledge({
+                                    reader,
+                                    sessionId: branch.sessionId,
+                                    assertCurrent: source,
+                                    originalParticipant: participant,
+                                    destinationAudience: audience,
+                                    expectedAudienceIdentity: identity,
+                                    getRuntimeConfig: () => params.getRuntimeConfig(),
+                                    signal: owner.signal,
+                                    sourceBudget: IDLE_KNOWLEDGE_BATCH,
+                                    packetBudget: IDLE_KNOWLEDGE_BATCH,
+                                    sourceOffset,
+                                    onPacket: () => admittedPackets++,
+                                    retainInHistory: {
+                                      writeTarget,
+                                      contextLimits: resolveConversationKnowledgeContextLimits(run),
+                                      maintainContext: (sources, ids, text) =>
+                                        enqueueCommandInLane(
+                                          resolveGlobalLane(run.lane, run),
+                                          async () => {
+                                            source();
+                                            // A summary-local scope cannot wait on its own
+                                            // ingestion ancestors in the outer session scope.
+                                            return await runWithIdleCleanup(
+                                              owner.signal,
+                                              () =>
+                                                createConversationKnowledgeMaintenance({
+                                                  run,
+                                                  signal: owner.signal,
+                                                  assertCurrent: composeSessionSourceAssertion([
+                                                    source,
+                                                    sources,
+                                                  ]),
+                                                  withWriter,
+                                                })(ids, text),
+                                              markCleanupFailed,
+                                            );
+                                          },
+                                          {
+                                            priority: "background",
+                                            abortSignal: owner.signal,
+                                            sessionTarget: writeTarget,
+                                          },
+                                        ),
+                                    },
+                                  });
+                                  const result = await withIdleResourceCleanup<
+                                    IdleConversationKnowledgeResult | undefined
+                                  >(
+                                    () => {
+                                      source();
+                                      if (!prepared?.pendingPackets) {
+                                        return { status: "settled", admittedPackets };
+                                      }
+                                      const nextOffset = prepared.nextSourceOffset ?? 0;
+                                      if (admittedPackets === before) {
+                                        unproductiveOffsets.add(sourceOffset);
+                                        if (unproductiveOffsets.has(nextOffset)) {
+                                          return { status: "pending", admittedPackets };
+                                        }
+                                      } else {
+                                        unproductiveOffsets.clear();
+                                      }
+                                      sourceOffset = nextOffset;
+                                      return undefined;
+                                    },
+                                    () => prepared?.release(),
+                                    markCleanupFailed,
+                                  );
+                                  if (result) {
+                                    return result;
+                                  }
+                                  // Yield between quanta, but finish without needing another user turn.
+                                  await setImmediate(undefined, { signal: owner.signal });
+                                  source();
+                                }
+                              }),
+                            ),
+                          markCleanupFailed,
+                        );
+                      },
+                      () => admission.release(),
+                      markCleanupFailed,
+                    );
+                  },
+                  () => held.databaseClaim.release(),
+                  markCleanupFailed,
+                );
               },
               {
                 priority: "background",

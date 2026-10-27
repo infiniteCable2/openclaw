@@ -145,7 +145,7 @@ export function prepareConversationKnowledgeRecipient(params: {
           participant: participant!,
           audience: audience!,
           env: params.env,
-          getRuntimeConfig: params.getRuntimeConfig,
+          getRuntimeConfig: () => params.getRuntimeConfig(),
           run: params.run,
           signal,
         });

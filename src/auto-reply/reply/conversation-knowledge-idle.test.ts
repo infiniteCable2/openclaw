@@ -269,9 +269,9 @@ describe("idle related-conversation hydration", () => {
     const started = createDeferred();
     boundary.prepare.mockImplementation(async (request) => {
       started.resolve();
-      await new Promise<void>((resolve) =>
-        request.signal.addEventListener("abort", () => resolve(), { once: true }),
-      );
+      await new Promise<void>((resolve) => {
+        request.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
       request.signal.throwIfAborted();
     });
     const work = runIdleConversationKnowledge(f.params);
@@ -400,22 +400,33 @@ describe("idle related-conversation hydration", () => {
     async (name) => {
       const f = fixture();
       const started = createDeferred();
-      f.release.mockRejectedValueOnce(
-        Object.assign(new Error("Synthetic database release failed"), { name }),
-      );
+      const cleanupError = Object.assign(new Error("Synthetic database release failed"), { name });
+      let abortReason: unknown;
+      f.release.mockRejectedValueOnce(cleanupError);
       boundary.prepare.mockImplementation(async (request) => {
         started.resolve();
-        await new Promise<void>((resolve) =>
-          request.signal.addEventListener("abort", () => resolve(), { once: true }),
-        );
+        await new Promise<void>((resolve) => {
+          request.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        abortReason = request.signal.reason;
         request.signal.throwIfAborted();
       });
       const work = runIdleConversationKnowledge(f.params);
       await started.promise;
       const foreground = beginForegroundSessionMaintenance(f.branch.sessionKey);
       try {
-        await expect(work).rejects.toThrow("Synthetic database release failed");
+        const failure: unknown = await work.catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(AggregateError);
+        if (!(failure instanceof AggregateError)) {
+          throw new Error("Expected both foreground abort and database cleanup failure");
+        }
+        expect(abortReason).toBeDefined();
+        expect(failure.errors).toHaveLength(2);
+        expect(failure.errors[0]).toBe(abortReason);
+        expect(failure.errors[1]).toBe(cleanupError);
+        expect(failure.cause).toBe(abortReason);
         expect(f.admissionRelease).toHaveBeenCalledOnce();
+        expect(f.release).toHaveBeenCalledOnce();
       } finally {
         (await foreground)();
       }
@@ -425,13 +436,14 @@ describe("idle related-conversation hydration", () => {
   it("does not turn external cancellation or audience revocation into automatic retries", async () => {
     const f = fixture();
     const controller = new AbortController();
+    const cancellation = new Error("Explicit stop");
     boundary.prepare.mockImplementation(async () => {
-      controller.abort(new Error("Explicit stop"));
+      controller.abort(cancellation);
       controller.signal.throwIfAborted();
     });
     await expect(
       runIdleConversationKnowledge({ ...f.params, signal: controller.signal }),
-    ).rejects.toThrow("Explicit stop");
+    ).rejects.toBe(cancellation);
     f.revokeAudience();
     await expect(runIdleConversationKnowledge(f.params)).rejects.toThrow(
       "Synthetic audience revoked",
