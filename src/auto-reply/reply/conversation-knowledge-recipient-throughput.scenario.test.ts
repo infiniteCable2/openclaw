@@ -38,8 +38,8 @@ import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const budget = vi.hoisted(() => ({ compact: vi.fn() }));
-// mock-isolation: Model compaction is forbidden here; actual SQLite, source authorization,
-// read-ahead, native request capacity and admitted-writer packet commits remain real.
+// Actual SQLite, source authorization, read-ahead, request capacity and packet commits remain real.
+// mock-isolation: This recipient harness must never initialize model compaction.
 vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
   compactEmbeddedAgentSessionDirect: budget.compact,
 }));

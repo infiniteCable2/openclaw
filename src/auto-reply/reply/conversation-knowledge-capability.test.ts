@@ -179,30 +179,43 @@ async function nativeTurn(
 }
 
 describe("actual native-turn knowledge ownership", () => {
-  it.each(["donor", "recipient", "canceled"] as const)(
-    "contains optional snapshot failure without suppressing %s authority",
+  it("returns no cold snapshot without discovering a donor or opening history", async () => {
+    const f = await nativeTurn(false, "branches", { type: "profile", id: "example-person" });
+    source.branch.mockClear();
+    expect(await f.owner.prepareSnapshot()).toEqual([]);
+    expect(f.owner.fragments).toEqual([]);
+    for (const read of [source.branch, source.root, source.facts, source.history, source.context]) {
+      expect(read).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["recipient", "canceled"] as const)(
+    "rechecks %s authority after awaiting a cold snapshot",
     async (failure) => {
       const f = await nativeTurn(false, "branches", { type: "profile", id: "example-person" });
-      source.branch.mockImplementationOnce(async () => {
-        if (failure === "recipient") {
-          f.originalSource.mockImplementation(() => {
-            throw new Error("Recipient revoked");
-          });
-        } else if (failure === "canceled") {
-          f.abort.abort(new Error("Snapshot canceled"));
-        }
-        throw new Error("Optional donor unavailable");
-      });
+      source.branch.mockClear();
       const snapshot = f.owner.prepareSnapshot();
-      if (failure === "donor") {
-        expect(await snapshot).toEqual([]);
-        expect(f.owner.fragments).toEqual([]);
+      // The real asynchronous snapshot has started, but cold preparation must
+      // not discover a branch. Revoke while its awaited result is outstanding.
+      if (failure === "recipient") {
+        f.originalSource.mockImplementation(() => {
+          throw new Error("Recipient revoked");
+        });
       } else {
-        await expect(snapshot).rejects.toThrow(
-          failure === "recipient" ? "Recipient revoked" : "Snapshot canceled",
-        );
+        f.abort.abort(new Error("Snapshot canceled"));
       }
-      expect(source.context).not.toHaveBeenCalled();
+      await expect(snapshot).rejects.toThrow(
+        failure === "recipient" ? "Recipient revoked" : "Snapshot canceled",
+      );
+      for (const read of [
+        source.branch,
+        source.root,
+        source.facts,
+        source.history,
+        source.context,
+      ]) {
+        expect(read).not.toHaveBeenCalled();
+      }
     },
   );
   it("continues a pending turn without injecting status or changing existing context", async () => {

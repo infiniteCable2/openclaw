@@ -305,7 +305,10 @@ export function createConversationKnowledgeSourceReader(params: {
       targetFacts.assertCurrent();
       params.signal?.throwIfAborted();
       params.sourceCache?.invalidateContribution(contributionId);
-      if (!(error instanceof SessionMutationAuthorizationChangedError)) {
+      if (
+        !(error instanceof SessionMutationAuthorizationChangedError) &&
+        !(error instanceof SessionTranscriptReadFenceError)
+      ) {
         // Unavailable facts and worker failures must reach the background owner's
         // bounded retry instead of silently settling this source as prepared.
         throw error;

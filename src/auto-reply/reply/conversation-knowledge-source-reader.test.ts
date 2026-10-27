@@ -2,6 +2,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
+import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import type { OpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
@@ -184,22 +185,27 @@ afterEach(async () => {
 });
 
 describe("source grant failure recovery", () => {
-  it("quietly refuses explicit native policy denial without revealing cached data", async () => {
-    const f = fixture();
-    boundary.grant.mockRejectedValueOnce(
-      new SessionMutationAuthorizationChangedError({
-        code: "FORBIDDEN",
-        message: "Synthetic private source refusal",
-      }),
-    );
-    await expect(f.reader.take(f.receipt)).resolves.toEqual({
-      source: undefined,
-      projection: undefined,
-    });
-    expect(f.cache.hasContribution(f.receipt.origin)).toBe(false);
-    expect(boundary.facts).not.toHaveBeenCalled();
-    expect(f.reads).toEqual([]);
-  });
+  it.each(["authorization", "range"])(
+    "quietly refuses explicit native %s denial without revealing cached data",
+    async (kind) => {
+      const f = fixture();
+      const refusal =
+        kind === "authorization"
+          ? new SessionMutationAuthorizationChangedError({
+              code: "FORBIDDEN",
+              message: "Synthetic private source refusal",
+            })
+          : new SessionTranscriptReadFenceError("Synthetic source range refused");
+      boundary.grant.mockRejectedValueOnce(refusal);
+      await expect(f.reader.take(f.receipt)).resolves.toEqual({
+        source: undefined,
+        projection: undefined,
+      });
+      expect(f.cache.hasContribution(f.receipt.origin)).toBe(false);
+      expect(boundary.facts).not.toHaveBeenCalled();
+      expect(f.reads).toEqual([]);
+    },
+  );
 
   it.each(["worker", "cleanup"])(
     "propagates %s failure rather than settling a missing source",

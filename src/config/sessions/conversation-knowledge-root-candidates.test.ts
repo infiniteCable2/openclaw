@@ -19,8 +19,8 @@ import type { SessionEntryCohortResult } from "./session-entry-read.types.js";
 import type { SessionTranscriptModelContext } from "./session-history-read.types.js";
 
 const boundary = vi.hoisted(() => ({ reports: vi.fn() }));
-// mock-isolation: Supply native report/read facts without opening SQLite workers.
 // The private provenance brands, exact reference selection and fresh rebind checks remain real.
+// mock-isolation: Supply native report/read facts without opening SQLite workers.
 vi.mock("./conversation-knowledge-history.js", () => ({
   readConversationKnowledgeReports: boundary.reports,
 }));

@@ -35,9 +35,8 @@ vi.mock("node:timers/promises", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:timers/promises")>()),
   setImmediate: preparationYield,
 }));
-// mock-isolation: Test silent source gaps without starting transcript workers.
-// This storage-owner boundary issues its unit manifest; native provenance brands
-// and rebinding are exercised independently in the root-candidates tests.
+// Native provenance brands and rebinding have separate root-candidates coverage.
+// mock-isolation: Supply unit manifests and silent source gaps without starting transcript workers.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readConversationKnowledgeBranch: source.branch,
   readConversationKnowledgeRoot: source.root,
