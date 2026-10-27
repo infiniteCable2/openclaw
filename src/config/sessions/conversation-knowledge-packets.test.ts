@@ -1,5 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
@@ -8,6 +8,7 @@ import {
   readActiveConversationKnowledgePacketIds,
   readConversationKnowledgePacketProgress,
   retainConversationKnowledgePacket,
+  retainConversationKnowledgePackets,
 } from "./conversation-knowledge-packets.js";
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import {
@@ -23,12 +24,209 @@ import {
 } from "./session-accessor.js";
 import { loadSessionEntryForAdmission } from "./session-accessor.sqlite-entry-admission.js";
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
+import * as sourceAuthority from "./session-source-authority.js";
 import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 import { readSessionTranscriptModelContextAsync } from "./session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
 import { withSessionTranscriptWriteAssertion } from "./transcript-write-context.js";
 
 describe("native retained conversation knowledge packets", () => {
+  it("prepares each held source once per batch without merging distinct grants or source versions", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "knowledge-packet-source-scaling" },
+      async (state) => {
+        const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+        const base = { agentId: "main", storePath: database.path, env: state.env };
+        const root = {
+          sessionKey: "agent:main:batch-root",
+          sessionId: "batch-root",
+          lifecycleRevision: "root-life",
+        };
+        const donor = {
+          ...base,
+          sessionKey: "agent:main:batch-donor",
+          sessionId: "batch-donor",
+          lifecycleRevision: "donor-life",
+        };
+        const branch: ConversationKnowledgeBranch = {
+          ...base,
+          sessionKey: "agent:main:batch-recipient",
+          sessionId: "batch-recipient",
+          lifecycleRevision: "recipient-life",
+          root,
+        };
+        for (const target of [root, donor, branch]) {
+          await upsertSessionEntryCore(
+            { ...base, ...target },
+            {
+              sessionId: target.sessionId,
+              lifecycleRevision: target.lifecycleRevision,
+              updatedAt: 1,
+              conversationTopology:
+                target === root
+                  ? { version: 1, role: "root" }
+                  : {
+                      version: 1,
+                      role: "branch",
+                      rootSessionKey: root.sessionKey,
+                      rootSessionId: root.sessionId,
+                      rootSessionLifecycleRevision: root.lifecycleRevision,
+                    },
+            },
+          );
+        }
+        const answer = appendTranscriptMessageSync(donor, {
+          message: {
+            role: "assistant",
+            content: "A synthetic complete observation.",
+            stopReason: "stop",
+            timestamp: 1,
+            __openclaw: { runId: "donor-run" },
+          },
+        });
+        if (!answer.ok || !answer.value?.anchor) {
+          throw new Error("Expected native donor anchor");
+        }
+        const receipt: ConversationKnowledgeReceipt = {
+          version: 1,
+          sourceMode: "branches",
+          source: donor,
+          origin: conversationKnowledgeOrigin(donor),
+          runId: "donor-run",
+          through: answer.value.anchor,
+        };
+        const { databaseClaim } = await loadSessionEntryForAdmission(branch);
+        if (
+          !("kind" in databaseClaim) ||
+          databaseClaim.kind !== "worker" ||
+          !databaseClaim.reader
+        ) {
+          await databaseClaim.release();
+          throw new Error("Expected native recipient cohort");
+        }
+        const reader = databaseClaim.reader;
+        let secondLive = true;
+        let revokeOnPrepare = false;
+        const firstCurrent = () => databaseClaim.assertCurrent();
+        const secondCurrent = () => {
+          databaseClaim.assertCurrent();
+          if (!secondLive) {
+            throw new Error("Synthetic second source grant revoked");
+          }
+        };
+        const firstPrepare = vi.fn(async () => ({ assertCurrent: firstCurrent, checks: [] }));
+        const secondPrepare = vi.fn(async () => {
+          if (revokeOnPrepare) {
+            secondLive = false;
+          }
+          return { assertCurrent: secondCurrent, checks: [] };
+        });
+        const first: SessionSourceAssertion = Object.assign(firstCurrent, {
+          prepareSessionSource: firstPrepare,
+        });
+        const second: SessionSourceAssertion = Object.assign(secondCurrent, {
+          prepareSessionSource: secondPrepare,
+        });
+        const prepareNative = sourceAuthority.prepareSessionSourceAuthority;
+        const prefixChecks: SessionSourcePredicate[][] = [];
+        const preparation = vi
+          .spyOn(sourceAuthority, "prepareSessionSourceAuthority")
+          .mockImplementation(async (...args) => {
+            const prepared = await prepareNative(...args);
+            prefixChecks.push(
+              prepared.checks
+                .map(({ predicate }) => predicate)
+                .filter((predicate) => predicate.transcript?.consistency === "prefix"),
+            );
+            return prepared;
+          });
+        try {
+          const context = await readSessionTranscriptModelContextAsync(donor, (value) => value);
+          if (!context.version) {
+            throw new Error("Expected native donor version");
+          }
+          const sourceVersion = context.version;
+          const packets = Array.from({ length: 32 }, (_, offset) => ({
+            receipt,
+            text: `Synthetic segment ${offset}.`,
+            offset,
+            nextOffset: offset + 1,
+            complete: false,
+            sourceVersion,
+            source: first,
+          }));
+          const retain = (batch: typeof packets) =>
+            retainConversationKnowledgePackets({
+              branch,
+              writeTarget: branch,
+              reader,
+              packets: batch,
+            });
+          expect((await retain(packets)).appended).toBe(32);
+          expect(firstPrepare).toHaveBeenCalledOnce();
+          expect(secondPrepare).not.toHaveBeenCalled();
+          expect(prefixChecks.at(-1)).toHaveLength(1);
+          firstPrepare.mockClear();
+          prefixChecks.length = 0;
+          const mixed = packets.map((packet, index) => ({
+            ...packet,
+            offset: packet.offset + 32,
+            nextOffset: packet.nextOffset + 32,
+            source: index === 31 ? second : first,
+          }));
+          expect((await retain(mixed)).appended).toBe(32);
+          expect(firstPrepare).toHaveBeenCalledOnce();
+          expect(secondPrepare).toHaveBeenCalledOnce();
+          expect(prefixChecks.at(-1)).toHaveLength(1);
+          expect(
+            appendTranscriptMessageSync(donor, {
+              message: { role: "user", content: "A later observation.", timestamp: 2 },
+            }).ok,
+          ).toBe(true);
+          const next = await readSessionTranscriptModelContextAsync(donor, (value) => value);
+          if (!next.version) {
+            throw new Error("Expected next native donor version");
+          }
+          const nextVersion = next.version;
+          prefixChecks.length = 0;
+          const versions = packets.map((packet, index) => ({
+            ...packet,
+            offset: packet.offset + 64,
+            nextOffset: packet.nextOffset + 64,
+            sourceVersion: index === 31 ? nextVersion : packet.sourceVersion,
+          }));
+          expect((await retain(versions)).appended).toBe(32);
+          expect(prefixChecks.at(-1)).toHaveLength(2);
+          // Every packet's donor identity is checked before predicates can coalesce.
+          const invalid = packets.map((packet, index) =>
+            index === 31
+              ? {
+                  ...packet,
+                  receipt: { ...receipt, source: { ...donor, sessionId: "replaced-donor" } },
+                }
+              : packet,
+          );
+          await expect(retain(invalid)).rejects.toThrow(
+            "Conversation knowledge packet source or recipient changed",
+          );
+          firstPrepare.mockClear();
+          secondPrepare.mockClear();
+          revokeOnPrepare = true;
+          await expect(retain(mixed)).rejects.toThrow("Synthetic second source grant revoked");
+          expect(firstPrepare).toHaveBeenCalledOnce();
+          expect(secondPrepare).toHaveBeenCalledOnce();
+          expect(
+            (await loadTranscriptEvents(branch))
+              .map(asOptionalRecord)
+              .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT),
+          ).toHaveLength(96);
+        } finally {
+          preparation.mockRestore();
+          await databaseClaim.release();
+        }
+      },
+    );
+  });
   it("retains append-preserved source progress across compaction and refuses replaced authority", async () => {
     await withOpenClawTestState(
       { scenario: "minimal", label: "knowledge-packets" },

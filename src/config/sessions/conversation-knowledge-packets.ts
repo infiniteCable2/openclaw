@@ -180,9 +180,9 @@ export async function retainConversationKnowledgePackets(params: {
   contextLimits?: { maxBytes: number; maxEvents: number };
 }): Promise<{ accepted: number; appended: number; deferred: boolean; packetIds: string[] }> {
   params.signal?.throwIfAborted();
-  const originalSources = composeSessionSourceAssertion(
-    params.packets.map((packet) => packet.source),
-  );
+  const originalSources = composeSessionSourceAssertion([
+    ...new Set(params.packets.map((packet) => packet.source)),
+  ]);
   originalSources();
   if (!params.packets.length) {
     return { accepted: 0, appended: 0, deferred: false, packetIds: [] };
@@ -221,7 +221,8 @@ export async function retainConversationKnowledgePackets(params: {
       ) {
         throw new Error("Conversation knowledge packet source or recipient changed");
       }
-      return params.packets.map((packet) => {
+      const selected = new Map<string, SessionSourcePredicate>();
+      for (const packet of params.packets) {
         const donor = facts.entries.find(
           (row) => row.sessionKey === packet.receipt.source.sessionKey,
         )?.entry;
@@ -231,18 +232,32 @@ export async function retainConversationKnowledgePackets(params: {
         ) {
           throw new Error("Conversation knowledge packet source or recipient changed");
         }
-        return {
-          source: facts.source,
-          sessionKey: packet.receipt.source.sessionKey,
-          fields: ["sessionId", "lifecycleRevision"],
-          expected: donor,
-          transcript: {
-            sessionId: donor.sessionId,
-            version: packet.sourceVersion,
-            consistency: "prefix",
-          },
-        } satisfies SessionSourcePredicate;
-      });
+        // One fresh cohort owns these identical donor/version predicates. Keep
+        // every packet's donor check above and every distinct live grant owner.
+        const key = JSON.stringify([
+          packet.receipt.source.agentId,
+          packet.receipt.source.sessionKey,
+          donor.sessionId,
+          donor.lifecycleRevision,
+          packet.sourceVersion.generation,
+          packet.sourceVersion.rawSeq,
+          packet.sourceVersion.updatedAt,
+        ]);
+        if (!selected.has(key)) {
+          selected.set(key, {
+            source: facts.source,
+            sessionKey: packet.receipt.source.sessionKey,
+            fields: ["sessionId", "lifecycleRevision"],
+            expected: donor,
+            transcript: {
+              sessionId: donor.sessionId,
+              version: packet.sourceVersion,
+              consistency: "prefix",
+            },
+          });
+        }
+      }
+      return [...selected.values()];
     },
   );
   const source = composeSessionSourceAssertion([
