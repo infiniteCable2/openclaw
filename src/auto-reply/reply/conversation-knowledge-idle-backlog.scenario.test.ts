@@ -27,7 +27,7 @@ vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
   compactEmbeddedAgentSessionDirect: budget.compact,
 }));
 
-it.each([
+it.for([
   {
     name: "finishes a multi-quantum source before settling later sources, without another user turn",
     repetitions: 5_000,
