@@ -1,5 +1,6 @@
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { RuntimeLogger } from "../../plugins/runtime/types.js";
+import type { SpeechConnectionPreparation } from "./types.js";
 
 /** Own teardown progress: fence once, retain failures, retry only pending resources. */
 export function createSpeechSessionLifecycle(params: {
@@ -11,7 +12,7 @@ export function createSpeechSessionLifecycle(params: {
   drainOutput: () => Promise<void>;
   stopTransport: () => Promise<void>;
   disposeTransport: () => Promise<void>;
-  closeConnectionPreparation?: () => Promise<void>;
+  connectionPreparation?: SpeechConnectionPreparation;
   publishClosed: () => void;
 }) {
   let fenced = false;
@@ -23,7 +24,7 @@ export function createSpeechSessionLifecycle(params: {
     drainOutput: () => params.drainOutput(),
     stopTransport: () => params.stopTransport(),
     disposeTransport: () => params.disposeTransport(),
-    closeConnectionPreparation: () => params.closeConnectionPreparation?.(),
+    closeConnectionPreparation: () => params.connectionPreparation?.close(),
   };
   const pending = new Set<() => void | Promise<void>>([
     resources.closeTranscription,
@@ -37,6 +38,7 @@ export function createSpeechSessionLifecycle(params: {
   const stop = async () => {
     if (!fenced) {
       fenced = true;
+      params.connectionPreparation?.cancel();
       params.fence();
     }
     if (stopPromise) {

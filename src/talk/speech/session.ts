@@ -144,7 +144,6 @@ export async function startSpeechSession(
     logScope: `${params.surface.logScope} ${agentLogScope}`,
     fence() {
       stopped = true;
-      params.connectionPreparation?.cancel();
       releaseConnectionPresentation?.();
       releaseConnectionPresentation = undefined;
       video.close();
@@ -163,7 +162,7 @@ export async function startSpeechSession(
     drainOutput: () => speechOutput.stopAndDrain(greetingPlayback),
     stopTransport: () => input.stop(),
     disposeTransport: () => params.transport.dispose(),
-    closeConnectionPreparation: () => params.connectionPreparation?.close() ?? Promise.resolve(),
+    connectionPreparation: params.connectionPreparation,
     publishClosed: () => {
       harness.emit({
         type: "session.closed",
@@ -172,8 +171,7 @@ export async function startSpeechSession(
       });
     },
   });
-  const stop = () => lifecycle.stop();
-  const stopAfterFailure = (source: string) => lifecycle.stopAfterFailure(source);
+  const { stop, stopAfterFailure } = lifecycle;
 
   const bargeInGate = createSpeechBargeInGate({
     transport: params.transport,

@@ -64,10 +64,12 @@ describe("speech session teardown ownership", () => {
       joining.resolve();
       await opening.promise;
     });
-    const { resources, lifecycle } = createLifecycle({ closeConnectionPreparation });
+    const connectionPreparation = { cancel: vi.fn(), close: closeConnectionPreparation };
+    const { resources, lifecycle } = createLifecycle({ connectionPreparation });
     const closing = lifecycle.stop();
     try {
       await joining.promise;
+      expect(connectionPreparation.cancel).toHaveBeenCalledOnce();
       expect(resources.fence).toHaveBeenCalledOnce();
       expect(resources.stopTransport).toHaveBeenCalledOnce();
       expect(resources.disposeTransport).not.toHaveBeenCalled();
@@ -83,11 +85,13 @@ describe("speech session teardown ownership", () => {
   it("retains failed opening cleanup for retry before declaring connection closed", async () => {
     const closeConnectionPreparation = vi.fn(async () => {});
     closeConnectionPreparation.mockRejectedValueOnce(new Error("Opening custody pending"));
-    const { resources, lifecycle } = createLifecycle({ closeConnectionPreparation });
+    const connectionPreparation = { cancel: vi.fn(), close: closeConnectionPreparation };
+    const { resources, lifecycle } = createLifecycle({ connectionPreparation });
     await expect(lifecycle.stop()).rejects.toThrow("Speech session resources did not close");
     expect(resources.disposeTransport).not.toHaveBeenCalled();
     expect(resources.publishClosed).not.toHaveBeenCalled();
     await lifecycle.stop();
+    expect(connectionPreparation.cancel).toHaveBeenCalledOnce();
     expect(closeConnectionPreparation).toHaveBeenCalledTimes(2);
     expect(resources.stopTransport).toHaveBeenCalledOnce();
     expect(resources.publishClosed).toHaveBeenCalledOnce();
