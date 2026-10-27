@@ -1,14 +1,10 @@
-import type { SessionTreeEntry } from "@openclaw/agent-core";
-import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import {
   withOpenClawAgentDatabaseReadOnly,
   type OpenClawAgentReadOnlyDatabase,
 } from "../../state/openclaw-agent-db-readonly.js";
-import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import {
-  getSessionKysely,
   resolveSqliteTranscriptReadScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
@@ -24,7 +20,6 @@ import {
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
-import { transcriptEventModelNavigationSql } from "./transcript-payload.js";
 import {
   scanSessionTranscriptNavigation,
   visitSessionTranscriptTreePathNodes,
@@ -44,6 +39,12 @@ export type SessionTranscriptModelContextRangeResult =
 export function readSessionTranscriptModelContextRanges(
   scope: SessionTranscriptReadScope,
   ranges: readonly SessionTranscriptModelContextRange[],
+  readNavigation: (
+    database: OpenClawAgentReadOnlyDatabase,
+    resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
+    through?: TranscriptEntryAnchor,
+    fence?: ReturnType<typeof resolveSqliteSessionTranscriptReadFence>,
+  ) => ContextEntry[],
   readRange: (
     database: OpenClawAgentReadOnlyDatabase,
     entries: ContextEntry[],
@@ -82,12 +83,15 @@ export function readSessionTranscriptModelContextRanges(
                 new Set(),
                 (node) => path.push(node),
               );
-              const entries = normalizeSessionContextEntryBoundaries(
-                valid
-                  ? path.toReversed().map(({ entry, parentId }) => ({ ...entry, parentId }))
-                  : [],
-                nodes,
-              );
+              // Range projection can reparent its entries. Preserve the shared
+              // historical navigation nodes for the remaining endpoint.
+              const detached: ContextEntry[] = [];
+              if (valid) {
+                for (const { entry, parentId } of path.toReversed()) {
+                  detached.push({ ...entry, parentId });
+                }
+              }
+              const entries = normalizeSessionContextEntryBoundaries(detached, nodes);
               results[index] = {
                 ok: true,
                 context: readRange(database, entries, range),
@@ -109,7 +113,7 @@ export function readSessionTranscriptModelContextRanges(
             }
           };
           const fence = resolveSqliteSessionTranscriptReadFence({ database, ...resolved });
-          const navigation = readTranscriptNavigationEntries(
+          const navigation = readNavigation(
             database,
             resolved,
             ordered.at(-1)!.range.through,
@@ -147,28 +151,4 @@ export function readSessionTranscriptModelContextRanges(
         ok: false,
         reason: "source-range-unverified",
       }));
-}
-
-export function readTranscriptNavigationEntries(
-  database: Pick<OpenClawAgentDatabase, "db">,
-  resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
-  through?: TranscriptEntryAnchor,
-  fence?: ReturnType<typeof resolveSqliteSessionTranscriptReadFence>,
-): ContextEntry[] {
-  return Array.from(
-    iterateSqliteQuerySync(
-      database.db,
-      getSessionKysely(database.db)
-        .selectFrom("transcript_events")
-        .select(["seq", transcriptEventModelNavigationSql().as("navigation_json")])
-        .where("session_id", "=", resolved.sessionId)
-        .$if(fence !== undefined, (q) => q.where("seq", "<", fence!.beforeRawSeq))
-        .$if(through !== undefined, (q) => q.where("seq", "<=", through!.rawSeq))
-        .orderBy("seq", "asc"),
-    ),
-    (row) => {
-      // SAFETY: Codec-owned navigation retains canonical discriminants and parent links.
-      return { ...(JSON.parse(row.navigation_json) as SessionTreeEntry), seq: row.seq };
-    },
-  );
 }

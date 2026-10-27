@@ -421,9 +421,9 @@ async function prepareReplyConversationKnowledgeInMode(
             contextValidation: { version: staged.version, through, from },
           },
           params.signal,
-          (facts) => {
+          (anchorFacts) => {
             sourceAssertion();
-            stagedValid = facts.contextValidated === true;
+            stagedValid = anchorFacts.contextValidated === true;
           },
         ).catch((error: unknown) => {
           params.assertCurrent();

@@ -2149,6 +2149,7 @@ const workerModules = new Set([
   "src/channels/message/ingress-queue.kernel.ts",
 
   "src/config/sessions/session-accessor.sqlite-archive-selection.ts", // Archive worker read-page selection only.
+  "src/config/sessions/session-model-context-batch-reader.ts", // Only session-history-read-operation.worker.ts's model-context-batch dispatcher reaches this range opener through the model-context facade; other callers are tests. Shared navigation remains in the mixed native scalar owner.
   "src/config/sessions/session-accessor.sqlite-mutation-worker.runtime.ts",
   "src/config/sessions/session-accessor.sqlite-summary.ts", // Only session-transcript.worker.ts dispatches the summary kernel at runtime.
   "src/config/sessions/session-accessor.sqlite-transcript-binding.ts", // History worker transcript-binding reader only.

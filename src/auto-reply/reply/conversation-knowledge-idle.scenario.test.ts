@@ -43,7 +43,7 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
       let stopObservation = () => {};
       let closeRecipient = async () => {};
       let observation = Promise.resolve();
-      let observationError: unknown;
+      let observationError: Error | undefined;
       try {
         const chat = await fixture.branch("chat");
         const priorCall = await fixture.branch("previous-call");
@@ -130,7 +130,10 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
                 }),
               )
               .catch((error: unknown) => {
-                observationError = error;
+                observationError =
+                  error instanceof Error
+                    ? error
+                    : new Error("Committed packet observation failed", { cause: error });
                 initialAdmission.resolve();
                 laterAdmission.resolve();
               });

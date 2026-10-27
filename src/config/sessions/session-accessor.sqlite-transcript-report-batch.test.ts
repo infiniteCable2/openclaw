@@ -327,7 +327,9 @@ it("rechecks every source in a public batch and refuses the whole write when one
       };
       await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
       const sources = ["first", "second"].map((id) => ({
-        ...target,
+        agentId: target.agentId,
+        env: target.env,
+        storePath: target.storePath,
         sessionKey: `agent:main:source-${id}`,
         sessionId: `source-${id}`,
       }));

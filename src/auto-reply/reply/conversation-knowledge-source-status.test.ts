@@ -510,9 +510,9 @@ describe("related-history source custody without model status", () => {
       const reports = await source.root();
       const receipt = readConversationKnowledgeReceipt(reports[0].details)!;
       const labels = kind === "queued-lookahead-revoked" ? ["next", "third", "fourth"] : ["next"];
-      source.root.mockResolvedValue([
-        ...reports,
-        ...labels.map((label, index) => ({
+      const lookaheadReports = [...reports];
+      for (const [index, label] of labels.entries()) {
+        lookaheadReports.push({
           ...reports[0],
           details: {
             ...receipt,
@@ -525,8 +525,9 @@ describe("related-history source custody without model status", () => {
               effectiveParentId: `${label}-question`,
             },
           },
-        })),
-      ]);
+        });
+      }
+      source.root.mockResolvedValue(lookaheadReports);
       source.contribution.mockImplementation((reference) => reference.through.entryId);
       source.grant.mockImplementation(async () => {
         assertSource();

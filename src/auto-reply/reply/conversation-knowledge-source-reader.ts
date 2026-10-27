@@ -39,7 +39,7 @@ export function createConversationKnowledgeSourceReader(params: {
   branch: ConversationKnowledgeBranch;
   originalParticipant: SessionParticipantIdentity;
   destinationAudience?: ConversationPrivateAudience;
-  rootEvidence: NativeKnowledgeRootEvidence;
+  rootEvidence?: NativeKnowledgeRootEvidence;
   targetFacts: Awaited<ReturnType<typeof prepareConversationKnowledgeBranchFacts>>;
   assertCurrent: SessionSourceAssertion;
   getRuntimeConfig: () => OpenClawConfig;
@@ -47,7 +47,7 @@ export function createConversationKnowledgeSourceReader(params: {
   sourceCache?: ConversationKnowledgeSourceCache;
   hasRetainedContribution(contributionId: string): boolean;
   reads: ConversationKnowledgeHeldSource[];
-  drop(read: ConversationKnowledgeHeldSource): void;
+  drop: (read: ConversationKnowledgeHeldSource) => void;
 }) {
   const { branch, originalParticipant, targetFacts, reads, drop } = params;
   const prepareSource = async (receipt: ConversationKnowledgeReference) => {

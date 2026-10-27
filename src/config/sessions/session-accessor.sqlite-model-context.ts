@@ -48,7 +48,6 @@ import type {
 } from "./session-history-read.types.js";
 import {
   readSessionTranscriptModelContextRanges,
-  readTranscriptNavigationEntries,
   type SessionTranscriptModelContextRange,
   type SessionTranscriptModelContextRangeResult,
 } from "./session-model-context-batch-reader.js";
@@ -301,8 +300,12 @@ export function readSessionTranscriptModelContexts(
   scope: SessionTranscriptReadScope,
   ranges: readonly SessionTranscriptModelContextRange[],
 ): SessionTranscriptModelContextRangeResult[] {
-  return readSessionTranscriptModelContextRanges(scope, ranges, (database, entries, range) =>
-    readModelContext(scope, range.through, range.limits, { database, entries }),
+  return readSessionTranscriptModelContextRanges(
+    scope,
+    ranges,
+    readTranscriptNavigationEntries,
+    (database, entries, range) =>
+      readModelContext(scope, range.through, range.limits, { database, entries }),
   );
 }
 
@@ -472,6 +475,30 @@ function withTranscriptContextSnapshot<T>(
   );
 }
 
+function readTranscriptNavigationEntries(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
+  through?: TranscriptEntryAnchor,
+  fence?: ReturnType<typeof resolveSqliteSessionTranscriptReadFence>,
+): ContextEntry[] {
+  return Array.from(
+    iterateSqliteQuerySync(
+      database.db,
+      getSessionKysely(database.db)
+        .selectFrom("transcript_events")
+        .select(["seq", transcriptEventModelNavigationSql().as("navigation_json")])
+        .where("session_id", "=", resolved.sessionId)
+        .$if(fence !== undefined, (q) => q.where("seq", "<", fence!.beforeRawSeq))
+        .$if(through !== undefined, (q) => q.where("seq", "<=", through!.rawSeq))
+        .orderBy("seq", "asc"),
+    ),
+    (row) => {
+      // SAFETY: Codec-owned navigation retains canonical discriminants and parent links.
+      return { ...(JSON.parse(row.navigation_json) as SessionTreeEntry), seq: row.seq };
+    },
+  );
+}
+
 function readTranscriptContextSnapshot<T>(
   database: OpenClawAgentReadOnlyDatabase,
   resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
@@ -526,7 +553,10 @@ function readTranscriptContextSnapshot<T>(
     }
     selectedEntries = normalizeSessionContextEntryBoundaries(
       selectSessionTranscriptTreePathNodes(tree, through?.entryId ?? tree.leafId).map(
-        ({ entry, parentId }) => ({ ...entry, parentId }),
+        ({ entry, parentId }) => {
+          entry.parentId = parentId;
+          return entry;
+        },
       ),
       tree.nodes,
     );

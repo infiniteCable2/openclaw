@@ -79,7 +79,12 @@ export function createConversationKnowledgeIngestion(params: {
         packetIds: string[];
       }>,
     ) {
-      const deferred = { accepted: 0, appended: 0, deferred: true, packetIds: [] as string[] };
+      const deferred: Awaited<ReturnType<typeof write>> = {
+        accepted: 0,
+        appended: 0,
+        deferred: true,
+        packetIds: [],
+      };
       if (!messages.length) {
         return { ...deferred, deferred: false };
       }
@@ -98,7 +103,7 @@ export function createConversationKnowledgeIngestion(params: {
           decision = await maintain(undefined, messages.slice(0, 1), { checkOnly: true });
         }
       }
-      if (decision?.canAdmitPending !== true || decision.complete !== true) {
+      if (decision?.canAdmitPending !== true || !decision.complete) {
         admissionDeferred = true;
         return deferred;
       }
