@@ -198,14 +198,11 @@ describe("native retained conversation knowledge packets", () => {
           expect((await retain(versions)).appended).toBe(32);
           expect(prefixChecks.at(-1)).toHaveLength(2);
           // Every packet's donor identity is checked before predicates can coalesce.
-          const invalid = packets.map((packet, index) =>
-            index === 31
-              ? {
-                  ...packet,
-                  receipt: { ...receipt, source: { ...donor, sessionId: "replaced-donor" } },
-                }
-              : packet,
-          );
+          const invalid = [...packets];
+          invalid[31] = {
+            ...packets[31]!,
+            receipt: { ...receipt, source: { ...donor, sessionId: "replaced-donor" } },
+          };
           await expect(retain(invalid)).rejects.toThrow(
             "Conversation knowledge packet source or recipient changed",
           );

@@ -142,7 +142,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
     }
     const pending = runInDetachedAsyncContext(() =>
       Promise.resolve().then(async () => {
-        while (requested && preparationPauses === 0 && !controller.signal.aborted) {
+        while (requested && !controller.signal.aborted) {
+          if (preparationPauses !== 0) {
+            break;
+          }
           requested = false;
           try {
             check();
