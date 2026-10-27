@@ -131,18 +131,20 @@ it.each([1, 32])(
           mutation: count,
         });
         let rejectCommit = false;
-        const backend = runWithSqliteWorkerStateContext({ environment: state.env }, () =>
-          bindSqliteWorkerBackend(
-            { resolved: batch, fence: {} },
-            {
-              database: database.db,
-              databasePath: database.path,
-              admit(stage) {
-                if (stage === "commit" && rejectCommit)
-                  throw new Error("Synthetic cursor commit refusal");
+        const backend = runWithSqliteWorkerStateContext(
+          { environment: { ...state.env, OPENCLAW_STATE_DIR: state.stateDir } },
+          () =>
+            bindSqliteWorkerBackend(
+              { resolved: batch, fence: {} },
+              {
+                database: database.db,
+                databasePath: database.path,
+                admit(stage) {
+                  if (stage === "commit" && rejectCommit)
+                    throw new Error("Synthetic cursor commit refusal");
+                },
               },
-            },
-          ),
+            ),
         );
         const { port1, port2 } = new MessageChannel();
         const run = (entries: PreparedTranscriptReportBatchEntry[]) =>
@@ -205,11 +207,13 @@ it("includes first-header creation in the single committed batch mutation", asyn
         env: state.env,
       };
       await upsertSessionEntryCore(resolved, { sessionId: resolved.sessionId, updatedAt: 1 });
-      const backend = runWithSqliteWorkerStateContext({ environment: state.env }, () =>
-        bindSqliteWorkerBackend(
-          { resolved, fence: {} },
-          { database: database.db, databasePath: database.path, admit() {} },
-        ),
+      const backend = runWithSqliteWorkerStateContext(
+        { environment: { ...state.env, OPENCLAW_STATE_DIR: state.stateDir } },
+        () =>
+          bindSqliteWorkerBackend(
+            { resolved, fence: {} },
+            { database: database.db, databasePath: database.path, admit() {} },
+          ),
       );
       const { port1, port2 } = new MessageChannel();
       try {
