@@ -18,7 +18,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { logConversationKnowledgeDiagnostic } from "./conversation-knowledge-status.js";
-import type { PreparedReplyConversationKnowledge } from "./conversation-knowledge.js";
+import type { PreparedReplyConversationKnowledge } from "./conversation-knowledge.types.js";
 
 /** Unavailable supplementary context never changes the current model dialogue. */
 export function unavailableConversationKnowledge(

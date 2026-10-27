@@ -24,10 +24,12 @@ import {
   prepareCustomTranscriptReport,
   prepareTranscriptReportBatchSelection,
   prepareTranscriptReportSelection,
-  observeTranscriptReportReceipts,
 } from "./session-accessor.sqlite-transcript-reports.kernel.js";
 import type { PreparedTranscriptReportBatchEntry } from "./session-accessor.sqlite-transcript-reports.types.js";
-import { bindSqliteWorkerBackend } from "./session-accessor.sqlite-transcript-reports.worker.js";
+import {
+  bindSqliteWorkerBackend,
+  observeTranscriptReportReceipts,
+} from "./session-accessor.sqlite-transcript-reports.worker.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";

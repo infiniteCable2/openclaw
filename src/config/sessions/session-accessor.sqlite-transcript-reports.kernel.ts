@@ -17,8 +17,6 @@ import {
 } from "../../shared/transcript-only-openclaw-assistant.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { readSessionEntryRow, writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
-import { readCurrentProjectionSnapshot } from "./session-accessor.sqlite-projection-read.js";
-import { resolveTranscriptBoundaryWindow } from "./session-accessor.sqlite-reset-window.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { ensureTranscriptHeader } from "./session-accessor.sqlite-transcript-header.js";
 import { appendTranscriptMessageInTransaction } from "./session-accessor.sqlite-transcript-message-append.js";
@@ -34,10 +32,7 @@ import type {
   TranscriptReportReceiptSelection,
   PreparedTranscriptReportBatchEntry,
   TranscriptReport,
-  TranscriptReportReceiptQuery,
-  TranscriptReportReceiptObservation,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
-import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import {
@@ -45,7 +40,6 @@ import {
   findSessionTranscriptHeader,
 } from "./session-entry-codec.js";
 import { SessionEntryNavigation, type SessionNavigationEntry } from "./session-entry-navigation.js";
-import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import {
   decodeSessionTranscriptReportFacts,
   projectSessionTranscriptReportFacts,
@@ -91,7 +85,7 @@ class TranscriptReportNavigation extends SessionEntryNavigation<ReportNavigation
   }
 }
 
-function readReportBranch(database: OpenClawAgentDatabase, sessionId: string) {
+export function readReportBranch(database: OpenClawAgentDatabase, sessionId: string) {
   function rows() {
     return iterateSqliteQuerySync(
       database.db,
@@ -147,7 +141,7 @@ function readReportBranch(database: OpenClawAgentDatabase, sessionId: string) {
   ).facts();
 }
 
-function readReportEvent(database: OpenClawAgentDatabase, sessionId: string, seq: number) {
+export function readReportEvent(database: OpenClawAgentDatabase, sessionId: string, seq: number) {
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
     getSessionKysely(database.db)
@@ -192,116 +186,6 @@ function matchesReportReceipt(
   return Boolean(
     record && Object.hasOwn(record, receipt.field) && record[receipt.field] === receipt.value,
   );
-}
-
-/** Observe known producer receipts under native report authority, not prompt-history admission. */
-export function observeTranscriptReportReceipts(
-  database: OpenClawAgentDatabase,
-  resolved: ResolvedTranscriptScope,
-  reports: readonly TranscriptReportReceiptQuery[],
-): TranscriptReportReceiptObservation[] {
-  if (!reports.length || reports.length > MAX_TRANSCRIPT_REPORT_BATCH_SIZE) {
-    throw new Error("Transcript receipt observation exceeds its scheduling quantum");
-  }
-  const selected = readCurrentProjectionSnapshot(database, resolved, (projection) => {
-    const branch = readReportBranch(database, resolved.sessionId);
-    const path = branch.path.toReversed();
-    const window = resolveTranscriptBoundaryWindow(projection, "context");
-    const observations: TranscriptReportReceiptObservation[] = reports.map((query) => ({
-      ...query,
-      status: "missing",
-    }));
-    const wanted = new Map<string, Map<string, Map<string, number[]>>>();
-    for (const [index, query] of reports.entries()) {
-      let fields = wanted.get(query.customType);
-      if (!fields) {
-        fields = new Map();
-        wanted.set(query.customType, fields);
-      }
-      let values = fields.get(query.receipt.field);
-      if (!values) {
-        values = new Map();
-        fields.set(query.receipt.field, values);
-      }
-      const indexes = values.get(query.receipt.value) ?? [];
-      indexes.push(index);
-      values.set(query.receipt.value, indexes);
-    }
-    // One reverse path pass selects the latest canonical occurrence for every
-    // receipt. Missing queries must not multiply old-body decoding by batch size.
-    for (const entry of path) {
-      if (wanted.size === 0) {
-        break;
-      }
-      if (entry.type !== "custom_message" || entry.customType === undefined) {
-        continue;
-      }
-      const fields = wanted.get(entry.customType);
-      if (!fields) {
-        continue;
-      }
-      const record = readReportEvent(database, resolved.sessionId, entry.seq);
-      const details = asOptionalRecord(record?.details);
-      const matched: number[] = [];
-      for (const [field, values] of fields) {
-        const value = details && Object.hasOwn(details, field) ? details[field] : undefined;
-        if (typeof value !== "string") {
-          continue;
-        }
-        const indexes = values.get(value);
-        if (indexes) {
-          matched.push(...indexes);
-          values.delete(value);
-          if (values.size === 0) {
-            fields.delete(field);
-          }
-        }
-      }
-      if (matched.length === 0) {
-        continue;
-      }
-      if (!record || record.id !== entry.id || typeof record.content !== "string") {
-        throw new Error("Known transcript report carrier has changed its canonical identity");
-      }
-      const active = executeSqliteQueryTakeFirstSync(
-        database.db,
-        getSessionKysely(database.db)
-          .selectFrom("session_transcript_active_events")
-          .select(["active_position", "context_eligible"])
-          .where("session_id", "=", resolved.sessionId)
-          .where("event_seq", "=", entry.seq),
-      );
-      if (!active) {
-        throw new SessionTranscriptProjectionUnavailableError(resolved.sessionId, "window-changed");
-      }
-      const inModel =
-        (active.context_eligible === 1 &&
-          active.active_position >= (window?.boundaryActivePosition ?? 0)) ||
-        window?.keptActivePositions.includes(active.active_position) === true;
-      const report = {
-        customType: entry.customType,
-        content: record.content,
-        display: record.display === true,
-        details: record.details,
-      };
-      for (const index of matched) {
-        observations[index] = {
-          ...reports[index]!,
-          status: inModel ? "active-model" : "historical",
-          eventId: entry.id,
-          report,
-        };
-      }
-      if (fields.size === 0) {
-        wanted.delete(entry.customType);
-      }
-    }
-    return observations;
-  });
-  if (selected.kind !== "value") {
-    throw new SessionTranscriptProjectionUnavailableError(resolved.sessionId);
-  }
-  return selected.value;
 }
 
 export function transcriptReportBatchReceiptKey(

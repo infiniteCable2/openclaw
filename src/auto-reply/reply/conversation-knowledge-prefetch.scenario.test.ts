@@ -206,10 +206,22 @@ describe("native branch prefetch and model-boundary composition", () => {
           expect(recipientUpdates).toBe(0);
           expect(await loadTranscriptEvents(recipient)).toEqual(before);
           expect(loadSessionEntry(recipient)?.pendingFinalDelivery).toEqual(pendingFinalDelivery);
-          const revision = prefetch.cache.revision;
+          const preparedPackets = () =>
+            [...earlier, fresh, priorCall, later].map((id) => ({
+              id,
+              packet: prefetch!.cache.peek(id, 0),
+            }));
+          const preparedBefore = preparedPackets();
+          const rootUpdatesBefore = rootUpdates;
           prefetch.owner.request();
           await prefetch.owner.wait();
-          expect(prefetch.cache.revision).toBe(revision);
+          // Rebinding provenance may advance readiness without changing prepared
+          // text/anchors or performing any canonical recipient work.
+          expect(preparedPackets()).toEqual(preparedBefore);
+          expect(await loadTranscriptEvents(recipient)).toEqual(before);
+          expect(loadSessionEntry(recipient)).toEqual(entryBefore);
+          expect(recipientUpdates).toBe(0);
+          expect(rootUpdates).toBe(rootUpdatesBefore);
           expect(budget.compact).not.toHaveBeenCalled();
           secondOpeningLive = false;
           expect(() => prefetch!.owner.assertCurrent()).toThrow();
@@ -482,10 +494,15 @@ describe("native branch prefetch and model-boundary composition", () => {
               withSessionTranscriptWriteAssertion(writer, owner.assertCurrent, () =>
                 refreshReady({ signal, canAdmit: () => canAdmit }),
               );
-            const revision = prefetch.cache.revision;
+            const stagedBefore = prefetch.cache.peek(firstId, 0);
+            expect(stagedBefore).toBeDefined();
+            const historyBeforeRefusal = await loadTranscriptEvents(recipient);
             expect(await refresh(false)).toEqual([]);
-            expect(prefetch.cache.revision).toBe(revision);
+            await prefetch.owner.wait();
+            expect(prefetch.cache.peek(firstId, 0)).toEqual(stagedBefore);
+            expect(await loadTranscriptEvents(recipient)).toEqual(historyBeforeRefusal);
             expect(await packets()).toEqual([]);
+            expect(budget.compact).not.toHaveBeenCalled();
             const model = makeProviderModelFixture({
               id: "test-model",
               provider: "openai",

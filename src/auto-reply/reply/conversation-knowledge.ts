@@ -1,6 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
-import type { BoundAgentRunSessionTarget } from "../../agents/run-session-target.types.js";
 import type { CustomMessage } from "../../agents/sessions/messages.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
@@ -17,24 +15,15 @@ import {
   combineConversationKnowledge,
   isConversationKnowledgeReferenceObserved,
   projectConversationKnowledge,
-  type ConversationKnowledgeFrontier,
 } from "../../config/sessions/conversation-knowledge.js";
 import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
-import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
-import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { unavailableConversationKnowledge } from "./conversation-knowledge-authority.js";
-import {
-  createConversationKnowledgeIngestion,
-  type ConversationKnowledgeIngestionMaintenance,
-} from "./conversation-knowledge-ingestion.js";
-import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
+import { createConversationKnowledgeIngestion } from "./conversation-knowledge-ingestion.js";
 import {
   createConversationKnowledgeSourceReader,
   observePreparedConversationKnowledgePackets,
@@ -48,51 +37,12 @@ import {
   createConversationKnowledgeGapCollector,
   logConversationKnowledgeDiagnostic,
 } from "./conversation-knowledge-status.js";
+import type {
+  PreparedReplyConversationKnowledge,
+  ReplyConversationKnowledgeParams,
+} from "./conversation-knowledge.types.js";
 
 export { recordConversationKnowledgeTurn };
-
-/** Retained until the actual model turn settles; source revocation also revokes quoted context. */
-export type PreparedReplyConversationKnowledge = {
-  fragments: RuntimeContextFragment[];
-  observed: ConversationKnowledgeFrontier[];
-  assertCurrent: SessionSourceAssertion;
-  release(): void;
-  pendingPackets?: boolean;
-  nextSourceCursor?: string;
-  /** Disposable preparation must await a new wakeup when pending packet storage is full. */
-  preparationSaturated?: boolean;
-};
-
-type ReplyConversationKnowledgeParams = {
-  reader: SessionEntryCohortReader;
-  sessionId: string;
-  assertCurrent: SessionSourceAssertion;
-  /** Host-carried participant of this actual input, never reconstructed from stored dialogue. */
-  originalParticipant?: SessionParticipantIdentity;
-  destinationAudience?: ConversationPrivateAudience;
-  /** A separately verified current recipient narrows disclosure; this is never a read grant. */
-  expectedAudienceIdentity?: string;
-  getRuntimeConfig: () => OpenClawConfig;
-  signal?: AbortSignal;
-  /** Retained context follows the turn lifetime, not a completed model response. */
-  retainedSignal?: AbortSignal;
-  sourceCache?: ConversationKnowledgeSourceCache;
-  /** Read/authorize ahead without modifying the recipient or asking a model to compact. */
-  preparationOnly?: boolean;
-  /** A natural model boundary consumes only prepared bytes; it never waits for source hydration. */
-  readyOnly?: boolean;
-  packetBudget?: number;
-  sourceBudget?: number;
-  /** Existing contribution identity; positional indexes shift when sources retire. */
-  sourceCursor?: string;
-  canAdmitPacket?: (message: CustomMessage) => boolean;
-  onPacket?: (message: CustomMessage) => void;
-  /** Actual native user runs retain observations; provider startup snapshots remain read-only. */
-  retainInHistory?: ConversationKnowledgeIngestionMaintenance & {
-    /** Native writer selector; physical read provenance does not grant write custody. */
-    writeTarget: BoundAgentRunSessionTarget;
-  };
-};
 
 /** A root reference selects candidates, never grants access to another person's conversation. */
 export async function prepareReplyConversationKnowledge(
@@ -588,9 +538,10 @@ async function prepareReplyConversationKnowledgeInMode(
           pendingPackets = true;
           break;
         }
+        const existingCarrier = observedPackets?.activeCarriers.get(report.details.packetId);
         const message: CustomMessage = {
           role: "custom",
-          ...(observedPackets?.activeCarriers.get(report.details.packetId) ?? report),
+          ...(existingCarrier ?? report),
           timestamp: Date.now(),
         };
         if (params.canAdmitPacket && !params.canAdmitPacket(message)) {
@@ -598,19 +549,31 @@ async function prepareReplyConversationKnowledgeInMode(
           pendingPackets = true;
           break;
         }
-        queuedPackets.push({
-          admission: {
-            receipt,
-            text: part.text,
-            offset,
-            nextOffset: part.nextOffset ?? offset,
-            complete: part.complete,
-            sourceVersion,
-            source: sourceAssertion,
-          },
-          message,
-          read,
-        });
+        if (existingCarrier) {
+          // The fresh native observation already proves durable, canonical model
+          // membership. Do not open another append transaction for that receipt.
+          // Settle an earlier queued prefix before exposing its successor.
+          if (!(await flushPackets())) {
+            break;
+          }
+          sourceAssertion();
+          params.onPacket?.(message);
+          params.sourceCache?.consume(contributionId, offset);
+        } else {
+          queuedPackets.push({
+            admission: {
+              receipt,
+              text: part.text,
+              offset,
+              nextOffset: part.nextOffset ?? offset,
+              complete: part.complete,
+              sourceVersion,
+              source: sourceAssertion,
+            },
+            message,
+            read,
+          });
+        }
         contributed = true;
         packets++;
         if (queuedPackets.length >= MAX_TRANSCRIPT_REPORT_BATCH_SIZE && !(await flushPackets())) {

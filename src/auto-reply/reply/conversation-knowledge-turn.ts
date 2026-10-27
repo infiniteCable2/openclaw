@@ -21,10 +21,8 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-execution.types.js";
 import type { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { logConversationKnowledgeDiagnostic } from "./conversation-knowledge-status.js";
-import {
-  prepareReplyConversationKnowledge,
-  type PreparedReplyConversationKnowledge,
-} from "./conversation-knowledge.js";
+import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
+import type { PreparedReplyConversationKnowledge } from "./conversation-knowledge.types.js";
 import {
   captureReplyConversationPublication,
   recordReplyConversationPublication,

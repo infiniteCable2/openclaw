@@ -1,4 +1,4 @@
-import type { PreparedReplyConversationKnowledge } from "../auto-reply/reply/conversation-knowledge.js";
+import type { PreparedReplyConversationKnowledge } from "../auto-reply/reply/conversation-knowledge.types.js";
 import {
   participantIdentityNamespace,
   type SessionParticipantIdentity,
