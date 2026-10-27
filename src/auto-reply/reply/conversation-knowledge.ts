@@ -19,6 +19,7 @@ import {
 import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
+import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
 import { unavailableConversationKnowledge } from "./conversation-knowledge-authority.js";
 import { createConversationKnowledgeIngestion } from "./conversation-knowledge-ingestion.js";
 import {
@@ -66,8 +67,7 @@ async function prepareReplyConversationKnowledgeInMode(
 ): Promise<PreparedReplyConversationKnowledge | undefined> {
   params.assertCurrent();
   params.signal?.throwIfAborted();
-  // Capture before the first source/receipt await: foreground admission may
-  // advance while this disposable preparation still holds older progress.
+  // Capture before source I/O so foreground consumption invalidates older disposable progress.
   const preparationConsumptionRevision = params.sourceCache?.consumptionRevision;
   const manifest = params.readyOnly ? params.sourceCache?.preparedRoot : undefined;
   if (params.readyOnly && !manifest) {
@@ -114,7 +114,10 @@ async function prepareReplyConversationKnowledgeInMode(
         held.grant.assertCurrent();
         held.facts?.assertCurrent();
         return false;
-      } catch {
+      } catch (error) {
+        if (error instanceof SessionMutationFactsUnavailableError) {
+          throw error;
+        }
         return true;
       }
     });
@@ -216,6 +219,9 @@ async function prepareReplyConversationKnowledgeInMode(
           params.assertCurrent();
           targetFacts.assertCurrent();
           params.signal?.throwIfAborted();
+          if (error instanceof SessionMutationFactsUnavailableError) {
+            throw error;
+          }
           const refused = refusedSources();
           if (!(error instanceof SessionTranscriptReadFenceError) && refused.length === 0) {
             throw error;
@@ -416,6 +422,9 @@ async function prepareReplyConversationKnowledgeInMode(
         params.assertCurrent();
         targetFacts.assertCurrent();
         params.signal?.throwIfAborted();
+        if (error instanceof SessionMutationFactsUnavailableError) {
+          throw error;
+        }
         const refusedReads = new Set(refusedSources());
         if (
           !(error instanceof SessionTranscriptReadFenceError) &&

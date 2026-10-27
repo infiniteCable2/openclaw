@@ -12,6 +12,7 @@ import type { TranscriptEvent } from "../../config/sessions/session-accessor.typ
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
+import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
 
 const source = vi.hoisted(() => ({
   branch: vi.fn(),
@@ -97,6 +98,15 @@ vi.mock("../../config/sessions/session-transcript-context-read.js", () => ({
 // mock-isolation: Prepared ranges use native proof results, never real transcript workers here.
 vi.mock("../../config/sessions/session-transcript-anchor-read.js", () => ({
   readSessionTranscriptAnchorsAsync: source.anchors,
+}));
+// mock-isolation: Synthetic storage uses full fixed native version facts, never a real database.
+vi.mock("../../config/sessions/session-transcript-hydration.js", () => ({
+  prepareSessionTranscriptHydration: () => ({
+    readMaintenance: async () => ({
+      kind: "transcript-maintenance",
+      version: { generation: "original", rawSeq: 2, updatedAt: 1 },
+    }),
+  }),
 }));
 
 import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
@@ -476,6 +486,10 @@ describe("related-history source custody without model status", () => {
     "snapshot-observed",
     "lookahead-revoked",
     "queued-lookahead-revoked",
+    "hydration-facts-pending",
+    "hydration-facts-refused",
+    "admission-facts-pending",
+    "admission-facts-refused",
   ] as const)("retains source authority only for actual imported data (%s)", async (kind) => {
     const participant = { type: "profile" as const, id: "example-person" };
     const branch = {
@@ -499,7 +513,11 @@ describe("related-history source custody without model status", () => {
     const audience = conversationKnowledgeParticipantIdentity(participant);
     const release = vi.fn();
     const targetRelease = vi.fn();
+    const donorRelease = vi.fn();
     let readable = true;
+    let donorFactsPending = false;
+    const factsUnavailable = new SessionMutationFactsUnavailableError();
+    const transientFacts = kind.includes("-facts-");
     const cancellation = new AbortController();
     const lookaheadRevoked = kind === "lookahead-revoked" || kind === "queued-lookahead-revoked";
     const assertSource = () => {
@@ -524,8 +542,13 @@ describe("related-history source custody without model status", () => {
       .mockResolvedValue({
         audience: "private-direct",
         audienceIdentity: audience,
-        assertCurrent: assertSource,
-        release: vi.fn(),
+        assertCurrent() {
+          assertSource();
+          if (donorFactsPending) {
+            throw factsUnavailable;
+          }
+        },
+        release: donorRelease,
       });
     source.grant.mockResolvedValue({
       sources: [{ ...donor, canonicalKey: donor.sessionKey, storePath: branch.storePath }],
@@ -771,41 +794,87 @@ describe("related-history source custody without model status", () => {
       consume({ contextValidated: true });
     });
     const packets: unknown[] = [];
-    const preparation = prepareReplyConversationKnowledge({
-      reader,
-      sessionId: branch.sessionId,
-      assertCurrent() {},
-      originalParticipant: participant,
-      signal: cancellation.signal,
-      getRuntimeConfig: () => ({
-        agents: { entries: { example: { conversationMode: "branches" } } },
-      }),
-      ...(kind.startsWith("prepare-")
-        ? { preparationOnly: true, sourceCache: cache }
-        : kind !== "snapshot-observed"
+    if (transientFacts) {
+      const operation = kind.startsWith("hydration-") ? source.context : source.retain;
+      operation.mockImplementationOnce(async () => {
+        donorFactsPending = true;
+        throw kind.endsWith("-pending")
+          ? factsUnavailable
+          : new SessionTranscriptReadFenceError("Synthetic pending donor publication");
+      });
+      source.retain.mockResolvedValue({
+        accepted: 1,
+        appended: 1,
+        deferred: false,
+        packetIds: ["saved-packet"],
+      });
+    }
+    const prepare = () =>
+      prepareReplyConversationKnowledge({
+        reader,
+        sessionId: branch.sessionId,
+        assertCurrent() {},
+        originalParticipant: participant,
+        signal: cancellation.signal,
+        getRuntimeConfig: () => ({
+          agents: { entries: { example: { conversationMode: "branches" } } },
+        }),
+        ...(kind.startsWith("prepare-")
+          ? { preparationOnly: true, sourceCache: cache }
+          : kind !== "snapshot-observed"
+            ? {
+                retainInHistory: {
+                  writeTarget: branch,
+                  maintainContext: async () => ({
+                    compacted: false,
+                    complete: true,
+                    canAdmitPending: true,
+                  }),
+                },
+              }
+            : {}),
+        ...(readyOnly
           ? {
-              retainInHistory: {
-                writeTarget: branch,
-                maintainContext: async () => ({
-                  compacted: false,
-                  complete: true,
-                  canAdmitPending: true,
-                }),
-              },
+              readyOnly: true,
+              sourceCache: cache,
+              canAdmitPacket: () => kind !== "capacity-deferred",
+              onPacket: (packet: unknown) => packets.push(packet),
             }
           : {}),
-      ...(readyOnly
-        ? {
-            readyOnly: true,
-            sourceCache: cache,
-            canAdmitPacket: () => kind !== "capacity-deferred",
-            onPacket: (packet: unknown) => packets.push(packet),
-          }
-        : {}),
-      ...(lookaheadRevoked
-        ? { sourceCache: cache, onPacket: (packet: unknown) => packets.push(packet) }
-        : {}),
-    });
+        ...(lookaheadRevoked || transientFacts
+          ? { sourceCache: cache, onPacket: (packet: unknown) => packets.push(packet) }
+          : {}),
+      });
+    const preparation = prepare();
+    if (transientFacts) {
+      await expect(preparation).rejects.toBe(factsUnavailable);
+      expect(release).toHaveBeenCalledOnce();
+      expect(donorRelease).toHaveBeenCalledOnce();
+      expect(targetRelease).toHaveBeenCalledOnce();
+      expect(packets).toEqual([]);
+      expect(source.retain).toHaveBeenCalledTimes(kind.startsWith("hydration-") ? 0 : 1);
+      // A fresh preparation reacquires facts after the native publication settles.
+      donorFactsPending = false;
+      source.facts.mockResolvedValueOnce({
+        audience: "private-direct",
+        audienceIdentity: audience,
+        assertCurrent() {},
+        release: targetRelease,
+      });
+      const recovered = await prepare();
+      try {
+        expect(recovered?.pendingPackets).toBe(false);
+        expect(source.retain).toHaveBeenCalledTimes(kind.startsWith("hydration-") ? 1 : 2);
+        expect(packets).toHaveLength(1);
+        expect(() => recovered?.assertCurrent()).not.toThrow();
+      } finally {
+        recovered?.release();
+      }
+      expect(release).toHaveBeenCalledTimes(2);
+      expect(donorRelease).toHaveBeenCalledTimes(2);
+      expect(targetRelease).toHaveBeenCalledTimes(2);
+      return;
+    }
     if (kind === "prepare-yield-revoked" || kind === "prepare-yield-canceled") {
       await expect(preparation).rejects.toThrow(
         kind === "prepare-yield-revoked"

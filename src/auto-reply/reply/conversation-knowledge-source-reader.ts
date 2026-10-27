@@ -1,11 +1,15 @@
 import { setImmediate } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
   createConversationKnowledgePacketReport,
   readConversationKnowledgePacketProgress,
 } from "../../config/sessions/conversation-knowledge-packets.js";
-import { selectConversationKnowledgeObserved } from "../../config/sessions/conversation-knowledge-selection.js";
+import {
+  selectConversationKnowledgeObserved,
+  selectConversationKnowledgeReceipts,
+} from "../../config/sessions/conversation-knowledge-selection.js";
 import {
   issuePreparedKnowledgeRootCandidates,
   readConversationKnowledgeRoot,
@@ -170,19 +174,125 @@ export async function readConversationKnowledgeInputs(params: {
   preparationOnly?: boolean;
   retainInHistory: boolean;
   manifest?: PreparedKnowledgeRootCandidates;
+  sourceCache?: ConversationKnowledgeSourceCache;
 }) {
   if (params.readyOnly && !params.manifest) {
     return undefined;
   }
-  const events = params.manifest
-    ? await readPreparedConversationKnowledgeRoot({ ...params, manifest: params.manifest })
-    : await readConversationKnowledgeRoot(params);
-  params.assertCurrent();
-  params.signal?.throwIfAborted();
+  const check = () => {
+    params.assertCurrent();
+    params.signal?.throwIfAborted();
+  };
+  const cache = params.preparationOnly ? params.sourceCache : undefined;
+  const epoch = cache?.consumptionRevision ?? -1;
+  const readVersion = async (target: ConversationKnowledgeBranch) => {
+    check();
+    const { prepareSessionTranscriptHydration } =
+      await import("../../config/sessions/session-transcript-hydration.js");
+    check();
+    const facts = await prepareSessionTranscriptHydration(
+      { ...target, env: params.reader.database.env },
+      undefined,
+      params.signal,
+    ).readMaintenance({ operation: "version" });
+    check();
+    if (!facts.version) {
+      throw new Error("Conversation preparation input version is unavailable");
+    }
+    return facts.version;
+  };
+  const rebind = async (manifest: PreparedKnowledgeRootCandidates) => {
+    try {
+      return await readPreparedConversationKnowledgeRoot({ ...params, manifest });
+    } catch (error) {
+      cache?.clearPreparationInputs();
+      throw error;
+    }
+  };
+  const readRoot = async () => {
+    if (params.manifest) {
+      return rebind(params.manifest);
+    }
+    if (!cache) {
+      return readConversationKnowledgeRoot(params);
+    }
+    const target = { ...params.branch, ...params.branch.root };
+    let version = await readVersion(target);
+    const cached = cache.preparationRoot(version);
+    if (cached) {
+      const events = await rebind(cached);
+      const current = await readVersion(target);
+      if (isDeepStrictEqual(version, current)) {
+        return events;
+      }
+      cache.preparationRoot(current);
+      version = current;
+    }
+    const events = await readConversationKnowledgeRoot(params);
+    const current = await readVersion(target);
+    if (isDeepStrictEqual(version, current)) {
+      try {
+        cache.retainPreparationRoot(
+          current,
+          issuePreparedKnowledgeRootCandidates(
+            events.evidence,
+            selectConversationKnowledgeReceipts(events, ""),
+            { maxBytes: cache.maxPreparedRootBytes },
+          ),
+          epoch,
+        );
+      } catch (error) {
+        if (!(error instanceof RangeError)) {
+          throw error;
+        }
+        // An oversized snapshot still serves this read; it is never retained.
+      }
+    }
+    return events;
+  };
+  const events = await readRoot();
+  check();
+  const readProgress = async () => {
+    if (!cache) {
+      return readConversationKnowledgePacketProgress(params);
+    }
+    let version = await readVersion(params.branch);
+    const cached = cache.preparationProgress(version);
+    if (cached) {
+      // Even equal native versions cannot authorize a replacement physical store.
+      await rebind(cached.manifest);
+      const current = await readVersion(params.branch);
+      if (isDeepStrictEqual(version, current)) {
+        return cached.progress;
+      }
+      cache.preparationProgress(current);
+      version = current;
+    }
+    const progress = await readConversationKnowledgePacketProgress(params);
+    const current = await readVersion(params.branch);
+    if (isDeepStrictEqual(version, current)) {
+      try {
+        cache.retainPreparationProgress(
+          current,
+          issuePreparedKnowledgeRootCandidates(events.evidence, [], {
+            maxBytes: cache.maxPreparedRootBytes,
+          }),
+          progress,
+          epoch,
+        );
+      } catch (error) {
+        if (!(error instanceof RangeError)) {
+          throw error;
+        }
+      }
+    }
+    return progress;
+  };
   const retained =
     (params.retainInHistory && !params.readyOnly) || params.preparationOnly
-      ? await readConversationKnowledgePacketProgress(params)
+      ? await readProgress()
       : undefined;
+  check();
   return { events, retained, previous: selectConversationKnowledgeObserved(events, params.branch) };
 }
 
@@ -192,7 +302,8 @@ export function publishPreparedConversationKnowledgeRoot(params: {
   receipts: readonly ConversationKnowledgeReference[];
   cache: ConversationKnowledgeSourceCache;
 }) {
-  const ready = new Set(params.cache.preparedContributionIds(MAX_TRANSCRIPT_REPORT_BATCH_SIZE));
+  // Provenance is byte-bounded by the cache, not by the SQL query batch size.
+  const ready = new Set(params.cache.preparedContributionIds(Number.MAX_SAFE_INTEGER));
   params.cache.setPreparedRoot(
     issuePreparedKnowledgeRootCandidates(
       params.evidence,

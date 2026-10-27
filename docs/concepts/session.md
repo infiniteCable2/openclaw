@@ -179,6 +179,10 @@ preparation failure receives a cancellable retry with bounded backoff, without
 waiting for another user input. Closing or revoking a recipient cancels that work.
 Disposable caches are bounded per recipient; cache capacity does not acknowledge
 unread data or remove references from the root.
+Unchanged root references and recipient progress reuse separate background
+snapshots within that same cache budget. Full native transcript versions and
+fresh physical-store and lifecycle checks invalidate stale snapshots. Temporary
+storage-fact unavailability retries preparation instead of settling a source as unreadable.
 
 The root remains the authoritative source-reference ledger. Prepared segments are
 a rebuildable view, not a second root, durable admission receipt, or guarantee
@@ -202,8 +206,10 @@ Append-only source growth uses native prefix proof; replacement, reset, and
 rewritten navigation remain fenced. Native prospective token accounting preserves
 the current request and response reserve. If an addition does not fit, it remains
 pending until a later native request can make room; this live boundary
-never starts compaction, restarts generation, or creates a turn. There is no fixed
-eight-packet admission limit. Already admitted packets retain their positions during retries
+never starts compaction, restarts generation, or creates a turn. SQL receipt batches
+do not limit the number of ready packets admitted at one model boundary: successive
+batches share the same prospective token budget and yield between operations.
+Already admitted packets retain their positions during retries
 and live steering. New observations are quoted data, not new instructions or
 permission to repeat tools.
 They can inform subsequent model decisions within the existing task; provenance

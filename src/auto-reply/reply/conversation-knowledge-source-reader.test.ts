@@ -2,8 +2,13 @@ import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
-import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
+import {
+  CONVERSATION_KNOWLEDGE_REPORT,
+  conversationKnowledgeOrigin,
+  type ConversationKnowledgeReference,
+} from "../../config/sessions/conversation-knowledge.js";
 import { readSessionTranscriptReportReceipts } from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
+import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
 import {
   readSessionTranscriptModelContextAsync,
@@ -17,6 +22,7 @@ import { createConversationKnowledgePrefetchOwner } from "./conversation-knowled
 import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 import {
   createConversationKnowledgeSourceReader,
+  readConversationKnowledgeInputs,
   stageConversationKnowledgeSource,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
@@ -24,6 +30,11 @@ import {
 const boundary = vi.hoisted(() => ({
   grant: vi.fn(),
   facts: vi.fn(),
+  root: vi.fn(),
+  rebind: vi.fn(),
+  manifest: vi.fn(),
+  progress: vi.fn(),
+  version: vi.fn(),
   register: vi.fn<(resource: OpenClawAgentDatabaseAsyncResource) => () => void>(),
 }));
 
@@ -31,19 +42,25 @@ const boundary = vi.hoisted(() => ({
 vi.mock("../../gateway/session-transcript-read-authority.js", () => ({
   prepareTranscriptReadAuthority: boundary.grant,
 }));
-// mock-isolation: These scenarios stop at grant acquisition, before root or transcript I/O.
+// mock-isolation: Native facts and provenance are supplied without opening their databases.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
-  issuePreparedKnowledgeRootCandidates: vi.fn(),
-  readConversationKnowledgeRoot: vi.fn(),
+  issuePreparedKnowledgeRootCandidates: boundary.manifest,
+  readConversationKnowledgeRoot: boundary.root,
   readConversationKnowledgeBranch: vi.fn(),
-  readPreparedConversationKnowledgeRoot: vi.fn(),
+  readPreparedConversationKnowledgeRoot: boundary.rebind,
 }));
 // mock-isolation: Packet identity is fixed here; no packet is hydrated or admitted by this fixture.
 vi.mock("../../config/sessions/conversation-knowledge-packets.js", () => ({
   CONVERSATION_KNOWLEDGE_CONTEXT: "openclaw.conversation-knowledge-context.v1",
   conversationKnowledgeContributionId: (receipt: ConversationKnowledgeReference) => receipt.origin,
   createConversationKnowledgePacketReport: vi.fn(),
-  readConversationKnowledgePacketProgress: vi.fn(),
+  readConversationKnowledgePacketProgress: boundary.progress,
+}));
+// mock-isolation: Exercise full native version decisions without running hydration workers.
+vi.mock("../../config/sessions/session-transcript-hydration.js", () => ({
+  prepareSessionTranscriptHydration: (target: { sessionId: string }) => ({
+    readMaintenance: () => boundary.version(target),
+  }),
 }));
 // mock-isolation: Observe that denied or failed grants never reach source metadata preparation.
 vi.mock("./conversation-knowledge-authority.js", () => ({
@@ -284,6 +301,177 @@ describe("source grant failure recovery", () => {
     });
     await expect(f.reader.take(f.receipt)).rejects.toBe(cancellation);
     expect(boundary.facts).not.toHaveBeenCalled();
+  });
+});
+
+describe("versioned background input snapshots", () => {
+  function inputs(maxBytes = 4 * 1024 * 1024) {
+    const { branch, receipt } = fixture();
+    const cache = createConversationKnowledgeSourceCache(maxBytes);
+    const versions = {
+      root: { generation: "root-generation", rawSeq: 3, updatedAt: 10 },
+      recipient: { generation: "recipient-generation", rawSeq: 8, updatedAt: 20 },
+    };
+    const events = Object.assign(
+      [
+        {
+          type: "custom_message",
+          customType: CONVERSATION_KNOWLEDGE_REPORT,
+          details: { ...receipt, origin: conversationKnowledgeOrigin(receipt.source) },
+        },
+      ],
+      { evidence: {} },
+    );
+    const manifests = new WeakMap<object, typeof events>();
+    boundary.root.mockResolvedValue(events);
+    boundary.progress.mockResolvedValue(
+      new Map([["existing", { complete: true, nextOffset: 12 }]]),
+    );
+    boundary.version.mockImplementation(async (target: { sessionId: "root" | "recipient" }) => ({
+      kind: "transcript-maintenance",
+      version: structuredClone(versions[target.sessionId]),
+    }));
+    boundary.manifest.mockImplementation(
+      (_evidence, references: readonly unknown[], options: { maxBytes: number }) => {
+        const manifest = { byteLength: references.length ? 600 : 80 };
+        if (manifest.byteLength > options.maxBytes) {
+          throw new RangeError("Synthetic native manifest exceeds budget");
+        }
+        manifests.set(manifest, references.length ? events : Object.assign([], { evidence: {} }));
+        return manifest;
+      },
+    );
+    boundary.rebind.mockImplementation(async ({ manifest }: { manifest: object }) => {
+      const saved = manifests.get(manifest);
+      if (!saved) {
+        throw new Error("Synthetic provenance is not from this native owner");
+      }
+      return saved;
+    });
+    const reader: SessionEntryCohortReader = {
+      database: { agentId: branch.agentId, path: branch.storePath, env: {} },
+      sessionKey: branch.sessionKey,
+      logicalAgentId: branch.agentId,
+      storePaths: [branch.storePath],
+      assertCurrent() {},
+      async withRead() {
+        throw new Error("Only the mocked native snapshot boundaries may read this fixture");
+      },
+    };
+    const read = () =>
+      readConversationKnowledgeInputs({
+        branch,
+        reader,
+        assertCurrent() {},
+        preparationOnly: true,
+        retainInHistory: false,
+        sourceCache: cache,
+      });
+    return { read, cache, versions, events, branch, receipt };
+  }
+
+  it("reuses unchanged snapshots only after fresh native physical rebind", async () => {
+    const f = inputs();
+    const first = await f.read();
+    first!.retained!.clear();
+    const second = await f.read();
+    expect(second?.events).toEqual(f.events);
+    expect(second?.retained?.get("existing")).toEqual({ complete: true, nextOffset: 12 });
+    expect(boundary.root).toHaveBeenCalledOnce();
+    expect(boundary.progress).toHaveBeenCalledOnce();
+    expect(boundary.rebind).toHaveBeenCalledTimes(2);
+    expect(boundary.version).toHaveBeenCalledTimes(8);
+  });
+
+  it("invalidates root and progress independently, including same-sequence navigation edits", async () => {
+    const f = inputs();
+    await f.read();
+    f.versions.root.updatedAt++;
+    await f.read();
+    expect(boundary.root).toHaveBeenCalledTimes(2);
+    expect(boundary.progress).toHaveBeenCalledOnce();
+    f.versions.recipient.updatedAt++;
+    await f.read();
+    expect(boundary.root).toHaveBeenCalledTimes(2);
+    expect(boundary.progress).toHaveBeenCalledTimes(2);
+    f.cache.consume("not-staged", 0);
+    await f.read();
+    expect(boundary.root).toHaveBeenCalledTimes(2);
+    expect(boundary.progress).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["consume", "clear"])("does not publish an awaited snapshot after %s", async (kind) => {
+    const f = inputs();
+    boundary.root.mockImplementationOnce(async () => {
+      if (kind === "consume") {
+        f.cache.consume("not-staged", 0);
+      } else {
+        f.cache.clear();
+      }
+      return f.events;
+    });
+    await f.read();
+    expect(f.cache.preparationRoot(f.versions.root)).toBeUndefined();
+    expect(f.cache.preparationProgress(f.versions.recipient)).toBeUndefined();
+    await f.read();
+    expect(boundary.root).toHaveBeenCalledTimes(2);
+    expect(boundary.progress).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retain a root snapshot changed during its load", async () => {
+    const f = inputs();
+    boundary.root.mockImplementationOnce(async () => {
+      f.versions.root.updatedAt++;
+      return f.events;
+    });
+    await f.read();
+    expect(f.cache.preparationRoot(f.versions.root)).toBeUndefined();
+    await f.read();
+    expect(boundary.root).toHaveBeenCalledTimes(2);
+    expect(boundary.progress).toHaveBeenCalledOnce();
+  });
+
+  it("refuses cached data when native physical or lifecycle rebind fails", async () => {
+    const f = inputs();
+    await f.read();
+    boundary.rebind.mockRejectedValueOnce(new Error("Synthetic native source replaced"));
+    await expect(f.read()).rejects.toThrow("Synthetic native source replaced");
+    expect(f.cache.preparationRoot(f.versions.root)).toBeUndefined();
+    expect(f.cache.preparationProgress(f.versions.recipient)).toBeUndefined();
+    await f.read();
+    expect(boundary.root).toHaveBeenCalledTimes(2);
+    expect(boundary.progress).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps oversized inputs readable without retaining a partial snapshot", async () => {
+    const f = inputs(1);
+    expect((await f.read())?.events).toEqual(f.events);
+    expect((await f.read())?.retained?.has("existing")).toBe(true);
+    expect(boundary.root).toHaveBeenCalledTimes(2);
+    expect(boundary.progress).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares the raw budget with foreground provenance while protecting staged packets", async () => {
+    const f = inputs(1024);
+    await f.read();
+    const manifest = f.cache.preparationRoot(f.versions.root)!;
+    expect(f.cache.preparationProgress(f.versions.recipient)).toBeDefined();
+    const packet = {
+      part: {
+        origin: "pending",
+        text: "pending",
+        complete: true,
+        nextOffset: undefined,
+        frontier: undefined,
+      },
+      version: f.versions.recipient,
+      through: f.receipt.through,
+    };
+    expect(f.cache.stage("pending", 0, packet)).toBe(true);
+    f.cache.setPreparedRoot(manifest);
+    expect(f.cache.preparationRoot(f.versions.root)).toBeUndefined();
+    expect(f.cache.preparationProgress(f.versions.recipient)).toBeUndefined();
+    expect(f.cache.peek("pending", 0)).toEqual(packet);
   });
 });
 

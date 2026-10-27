@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { PreparedAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
@@ -356,7 +357,7 @@ export function createReplyConversationKnowledgeTurn(params: {
         ? AbortSignal.any([retainedSignal, input.signal])
         : retainedSignal;
       try {
-        if (replayPending.length) {
+        while (replayPending.length) {
           const { readSessionTranscriptReportReceipts } =
             await import("../../config/sessions/session-accessor.sqlite-transcript-reports.js");
           const requested = replayPending.slice(0, MAX_TRANSCRIPT_REPORT_BATCH_SIZE);
@@ -374,7 +375,7 @@ export function createReplyConversationKnowledgeTurn(params: {
           );
           assertCurrent();
           signal.throwIfAborted();
-          if (!observed.ok) {
+          if (!observed.ok || !observed.value.length) {
             return messages;
           }
           for (const carrier of observed.value) {
@@ -399,48 +400,60 @@ export function createReplyConversationKnowledgeTurn(params: {
             replayPending.shift();
           }
           if (replayPending.length) {
-            return messages;
+            await setImmediate(undefined, { signal });
           }
         }
-        const next = await withConversationKnowledgeWriter(
-          { run, assertCurrent: assertTurnSourceCurrent },
-          (writeTarget) =>
-            prepareReplyConversationKnowledge({
-              reader,
-              sessionId,
-              assertCurrent: assertTurnSourceCurrent,
-              originalParticipant: followupRun.conversationParticipant,
-              destinationAudience: followupRun.conversationAudience,
-              getRuntimeConfig,
-              signal,
-              retainedSignal,
-              sourceCache: recipient!.cache,
-              readyOnly: true,
-              canAdmitPacket: input.canAdmit,
-              onPacket: (message) => {
-                const id = asOptionalRecord(message.details)?.packetId;
-                if (typeof id === "string") {
-                  acceptedPackets.set(id, message.timestamp);
-                }
-                messages.push(message);
-              },
-              retainInHistory: {
-                writeTarget,
-                contextLimits: resolveConversationKnowledgeContextLimits(run),
-                // The upcoming native request has already supplied prospective token
-                // admission. This live boundary never invokes a model to compact.
-                maintainContext: async () => ({
-                  compacted: false,
-                  complete: true,
-                  canAdmitPending: true,
-                }),
-              },
-            }),
-        );
-        prepared?.release();
-        prepared = next;
-        consumedRevision = revision;
-        morePreparedPackets = next?.pendingPackets === true;
+        for (;;) {
+          const before = recipient.cache.consumptionRevision;
+          const next = await withConversationKnowledgeWriter(
+            { run, assertCurrent: assertTurnSourceCurrent },
+            (writeTarget) =>
+              prepareReplyConversationKnowledge({
+                reader,
+                sessionId,
+                assertCurrent: assertTurnSourceCurrent,
+                originalParticipant: followupRun.conversationParticipant,
+                destinationAudience: followupRun.conversationAudience,
+                getRuntimeConfig,
+                signal,
+                retainedSignal,
+                sourceCache: recipient!.cache,
+                readyOnly: true,
+                canAdmitPacket: input.canAdmit,
+                onPacket: (message) => {
+                  const id = asOptionalRecord(message.details)?.packetId;
+                  if (typeof id === "string") {
+                    acceptedPackets.set(id, message.timestamp);
+                  }
+                  messages.push(message);
+                },
+                retainInHistory: {
+                  writeTarget,
+                  contextLimits: resolveConversationKnowledgeContextLimits(run),
+                  // The upcoming native request has already supplied prospective token
+                  // admission. This live boundary never invokes a model to compact.
+                  maintainContext: async () => ({
+                    compacted: false,
+                    complete: true,
+                    canAdmitPending: true,
+                  }),
+                },
+              }),
+          );
+          prepared?.release();
+          prepared = next;
+          consumedRevision = revision;
+          morePreparedPackets = next?.pendingPackets === true;
+          // SQL batches share one real request's native token budget. Yield to
+          // other work between them; never wait for background source hydration.
+          if (
+            recipient.cache.consumptionRevision === before ||
+            !recipient.cache.preparedPackets(1).length
+          ) {
+            break;
+          }
+          await setImmediate(undefined, { signal });
+        }
       } catch {
         // Completed packet commits remain recipient history. Return their live
         // projections even if a later independent source failed; never replay tools.

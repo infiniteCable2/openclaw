@@ -432,12 +432,12 @@ it("prepares long-source observations while idle and consumes them once through 
           }),
         );
         const contextIdentity = {};
-        const admit = () =>
+        const admit = (context: object = contextIdentity) =>
           foreground.run(true, () =>
             withSessionTranscriptWriteAssertion(writer, recipientClaim.assertCurrent, () =>
               knowledge.refreshPrepared({
                 signal,
-                contextIdentity,
+                contextIdentity: context,
                 canAdmit: createConversationContextCapacity({
                   messages: [],
                   contextWindow: 1_000_000,
@@ -652,6 +652,12 @@ it("prepares long-source observations while idle and consumes them once through 
         );
         expect(reads.foreground.missing).toBeGreaterThanOrEqual(packets.length);
         await admit();
+        expect(batch).toHaveBeenCalledTimes(batchCalls);
+        const retryPackets = await admit({});
+        expect(retryPackets).toHaveLength(packets.length);
+        expect(
+          new Set(retryPackets.map((packet) => asOptionalRecord(packet.details)?.packetId)).size,
+        ).toBe(packets.length);
         expect(batch).toHaveBeenCalledTimes(batchCalls);
         expect(budget.compact).not.toHaveBeenCalled();
         expect(await fixture.receipts()).toEqual(receipts);

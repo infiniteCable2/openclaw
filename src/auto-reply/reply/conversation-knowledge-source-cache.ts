@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { ConversationKnowledgePacketProgress } from "../../config/sessions/conversation-knowledge-packets.js";
 import type { PreparedKnowledgeRootCandidates } from "../../config/sessions/conversation-knowledge-store.js";
 import type { projectConversationKnowledge } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
@@ -36,6 +37,22 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
   let consumptionRevision = 0;
   let clearEpoch = 0;
   let preparedRoot: PreparedKnowledgeRootCandidates | undefined;
+  let inputRoot:
+    | {
+        version: SessionTranscriptContextVersion;
+        manifest: PreparedKnowledgeRootCandidates;
+        bytes: number;
+      }
+    | undefined;
+  let inputProgress:
+    | {
+        version: SessionTranscriptContextVersion;
+        manifest: PreparedKnowledgeRootCandidates;
+        progress: Map<string, ConversationKnowledgePacketProgress>;
+        bytes: number;
+      }
+    | undefined;
+  const inputBytes = () => (inputRoot?.bytes ?? 0) + (inputProgress?.bytes ?? 0);
   const remove = (key: string) => {
     const old = entries.get(key);
     if (old) {
@@ -54,6 +71,18 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       }
     }
   };
+  const reserveInputBytes = (additional: number) => {
+    if (inputBytes() + (preparedRoot?.byteLength ?? 0) + additional > maxBytes) {
+      return false;
+    }
+    for (const key of entries.keys()) {
+      if (bytes + inputBytes() + (preparedRoot?.byteLength ?? 0) + additional <= maxBytes) {
+        break;
+      }
+      remove(key);
+    }
+    return bytes + inputBytes() + (preparedRoot?.byteLength ?? 0) + additional <= maxBytes;
+  };
   return {
     get revision() {
       return revision;
@@ -67,14 +96,74 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
     get maxPreparedRootBytes() {
       return maxBytes;
     },
+    clearPreparationInputs() {
+      inputRoot = undefined;
+      inputProgress = undefined;
+    },
+    preparationRoot(version: SessionTranscriptContextVersion) {
+      if (inputRoot && !isDeepStrictEqual(inputRoot.version, version)) {
+        inputRoot = undefined;
+      }
+      return inputRoot?.manifest;
+    },
+    retainPreparationRoot(
+      version: SessionTranscriptContextVersion,
+      manifest: PreparedKnowledgeRootCandidates,
+      expectedConsumptionRevision: number,
+    ) {
+      if (consumptionRevision !== expectedConsumptionRevision) {
+        return;
+      }
+      inputRoot = undefined;
+      const size = manifest.byteLength + Buffer.byteLength(JSON.stringify(version));
+      if (reserveInputBytes(size)) {
+        inputRoot = { version: structuredClone(version), manifest, bytes: size };
+      }
+    },
+    preparationProgress(version: SessionTranscriptContextVersion) {
+      if (inputProgress && !isDeepStrictEqual(inputProgress.version, version)) {
+        inputProgress = undefined;
+      }
+      return (
+        inputProgress && {
+          manifest: inputProgress.manifest,
+          progress: structuredClone(inputProgress.progress),
+        }
+      );
+    },
+    retainPreparationProgress(
+      version: SessionTranscriptContextVersion,
+      manifest: PreparedKnowledgeRootCandidates,
+      progress: Map<string, ConversationKnowledgePacketProgress>,
+      expectedConsumptionRevision: number,
+    ) {
+      if (consumptionRevision !== expectedConsumptionRevision) {
+        return;
+      }
+      inputProgress = undefined;
+      const size =
+        manifest.byteLength + Buffer.byteLength(JSON.stringify([version, [...progress]]));
+      if (reserveInputBytes(size)) {
+        inputProgress = {
+          version: structuredClone(version),
+          manifest,
+          progress: structuredClone(progress),
+          bytes: size,
+        };
+      }
+    },
     setPreparedRoot(value: PreparedKnowledgeRootCandidates) {
       if (value.byteLength > maxBytes) {
         throw new RangeError("Prepared conversation provenance exceeds its cache budget");
       }
       // Provenance shares the disposable raw-byte budget; pending packets retain
       // their independent budget so preparing a manifest cannot evict unsent text.
+      if (inputBytes() + value.byteLength > maxBytes) {
+        inputRoot = undefined;
+        inputProgress = undefined;
+      }
       for (const key of entries.keys()) {
-        if (bytes + value.byteLength <= maxBytes) {
+        if (bytes + inputBytes() + value.byteLength <= maxBytes) {
           break;
         }
         remove(key);
@@ -154,6 +243,7 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       // A native commit can advance a packet that was never staged here. Any
       // in-flight preparation must reread durable progress before staging more.
       consumptionRevision++;
+      inputProgress = undefined;
       const key = stagedKey(id, offset);
       const old = staged.get(key);
       if (old) {
@@ -188,6 +278,8 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       bytes = 0;
       stagedBytes = 0;
       preparedRoot = undefined;
+      inputRoot = undefined;
+      inputProgress = undefined;
       revision++;
       clearEpoch++;
       consumptionRevision++;
@@ -259,7 +351,7 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       params.signal?.throwIfAborted();
       const size = Buffer.byteLength(JSON.stringify(value));
       // Cache capacity changes only preparation cost, never delivered knowledge coverage.
-      const rawLimit = maxBytes - (preparedRoot?.byteLength ?? 0);
+      const rawLimit = maxBytes - (preparedRoot?.byteLength ?? 0) - inputBytes();
       if (value.version && size <= rawLimit && epoch === clearEpoch) {
         remove(key);
         for (const oldKey of entries.keys()) {

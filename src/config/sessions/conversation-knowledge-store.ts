@@ -17,7 +17,6 @@ import {
   type ConversationKnowledgeReference,
 } from "./conversation-knowledge.js";
 import { appendSessionTranscriptReport } from "./session-accessor.sqlite-transcript-reports.js";
-import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { SessionTranscriptRuntimeTarget, TranscriptEvent } from "./session-accessor.types.js";
 import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
@@ -125,11 +124,7 @@ class NativeKnowledgeRootEvidence {
       throw new Error("Prepared contributions require native root evidence");
     }
     evidence.#assertCurrent();
-    if (
-      !Number.isSafeInteger(maxBytes) ||
-      maxBytes < 0 ||
-      references.length > MAX_TRANSCRIPT_REPORT_BATCH_SIZE
-    ) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
       throw new RangeError("Prepared root candidates exceed their bounded manifest");
     }
     const events = new Map<string, TranscriptEvent>();
