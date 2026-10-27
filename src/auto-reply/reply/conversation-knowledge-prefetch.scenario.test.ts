@@ -584,7 +584,7 @@ describe("native branch prefetch and model-boundary composition", () => {
       },
     );
   }
-  it.each(["response-close", "outer-retry"] as const)(
+  it.for(["response-close", "outer-retry"] as const)(
     "consumes ready packets with the native writer (%s)",
     consumeWithNativeWriter,
   );
