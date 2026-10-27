@@ -413,8 +413,12 @@ describe("native branch prefetch and model-boundary composition", () => {
               // The actual native recorder commits one canonical user row. Both
               // fresh attempts read before that same row; packet receipts remain
               // durable even when the first synthetic provider fails afterward.
+              const sessionEntry = loadSessionEntry(recipient);
+              if (!sessionEntry) {
+                throw new Error("Expected the admitted recipient entry for the native recorder");
+              }
               const recorder = createUserTurnTranscriptRecorder({
-                target: writer,
+                target: { ...writer, sessionEntry },
                 input: { text: "Which color?" },
                 assertOriginalInputCommit: owner.assertCurrent,
               });
