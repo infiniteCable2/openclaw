@@ -24,6 +24,20 @@ type PrefixProof = {
   current: SessionTranscriptContextVersion;
 };
 
+function sameTranscriptVersion(
+  left: SessionTranscriptContextVersion | undefined,
+  right: SessionTranscriptContextVersion | undefined,
+): boolean {
+  // Native SQLite rows and detached snapshots may have different object prototypes.
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.generation === right.generation &&
+    left.rawSeq === right.rawSeq &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
 /** One report operation owns these proofs; live permission facts are never retained. */
 export function createSessionSourceValidationScope(database: SourceDatabase) {
   const proofs = new Map<string, PrefixProof>();
@@ -143,8 +157,8 @@ function matchesTranscript(
     proof.identity === identity &&
     proof.path === source.source.path &&
     proof.sessionKey === source.sessionKey &&
-    isDeepStrictEqual(proof.expected, source.transcript.version) &&
-    isDeepStrictEqual(proof.current, current)
+    sameTranscriptVersion(proof.expected, source.transcript.version) &&
+    sameTranscriptVersion(proof.current, current)
   ) {
     return true;
   }
