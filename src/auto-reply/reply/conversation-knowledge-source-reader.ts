@@ -87,7 +87,7 @@ export async function prepareConversationKnowledgeTarget(params: {
   }
   const targetFacts = await prepareConversationKnowledgeBranchFacts({
     branch,
-    getRuntimeConfig: params.getRuntimeConfig,
+    getRuntimeConfig: () => params.getRuntimeConfig(),
     destinationAudience: params.destinationAudience,
   });
   // A private source grant does not authorize disclosure to a room or shared device.

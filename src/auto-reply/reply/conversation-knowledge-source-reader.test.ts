@@ -409,7 +409,7 @@ describe("bounded authorized source preparation", () => {
     const pending = initial.slice(2);
     const pendingPackets = pending.map((slot) => cache.peek(slot.contributionId, slot.offset));
     const originalStage = cache.stage.bind(cache);
-    vi.spyOn(cache, "stage").mockImplementationOnce((...args) => {
+    const stage = vi.spyOn(cache, "stage").mockImplementationOnce((...args) => {
       const staged = originalStage(...args);
       // The foreground native batch accepted two already-prepared packets while
       // the old producer still holds the progress snapshot preceding that batch.
@@ -428,11 +428,11 @@ describe("bounded authorized source preparation", () => {
     expect(pending.map((slot) => cache.peek(slot.contributionId, slot.offset))).toEqual(
       pendingPackets,
     );
-    expect(cache.stage).toHaveBeenCalledOnce();
+    expect(stage).toHaveBeenCalledOnce();
     expect(result).toBe("recipient-advanced");
     // Reusing the stale captured progress cannot resurrect the accepted prefix.
     expect(await stageConversationKnowledgeSource(request)).toBe("recipient-advanced");
-    expect(cache.stage).toHaveBeenCalledOnce();
+    expect(stage).toHaveBeenCalledOnce();
     // Only a new quantum with freshly read native progress may prepare its suffix.
     expect(
       await stageConversationKnowledgeSource({
@@ -458,7 +458,7 @@ describe("bounded authorized source preparation", () => {
     const controller = new AbortController();
     const cancellation = new Error("Synthetic preparation cancelled");
     const originalStage = cache.stage.bind(cache);
-    vi.spyOn(cache, "stage").mockImplementation((...args) => {
+    const stage = vi.spyOn(cache, "stage").mockImplementation((...args) => {
       const staged = originalStage(...args);
       queueMicrotask(() => controller.abort(cancellation));
       return staged;
@@ -475,7 +475,7 @@ describe("bounded authorized source preparation", () => {
         expectedConsumptionRevision: cache.consumptionRevision,
       }),
     ).rejects.toMatchObject({ name: "AbortError", cause: cancellation });
-    expect(cache.stage).toHaveBeenCalledOnce();
+    expect(stage).toHaveBeenCalledOnce();
     expect(cache.preparedPackets(100)).toEqual([
       { contributionId: source.receipt.origin, offset: 0 },
     ]);

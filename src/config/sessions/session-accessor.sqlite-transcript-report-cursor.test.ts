@@ -57,10 +57,18 @@ function measure<T>(database: OpenClawAgentDatabase, run: () => T) {
     database.db,
     ["header", "window", "generation", "mutation"],
     (sql) => {
-      if (/^select "seq" from "transcript_events".*\blimit\b/i.test(sql)) return "header";
-      if (/^insert into "session_windows"/i.test(sql)) return "window";
-      if (/^insert into "transcript_rewrite_watermarks"/i.test(sql)) return "generation";
-      if (/^update "session_windows" set "transcript_updated_at"/i.test(sql)) return "mutation";
+      if (/^select "seq" from "transcript_events".*\blimit\b/i.test(sql)) {
+        return "header";
+      }
+      if (/^insert into "session_windows"/i.test(sql)) {
+        return "window";
+      }
+      if (/^insert into "transcript_rewrite_watermarks"/i.test(sql)) {
+        return "generation";
+      }
+      if (/^update "session_windows" set "transcript_updated_at"/i.test(sql)) {
+        return "mutation";
+      }
       return null;
     },
   );
@@ -140,8 +148,9 @@ it.each([1, 32])(
                 database: database.db,
                 databasePath: database.path,
                 admit(stage) {
-                  if (stage === "commit" && rejectCommit)
+                  if (stage === "commit" && rejectCommit) {
                     throw new Error("Synthetic cursor commit refusal");
+                  }
                 },
               },
             ),

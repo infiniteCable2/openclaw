@@ -632,11 +632,11 @@ it("prepares long-source observations while idle and consumes them once through 
               }
               return quoted.observations
                 .map((observation) => {
-                  const text = asOptionalRecord(observation)?.text;
-                  if (typeof text !== "string") {
+                  const observationText = asOptionalRecord(observation)?.text;
+                  if (typeof observationText !== "string") {
                     throw new Error("Expected native observation text");
                   }
-                  return text;
+                  return observationText;
                 })
                 .join("");
             })
