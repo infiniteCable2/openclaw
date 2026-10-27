@@ -73,7 +73,7 @@ function fixture() {
       },
     },
   };
-  const events: TranscriptEvent[] = [
+  const events = [
     {
       type: "custom_message",
       id: "root-report",
@@ -82,7 +82,7 @@ function fixture() {
       content: "An exact native contribution reference.",
       details: structuredClone(receipt),
     },
-  ];
+  ] satisfies TranscriptEvent[];
   const source = {
     agentId: branch.agentId,
     path: branch.storePath,
