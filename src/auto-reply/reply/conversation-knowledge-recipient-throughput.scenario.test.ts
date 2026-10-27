@@ -467,6 +467,55 @@ it("prepares long-source observations while idle and consumes them once through 
         let continuationWaitMs = 0;
         let maxAdmissionMs = 0;
         let packets = await readPackets();
+        const boundaryTrace: Array<{
+          boundary: number;
+          newDurable: number;
+          durable: number;
+          staged: number;
+          overlap: number;
+          examples: Array<{ contributionId: string; offset: number }>;
+        }> = [];
+        const reportDiagnostic = (checkpoint: string) => {
+          if (!simulation) {
+            return;
+          }
+          console.info(
+            JSON.stringify({
+              benchmark: "recipient-readiness-and-native-consumption",
+              checkpoint,
+              historyEvents,
+              recipientLedgerEvents,
+              contributions: markers.length + 1,
+              packets: packets.length,
+              sources: 2,
+              observationRepeat,
+              nativeBatchCalls: batch.mock.calls.length,
+              compactionCalls: budget.compact.mock.calls.length,
+              setupMs,
+              preparationMs,
+              idlePreparedPackets,
+              idlePreparedBytes,
+              immediatelyProvenContributions: readyContributions.size,
+              withinNativeManifest,
+              boundaryCount,
+              boundaryTrace,
+              admissionMs,
+              maxAdmissionMs,
+              continuationWaitMs,
+              reads,
+              spans,
+              timingSemantics:
+                "inclusive nested spans; outsideRefresh includes setup and detached preparation; do not sum overlapping owners",
+              harnessRssBefore: rssBefore,
+              harnessRssAfter: process.memoryUsage().rss,
+              processLifetimePeakRssKiB: process.resourceUsage().maxRSS,
+              mocked: "model compaction module, expected never called",
+              real: "SQLite, compiled workers, source authority, bounded read-ahead, actual knowledge-turn boundaries and owner wakeups, native request capacity, exact packet receipts and admitted writer",
+              modelPreparationCoveredSeparately: true,
+              serverLatencyAcceptance: false,
+            }),
+          );
+        };
         for (; boundaryCount < 512; boundaryCount++) {
           signal.throwIfAborted();
           const previousPacketCount = packets.length;
@@ -483,6 +532,39 @@ it("prepares long-source observations while idle and consumes them once through 
           await prefetch.owner.wait();
           continuationWaitMs += performance.now() - waitStarted;
           packets = await readPackets();
+          const committed = new Set(
+            packets.map((packet) => {
+              const details = asOptionalRecord(packet!.details);
+              if (
+                typeof details?.contributionId !== "string" ||
+                !Number.isSafeInteger(details.offset)
+              ) {
+                throw new Error("Expected exact native durable packet identity");
+              }
+              return JSON.stringify([details.contributionId, details.offset]);
+            }),
+          );
+          const staged = prefetch.cache.preparedPackets(Number.MAX_SAFE_INTEGER);
+          const overlap = staged.filter((slot) =>
+            committed.has(JSON.stringify([slot.contributionId, slot.offset])),
+          );
+          if (boundaryTrace.length < 32) {
+            boundaryTrace.push({
+              boundary: boundaryCount + 1,
+              newDurable: packets.length - previousPacketCount,
+              durable: packets.length,
+              staged: staged.length,
+              overlap: overlap.length,
+              examples: overlap.slice(0, 4),
+            });
+          }
+          if (overlap.length) {
+            reportDiagnostic("accepted-slot-restaged");
+          }
+          expect(
+            overlap.length,
+            "drained background work must not restage a durably admitted slot",
+          ).toBe(0);
           const complete = new Set(
             packets.flatMap((packet) => {
               const details = asOptionalRecord(packet!.details);
@@ -500,6 +582,7 @@ it("prepares long-source observations while idle and consumes them once through 
             "the actual preparation owner and natural boundary must make observable progress",
           ).toBe(true);
         }
+        reportDiagnostic("after-native-drain");
         expect(
           boundaryCount,
           "all contributions must finish through bounded native boundaries",
@@ -576,42 +659,6 @@ it("prepares long-source observations while idle and consumes them once through 
         expect(reads.foreground.observe).toBeGreaterThan(0);
         expect(reads.foreground.maxObserveQueries).toBeLessThanOrEqual(32);
         expect(reads.foreground.missing).toBeGreaterThanOrEqual(packets.length);
-        if (simulation) {
-          console.info(
-            JSON.stringify({
-              benchmark: "recipient-readiness-and-native-consumption",
-              historyEvents,
-              recipientLedgerEvents,
-              contributions: markers.length + 1,
-              packets: packets.length,
-              sources: 2,
-              observationRepeat,
-              nativeBatchCalls: batchCalls,
-              compactionCalls: budget.compact.mock.calls.length,
-              setupMs,
-              preparationMs,
-              idlePreparedPackets,
-              idlePreparedBytes,
-              immediatelyProvenContributions: readyContributions.size,
-              withinNativeManifest,
-              boundaryCount,
-              admissionMs,
-              maxAdmissionMs,
-              continuationWaitMs,
-              reads,
-              spans,
-              timingSemantics:
-                "inclusive nested spans; outsideRefresh includes setup and detached preparation; do not sum overlapping owners",
-              harnessRssBefore: rssBefore,
-              harnessRssAfter: process.memoryUsage().rss,
-              processLifetimePeakRssKiB: process.resourceUsage().maxRSS,
-              mocked: "model compaction module, expected never called",
-              real: "SQLite, compiled workers, source authority, bounded read-ahead, actual knowledge-turn boundaries and owner wakeups, native request capacity, exact packet receipts and admitted writer",
-              modelPreparationCoveredSeparately: true,
-              serverLatencyAcceptance: false,
-            }),
-          );
-        }
         await admit();
         expect(batch).toHaveBeenCalledTimes(batchCalls);
         expect(budget.compact).not.toHaveBeenCalled();
