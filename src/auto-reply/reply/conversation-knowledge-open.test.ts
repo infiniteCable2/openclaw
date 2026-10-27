@@ -125,7 +125,7 @@ describe("opening a private conversation recipient", () => {
         getRuntimeConfig:
           reason === "native"
             ? () => ({ agents: { entries: { example: { conversationMode: "native" } } } })
-            : params.getRuntimeConfig,
+            : () => params.getRuntimeConfig(),
       });
       expect(boundary.load).not.toHaveBeenCalled();
       expect(boundary.seed).not.toHaveBeenCalled();

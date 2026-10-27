@@ -70,7 +70,7 @@ async function withIdleResourceCleanup<T>(
       throw new AggregateError(
         [outcome.error, cleanupError],
         "Idle maintenance operation and cleanup failed",
-        { cause: outcome.error },
+        { cause: cleanupError },
       );
     }
     throw cleanupError;

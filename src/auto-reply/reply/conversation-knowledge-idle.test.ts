@@ -424,7 +424,7 @@ describe("idle related-conversation hydration", () => {
         expect(failure.errors).toHaveLength(2);
         expect(failure.errors[0]).toBe(abortReason);
         expect(failure.errors[1]).toBe(cleanupError);
-        expect(failure.cause).toBe(abortReason);
+        expect(failure.cause).toBe(cleanupError);
         expect(f.admissionRelease).toHaveBeenCalledOnce();
         expect(f.release).toHaveBeenCalledOnce();
       } finally {
