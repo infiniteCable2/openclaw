@@ -38,7 +38,11 @@ export type IdleConversationKnowledgeResult = {
   status: "settled" | "pending";
   admittedPackets: number;
   preempted?: boolean;
+  /** Native delivery settlement, rather than another user input, resumes this recipient. */
+  waitingFor?: "recipient-delivery";
 };
+
+class RecipientDeliveryPendingError extends Error {}
 
 type IdleConversationKnowledgeParams = {
   branch: ConversationKnowledgeBranch;
@@ -232,7 +236,9 @@ async function runIdleConversationKnowledgeDetached(
                           reject("incognito");
                         }
                         if (entry.pendingFinalDelivery) {
-                          reject("pending-delivery");
+                          throw new RecipientDeliveryPendingError(
+                            "Idle conversation knowledge awaits recipient delivery settlement",
+                          );
                         }
                         if (topology?.role !== "branch") {
                           reject("branch-role");
@@ -337,7 +343,13 @@ async function runIdleConversationKnowledgeDetached(
                                     retainInHistory: {
                                       writeTarget,
                                       contextLimits: resolveConversationKnowledgeContextLimits(run),
-                                      maintainContext: (sources, ids, text) =>
+                                      maintainContext: (
+                                        sources,
+                                        ids,
+                                        text,
+                                        pendingMessages,
+                                        options,
+                                      ) =>
                                         enqueueCommandInLane(
                                           resolveGlobalLane(run.lane, run),
                                           async () => {
@@ -355,7 +367,7 @@ async function runIdleConversationKnowledgeDetached(
                                                     sources,
                                                   ]),
                                                   withWriter,
-                                                })(ids, text),
+                                                })(ids, text, pendingMessages, options),
                                               markCleanupFailed,
                                             );
                                           },
@@ -422,6 +434,18 @@ async function runIdleConversationKnowledgeDetached(
       ),
     )
     .catch((error: unknown) => {
+      if (
+        error instanceof RecipientDeliveryPendingError &&
+        !owner.signal.aborted &&
+        !cleanupFailed
+      ) {
+        assertAudience();
+        return {
+          status: "pending" as const,
+          admittedPackets,
+          waitingFor: "recipient-delivery" as const,
+        };
+      }
       if (
         owner.signal.aborted &&
         !cleanupFailed &&

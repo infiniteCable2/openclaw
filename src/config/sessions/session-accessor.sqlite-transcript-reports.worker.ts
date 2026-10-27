@@ -33,14 +33,19 @@ import { ensureTranscriptHeader } from "./session-accessor.sqlite-transcript-hea
 import {
   appendAbortedSessionTranscriptPartialInTransaction,
   appendSelectedTranscriptReportInTransaction,
+  prepareTranscriptReportBatchSelection,
   prepareTranscriptReportSelection,
+  reparentTranscriptReportBatchEntry,
+  transcriptReportBatchReceiptKey,
 } from "./session-accessor.sqlite-transcript-reports.kernel.js";
 import type {
   AbortedSessionTranscriptPartialResult,
   PreparedTranscriptReport,
   TranscriptReportCommit,
+  TranscriptReportBatchCommit,
   TranscriptReportWorkerOperations,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
+import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transcript-write-guard.js";
 import { requestSessionEntryCurrentAdmission } from "./session-entry-current-admission.worker.js";
@@ -178,6 +183,161 @@ export function bindSqliteWorkerBackend(
           };
           return ok(prepared.facts);
         });
+      }
+      if (command.type === "appendBatch") {
+        prepared = undefined;
+        const { reports, preserveContextLimits: limits } = command.input;
+        if (reports.length === 0 || reports.length > MAX_TRANSCRIPT_REPORT_BATCH_SIZE) {
+          throw new Error("Transcript report batch exceeds its scheduling quantum");
+        }
+        let duplicatePrefix = 0;
+        try {
+          return runOpenClawAgentWriteTransaction(
+            (current): Result<TranscriptReportBatchCommit, TranscriptAppendRefusal> => {
+              if (current.db !== database.db) {
+                throw new Error("Transcript report lost its canonical database owner");
+              }
+              admit("transaction");
+              const refusal = readRefusal();
+              if (refusal) {
+                admit("commit");
+                return err(refusal);
+              }
+              const selection = prepareTranscriptReportBatchSelection(database, resolved, reports);
+              let appendParentId = selection.appendParentId;
+              let projectionNeedsReconcile = false;
+              const projection = {
+                scheduleProjectionReconcile: false as const,
+                onProjectionReconcileNeeded: () => {
+                  projectionNeedsReconcile = true;
+                },
+              };
+              const firstSeq = target.cliWriter
+                ? (readTranscriptContextVersionInTransaction(database, resolved.sessionId).rawSeq ??
+                    -1) + 1
+                : undefined;
+              let usage:
+                | ReturnType<typeof readSessionTranscriptBoundedActiveContextUsageCore>
+                | undefined;
+              let accepted = 0;
+              let appended = 0;
+              let deferred = false;
+              for (const report of reports) {
+                const selected = reparentTranscriptReportBatchEntry(report, appendParentId);
+                const receiptKey = transcriptReportBatchReceiptKey(report);
+                if (selection.existing.has(receiptKey)) {
+                  accepted++;
+                  continue;
+                }
+                if (limits) {
+                  if (!usage) {
+                    ensureTranscriptHeader(database, resolved, undefined, projection);
+                    usage = readSessionTranscriptBoundedActiveContextUsageCore(resolved, {
+                      ...limits,
+                      resolvedScope: resolved,
+                    });
+                  }
+                  const additionalBytes = Buffer.byteLength(selected.eventJson, "utf8") + 1;
+                  if (
+                    usage.eventCount === 0 ||
+                    usage.serializedBytes + additionalBytes > limits.maxBytes ||
+                    usage.eventCount + 1 > limits.maxEvents
+                  ) {
+                    deferred = true;
+                    if (appended === 0) {
+                      // Roll back a provisional first header, retaining exact duplicate progress.
+                      duplicatePrefix = accepted;
+                      admit("commit");
+                      throw deferredContextAdmission;
+                    }
+                    break;
+                  }
+                  usage = {
+                    ...usage,
+                    serializedBytes: usage.serializedBytes + additionalBytes,
+                    eventCount: usage.eventCount + 1,
+                  };
+                }
+                appendSelectedTranscriptReportInTransaction(
+                  database,
+                  resolved,
+                  appendParentId,
+                  selected,
+                  projection,
+                );
+                appendParentId = selected.eventId;
+                selection.existing.add(receiptKey);
+                accepted++;
+                appended++;
+              }
+              let commitGranted = false;
+              const authorizeCommit = () => {
+                if (!commitGranted) {
+                  admit("commit");
+                  commitGranted = true;
+                }
+              };
+              const cliHistoryChanged =
+                appended > 0 && target.cliWriter && firstSeq !== undefined
+                  ? advanceCliHistoryBoundaryRangeInTransaction(
+                      database,
+                      resolved,
+                      {
+                        first: firstSeq,
+                        last:
+                          readTranscriptContextVersionInTransaction(database, resolved.sessionId)
+                            .rawSeq ?? -1,
+                      },
+                      target.cliWriter,
+                      authorizeCommit,
+                    )
+                  : false;
+              if (readRefusal()) {
+                throw new SessionTranscriptWriterClaimReboundError();
+              }
+              authorizeCommit();
+              return ok({
+                committed: true,
+                accepted,
+                appended,
+                ...(deferred ? { deferred: true as const } : {}),
+                projectionNeedsReconcile,
+                cliHistoryChanged,
+                ...(appended > 0
+                  ? {
+                      transcriptUpdate: {
+                        target: {
+                          agentId: resolved.agentId,
+                          storePath: resolved.path,
+                          sessionKey: resolved.sessionKey,
+                          sessionId: resolved.sessionId,
+                        },
+                        lifecycleRevision,
+                      },
+                    }
+                  : {}),
+              });
+            },
+            options,
+            { operationLabel: "session.transcript.report" },
+          );
+        } catch (error) {
+          if (error !== deferredContextAdmission) {
+            throw error;
+          }
+          assertOpen();
+          if (database.db.isTransaction) {
+            throw new Error("Deferred transcript batch left a transaction open", { cause: error });
+          }
+          // No input was newly appended; existing duplicate receipts are rediscovered on retry.
+          return ok({
+            committed: false,
+            accepted: duplicatePrefix,
+            appended: 0,
+            deferred: true,
+            projectionNeedsReconcile: false,
+          });
+        }
       }
       return runReportTransaction((current) => {
         if (current.db !== database.db) {

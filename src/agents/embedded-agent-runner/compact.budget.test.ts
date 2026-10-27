@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCompactHooksSessionFixture } from "./compact.hooks.fixture.test-support.js";
 import {
   attemptServerEndpointCompactionMock,
@@ -47,6 +47,91 @@ function args() {
 }
 
 describe("native ingestion-budget compaction dispatch", () => {
+  it("does not admit pending packets against a merely prospective tool-result reduction", async () => {
+    const { prepareCompactionBudgetPreflight } = await import("./compaction-budget-preflight.js");
+    const history = [
+      {
+        role: "toolResult" as const,
+        toolCallId: "large",
+        toolName: "synthetic",
+        content: [{ type: "text" as const, text: "x".repeat(700_000) }],
+        isError: false,
+        timestamp: 1,
+      },
+    ];
+    const pending = [
+      {
+        role: "custom" as const,
+        customType: "synthetic-observation",
+        content: "Quoted fact.",
+        display: false,
+        timestamp: 2,
+      },
+    ];
+    const pressure = prepareCompactionBudgetPreflight({
+      messages: history,
+      pendingMessages: pending,
+      prompt: "Continue.",
+      contextTokenBudget: 128_000,
+      reserveTokens: 16_384,
+    });
+    expect(pressure.route).toBe("truncate_tool_results_only");
+    expect(pressure.shouldCompact).toBe(false);
+    expect(pressure.overflowTokens).toBeGreaterThan(0);
+    sessionMessages.splice(0, sessionMessages.length, ...history);
+    const original = structuredClone(sessionMessages);
+    const onDecision = vi.fn();
+    const result = await compact({
+      ...args(),
+      budgetPreflight: {
+        prompt: "Continue.",
+        pendingMessages: pending,
+        checkOnly: true,
+        onDecision,
+      },
+    });
+    expect(result).toMatchObject({ ok: true, compacted: false });
+    expect(onDecision).toHaveBeenCalledExactlyOnceWith(false);
+    expect(sessionMessages).toEqual(original);
+    expect(sessionCompactImpl).not.toHaveBeenCalled();
+    expect(hookRunner.runBeforeCompaction).not.toHaveBeenCalled();
+  });
+  it("reports an oversized prospective check without summary dispatch, hooks, or durable insertion", async () => {
+    const pending = [
+      {
+        role: "custom" as const,
+        customType: "synthetic-observation",
+        content: "Pending observation. ".repeat(80_000),
+        display: false,
+        timestamp: 3,
+      },
+    ];
+    const original = structuredClone(sessionMessages);
+    const onDecision = vi.fn();
+    const result = await compact({
+      ...args(),
+      budgetPreflight: {
+        prompt: "Continue with this request.",
+        pendingMessages: pending,
+        checkOnly: true,
+        onDecision,
+      },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      compacted: false,
+      reason: "native budget admission checked without compaction",
+    });
+    expect(onDecision).toHaveBeenCalledExactlyOnceWith(false);
+    expect(sessionMessages).toEqual(original);
+    expect(sessionAutomaticCompactionMock).not.toHaveBeenCalled();
+    expect(sessionManualCompactionMock).not.toHaveBeenCalled();
+    expect(sessionCompactImpl).not.toHaveBeenCalled();
+    expect(attemptServerEndpointCompactionMock).not.toHaveBeenCalled();
+    expect(hookRunner.runBeforeCompaction).not.toHaveBeenCalled();
+    expect(hookRunner.runAfterCompaction).not.toHaveBeenCalled();
+    expect(triggerInternalHookMock).not.toHaveBeenCalled();
+  });
   it("skips ingestion-budget compaction before dispatch and hooks when prepared context fits", async () => {
     const result = await compact(args());
     expect(result).toMatchObject({

@@ -98,6 +98,7 @@ export async function prepareCompactionPromptContext(input: {
         });
   const pressure = prepareCompactionBudgetPreflight({
     messages: session.messages,
+    pendingMessages: foreground.pendingMessages,
     systemPrompt: input.systemPrompt,
     prompt: foreground.prompt,
     contextTokenBudget: foreground.contextTokenBudget,
@@ -118,5 +119,16 @@ export async function prepareCompactionPromptContext(input: {
     },
   });
   assertActive();
-  return { originalMessages, skipCompaction: !pressure.shouldCompact };
+  const outgoingPressure = pressure.compactionReplay ?? pressure;
+  // A truncate-only route has not applied its prospective reduction yet and is
+  // not admission. Replay's outgoing window, rather than raw diagnostics, owns fit.
+  foreground.onDecision?.(
+    outgoingPressure.route === "fits" && outgoingPressure.overflowTokens <= 0,
+  );
+  // Prospective admission may choose a smaller ordered prefix before asking the
+  // native owner to rewrite durable history. The pressure decision stays exact.
+  return {
+    originalMessages,
+    skipCompaction: foreground.checkOnly === true || !pressure.shouldCompact,
+  };
 }

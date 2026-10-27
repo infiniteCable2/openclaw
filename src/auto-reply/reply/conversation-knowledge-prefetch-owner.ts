@@ -2,6 +2,7 @@ import path from "node:path";
 import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createBackgroundWorkOwner } from "../../process/background-work.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { runInDetachedAsyncContext } from "../../shared/detached-async-context.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
@@ -29,6 +30,8 @@ export function createConversationKnowledgePrefetchOwner(params: {
   clear(): void;
   /** Schedule recipient maintenance outside the bounded source-read leaf pool. */
   onRequest?(signal: AbortSignal): void;
+  /** Committed recipient metadata may release a deferred admission, without rereading sources. */
+  onRecipientChange?(signal: AbortSignal): void | Promise<void>;
   /** Database retirement must join accepted recipient writes as well as source reads. */
   settle?(): Promise<void>;
 }) {
@@ -42,7 +45,9 @@ export function createConversationKnowledgePrefetchOwner(params: {
   let execution: OpenClawAgentDatabaseExecution | undefined;
   let unregister = () => {};
   let unsubscribe = () => {};
+  let unsubscribeRecipient = () => {};
   let requested = false;
+  let recipientRequested = false;
   let admissionRequested = false;
   let completion: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
@@ -62,8 +67,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
   const revoke = () => {
     controller.abort();
     requested = false;
+    recipientRequested = false;
     admissionRequested = false;
     unsubscribe();
+    unsubscribeRecipient();
     try {
       params.clear();
     } catch {
@@ -116,28 +123,36 @@ export function createConversationKnowledgePrefetchOwner(params: {
     }
     const pending = runInDetachedAsyncContext(() =>
       Promise.resolve().then(async () => {
-        while (requested && !controller.signal.aborted) {
+        while ((requested || recipientRequested) && !controller.signal.aborted) {
+          const prepareRequested = requested;
           requested = false;
           try {
             check();
+            if (recipientRequested) {
+              recipientRequested = false;
+              await params.onRecipientChange?.(controller.signal);
+              check();
+            }
             // Never check authority or start recipient work on the root publisher's stack.
             if (admissionRequested) {
               admissionRequested = false;
               params.onRequest?.(controller.signal);
             }
             // Each batch releases shared capacity before a coalesced successor is queued.
-            await background.enqueue(
-              async (signal) => {
-                check();
-                signal.throwIfAborted();
-                const more = await params.prepare(signal);
-                signal.throwIfAborted();
-                check();
-                reportedFailures.delete("preparation-deferred");
-                requested ||= more === true;
-              },
-              { abortSignal: controller.signal },
-            );
+            if (prepareRequested) {
+              await background.enqueue(
+                async (signal) => {
+                  check();
+                  signal.throwIfAborted();
+                  const more = await params.prepare(signal);
+                  signal.throwIfAborted();
+                  check();
+                  reportedFailures.delete("preparation-deferred");
+                  requested ||= more === true;
+                },
+                { abortSignal: controller.signal },
+              );
+            }
           } catch {
             if (controller.signal.aborted) {
               return;
@@ -159,7 +174,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
         completion = undefined;
       }
       // Preserve a wakeup delivered between the final loop check and settlement.
-      if (requested && !controller.signal.aborted) {
+      if ((requested || recipientRequested) && !controller.signal.aborted) {
         schedule();
       }
     });
@@ -176,6 +191,14 @@ export function createConversationKnowledgePrefetchOwner(params: {
     // Committed-root publishers only mark work; even authority checks run off their stack.
     requested = true;
     admissionRequested = true;
+    schedule();
+  };
+  const requestRecipientCheck = () => {
+    if (controller.signal.aborted) {
+      return;
+    }
+    // Row publishers only coalesce a wakeup; native facts/authority are read off their stack.
+    recipientRequested = true;
     schedule();
   };
 
@@ -206,6 +229,18 @@ export function createConversationKnowledgePrefetchOwner(params: {
         request();
       }
     });
+    unsubscribeRecipient = sessionChanges.subscribe((change) => {
+      if (
+        "sessionKey" in change &&
+        change.scope === "session-entry" &&
+        change.agentId === target.agentId &&
+        change.sessionKey === target.sessionKey &&
+        change.storePath &&
+        path.resolve(change.storePath) === target.storePath
+      ) {
+        requestRecipientCheck();
+      }
+    });
   } catch (error) {
     if (execution) {
       stop();
@@ -215,5 +250,5 @@ export function createConversationKnowledgePrefetchOwner(params: {
     throw error;
   }
   request();
-  return { request, close, assertCurrent, wait };
+  return { request, requestRecipientCheck, close, assertCurrent, wait };
 }

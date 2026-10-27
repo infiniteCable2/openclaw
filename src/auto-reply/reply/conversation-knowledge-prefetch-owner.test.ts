@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { OpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
@@ -113,6 +114,48 @@ afterEach(async () => {
 });
 
 describe("conversation knowledge prefetch lifecycle", () => {
+  it("coalesces committed recipient metadata off the publisher stack without rewarming sources", async () => {
+    const context = new AsyncLocalStorage<string>();
+    const onRecipientChange = vi.fn(async () => {
+      expect(context.getStore()).toBeUndefined();
+    });
+    const prepare = vi.fn(async () => {});
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      assertCurrent() {},
+      clear() {},
+      prepare,
+      onRecipientChange,
+    });
+    await owner.wait();
+    const change = {
+      agentId: target.agentId,
+      storePath: target.storePath,
+      sessionKey: target.sessionKey,
+      scope: "session-entry" as const,
+    };
+    context.run("delivery-publisher", () => {
+      sessionChanges.emit(change);
+      sessionChanges.emit(change);
+      expect(onRecipientChange).not.toHaveBeenCalled();
+    });
+    await owner.wait();
+    expect(onRecipientChange).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledOnce();
+    sessionChanges.emit({ ...change, scope: "transcript" });
+    sessionChanges.emit({ ...change, scope: "runtime" });
+    sessionChanges.emit({ ...change, agentId: "other" });
+    sessionChanges.emit({ ...change, storePath: path.resolve("other.sqlite") });
+    sessionChanges.emit({ ...change, sessionKey: target.root.sessionKey });
+    await owner.wait();
+    expect(onRecipientChange).toHaveBeenCalledOnce();
+    await owner.close();
+    sessionChanges.emit(change);
+    owner.requestRecipientCheck();
+    await owner.wait();
+    expect(onRecipientChange).toHaveBeenCalledOnce();
+  });
+
   it("continues source pages without restarting idle admission and preserves new root wakeups", async () => {
     const onRequest = vi.fn();
     let pages = 0;
@@ -134,6 +177,34 @@ describe("conversation knowledge prefetch lifecycle", () => {
     expect(prepare).toHaveBeenCalledTimes(4);
     expect(onRequest).toHaveBeenCalledTimes(2);
     await owner.close();
+  });
+
+  it("does not revive revoked recipient authority from a committed delivery notification", async () => {
+    let live = true;
+    const onRecipientChange = vi.fn();
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      assertCurrent() {
+        if (!live) {
+          throw new Error("Synthetic private opening revoked");
+        }
+      },
+      clear() {},
+      prepare: async () => {},
+      onRecipientChange,
+    });
+    await owner.wait();
+    live = false;
+    expect(() =>
+      sessionChanges.emit({
+        agentId: target.agentId,
+        storePath: target.storePath,
+        sessionKey: target.sessionKey,
+        scope: "session-entry",
+      }),
+    ).not.toThrow();
+    await owner.close();
+    expect(onRecipientChange).not.toHaveBeenCalled();
   });
 
   it("starts detached and nonblocking, then coalesces exact root notifications", async () => {

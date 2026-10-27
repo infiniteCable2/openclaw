@@ -118,6 +118,7 @@ export function prepareConversationKnowledgeRecipient(params: {
   let sourceCursor: string | undefined;
   let idleRequested = false;
   let idleRequestRevision = 0;
+  let waitingForRecipientDelivery = false;
   let idleCompletion: Promise<void> | undefined;
   const checkAudience = () => {
     audience.assertCurrent();
@@ -137,6 +138,7 @@ export function prepareConversationKnowledgeRecipient(params: {
       const { runIdleConversationKnowledge } = await import("./conversation-knowledge-idle.js");
       while (idleRequested && !signal.aborted) {
         idleRequested = false;
+        waitingForRecipientDelivery = false;
         attemptedRevision = idleRequestRevision;
         checkAudience();
         const startedAt = performance.now();
@@ -157,6 +159,12 @@ export function prepareConversationKnowledgeRecipient(params: {
           status: result.status,
           preempted: result.preempted === true,
         });
+        if (result.waitingFor === "recipient-delivery") {
+          waitingForRecipientDelivery = true;
+          // The native clear may have committed before the deferred result arrived.
+          // Check once now, then wait for actual committed recipient metadata.
+          owner.requestRecipientCheck();
+        }
         // A new preemptible owner waits for the foreground turn to finish. Read,
         // capacity and authorization failures never become a busy retry loop.
         idleRequested ||= result.preempted === true;
@@ -193,6 +201,32 @@ export function prepareConversationKnowledgeRecipient(params: {
       }
     },
     onRequest: requestIdle,
+    async onRecipientChange(signal) {
+      if (!waitingForRecipientDelivery) {
+        return;
+      }
+      const held = await loadSessionEntryForAdmission(
+        { ...branch, env: params.env },
+        { signal, assertCurrent: owner.assertCurrent },
+      );
+      try {
+        owner.assertCurrent();
+        held.databaseClaim.assertCurrent();
+        signal.throwIfAborted();
+        if (
+          held.entry?.sessionId !== branch.sessionId ||
+          held.entry.lifecycleRevision !== branch.lifecycleRevision ||
+          held.entry.pendingFinalDelivery
+        ) {
+          return;
+        }
+        // This notification grants no write custody. A new idle owner rereads every fence.
+        waitingForRecipientDelivery = false;
+        requestIdle(signal);
+      } finally {
+        await held.databaseClaim.release();
+      }
+    },
     settle: async () => {
       for (let pending = idleCompletion; pending; pending = idleCompletion) {
         await pending;

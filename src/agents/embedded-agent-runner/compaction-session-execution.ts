@@ -292,7 +292,9 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           return {
             ok: true,
             compacted: false,
-            reason: "below threshold: prepared native prompt does not require compaction",
+            reason: params.budgetPreflight?.checkOnly
+              ? "native budget admission checked without compaction"
+              : "below threshold: prepared native prompt does not require compaction",
           };
         }
         diagnosticOwner = createDiagnosticEmbeddedRunOwner({

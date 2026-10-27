@@ -48,6 +48,7 @@ import {
   appendAbortedSessionTranscriptPartialInTransaction,
   appendSessionTranscriptReportInTransaction,
   prepareTranscriptReportSelection,
+  prepareCustomTranscriptReport,
 } from "./session-accessor.sqlite-transcript-reports.kernel.js";
 import type {
   CustomMessageReport,
@@ -57,7 +58,10 @@ import type {
   TranscriptReportCommit,
   TranscriptReportContextAdmission,
   TranscriptReportWorkerOperations,
+  TranscriptReportBatchEntry,
+  TranscriptReportBatchProgress,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
+import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { TranscriptReportWorkerTarget } from "./session-accessor.sqlite-transcript-reports.worker.js";
 import { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transcript-write-guard.js";
 import { assertSessionEntryCurrentAdmission } from "./session-entry-current-admission.js";
@@ -146,6 +150,9 @@ async function withIncognitoReportWorker<T>(
         input: TranscriptReportWorkerOperations[Key]["input"],
       ) => Promise<TranscriptReportWorkerOperations[Key]["output"]>;
     } = {
+      appendBatch: async () => {
+        throw new Error("Batch reports require a durable native transcript target");
+      },
       prepare: async (selection) => {
         prepared = undefined;
         const selectionResult = await actor.sessions.transcript(authority, {
@@ -705,6 +712,67 @@ export async function appendSessionTranscriptReport(
       }),
     options?.sessionEntryCurrent,
     incognito,
+    options?.source,
+  );
+}
+
+/** Append a bounded exact-receipt prefix under one native report domain and writer admission. */
+export async function appendSessionTranscriptReportBatch(
+  scope: SessionTranscriptWriteScope,
+  reports: readonly TranscriptReportBatchEntry[],
+  options?: {
+    contextAdmission?: TranscriptReportContextAdmission;
+    source?: SessionSourceAssertion;
+  },
+): Promise<Result<TranscriptReportBatchProgress, TranscriptAppendRefusal>> {
+  if (reports.length === 0 || reports.length > MAX_TRANSCRIPT_REPORT_BATCH_SIZE) {
+    throw new Error("Transcript report batch exceeds its scheduling quantum");
+  }
+  if (captureIncognitoSessionOperation(scope) || isProcessHeldTranscript(scope)) {
+    throw new Error("Batch reports require a durable native transcript target");
+  }
+  const entries = reports.map(({ report, receipt }) => ({
+    report: { ...report },
+    receipt: { ...receipt },
+  }));
+  const contextAdmission = options?.contextAdmission;
+  const limits = contextAdmission && structuredClone(contextAdmission.limits);
+  return withReportWorker(
+    scope,
+    "append",
+    async (operation, assertCurrent, publish) => {
+      assertCurrent();
+      // The original producer owns toJSON and final envelope identity. Serialize
+      // only after live writer/source admission, as the single-report owner does.
+      const prepared = entries.map(({ report, receipt }) => {
+        assertCurrent();
+        const selection = { kind: "custom" as const, customTypes: [report.customType], receipt };
+        const { eventJson } = prepareCustomTranscriptReport(report, null, selection);
+        assertCurrent();
+        return { eventJson, customType: report.customType, receipt };
+      });
+      const result = await operation.execute({
+        type: "appendBatch",
+        input: { reports: prepared, ...(limits ? { preserveContextLimits: limits } : {}) },
+      });
+      assertCurrent();
+      if (!result.ok) {
+        return result;
+      }
+      if (result.value.committed) {
+        publish(result.value);
+      }
+      if (result.value.deferred) {
+        contextAdmission?.onDeferred();
+      }
+      return ok({
+        accepted: result.value.accepted,
+        appended: result.value.appended,
+        deferred: result.value.deferred === true,
+      });
+    },
+    undefined,
+    undefined,
     options?.source,
   );
 }

@@ -4,6 +4,7 @@ import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
+import type { CompactEmbeddedAgentSessionRuntimeParams } from "../../agents/embedded-agent-runner/compact.types.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import { recordConversationKnowledgeTurn } from "../../config/sessions/conversation-knowledge-store.js";
@@ -25,7 +26,10 @@ import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const budget = vi.hoisted(() => ({
-  compact: vi.fn(async () => ({ ok: true, compacted: false, reason: "within budget" })),
+  compact: vi.fn(async (params: CompactEmbeddedAgentSessionRuntimeParams) => {
+    params.budgetPreflight?.onDecision?.(true);
+    return { ok: true, compacted: false, reason: "within budget" };
+  }),
 }));
 // mock-isolation: No provider/model compaction; native target, cohort, writer and packet I/O remain real.
 vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({

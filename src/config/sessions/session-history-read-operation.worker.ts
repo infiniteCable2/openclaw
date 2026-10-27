@@ -19,6 +19,7 @@ type DurableHistoryReadOperationRequest = Extract<
       | "session-title-fields"
       | "session-preview"
       | "model-context"
+      | "model-context-batch"
       | "context-messages"
       | "transcript-watermark"
       | "transcript-message-presence"
@@ -55,6 +56,7 @@ export function isSessionHistoryReadOperation(
     case "session-title-fields":
     case "session-preview":
     case "model-context":
+    case "model-context-batch":
     case "context-messages":
     case "transcript-watermark":
     case "transcript-message-presence":
@@ -91,7 +93,9 @@ export async function prepareSessionHistoryReadOperation(
       request.kind !== "context-messages"
     ) {
       assertExistingDatabaseIdentity(
-        request.kind === "model-context" ? request.target.storePath : request.database.path,
+        request.kind === "model-context" || request.kind === "model-context-batch"
+          ? request.target.storePath
+          : request.database.path,
         request.expectedIdentity.key,
         request.expectedIdentity.birthtime,
       );
@@ -405,6 +409,14 @@ async function prepareHistoryRead(
         runWithSessionTranscriptReadFence(request.admission, () =>
           readSessionTranscriptModelContext(request.target, request.through, request.limits),
         );
+    }
+    case "model-context-batch": {
+      const { readSessionTranscriptModelContexts } =
+        await import("./session-accessor.sqlite-model-context.js");
+      return () =>
+        runWithSessionTranscriptReadFence(request.admission, () => ({
+          contexts: readSessionTranscriptModelContexts(request.target, request.ranges),
+        }));
     }
     case "transcript-watermark": {
       const { readSessionTranscriptWatermark } =

@@ -240,7 +240,6 @@ describe("idle related-conversation hydration", () => {
     ["session-incarnation", { sessionId: "replacement" }],
     ["lifecycle-revision", { lifecycleRevision: "replacement" }],
     ["incognito", { incognito: true }],
-    ["pending-delivery", { pendingFinalDelivery: { kind: "replayable", text: "held" } }],
     ["branch-role", { conversationTopology: undefined }],
   ] as const)("classifies %s without admitting stale ownership", async (reason, change) => {
     const f = fixture();
@@ -252,6 +251,22 @@ describe("idle related-conversation hydration", () => {
     await expect(runIdleConversationKnowledge(f.params)).rejects.toThrow(
       `recipient ownership changed: ${reason}`,
     );
+    expect(boundary.prepare).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
+  it("defers an outstanding delivery without taking the writer or losing its retry reason", async () => {
+    const f = fixture();
+    boundary.admission.mockImplementation(async (request) => {
+      f.entry.pendingFinalDelivery = { kind: "replayable", text: "held", createdAt: 1 };
+      await request.assertAllowed();
+      throw new Error("Unexpected admission before native delivery settlement");
+    });
+    await expect(runIdleConversationKnowledge(f.params)).resolves.toEqual({
+      status: "pending",
+      admittedPackets: 0,
+      waitingFor: "recipient-delivery",
+    });
     expect(boundary.prepare).not.toHaveBeenCalled();
     expect(f.release).toHaveBeenCalledOnce();
   });

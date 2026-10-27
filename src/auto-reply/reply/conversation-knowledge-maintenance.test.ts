@@ -74,6 +74,113 @@ beforeEach(() => {
 });
 
 describe("conversation knowledge native maintenance", () => {
+  it("forwards check-only admission and distinguishes a negative native decision from an absent one", async () => {
+    const pending = [
+      {
+        role: "custom" as const,
+        customType: "synthetic",
+        content: "Fact",
+        display: false,
+        timestamp: 1,
+      },
+    ];
+    mocks.compact.mockImplementationOnce(async (params) => {
+      expect(params.budgetPreflight?.checkOnly).toBe(true);
+      params.budgetPreflight?.onDecision?.(false);
+      return { ok: true, compacted: false };
+    });
+    await expect(
+      createConversationKnowledgeMaintenance({
+        run,
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      })([], undefined, pending, { checkOnly: true }),
+    ).resolves.toEqual({
+      compacted: false,
+      complete: true,
+      canAdmitPending: false,
+    });
+  });
+
+  it("admits prospective messages only after an explicit native pressure decision", async () => {
+    const pending = [
+      {
+        role: "custom" as const,
+        customType: "synthetic-observation",
+        content: "Quoted fact.",
+        display: false,
+        timestamp: 1,
+      },
+    ];
+    mocks.compact.mockImplementationOnce(async (params) => {
+      expect(params.budgetPreflight?.pendingMessages).toBe(pending);
+      params.budgetPreflight?.onDecision?.(true);
+      return { ok: true, compacted: false };
+    });
+    const maintenance = createConversationKnowledgeMaintenance({
+      run,
+      signal: new AbortController().signal,
+      assertCurrent() {},
+    });
+    await expect(maintenance([], undefined, pending)).resolves.toEqual({
+      compacted: false,
+      complete: true,
+      canAdmitPending: true,
+    });
+    expect(mocks.compact).toHaveBeenCalledOnce();
+    expect(mocks.read).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "does not reuse an absent or pre-compaction prospective fit decision (compacted=%s)",
+    async (compacted) => {
+      const pending = [
+        {
+          role: "custom" as const,
+          customType: "synthetic-observation",
+          content: "Quoted fact.",
+          display: false,
+          timestamp: 1,
+        },
+      ];
+      mocks.compact.mockImplementationOnce(async (params) => {
+        if (compacted) {
+          params.budgetPreflight?.onDecision?.(false);
+        }
+        return { ok: true, compacted };
+      });
+      await expect(
+        createConversationKnowledgeMaintenance({
+          run,
+          signal: new AbortController().signal,
+          assertCurrent() {},
+        })([], undefined, pending),
+      ).resolves.toEqual({ compacted, complete: true });
+    },
+  );
+
+  it("revalidates source authority when native prospective pressure reports its decision", async () => {
+    let current = true;
+    mocks.compact.mockImplementationOnce(async (params) => {
+      current = false;
+      params.budgetPreflight?.onDecision?.(true);
+      return { ok: true, compacted: false };
+    });
+    await expect(
+      createConversationKnowledgeMaintenance({
+        run,
+        signal: new AbortController().signal,
+        assertCurrent() {
+          if (!current) {
+            throw new Error("Source revoked during native budget check");
+          }
+        },
+      })([], undefined, [
+        { role: "custom", customType: "synthetic", content: "Fact", display: false, timestamp: 1 },
+      ]),
+    ).rejects.toThrow("Source revoked");
+  });
+
   it("uses the foreground native hydration budget, not a custom catch-up cap", () => {
     expect(
       resolveConversationKnowledgeContextLimits({ ...run, contextTokenBudget: 1_000_000 }),

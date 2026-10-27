@@ -3,7 +3,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { readConversationKnowledgeReports } from "./conversation-knowledge-history.js";
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "./conversation-knowledge.js";
-import { appendSessionTranscriptReport } from "./session-accessor.sqlite-transcript-reports.js";
+import { appendSessionTranscriptReportBatch } from "./session-accessor.sqlite-transcript-reports.js";
 import type { CustomMessageReportAppend } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type {
   SessionTranscriptRuntimeTarget,
@@ -149,8 +149,44 @@ export async function retainConversationKnowledgePacket(
     contextLimits?: { maxBytes: number; maxEvents: number };
   },
 ): Promise<string | undefined> {
+  const { branch, writeTarget, reader, signal, contextLimits, ...packet } = params;
+  const result = await retainConversationKnowledgePackets({
+    branch,
+    writeTarget,
+    reader,
+    signal,
+    contextLimits,
+    packets: [packet],
+  });
+  return result.packetIds[0];
+}
+
+export type ConversationKnowledgePacketAdmission = Omit<
+  ConversationKnowledgePacketReportInput,
+  "branch"
+> & {
+  sourceVersion: SessionTranscriptContextVersion;
+  source: SessionSourceAssertion;
+};
+
+/** A bounded native publication retains individual receipts and exact committed-prefix progress. */
+export async function retainConversationKnowledgePackets(params: {
+  branch: ConversationKnowledgeBranch;
+  writeTarget: SessionTranscriptRuntimeTarget &
+    Pick<SessionTranscriptWriteScope, "expectedWriterRunId" | "expectedLifecycleRevision">;
+  reader: SessionEntryCohortReader;
+  packets: readonly ConversationKnowledgePacketAdmission[];
+  signal?: AbortSignal;
+  contextLimits?: { maxBytes: number; maxEvents: number };
+}): Promise<{ accepted: number; appended: number; deferred: boolean; packetIds: string[] }> {
   params.signal?.throwIfAborted();
-  params.source();
+  const originalSources = composeSessionSourceAssertion(
+    params.packets.map((packet) => packet.source),
+  );
+  originalSources();
+  if (!params.packets.length) {
+    return { accepted: 0, appended: 0, deferred: false, packetIds: [] };
+  }
   const writeTarget = { ...params.writeTarget };
   assertSessionEntryCohortScope(params.reader, writeTarget);
   if (
@@ -162,85 +198,95 @@ export async function retainConversationKnowledgePacket(
   ) {
     throw new Error("Conversation knowledge packet writer differs from its recipient");
   }
-  const report = createConversationKnowledgePacketReport(params);
-  const { packetId } = report.details;
-  const predicate = await params.reader.withRead(
-    { sessionKeys: [params.receipt.source.sessionKey, params.branch.sessionKey] },
-    params.source,
+  const reports = params.packets.map((packet) =>
+    createConversationKnowledgePacketReport({ ...packet, branch: params.branch }),
+  );
+  const predicates = await params.reader.withRead(
+    {
+      sessionKeys: [
+        ...new Set([
+          params.branch.sessionKey,
+          ...params.packets.map((packet) => packet.receipt.source.sessionKey),
+        ]),
+      ],
+    },
+    originalSources,
     (facts) => {
-      const donor = facts.entries.find(
-        (row) => row.sessionKey === params.receipt.source.sessionKey,
-      )?.entry;
       const recipient = facts.entries.find(
         (row) => row.sessionKey === params.branch.sessionKey,
       )?.entry;
       if (
-        donor?.sessionId !== params.receipt.source.sessionId ||
-        donor.lifecycleRevision !== params.receipt.source.lifecycleRevision ||
         recipient?.sessionId !== params.branch.sessionId ||
         recipient.lifecycleRevision !== params.branch.lifecycleRevision
       ) {
         throw new Error("Conversation knowledge packet source or recipient changed");
       }
-      return {
-        source: facts.source,
-        sessionKey: params.receipt.source.sessionKey,
-        fields: ["sessionId", "lifecycleRevision"],
-        expected: donor,
-        transcript: {
-          sessionId: donor.sessionId,
-          version: params.sourceVersion,
-          consistency: "prefix",
-        },
-      } satisfies SessionSourcePredicate;
+      return params.packets.map((packet) => {
+        const donor = facts.entries.find(
+          (row) => row.sessionKey === packet.receipt.source.sessionKey,
+        )?.entry;
+        if (
+          donor?.sessionId !== packet.receipt.source.sessionId ||
+          donor.lifecycleRevision !== packet.receipt.source.lifecycleRevision
+        ) {
+          throw new Error("Conversation knowledge packet source or recipient changed");
+        }
+        return {
+          source: facts.source,
+          sessionKey: packet.receipt.source.sessionKey,
+          fields: ["sessionId", "lifecycleRevision"],
+          expected: donor,
+          transcript: {
+            sessionId: donor.sessionId,
+            version: packet.sourceVersion,
+            consistency: "prefix",
+          },
+        } satisfies SessionSourcePredicate;
+      });
     },
   );
   const source = composeSessionSourceAssertion([
-    params.source,
-    Object.assign(() => params.source(), {
+    originalSources,
+    Object.assign(() => originalSources(), {
       prepareSessionSource: async () => ({
-        assertCurrent: params.source,
-        checks: [
-          {
-            predicate,
-            refuse: (): never => {
-              throw new SessionTranscriptReadFenceError("Knowledge packet source anchor changed");
-            },
+        assertCurrent: originalSources,
+        checks: predicates.map((predicate) => ({
+          predicate,
+          refuse: (): never => {
+            throw new SessionTranscriptReadFenceError("Knowledge packet source anchor changed");
           },
-        ],
+        })),
       }),
     }),
   ]);
-  let deferred = false;
-  const result = await appendSessionTranscriptReport(
+  const result = await appendSessionTranscriptReportBatch(
     {
       ...writeTarget,
       expectedLifecycleRevision: params.branch.lifecycleRevision,
     },
-    {
-      kind: "custom",
-      customTypes: [CONVERSATION_KNOWLEDGE_CONTEXT],
-      receipt: { field: "packetId", value: packetId },
-      selectReport: (latest) => (latest ? undefined : report),
-    },
+    reports.map((report) => ({
+      report,
+      receipt: { field: "packetId", value: report.details.packetId },
+    })),
     {
       source,
       ...(params.contextLimits
         ? {
             contextAdmission: {
               limits: params.contextLimits,
-              onDeferred: () => {
-                deferred = true;
-              },
+              onDeferred: () => {},
             },
           }
         : {}),
     },
   );
-  params.source();
+  originalSources();
   params.signal?.throwIfAborted();
   if (!result.ok) {
     throw new Error("Conversation knowledge packet admission was refused", { cause: result.error });
   }
-  return deferred ? undefined : packetId;
+  return {
+    ...result.value,
+    packetIds: reports.slice(0, result.value.accepted).map((report) => report.details.packetId),
+  };
 }

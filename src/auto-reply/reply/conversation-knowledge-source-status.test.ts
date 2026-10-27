@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
+import type { ConversationKnowledgePacketAdmission } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
   CONVERSATION_KNOWLEDGE_REPORT,
   conversationKnowledgeOrigin,
@@ -15,10 +16,12 @@ const source = vi.hoisted(() => ({
   facts: vi.fn(),
   grant: vi.fn(),
   context: vi.fn(),
+  contextBatch: vi.fn(),
   retain: vi.fn(),
   anchors: vi.fn(),
   contribution: vi.fn(),
   progress: vi.fn(),
+  report: vi.fn(),
 }));
 const preparationYield = vi.hoisted(() => vi.fn());
 // mock-isolation: Control the native cooperative boundary without scheduling media or timers.
@@ -34,16 +37,11 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
 }));
 // mock-isolation: Observe packet custody without starting native packet storage.
 vi.mock("../../config/sessions/conversation-knowledge-packets.js", () => ({
-  createConversationKnowledgePacketReport: ({ text }: { text: string }) => ({
-    customType: "synthetic-knowledge-packet",
-    content: text,
-    display: false,
-    details: { packetId: "synthetic-packet" },
-  }),
+  createConversationKnowledgePacketReport: source.report,
   conversationKnowledgeContributionId: source.contribution,
   readConversationKnowledgePacketProgress: source.progress,
   readActiveConversationKnowledgePacketIds: async () => [],
-  retainConversationKnowledgePacket: source.retain,
+  retainConversationKnowledgePackets: source.retain,
 }));
 // mock-isolation: Supply revocable facts without initializing unrelated Gateway sharing storage.
 vi.mock("./conversation-knowledge-authority.js", () => ({
@@ -80,6 +78,7 @@ vi.mock("../../gateway/session-transcript-read-authority.js", () => ({
 // mock-isolation: Reproduce source gaps without reading a real private transcript.
 vi.mock("../../config/sessions/session-transcript-context-read.js", () => ({
   readSessionTranscriptModelContextAsync: source.context,
+  readSessionTranscriptModelContextsAsync: source.contextBatch,
 }));
 // mock-isolation: Prepared ranges use native proof results, never real transcript workers here.
 vi.mock("../../config/sessions/session-transcript-anchor-read.js", () => ({
@@ -95,6 +94,12 @@ beforeEach(() => {
   }
   source.contribution.mockReturnValue("synthetic-contribution");
   source.progress.mockImplementation(async () => new Map());
+  source.report.mockImplementation(({ text }: { text: string }) => ({
+    customType: "synthetic-knowledge-packet",
+    content: text,
+    display: false,
+    details: { packetId: "synthetic-packet" },
+  }));
   preparationYield.mockReset().mockResolvedValue(undefined);
 });
 
@@ -174,13 +179,24 @@ describe("related-history source custody without model status", () => {
       });
       const progress = new Map<string, { complete: boolean; nextOffset: number }>();
       source.progress.mockImplementation(async () => new Map(progress));
-      source.retain.mockImplementation(async (packet) => {
-        progress.set(packet.receipt.through.entryId, {
-          complete: packet.complete,
-          nextOffset: packet.nextOffset,
-        });
-        return "saved-packet";
-      });
+      source.retain.mockImplementation(
+        async ({ packets }: { packets: ConversationKnowledgePacketAdmission[] }) => {
+          for (const packet of packets) {
+            progress.set(packet.receipt.through.entryId, {
+              complete: packet.complete,
+              nextOffset: packet.nextOffset,
+            });
+          }
+          return {
+            accepted: packets.length,
+            appended: packets.length,
+            deferred: false,
+            packetIds: packets.map(
+              (packet) => `${packet.receipt.through.entryId}:${packet.offset}`,
+            ),
+          };
+        },
+      );
       source.context.mockImplementation(async (target, consume) => {
         const receipt = receipts.find(
           (candidate) => candidate.source.sessionId === target.sessionId,
@@ -275,7 +291,14 @@ describe("related-history source custody without model status", () => {
         ...(admission
           ? {
               packetBudget: 1,
-              retainInHistory: { writeTarget: branch, maintainContext: async () => {} },
+              retainInHistory: {
+                writeTarget: branch,
+                maintainContext: async () => ({
+                  compacted: false,
+                  complete: true,
+                  canAdmitPending: true,
+                }),
+              },
             }
           : { preparationOnly: true, sourceBudget: 8 }),
       };
@@ -308,9 +331,13 @@ describe("related-history source custody without model status", () => {
       try {
         expect(first?.pendingPackets).toBe(true);
         expect(first?.nextSourceCursor).toBe("large-answer");
-        expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
-          "large-answer",
-        ]);
+        expect(
+          source.retain.mock.calls.flatMap(([call]) =>
+            call.packets.map(
+              (packet: ConversationKnowledgePacketAdmission) => packet.receipt.through.entryId,
+            ),
+          ),
+        ).toEqual(["large-answer"]);
       } finally {
         first?.release();
       }
@@ -331,19 +358,25 @@ describe("related-history source custody without model status", () => {
       });
       try {
         if (kind !== "admission") {
-          expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
-            "large-answer",
-            "small-answer",
-          ]);
+          expect(
+            source.retain.mock.calls.flatMap(([call]) =>
+              call.packets.map(
+                (packet: ConversationKnowledgePacketAdmission) => packet.receipt.through.entryId,
+              ),
+            ),
+          ).toEqual(["large-answer", "small-answer"]);
           expect(second?.nextSourceCursor).toBeUndefined();
           expect(second?.pendingPackets).toBe(false);
           expect(source.context).not.toHaveBeenCalled();
           return;
         }
-        expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
-          "large-answer",
-          "large-answer",
-        ]);
+        expect(
+          source.retain.mock.calls.flatMap(([call]) =>
+            call.packets.map(
+              (packet: ConversationKnowledgePacketAdmission) => packet.receipt.through.entryId,
+            ),
+          ),
+        ).toEqual(["large-answer", "large-answer"]);
         expect(second?.nextSourceCursor).toBe("small-answer");
         expect(source.context).not.toHaveBeenCalled();
       } finally {
@@ -363,11 +396,13 @@ describe("related-history source custody without model status", () => {
         sourceCursor: second?.nextSourceCursor,
       });
       try {
-        expect(source.retain.mock.calls.map(([call]) => call.receipt.through.entryId)).toEqual([
-          "large-answer",
-          "large-answer",
-          "small-answer",
-        ]);
+        expect(
+          source.retain.mock.calls.flatMap(([call]) =>
+            call.packets.map(
+              (packet: ConversationKnowledgePacketAdmission) => packet.receipt.through.entryId,
+            ),
+          ),
+        ).toEqual(["large-answer", "large-answer", "small-answer"]);
         expect(third?.nextSourceCursor).toBeUndefined();
         expect(third?.pendingPackets).toBe(false);
         expect(source.context).not.toHaveBeenCalled();
@@ -391,6 +426,8 @@ describe("related-history source custody without model status", () => {
     "capacity-deferred",
     "source-changed",
     "snapshot-observed",
+    "lookahead-revoked",
+    "queued-lookahead-revoked",
   ] as const)("retains source authority only for actual imported data (%s)", async (kind) => {
     const participant = { type: "profile" as const, id: "example-person" };
     const branch = {
@@ -416,8 +453,15 @@ describe("related-history source custody without model status", () => {
     const targetRelease = vi.fn();
     let readable = true;
     const cancellation = new AbortController();
+    const lookaheadRevoked = kind === "lookahead-revoked" || kind === "queued-lookahead-revoked";
     const assertSource = () => {
       if (!readable) {
+        if (kind === "queued-lookahead-revoked") {
+          throw new Error("Transcript source is no longer readable");
+        }
+        if (lookaheadRevoked) {
+          throw new SessionTranscriptReadFenceError("Synthetic lookahead grant revoked");
+        }
         throw new Error("Diagnostic source revoked");
       }
     };
@@ -429,7 +473,7 @@ describe("related-history source custody without model status", () => {
         assertCurrent() {},
         release: targetRelease,
       })
-      .mockResolvedValueOnce({
+      .mockResolvedValue({
         audience: "private-direct",
         audienceIdentity: audience,
         assertCurrent: assertSource,
@@ -462,6 +506,78 @@ describe("related-history source custody without model status", () => {
         },
       },
     ]);
+    if (lookaheadRevoked) {
+      const reports = await source.root();
+      const receipt = readConversationKnowledgeReceipt(reports[0].details)!;
+      const labels = kind === "queued-lookahead-revoked" ? ["next", "third", "fourth"] : ["next"];
+      source.root.mockResolvedValue([
+        ...reports,
+        ...labels.map((label, index) => ({
+          ...reports[0],
+          details: {
+            ...receipt,
+            runId: `donor-${label}-run`,
+            through: {
+              ...receipt.through,
+              entryId: `${label}-answer`,
+              rawSeq: 4 + index * 2,
+              activeMessagePosition: 3 + index * 2,
+              effectiveParentId: `${label}-question`,
+            },
+          },
+        })),
+      ]);
+      source.contribution.mockImplementation((reference) => reference.through.entryId);
+      source.grant.mockImplementation(async () => {
+        assertSource();
+        return {
+          sources: [{ ...donor, canonicalKey: donor.sessionKey, storePath: branch.storePath }],
+          assertCurrent: assertSource,
+          release,
+        };
+      });
+      // Both ranges share one original source. Revoking its look-ahead grant
+      // during hydration must release both held claims, not poison finalization.
+      source.contextBatch.mockImplementation(async (_target, ranges, consume) => {
+        if (kind === "queued-lookahead-revoked" && source.contextBatch.mock.calls.length === 1) {
+          return consume(
+            ranges.map(
+              ({ through }: { through: { entryId: string; effectiveParentId: string } }) => ({
+                ok: true,
+                context: {
+                  version: { generation: "original", rawSeq: 8, updatedAt: 1 },
+                  events: [
+                    {
+                      type: "message",
+                      id: through.effectiveParentId,
+                      message: { role: "user", content: "A queued synthetic observation." },
+                    },
+                    {
+                      type: "message",
+                      id: through.entryId,
+                      message: {
+                        role: "assistant",
+                        content: "Understood.",
+                        stopReason: "stop",
+                        __openclaw: {
+                          runId: through.entryId === "answer" ? "donor-run" : "donor-next-run",
+                        },
+                      },
+                    },
+                  ],
+                },
+              }),
+            ),
+          );
+        }
+        if (kind === "queued-lookahead-revoked") {
+          expect(source.report).toHaveBeenCalledTimes(2);
+          expect(source.retain).not.toHaveBeenCalled();
+        }
+        readable = false;
+        return consume([]);
+      });
+    }
     if (kind === "snapshot-observed") {
       const reports = await source.root();
       const receipt = readConversationKnowledgeReceipt(reports[0].details)!;
@@ -497,9 +613,13 @@ describe("related-history source custody without model status", () => {
     } else if (kind === "unverified-exchange") {
       source.context.mockImplementation(async (_target, consume) => consume({ events: [] }));
     } else {
-      source.retain.mockResolvedValue(
-        kind === "admitted" || kind === "ready-admitted" ? "saved-packet" : undefined,
-      );
+      const accepted = kind === "admitted" || kind === "ready-admitted";
+      source.retain.mockResolvedValue({
+        accepted: accepted ? 1 : 0,
+        appended: accepted ? 1 : 0,
+        deferred: !accepted,
+        packetIds: accepted ? ["saved-packet"] : [],
+      });
       if (kind === "source-changed") {
         source.retain.mockRejectedValue(new SessionTranscriptReadFenceError("Source changed"));
       }
@@ -595,7 +715,14 @@ describe("related-history source custody without model status", () => {
         ? { preparationOnly: true, sourceCache: cache }
         : kind !== "snapshot-observed"
           ? {
-              retainInHistory: { writeTarget: branch, maintainContext: async () => {} },
+              retainInHistory: {
+                writeTarget: branch,
+                maintainContext: async () => ({
+                  compacted: false,
+                  complete: true,
+                  canAdmitPending: true,
+                }),
+              },
             }
           : {}),
       ...(readyOnly
@@ -605,6 +732,9 @@ describe("related-history source custody without model status", () => {
             canAdmitPacket: () => kind !== "capacity-deferred",
             onPacket: (packet: unknown) => packets.push(packet),
           }
+        : {}),
+      ...(lookaheadRevoked
+        ? { sourceCache: cache, onPacket: (packet: unknown) => packets.push(packet) }
         : {}),
     });
     if (kind === "prepare-yield-revoked" || kind === "prepare-yield-canceled") {
@@ -626,7 +756,9 @@ describe("related-history source custody without model status", () => {
       if (kind === "admitted" || kind === "ready-empty" || kind === "snapshot-observed") {
         expect(release).not.toHaveBeenCalled();
       } else {
-        expect(release).toHaveBeenCalledOnce();
+        expect(release).toHaveBeenCalledTimes(
+          lookaheadRevoked ? (kind === "queued-lookahead-revoked" ? 4 : 2) : 1,
+        );
       }
       if (
         [
@@ -638,6 +770,8 @@ describe("related-history source custody without model status", () => {
           "ready-stale",
           "capacity-deferred",
           "snapshot-observed",
+          "lookahead-revoked",
+          "queued-lookahead-revoked",
         ].includes(kind)
       ) {
         expect(source.retain).not.toHaveBeenCalled();
@@ -646,6 +780,7 @@ describe("related-history source custody without model status", () => {
       }
       if (readyOnly) {
         expect(source.context).not.toHaveBeenCalled();
+        expect(source.contextBatch).not.toHaveBeenCalled();
         expect(packets).toHaveLength(kind === "ready-admitted" ? 1 : 0);
       }
       if (kind === "snapshot-observed") {
@@ -666,6 +801,22 @@ describe("related-history source custody without model status", () => {
       if (kind === "capacity-deferred" || kind === "ready-stale" || kind === "source-changed") {
         expect(prepared?.pendingPackets).toBe(true);
       }
+      if (kind === "lookahead-revoked") {
+        expect(source.contextBatch).toHaveBeenCalledOnce();
+        expect(source.context).not.toHaveBeenCalled();
+        expect(source.grant).toHaveBeenCalledTimes(3);
+        expect(() => prepared?.assertCurrent()).not.toThrow();
+      }
+      if (kind === "queued-lookahead-revoked") {
+        expect(source.contextBatch).toHaveBeenCalledTimes(2);
+        expect(source.context).not.toHaveBeenCalled();
+        expect(source.grant).toHaveBeenCalledTimes(4);
+        expect(source.report).toHaveBeenCalledTimes(2);
+        expect(packets).toEqual([]);
+        expect(prepared?.pendingPackets).toBe(true);
+        expect(prepared?.nextSourceCursor).toBe("answer");
+        expect(() => prepared?.assertCurrent()).not.toThrow();
+      }
       readable = false;
       if (kind === "admitted") {
         expect(() => prepared?.assertCurrent()).toThrow("Diagnostic source revoked");
@@ -676,7 +827,13 @@ describe("related-history source custody without model status", () => {
       prepared?.release();
     }
     expect(release).toHaveBeenCalledTimes(
-      kind === "ready-empty" || kind === "snapshot-observed" ? 0 : 1,
+      kind === "ready-empty" || kind === "snapshot-observed"
+        ? 0
+        : lookaheadRevoked
+          ? kind === "queued-lookahead-revoked"
+            ? 4
+            : 2
+          : 1,
     );
     expect(targetRelease).toHaveBeenCalledOnce();
   });

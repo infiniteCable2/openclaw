@@ -288,6 +288,26 @@ describe("ordered native branch Knowledge scenario", () => {
                 (await loadTranscriptEvents(recipient))
                   .map(asOptionalRecord)
                   .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT);
+              // Commit one bounded prefix before interrupting the next native
+              // preflight. A refused preflight must never write its pending batch.
+              const initial = await prepareReplyConversationKnowledge({
+                ...owner,
+                originalParticipant: person,
+                getRuntimeConfig: () => fixture.cfg,
+                packetBudget: 8,
+                retainInHistory: {
+                  writeTarget: recipient,
+                  contextLimits,
+                  maintainContext: async (source) => {
+                    source();
+                    return { compacted: false, complete: true, canAdmitPending: true };
+                  },
+                },
+              });
+              expect(initial?.pendingPackets).toBe(true);
+              initial?.release();
+              const prefixPackets = await readPackets();
+              expect(prefixPackets).toHaveLength(8);
               let maintenanceCalls = 0;
               await expect(
                 prepareReplyConversationKnowledge({
@@ -300,14 +320,14 @@ describe("ordered native branch Knowledge scenario", () => {
                     maintainContext: async (source) => {
                       source();
                       maintenanceCalls += 1;
-                      throw new Error("Synthetic interruption after durable admission");
+                      throw new Error("Synthetic interruption before the next durable batch");
                     },
                   },
                 }),
-              ).rejects.toThrow("Synthetic interruption after durable admission");
+              ).rejects.toThrow("Synthetic interruption before the next durable batch");
               expect(maintenanceCalls).toBe(1);
               const interruptedPackets = await readPackets();
-              expect(interruptedPackets.length).toBeGreaterThan(0);
+              expect(interruptedPackets).toEqual(prefixPackets);
               const resumed = await prepareReplyConversationKnowledge({
                 ...owner,
                 originalParticipant: person,
@@ -317,6 +337,7 @@ describe("ordered native branch Knowledge scenario", () => {
                   contextLimits,
                   maintainContext: async (source) => {
                     source();
+                    return { compacted: false, complete: true, canAdmitPending: true };
                   },
                 },
               });
@@ -363,12 +384,12 @@ describe("ordered native branch Knowledge scenario", () => {
                     source();
                     checkedExisting = true;
                     expect(new Set(activeIds)).toEqual(new Set(ids));
-                    return { compacted: false, complete: true };
+                    return { compacted: false, complete: true, canAdmitPending: true };
                   },
                 },
               });
               repeated?.release();
-              expect(checkedExisting).toBe(true);
+              expect(checkedExisting).toBe(false);
               expect(await readPackets()).toHaveLength(packets.length);
               const lateDonor = await fixture.branch("late-donor");
               const lateOwner = await fixture.claim(lateDonor);
@@ -391,7 +412,8 @@ describe("ordered native branch Knowledge scenario", () => {
               });
               try {
                 expect(incomplete?.fragments).toEqual([]);
-                expect(JSON.stringify(await readPackets())).toContain("late-observation");
+                expect(incomplete?.pendingPackets).toBe(true);
+                expect(JSON.stringify(await readPackets())).not.toContain("late-observation");
               } finally {
                 incomplete?.release();
               }
@@ -432,7 +454,7 @@ describe("ordered native branch Knowledge scenario", () => {
                   contextLimits: { ...contextLimits, maxEvents: 2 },
                   maintainContext: async (source) => {
                     source();
-                    return { compacted: false, complete: true };
+                    return { compacted: false, complete: true, canAdmitPending: true };
                   },
                 },
               });
@@ -448,12 +470,14 @@ describe("ordered native branch Knowledge scenario", () => {
                   contextLimits,
                   maintainContext: async (source) => {
                     source();
+                    return { compacted: false, complete: true, canAdmitPending: true };
                   },
                 },
               });
               expect(retried?.fragments).toEqual([]);
               retried?.release();
               expect((await readPackets()).length).toBeGreaterThan(beforeDeferred.length);
+              expect(JSON.stringify(await readPackets())).toContain("late-observation");
               expect(JSON.stringify(await readPackets())).toContain("pending-window-fact");
             },
           );

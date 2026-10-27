@@ -10,7 +10,8 @@ import {
   conversationKnowledgeContributionId,
   readActiveConversationKnowledgePacketIds,
   readConversationKnowledgePacketProgress,
-  retainConversationKnowledgePacket,
+  retainConversationKnowledgePackets,
+  type ConversationKnowledgePacketAdmission,
 } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
   selectConversationKnowledgeObserved,
@@ -27,14 +28,20 @@ import {
   isConversationKnowledgeReferenceObserved,
   projectConversationKnowledge,
   type ConversationKnowledgeFrontier,
+  type ConversationKnowledgeReference,
 } from "../../config/sessions/conversation-knowledge.js";
+import type { SessionTranscriptModelContextRangeResult } from "../../config/sessions/session-accessor.sqlite-model-context.js";
+import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
-import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-context-read.js";
+import {
+  readSessionTranscriptModelContextAsync,
+  readSessionTranscriptModelContextsAsync,
+} from "../../config/sessions/session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
@@ -182,6 +189,16 @@ async function prepareReplyConversationKnowledgeInMode(
       throw new AggregateError(failures, "Conversation knowledge source release failed");
     }
   };
+  const refusedSources = () =>
+    reads.filter((held) => {
+      try {
+        held.grant.assertCurrent();
+        held.facts?.assertCurrent();
+        return false;
+      } catch {
+        return true;
+      }
+    });
   let active = true;
   const release = () => {
     if (!active) {
@@ -251,6 +268,72 @@ async function prepareReplyConversationKnowledgeInMode(
     let nextSourceCursor: string | undefined;
     let preparationSaturated = false;
     let sources = 0;
+    let batchBlocked = false;
+    const queuedPackets: Array<{
+      admission: ConversationKnowledgePacketAdmission;
+      message: CustomMessage;
+      read: (typeof reads)[number];
+    }> = [];
+    const flushPackets = async () => {
+      if (!queuedPackets.length || !ingestion || !params.retainInHistory) {
+        return true;
+      }
+      const batch = queuedPackets.splice(0);
+      const result = await ingestion
+        .tryBatch(
+          batch.map(({ message }) => message),
+          (count) =>
+            retainConversationKnowledgePackets({
+              branch,
+              writeTarget: params.retainInHistory!.writeTarget,
+              reader: params.reader,
+              packets: batch.slice(0, count).map(({ admission }) => admission),
+              signal: params.signal,
+              contextLimits: params.retainInHistory?.contextLimits,
+            }),
+        )
+        .catch((error: unknown) => {
+          params.assertCurrent();
+          targetFacts.assertCurrent();
+          params.signal?.throwIfAborted();
+          const refused = refusedSources();
+          if (!(error instanceof SessionTranscriptReadFenceError) && refused.length === 0) {
+            throw error;
+          }
+          for (const { admission } of batch) {
+            gap(admission.receipt, "source-range-unverified");
+            params.sourceCache?.invalidateContribution(
+              conversationKnowledgeContributionId(admission.receipt),
+            );
+          }
+          for (const held of new Set(batch.map(({ read }) => read))) {
+            drop(held);
+          }
+          // A look-ahead grant can share the rewritten source without having a
+          // queued packet yet. Do not carry its already-refused claim into the result.
+          for (const held of refused) {
+            drop(held);
+          }
+          return { accepted: 0, appended: 0, deferred: true, packetIds: [] };
+        });
+      for (const { admission, message } of batch.slice(0, result.accepted)) {
+        params.onPacket?.(message);
+        params.sourceCache?.consume(
+          conversationKnowledgeContributionId(admission.receipt),
+          admission.offset,
+        );
+      }
+      const firstMissing = batch[result.accepted];
+      if (firstMissing) {
+        pendingPackets = true;
+        batchBlocked = true;
+        nextSourceCursor = conversationKnowledgeContributionId(firstMissing.admission.receipt);
+        for (const { admission } of batch.slice(result.accepted)) {
+          gap(admission.receipt, "admission-deferred");
+        }
+      }
+      return !firstMissing;
+    };
     const receipts = selectConversationKnowledgeReceipts(
       events,
       branch.sessionId,
@@ -265,6 +348,97 @@ async function prepareReplyConversationKnowledgeInMode(
           ),
         )
       : 0;
+    const prepareSource = async (receipt: ConversationKnowledgeReference) => {
+      const contributionId = conversationKnowledgeContributionId(receipt);
+      let grant: Awaited<ReturnType<typeof prepareTranscriptReadAuthority>>;
+      try {
+        grant = await prepareTranscriptReadAuthority({
+          purpose: "conversation-differences",
+          personal: {
+            originalParticipant,
+            assertCurrent: composeSessionSourceAssertion([
+              params.assertCurrent,
+              targetFacts.assertCurrent,
+            ]),
+            target: branch,
+            targetAudience: params.destinationAudience,
+            contribution: receipt,
+            rootEvidence: events.evidence,
+          },
+          getRuntimeConfig: params.getRuntimeConfig,
+          sources: [receipt.source],
+        });
+      } catch {
+        // A hidden, removed or now-unreadable source does not become a discovery result.
+        params.assertCurrent();
+        targetFacts.assertCurrent();
+        params.signal?.throwIfAborted();
+        params.sourceCache?.invalidateContribution(contributionId);
+        return undefined;
+      }
+      const read: (typeof reads)[number] = { grant };
+      reads.push(read);
+      grant.assertCurrent();
+      const source = grant.sources[0];
+      if (
+        !source ||
+        source.agentId !== branch.agentId ||
+        source.canonicalKey !== receipt.source.sessionKey ||
+        source.sessionId !== receipt.source.sessionId ||
+        source.lifecycleRevision !== receipt.source.lifecycleRevision ||
+        source.storePath !== branch.storePath ||
+        source.storePath !== receipt.through.storePath
+      ) {
+        params.sourceCache?.invalidateContribution(contributionId);
+        drop(read);
+        return undefined;
+      }
+      read.facts = await prepareConversationKnowledgeBranchFacts({
+        branch: {
+          ...branch,
+          sessionKey: source.canonicalKey,
+          sessionId: source.sessionId,
+          lifecycleRevision: receipt.source.lifecycleRevision,
+        },
+        getRuntimeConfig: params.getRuntimeConfig,
+        contribution: receipt,
+      });
+      grant.assertCurrent();
+      targetFacts.assertCurrent();
+      if (read.facts.audienceIdentity !== targetFacts.audienceIdentity) {
+        params.sourceCache?.invalidateContribution(contributionId);
+        drop(read);
+        return undefined;
+      }
+      const sourceAssertion = composeSessionSourceAssertion([
+        params.assertCurrent,
+        targetFacts.assertCurrent,
+        grant.assertCurrent,
+        read.facts.assertCurrent,
+      ]);
+      const projectionTarget = {
+        agentId: source.agentId,
+        sessionKey: source.canonicalKey,
+        sessionId: source.sessionId,
+        storePath: source.storePath,
+      };
+      const through = grant.contributionRange?.through ?? receipt.through;
+      const from = grant.contributionRange?.from;
+      return { read, grant, sourceAssertion, projectionTarget, through, from, facts: read.facts };
+    };
+    type PreparedSource = NonNullable<Awaited<ReturnType<typeof prepareSource>>>;
+    const preparedSources = new Map<string, PreparedSource>();
+    // At most the current and next range are hydrated; future grants are not an eager all-source scan.
+    const preparedProjections = new Map<string, SessionTranscriptModelContextRangeResult>();
+    const acceptProjection = (result: SessionTranscriptModelContextRangeResult) => {
+      if (result.ok) {
+        return result.context;
+      }
+      if (result.reason === "source-range-over-capacity") {
+        throw new RangeError("Conversation source range exceeds native context capacity");
+      }
+      throw new SessionTranscriptReadFenceError("Conversation source range is no longer verified");
+    };
     for (let index = startIndex; index < receipts.length; index++) {
       const receipt = receipts[index]!;
       params.signal?.throwIfAborted();
@@ -297,88 +471,22 @@ async function prepareReplyConversationKnowledgeInMode(
         break;
       }
       sources++;
-      let grant: Awaited<ReturnType<typeof prepareTranscriptReadAuthority>>;
-      try {
-        grant = await prepareTranscriptReadAuthority({
-          purpose: "conversation-differences",
-          personal: {
-            originalParticipant,
-            assertCurrent: composeSessionSourceAssertion([
-              params.assertCurrent,
-              targetFacts.assertCurrent,
-            ]),
-            target: branch,
-            targetAudience: params.destinationAudience,
-            contribution: receipt,
-            rootEvidence: events.evidence,
-          },
-          getRuntimeConfig: params.getRuntimeConfig,
-          sources: [receipt.source],
-        });
-      } catch {
-        // A hidden, removed or now-unreadable source does not become a discovery result.
-        params.assertCurrent();
-        targetFacts.assertCurrent();
-        params.signal?.throwIfAborted();
-        params.sourceCache?.invalidateContribution(contributionId);
+      const cachedSource = preparedSources.get(contributionId);
+      const preparedSource =
+        cachedSource && reads.includes(cachedSource.read)
+          ? cachedSource
+          : await prepareSource(receipt);
+      preparedSources.delete(contributionId);
+      const preparedProjection = preparedProjections.get(contributionId);
+      preparedProjections.delete(contributionId);
+      if (!preparedSource) {
         continue;
       }
-      const read: (typeof reads)[number] = { grant };
-      reads.push(read);
-      grant.assertCurrent();
-      const source = grant.sources[0];
-      if (
-        !source ||
-        source.agentId !== branch.agentId ||
-        source.canonicalKey !== receipt.source.sessionKey ||
-        source.sessionId !== receipt.source.sessionId ||
-        source.lifecycleRevision !== receipt.source.lifecycleRevision ||
-        source.storePath !== branch.storePath ||
-        source.storePath !== receipt.through.storePath
-      ) {
-        params.sourceCache?.invalidateContribution(contributionId);
-        drop(read);
-        continue;
-      }
-      read.facts = await prepareConversationKnowledgeBranchFacts({
-        branch: {
-          ...branch,
-          sessionKey: source.canonicalKey,
-          sessionId: source.sessionId,
-          lifecycleRevision: receipt.source.lifecycleRevision,
-        },
-        getRuntimeConfig: params.getRuntimeConfig,
-        contribution: receipt,
-      });
-      grant.assertCurrent();
-      targetFacts.assertCurrent();
-      if (read.facts.audienceIdentity !== targetFacts.audienceIdentity) {
-        params.sourceCache?.invalidateContribution(contributionId);
-        drop(read);
-        continue;
-      }
-      const sourceAssertion = composeSessionSourceAssertion([
-        params.assertCurrent,
-        targetFacts.assertCurrent,
-        grant.assertCurrent,
-        read.facts.assertCurrent,
-      ]);
-      const projectionTarget = {
-        agentId: source.agentId,
-        sessionKey: source.canonicalKey,
-        sessionId: source.sessionId,
-        storePath: source.storePath,
-      };
-      const through = grant.contributionRange?.through ?? receipt.through;
-      const from = grant.contributionRange?.from;
-      const loadProjection = () =>
+      const { read, grant, sourceAssertion, projectionTarget, through, from, facts } =
+        preparedSource;
+      const loadSingleProjection = () =>
         readSessionTranscriptModelContextAsync(
-          {
-            agentId: source.agentId,
-            sessionKey: source.canonicalKey,
-            sessionId: source.sessionId,
-            storePath: source.storePath,
-          },
+          projectionTarget,
           (context) => {
             grant.assertCurrent();
             return context;
@@ -391,6 +499,54 @@ async function prepareReplyConversationKnowledgeInMode(
             ...(grant.contributionRange ? { from: grant.contributionRange.from } : {}),
           },
         );
+      const loadProjection = async () => {
+        if (preparedProjection) {
+          return acceptProjection(preparedProjection);
+        }
+        const nextReceipt = receipts[index + 1];
+        const nextId = nextReceipt && conversationKnowledgeContributionId(nextReceipt);
+        if (
+          !params.sourceCache ||
+          !nextReceipt ||
+          !nextId ||
+          retained?.get(nextId)?.complete ||
+          (params.sourceBudget !== undefined && sources >= params.sourceBudget) ||
+          nextReceipt.source.sessionId !== receipt.source.sessionId ||
+          nextReceipt.source.sessionKey !== receipt.source.sessionKey ||
+          nextReceipt.through.generation !== receipt.through.generation
+        ) {
+          return loadSingleProjection();
+        }
+        const next = await prepareSource(nextReceipt);
+        if (!next) {
+          return loadSingleProjection();
+        }
+        preparedSources.set(nextId, next);
+        const results = await readSessionTranscriptModelContextsAsync(
+          projectionTarget,
+          [
+            {
+              through,
+              limits: { ...CONVERSATION_KNOWLEDGE_SOURCE_LIMITS, ...(from ? { from } : {}) },
+            },
+            {
+              through: next.through,
+              limits: {
+                ...CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
+                ...(next.from ? { from: next.from } : {}),
+              },
+            },
+          ],
+          (contexts) => {
+            sourceAssertion();
+            next.sourceAssertion();
+            return contexts;
+          },
+          params.signal,
+        );
+        preparedProjections.set(nextId, results[1]!);
+        return acceptProjection(results[0]!);
+      };
       const staged = params.readyOnly
         ? params.sourceCache?.peek(contributionId, admitted?.nextOffset ?? 0)
         : undefined;
@@ -446,7 +602,12 @@ async function prepareReplyConversationKnowledgeInMode(
         params.assertCurrent();
         targetFacts.assertCurrent();
         params.signal?.throwIfAborted();
-        if (!(error instanceof SessionTranscriptReadFenceError) && !(error instanceof RangeError)) {
+        const refusedReads = new Set(refusedSources());
+        if (
+          !(error instanceof SessionTranscriptReadFenceError) &&
+          !(error instanceof RangeError) &&
+          refusedReads.size === 0
+        ) {
           throw error;
         }
         // Rewritten or over-budget source ranges stay unresolved, never acknowledged.
@@ -454,16 +615,44 @@ async function prepareReplyConversationKnowledgeInMode(
           receipt,
           error instanceof RangeError ? "source-range-over-capacity" : "source-range-unverified",
         );
+        // Batched look-ahead may fail on a different source claim. Release its
+        // refused custody as well, rather than escalating a soft gap at finalization.
+        for (const held of refusedReads) {
+          drop(held);
+        }
+        const refused = queuedPackets.filter(({ read: queuedRead }) =>
+          refusedReads.has(queuedRead),
+        );
+        if (refused.length) {
+          // Nothing in this queue has committed. Retry its original ordered prefix
+          // rather than letting a later valid/deferred packet move past the gap.
+          const uncommitted = queuedPackets.splice(0);
+          pendingPackets = true;
+          batchBlocked = true;
+          nextSourceCursor = conversationKnowledgeContributionId(uncommitted[0]!.admission.receipt);
+          for (const { admission, read: queuedRead } of uncommitted) {
+            const rejected = refusedReads.has(queuedRead);
+            gap(admission.receipt, rejected ? "source-range-unverified" : "admission-deferred");
+            if (rejected) {
+              params.sourceCache?.invalidateContribution(
+                conversationKnowledgeContributionId(admission.receipt),
+              );
+            }
+          }
+        }
         return undefined;
       });
-      grant.assertCurrent();
-      read.facts.assertCurrent();
       targetFacts.assertCurrent();
       params.assertCurrent();
       if (!projection) {
         drop(read);
+        if (batchBlocked) {
+          break;
+        }
         continue;
       }
+      grant.assertCurrent();
+      facts.assertCurrent();
       if (params.preparationOnly) {
         let offset = admitted?.nextOffset ?? 0;
         let saturated = false;
@@ -473,7 +662,7 @@ async function prepareReplyConversationKnowledgeInMode(
             receipt,
             projection.events,
             undefined,
-            read.facts.audience,
+            facts.audience,
             { offset },
           );
           if (!part || !projection.version || !params.sourceCache) {
@@ -528,7 +717,7 @@ async function prepareReplyConversationKnowledgeInMode(
               receipt,
               projection.events,
               retained ? undefined : prior,
-              read.facts.audience,
+              facts.audience,
               { offset },
             );
         if (!part) {
@@ -566,43 +755,24 @@ async function prepareReplyConversationKnowledgeInMode(
           pendingPackets = true;
           break;
         }
-        const accepted = await ingestion
-          ?.tryPacket(part.text, () =>
-            retainConversationKnowledgePacket({
-              branch,
-              writeTarget: params.retainInHistory!.writeTarget,
-              receipt,
-              text: part.text,
-              offset,
-              nextOffset: part.nextOffset ?? offset,
-              complete: part.complete,
-              reader: params.reader,
-              sourceVersion,
-              source: sourceAssertion,
-              signal: params.signal,
-              contextLimits: params.retainInHistory?.contextLimits,
-            }),
-          )
-          .catch((error: unknown) => {
-            params.assertCurrent();
-            targetFacts.assertCurrent();
-            params.signal?.throwIfAborted();
-            if (!(error instanceof SessionTranscriptReadFenceError)) {
-              throw error;
-            }
-            gap(receipt, "source-range-unverified");
-            params.sourceCache?.invalidateContribution(contributionId);
-            return false;
-          });
-        if (!accepted) {
-          gap(receipt, "admission-deferred");
-          pendingPackets = true;
-          break;
-        }
+        queuedPackets.push({
+          admission: {
+            receipt,
+            text: part.text,
+            offset,
+            nextOffset: part.nextOffset ?? offset,
+            complete: part.complete,
+            sourceVersion,
+            source: sourceAssertion,
+          },
+          message,
+          read,
+        });
         contributed = true;
         packets++;
-        params.onPacket?.(message);
-        params.sourceCache?.consume(contributionId, offset);
+        if (queuedPackets.length >= MAX_TRANSCRIPT_REPORT_BATCH_SIZE && !(await flushPackets())) {
+          break;
+        }
         sourceAssertion();
         if (part.frontier) {
           break;
@@ -617,8 +787,15 @@ async function prepareReplyConversationKnowledgeInMode(
           break;
         }
       }
+      if (params.retainInHistory && params.readyOnly) {
+        // Foreground ready-only reads must retain their grant until their packets commit.
+        await flushPackets();
+      }
       if (!contributed || (params.retainInHistory && params.readyOnly)) {
         drop(read);
+      }
+      if (batchBlocked) {
+        break;
       }
       if (yieldedContribution) {
         // The quantum ended inside this source. Its durable packet offset owns
@@ -627,7 +804,7 @@ async function prepareReplyConversationKnowledgeInMode(
         break;
       }
     }
-    await ingestion?.finish();
+    await flushPackets();
     const combined = combineConversationKnowledge(parts);
     logConversationKnowledgeDiagnostic({
       recipient: branch.sessionId,

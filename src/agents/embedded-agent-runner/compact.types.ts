@@ -138,5 +138,13 @@ export type CompactEmbeddedAgentSessionRuntimeParams = Omit<
   /** Deprecated file-backed artifact target. Prefer sessionTarget for new callers. */
   sessionFile?: string;
   /** Internal ingestion maintenance: let prepared native token pressure decide whether to compact. */
-  budgetPreflight?: { prompt: string };
+  budgetPreflight?: {
+    prompt: string;
+    /** Prospective quoted messages affect admission only, never durable compaction input. */
+    pendingMessages?: readonly import("../sessions/messages.js").CustomMessage[];
+    /** Evaluate admission without requesting a durable-history summary. */
+    checkOnly?: boolean;
+    /** Internal observation of the prepared native decision; never write/source authority. */
+    onDecision?: (fits: boolean) => void;
+  };
 };

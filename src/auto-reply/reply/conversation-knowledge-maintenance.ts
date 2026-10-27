@@ -6,6 +6,7 @@ import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/
 import { resolveEmbeddedSessionContextLimits } from "../../agents/embedded-agent-runner/run/session-context-limits.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
 import type { BoundAgentRunSessionTarget } from "../../agents/run-session-target.types.js";
+import type { CustomMessage } from "../../agents/sessions/messages.js";
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
   composeSessionSourceAssertion,
@@ -88,12 +89,14 @@ export function createConversationKnowledgeMaintenance(params: {
 }): (
   packetIds?: readonly string[],
   pendingText?: string,
+  pendingMessages?: readonly CustomMessage[],
+  options?: { checkOnly?: boolean },
 ) => Promise<ConversationKnowledgeMaintenanceResult> {
   const check = composeSessionSourceAssertion([params.assertCurrent], (assertSources) => {
     params.signal.throwIfAborted();
     assertSources();
   });
-  return async (packetIds, pendingText) => {
+  return async (packetIds, pendingText, pendingMessages, options) => {
     const expectedPackets = packetIds ?? [];
     check();
     const target = await resolveAgentRunSessionTarget({
@@ -112,6 +115,7 @@ export function createConversationKnowledgeMaintenance(params: {
     const { compactEmbeddedAgentSessionDirect } =
       await import("../../agents/embedded-agent-runner/compact.js");
     check();
+    let pendingFits: boolean | undefined;
     const compact = () =>
       withCompleteCompactionSummary(() =>
         compactEmbeddedAgentSessionDirect({
@@ -126,9 +130,19 @@ export function createConversationKnowledgeMaintenance(params: {
           // Summary generation does not execute those tools.
           modelFallbacksOverride: [],
           budgetPreflight: {
+            ...(options?.checkOnly ? { checkOnly: true } : {}),
             prompt: pendingText
               ? `${params.run.prompt}\nAdditional quoted observation pending admission:\n${pendingText}`
               : params.run.prompt,
+            ...(pendingMessages?.length
+              ? {
+                  pendingMessages,
+                  onDecision: (fits: boolean) => {
+                    check();
+                    pendingFits = fits;
+                  },
+                }
+              : {}),
           },
           trigger: "budget",
           customInstructions: KNOWLEDGE_COMPACTION_INSTRUCTIONS,
@@ -148,11 +162,15 @@ export function createConversationKnowledgeMaintenance(params: {
       log.warn("Related-history maintenance deferred; current dialogue retains native preflight");
       return { compacted: false, complete: false, pending: "maintenance-deferred" };
     }
-    // A native no-op means this prepared context fits; a committed native
-    // compaction can be server-owned without a textual summary. Neither is
-    // evidence that every fact survived reduction: packet coverage stays exact.
+    const pendingAdmission =
+      pendingMessages?.length && !result.compacted && pendingFits !== undefined
+        ? { canAdmitPending: pendingFits }
+        : {};
+    // A check-only no-op carries its separate native fit decision. A committed
+    // compaction can be server-owned without a textual summary. Neither proves
+    // every fact survived reduction: packet coverage stays exact.
     if (result.compacted || expectedPackets.length === 0) {
-      return { compacted: result.compacted, complete: true };
+      return { compacted: result.compacted, complete: true, ...pendingAdmission };
     }
     const visible = await readSessionTranscriptModelContextAsync(
       target,
@@ -174,6 +192,13 @@ export function createConversationKnowledgeMaintenance(params: {
     check();
     // Native hydration can omit old media harmlessly. Only missing NEW packets
     // make catch-up incomplete; this fact never forces compaction or deletes data.
-    return { compacted: false, complete: expectedPackets.every((id) => visible.has(id)) };
+    const complete = expectedPackets.every((id) => visible.has(id));
+    return {
+      compacted: false,
+      complete,
+      ...(complete && pendingMessages?.length && pendingFits !== undefined
+        ? { canAdmitPending: pendingFits }
+        : {}),
+    };
   };
 }

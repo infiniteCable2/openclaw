@@ -8,6 +8,7 @@ import type {
   SessionTranscriptRawDeltaLimits,
   SessionTranscriptVisibleMessageDeltaLimits,
 } from "./session-accessor.sqlite-contract.js";
+import type { SessionTranscriptModelContextRange } from "./session-accessor.sqlite-model-context.js";
 import type {
   ResolvedTranscriptReadScope,
   ResolvedTranscriptScope,
@@ -97,6 +98,14 @@ export type SessionModelContextWorkerInput = {
   admission?: UserTurnTranscriptAdmissionReceipt;
   through?: TranscriptEntryAnchor;
   limits?: SessionModelContextLimits;
+  expectedIdentity?: DatabaseFileIdentity;
+};
+
+export type SessionModelContextBatchWorkerInput = {
+  kind: "model-context-batch";
+  target: SessionTranscriptRuntimeTarget;
+  admission?: UserTurnTranscriptAdmissionReceipt;
+  ranges: SessionTranscriptModelContextRange[];
   expectedIdentity?: DatabaseFileIdentity;
 };
 

@@ -41,6 +41,27 @@ export type TranscriptReportReceiptSelection = {
   field: string;
   value: string;
 };
+
+/** Exact append-if-absent reports; arbitrary host selectors retain the single-report API. */
+export type TranscriptReportBatchEntry = {
+  report: CustomMessageReportAppend;
+  receipt: TranscriptReportReceiptSelection;
+};
+
+export const MAX_TRANSCRIPT_REPORT_BATCH_SIZE = 32;
+
+export type TranscriptReportBatchProgress = {
+  /** Input prefix durably present, including existing receipts and duplicates within this batch. */
+  accepted: number;
+  appended: number;
+  deferred: boolean;
+};
+
+export type PreparedTranscriptReportBatchEntry = {
+  eventJson: string;
+  customType: string;
+  receipt: TranscriptReportReceiptSelection;
+};
 export type TranscriptReport =
   | { kind: "assistant"; message: AssistantMessage & { responseId: string } }
   | {
@@ -96,7 +117,17 @@ export type TranscriptReportCommit = {
   };
 };
 
+export type TranscriptReportBatchCommit = TranscriptReportCommit &
+  Pick<TranscriptReportBatchProgress, "accepted" | "appended">;
+
 export type TranscriptReportWorkerOperations = {
+  appendBatch: {
+    input: {
+      reports: PreparedTranscriptReportBatchEntry[];
+      preserveContextLimits?: TranscriptReportContextAdmission["limits"];
+    };
+    output: Result<TranscriptReportBatchCommit, TranscriptAppendRefusal>;
+  };
   abortedPartial: {
     input: AbortedSessionTranscriptPartial & {
       preparedMessage: PreparedTranscriptMessageAppend<Record<string, unknown>>;

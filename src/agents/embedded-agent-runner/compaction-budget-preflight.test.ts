@@ -1,8 +1,10 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import { describe, expect, it } from "vitest";
+import { convertToLlm, type CustomMessage } from "../sessions/messages.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
 import { textAssistant } from "../test-helpers/sparse-transcript.test-support.js";
 import { prepareCompactionBudgetPreflight } from "./compaction-budget-preflight.js";
+import { shouldPreemptivelyCompactBeforePrompt } from "./run/preemptive-compaction.js";
 
 const budget = { contextTokenBudget: 20_000, reserveTokens: 2_000, prompt: "Continue." };
 
@@ -31,6 +33,61 @@ function completedHistory(imageBytes: number): AgentMessage[] {
 }
 
 describe("prepared compaction budget preflight", () => {
+  it("counts actual prospective quoted messages through native conversion without changing durable history", () => {
+    const history: AgentMessage[] = [{ role: "user", content: "Existing request.", timestamp: 1 }];
+    const pending: CustomMessage[] = [
+      {
+        role: "custom",
+        customType: "openclaw.test-observation",
+        content: "Quoted observation. ".repeat(8_000),
+        display: false,
+        timestamp: 2,
+      },
+    ];
+    const before = structuredClone({ history, pending });
+    const actual = prepareCompactionBudgetPreflight({
+      ...budget,
+      messages: history,
+      pendingMessages: pending,
+    });
+    expect(actual).toEqual(
+      shouldPreemptivelyCompactBeforePrompt({
+        ...budget,
+        messages: [...history, ...convertToLlm(pending)],
+      }),
+    );
+    expect(actual.shouldCompact).toBe(true);
+    expect(prepareCompactionBudgetPreflight({ ...budget, messages: history }).shouldCompact).toBe(
+      false,
+    );
+    expect({ history, pending }).toEqual(before);
+  });
+
+  it("keeps prospective images unprocessed while pruning only durable old images", () => {
+    const history = completedHistory(3_100_000);
+    const pending: CustomMessage[] = [
+      {
+        role: "custom",
+        customType: "openclaw.test-observation",
+        content: Array.from({ length: 64 }, () => ({
+          type: "image" as const,
+          mimeType: "image/png",
+          data: "A",
+        })),
+        display: false,
+        timestamp: 10,
+      },
+    ];
+    expect(prepareCompactionBudgetPreflight({ ...budget, messages: history }).shouldCompact).toBe(
+      false,
+    );
+    expect(
+      prepareCompactionBudgetPreflight({ ...budget, messages: history, pendingMessages: pending })
+        .shouldCompact,
+    ).toBe(true);
+    expect(history).toHaveLength(12);
+  });
+
   it("does not mistake old image payload bytes for token pressure or mutate history", () => {
     const messages = completedHistory(3_100_000);
     const originalImage = messages[0];

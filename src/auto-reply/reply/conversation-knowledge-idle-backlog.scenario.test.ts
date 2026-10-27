@@ -16,11 +16,10 @@ import {
 } from "./conversation-knowledge.scenario.test-support.js";
 
 const budget = vi.hoisted(() => ({
-  compact: vi.fn(async (_params: CompactEmbeddedAgentSessionRuntimeParams) => ({
-    ok: true,
-    compacted: false,
-    reason: "within native budget",
-  })),
+  compact: vi.fn(async (params: CompactEmbeddedAgentSessionRuntimeParams) => {
+    params.budgetPreflight?.onDecision?.(true);
+    return { ok: true, compacted: false, reason: "within native budget" };
+  }),
 }));
 // mock-isolation: Avoid model inference; real SQLite, workers, source grants, packet progress and native idle scheduling remain active.
 vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({

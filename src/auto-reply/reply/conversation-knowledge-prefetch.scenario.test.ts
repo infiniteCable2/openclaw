@@ -2,10 +2,12 @@ import { createAssistantMessageEventStream } from "@openclaw/llm-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { streamAgentResponse } from "../../../packages/agent-core/src/agent-stream-response.js";
+import { withinTest } from "../../../test/helpers/promise.js";
 import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
+import type { CompactEmbeddedAgentSessionRuntimeParams } from "../../agents/embedded-agent-runner/compact.types.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
 import { beginForegroundSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
@@ -23,11 +25,14 @@ import {
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
+import * as idleKnowledge from "./conversation-knowledge-idle.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
 import {
@@ -44,6 +49,153 @@ vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
 }));
 
 describe("native branch prefetch and model-boundary composition", () => {
+  it("resumes from native pending-final-clear without another input or root publication", async ({
+    signal,
+  }) => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "knowledge-native-delivery-resume" },
+      async (state) => {
+        const fixture = await createConversationKnowledgeScenario(state);
+        const firstAttemptSettled = createDeferredCore();
+        const copied = createDeferredCore();
+        const actualIdle = idleKnowledge.runIdleConversationKnowledge;
+        // Observe real native completion; no result, custody or storage behavior is replaced.
+        const idle = vi
+          .spyOn(idleKnowledge, "runIdleConversationKnowledge")
+          .mockImplementation(async (params) => {
+            try {
+              return await actualIdle(params);
+            } finally {
+              firstAttemptSettled.resolve();
+            }
+          });
+        budget.compact.mockImplementation(
+          async (params: CompactEmbeddedAgentSessionRuntimeParams) => {
+            params.budgetPreflight?.onDecision?.(true);
+            return { ok: true, compacted: false, reason: "within native budget" };
+          },
+        );
+        let stopObservation = () => {};
+        let prefetch: ReturnType<typeof prepareConversationKnowledgeRecipient>;
+        try {
+          const donor = await fixture.branch("delivery-donor");
+          const recipient = await fixture.branch("delivery-recipient");
+          await upsertSessionEntryCore(recipient, {
+            ...loadSessionEntry(recipient)!,
+            pendingFinalDelivery: {
+              kind: "transport-only",
+              intentId: "synthetic-intent",
+              deliveries: [
+                { id: "synthetic-delivery", state: "delivered" },
+                { id: "synthetic-sibling", state: "queued" },
+              ],
+              createdAt: Date.now(),
+            },
+          });
+          const donorOwner = await fixture.claim(donor);
+          const terminal = await fixture.append(
+            donor,
+            "delivery-observation",
+            "stop",
+            "The recovered observation is amber.",
+          );
+          expect(
+            await recordConversationKnowledgeTurn({
+              ...donorOwner,
+              ...terminal,
+              privateAudience: { participant: person, admission: terminal.admission! },
+            }),
+          ).toBe(true);
+          const recipientOwner = await fixture.claim(recipient);
+          const branch = await readConversationKnowledgeBranch(recipientOwner);
+          if (!branch) {
+            throw new Error("Expected native recipient membership");
+          }
+          let rootUpdates = 0;
+          stopObservation = onInternalSessionTranscriptUpdate((update) => {
+            if (update.target?.sessionId === branch.root.sessionId) {
+              rootUpdates++;
+            }
+            if (update.target?.sessionId === recipient.sessionId) {
+              copied.resolve();
+            }
+          });
+          prefetch = prepareConversationKnowledgeRecipient({
+            branch,
+            participant: person,
+            audience: {
+              agentId: branch.agentId,
+              sessionKey: branch.sessionKey,
+              channelId: "example-channel",
+              nativeChannelId: "synthetic-private-recipient",
+              participant: person,
+              assertCurrent: recipientOwner.assertCurrent,
+            },
+            env: state.env,
+            getRuntimeConfig: () => fixture.cfg,
+          });
+          if (!prefetch) {
+            throw new Error("Expected eligible recipient");
+          }
+          await withinTest(firstAttemptSettled.promise, signal);
+          expect(
+            (await loadTranscriptEvents(recipient)).some(
+              (event) => asOptionalRecord(event)?.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
+            ),
+          ).toBe(false);
+          const clear = () =>
+            applySessionEntryOperation(
+              recipient,
+              {
+                kind: "pending-final-clear",
+                sessionId: recipient.sessionId,
+                intentId: "synthetic-intent",
+                now: Date.now(),
+              },
+              { skipMaintenance: true, takeCacheOwnership: true, workerGuard: {} },
+            );
+          await clear();
+          expect(loadSessionEntry(recipient)?.pendingFinalDelivery).toBeDefined();
+          expect(
+            (await loadTranscriptEvents(recipient)).some(
+              (event) => asOptionalRecord(event)?.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
+            ),
+          ).toBe(false);
+          await applySessionEntryOperation(
+            recipient,
+            {
+              kind: "pending-final-settle",
+              settlement: {
+                sessionId: recipient.sessionId,
+                intentId: "synthetic-intent",
+                deliveryId: "synthetic-sibling",
+                state: "delivered",
+                expectedStates: ["queued"],
+              },
+            },
+            { skipMaintenance: true, takeCacheOwnership: true, workerGuard: {} },
+          );
+          await clear();
+          expect(loadSessionEntry(recipient)?.pendingFinalDelivery).toBeUndefined();
+          await withinTest(copied.promise, signal);
+          const packets = (await loadTranscriptEvents(recipient))
+            .map(asOptionalRecord)
+            .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT);
+          expect(packets).toHaveLength(1);
+          expect(packets[0]?.content).toContain("The recovered observation is amber.");
+          expect(rootUpdates).toBe(0);
+          expect(idle).toHaveBeenCalledTimes(2);
+        } finally {
+          stopObservation();
+          await prefetch?.owner.close();
+          idle.mockRestore();
+          budget.compact.mockReset();
+          await fixture.close();
+        }
+      },
+    );
+  });
+
   it("warms on committed roots and consumes only ready packets under the existing native writer", async ({
     signal,
   }) => {

@@ -278,12 +278,12 @@ export function createReplyConversationKnowledgeTurn(params: {
             retainInHistory: {
               writeTarget,
               contextLimits: resolveConversationKnowledgeContextLimits(run),
-              maintainContext: async (sources, packetIds, pendingText) =>
+              maintainContext: async (sources, packetIds, pendingText, pendingMessages, options) =>
                 createConversationKnowledgeMaintenance({
                   run: { ...followupRun.run, ...run },
                   assertCurrent: composeSessionSourceAssertion([assertCurrent, sources]),
                   signal,
-                })(packetIds, pendingText),
+                })(packetIds, pendingText, pendingMessages, options),
             },
           }),
       );
@@ -366,7 +366,11 @@ export function createReplyConversationKnowledgeTurn(params: {
                 contextLimits: resolveConversationKnowledgeContextLimits(run),
                 // The upcoming native request has already supplied prospective token
                 // admission. This live boundary never invokes a model to compact.
-                maintainContext: async () => ({ compacted: false, complete: true }),
+                maintainContext: async () => ({
+                  compacted: false,
+                  complete: true,
+                  canAdmitPending: true,
+                }),
               },
             }),
         );

@@ -12,6 +12,7 @@ import { readSessionTranscriptModelContextAsync } from "../../config/sessions/se
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { runInDetachedAsyncContext } from "../../shared/detached-async-context.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { runIdleConversationKnowledge } from "./conversation-knowledge-idle.js";
 import { openConversationKnowledgeRecipient } from "./conversation-knowledge-open.js";
@@ -22,11 +23,10 @@ import {
 } from "./conversation-knowledge.scenario.test-support.js";
 
 const budget = vi.hoisted(() => ({
-  compact: vi.fn(async (_params: CompactEmbeddedAgentSessionRuntimeParams) => ({
-    ok: true,
-    compacted: false,
-    reason: "within native budget",
-  })),
+  compact: vi.fn(async (params: CompactEmbeddedAgentSessionRuntimeParams) => {
+    params.budgetPreflight?.onDecision?.(true);
+    return { ok: true, compacted: false, reason: "within native budget" };
+  }),
 }));
 // mock-isolation: Replace only model/summary inference; native cohort, private read grants, writer and packet commits remain real.
 vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
@@ -42,6 +42,8 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
       const fixture = await createConversationKnowledgeScenario(state);
       let stopObservation = () => {};
       let closeRecipient = async () => {};
+      let observation = Promise.resolve();
+      let observationError: unknown;
       try {
         const chat = await fixture.branch("chat");
         const priorCall = await fixture.branch("previous-call");
@@ -104,19 +106,34 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
         };
         const initialAdmission = createDeferredCore();
         const laterAdmission = createDeferredCore();
-        let committedPackets = 0;
         stopObservation = onInternalSessionTranscriptUpdate((update) => {
           if (
             update.target?.agentId === recipient.agentId &&
             update.target.sessionId === recipient.sessionId &&
             update.target.sessionKey === recipient.sessionKey
           ) {
-            committedPackets++;
-            if (committedPackets === 11) {
-              initialAdmission.resolve();
-            } else if (committedPackets === 12) {
-              laterAdmission.resolve();
-            }
+            // A native batch commit emits one notification for several packets.
+            // Gate on persisted occurrences, not notification frequency.
+            observation = observation
+              .then(() =>
+                runInDetachedAsyncContext(async () => {
+                  const committedPackets = (await loadTranscriptEvents(recipient)).filter(
+                    (event) =>
+                      asOptionalRecord(event)?.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
+                  ).length;
+                  if (committedPackets >= 11) {
+                    initialAdmission.resolve();
+                  }
+                  if (committedPackets >= 12) {
+                    laterAdmission.resolve();
+                  }
+                }),
+              )
+              .catch((error: unknown) => {
+                observationError = error;
+                initialAdmission.resolve();
+                laterAdmission.resolve();
+              });
           }
         });
         await openConversationKnowledgeRecipient({ ...request, target: recipient });
@@ -126,6 +143,9 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
           await prepareConversationKnowledgeRecipient(request)?.owner.close();
         };
         await withinTest(initialAdmission.promise, signal);
+        if (observationError) {
+          throw observationError;
+        }
         const packets = async () =>
           (await loadTranscriptEvents(recipient))
             .map(asOptionalRecord)
@@ -162,6 +182,9 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
         await publish(chat, chatOwner, "after-opening", "The later chat codeword is emerald.");
         // No recipient/user request: the committed-root notification alone must hydrate it.
         await withinTest(laterAdmission.promise, signal);
+        if (observationError) {
+          throw observationError;
+        }
         const nativeContext = await readSessionTranscriptModelContextAsync(
           recipient,
           (context) => JSON.stringify(context.events),
@@ -200,6 +223,7 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
       } finally {
         stopObservation();
         try {
+          await observation;
           await closeRecipient();
         } finally {
           await fixture.close();

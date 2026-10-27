@@ -3,6 +3,10 @@ import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import { readSessionTranscriptModelContext } from "./session-accessor.sqlite-model-context.js";
+import type {
+  SessionTranscriptModelContextRange,
+  SessionTranscriptModelContextRangeResult,
+} from "./session-accessor.sqlite-model-context.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
 import type {
   SessionModelContextLimits,
@@ -13,6 +17,7 @@ import {
   prepareIncognitoSessionHistoryRead,
   type IncognitoSessionHistoryBinding,
 } from "./session-incognito-history-read.js";
+import { assertSessionModelContextBatchBudget } from "./session-model-context-batch-limits.js";
 import {
   readSessionTranscriptAnchorsAsync,
   readSessionTranscriptAnchorsFromSource,
@@ -25,7 +30,10 @@ import {
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
 import { withSessionTranscriptReadSource } from "./session-transcript-read-source.js";
-import { readSessionTranscriptModelContextInWorker } from "./session-transcript-read-worker-runtime.js";
+import {
+  readSessionTranscriptModelContextInWorker,
+  readSessionTranscriptModelContextsInWorker,
+} from "./session-transcript-read-worker-runtime.js";
 import { targetDiscoveryLane } from "./session-transcript-worker-resources.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import { getOwnedSessionTranscriptReader } from "./transcript-write-context.js";
@@ -36,6 +44,144 @@ export type SessionTranscriptContextProjectionSource = {
   /** Presence pins a durable source; undefined identity means the captured file was absent. */
   physicalSource?: { expectedIdentity: DatabaseFileIdentity | undefined };
 };
+
+/** Retain exact source generations until every bounded historical range is accepted. */
+export async function readSessionTranscriptModelContextsAsync<T>(
+  target: SessionTranscriptRuntimeTarget,
+  ranges: readonly SessionTranscriptModelContextRange[],
+  consume: (contexts: SessionTranscriptModelContextRangeResult[]) => T,
+  signal?: AbortSignal,
+): Promise<T> {
+  assertSessionModelContextBatchBudget(ranges);
+  const captured = { ...target };
+  const requests = structuredClone([...ranges]);
+  const currentAdmission = resolveSessionTranscriptReadFence(captured);
+  const admission = currentAdmission && structuredClone(currentAdmission);
+  const accept = async (
+    scope: SessionTranscriptRuntimeTarget,
+    contexts: SessionTranscriptModelContextRangeResult[],
+    assertCurrent: () => void,
+    databaseIdentity?: string,
+  ): Promise<T> => {
+    if (contexts.length !== requests.length) {
+      throw new Error("Session context batch omitted a requested range");
+    }
+    const generations: Array<
+      ReturnType<typeof retainSessionTranscriptContextGeneration> | undefined
+    > = [];
+    const validate = async () => {
+      for (const [index, result] of contexts.entries()) {
+        if (!result.ok) {
+          continue;
+        }
+        await readSessionTranscriptAnchorsAsync(
+          scope,
+          {
+            entryIds: [],
+            contextValidation: {
+              version: result.context.version,
+              admission,
+              through: requests[index]!.through,
+              from: requests[index]!.limits.from,
+            },
+          },
+          signal,
+          (facts) => {
+            assertCurrent();
+            generations[index]!.assertCurrent();
+            if (!facts.contextValidated) {
+              throw new SessionTranscriptReadFenceError(
+                "Session transcript changed during context batch read",
+              );
+            }
+          },
+        );
+      }
+      for (const generation of generations) {
+        generation?.assertCurrent();
+      }
+      assertCurrent();
+      signal?.throwIfAborted();
+    };
+    try {
+      for (const result of contexts) {
+        generations.push(
+          result.ok
+            ? retainSessionTranscriptContextGeneration(
+                scope,
+                result.context.version,
+                databaseIdentity,
+              )
+            : undefined,
+        );
+      }
+      await validate();
+      const consumed = consume(contexts);
+      if (isPromiseLike(consumed)) {
+        const value = await consumed;
+        await validate();
+        return value;
+      }
+      return consumed;
+    } finally {
+      for (const generation of generations) {
+        generation?.release();
+      }
+    }
+  };
+  return withSessionTranscriptReadSource(
+    captured,
+    async (scope) => {
+      // Process-held histories keep their native single-read authority owner.
+      const contexts: SessionTranscriptModelContextRangeResult[] = [];
+      for (const range of requests) {
+        try {
+          contexts.push({
+            ok: true,
+            context: await readSessionTranscriptModelContextAsync(
+              captured,
+              (value) => value,
+              admission,
+              signal,
+              range.through,
+              range.limits,
+            ),
+          });
+        } catch (error) {
+          if (
+            !(error instanceof SessionTranscriptReadFenceError) &&
+            !(error instanceof RangeError)
+          ) {
+            throw error;
+          }
+          contexts.push({
+            ok: false,
+            reason:
+              error instanceof RangeError
+                ? "source-range-over-capacity"
+                : "source-range-unverified",
+          });
+        }
+      }
+      return accept(scope, contexts, () => signal?.throwIfAborted());
+    },
+    async ({ scope, expectedIdentity, assertCurrent }) => {
+      const selected = { ...scope, sessionKey: captured.sessionKey };
+      const contexts = await readSessionTranscriptModelContextsInWorker(
+        { target: selected, ranges: requests, admission, expectedIdentity },
+        signal,
+      );
+      assertCurrent();
+      return accept(
+        selected,
+        contexts,
+        assertCurrent,
+        expectedIdentity?.key.startsWith("file:") ? expectedIdentity.key.slice(5) : undefined,
+      );
+    },
+    signal,
+  );
+}
 
 /** Keep a worker's bounded projection attached to its physical source until final acceptance. */
 export async function readSessionTranscriptContextProjectionAsync<T>(

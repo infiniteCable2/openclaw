@@ -13,12 +13,14 @@ import type {
   SessionEntryWorkerInput,
   SessionResetRecallWorkerInput,
   SessionModelContextWorkerInput,
+  SessionModelContextBatchWorkerInput,
   SessionSqliteTargetWorkerInput,
 } from "./session-transcript-worker.types.js";
 
 // Callers retain writer admission and validate snapshots before consuming parallel reads.
 const modelContextReads = createSessionTranscriptReadPool<
   | SessionModelContextWorkerInput
+  | SessionModelContextBatchWorkerInput
   | SessionSqliteTargetWorkerInput
   | SessionContextMessagesWorkerInput
 >(SESSION_TRANSCRIPT_FOREGROUND_WORKERS);
@@ -47,6 +49,23 @@ export async function readSessionTranscriptModelContextInWorker(
     throw new Error("Session context worker returned a database target instead of context");
   }
   return value;
+}
+
+export async function readSessionTranscriptModelContextsInWorker(
+  input: Omit<SessionModelContextBatchWorkerInput, "kind">,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  const value = unwrapSessionTranscriptWorkerReply(
+    await modelContextReads.run(
+      { kind: "model-context-batch", ...input },
+      { timeoutMs: 60_000, signal },
+    ),
+  );
+  if (!("contexts" in value)) {
+    throw new Error("Session context worker returned a different batch operation");
+  }
+  return value.contexts;
 }
 
 export async function resolveSessionSqliteTargetInWorker(

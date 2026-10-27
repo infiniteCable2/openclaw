@@ -30,6 +30,7 @@ import type {
   SelectedTranscriptReport,
   TranscriptReportSelection,
   TranscriptReportReceiptSelection,
+  PreparedTranscriptReportBatchEntry,
   TranscriptReport,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
@@ -185,6 +186,80 @@ function matchesReportReceipt(
   return Boolean(
     record && Object.hasOwn(record, receipt.field) && record[receipt.field] === receipt.value,
   );
+}
+
+export function transcriptReportBatchReceiptKey(
+  entry: Pick<PreparedTranscriptReportBatchEntry, "customType" | "receipt">,
+): string {
+  return JSON.stringify([entry.customType, entry.receipt.field, entry.receipt.value]);
+}
+
+/** One native branch snapshot selects a whole bounded batch without rereading old bodies per ID. */
+export function prepareTranscriptReportBatchSelection(
+  database: OpenClawAgentDatabase,
+  resolved: ResolvedTranscriptScope,
+  reports: readonly PreparedTranscriptReportBatchEntry[],
+) {
+  const branch = readReportBranch(database, resolved.sessionId);
+  const wanted = new Map<string, Map<string, Set<string>>>();
+  for (const report of reports) {
+    let fields = wanted.get(report.customType);
+    if (!fields) {
+      fields = new Map();
+      wanted.set(report.customType, fields);
+    }
+    let values = fields.get(report.receipt.field);
+    if (!values) {
+      values = new Set();
+      fields.set(report.receipt.field, values);
+    }
+    values.add(report.receipt.value);
+  }
+  const existing = new Set<string>();
+  for (const entry of branch.path) {
+    if (entry.type !== "custom_message" || entry.customType === undefined) {
+      continue;
+    }
+    const fields = wanted.get(entry.customType);
+    if (!fields) {
+      continue;
+    }
+    const details = asOptionalRecord(
+      readReportEvent(database, resolved.sessionId, entry.seq)?.details,
+    );
+    for (const [field, values] of fields) {
+      const value = details && Object.hasOwn(details, field) ? details[field] : undefined;
+      if (typeof value === "string" && values.has(value)) {
+        existing.add(
+          transcriptReportBatchReceiptKey({
+            customType: entry.customType,
+            receipt: { field, value },
+          }),
+        );
+      }
+    }
+  }
+  return { appendParentId: branch.appendParentId, existing };
+}
+
+/** Host serialization owns identity and toJSON; only the canonical append parent is worker-owned. */
+export function reparentTranscriptReportBatchEntry(
+  report: PreparedTranscriptReportBatchEntry,
+  appendParentId: string | null,
+): Extract<SelectedTranscriptReport, { kind: "custom" }> & { eventId: string } {
+  const event = asOptionalRecord(JSON.parse(report.eventJson));
+  if (
+    !event ||
+    event.type !== "custom_message" ||
+    typeof event.id !== "string" ||
+    event.customType !== report.customType ||
+    event.appendMode === "side" ||
+    !matchesReportReceipt(event.details, report.receipt)
+  ) {
+    throw new Error("Transcript batch report does not match its exact receipt.");
+  }
+  event.parentId = appendParentId;
+  return { kind: "custom", eventJson: JSON.stringify(event), eventId: event.id };
 }
 
 export function prepareTranscriptReportSelection(

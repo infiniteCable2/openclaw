@@ -9,6 +9,11 @@ export type PreparedCompactionBudgetPreflight = {
   prompt: string;
   model: ProviderRuntimeModel;
   contextTokenBudget: number;
+  pendingMessages?: NonNullable<
+    CompactEmbeddedAgentSessionRuntimeParams["budgetPreflight"]
+  >["pendingMessages"];
+  onDecision?: (fits: boolean) => void;
+  checkOnly?: boolean;
 };
 
 /** Capture the foreground route before any summarizer override or fallback changes it. */
@@ -44,6 +49,9 @@ export async function prepareCompactionForegroundBudget(
   }
   return {
     prompt: params.budgetPreflight.prompt,
+    pendingMessages: params.budgetPreflight.pendingMessages,
+    onDecision: params.budgetPreflight.onDecision,
+    checkOnly: params.budgetPreflight.checkOnly,
     model,
     contextTokenBudget: resolveCompactionContextTokenBudget({
       config: params.config,

@@ -61,7 +61,10 @@ import type {
   SessionMaintenanceReadCommand,
   SessionMaintenanceReadResult,
 } from "./session-accessor.sqlite-lifecycle-types.js";
-import type { readSessionTranscriptModelContext } from "./session-accessor.sqlite-model-context.js";
+import type {
+  readSessionTranscriptModelContext,
+  readSessionTranscriptModelContexts,
+} from "./session-accessor.sqlite-model-context.js";
 import type { listSessionPendingInputReceipts } from "./session-accessor.sqlite-pending-input-receipts.js";
 import type { SessionTranscriptWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
 import type {
@@ -155,6 +158,7 @@ import type {
   SessionProjectionStatusWorkerInput,
   SessionTranscriptAnchorsWorkerInput,
   SessionModelContextWorkerInput,
+  SessionModelContextBatchWorkerInput,
   SessionTranscriptWatermarkWorkerInput,
   SessionTranscriptMessagePresenceWorkerInput,
   SessionTranscriptDeltaWorkerInput,
@@ -177,7 +181,10 @@ export type {
   SessionTranscriptHydrationWorkerResult,
 } from "./session-transcript-hydration.types.js";
 
-export type { SessionModelContextWorkerInput } from "./session-transcript-worker-read.types.js";
+export type {
+  SessionModelContextWorkerInput,
+  SessionModelContextBatchWorkerInput,
+} from "./session-transcript-worker-read.types.js";
 
 export type SessionSqliteTargetWorkerInput = {
   kind: "sqlite-target";
@@ -401,6 +408,7 @@ export type SessionTranscriptWorkerInput =
   | SessionSqliteTargetWorkerInput
   | SessionHistoryWorkerInput
   | SessionModelContextWorkerInput
+  | SessionModelContextBatchWorkerInput
   | SessionContextMessagesWorkerInput
   | SessionEntryWorkerInput
   | SessionResetRecallWorkerInput;
@@ -540,6 +548,7 @@ export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValu
     "voice-sessions": { kind: "voice-sessions"; matches: VoiceSessionMatch[] };
     "usage-cache": SessionCostUsageCacheReadResult;
     "model-context": ReturnType<typeof readSessionTranscriptModelContext>;
+    "model-context-batch": { contexts: ReturnType<typeof readSessionTranscriptModelContexts> };
     "context-messages": import("./session-history-read.types.js").SessionTranscriptContextSnapshot;
     "session-reset-recall": {
       cutoff: import("../../../packages/memory-host-sdk/src/host/session-reset-recall.js").SessionResetRecallCutoff;
