@@ -43,6 +43,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
   let unsubscribe = () => {};
   let unsubscribeRecipient = () => {};
   let requested = false;
+  let preparationPauses = 0;
   let completion: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -121,6 +122,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
     if (retryTimer !== undefined || controller.signal.aborted) {
       return;
     }
+    if (preparationPauses > 0) {
+      requested = true;
+      return;
+    }
     // Silence after a transient read failure must not strand an open recipient.
     // This owns one future wakeup, not accepted work that wait()/close() must join.
     retryTimer = setTimeout(() => {
@@ -132,18 +137,23 @@ export function createConversationKnowledgePrefetchOwner(params: {
     retryDelayMs = Math.min(RETRY_MAX_MS, retryDelayMs * 2);
   };
   const schedule = () => {
-    if (completion || controller.signal.aborted) {
+    if (completion || preparationPauses > 0 || controller.signal.aborted) {
       return;
     }
     const pending = runInDetachedAsyncContext(() =>
       Promise.resolve().then(async () => {
-        while (requested && !controller.signal.aborted) {
+        while (requested && preparationPauses === 0 && !controller.signal.aborted) {
           requested = false;
           try {
             check();
             // Each batch releases shared capacity before a coalesced successor is queued.
             await background.enqueue(
               async (signal) => {
+                // A foreground drain may start after this quantum was queued.
+                if (preparationPauses > 0) {
+                  requested = true;
+                  return;
+                }
                 check();
                 signal.throwIfAborted();
                 const more = await params.prepare(signal);
@@ -197,6 +207,26 @@ export function createConversationKnowledgePrefetchOwner(params: {
     requested = true;
     schedule();
   };
+  const pausePreparation = () => {
+    if (controller.signal.aborted) {
+      return () => {};
+    }
+    preparationPauses++;
+    cancelRetry();
+    let held = true;
+    return () => {
+      if (!held) {
+        return;
+      }
+      held = false;
+      preparationPauses--;
+      if (preparationPauses === 0) {
+        // A drain may have committed before cancellation. Refresh its progress
+        // once, together with every notification received while paused.
+        request();
+      }
+    };
+  };
 
   params.assertCurrent();
   try {
@@ -246,5 +276,5 @@ export function createConversationKnowledgePrefetchOwner(params: {
     throw error;
   }
   request();
-  return { request, close, assertCurrent, wait };
+  return { request, pausePreparation, close, assertCurrent, wait };
 }

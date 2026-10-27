@@ -115,6 +115,133 @@ afterEach(async () => {
 });
 
 describe("conversation knowledge prefetch lifecycle", () => {
+  it("defers a queued quantum and coalesces root wakeups until the drain resumes", async () => {
+    const queued = createDeferredCore();
+    const dispatch = gate();
+    boundary.enqueue.mockImplementationOnce(async (task, options) => {
+      queued.resolve();
+      await dispatch.promise;
+      await task(options.abortSignal);
+    });
+    const f = fixture();
+    await queued.promise;
+    const resume = f.owner.pausePreparation();
+    rootUpdate();
+    rootUpdate();
+    dispatch.resolve();
+    await f.owner.wait();
+    expect(f.prepare).not.toHaveBeenCalled();
+    expect(boundary.enqueue).toHaveBeenCalledOnce();
+    resume();
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledOnce();
+    expect(boundary.enqueue).toHaveBeenCalledTimes(2);
+    expect(f.clear).not.toHaveBeenCalled();
+  });
+
+  it("nests drain leases without blocking another recipient or duplicating a resumed request", async () => {
+    const f = fixture();
+    const first = f.owner.pausePreparation();
+    const second = f.owner.pausePreparation();
+    await f.owner.wait();
+    expect(f.prepare).not.toHaveBeenCalled();
+    const other = vi.fn(async () => {});
+    const otherOwner = createConversationKnowledgePrefetchOwner({
+      target: { ...target, sessionKey: "agent:example:other", sessionId: "other" },
+      assertCurrent() {},
+      clear() {},
+      prepare: other,
+    });
+    await otherOwner.wait();
+    expect(other).toHaveBeenCalledOnce();
+    first();
+    f.owner.request();
+    f.owner.request();
+    await f.owner.wait();
+    expect(f.prepare).not.toHaveBeenCalled();
+    second();
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledOnce();
+    second();
+    first();
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledOnce();
+  });
+
+  it("joins the active quantum without aborting it and holds its successor until resume", async () => {
+    const began = createDeferredCore();
+    const finish = gate();
+    const f = fixture();
+    f.prepare.mockImplementationOnce(async (signal) => {
+      began.resolve();
+      await finish.promise;
+      expect(signal.aborted).toBe(false);
+    });
+    await began.promise;
+    const resume = f.owner.pausePreparation();
+    rootUpdate();
+    let joined = false;
+    const waiting = f.owner.wait().then(() => {
+      joined = true;
+    });
+    await Promise.resolve();
+    expect(joined).toBe(false);
+    finish.resolve();
+    await waiting;
+    expect(f.prepare).toHaveBeenCalledOnce();
+    expect(f.clear).not.toHaveBeenCalled();
+    resume();
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds scheduled failure retries and cannot revive a closed paused owner", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const f = fixture();
+    f.prepare.mockRejectedValueOnce(new Error("Synthetic deferred read"));
+    await f.owner.wait();
+    const resume = f.owner.pausePreparation();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledOnce();
+    resume();
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledTimes(2);
+    const lateResume = f.owner.pausePreparation();
+    await f.owner.close();
+    lateResume();
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledTimes(2);
+    expect(resources.size).toBe(0);
+  });
+
+  it("keeps an active failure pending without arming retries during nested drain leases", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const began = createDeferredCore();
+    const finish = gate();
+    const f = fixture();
+    f.prepare.mockImplementationOnce(async () => {
+      began.resolve();
+      await finish.promise;
+      throw new Error("Synthetic active read failure");
+    });
+    await began.promise;
+    const first = f.owner.pausePreparation();
+    const second = f.owner.pausePreparation();
+    finish.resolve();
+    await f.owner.wait();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(30_000);
+    first();
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    second();
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("coalesces committed recipient metadata into detached data preparation", async () => {
     const context = new AsyncLocalStorage<string>();
     const prepare = vi.fn(async () => {

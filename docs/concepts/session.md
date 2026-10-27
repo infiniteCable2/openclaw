@@ -209,6 +209,9 @@ pending until a later native request can make room; this live boundary
 never starts compaction, restarts generation, or creates a turn. SQL receipt batches
 do not limit the number of ready packets admitted at one model boundary: successive
 batches share the same prospective token budget and yield between operations.
+While that drain writes prepared packets, the same recipient's background
+preparation retains notifications but does not start another quantum. It resumes
+after the drain, including on cancellation; model generation does not hold this pause.
 Already admitted packets retain their positions during retries
 and live steering. New observations are quoted data, not new instructions or
 permission to repeat tools.

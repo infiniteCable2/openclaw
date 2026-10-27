@@ -356,6 +356,7 @@ export function createReplyConversationKnowledgeTurn(params: {
       const signal = input.signal
         ? AbortSignal.any([retainedSignal, input.signal])
         : retainedSignal;
+      const resumePreparation = recipient.owner.pausePreparation();
       try {
         while (replayPending.length) {
           const { readSessionTranscriptReportReceipts } =
@@ -463,6 +464,8 @@ export function createReplyConversationKnowledgeTurn(params: {
           recipient: sessionId,
           reason: "preparation-deferred",
         });
+      } finally {
+        resumePreparation();
       }
       if (messages.length || recipient.cache.revision !== revision) {
         recipient.owner.request();

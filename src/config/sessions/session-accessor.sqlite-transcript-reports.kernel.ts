@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asOptionalRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  executeSqliteQueryTakeFirstSync,
-  iterateSqliteQuerySync,
-} from "../../infra/kysely-sync.js";
+import { iterateSqliteQuerySync, sqliteStringSet } from "../../infra/kysely-sync.js";
 import type { AssistantMessage } from "../../llm/types.js";
 import {
   readSessionTranscriptRunId,
@@ -144,17 +141,42 @@ export function readReportBranch(database: OpenClawAgentDatabase, sessionId: str
   ).facts();
 }
 
-export function readReportEvent(database: OpenClawAgentDatabase, sessionId: string, seq: number) {
-  const row = executeSqliteQueryTakeFirstSync(
-    database.db,
-    getSessionKysely(database.db)
-      .selectFrom("transcript_events")
-      .select(transcriptEventJsonSql(database.db).as("event_json"))
-      .where("session_id", "=", sessionId)
-      .where("seq", "=", seq),
-  );
-  const event: unknown = row ? JSON.parse(row.event_json) : undefined;
-  return asOptionalRecord(event);
+type ReportEventRow = { seq: number; event: ReturnType<typeof asOptionalRecord> };
+export function readReportEvent(
+  database: OpenClawAgentDatabase,
+  sessionId: string,
+  seq: number,
+): ReportEventRow["event"];
+export function readReportEvent(
+  database: OpenClawAgentDatabase,
+  sessionId: string,
+  seqs: readonly number[],
+): IterableIterator<ReportEventRow>;
+export function readReportEvent(
+  database: OpenClawAgentDatabase,
+  sessionId: string,
+  selection: number | readonly number[],
+): ReportEventRow["event"] | IterableIterator<ReportEventRow> {
+  const selected = typeof selection === "number" ? [selection] : selection;
+  const rows = (function* () {
+    for (const row of iterateSqliteQuerySync(
+      database.db,
+      getSessionKysely(database.db)
+        .selectFrom("transcript_events")
+        .select(["seq", transcriptEventJsonSql(database.db).as("event_json")])
+        .where("session_id", "=", sessionId)
+        .where("seq", "in", sqliteStringSet(selected.map(String))),
+    )) {
+      yield { seq: row.seq, event: asOptionalRecord(JSON.parse(row.event_json)) };
+    }
+  })();
+  if (typeof selection !== "number") {
+    return rows;
+  }
+  for (const row of rows) {
+    return row.event;
+  }
+  return undefined;
 }
 
 function latestCustomReport(
@@ -219,23 +241,29 @@ export function prepareTranscriptReportBatchSelection(
     values.add(report.receipt.value);
   }
   const existing = new Set<string>();
-  for (const entry of branch.path) {
-    if (entry.type !== "custom_message" || entry.customType === undefined) {
-      continue;
-    }
-    const fields = wanted.get(entry.customType);
-    if (!fields) {
-      continue;
-    }
-    const details = asOptionalRecord(
-      readReportEvent(database, resolved.sessionId, entry.seq)?.details,
-    );
+  const selected = new Map(
+    branch.path.flatMap((entry) => {
+      if (entry.type !== "custom_message" || entry.customType === undefined) {
+        return [];
+      }
+      const fields = wanted.get(entry.customType);
+      return fields ? [[entry.seq, { customType: entry.customType, fields }] as const] : [];
+    }),
+  );
+  if (!selected.size) {
+    return { appendParentId: branch.appendParentId, existing };
+  }
+  // Stream only canonical matching bodies through one native query. Repeated
+  // missing receipts must not issue one payload SELECT per old ledger entry.
+  for (const row of readReportEvent(database, resolved.sessionId, [...selected.keys()])) {
+    const { customType, fields } = selected.get(row.seq)!;
+    const details = asOptionalRecord(row.event?.details);
     for (const [field, values] of fields) {
       const value = details && Object.hasOwn(details, field) ? details[field] : undefined;
       if (typeof value === "string" && values.has(value)) {
         existing.add(
           transcriptReportBatchReceiptKey({
-            customType: entry.customType,
+            customType,
             receipt: { field, value },
           }),
         );
