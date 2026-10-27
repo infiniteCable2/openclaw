@@ -44,6 +44,11 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
       let closeRecipient = async () => {};
       let observation = Promise.resolve();
       let observationError: Error | undefined;
+      const checkObservation = () => {
+        if (observationError) {
+          throw observationError;
+        }
+      };
       try {
         const chat = await fixture.branch("chat");
         const priorCall = await fixture.branch("previous-call");
@@ -146,9 +151,7 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
           await prepareConversationKnowledgeRecipient(request)?.owner.close();
         };
         await withinTest(initialAdmission.promise, signal);
-        if (observationError) {
-          throw observationError;
-        }
+        checkObservation();
         const packets = async () =>
           (await loadTranscriptEvents(recipient))
             .map(asOptionalRecord)
@@ -185,9 +188,7 @@ it("hydrates an idle branch from old chat history and both fresh peer sources wi
         await publish(chat, chatOwner, "after-opening", "The later chat codeword is emerald.");
         // No recipient/user request: the committed-root notification alone must hydrate it.
         await withinTest(laterAdmission.promise, signal);
-        if (observationError) {
-          throw observationError;
-        }
+        checkObservation();
         const nativeContext = await readSessionTranscriptModelContextAsync(
           recipient,
           (context) => JSON.stringify(context.events),
