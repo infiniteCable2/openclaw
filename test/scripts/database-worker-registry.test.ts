@@ -15,6 +15,7 @@ describe("database-worker test routing registry", () => {
     "src/agents/embedded-agent-runner/run/attempt-prompt-submit.conversation-context.test.ts",
     "src/auto-reply/reply/conversation-knowledge-prefetch.scenario.test.ts",
     "src/auto-reply/reply/conversation-knowledge-idle.scenario.test.ts",
+    "src/auto-reply/reply/conversation-knowledge-idle-backlog.scenario.test.ts",
     "src/wizard/setup.inference-recovery.integration.test.ts",
     "src/channels/message-access/discord-native-acp-owner.test.ts",
     "src/auto-reply/reply/commands-acp.owner.test.ts",

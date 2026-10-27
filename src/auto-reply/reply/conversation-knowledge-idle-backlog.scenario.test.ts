@@ -27,9 +27,18 @@ vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
   compactEmbeddedAgentSessionDirect: budget.compact,
 }));
 
-it("finishes a multi-quantum source before settling later sources, without another user turn", async ({
-  signal,
-}) => {
+it.each([
+  {
+    name: "finishes a multi-quantum source before settling later sources, without another user turn",
+    repetitions: 5_000,
+    verifyUnchanged: false,
+  },
+  {
+    name: "does not repeat full maintenance for an unchanged, already hydrated idle recipient",
+    repetitions: 1,
+    verifyUnchanged: true,
+  },
+])("$name", async ({ repetitions, verifyUnchanged }, { signal }) => {
   await withOpenClawTestState(
     { scenario: "minimal", label: "knowledge-idle-multi-source-backlog" },
     async (state) => {
@@ -41,7 +50,7 @@ it("finishes a multi-quantum source before settling later sources, without anoth
         // More than the 32-packet idle quantum at the production 4,000-character
         // packet size. A second contribution exposes a skipped remainder that
         // a single-source fixture revisits accidentally from offset zero.
-        const firstText = `${"Earlier synthetic chat observation. ".repeat(5_000)}CHAT_TAIL_AMBER`;
+        const firstText = `${"Earlier synthetic chat observation. ".repeat(repetitions)}CHAT_TAIL_AMBER`;
         const secondText = "The previous call codeword is violet. CALL_TAIL_VIOLET";
         for (const [source, runId, text] of [
           [chat, "long-chat-run", firstText],
@@ -95,12 +104,14 @@ it("finishes a multi-quantum source before settling later sources, without anoth
 
         // Reopening an unchanged idle recipient must preserve its imported history
         // without repeating model-context preparation just to rediscover no work.
-        const maintenanceCalls = budget.compact.mock.calls.length;
-        await expect(runIdleConversationKnowledge(request)).resolves.toEqual({
-          status: "settled",
-          admittedPackets: 0,
-        });
-        expect(budget.compact).toHaveBeenCalledTimes(maintenanceCalls);
+        if (verifyUnchanged) {
+          const maintenanceCalls = budget.compact.mock.calls.length;
+          await expect(runIdleConversationKnowledge(request)).resolves.toEqual({
+            status: "settled",
+            admittedPackets: 0,
+          });
+          expect(budget.compact).toHaveBeenCalledTimes(maintenanceCalls);
+        }
       } finally {
         await fixture.close();
       }
