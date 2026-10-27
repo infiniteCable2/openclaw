@@ -26,10 +26,13 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import * as reportStorage from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
 import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
+import * as transcriptAnchors from "../../config/sessions/session-transcript-anchor-read.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
+import * as transcriptReadAuthority from "../../gateway/session-transcript-read-authority.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import * as branchAuthority from "./conversation-knowledge-authority.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
 import {
@@ -87,8 +90,49 @@ it("prepares long-source observations while idle and consumes them once through 
     async (state) => {
       const setupStarted = performance.now();
       const fixture = await createConversationKnowledgeScenario(state);
+      const appendBatch = reportStorage.appendSessionTranscriptReportBatch;
       const batch = vi.spyOn(reportStorage, "appendSessionTranscriptReportBatch");
       const foreground = new AsyncLocalStorage<boolean>();
+      const newSpan = () => ({ calls: 0, ms: 0, maxMs: 0, entries: 0 });
+      const newSpans = () => ({
+        appendBatch: newSpan(),
+        grant: newSpan(),
+        branchFacts: newSpan(),
+        anchors: newSpan(),
+      });
+      const spans = { outsideRefresh: newSpans(), foreground: newSpans() };
+      const timed = async <T>(
+        kind: keyof ReturnType<typeof newSpans>,
+        run: () => Promise<T>,
+        entries = 0,
+      ): Promise<T> => {
+        const span = (foreground.getStore() ? spans.foreground : spans.outsideRefresh)[kind];
+        span.calls++;
+        span.entries += entries;
+        const started = performance.now();
+        try {
+          return await run();
+        } finally {
+          const elapsed = performance.now() - started;
+          span.ms += elapsed;
+          span.maxMs = Math.max(span.maxMs, elapsed);
+        }
+      };
+      batch.mockImplementation((...args) =>
+        timed("appendBatch", () => appendBatch(...args), args[1].length),
+      );
+      const prepareGrant = transcriptReadAuthority.prepareTranscriptReadAuthority;
+      const prepareFacts = branchAuthority.prepareConversationKnowledgeBranchFacts;
+      const readAnchors = transcriptAnchors.readSessionTranscriptAnchorsAsync;
+      const grantRead = vi
+        .spyOn(transcriptReadAuthority, "prepareTranscriptReadAuthority")
+        .mockImplementation((...args) => timed("grant", () => prepareGrant(...args)));
+      const factsRead = vi
+        .spyOn(branchAuthority, "prepareConversationKnowledgeBranchFacts")
+        .mockImplementation((...args) => timed("branchFacts", () => prepareFacts(...args)));
+      const anchorRead = vi
+        .spyOn(transcriptAnchors, "readSessionTranscriptAnchorsAsync")
+        .mockImplementation((...args) => timed("anchors", () => readAnchors(...args)));
       const reads = {
         background: {
           root: 0,
@@ -555,6 +599,9 @@ it("prepares long-source observations while idle and consumes them once through 
               maxAdmissionMs,
               continuationWaitMs,
               reads,
+              spans,
+              timingSemantics:
+                "inclusive nested spans; outsideRefresh includes setup and detached preparation; do not sum overlapping owners",
               harnessRssBefore: rssBefore,
               harnessRssAfter: process.memoryUsage().rss,
               processLifetimePeakRssKiB: process.resourceUsage().maxRSS,
@@ -580,6 +627,9 @@ it("prepares long-source observations while idle and consumes them once through 
         rootRead.mockRestore();
         progressRead.mockRestore();
         observeRead.mockRestore();
+        grantRead.mockRestore();
+        factsRead.mockRestore();
+        anchorRead.mockRestore();
         await prefetch?.owner.close();
         await fixture.close();
       }
