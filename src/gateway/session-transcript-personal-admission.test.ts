@@ -261,15 +261,24 @@ describe("prepared native personal admission custody", () => {
       const descriptor = original.prepareAdmission();
       original.release();
       const request = f.fresh(descriptor);
-      if (change === "target")
+      if (change === "target") {
         request.personal.target = { ...request.personal.target, lifecycleRevision: "replacement" };
-      if (change === "participant")
+      }
+      if (change === "participant") {
         request.personal.originalParticipant = { type: "profile", id: "person-b" };
-      if (change === "source")
+      }
+      if (change === "source") {
         request.sources = [{ agentId: "example", sessionKey: "agent:example:other" }];
-      if (change === "mode") f.changeMode();
-      if (change === "endpoint") f.revokeEndpoint();
-      if (change === "forged") request.preparedAdmission = structuredClone(descriptor);
+      }
+      if (change === "mode") {
+        f.changeMode();
+      }
+      if (change === "endpoint") {
+        f.revokeEndpoint();
+      }
+      if (change === "forged") {
+        request.preparedAdmission = structuredClone(descriptor);
+      }
       try {
         await expect(preparePersonalConversationRead(request)).rejects.toThrow();
         expect(native.prepare).toHaveBeenCalledTimes(3);
@@ -292,18 +301,28 @@ describe("prepared native personal admission custody", () => {
     const original = await preparePersonalConversationRead(f.original);
     const descriptor = original.prepareAdmission();
     original.release();
-    if (change === "source-incarnation") f.source.entry.lifecycleRevision = "replacement";
-    if (change === "root-incarnation") f.rootRow.entry.lifecycleRevision = "replacement";
-    if (change === "physical-store")
+    if (change === "source-incarnation") {
+      f.source.entry.lifecycleRevision = "replacement";
+    }
+    if (change === "root-incarnation") {
+      f.rootRow.entry.lifecycleRevision = "replacement";
+    }
+    if (change === "physical-store") {
       f.source.readSource = { ...f.source.readSource!, databaseIdentity: "replacement" };
-    if (change === "shared-reader") f.members.get(f.source.canonicalKey)!.add("person-b");
-    if (change === "visibility") f.recipient.entry.visibility = "shared";
-    if (change === "public-share")
+    }
+    if (change === "shared-reader") {
+      f.members.get(f.source.canonicalKey)!.add("person-b");
+    }
+    if (change === "visibility") {
+      f.recipient.entry.visibility = "shared";
+    }
+    if (change === "public-share") {
       f.recipient.entry.publicShare = {
         id: "synthetic",
         sessionId: f.recipient.entry.sessionId,
         createdAt: 1,
       };
+    }
     try {
       await expect(preparePersonalConversationRead(f.fresh(descriptor))).rejects.toThrow();
       expect(native.prepare).toHaveBeenCalledTimes(3);
