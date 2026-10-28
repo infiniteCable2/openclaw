@@ -80,6 +80,100 @@ beforeEach(() => {
 });
 
 describe("disposable conversation source preparation", () => {
+  it("shares bounded native custody across one donor's pending packets", () => {
+    const cache = createConversationKnowledgeSourceCache<{ byteLength: number; release(): void }>(
+      128,
+    );
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const admission = { byteLength: 64, release: vi.fn() };
+    const duplicate = { byteLength: 64, release: vi.fn() };
+    expect(cache.retainAdmission("first", source, admission)).toBe(true);
+    expect(cache.retainAdmission("second", source, duplicate)).toBe(true);
+    expect(duplicate.release).toHaveBeenCalledOnce();
+    expect(cache.preparedAdmission(source)).toBe(admission);
+    cache.invalidateContribution("first");
+    expect(admission.release).not.toHaveBeenCalled();
+    cache.invalidateContribution("second");
+    expect(admission.release).toHaveBeenCalledOnce();
+    expect(cache.preparedAdmission(source)).toBeUndefined();
+    cache.clear();
+    expect(admission.release).toHaveBeenCalledOnce();
+  });
+
+  it("revokes every cached preparation before retrying failed cleanup", () => {
+    const cache = createConversationKnowledgeSourceCache<{ byteLength: number; release(): void }>();
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const first = {
+      byteLength: 64,
+      release: vi.fn().mockImplementationOnce(() => {
+        throw new Error("Native cleanup unavailable");
+      }),
+    };
+    const second = { byteLength: 64, release: vi.fn() };
+    const other = { ...source, sessionId: "another-source" };
+    cache.retainAdmission("first", source, first);
+    cache.retainAdmission("second", other, second);
+    expect(() => cache.clear()).toThrow("cleanup remains pending");
+    expect(cache.preparedAdmission(source)).toBeUndefined();
+    expect(cache.preparedAdmission(other)).toBeUndefined();
+    expect(first.release).toHaveBeenCalledOnce();
+    expect(second.release).toHaveBeenCalledOnce();
+    cache.clear();
+    expect(first.release).toHaveBeenCalledTimes(2);
+    expect(second.release).toHaveBeenCalledOnce();
+  });
+
+  it("keeps native preparation bounded independently of pending text", () => {
+    const cache = createConversationKnowledgeSourceCache<{ byteLength: number; release(): void }>(
+      64,
+    );
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const admission = { byteLength: 64, release: vi.fn() };
+    const refused = { byteLength: 1, release: vi.fn() };
+    expect(cache.retainAdmission("first", source, admission)).toBe(true);
+    expect(cache.retainAdmission("other", { ...source, sessionId: "another" }, refused)).toBe(
+      false,
+    );
+    expect(refused.release).toHaveBeenCalledOnce();
+    cache.retainContributions(new Set());
+    expect(admission.release).toHaveBeenCalledOnce();
+  });
+
+  it("releases the native preparation only after the final staged segment", () => {
+    const cache = createConversationKnowledgeSourceCache<{ byteLength: number; release(): void }>();
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const admission = { byteLength: 64, release: vi.fn() };
+    expect(
+      cache.stage("source", 0, {
+        ...packet(),
+        part: { ...packet().part, complete: false, nextOffset: 1 },
+      }),
+    ).toBe(true);
+    expect(cache.stage("source", 1, packet())).toBe(true);
+    expect(cache.retainAdmission("source", source, admission)).toBe(true);
+    cache.consume("source", 0);
+    expect(admission.release).not.toHaveBeenCalled();
+    cache.consume("source", 1);
+    expect(admission.release).toHaveBeenCalledOnce();
+  });
+
+  it("drops invalid native custody without acknowledging prepared source text", () => {
+    const cache = createConversationKnowledgeSourceCache<{ byteLength: number; release(): void }>();
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const admission = { byteLength: 64, release: vi.fn() };
+    const replacement = { byteLength: 64, release: vi.fn() };
+    cache.stage("source", 0, packet());
+    cache.retainAdmission("source", source, admission);
+    cache.invalidateAdmission(source);
+    expect(admission.release).toHaveBeenCalledOnce();
+    expect(cache.preparedAdmission(source)).toBeUndefined();
+    expect(cache.peek("source", 0)).toEqual(packet());
+    cache.retainAdmission("source", source, replacement);
+    cache.clear();
+    expect(admission.release).toHaveBeenCalledOnce();
+    expect(replacement.release).toHaveBeenCalledOnce();
+  });
+
   it("reuses bytes only after fresh native range proof and the current caller's checks", async () => {
     const cache = createConversationKnowledgeSourceCache();
     const load = vi.fn(async () => context());

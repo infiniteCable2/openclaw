@@ -41,6 +41,7 @@ import {
 import { assertSessionEntryCohortScope } from "../../config/sessions/session-entry-cohort-scope.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
+import * as sharingPreparation from "../../gateway/session-sharing-preparation.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
@@ -259,7 +260,22 @@ describe("native branch prefetch and model-boundary composition", () => {
             );
           const preparation = vi.spyOn(knowledgePreparation, "prepareReplyConversationKnowledge");
           onTestFinished(() => preparation.mockRestore());
-          const admitted = await refresh();
+          const foreground = new AsyncLocalStorage<boolean>();
+          const foregroundFactKeys: string[] = [];
+          const prepareFacts = sharingPreparation.prepareSessionMutationFacts;
+          const facts = vi
+            .spyOn(sharingPreparation, "prepareSessionMutationFacts")
+            .mockImplementation((params) => {
+              if (foreground.getStore()) {
+                foregroundFactKeys.push(params.sessionKey);
+              }
+              return prepareFacts(params);
+            });
+          onTestFinished(() => {
+            facts.mockRestore();
+            foreground.disable();
+          });
+          const admitted = await foreground.run(true, refresh);
           const outcomes = await Promise.all(
             preparation.mock.results.map(async (result) => {
               try {
@@ -278,6 +294,10 @@ describe("native branch prefetch and model-boundary composition", () => {
             "The live codeword is amber.",
           );
           expect(JSON.stringify(admitted)).toContain("I will keep the live codeword.");
+          // Recipient admission still acquires its current target facts once.
+          // Both prepared source grants rebind native custody without repeating
+          // target/root/donor discovery or acquiring duplicate donor facts.
+          expect(foregroundFactKeys).toEqual([target.sessionKey]);
           expect(await refresh()).toEqual([]);
           const retained = (await loadTranscriptEvents(target))
             .map(asOptionalRecord)

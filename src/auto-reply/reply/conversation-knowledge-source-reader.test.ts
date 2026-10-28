@@ -135,6 +135,8 @@ function fixture(signal?: AbortSignal) {
   };
   const assertCurrent = vi.fn();
   const grant = {
+    audience: "private-direct" as const,
+    audienceIdentity: "person-example",
     assertCurrent: vi.fn(),
     release: vi.fn(),
     sources: [
@@ -163,7 +165,6 @@ function fixture(signal?: AbortSignal) {
   const reads: ConversationKnowledgeHeldSource[] = [];
   const drop = (read: ConversationKnowledgeHeldSource) => {
     reads.splice(reads.indexOf(read), 1);
-    read.facts?.release();
     read.grant.release();
   };
   const reader = createConversationKnowledgeSourceReader({

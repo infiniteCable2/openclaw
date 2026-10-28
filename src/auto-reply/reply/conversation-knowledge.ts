@@ -96,26 +96,15 @@ async function prepareReplyConversationKnowledgeInMode(
       return;
     }
     reads.splice(index, 1);
-    const failures: unknown[] = [];
-    for (const owner of [read.facts, read.grant]) {
-      try {
-        owner?.release();
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    if (failures.length) {
-      throw new AggregateError(failures, "Conversation knowledge source release failed");
-    }
+    read.grant.release();
   };
   const refusedSources = () =>
     reads.filter((held) => {
       try {
         held.grant.assertCurrent();
-        held.facts?.assertCurrent();
         return false;
       } catch (error) {
-        if (error instanceof SessionMutationFactsUnavailableError) {
+        if (error instanceof SessionMutationFactsUnavailableError && !params.readyOnly) {
           throw error;
         }
         return true;
@@ -180,7 +169,7 @@ async function prepareReplyConversationKnowledgeInMode(
             composeSessionSourceAssertion([
               params.assertCurrent,
               targetFacts.assertCurrent,
-              ...reads.flatMap((held) => [held.grant.assertCurrent, held.facts?.assertCurrent]),
+              ...reads.map((held) => held.grant.assertCurrent),
             ]),
         })
       : undefined;
@@ -219,7 +208,7 @@ async function prepareReplyConversationKnowledgeInMode(
           params.assertCurrent();
           targetFacts.assertCurrent();
           params.signal?.throwIfAborted();
-          if (error instanceof SessionMutationFactsUnavailableError) {
+          if (error instanceof SessionMutationFactsUnavailableError && !params.readyOnly) {
             throw error;
           }
           const refused = refusedSources();
@@ -308,6 +297,7 @@ async function prepareReplyConversationKnowledgeInMode(
       destinationAudience: params.destinationAudience,
       signal: params.signal,
       sourceCache: params.sourceCache,
+      readyOnly: params.readyOnly,
       hasRetainedContribution: (id) => retained?.get(id)?.complete === true,
     });
     for (let index = startIndex; index < receipts.length; index++) {
@@ -393,7 +383,10 @@ async function prepareReplyConversationKnowledgeInMode(
           params.assertCurrent();
           targetFacts.assertCurrent();
           params.signal?.throwIfAborted();
-          if (!(error instanceof SessionTranscriptReadFenceError)) {
+          if (
+            !(error instanceof SessionTranscriptReadFenceError) &&
+            !(params.readyOnly && error instanceof SessionMutationFactsUnavailableError)
+          ) {
             throw error;
           }
         });
@@ -422,7 +415,7 @@ async function prepareReplyConversationKnowledgeInMode(
         params.assertCurrent();
         targetFacts.assertCurrent();
         params.signal?.throwIfAborted();
-        if (error instanceof SessionMutationFactsUnavailableError) {
+        if (error instanceof SessionMutationFactsUnavailableError && !params.readyOnly) {
           throw error;
         }
         const refusedReads = new Set(refusedSources());
@@ -477,7 +470,7 @@ async function prepareReplyConversationKnowledgeInMode(
       grant.assertCurrent();
       facts.assertCurrent();
       if (params.preparationOnly) {
-        const preparation = await stageConversationKnowledgeSource({
+        let preparation = await stageConversationKnowledgeSource({
           receipt,
           projection,
           audience: facts.audience,
@@ -489,6 +482,18 @@ async function prepareReplyConversationKnowledgeInMode(
           cache: params.sourceCache,
           expectedConsumptionRevision: preparationConsumptionRevision,
         });
+        if (params.sourceCache?.firstPreparedOffset(contributionId) !== undefined) {
+          const sourceTarget = { ...receipt.source, storePath: receipt.through.storePath };
+          if (
+            !params.sourceCache.retainAdmission(
+              contributionId,
+              sourceTarget,
+              params.sourceCache.preparedAdmission(sourceTarget) ?? grant.prepareAdmission(),
+            )
+          ) {
+            preparation = "cache-full";
+          }
+        }
         drop(read);
         if (preparation !== "complete") {
           preparationSaturated = preparation === "cache-full";
@@ -650,7 +655,7 @@ async function prepareReplyConversationKnowledgeInMode(
       [
         params.assertCurrent,
         targetFacts.assertCurrent,
-        ...reads.flatMap((read) => [read.grant.assertCurrent, read.facts?.assertCurrent]),
+        ...reads.map((read) => read.grant.assertCurrent),
       ],
       (check) => {
         if (!active) {

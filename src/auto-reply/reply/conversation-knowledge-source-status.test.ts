@@ -13,6 +13,7 @@ import type { SessionEntryCohortReader } from "../../config/sessions/session-ent
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
+import { createPreparedKnowledgeAdmission } from "./conversation-knowledge-admission.test-support.js";
 
 const source = vi.hoisted(() => ({
   branch: vi.fn(),
@@ -29,6 +30,7 @@ const source = vi.hoisted(() => ({
   contribution: vi.fn(),
   progress: vi.fn(),
   report: vi.fn(),
+  prepareFacts: vi.fn(),
 }));
 const preparationYield = vi.hoisted(() => vi.fn());
 // mock-isolation: Control the native cooperative boundary without scheduling media or timers.
@@ -90,6 +92,10 @@ vi.mock("./reply-run-registry.state.js", () => ({
 vi.mock("../../gateway/session-transcript-read-authority.js", () => ({
   prepareTranscriptReadAuthority: source.grant,
 }));
+// mock-isolation: Mint real opaque admission custody from synthetic native sharing rows.
+vi.mock("../../gateway/session-sharing-preparation.js", () => ({
+  prepareSessionMutationFacts: source.prepareFacts,
+}));
 // mock-isolation: Reproduce source gaps without reading a real private transcript.
 vi.mock("../../config/sessions/session-transcript-context-read.js", () => ({
   readSessionTranscriptModelContextAsync: source.context,
@@ -150,10 +156,22 @@ function setRootReports(events: TranscriptEvent[]) {
 }
 
 describe("related-history source custody without model status", () => {
-  it.each(["admission", "unavailable", "removed-cursor", "preparation", "saturated"] as const)(
+  it.each([
+    "admission",
+    "unavailable",
+    "prepared-unavailable",
+    "prepared-anchor-unavailable",
+    "removed-cursor",
+    "preparation",
+    "saturated",
+  ] as const)(
     "resumes ordered contributions without starving later readable sources (%s)",
     async (kind) => {
-      const admission = kind === "admission" || kind === "unavailable" || kind === "removed-cursor";
+      const admission =
+        kind === "admission" ||
+        kind === "unavailable" ||
+        kind.startsWith("prepared-") ||
+        kind === "removed-cursor";
       const participant = { type: "profile" as const, id: "example-person" };
       const audienceIdentity = conversationKnowledgeParticipantIdentity(participant);
       const branch = {
@@ -211,7 +229,24 @@ describe("related-history source custody without model status", () => {
         assertCurrent() {},
         release() {},
       }));
+      const admissions = new Map<
+        string,
+        Awaited<ReturnType<typeof createPreparedKnowledgeAdmission>>
+      >();
+      for (const receipt of receipts) {
+        admissions.set(
+          receipt.source.sessionId,
+          await createPreparedKnowledgeAdmission({
+            branch,
+            donor: receipt.source,
+            participant,
+            installFacts: (prepare) => source.prepareFacts.mockImplementation(prepare),
+          }),
+        );
+      }
       source.grant.mockImplementation(async ({ sources }) => ({
+        audience: "private-direct",
+        audienceIdentity,
         sources: sources.map((donor: (typeof receipts)[number]["source"]) => ({
           ...donor,
           canonicalKey: donor.sessionKey,
@@ -219,8 +254,19 @@ describe("related-history source custody without model status", () => {
         })),
         assertCurrent() {},
         release() {},
+        prepareAdmission() {
+          const prepared = admissions.get(sources[0].sessionId);
+          if (!prepared) {
+            throw new Error("Missing synthetic donor admission");
+          }
+          return prepared;
+        },
       }));
-      source.anchors.mockImplementation(async (_target, _selection, _signal, consume) => {
+      source.anchors.mockImplementation(async (target, _selection, _signal, consume) => {
+        if (kind === "prepared-anchor-unavailable" && target.sessionId === "large") {
+          await Promise.resolve();
+          throw new SessionMutationFactsUnavailableError();
+        }
         consume({ contextValidated: true });
       });
       const progress = new Map<string, { complete: boolean; nextOffset: number }>();
@@ -276,6 +322,14 @@ describe("related-history source custody without model status", () => {
       );
       const stage = vi.spyOn(cache, "stage");
       for (const receipt of admission ? receipts : []) {
+        const preparedAdmission = admissions.get(receipt.source.sessionId)!;
+        expect(
+          cache.retainAdmission(
+            receipt.through.entryId,
+            { ...receipt.source, storePath: receipt.through.storePath },
+            preparedAdmission,
+          ),
+        ).toBe(true);
         const large = receipt === receipts[0];
         cache.stage(receipt.through.entryId, 0, {
           part: {
@@ -351,7 +405,39 @@ describe("related-history source custody without model status", () => {
             }
           : { preparationOnly: true, sourceBudget: 8 }),
       };
+      if (kind === "prepared-unavailable") {
+        source.grant.mockRejectedValueOnce(new SessionMutationFactsUnavailableError());
+      }
       const first = await prepareReplyConversationKnowledge(common);
+      if (kind.startsWith("prepared-")) {
+        try {
+          expect(source.grant).toHaveBeenCalledTimes(2);
+          expect(
+            source.grant.mock.calls.every(([request]) => request.preparedAdmission !== undefined),
+          ).toBe(true);
+          expect(
+            source.retain.mock.calls.flatMap(([call]) =>
+              call.packets.map(
+                (packet: ConversationKnowledgePacketAdmission) => packet.receipt.through.entryId,
+              ),
+            ),
+          ).toEqual(["small-answer"]);
+          expect(progress.has("large-answer")).toBe(false);
+          expect(progress.get("small-answer")?.complete).toBe(true);
+          expect(source.context).not.toHaveBeenCalled();
+          if (kind === "prepared-anchor-unavailable") {
+            expect(source.anchors.mock.calls.map(([target]) => target.sessionId)).toEqual([
+              "large",
+              "small",
+            ]);
+            expect(first?.pendingPackets).toBe(true);
+          }
+          expect(() => first?.assertCurrent()).not.toThrow();
+        } finally {
+          first?.release();
+        }
+        return;
+      }
       if (!admission) {
         try {
           expect(source.retain).not.toHaveBeenCalled();
@@ -513,7 +599,6 @@ describe("related-history source custody without model status", () => {
     const audience = conversationKnowledgeParticipantIdentity(participant);
     const release = vi.fn();
     const targetRelease = vi.fn();
-    const donorRelease = vi.fn();
     let readable = true;
     let donorFactsPending = false;
     const factsUnavailable = new SessionMutationFactsUnavailableError();
@@ -521,6 +606,9 @@ describe("related-history source custody without model status", () => {
     const cancellation = new AbortController();
     const lookaheadRevoked = kind === "lookahead-revoked" || kind === "queued-lookahead-revoked";
     const assertSource = () => {
+      if (donorFactsPending) {
+        throw factsUnavailable;
+      }
       if (!readable) {
         if (kind === "queued-lookahead-revoked") {
           throw new Error("Transcript source is no longer readable");
@@ -532,28 +620,25 @@ describe("related-history source custody without model status", () => {
       }
     };
     source.branch.mockResolvedValue(branch);
-    source.facts
-      .mockResolvedValueOnce({
-        audience: "private-direct",
-        audienceIdentity: audience,
-        assertCurrent() {},
-        release: targetRelease,
-      })
-      .mockResolvedValue({
-        audience: "private-direct",
-        audienceIdentity: audience,
-        assertCurrent() {
-          assertSource();
-          if (donorFactsPending) {
-            throw factsUnavailable;
-          }
-        },
-        release: donorRelease,
-      });
+    source.facts.mockResolvedValue({
+      audience: "private-direct",
+      audienceIdentity: audience,
+      assertCurrent() {},
+      release: targetRelease,
+    });
+    const preparedAdmission = await createPreparedKnowledgeAdmission({
+      branch,
+      donor,
+      participant,
+      installFacts: (prepare) => source.prepareFacts.mockImplementation(prepare),
+    });
     source.grant.mockResolvedValue({
+      audience: "private-direct",
+      audienceIdentity: audience,
       sources: [{ ...donor, canonicalKey: donor.sessionKey, storePath: branch.storePath }],
       assertCurrent: assertSource,
       release,
+      prepareAdmission: () => preparedAdmission,
     });
     setRootReports([
       {
@@ -603,9 +688,12 @@ describe("related-history source custody without model status", () => {
       source.grant.mockImplementation(async () => {
         assertSource();
         return {
+          audience: "private-direct",
+          audienceIdentity: audience,
           sources: [{ ...donor, canonicalKey: donor.sessionKey, storePath: branch.storePath }],
           assertCurrent: assertSource,
           release,
+          prepareAdmission: () => preparedAdmission,
         };
       });
       // Both ranges share one original source. Revoking its look-ahead grant
@@ -765,6 +853,13 @@ describe("related-history source custody without model status", () => {
           through: receipt.through,
         }),
       ).toBe(true);
+      expect(
+        cache.retainAdmission(
+          "synthetic-contribution",
+          { ...receipt.source, storePath: receipt.through.storePath },
+          preparedAdmission,
+        ),
+      ).toBe(true);
       source.context.mockClear();
       cache.setPreparedRoot(source.issueRoot());
     }
@@ -849,7 +944,6 @@ describe("related-history source custody without model status", () => {
     if (transientFacts) {
       await expect(preparation).rejects.toBe(factsUnavailable);
       expect(release).toHaveBeenCalledOnce();
-      expect(donorRelease).toHaveBeenCalledOnce();
       expect(targetRelease).toHaveBeenCalledOnce();
       expect(packets).toEqual([]);
       expect(source.retain).toHaveBeenCalledTimes(kind.startsWith("hydration-") ? 0 : 1);
@@ -871,7 +965,6 @@ describe("related-history source custody without model status", () => {
         recovered?.release();
       }
       expect(release).toHaveBeenCalledTimes(2);
-      expect(donorRelease).toHaveBeenCalledTimes(2);
       expect(targetRelease).toHaveBeenCalledTimes(2);
       return;
     }

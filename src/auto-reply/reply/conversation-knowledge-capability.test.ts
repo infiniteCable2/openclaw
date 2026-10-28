@@ -487,21 +487,16 @@ describe("conversation knowledge capability absence", () => {
       },
     ]);
     const targetRelease = vi.fn();
-    const sourceRelease = vi.fn();
     source.facts.mockResolvedValueOnce({
       audience: "private-direct",
       audienceIdentity: conversationKnowledgeParticipantIdentity(originalParticipant),
       assertCurrent() {},
       release: targetRelease,
     });
-    source.facts.mockResolvedValueOnce({
-      audience: "private-direct",
-      audienceIdentity: "native-person-b",
-      assertCurrent() {},
-      release: sourceRelease,
-    });
     const grantRelease = vi.fn();
     source.history.mockResolvedValue({
+      audience: "private-direct",
+      audienceIdentity: "native-person-b",
       sources: [{ ...sibling, canonicalKey: sibling.sessionKey, storePath: branch.storePath }],
       assertCurrent() {},
       release: grantRelease,
@@ -516,7 +511,7 @@ describe("conversation knowledge capability absence", () => {
     expect(source.history).toHaveBeenCalledOnce();
     expect(source.context).not.toHaveBeenCalled();
     expect(prepared?.fragments).toEqual([]);
-    expect(sourceRelease).toHaveBeenCalledOnce();
+    expect(source.facts).toHaveBeenCalledOnce();
     expect(grantRelease).toHaveBeenCalledOnce();
     prepared?.release();
     expect(targetRelease).toHaveBeenCalledOnce();
@@ -581,6 +576,8 @@ function personalFixture(sourceMode: "native" | "branches" = "branches") {
     },
   ]);
   source.history.mockResolvedValue({
+    audience: "private-direct",
+    audienceIdentity: facts.audienceIdentity,
     sources: [{ ...sibling, canonicalKey: sibling.sessionKey, storePath: branch.storePath }],
     assertCurrent,
     release: grantRelease,
@@ -645,7 +642,7 @@ describe("native personal difference-context integration", () => {
     ).rejects.toThrow("Preparation canceled");
     expect(turn.signal.aborted).toBe(false);
     expect(f.grantRelease).toHaveBeenCalledOnce();
-    expect(f.factsRelease).toHaveBeenCalledTimes(2);
+    expect(f.factsRelease).toHaveBeenCalledOnce();
   });
 
   it.each(["native", "branches"] as const)(
@@ -697,7 +694,7 @@ describe("native personal difference-context integration", () => {
     expect(() => prepared?.assertCurrent()).toThrow("revoked");
     prepared?.release();
     expect(f.grantRelease).toHaveBeenCalledOnce();
-    expect(f.factsRelease).toHaveBeenCalledTimes(2);
+    expect(f.factsRelease).toHaveBeenCalledOnce();
   });
 
   it("does not turn an observation or a stored row into personal authority", async () => {

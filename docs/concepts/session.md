@@ -197,6 +197,12 @@ permissions are still checked freshly. This does not enumerate the full root or
 all recipient receipts before a model request. Exact native receipt observations
 distinguish active carriers, historical carriers and missing evidence, so a retry
 can recover an accepted observation without resurrecting compacted content.
+Background preparation also retains bounded native read custody shared per donor.
+Each admission binds fresh execution, destination and root evidence to that custody;
+it does not reuse the former caller's grant or repeat source discovery. Native
+revocation, physical identity, exact ranges and atomic write predicates still apply.
+Consumption, retirement and recipient closure release unused custody. Stale donor
+preparation is deferred without rebuilding it on the foreground path.
 
 An existing embedded model request may consume ready observations, including at
 the next natural model step after tools. It does not wait for full freshness or

@@ -41,6 +41,8 @@ export class PersonalConversationReadRefusedError extends SessionMutationAuthori
 
 export type PersonalConversationReadParams = {
   purpose: "conversation-differences";
+  /** Internal native custody only; the current caller still supplies all disclosure proofs. */
+  preparedAdmission?: PreparedPersonalConversationAdmission;
   personal: {
     originalParticipant: SessionParticipantIdentity;
     assertCurrent: SessionSourceAssertion;
@@ -86,6 +88,107 @@ const fields = [
   "providerReview",
 ] as const satisfies readonly (keyof InternalSessionEntry)[];
 
+type PersonalReadSource = Readonly<{
+  agentId: string;
+  canonicalKey: string;
+  storePath: string;
+  sessionId: string;
+  lifecycleRevision: string | undefined;
+  readSource: CapturedSessionEntryReadSource;
+}>;
+type PersonalReadCustody = {
+  reads: Array<{
+    held: Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
+    expected: PersonalReadSource;
+    selectorPath: string;
+    storeKey: string;
+    members: string[];
+    entry: InternalSessionEntry;
+    root: boolean;
+    attested: boolean;
+  }>;
+  sources: PersonalReadSource[];
+  releases: Array<() => void>;
+  references: number;
+};
+type PersonalAdmissionBinding = {
+  target: ConversationKnowledgeBranch;
+  participant: SessionParticipantIdentity;
+  selected: readonly { agentId: string; sessionKey: string }[];
+  selectedMode: ReturnType<typeof resolveAgentConversationMode>;
+};
+
+function releasePersonalReadCustody(custody: PersonalReadCustody, retireView: boolean) {
+  if (retireView) {
+    custody.references--;
+  }
+  if (custody.references > 0) {
+    return;
+  }
+  const errors: unknown[] = [];
+  // Failed terminal cleanup retains native ownership for a later release retry.
+  for (let index = custody.releases.length - 1; index >= 0; index--) {
+    try {
+      custody.releases[index]!();
+      custody.releases.splice(index, 1);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  throwSqliteLifecycleErrors(errors, "Personal transcript read release failed");
+}
+
+const personalAdmissionIssuer = Symbol("native-personal-admission");
+/** Retains native row publications, never a former caller's execution or disclosure proof. */
+class PreparedPersonalConversationAdmission {
+  #custody: PersonalReadCustody;
+  #binding: PersonalAdmissionBinding;
+  #active = true;
+  readonly byteLength: number;
+
+  constructor(
+    issuer: typeof personalAdmissionIssuer,
+    custody: PersonalReadCustody,
+    binding: PersonalAdmissionBinding,
+  ) {
+    if (issuer !== personalAdmissionIssuer) {
+      throw new Error("Prepared personal admission requires its native read owner");
+    }
+    this.#custody = custody;
+    this.#binding = structuredClone(binding);
+    this.byteLength = Buffer.byteLength(
+      JSON.stringify({ binding, reads: custody.reads.map(({ held: _held, ...read }) => read) }),
+    );
+    custody.references++;
+    Object.freeze(this);
+  }
+
+  static acquire(value: unknown, binding: PersonalAdmissionBinding): PersonalReadCustody {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !(#custody in value) ||
+      !value.#active ||
+      !isDeepStrictEqual(value.#binding, binding)
+    ) {
+      throw new PersonalConversationReadRefusedError(
+        "Prepared personal admission changed or expired",
+      );
+    }
+    value.#custody.references++;
+    return value.#custody;
+  }
+
+  release() {
+    const retireView = this.#active;
+    this.#active = false;
+    releasePersonalReadCustody(this.#custody, retireView);
+  }
+}
+Object.freeze(PreparedPersonalConversationAdmission);
+Object.freeze(PreparedPersonalConversationAdmission.prototype);
+export type { PreparedPersonalConversationAdmission };
+
 /** Internal purpose of the native read owner, never a general history or operator grant. */
 export async function preparePersonalConversationRead(params: PersonalConversationReadParams) {
   const target = structuredClone(params.personal.target);
@@ -127,27 +230,12 @@ export async function preparePersonalConversationRead(params: PersonalConversati
           .assertNativeKnowledgeRootContribution
       : undefined;
   original();
-  type Held = Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
-  type Source = Readonly<{
-    agentId: string;
-    canonicalKey: string;
-    storePath: string;
-    sessionId: string;
-    lifecycleRevision: string | undefined;
-    readSource: CapturedSessionEntryReadSource;
-  }>;
-  const reads: Array<{
-    held: Held;
-    expected: Source;
-    selectorPath: string;
-    storeKey: string;
-    members: string[];
-    entry: InternalSessionEntry;
-    root: boolean;
-    attested: boolean;
-  }> = [];
-  const sources: Source[] = [];
-  const releases: Array<() => void> = [];
+  const binding = { target, participant, selected, selectedMode };
+  const reusingAdmission = params.preparedAdmission !== undefined;
+  const custody: PersonalReadCustody = reusingAdmission
+    ? PreparedPersonalConversationAdmission.acquire(params.preparedAdmission, binding)
+    : { reads: [], sources: [], releases: [], references: 1 };
+  const { reads, sources, releases } = custody;
   let active = true;
   let refusal: unknown;
   let revoked = false;
@@ -293,17 +381,9 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     }
   };
   const release = () => {
+    const retireView = active;
     active = false;
-    const errors: unknown[] = [];
-    for (let index = releases.length - 1; index >= 0; index--) {
-      try {
-        releases[index]!();
-        releases.splice(index, 1);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    throwSqliteLifecycleErrors(errors, "Personal transcript read release failed");
+    releasePersonalReadCustody(custody, retireView);
   };
   const hold = async (request: { agentId: string; sessionKey: string }, root: boolean) => {
     assertCurrent();
@@ -349,27 +429,30 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     return expected;
   };
   try {
-    const originalTarget = await hold(
-      { agentId: target.agentId, sessionKey: target.sessionKey },
-      false,
-    );
-    if (
-      originalTarget.sessionId !== target.sessionId ||
-      originalTarget.lifecycleRevision !== target.lifecycleRevision
-    ) {
-      throw new PersonalConversationReadRefusedError(
-        "Personal destination is not the original input incarnation",
+    if (!reusingAdmission) {
+      const originalTarget = await hold(
+        { agentId: target.agentId, sessionKey: target.sessionKey },
+        false,
       );
-    }
-    const originalRoot = await hold(
-      { agentId: target.agentId, sessionKey: target.root.sessionKey },
-      true,
-    );
-    if (!isDeepStrictEqual(originalRoot.readSource, originalTarget.readSource)) {
-      throw new PersonalConversationReadRefusedError(
-        "Personal conversation root differs from the original physical store",
+      if (
+        originalTarget.sessionId !== target.sessionId ||
+        originalTarget.lifecycleRevision !== target.lifecycleRevision
+      ) {
+        throw new PersonalConversationReadRefusedError(
+          "Personal destination is not the original input incarnation",
+        );
+      }
+      const originalRoot = await hold(
+        { agentId: target.agentId, sessionKey: target.root.sessionKey },
+        true,
       );
+      if (!isDeepStrictEqual(originalRoot.readSource, originalTarget.readSource)) {
+        throw new PersonalConversationReadRefusedError(
+          "Personal conversation root differs from the original physical store",
+        );
+      }
     }
+    assertCurrent();
     if (contribution?.privateAudience || contribution?.readRange) {
       if (
         selected.length !== 1 ||
@@ -387,14 +470,16 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       // entire root once per contribution or trust a tool-shaped receipt object.
       policy();
     }
-    for (const request of selected) {
-      const source = await hold(request, false);
-      if (!isDeepStrictEqual(source.readSource, originalTarget.readSource)) {
-        throw new PersonalConversationReadRefusedError(
-          "Personal conversation sources do not share the original physical store",
-        );
+    if (!reusingAdmission) {
+      for (const request of selected) {
+        const source = await hold(request, false);
+        if (!isDeepStrictEqual(source.readSource, reads[0]!.expected.readSource)) {
+          throw new PersonalConversationReadRefusedError(
+            "Personal conversation sources do not share the original physical store",
+          );
+        }
+        sources.push(source);
       }
-      sources.push(source);
     }
     const prepare = async (): Promise<PreparedSessionSourceAuthority> => {
       assertCurrent();
@@ -444,7 +529,13 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       prepareSessionSourceScope: prepare,
     });
     return {
+      audience: "private-direct" as const,
+      audienceIdentity,
       sources: Object.freeze(sources),
+      prepareAdmission() {
+        assertCurrent();
+        return new PreparedPersonalConversationAdmission(personalAdmissionIssuer, custody, binding);
+      },
       contributionRange:
         contribution?.privateAudience || contribution?.readRange
           ? Object.freeze({

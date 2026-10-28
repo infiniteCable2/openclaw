@@ -9,11 +9,14 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
-import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
+import {
+  createConversationKnowledgeSourceCache,
+  type ConversationKnowledgeSourceCache,
+} from "./conversation-knowledge-source-cache.js";
 
 type Recipient = {
   owner: ReturnType<typeof createConversationKnowledgePrefetchOwner>;
-  cache: ReturnType<typeof createConversationKnowledgeSourceCache>;
+  cache: ConversationKnowledgeSourceCache;
   retainAudience(audience: ConversationPrivateAudience): void;
 };
 const log = createSubsystemLogger("conversation-knowledge");

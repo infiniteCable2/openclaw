@@ -24,20 +24,35 @@ import {
   type PersonalConversationReadParams,
 } from "./session-transcript-personal-read.js";
 
+type OperatorTranscriptReadParams = {
+  purpose?: "operator-history";
+  authority: AdmittedRunOperatorAuthority;
+  getRuntimeConfig: () => OpenClawConfig;
+  sources: readonly { agentId: string; sessionKey: string }[];
+};
+
+export function prepareTranscriptReadAuthority(
+  params: PersonalConversationReadParams,
+): ReturnType<typeof preparePersonalConversationRead>;
+export function prepareTranscriptReadAuthority(
+  params: OperatorTranscriptReadParams,
+): ReturnType<typeof prepareOperatorTranscriptRead>;
+export function prepareTranscriptReadAuthority(
+  params: OperatorTranscriptReadParams | PersonalConversationReadParams,
+):
+  | ReturnType<typeof preparePersonalConversationRead>
+  | ReturnType<typeof prepareOperatorTranscriptRead>;
 /** Selected reads retain their original operator grant or narrowly bound personal-difference proof. */
 export async function prepareTranscriptReadAuthority(
-  params:
-    | {
-        purpose?: "operator-history";
-        authority: AdmittedRunOperatorAuthority;
-        getRuntimeConfig: () => OpenClawConfig;
-        sources: readonly { agentId: string; sessionKey: string }[];
-      }
-    | PersonalConversationReadParams,
+  params: OperatorTranscriptReadParams | PersonalConversationReadParams,
 ) {
   if (params.purpose === "conversation-differences") {
     return preparePersonalConversationRead(params);
   }
+  return prepareOperatorTranscriptRead(params);
+}
+
+async function prepareOperatorTranscriptRead(params: OperatorTranscriptReadParams) {
   assertAdmittedRunOperatorAuthority(params.authority);
   if (!params.sources.length || params.sources.length > MAX_SESSION_ROW_FACTS_KEYS) {
     throw new Error(`Transcript reads require 1 to ${MAX_SESSION_ROW_FACTS_KEYS} selected sources`);

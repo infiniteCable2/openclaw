@@ -46,6 +46,8 @@ import { SessionTranscriptReadFenceError } from "../../config/sessions/session-t
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
+import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
+import type { preparePersonalConversationRead } from "../../gateway/session-transcript-personal-read.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import {
@@ -55,8 +57,7 @@ import {
 import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 
 export type ConversationKnowledgeHeldSource = {
-  grant: Awaited<ReturnType<typeof prepareTranscriptReadAuthority>>;
-  facts?: Awaited<ReturnType<typeof prepareConversationKnowledgeBranchFacts>>;
+  grant: Awaited<ReturnType<typeof preparePersonalConversationRead>>;
   origin?: string;
 };
 
@@ -394,6 +395,7 @@ export function createConversationKnowledgeSourceReader(params: {
   getRuntimeConfig: () => OpenClawConfig;
   signal?: AbortSignal;
   sourceCache?: ConversationKnowledgeSourceCache;
+  readyOnly?: boolean;
   hasRetainedContribution(contributionId: string): boolean;
   reads: ConversationKnowledgeHeldSource[];
   drop: (read: ConversationKnowledgeHeldSource) => void;
@@ -401,9 +403,15 @@ export function createConversationKnowledgeSourceReader(params: {
   const { branch, originalParticipant, targetFacts, reads, drop } = params;
   const prepareSource = async (receipt: ConversationKnowledgeReference) => {
     const contributionId = conversationKnowledgeContributionId(receipt);
-    let grant: Awaited<ReturnType<typeof prepareTranscriptReadAuthority>>;
+    const sourceTarget = { ...receipt.source, storePath: receipt.through.storePath };
+    const preparedAdmission = params.sourceCache?.preparedAdmission(sourceTarget);
+    if (params.readyOnly && !preparedAdmission) {
+      return undefined;
+    }
+    let grant: ConversationKnowledgeHeldSource["grant"];
+    let read: ConversationKnowledgeHeldSource | undefined;
     try {
-      grant = await prepareTranscriptReadAuthority({
+      const request = {
         purpose: "conversation-differences",
         personal: {
           originalParticipant,
@@ -418,8 +426,58 @@ export function createConversationKnowledgeSourceReader(params: {
         },
         getRuntimeConfig: params.getRuntimeConfig,
         sources: [receipt.source],
-      });
+      } as const;
+      try {
+        grant = await prepareTranscriptReadAuthority({ ...request, preparedAdmission });
+      } catch (error) {
+        params.sourceCache?.invalidateAdmission(sourceTarget);
+        // Only background preparation may reacquire invalid native custody.
+        // A live boundary consumes ready work and never waits for discovery.
+        if (!preparedAdmission || params.readyOnly) {
+          throw error;
+        }
+        params.assertCurrent();
+        targetFacts.assertCurrent();
+        params.signal?.throwIfAborted();
+        grant = await prepareTranscriptReadAuthority(request);
+      }
+      read = { grant };
+      reads.push(read);
+      grant.assertCurrent();
+      const source = grant.sources[0];
+      if (
+        !source ||
+        source.agentId !== branch.agentId ||
+        source.canonicalKey !== receipt.source.sessionKey ||
+        source.sessionId !== receipt.source.sessionId ||
+        source.lifecycleRevision !== receipt.source.lifecycleRevision ||
+        source.storePath !== branch.storePath ||
+        source.storePath !== receipt.through.storePath ||
+        grant.audienceIdentity !== targetFacts.audienceIdentity
+      ) {
+        params.sourceCache?.invalidateContribution(contributionId);
+        drop(read);
+        return undefined;
+      }
+      targetFacts.assertCurrent();
+      const sourceAssertion = composeSessionSourceAssertion([
+        params.assertCurrent,
+        targetFacts.assertCurrent,
+        grant.assertCurrent,
+      ]);
+      const projectionTarget = {
+        agentId: source.agentId,
+        sessionKey: source.canonicalKey,
+        sessionId: source.sessionId,
+        storePath: source.storePath,
+      };
+      const through = grant.contributionRange?.through ?? receipt.through;
+      const from = grant.contributionRange?.from;
+      return { read, grant, sourceAssertion, projectionTarget, through, from, facts: grant };
     } catch (error) {
+      if (read) {
+        drop(read);
+      }
       // A hidden, removed or now-unreadable source does not become a discovery result.
       params.assertCurrent();
       targetFacts.assertCurrent();
@@ -427,7 +485,12 @@ export function createConversationKnowledgeSourceReader(params: {
       params.sourceCache?.invalidateContribution(contributionId);
       if (
         !(error instanceof SessionMutationAuthorizationChangedError) &&
-        !(error instanceof SessionTranscriptReadFenceError)
+        !(error instanceof SessionTranscriptReadFenceError) &&
+        !(
+          params.readyOnly &&
+          preparedAdmission &&
+          error instanceof SessionMutationFactsUnavailableError
+        )
       ) {
         // Unavailable facts and worker failures must reach the background owner's
         // bounded retry instead of silently settling this source as prepared.
@@ -435,55 +498,6 @@ export function createConversationKnowledgeSourceReader(params: {
       }
       return undefined;
     }
-    const read: (typeof reads)[number] = { grant };
-    reads.push(read);
-    grant.assertCurrent();
-    const source = grant.sources[0];
-    if (
-      !source ||
-      source.agentId !== branch.agentId ||
-      source.canonicalKey !== receipt.source.sessionKey ||
-      source.sessionId !== receipt.source.sessionId ||
-      source.lifecycleRevision !== receipt.source.lifecycleRevision ||
-      source.storePath !== branch.storePath ||
-      source.storePath !== receipt.through.storePath
-    ) {
-      params.sourceCache?.invalidateContribution(contributionId);
-      drop(read);
-      return undefined;
-    }
-    read.facts = await prepareConversationKnowledgeBranchFacts({
-      branch: {
-        ...branch,
-        sessionKey: source.canonicalKey,
-        sessionId: source.sessionId,
-        lifecycleRevision: receipt.source.lifecycleRevision,
-      },
-      getRuntimeConfig: params.getRuntimeConfig,
-      contribution: receipt,
-    });
-    grant.assertCurrent();
-    targetFacts.assertCurrent();
-    if (read.facts.audienceIdentity !== targetFacts.audienceIdentity) {
-      params.sourceCache?.invalidateContribution(contributionId);
-      drop(read);
-      return undefined;
-    }
-    const sourceAssertion = composeSessionSourceAssertion([
-      params.assertCurrent,
-      targetFacts.assertCurrent,
-      grant.assertCurrent,
-      read.facts.assertCurrent,
-    ]);
-    const projectionTarget = {
-      agentId: source.agentId,
-      sessionKey: source.canonicalKey,
-      sessionId: source.sessionId,
-      storePath: source.storePath,
-    };
-    const through = grant.contributionRange?.through ?? receipt.through;
-    const from = grant.contributionRange?.from;
-    return { read, grant, sourceAssertion, projectionTarget, through, from, facts: read.facts };
   };
   type PreparedSource = NonNullable<Awaited<ReturnType<typeof prepareSource>>>;
   const preparedSources = new Map<string, PreparedSource>();

@@ -8,6 +8,7 @@ import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
+import type { PreparedPersonalConversationAdmission } from "../../gateway/session-transcript-personal-read.js";
 
 export type PreparedConversationKnowledgePacket = {
   part: NonNullable<ReturnType<typeof projectConversationKnowledge>>;
@@ -16,8 +17,11 @@ export type PreparedConversationKnowledgePacket = {
   from?: TranscriptEntryAnchor;
 };
 
-/** Disposable source bytes, never a retained read grant or recipient admission receipt. */
-export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 1024) {
+/** Disposable bytes and native read preparation; every disclosure still needs a fresh grant. */
+export function createConversationKnowledgeSourceCache<
+  Admission extends Pick<PreparedPersonalConversationAdmission, "byteLength" | "release"> =
+    PreparedPersonalConversationAdmission,
+>(maxBytes = 4 * 1024 * 1024) {
   const entries = new Map<
     string,
     { value: SessionTranscriptModelContext; bytes: number; contributionId: string }
@@ -32,6 +36,47 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
     }
   >();
   let bytes = 0;
+  let admissionBytes = 0;
+  const admissions = new Map<string, Admission>();
+  const admissionSources = new Map<string, string>();
+  const retiringAdmissions = new Set<Admission>();
+  const releaseAdmissions = (selected: Iterable<Admission>) => {
+    for (const admission of selected) {
+      retiringAdmissions.add(admission);
+    }
+    const errors: unknown[] = [];
+    for (const admission of retiringAdmissions) {
+      try {
+        admission.release();
+        retiringAdmissions.delete(admission);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, "Prepared conversation admission cleanup remains pending");
+    }
+  };
+  const admissionKey = (source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string }) =>
+    JSON.stringify([
+      source.agentId,
+      source.storePath,
+      source.sessionKey,
+      source.sessionId,
+      source.lifecycleRevision,
+    ]);
+  const releaseUnusedAdmissions = () => {
+    const selected = new Set(admissionSources.values());
+    const retired: Admission[] = [];
+    for (const [key, admission] of admissions) {
+      if (!selected.has(key)) {
+        admissions.delete(key);
+        admissionBytes -= admission.byteLength;
+        retired.push(admission);
+      }
+    }
+    releaseAdmissions(retired);
+  };
   let stagedBytes = 0;
   let revision = 0;
   let consumptionRevision = 0;
@@ -59,6 +104,14 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       bytes -= old.bytes;
       entries.delete(key);
       revision++;
+      if (
+        ![...entries.values(), ...staged.values()].some(
+          (entry) => entry.contributionId === old.contributionId,
+        )
+      ) {
+        admissionSources.delete(old.contributionId);
+        releaseUnusedAdmissions();
+      }
     }
   };
   const stagedKey = (id: string, offset: number) => JSON.stringify([id, offset]);
@@ -84,6 +137,40 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
     return bytes + inputBytes() + (preparedRoot?.byteLength ?? 0) + additional <= maxBytes;
   };
   return {
+    preparedAdmission(source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string }) {
+      return admissions.get(admissionKey(source));
+    },
+    retainAdmission(
+      contributionId: string,
+      source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string },
+      admission: Admission,
+    ): boolean {
+      const key = admissionKey(source);
+      const existing = admissions.get(key);
+      if (existing) {
+        if (existing !== admission) {
+          releaseAdmissions([admission]);
+        }
+      } else if (admission.byteLength <= maxBytes - admissionBytes) {
+        admissions.set(key, admission);
+        admissionBytes += admission.byteLength;
+      } else {
+        releaseAdmissions([admission]);
+        return false;
+      }
+      admissionSources.set(contributionId, key);
+      return true;
+    },
+    invalidateAdmission(source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string }) {
+      const key = admissionKey(source);
+      const existing = admissions.get(key);
+      if (existing) {
+        admissions.delete(key);
+        admissionBytes -= existing.byteLength;
+        revision++;
+        releaseAdmissions([existing]);
+      }
+    },
     get revision() {
       return revision;
     },
@@ -250,6 +337,10 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
         staged.delete(key);
         stagedBytes -= old.bytes;
         revision++;
+        if (old.value.part.complete) {
+          admissionSources.delete(id);
+          releaseUnusedAdmissions();
+        }
       }
     },
     invalidateContribution(id: string) {
@@ -259,6 +350,8 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
         }
       }
       invalidateStaged(id);
+      admissionSources.delete(id);
+      releaseUnusedAdmissions();
     },
     retainContributions(current: ReadonlySet<string>) {
       for (const [key, entry] of entries) {
@@ -271,8 +364,18 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
           invalidateStaged(id);
         }
       }
+      for (const id of admissionSources.keys()) {
+        if (!current.has(id)) {
+          admissionSources.delete(id);
+        }
+      }
+      releaseUnusedAdmissions();
     },
     clear() {
+      const retired = [...admissions.values()];
+      admissions.clear();
+      admissionSources.clear();
+      admissionBytes = 0;
       entries.clear();
       staged.clear();
       bytes = 0;
@@ -283,6 +386,7 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
       revision++;
       clearEpoch++;
       consumptionRevision++;
+      releaseAdmissions(retired);
     },
     async read(params: {
       contributionId: string;
@@ -370,5 +474,5 @@ export function createConversationKnowledgeSourceCache(maxBytes = 4 * 1024 * 102
 }
 
 export type ConversationKnowledgeSourceCache = ReturnType<
-  typeof createConversationKnowledgeSourceCache
+  typeof createConversationKnowledgeSourceCache<PreparedPersonalConversationAdmission>
 >;
