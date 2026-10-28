@@ -21,7 +21,7 @@ import {
   resolveThreadBindingIdleTimeoutMsForChannel,
   resolveThreadBindingMaxAgeMsForChannel,
 } from "openclaw/plugin-sdk/thread-bindings-runtime";
-import { getMatrixRuntime } from "../../runtime.js";
+import { getMatrixRuntime, getMatrixRuntimeLifecycle } from "../../runtime.js";
 import type {
   CoreConfig,
   MatrixStreamingConfig,
@@ -485,14 +485,18 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     });
 
     if (rtcConfig) {
+      const runInBackgroundContext = getMatrixRuntimeLifecycle()?.runInBackgroundContext;
+      if (!runInBackgroundContext) {
+        throw new Error("MatrixRTC requires an instance-bound background runtime");
+      }
       const { registerMatrixRtcController } = await import("../rtc-controller.js");
       rtcController = registerMatrixRtcController({
         client,
-        cfg,
         accountConfig,
         accountId: effectiveAccountId,
         config: rtcConfig,
         runtime: core,
+        runInBackgroundContext,
         runtimeEnv: runtime,
         logger,
         abortSignal: monitorLifecycleSignal,

@@ -79,6 +79,9 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
     if (sessionId !== params.conversationId) {
       throw new Error("Conversation input binding changed");
     }
+    // Settle this connection's native session creation/enrollment before an input
+    // captures its source facts. Donor hydration remains background work.
+    await preparing;
     const parsed = parseRealtimeVoiceAgentConsultArgs(consult.args);
     const text = parsed.question;
     const runtimeContext: NonNullable<ConversationReplyParams["runtimeContext"]> = [];

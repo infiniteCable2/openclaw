@@ -9,7 +9,11 @@ import {
   type MeetingRealtimeBindingsV2Params,
 } from "./conversation-bindings.js";
 
-const mocks = vi.hoisted(() => ({ getReplyFromConfig: vi.fn(), prepareExpression: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  getReplyFromConfig: vi.fn(),
+  prepareExpression: vi.fn(),
+  prepareGreeting: vi.fn(),
+}));
 // mock-isolation: Native model/storage execution is the boundary, not part of this host adapter test.
 vi.mock("../auto-reply/reply/get-reply.js", () => ({
   getReplyFromConfig: mocks.getReplyFromConfig,
@@ -21,6 +25,10 @@ vi.mock("../auto-reply/reply/reply-operation-abort.js", () => ({
 // mock-isolation: Readiness is explicitly controlled without loading a provider or GPU worker.
 vi.mock("../tts/expression-preparation.js", () => ({
   prepareSpeechExpressionContext: mocks.prepareExpression,
+}));
+// mock-isolation: Greeting model execution is outside this input-admission adapter.
+vi.mock("../talk/conversation-greeting.js", () => ({
+  prepareConversationGreeting: mocks.prepareGreeting,
 }));
 
 function fixture() {
@@ -93,6 +101,80 @@ describe("original speech binding to native reply", () => {
   beforeEach(() => {
     mocks.getReplyFromConfig.mockReset();
     mocks.prepareExpression.mockReset().mockResolvedValue(undefined);
+    mocks.prepareGreeting.mockReset().mockResolvedValue({ text: "Hello." });
+  });
+
+  it.each(["user", "greeting"] as const)(
+    "settles connection enrollment before admitting a %s input",
+    async (purpose) => {
+      const f = fixture();
+      const started = Promise.withResolvers<void>();
+      const created = Promise.withResolvers<void>();
+      f.params.inputSource = {
+        ...f.params.inputSource,
+        prepareConnection: async () => {
+          started.resolve();
+          await created.promise;
+        },
+      };
+      mocks.getReplyFromConfig.mockResolvedValue({ text: "Native answer." });
+      const bindings = createMeetingRealtimeEngineBindingsV2(f.params);
+      const reply = bindings.nativeInput({
+        sessionId: "example-call",
+        inputId: "example-input",
+        purpose,
+        args: { question: "A question" },
+        transcript: [],
+        bufferReply: true,
+        queueMode: "followup",
+        onNativeRunBound: vi.fn(),
+        onInputDisposition: vi.fn(),
+        onQueueAccepted: vi.fn(),
+        ...(purpose === "greeting" ? { speechExpressionCaptureOnly: true as const } : {}),
+      });
+      try {
+        await started.promise;
+        expect(f.params.inputSource.admitInput).not.toHaveBeenCalled();
+        expect(mocks.getReplyFromConfig).not.toHaveBeenCalled();
+        expect(mocks.prepareGreeting).not.toHaveBeenCalled();
+      } finally {
+        created.resolve();
+        await reply;
+        await bindings.connectionPreparation?.close();
+      }
+      expect(f.params.inputSource.admitInput).toHaveBeenCalledOnce();
+      expect(
+        purpose === "greeting" ? mocks.prepareGreeting : mocks.getReplyFromConfig,
+      ).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("refuses a source revoked while connection enrollment is settling", async () => {
+    const f = fixture();
+    const started = Promise.withResolvers<void>();
+    const created = Promise.withResolvers<void>();
+    f.params.inputSource = {
+      ...f.params.inputSource,
+      prepareConnection: async () => {
+        started.resolve();
+        await created.promise;
+      },
+    };
+    const bindings = createMeetingRealtimeEngineBindingsV2(f.params);
+    const reply = bindings.consultAgent({
+      meetingSessionId: "example-call",
+      inputId: "example-greeting",
+      purpose: "greeting",
+      args: { question: "Greet briefly." },
+      transcript: [],
+    });
+    await started.promise;
+    f.revoke();
+    created.resolve();
+    await expect(reply).rejects.toThrow("Original source revoked");
+    expect(mocks.getReplyFromConfig).not.toHaveBeenCalled();
+    expect(mocks.prepareGreeting).not.toHaveBeenCalled();
+    await bindings.connectionPreparation?.close();
   });
 
   it("starts connection preparation without waiting or admitting a synthetic input", async () => {

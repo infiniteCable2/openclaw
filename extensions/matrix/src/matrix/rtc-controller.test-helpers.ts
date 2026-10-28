@@ -19,9 +19,11 @@ const mocks = vi.hoisted(() => ({
     connectionPresentation: _params.connectionPresentation,
   })),
   prepareMeetingAgentRealtimeEngine: vi.fn(
-    async (_params: {
-      onPreparation?: (preparation: MeetingAgentRealtimePreparation) => void;
-    }) => ({ release: vi.fn(async () => undefined) }),
+    async (
+      _params: Parameters<
+        typeof import("openclaw/plugin-sdk/meeting-runtime").prepareMeetingAgentRealtimeEngine
+      >[0],
+    ) => ({ release: vi.fn(async () => undefined) }),
   ),
   prepareMeetingAgentGreeting: vi.fn(
     async (_params: {
@@ -104,6 +106,9 @@ export function createHarness(
     video?: boolean;
     cfg?: CoreConfig;
     runtime?: PluginRuntime;
+    runInBackgroundContext?: Parameters<
+      typeof registerMatrixRtcController
+    >[0]["runInBackgroundContext"];
     preparePrivateAudience?: Parameters<
       typeof registerMatrixRtcController
     >[0]["preparePrivateAudience"];
@@ -231,7 +236,6 @@ export function createHarness(
       matrixRtc,
       dms: { isDm: vi.fn(() => true) },
     } as never,
-    cfg,
     accountConfig: {} as never,
     accountId: "default",
     preparePrivateAudience: options.preparePrivateAudience ?? (async () => undefined),
@@ -266,6 +270,7 @@ export function createHarness(
       admissions: [{ roomId, userId: ownerId, agentId: "example_owner" }],
     },
     runtimeEnv: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+    runInBackgroundContext: options.runInBackgroundContext ?? ((run) => run()),
     runtime:
       options.runtime ??
       ({

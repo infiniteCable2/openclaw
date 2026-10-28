@@ -14,7 +14,9 @@ import {
 } from "openclaw/plugin-sdk/meeting-runtime";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
-import type { CoreConfig, MatrixConfig } from "../types.js";
+import { cloneRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import type { MatrixRuntimeLifecycle } from "../runtime.js";
+import type { MatrixConfig } from "../types.js";
 import { resolveMatrixInboundRoute } from "./monitor/route.js";
 import {
   assertMatrixRtcCallAdmission,
@@ -79,11 +81,11 @@ async function waitForInitialMediaKeys(params: {
 
 export function registerMatrixRtcController(params: {
   client: MatrixClient;
-  cfg: CoreConfig;
   accountConfig: MatrixConfig;
   accountId: string;
   config: ResolvedMatrixRtcConfig;
   runtime: PluginRuntime;
+  runInBackgroundContext: NonNullable<MatrixRuntimeLifecycle["runInBackgroundContext"]>;
   runtimeEnv: RuntimeEnv;
   logger: RuntimeLogger;
   preparePrivateAudience: Parameters<
@@ -198,9 +200,10 @@ export function registerMatrixRtcController(params: {
     calls.set(roomId, call);
     params.logger.warn("matrix rtc: admitted call start requested");
 
-    call.startup = Promise.resolve().then(async () => {
+    const startCall = async () => {
       let remoteIncarnation: string | undefined;
       try {
+        const cfg = cloneRuntimeConfigSnapshot(params.runtime.config.current());
         const self = params.client.matrixRtc.getSelfIdentity();
         const assertCurrentSession = () => {
           abort.signal.throwIfAborted();
@@ -224,7 +227,7 @@ export function registerMatrixRtcController(params: {
           assertMatrixRtcEncryptionCompatibility(session.getRtcSlot()?.encryption?.type);
         };
         const route = resolveMatrixInboundRoute({
-          cfg: params.cfg,
+          cfg,
           accountId: params.accountId,
           roomId,
           senderId: admission.userId,
@@ -290,7 +293,7 @@ export function registerMatrixRtcController(params: {
 
         const meetingSessionId = randomUUID();
         const agentProfile = resolveMatrixRtcAgentProfile(params.config, admission.agentId);
-        const speechProfile = resolveTalkSpeechAgentProfile(params.cfg, admission.agentId);
+        const speechProfile = resolveTalkSpeechAgentProfile(cfg, admission.agentId);
         const { bindings } = createMatrixRtcConversationBindings({
           source: {
             runtime: params.runtime,
@@ -307,7 +310,7 @@ export function registerMatrixRtcController(params: {
             },
             signal: abort.signal,
           },
-          cfg: params.cfg,
+          cfg,
           realtime: {
             agentId: admission.agentId,
             toolPolicy: params.config.toolPolicy,
@@ -332,7 +335,7 @@ export function registerMatrixRtcController(params: {
               video: speechProfile.video,
             },
           },
-          fullConfig: params.cfg,
+          fullConfig: cfg,
           runtime: params.runtime,
           ttsContext: {
             agentId: admission.agentId,
@@ -356,7 +359,7 @@ export function registerMatrixRtcController(params: {
           ]);
           try {
             initialGreeting = await prepareMeetingAgentGreeting({
-              cfg: params.cfg,
+              cfg,
               runtime: params.runtime,
               consultAgent: bindings.consultAgent,
               meetingSessionId,
@@ -556,7 +559,7 @@ export function registerMatrixRtcController(params: {
               video: speechProfile.video,
             },
           },
-          fullConfig: params.cfg,
+          fullConfig: cfg,
           runtime: params.runtime,
           platform: bindings.platform,
           meetingSessionId,
@@ -589,7 +592,16 @@ export function registerMatrixRtcController(params: {
         // Cleanup waits for startup; awaiting it here would wait on ourselves.
         void endCall(roomId, call);
       }
-    });
+    };
+    try {
+      // SDK sockets can retain the monitor's birth registry after provider reload.
+      // Admit each new call through this exact instance's current adopted owner.
+      call.startup = params.runInBackgroundContext(() => Promise.resolve().then(startCall));
+    } catch (error) {
+      call.startup = Promise.resolve();
+      params.logger.warn(`matrix rtc: call start failed: ${formatErrorMessage(error)}`);
+      void endCall(roomId, call);
+    }
   };
 
   const observeSession = (roomId: string, session: MatrixRTCSession) => {

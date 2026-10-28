@@ -13,7 +13,8 @@ const {
 
 export type MatrixRuntimeLifecycle = Required<
   Pick<OpenClawPluginApi["lifecycle"], "signal" | "onDispose">
->;
+> &
+  Pick<OpenClawPluginApi["lifecycle"], "runInBackgroundContext">;
 
 const runtimeLifecycles = createPluginRuntimeStore<WeakMap<PluginRuntime, MatrixRuntimeLifecycle>>({
   key: "matrix:runtime-lifecycles",
@@ -33,6 +34,7 @@ export function setMatrixRuntimeLifecycle(
     lifecycles.set(runtime, {
       signal: lifecycle.signal,
       onDispose: lifecycle.onDispose,
+      runInBackgroundContext: lifecycle.runInBackgroundContext,
     });
   }
 }
