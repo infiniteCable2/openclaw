@@ -9,6 +9,7 @@ import {
 } from "../../agents/admitted-run-context.js";
 import { submitEmbeddedAttemptPrompt } from "../../agents/embedded-agent-runner/run/attempt-prompt-submit.js";
 import { createBaseInput } from "../../agents/embedded-agent-runner/run/attempt-prompt-submit.test-support.js";
+import { createConversationContextCapacity } from "../../agents/embedded-agent-runner/run/prepared-conversation-context.js";
 import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js";
 import { beginForegroundSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import {
@@ -23,13 +24,23 @@ import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { makeProviderModelFixture } from "../../agents/test-helpers/provider-model-fixture.js";
 import * as knowledgePacketReads from "../../config/sessions/conversation-knowledge-packets.js";
+import * as knowledgeSeed from "../../config/sessions/conversation-knowledge-seed.js";
 import * as knowledgeStoreReads from "../../config/sessions/conversation-knowledge-store.js";
+import {
+  CONVERSATION_UTTERANCE_REPORT,
+  projectConversationKnowledge,
+  readConversationUtteranceObservation,
+} from "../../config/sessions/conversation-knowledge.js";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
+  appendTranscriptMessage,
+  replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { assertSessionEntryCohortScope } from "../../config/sessions/session-entry-cohort-scope.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
+import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
@@ -37,6 +48,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
+import * as knowledgePreparation from "./conversation-knowledge.js";
 import {
   createConversationKnowledgeScenario,
   person,
@@ -54,9 +66,232 @@ registerAgentSessionLoopTestLifecycle();
 
 const { CONVERSATION_KNOWLEDGE_CONTEXT, conversationKnowledgeContributionId } =
   knowledgePacketReads;
-const { readConversationKnowledgeBranch, recordConversationKnowledgeTurn } = knowledgeStoreReads;
+const {
+  readConversationKnowledgeBranch,
+  recordConversationKnowledgeTurn,
+  recordConversationUtteranceObservation,
+} = knowledgeStoreReads;
 
 describe("native branch prefetch and model-boundary composition", () => {
+  it("prepares and admits committed live utterances before their conversation completes", async ({
+    signal,
+  }) => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "knowledge-live-utterance-recipient" },
+      async (state) => {
+        const fixture = await createConversationKnowledgeScenario(state);
+        let recipient: ReturnType<typeof prepareConversationKnowledgeRecipient>;
+        let releaseKnowledge = () => {};
+        try {
+          const source = await fixture.branch("live-source");
+          const target = await fixture.branch("live-recipient");
+          // Real model sessions initialize their canonical transcript before
+          // the Knowledge turn. A metadata-only fixture is only a prefetch target.
+          await replaceTranscriptEvents(target, [
+            { type: "session", id: target.sessionId, version: CURRENT_SESSION_VERSION },
+          ]);
+          const runId = "synthetic-live-recipient-run";
+          const executionTarget = await resolveAgentRunSessionTarget({
+            ...target,
+            sessionTarget: target,
+            config: fixture.cfg,
+            missingSessionKey: "resolve-existing",
+          });
+          const writer = {
+            ...executionTarget,
+            expectedLifecycleRevision: target.lifecycleRevision,
+            expectedWriterRunId: runId,
+          };
+          await upsertSessionEntryCore(target, {
+            ...loadSessionEntry(target)!,
+            activeWriterRunId: runId,
+          });
+          const sourceOwner = await fixture.claim(source);
+          const targetOwner = await fixture.claim(target);
+          assertSessionEntryCohortScope(targetOwner.reader, writer);
+          const branch = await readConversationKnowledgeBranch(targetOwner);
+          if (!branch) {
+            throw new Error("Expected actual native recipient membership");
+          }
+          const audience: ConversationPrivateAudience = {
+            agentId: target.agentId,
+            sessionKey: target.sessionKey,
+            channelId: "matrix",
+            accountId: "example",
+            nativeChannelId: "synthetic-live-recipient",
+            participant: person,
+            assertCurrent: targetOwner.assertCurrent,
+          };
+          recipient = prepareConversationKnowledgeRecipient({
+            branch,
+            participant: person,
+            audience,
+            env: state.env,
+            getRuntimeConfig: () => fixture.cfg,
+          });
+          if (!recipient) {
+            throw new Error("Expected an eligible live recipient");
+          }
+          await recipient.owner.wait();
+          const before = await loadTranscriptEvents(target);
+          const user = await appendTranscriptMessage(source, {
+            message: {
+              role: "user",
+              content: "The live codeword is amber.",
+              timestamp: Date.now(),
+            },
+          });
+          if (!user.anchor) {
+            throw new Error("Expected original committed user anchor");
+          }
+          for (const role of ["user", "assistant"] as const) {
+            const expectedText =
+              role === "user" ? "The live codeword is amber." : "I will keep the live codeword.";
+            const anchor =
+              role === "user"
+                ? user.anchor
+                : (
+                    await appendTranscriptMessage(source, {
+                      message: {
+                        role: "assistant",
+                        content: [{ type: "text", text: expectedText }],
+                        stopReason: "stop",
+                        timestamp: Date.now(),
+                        __openclaw: { runId: "synthetic-live-run" },
+                      },
+                    })
+                  ).anchor;
+            if (!anchor) {
+              throw new Error("Expected original committed utterance anchor");
+            }
+            expect(
+              await recordConversationUtteranceObservation({
+                ...sourceOwner,
+                role,
+                anchor,
+                privateAudience: { participant: person, admission: user.anchor },
+              }),
+            ).toBe(true);
+            const receipt = (await loadTranscriptEvents(fixture.root))
+              .map(asOptionalRecord)
+              .filter((event) => event?.customType === CONVERSATION_UTTERANCE_REPORT)
+              .map((event) => readConversationUtteranceObservation(event?.details))
+              .find((value) => value?.through.entryId === anchor.entryId);
+            if (!receipt) {
+              throw new Error("Expected published live utterance reference");
+            }
+            // Publication and the raw projector must work before checking the
+            // actual grant, worker hydration, and background recipient cache.
+            expect(
+              projectConversationKnowledge(
+                receipt,
+                await loadTranscriptEvents(source),
+                undefined,
+                "private-direct",
+              )?.text,
+            ).toContain(expectedText);
+            await recipient.owner.wait();
+            expect(
+              recipient.cache.peek(conversationKnowledgeContributionId(receipt), 0)?.part.text,
+            ).toContain(expectedText);
+          }
+          expect(await loadTranscriptEvents(target)).toEqual(before);
+          expect(await fixture.receipts()).toHaveLength(0);
+          const { replyOperation } = createMockReplyOperation({
+            key: target.sessionKey,
+            sessionId: target.sessionId,
+          });
+          lifecycleAdmissionByOperation.set(replyOperation, { reader: targetOwner.reader });
+          releaseKnowledge = () => lifecycleAdmissionByOperation.delete(replyOperation);
+          const followupRun = createMockFollowupRun({
+            conversationParticipant: person,
+            conversationAudience: audience,
+            run: { ...executionTarget, config: fixture.cfg },
+          });
+          const admission = prepareAgentRunAdmission({
+            cfg: fixture.cfg,
+            operationalRunInstance: createOperationalRunInstanceRef(runId),
+            assertSourceCurrent: targetOwner.assertCurrent,
+            facts: {
+              runId,
+              agentId: target.agentId,
+              ingress: { kind: "channel", boundary: "knowledge-live-test", state: "present" },
+            },
+          });
+          const knowledge = createReplyConversationKnowledgeTurn({
+            turn: { isHeartbeat: false, followupRun, replyOperation },
+            originalSource: targetOwner.assertCurrent,
+            getRuntimeConfig: () => fixture.cfg,
+          });
+          if (!knowledge) {
+            throw new Error("Expected native live recipient admission");
+          }
+          releaseKnowledge = () => {
+            lifecycleAdmissionByOperation.delete(replyOperation);
+            knowledge.release();
+          };
+          const seed = vi.spyOn(knowledgeSeed, "ensureConversationKnowledgeSeed");
+          onTestFinished(() => seed.mockRestore());
+          await knowledge.prepare(admission, signal);
+          expect(seed).toHaveBeenCalledOnce();
+          expect((await seed.mock.results[0]!.value).status).not.toBe("pending");
+          expect(recipient.cache.preparedPackets(10)).toHaveLength(2);
+          expect(recipient.cache.preparedRoot).toBeDefined();
+          await withSessionTranscriptWriteAssertion(writer, targetOwner.assertCurrent, () =>
+            knowledge.prepareHistory({
+              ...followupRun.run,
+              runId,
+              prompt: "Recall the live codeword.",
+              sessionTarget: writer,
+              contextTokenBudget: 100_000,
+            }),
+          );
+          const refresh = () =>
+            withSessionTranscriptWriteAssertion(writer, targetOwner.assertCurrent, () =>
+              knowledge.refreshPrepared({
+                signal,
+                canAdmit: createConversationContextCapacity({
+                  messages: [],
+                  contextWindow: 100_000,
+                  reserveTokens: 16_384,
+                }),
+              }),
+            );
+          const preparation = vi.spyOn(knowledgePreparation, "prepareReplyConversationKnowledge");
+          onTestFinished(() => preparation.mockRestore());
+          const admitted = await refresh();
+          const outcomes = await Promise.all(
+            preparation.mock.results.map(async (result) => {
+              try {
+                const value = await result.value;
+                return {
+                  result: result.type,
+                  prepared: Boolean(value),
+                  pending: value?.pendingPackets,
+                };
+              } catch (error) {
+                return { result: result.type, error: String(error) };
+              }
+            }),
+          );
+          expect(JSON.stringify(admitted), JSON.stringify(outcomes)).toContain(
+            "The live codeword is amber.",
+          );
+          expect(JSON.stringify(admitted)).toContain("I will keep the live codeword.");
+          expect(await refresh()).toEqual([]);
+          const retained = (await loadTranscriptEvents(target))
+            .map(asOptionalRecord)
+            .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT);
+          expect(retained).toHaveLength(2);
+        } finally {
+          releaseKnowledge();
+          await recipient?.owner.close();
+          await fixture.close();
+        }
+      },
+    );
+  });
+
   it("prepares idle history on committed roots without recipient writes or model maintenance", async () => {
     await withOpenClawTestState(
       { scenario: "minimal", label: "knowledge-idle-readiness" },
