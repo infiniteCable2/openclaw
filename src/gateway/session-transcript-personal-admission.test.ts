@@ -134,7 +134,10 @@ function fixture() {
       throw new Error("Original execution ended");
     }
   };
-  original.personal.targetAudience!.assertCurrent = original.personal.assertCurrent;
+  original.personal.targetAudience = {
+    ...original.personal.targetAudience!,
+    assertCurrent: original.personal.assertCurrent,
+  };
   return {
     original,
     fresh,
