@@ -155,7 +155,9 @@ function fixture() {
   };
 }
 
-beforeEach(() => native.prepare.mockReset());
+beforeEach(() => {
+  native.prepare.mockReset();
+});
 
 describe("prepared native personal admission custody", () => {
   it.each(["grant", "descriptor"] as const)(
