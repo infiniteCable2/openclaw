@@ -34,7 +34,7 @@ import * as transcriptAnchors from "../../config/sessions/session-transcript-anc
 import * as reportOperation from "../../config/sessions/session-transcript-report-operation.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
-import * as transcriptReadAuthority from "../../gateway/session-transcript-read-authority.js";
+import * as personalReadAuthority from "../../gateway/session-transcript-personal-read.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as branchAuthority from "./conversation-knowledge-authority.js";
@@ -235,11 +235,11 @@ it("prepares long-source observations while idle and consumes them once through 
       batch.mockImplementation((...args) =>
         timed("appendBatch", () => appendBatch(...args), args[1].length),
       );
-      const prepareGrant = transcriptReadAuthority.prepareTranscriptReadAuthority;
+      const prepareGrant = personalReadAuthority.preparePersonalConversationRead;
       const prepareFacts = branchAuthority.prepareConversationKnowledgeBranchFacts;
       const readAnchors = transcriptAnchors.readSessionTranscriptAnchorsAsync;
       const grantRead = vi
-        .spyOn(transcriptReadAuthority, "prepareTranscriptReadAuthority")
+        .spyOn(personalReadAuthority, "preparePersonalConversationRead")
         .mockImplementation((...args) => timed("grant", () => prepareGrant(...args)));
       const factsRead = vi
         .spyOn(branchAuthority, "prepareConversationKnowledgeBranchFacts")
