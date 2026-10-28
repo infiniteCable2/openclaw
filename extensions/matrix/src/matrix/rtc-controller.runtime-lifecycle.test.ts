@@ -98,12 +98,14 @@ it("admits new RTC startup from an old socket context through the adopted Matrix
   });
   first.registry.realtimeTranscriptionProviders.push({
     pluginId: "local-media",
+    source: "/synthetic/local-media/first.ts",
     provider: provider(oldProvider),
   });
   const successor = createEmptyPluginRegistry();
   successor.plugins.push(record);
   successor.realtimeTranscriptionProviders.push({
     pluginId: "local-media",
+    source: "/synthetic/local-media/successor.ts",
     provider: provider(currentProvider),
   });
   setActivePluginRegistry(first.registry);
