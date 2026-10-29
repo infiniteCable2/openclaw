@@ -24,8 +24,6 @@ const WAIT = { timeout: 30_000, interval: 50 } as const;
 const FACT_A = "BIDIRECTIONAL_ALPHA_COBALT_73";
 const FACT_B = "BIDIRECTIONAL_BETA_AMBER_94";
 
-// Standalone synthetic config; alternatively relocate the existing equivalent
-// config helper into conversation-branches-gateway.ts and share it between tests.
 function config(model: Model): OpenClawConfig {
   const provider = buildMockOpenAiResponsesProvider(model.baseUrl, "bidirectional-proof");
   return {
@@ -78,7 +76,9 @@ function config(model: Model): OpenClawConfig {
         [provider.providerId]: {
           ...provider.config,
           request: { allowPrivateNetwork: true },
-          models: provider.config.models.map((entry) => ({ ...entry, input: [...entry.input] })),
+          models: provider.config.models.map((entry) =>
+            Object.assign({}, entry, { input: [...entry.input] }),
+          ),
         },
       },
     },
@@ -184,9 +184,11 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
           (row) => row.role === "user" && JSON.stringify(row.content).includes(marker),
         );
         expect(originals).toHaveLength(1);
-        const rawSeq = originals[0]?.__openclaw?.transcriptPosition?.rawSeq;
+        const rawSeq = originals[0]?.["__openclaw"]?.transcriptPosition?.rawSeq;
         expect(Number.isSafeInteger(rawSeq)).toBe(true);
-        if (typeof rawSeq !== "number") throw new Error("Native original raw position unavailable");
+        if (typeof rawSeq !== "number") {
+          throw new Error("Native original raw position unavailable");
+        }
         return rawSeq;
       };
       await send(a, "ALPHA_LOCAL_HISTORY_21");
@@ -250,7 +252,9 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
       expect(model.requests).toHaveLength(before + 2);
 
       const exact = (input: string) => {
-        for (const marker of [FACT_A, FACT_B]) expect(input.split(marker).length - 1).toBe(1);
+        for (const marker of [FACT_A, FACT_B]) {
+          expect(input.split(marker).length - 1).toBe(1);
+        }
       };
       // Ordinary safe requests follow completion; no sessions_send or forced refresh.
       // Sequential probes give unambiguous captured-request attribution.
@@ -269,13 +273,15 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
         readyAt: number,
         probe: { callStartedAt: number; acceptedAt: number },
       ) => ({
-        readyObservedFromCallStartMs: +(readyAt - turn.callStartedAt).toFixed(3),
-        readyObservedFromAckMs: +(readyAt - turn.acknowledgedAt).toFixed(3),
-        firstSafeProbeDispatchMs: +(probe.acceptedAt - probe.callStartedAt).toFixed(3),
-        nextProbeProviderAcceptedFromCallStartMs: +(probe.acceptedAt - turn.callStartedAt).toFixed(
-          3,
+        readyObservedFromCallStartMs: Number((readyAt - turn.callStartedAt).toFixed(3)),
+        readyObservedFromAckMs: Number((readyAt - turn.acknowledgedAt).toFixed(3)),
+        firstSafeProbeDispatchMs: Number((probe.acceptedAt - probe.callStartedAt).toFixed(3)),
+        nextProbeProviderAcceptedFromCallStartMs: Number(
+          (probe.acceptedAt - turn.callStartedAt).toFixed(3),
         ),
-        nextProbeProviderAcceptedFromAckMs: +(probe.acceptedAt - turn.acknowledgedAt).toFixed(3),
+        nextProbeProviderAcceptedFromAckMs: Number(
+          (probe.acceptedAt - turn.acknowledgedAt).toFixed(3),
+        ),
       });
       console.info(
         JSON.stringify({
@@ -294,7 +300,9 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
       );
     },
     async () => {
-      for (const gate of gates) gate.release();
+      for (const gate of gates) {
+        gate.release();
+      }
       await owner?.close();
     },
     () => gateway?.cleanup(),
