@@ -19,6 +19,11 @@ import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
 type Operator = Awaited<ReturnType<typeof connectConversationOperator>>;
 type Model = Awaited<ReturnType<typeof startConversationModel>>;
 type Description = { session: { sessionId: string; visibility: string; sharingRole: string } };
+type NativeHistoryMessage = {
+  role: string;
+  content: unknown;
+  __openclaw?: { transcriptPosition?: { rawSeq?: number } };
+};
 const WAIT = { timeout: 30_000, interval: 50 } as const;
 const CODE_ONE = "SYNTHETIC_SHARED_COBALT_73";
 const CODE_TWO = "SYNTHETIC_SHARED_AMBER_94";
@@ -235,12 +240,12 @@ describe("isolated full Gateway conversation continuity", () => {
           key: source,
         });
         const firstHistory = await owner.call<{
-          messages: Array<{ role: string; content: unknown; __openclaw?: { seq?: number } }>;
+          messages: NativeHistoryMessage[];
         }>("chat.history", { sessionKey: source, limit: 100 });
         const firstSequence = firstHistory.messages.find(
           (message) =>
             message.role === "user" && JSON.stringify(message.content).includes(markers[0]!),
-        )?.["__openclaw"]?.seq;
+        )?.["__openclaw"]?.transcriptPosition?.rawSeq;
         if (typeof firstSequence !== "number") {
           throw new Error("Native source sequence is missing");
         }
@@ -261,13 +266,13 @@ describe("isolated full Gateway conversation continuity", () => {
           await send(source, `${marker}. ${filler}`);
         }
         const history = await owner.call<{
-          messages: Array<{ role: string; content: unknown; __openclaw?: { seq?: number } }>;
+          messages: NativeHistoryMessage[];
         }>("chat.history", { sessionKey: source, limit: 100 });
         const originalInputs = history.messages.filter((message) => message.role === "user");
         const lastOriginal = originalInputs.find((message) =>
           JSON.stringify(message.content).includes(markers.at(-1)!),
         );
-        const lastSequence = lastOriginal?.["__openclaw"]?.seq;
+        const lastSequence = lastOriginal?.["__openclaw"]?.transcriptPosition?.rawSeq;
         if (typeof lastSequence !== "number") {
           throw new Error("Native source sequence is missing");
         }
@@ -418,14 +423,14 @@ describe("isolated full Gateway conversation continuity", () => {
           const waitForSource = async (recipientId: string, sourceKey: string, marker: string) => {
             const source = await describeSession(sourceKey);
             const history = await owner.call<{
-              messages: Array<{ role: string; content: unknown; __openclaw?: { seq?: number } }>;
+              messages: NativeHistoryMessage[];
             }>("chat.history", { sessionKey: sourceKey, limit: 100 });
             const originals = history.messages.filter(
               (message) =>
                 message.role === "user" && JSON.stringify(message.content).includes(marker),
             );
             expect(originals).toHaveLength(1);
-            const sequence = originals[0]?.["__openclaw"]?.seq;
+            const sequence = originals[0]?.["__openclaw"]?.transcriptPosition?.rawSeq;
             expect(Number.isSafeInteger(sequence)).toBe(true);
             if (typeof sequence !== "number") {
               throw new Error("Native source sequence is missing");
@@ -521,14 +526,14 @@ describe("isolated full Gateway conversation continuity", () => {
               key: privateBranch,
             });
             const privateHistory = await other.call<{
-              messages: Array<{ role: string; content: unknown; __openclaw?: { seq?: number } }>;
+              messages: NativeHistoryMessage[];
             }>("chat.history", { sessionKey: privateBranch, limit: 100 });
             const originals = privateHistory.messages.filter(
               (message) =>
                 message.role === "user" && JSON.stringify(message.content).includes(PRIVATE_CODE),
             );
             expect(originals).toHaveLength(1);
-            const privateSequence = originals[0]?.["__openclaw"]?.seq;
+            const privateSequence = originals[0]?.["__openclaw"]?.transcriptPosition?.rawSeq;
             if (typeof privateSequence !== "number" || !Number.isSafeInteger(privateSequence)) {
               throw new Error("Native private source sequence is missing");
             }
