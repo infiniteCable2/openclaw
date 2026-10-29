@@ -11,6 +11,14 @@ export class SessionMutationAuthorizationChangedError extends Error {
   }
 }
 
+/** An explicit native personal-read refusal, distinct from unavailable storage facts. */
+export class PersonalConversationReadRefusedError extends SessionMutationAuthorizationChangedError {
+  constructor(message: string) {
+    super({ code: "FORBIDDEN", message });
+    this.name = "PersonalConversationReadRefusedError";
+  }
+}
+
 export class SessionSharingProfileFactsChangedError extends SessionMutationAuthorizationChangedError {
   readonly readSource: () => OpenClawStateDatabaseOptions;
 

@@ -32,7 +32,7 @@ import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
-import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
+import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
 import { resolveSessionVisibility } from "./session-sharing-policy.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 import {
@@ -47,13 +47,7 @@ import {
   type PersonalAdmissionBinding,
 } from "./session-transcript-personal-custody.js";
 
-/** An explicit native policy refusal, distinct from unavailable facts or worker failures. */
-export class PersonalConversationReadRefusedError extends SessionMutationAuthorizationChangedError {
-  constructor(message: string) {
-    super({ code: "FORBIDDEN", message });
-    this.name = "PersonalConversationReadRefusedError";
-  }
-}
+export { PersonalConversationReadRefusedError };
 
 export type PersonalConversationReadParams = {
   purpose: "conversation-differences";

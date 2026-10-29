@@ -5,10 +5,10 @@ import { conversationKnowledgeContributionId } from "../config/sessions/conversa
 import type { NativeKnowledgeRootContributionGroup } from "../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
-import {
-  PersonalConversationReadRefusedError,
-  type PersonalConversationReadParams,
-  type PreparedPersonalConversationAdmission,
+import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
+import type {
+  PersonalConversationReadParams,
+  PreparedPersonalConversationAdmission,
 } from "./session-transcript-personal-read.js";
 
 const contributionGroupIssuer = Symbol("native-personal-contribution-group");

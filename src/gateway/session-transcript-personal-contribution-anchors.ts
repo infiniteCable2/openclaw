@@ -2,7 +2,7 @@ import type { ConversationKnowledgeReference } from "../config/sessions/conversa
 import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
 import type { TranscriptEntryAnchor } from "../config/sessions/transcript-entry-anchor.js";
-import { PersonalConversationReadRefusedError } from "./session-transcript-personal-read.js";
+import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
 export async function validatePersonalContributionGroupAnchors(params: {
   contributions: readonly ConversationKnowledgeReference[];
   source: {
