@@ -298,9 +298,9 @@ describe("isolated full Gateway conversation continuity", () => {
         expect(requests).toHaveLength(1);
         const input = JSON.stringify(requests[0]);
         expect(input).toContain("Summary of related conversations");
-        for (const marker of markers) {
-          expect(input.split(marker).length - 1).toBe(1);
-        }
+        expect(
+          Object.fromEntries(markers.map((marker) => [marker, input.split(marker).length - 1])),
+        ).toEqual(Object.fromEntries(markers.map((marker) => [marker, 1])));
         for (const marker of markers) {
           expect(
             originalInputs.filter((message) => JSON.stringify(message.content).includes(marker)),
