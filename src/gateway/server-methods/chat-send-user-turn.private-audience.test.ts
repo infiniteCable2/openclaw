@@ -283,6 +283,7 @@ describe("prepareChatSendUserTurn private browser audience", () => {
           const browser = privateBrowserTurnFixture();
           const input = createUserTurnInputController(browser.params.request.inboundMessage);
           const recorder = createUserTurnTranscriptRecorder({
+            input: input.controller.baseInput,
             resolveInput: input.readInput,
             target: { ...chat, sessionEntry: entry, config: f.cfg },
             assertOriginalInputCommit: owner.assertCurrent,
