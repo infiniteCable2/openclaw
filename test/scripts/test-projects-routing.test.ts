@@ -247,6 +247,11 @@ describe("test-projects args", () => {
       config: "test/vitest/vitest.infra.config.ts",
     },
     {
+      title: "routes native SDK conversation bootstrap to its host broker owner",
+      target: "src/agents/sessions/sdk.conversation-bootstrap.test.ts",
+      config: "test/vitest/vitest.infra.config.ts",
+    },
+    {
       title: "routes process targets to the process config",
       target: "src/process/exec.test.ts",
       config: "test/vitest/vitest.process.config.ts",
