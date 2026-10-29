@@ -33,7 +33,9 @@ vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
     let closed = false;
     return {
       assertCurrent() {
-        if (closed) throw new Error("closed");
+        if (closed) {
+          throw new Error("closed");
+        }
         params.assertCurrent();
       },
       request() {},
@@ -143,7 +145,9 @@ function register(selected = branch, getRuntimeConfig = () => config) {
     nativeChannelId: "private-room",
     participant: person,
     assertCurrent() {
-      if (!active) throw new Error("expired");
+      if (!active) {
+        throw new Error("expired");
+      }
     },
   };
   const ready = vi.fn();
@@ -196,7 +200,9 @@ beforeEach(() => {
   }));
 });
 afterEach(async () => {
-  for (const registration of registrations.splice(0)) await registration.close();
+  for (const registration of registrations.splice(0)) {
+    await registration.close();
+  }
 });
 
 describe("shared root projection preparation", () => {

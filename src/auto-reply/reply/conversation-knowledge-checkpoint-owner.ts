@@ -68,14 +68,18 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   const pendingCleanup = new Set<() => Promise<void>>();
   const settle = async () => {
     const failures: unknown[] = [];
-    for (const cleanup of [...pendingCleanup]) {
+    // Cleanup may mutate the set while awaiting; retry only this pass's captured owners.
+    const cleanupSnapshot = Array.from(pendingCleanup);
+    for (const cleanup of cleanupSnapshot) {
       try {
         await cleanup();
       } catch (error) {
         failures.push(error);
       }
     }
-    if (failures.length) throw new AggregateError(failures, "Checkpoint cleanup remains pending");
+    if (failures.length) {
+      throw new AggregateError(failures, "Checkpoint cleanup remains pending");
+    }
   };
   let planning:
     | { config: OpenClawConfig; value: ConversationKnowledgeCheckpointModel["planning"] }
@@ -144,8 +148,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           if (
             resolveAgentConversationMode(broker.getRuntimeConfig(), broker.branch.agentId) !==
             "branches"
-          )
+          ) {
             continue;
+          }
           return { broker, audience };
         } catch {
           broker.audiences.delete(audience);
@@ -173,18 +178,21 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       tail.clear();
       tailBytes = 0;
       rootContinuation.release();
-      if (!pendingCleanup.size) dispose();
+      if (!pendingCleanup.size) {
+        dispose();
+      }
     },
     async prepare(parentSignal) {
       await settle();
       const selected = selectBroker();
       const { broker, audience } = selected;
       if (requiredWorkerHelperError(broker.getRuntimeConfig())) {
-        if (!reportedWorkerPolicy)
+        if (!reportedWorkerPolicy) {
           log.warn(
             "Related-history checkpoint summarization is unavailable under required worker placement.",
             { reason: "sessionless-worker-placement-unsupported" },
           );
+        }
         reportedWorkerPolicy = true;
         return false;
       }
@@ -197,8 +205,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         owner.assertCurrent();
         signal.throwIfAborted();
         audience.assertCurrent();
-        if (!configSnapshotsMatch(broker.getRuntimeConfig(), config))
+        if (!configSnapshotsMatch(broker.getRuntimeConfig(), config)) {
           throw new Error("Checkpoint configuration changed");
+        }
       };
       let held: Awaited<ReturnType<typeof loadSessionEntryForAdmission>> | undefined;
       let sources:
@@ -230,8 +239,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             failures.push(error);
           }
         }
-        if (failures.length)
+        if (failures.length) {
           throw new AggregateError(failures, "Checkpoint preparation cleanup remains pending");
+        }
         pendingCleanup.delete(cleanup);
       };
       pendingCleanup.add(cleanup);
@@ -260,7 +270,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         }
         const source = () => {
           check();
-          if (!held) throw new Error("Checkpoint database custody ended");
+          if (!held) {
+            throw new Error("Checkpoint database custody ended");
+          }
           held.databaseClaim.assertCurrent();
         };
         const previous = await readLatestConversationKnowledgeCheckpoint({
@@ -280,7 +292,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
                 signal,
               })
           : undefined;
-        if (!previous) latest = undefined;
+        if (!previous) {
+          latest = undefined;
+        }
         const { prepareConversationKnowledgeCheckpointSources } =
           await import("./conversation-knowledge-checkpoint-source.js");
         const { planConversationKnowledgeCheckpointSummary } =
@@ -325,8 +339,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           });
           return false;
         }
-        if (previous && previousCoverage)
+        if (previous && previousCoverage) {
           publish({ checkpoint: previous, coverage: previousCoverage });
+        }
         const remaining = sources.references.filter(
           (reference) => !previousCoverage?.has(conversationKnowledgeContributionId(reference)),
         );
@@ -336,10 +351,13 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             !reference ||
             previousCoverage?.has(id) ||
             JSON.stringify(reference) !== cached.referenceKey
-          )
+          ) {
             evict(id);
+          }
         }
-        if (!remaining.length) return false;
+        if (!remaining.length) {
+          return false;
+        }
         const acquireModel = async () => {
           if (!model) {
             const { acquireConversationKnowledgeCheckpointModel } =
@@ -358,19 +376,24 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           planning = { config, value: model.planning };
           return model;
         };
-        if (!planning || !configSnapshotsMatch(planning.config, config)) await acquireModel();
+        if (!planning || !configSnapshotsMatch(planning.config, config)) {
+          await acquireModel();
+        }
         const { budget, settings } = planning!.value;
-        if (!settings.enabled) return false;
+        if (!settings.enabled) {
+          return false;
+        }
         const maxTailBytes = Math.min(4 * 1024 * 1024, budget.contextTokenBudget * 32);
         const contributions: PreparedCheckpointContribution[] = [];
-        const selected = new Map<string, PreparedRootKnowledgeContribution>();
+        const selectedContributions = new Map<string, PreparedRootKnowledgeContribution>();
         let tokens = estimateRenderedPromptTokens(budget);
-        if (previous?.summary)
+        if (previous?.summary) {
           tokens += estimateMessageTokenPressure({
             role: "user",
             timestamp: 0,
             content: renderConversationKnowledgeCheckpointSummary(previous.summary),
           });
+        }
         let ready = false;
         for (const reference of remaining) {
           const id = conversationKnowledgeContributionId(reference);
@@ -400,7 +423,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             }
           }
           contributions.push(cached.value);
-          selected.set(id, cached.value);
+          selectedContributions.set(id, cached.value);
           tokens += cached.tokens;
           check();
           const pressure = prepareCompactionBudgetPreflight({
@@ -427,12 +450,16 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
               ready = true;
               break;
             }
-            if (plan.kind === "deferred" && plan.reason !== "no-whole-prefix") return false;
+            if (plan.kind === "deferred" && plan.reason !== "no-whole-prefix") {
+              return false;
+            }
           }
         }
-        if (!ready) return false;
+        if (!ready) {
+          return false;
+        }
         for (const contribution of contributions) {
-          const current = selected.get(contribution.contributionId)!;
+          const current = selectedContributions.get(contribution.contributionId)!;
           if (
             conversationKnowledgeCheckpointRangeDigest(current.reference, current.packet) !==
             conversationKnowledgeCheckpointRangeDigest(current.reference, {
@@ -449,14 +476,16 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         }
         // Prior summary disclosure needs every original source's current grant as well.
         // Those exact IDs stay outside model input and never become a second summary ledger.
-        if (previousCoverage)
+        if (previousCoverage) {
           await sources.verifyAll(
             [...previousCoverage.contributionIds()].map((id) => byId.get(id)!),
             (reference, range) => {
-              if (!previousCoverage.matchesReference(reference, range))
+              if (!previousCoverage.matchesReference(reference, range)) {
                 throw new Error("Checkpoint previous source range changed");
+              }
             },
           );
+        }
         const sourceAuthority = sources.source();
         sourceAuthority();
         const candidate = await (
@@ -468,7 +497,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           assertCurrent: sourceAuthority,
         });
         check();
-        if (candidate.kind !== "candidate") return false;
+        if (candidate.kind !== "candidate") {
+          return false;
+        }
         const checkpoint = createConversationKnowledgeCheckpoint({
           branch: broker.branch,
           audienceKey,
@@ -494,7 +525,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         });
         check();
         publish({ checkpoint, coverage });
-        for (const id of candidate.coveredContributionIds) evict(id);
+        for (const id of candidate.coveredContributionIds) {
+          evict(id);
+        }
         log.debug("Related-history checkpoint prepared", {
           summarizedContributions: candidate.coveredContributionIds.length,
           retainedContributions: candidate.retainedContributionIds.length,
@@ -502,14 +535,20 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         return true;
       } catch (error) {
         // Foreground work cancels preparation without becoming a retry/error notification.
-        if (controller.signal.aborted && !parentSignal.aborted) return false;
+        if (controller.signal.aborted && !parentSignal.aborted) {
+          return false;
+        }
         throw error;
       } finally {
         try {
           await cleanup();
         } finally {
-          if (inFlight === controller) inFlight = undefined;
-          if (projectionRevision !== previousProjectionRevision) notify();
+          if (inFlight === controller) {
+            inFlight = undefined;
+          }
+          if (projectionRevision !== previousProjectionRevision) {
+            notify();
+          }
         }
       }
     },
@@ -518,14 +557,17 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     let active = true;
     return {
       retainAudience(audience: ConversationPrivateAudience) {
-        if (!active) throw new Error("Checkpoint broker registration ended");
+        if (!active) {
+          throw new Error("Checkpoint broker registration ended");
+        }
         audience.assertCurrent();
         if (
           audience.agentId !== broker.branch.agentId ||
           audience.sessionKey !== broker.branch.sessionKey ||
           conversationKnowledgeParticipantIdentity(audience.participant) !== audienceKey
-        )
+        ) {
           throw new Error("Checkpoint broker audience changed");
+        }
         broker.audiences.add(audience);
       },
       request: owner.request,
@@ -555,14 +597,19 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       },
       async close() {
         if (!active) {
-          if (!brokers.size) await owner.close();
+          if (!brokers.size) {
+            await owner.close();
+          }
           return;
         }
         active = false;
         brokers.delete(broker);
         broker.audiences.clear();
-        if (!brokers.size) await owner.close();
-        else owner.request();
+        if (!brokers.size) {
+          await owner.close();
+        } else {
+          owner.request();
+        }
       },
     };
   };
@@ -603,7 +650,9 @@ export function registerConversationKnowledgeCheckpointOwner(params: Registratio
     identity,
   ]);
   const existing = owners.get(key);
-  if (existing) return existing.add(params);
+  if (existing) {
+    return existing.add(params);
+  }
   const root = createRootOwner(params, identity, () => owners.delete(key));
   owners.set(key, root);
   return root.first;
