@@ -287,9 +287,9 @@ describe("prepareChatSendUserTurn private browser audience", () => {
             ...(await f.append(sibling, "spoken-fact")),
           });
           const chatOwner = await f.claim(chat);
-          expect((await f.read(chatOwner, person)).text).toContain(
-            "private-destination-audience-unconfirmed",
-          );
+          // Missing private recipient evidence discloses neither source content
+          // nor the retired model-facing synchronization status block.
+          expect(await f.read(chatOwner, person)).toEqual({ text: "", observed: [] });
           const browser = privateBrowserTurnFixture();
           browser.params.session = {
             ...browser.params.session,
