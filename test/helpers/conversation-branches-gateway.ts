@@ -22,10 +22,26 @@ export const BRANCH_GATEWAY_ORIGIN = "https://conversation.example.test";
 export const BRANCH_GATEWAY_SCOPES = ["operator.read", "operator.write"];
 
 /** Real provider transport; only the model itself is deterministic. No OpenClaw hooks are replaced. */
-export async function startConversationModel(signal: AbortSignal) {
+export async function startConversationModel(
+  signal: AbortSignal,
+  respond: (request: Record<string, unknown>, index: number) => string = (_request, index) =>
+    `FIXTURE_REPLY_${index}`,
+) {
   const claim = await acquireTestPortBlock({ offsets: [0], signal });
   const requests: Record<string, unknown>[] = [];
   const errors: unknown[] = [];
+  const gates = new Set<{
+    matches: (request: Record<string, unknown>) => boolean;
+    entered: ReturnType<typeof createDeferred<Record<string, unknown>>>;
+    released: ReturnType<typeof createDeferred<void>>;
+    claimed: boolean;
+  }>();
+  const releaseGates = () => {
+    for (const gate of gates) {
+      gate.released.resolve();
+    }
+  };
+  signal.addEventListener("abort", releaseGates, { once: true });
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== "POST" || request.url !== "/v1/responses") {
@@ -41,10 +57,19 @@ export async function startConversationModel(signal: AbortSignal) {
         }
         chunks.push(data);
       }
-      requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
+      const input = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      requests.push(input);
       const index = requests.length;
+      const gate = [...gates].find((entry) => !entry.claimed && entry.matches(input));
+      if (gate) {
+        gate.claimed = true;
+        gate.entered.resolve(input);
+        await gate.released.promise;
+        gates.delete(gate);
+      }
+      signal.throwIfAborted();
       writeOpenAiResponsesText(response, {
-        text: `FIXTURE_REPLY_${index}`,
+        text: respond(input, index),
         messageId: `msg_branch_${index}`,
         responseId: `resp_branch_${index}`,
       });
@@ -59,6 +84,7 @@ export async function startConversationModel(signal: AbortSignal) {
       server.listen(claim.port, "127.0.0.1", resolve);
     });
   } catch (error) {
+    signal.removeEventListener("abort", releaseGates);
     await claim.release();
     throw error;
   }
@@ -66,7 +92,19 @@ export async function startConversationModel(signal: AbortSignal) {
     baseUrl: `http://127.0.0.1:${claim.port}/v1`,
     requests,
     errors,
+    holdNext(matches: (request: Record<string, unknown>) => boolean) {
+      const gate = {
+        matches,
+        entered: createDeferred<Record<string, unknown>>(),
+        released: createDeferred<void>(),
+        claimed: false,
+      };
+      gates.add(gate);
+      return { entered: gate.entered.promise, release: () => gate.released.resolve() };
+    },
     async stop() {
+      signal.removeEventListener("abort", releaseGates);
+      releaseGates();
       try {
         server.closeAllConnections();
         await new Promise<void>((resolve, reject) =>
@@ -125,14 +163,18 @@ export async function connectConversationOperator(
       fail(error instanceof Error ? error : new Error(String(error)));
     }
   });
-  const call = async <T = unknown>(method: string, params: unknown): Promise<T> => {
+  const call = async <T = unknown>(
+    method: string,
+    params: unknown,
+    options?: { timeoutMs: number },
+  ): Promise<T> => {
     signal.throwIfAborted();
     const id = randomUUID();
     const result = createDeferred<ResponseFrame>();
     pending.set(id, result);
     const timer = setTimeout(
       () => result.reject(new Error(`${method}: fixture RPC timeout`)),
-      30_000,
+      options?.timeoutMs ?? 30_000,
     );
     try {
       socket.send(JSON.stringify({ type: "req", id, method, params }));

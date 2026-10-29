@@ -313,12 +313,15 @@ export async function completeEmbeddedAttemptAfterTurn(
       promptError && !lifecycleForAgentEnd.aborted ? formatErrorMessage(promptError) : undefined;
     const sourceTarget = sessionManager.getSessionTarget();
     let terminalEntry: SessionMessageEntry | undefined;
+    const reviewContextTail: ReturnType<typeof sessionManager.getBranch> = [];
     let entry = sessionManager.getLeafEntry();
     // Suppressed writes can leave the previous turn as the tail. Partial current
     // turns remain useful, but review must never cross the pre-prompt boundary.
     while (entry && entry.id !== transcriptLeafId) {
       if (!terminalEntry && entry.type === "message") {
         terminalEntry = entry;
+      } else if (!terminalEntry) {
+        reviewContextTail.push(entry);
       }
       entry = entry.parentId ? sessionManager.getEntry(entry.parentId) : undefined;
     }
@@ -331,6 +334,15 @@ export async function completeEmbeddedAttemptAfterTurn(
       skillExperienceReviewSource:
         sourceTarget && terminalEntry && reachedPromptBoundary
           ? { ...sourceTarget, entryId: terminalEntry.id }
+          : undefined,
+      // A compaction can follow the final message. Reading only through the
+      // message would otherwise reconstruct the larger pre-compaction prompt.
+      skillExperienceReviewContextTail:
+        sourceTarget &&
+        terminalEntry &&
+        reachedPromptBoundary &&
+        reviewContextTail.some((item) => item.type === "compaction")
+          ? structuredClone(reviewContextTail.reverse())
           : undefined,
       event: bindAgentHarnessHookMessages(
         {

@@ -41,6 +41,7 @@ import { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transc
 import type { SessionEntryCurrentCheck } from "./session-entry-current.types.js";
 import { captureIncognitoSessionOperation } from "./session-incognito-binding.js";
 import type { SessionSourceAssertion } from "./session-source-authority.js";
+import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import { appendCustomTranscriptReportWithWorker } from "./session-transcript-custom-report.js";
 import {
   withReportWorker,
@@ -337,6 +338,8 @@ export async function appendSessionTranscriptReportBatch(
   options?: {
     contextAdmission?: TranscriptReportContextAdmission;
     source?: SessionSourceAssertion;
+    /** Atomic destination CAS; source/audience assertions still run through commit. */
+    expectedTranscriptVersion?: SessionTranscriptContextVersion;
   },
 ): Promise<Result<TranscriptReportBatchProgress, TranscriptAppendRefusal>> {
   if (reports.length === 0 || reports.length > MAX_TRANSCRIPT_REPORT_BATCH_SIZE) {
@@ -351,6 +354,8 @@ export async function appendSessionTranscriptReportBatch(
   }));
   const contextAdmission = options?.contextAdmission;
   const limits = contextAdmission && structuredClone(contextAdmission.limits);
+  const expectedTranscriptVersion =
+    options?.expectedTranscriptVersion && structuredClone(options.expectedTranscriptVersion);
   return withReportWorker(
     scope,
     "append",
@@ -367,7 +372,11 @@ export async function appendSessionTranscriptReportBatch(
       });
       const result = await operation.execute({
         type: "appendBatch",
-        input: { reports: prepared, ...(limits ? { preserveContextLimits: limits } : {}) },
+        input: {
+          reports: prepared,
+          ...(limits ? { preserveContextLimits: limits } : {}),
+          ...(expectedTranscriptVersion ? { expectedTranscriptVersion } : {}),
+        },
       });
       assertCurrent();
       if (!result.ok) {

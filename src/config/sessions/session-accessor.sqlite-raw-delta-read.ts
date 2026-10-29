@@ -11,6 +11,12 @@ import { resolveTranscriptBoundaryWindow } from "./session-accessor.sqlite-reset
 import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import { readSessionTranscriptHotWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
 import { normalizeVisibleMessageLimit } from "./session-accessor.sqlite-visible-cursor.js";
+import {
+  RAW_TRANSCRIPT_CURSOR_VERSION,
+  encodeRawTranscriptCursor,
+  parseRawTranscriptCursor,
+  type RawTranscriptCursor,
+} from "./session-transcript-raw-cursor.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import {
   resolveSqliteSessionTranscriptReadFence,
@@ -18,58 +24,12 @@ import {
 } from "./session-transcript-read-fence.js";
 import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
 
-const RAW_TRANSCRIPT_CURSOR_VERSION = 1;
+export { createTranscriptRawDeltaCursor } from "./session-transcript-raw-cursor.js";
+
 const DEFAULT_RAW_TRANSCRIPT_MAX_EVENTS = 1_000;
 const DEFAULT_RAW_TRANSCRIPT_MAX_BYTES = 1_000_000;
 const MAX_RAW_TRANSCRIPT_EVENTS = 10_000;
 const MAX_RAW_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
-
-type RawTranscriptCursor = {
-  agentId: string;
-  generation: string;
-  lastSeq: number;
-  sessionId: string;
-  version: typeof RAW_TRANSCRIPT_CURSOR_VERSION;
-};
-
-function encodeRawTranscriptCursor(cursor: RawTranscriptCursor): string {
-  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
-}
-
-/** Mint the raw-delta cursor for a generation-consistent transcript snapshot. */
-export function createTranscriptRawDeltaCursor(params: {
-  agentId: string;
-  generation: string;
-  lastSeq: number;
-  sessionId: string;
-}): string {
-  return encodeRawTranscriptCursor({ ...params, version: RAW_TRANSCRIPT_CURSOR_VERSION });
-}
-
-function parseRawTranscriptCursor(value: string): RawTranscriptCursor | undefined {
-  if (value.length > 4_096) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(
-      Buffer.from(value, "base64url").toString("utf8"),
-    ) as Partial<RawTranscriptCursor>; // SAFETY: Checks and catch reject invalid cursor shapes.
-    if (
-      parsed.version !== RAW_TRANSCRIPT_CURSOR_VERSION ||
-      typeof parsed.agentId !== "string" ||
-      typeof parsed.sessionId !== "string" ||
-      typeof parsed.generation !== "string" ||
-      !Number.isSafeInteger(parsed.lastSeq) ||
-      (parsed.lastSeq ?? -2) < -1
-    ) {
-      return undefined;
-    }
-    // SAFETY: All required fields and the sequence range passed validation above.
-    return parsed as RawTranscriptCursor;
-  } catch {
-    return undefined;
-  }
-}
 
 function bootstrapCursor(
   scope: ResolvedTranscriptReadScope,

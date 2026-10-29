@@ -5,6 +5,7 @@ import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/
 import type { RuntimeContextFragment } from "../../agents/internal-runtime-context.js";
 import type { CustomMessage } from "../../agents/sessions/messages.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
+import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import { ensureConversationKnowledgeSeed } from "../../config/sessions/conversation-knowledge-seed.js";
 import {
@@ -23,7 +24,10 @@ import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-ex
 import type { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { logConversationKnowledgeDiagnostic } from "./conversation-knowledge-status.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
-import type { PreparedReplyConversationKnowledge } from "./conversation-knowledge.types.js";
+import type {
+  PreparedReplyConversationKnowledge,
+  ReplyConversationKnowledgeParams,
+} from "./conversation-knowledge.types.js";
 import {
   captureReplyConversationPublication,
   recordReplyConversationPublication,
@@ -63,7 +67,8 @@ export function createReplyConversationKnowledgeTurn(params: {
   let morePreparedPackets = false;
   // These are receipts accepted by this logical turn, not another durable cursor
   // or a copy of source history. Native carrier observation owns replay eligibility.
-  const acceptedPackets = new Map<string, number>();
+  const acceptedPackets = new Map<string, { timestamp: number; customType: string }>();
+  let resumeRootPreparation: (() => void) | undefined;
   let replayContext: object | undefined;
   let replayPending: string[] = [];
   const selected = createDynamicSessionSourceAssertion(
@@ -146,6 +151,50 @@ export function createReplyConversationKnowledgeTurn(params: {
                 env: reader.database.env,
                 getRuntimeConfig,
               });
+              resumeRootPreparation = recipient?.checkpoint.pausePreparation();
+              const projection = recipient?.checkpoint.projection();
+              if (recipient && projection && !recipient.cache.preparedRoot) {
+                const {
+                  prepareRecipientConversationProjection,
+                  prepareRecipientConversationCheckpoint,
+                } = await import("./conversation-knowledge-checkpoint-recipient.js");
+                // One cold admission can reuse already prepared root bytes. Existing
+                // recipients continue to consume only their asynchronous ready queue.
+                const initialization = {
+                  reader,
+                  sessionId,
+                  assertCurrent: assertTurnSourceCurrent,
+                  originalParticipant: followupRun.conversationParticipant,
+                  destinationAudience: followupRun.conversationAudience,
+                  expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(
+                    followupRun.conversationParticipant,
+                  ),
+                  getRuntimeConfig,
+                  signal,
+                  sourceCache: recipient.cache,
+                };
+                if (projection.checkpoint && projection.coverage) {
+                  const { prepareNewConversationKnowledgeBootstrap } =
+                    await import("../../config/sessions/conversation-knowledge-checkpoint-admission.js");
+                  const bootstrap = await prepareNewConversationKnowledgeBootstrap({
+                    branch: publicationBranch,
+                    source: assertTurnSourceCurrent,
+                    env: reader.database.env,
+                    signal,
+                    admission: followupRun.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+                  });
+                  if (bootstrap)
+                    await prepareRecipientConversationCheckpoint(
+                      initialization,
+                      {
+                        checkpoint: projection.checkpoint,
+                        coverage: projection.coverage,
+                      },
+                      bootstrap,
+                    );
+                }
+                await prepareRecipientConversationProjection(initialization, projection.tail);
+              }
             } catch {
               // Optional warm-up has no authority to abort an admitted foreground input.
               logConversationKnowledgeDiagnostic({
@@ -310,6 +359,7 @@ export function createReplyConversationKnowledgeTurn(params: {
       input: {
         signal?: AbortSignal;
         contextIdentity?: object;
+        bootstrapInitialization?: ReplyConversationKnowledgeParams["bootstrapInitialization"];
         canAdmit: (message: CustomMessage) => boolean;
       },
     ): Promise<CustomMessage[]> {
@@ -334,6 +384,8 @@ export function createReplyConversationKnowledgeTurn(params: {
               env: reader.database.env,
               getRuntimeConfig,
             });
+            resumeRootPreparation?.();
+            resumeRootPreparation = recipient?.checkpoint.pausePreparation();
             consumedRevision = -1;
           } catch {
             // A closed connection/cache cannot cancel already accepted work.
@@ -368,7 +420,7 @@ export function createReplyConversationKnowledgeTurn(params: {
               readSessionTranscriptReportReceipts(
                 writeTarget,
                 requested.map((id) => ({
-                  customType: CONVERSATION_KNOWLEDGE_CONTEXT,
+                  customType: acceptedPackets.get(id)?.customType ?? CONVERSATION_KNOWLEDGE_CONTEXT,
                   receipt: { field: "packetId", value: id },
                 })),
                 { source: assertTurnSourceCurrent },
@@ -389,7 +441,7 @@ export function createReplyConversationKnowledgeTurn(params: {
               const message: CustomMessage = {
                 role: "custom",
                 ...carrier.report,
-                timestamp: acceptedPackets.get(id) ?? Date.now(),
+                timestamp: acceptedPackets.get(id)?.timestamp ?? Date.now(),
               };
               if (!input.canAdmit(message)) {
                 return messages;
@@ -420,11 +472,16 @@ export function createReplyConversationKnowledgeTurn(params: {
                 retainedSignal,
                 sourceCache: recipient!.cache,
                 readyOnly: true,
+                bootstrapInput: followupRun.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+                bootstrapInitialization: input.bootstrapInitialization,
                 canAdmitPacket: input.canAdmit,
                 onPacket: (message) => {
                   const id = asOptionalRecord(message.details)?.packetId;
                   if (typeof id === "string") {
-                    acceptedPackets.set(id, message.timestamp);
+                    acceptedPackets.set(id, {
+                      timestamp: message.timestamp,
+                      customType: message.customType,
+                    });
                   }
                   messages.push(message);
                 },
@@ -489,6 +546,8 @@ export function createReplyConversationKnowledgeTurn(params: {
         return;
       }
       phase = "released";
+      resumeRootPreparation?.();
+      resumeRootPreparation = undefined;
       acceptedPackets.clear();
       replayPending = [];
       prepared?.release();

@@ -5,6 +5,7 @@ import type { ConversationKnowledgeFrontier } from "../../config/sessions/conver
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import type { TranscriptTurnAdmission } from "../../config/sessions/transcript-entry-anchor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import type { ConversationKnowledgeIngestionMaintenance } from "./conversation-knowledge-ingestion.js";
@@ -46,6 +47,9 @@ export type ReplyConversationKnowledgeParams = {
   sourceCursor?: string;
   canAdmitPacket?: (message: CustomMessage) => boolean;
   onPacket?: (message: CustomMessage) => void;
+  /** Exact native input permits a bounded bootstrap proof advance, never a general history scan. */
+  bootstrapInput?: TranscriptTurnAdmission;
+  bootstrapInitialization?: import("../../config/sessions/conversation-knowledge-checkpoint-admission.js").ConversationKnowledgeBootstrapInitialization;
   /** Actual native user runs retain observations; provider startup snapshots remain read-only. */
   retainInHistory?: ConversationKnowledgeIngestionMaintenance & {
     /** Native writer selector; physical read provenance does not grant write custody. */

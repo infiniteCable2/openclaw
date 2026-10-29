@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
 import {
   createConversationKnowledgeSourceCache,
@@ -17,6 +18,7 @@ import {
 type Recipient = {
   owner: ReturnType<typeof createConversationKnowledgePrefetchOwner>;
   cache: ConversationKnowledgeSourceCache;
+  checkpoint: ReturnType<typeof registerConversationKnowledgeCheckpointOwner>;
   retainAudience(audience: ConversationPrivateAudience): void;
 };
 const log = createSubsystemLogger("conversation-knowledge");
@@ -52,6 +54,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     // A second independently admitted endpoint must not inherit the first one's
     // lifetime. A refused incoming proof must not revoke a healthy incumbent.
     old.retainAudience(incomingAudience);
+    old.checkpoint.retainAudience(incomingAudience);
     try {
       old.owner.assertCurrent();
       recipients.delete(key);
@@ -123,17 +126,27 @@ export function prepareConversationKnowledgeRecipient(params: {
     }
   };
   checkAudience();
+  const checkpoint = registerConversationKnowledgeCheckpointOwner({
+    ...params,
+    participant: participant!,
+    audience,
+    onReady: () => recipients.get(key)?.owner.request(),
+  });
   const owner = createConversationKnowledgePrefetchOwner({
     target: { ...branch, env: params.env },
     assertCurrent: checkAudience,
     clear: () => {
       audiences.clear();
       cache.clear();
+      void checkpoint
+        .close()
+        .catch(() => log.debug("Related-history checkpoint owner cleanup deferred"));
       if (recipients.get(key)?.cache === cache) {
         recipients.delete(key);
       }
     },
     async prepare(signal) {
+      cache.retryCleanup();
       const startedAt = performance.now();
       const held = await loadSessionEntryForAdmission(
         { ...branch, env: params.env },
@@ -175,18 +188,39 @@ export function prepareConversationKnowledgeRecipient(params: {
         sourceCursor = prepared?.nextSourceCursor;
         log.debug("Related-history source preparation settled", {
           recipientHash: redactIdentifier(branch.sessionId),
+          preparedSourceFrontiers: cache.diagnosticPreparedFrontiers(),
           elapsedMs: Math.round(performance.now() - startedAt),
           hasContinuation: sourceCursor !== undefined,
           saturated: prepared?.preparationSaturated === true,
         });
         prepared?.release();
+        const latest = checkpoint.latest();
+        if (latest) {
+          const { prepareRecipientConversationCheckpoint } =
+            await import("./conversation-knowledge-checkpoint-recipient.js");
+          await prepareRecipientConversationCheckpoint(
+            {
+              reader,
+              sessionId: branch.sessionId,
+              assertCurrent,
+              originalParticipant: participant,
+              destinationAudience: audience,
+              expectedAudienceIdentity: identity,
+              getRuntimeConfig: params.getRuntimeConfig,
+              signal,
+              sourceCache: cache,
+              preparationOnly: true,
+            },
+            latest,
+          );
+        }
         return sourceCursor !== undefined && !prepared?.preparationSaturated;
       } finally {
         await held.databaseClaim.release();
       }
     },
   });
-  const recipient = { owner, cache, retainAudience };
+  const recipient = { owner, cache, checkpoint, retainAudience };
   recipients.set(key, recipient);
   return recipient;
 }

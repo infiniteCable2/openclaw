@@ -7,6 +7,7 @@ import type {
 } from "./session-accessor.sqlite-contract.js";
 import type { PreparedTranscriptMessageAppend } from "./session-accessor.sqlite-transcript-message-append.types.js";
 import type { SessionModelContextLimits } from "./session-history-read.types.js";
+import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 
 export type TranscriptReportContextAdmission = {
   limits: Pick<SessionModelContextLimits, "maxBytes" | "maxEvents">;
@@ -145,6 +146,8 @@ export type TranscriptReportWorkerOperations = {
     input: {
       reports: PreparedTranscriptReportBatchEntry[];
       preserveContextLimits?: TranscriptReportContextAdmission["limits"];
+      /** Compare once before this batch's mutations, inside its native writer transaction. */
+      expectedTranscriptVersion?: SessionTranscriptContextVersion;
     };
     output: Result<TranscriptReportBatchCommit, TranscriptAppendRefusal>;
   };

@@ -213,6 +213,7 @@ it("reads active anchors and raw tail facts without caller SQL, including cold d
       const result = await readSessionTranscriptAnchorsAsync(scope, {
         entryIds: ["question", "answer", "alternate", "missing"],
         afterSeq: 1,
+        includeContextVersion: true,
       });
       expect(result.anchors).toEqual([
         {
@@ -240,6 +241,21 @@ it("reads active anchors and raw tail facts without caller SQL, including cold d
         },
       ]);
       expect(result.anchors[0]?.generation).toBe(result.anchors[1]?.generation);
+      expect(result.contextVersion).toEqual({
+        generation: result.anchors[0]!.generation,
+        rawSeq: 4,
+        updatedAt: expect.any(Number),
+      });
+      const point = await readSessionTranscriptAnchorsAsync(scope, {
+        entryIds: [],
+        includeContextVersion: true,
+        contextValidation: { through: result.anchors[1]!, from: result.anchors[0]! },
+      });
+      expect(point).toMatchObject({
+        anchors: [],
+        contextValidated: true,
+        contextVersion: result.contextVersion,
+      });
       expect(result.tail).toEqual({
         lastSeq: 4,
         entries: [

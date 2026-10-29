@@ -1,6 +1,7 @@
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { EmbeddedForegroundPromptContext } from "../../agents/embedded-agent-runner/run/params.js";
+import type { SessionEntry } from "../../agents/sessions/session-manager-types.js";
 import { getCanonicalSkillWorkspace } from "../../agents/skill-workshop-workspace-context.js";
 import { canonicalizePath } from "../../agents/utils/paths.js";
 import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
@@ -54,18 +55,24 @@ export type SkillExperienceReviewParams = {
   usedSkills?: readonly RunSkillUsage[];
   config: OpenClawConfig;
   source?: TranscriptEntryAnchor;
+  /** Native maintenance after the terminal message, including any completed compaction. */
+  contextTail?: readonly SessionEntry[];
   /** The foreground turn itself changed a Workshop skill, so its learning is already saved. */
   workshopMutated?: boolean;
 };
 
 export type ExperienceReviewCandidate = {
-  ctx: Pick<ExperienceReviewAgentContext, "runId" | "authProfileId" | "foregroundPromptContext"> & {
+  ctx: Pick<
+    ExperienceReviewAgentContext,
+    "runId" | "authProfileId" | "modelContextWindowTokens" | "foregroundPromptContext"
+  > & {
     workspaceDir: string;
     modelProviderId: string;
     modelId: string;
   };
   config: OpenClawConfig;
   source: TranscriptEntryAnchor;
+  contextTail?: readonly SessionEntry[];
   usedSkills?: readonly RunSkillUsage[];
   turnAborted?: boolean;
 };
@@ -274,10 +281,12 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
           modelProviderId,
           modelId,
           authProfileId: params.ctx.authProfileId,
+          modelContextWindowTokens: params.ctx.modelContextWindowTokens,
           foregroundPromptContext: params.ctx.foregroundPromptContext,
         },
         config: params.config,
         source: { ...source },
+        ...(params.contextTail ? { contextTail: structuredClone(params.contextTail) } : {}),
         usedSkills: params.usedSkills ? [...params.usedSkills] : undefined,
         turnAborted: !params.event.success,
       };

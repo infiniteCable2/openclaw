@@ -23,6 +23,7 @@ import {
   hasSessionTranscriptMessageInDatabase,
   readTranscriptHeaderFromDatabase,
 } from "./session-accessor.sqlite-transcript-metadata-read.js";
+import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
 import type { SessionTranscriptAnchorFacts } from "./session-transcript-anchor-read.types.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
@@ -42,6 +43,8 @@ export type SessionTranscriptAnchorSelection = {
   includeSession?: boolean;
   includeHeader?: boolean;
   includeWatermark?: boolean;
+  /** Native commit witness captured alongside exact anchor validation, without loading text. */
+  includeContextVersion?: boolean;
   includeMessagePresence?: boolean;
   contextValidation?: Parameters<typeof validateSessionTranscriptContextInDatabase>[2];
   contextAuthority?: true | { permissionMode: InternalSessionEntry["permissionMode"] };
@@ -159,6 +162,11 @@ export function readSessionTranscriptAnchorFactsInDatabase(
       );
     }
     const validated = {
+      ...(selection.includeContextVersion
+        ? {
+            contextVersion: readTranscriptContextVersionInTransaction(database, resolved.sessionId),
+          }
+        : {}),
       ...(selection.includeMessagePresence
         ? { messagePresence: hasSessionTranscriptMessageInDatabase(database, resolved.sessionId) }
         : {}),

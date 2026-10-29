@@ -29,6 +29,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
   assertCurrent(): void;
   /** True continues disposable read-ahead; it is not a new root/input notification. */
   prepare(signal: AbortSignal): Promise<void | boolean>;
+  /** Native background capacity owner; slow summarization must not occupy source read-ahead. */
+  workOwner?: Pick<ReturnType<typeof createBackgroundWorkOwner>, "enqueue">;
+  /** Join retained asynchronous cleanup before releasing native database custody. */
+  settle?(): Promise<void>;
   clear(): void;
 }) {
   const target = {
@@ -92,7 +96,20 @@ export function createConversationKnowledgePrefetchOwner(params: {
     revoke();
     const attempt = (async () => {
       await wait();
-      params.clear();
+      const failures: unknown[] = [];
+      try {
+        await params.settle?.();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        params.clear();
+      } catch (error) {
+        failures.push(error);
+      }
+      // Failed child cleanup still needs this native owner; retry it before releasing custody.
+      if (failures.length)
+        throw new AggregateError(failures, "Conversation knowledge cleanup remains pending");
       await execution?.release();
       execution = undefined;
       unregister();
@@ -150,7 +167,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
           try {
             check();
             // Each batch releases shared capacity before a coalesced successor is queued.
-            await background.enqueue(
+            await (params.workOwner ?? background).enqueue(
               async (signal) => {
                 // A foreground drain may start after this quantum was queued.
                 if (preparationPauses > 0) {

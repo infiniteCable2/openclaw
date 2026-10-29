@@ -1,13 +1,133 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { readConversationKnowledgeReports } from "./conversation-knowledge-history.js";
+import {
+  readConversationKnowledgeReports,
+  readConversationKnowledgeRootReports,
+} from "./conversation-knowledge-history.js";
 import { appendTranscriptEventSync, upsertSessionEntryCore } from "./session-accessor.js";
+import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
 import { withSessionTranscriptDeltaReader } from "./session-transcript-delta-read.js";
+import * as nativeDelta from "./session-transcript-delta-read.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
+import { readSessionTranscriptWatermarkAsync } from "./session-transcript-watermark.js";
 
 describe("native conversation knowledge history catch-up", () => {
+  it("incrementally reads native roots while leaf and reset controls force exact active-path rebuilds", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "knowledge-root-cache" },
+      async (state) => {
+        const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+        const target = {
+          agentId: "main",
+          storePath: database.path,
+          env: state.env,
+          sessionKey: "agent:main:cached-root",
+          sessionId: "cached-root",
+        };
+        await upsertSessionEntryCore(target, {
+          sessionId: target.sessionId,
+          lifecycleRevision: "root-life",
+          updatedAt: 1,
+        });
+        const source = captureSessionEntryReadSource(database, undefined);
+        const customTypes = ["synthetic-root-receipt"];
+        const append = (id: string) =>
+          expect(
+            appendTranscriptEventSync(target, {
+              type: "custom_message",
+              id,
+              customType: customTypes[0],
+              content: "Synthetic root receipt",
+              display: false,
+              details: { id },
+            }).ok,
+          ).toBe(true);
+        append("first");
+        append("second");
+        const revalidate = vi.fn(async () => {});
+        const params = {
+          target,
+          source,
+          lifecycleRevision: "root-life",
+          customTypes,
+          assertCurrent() {},
+          revalidate,
+        };
+        const native = nativeDelta.withSessionTranscriptDeltaReader;
+        type Reader = Parameters<Parameters<typeof native>[1]>[0];
+        const calls: Parameters<Reader["raw"]>[0][] = [];
+        // Instrumentation only: retain all native owner, authority and SQLite operations.
+        const reads = vi
+          .spyOn(nativeDelta, "withSessionTranscriptDeltaReader")
+          .mockImplementation(
+            <T>(
+              scope: Parameters<typeof native>[0],
+              consume: (reader: Reader) => Promise<T>,
+              signal?: AbortSignal,
+            ) =>
+              native(
+                scope,
+                (reader) =>
+                  consume({
+                    ...reader,
+                    raw: (limits) => {
+                      calls.push(limits);
+                      return reader.raw(limits);
+                    },
+                  }),
+                signal,
+              ),
+          );
+        try {
+          expect(await readConversationKnowledgeRootReports(params)).toHaveLength(2);
+          calls.length = 0;
+          expect(await readConversationKnowledgeRootReports(params)).toHaveLength(2);
+          expect(calls).toHaveLength(0);
+          append("third");
+          expect(await readConversationKnowledgeRootReports(params)).toHaveLength(3);
+          expect(calls).toHaveLength(1);
+          expect(calls[0]).not.toHaveProperty("customTypes");
+          const before = await readSessionTranscriptWatermarkAsync(target);
+          expect(
+            appendTranscriptEventSync(target, {
+              type: "leaf",
+              id: "select-first",
+              parentId: "third",
+              targetId: "first",
+            }).ok,
+          ).toBe(true);
+          append("new-path");
+          const after = await readSessionTranscriptWatermarkAsync(target);
+          expect(after.generation).toBe(before.generation);
+          const expected = await readConversationKnowledgeReports(params);
+          calls.length = 0;
+          const actual = await readConversationKnowledgeRootReports(params);
+          expect(actual).toEqual(expected);
+          expect(actual.map((event) => asOptionalRecord(event)?.id)).toEqual(["first", "new-path"]);
+          expect(calls.some((limits) => limits.activePathOnly)).toBe(true);
+          expect(
+            appendTranscriptEventSync(target, {
+              type: "reset",
+              id: "root-reset",
+              firstKeptEntryId: "new-path",
+            }).ok,
+          ).toBe(true);
+          append("after-reset");
+          expect(await readConversationKnowledgeRootReports(params)).toEqual(
+            await readConversationKnowledgeReports(params),
+          );
+          revalidate.mockRejectedValueOnce(new Error("Root enrollment revoked"));
+          await expect(readConversationKnowledgeRootReports(params)).rejects.toThrow(
+            "Root enrollment revoked",
+          );
+        } finally {
+          reads.mockRestore();
+        }
+      },
+    );
+  });
   it("reads every raw page, fixes the admitted prefix, and survives a compacted model view", async () => {
     await withOpenClawTestState(
       { scenario: "minimal", label: "knowledge-history" },

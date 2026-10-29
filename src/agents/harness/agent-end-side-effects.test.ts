@@ -83,9 +83,12 @@ describe("agent end side effects", () => {
       });
       const anchor = manager[sessionManagerReadMessageAnchor](appended.entryId);
       expect(anchor).toEqual(appended.anchor);
+      await manager.appendCompactionAsync("Completed native summary", appended.entryId, 100);
+      const contextTail = manager.getBranch().slice(1);
       const params = {
         [completedTurnMessageAnchor]: captureCompletedTurnMessageAnchor(manager, appended.entryId),
         skillExperienceReviewSource: { ...target, entryId: appended.entryId },
+        skillExperienceReviewContextTail: contextTail,
         event: { messages: [], success: true },
         ctx: {
           runId: "receipt-run",
@@ -102,7 +105,7 @@ describe("agent end side effects", () => {
       } satisfies Parameters<typeof runAgentEndSideEffectsAsync>[0];
       await runAgentEndSideEffectsAsync(params);
       expect(mockExperienceReview).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ source: anchor }),
+        expect.objectContaining({ source: anchor, contextTail }),
       );
       expect(transcriptAnchor.readActiveTranscriptEntryAnchorAsync).not.toHaveBeenCalled();
       let active = true;

@@ -96,6 +96,12 @@ describe("prepared conversation context dispatch", () => {
     expect(requests).toHaveLength(2);
     expect(read).toHaveBeenCalledOnce();
     expect(refreshConversationContext).toHaveBeenCalledTimes(2);
+    expect(refreshConversationContext.mock.calls[0]?.[0].bootstrapInitialization).toEqual({
+      provider: testModel.provider,
+      modelId: testModel.id,
+      thinkingLevel: session.thinkingLevel,
+    });
+    expect(refreshConversationContext.mock.calls[1]?.[0].bootstrapInitialization).toBeUndefined();
     expect(requests[1]?.slice(0, requests[0]?.length)).toEqual(requests[0]);
     expect(JSON.stringify(requests[0])).toContain("Observation 1");
     expect(JSON.stringify(requests[0])).not.toContain("Observation 2");

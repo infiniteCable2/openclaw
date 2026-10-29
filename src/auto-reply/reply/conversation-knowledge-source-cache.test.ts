@@ -1,3 +1,4 @@
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionTranscriptRuntimeScope } from "../../config/sessions/session-accessor.types.js";
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
@@ -80,6 +81,68 @@ beforeEach(() => {
 });
 
 describe("disposable conversation source preparation", () => {
+  it("charges checkpoint-owned custody and summary bytes, not shared root metadata", () => {
+    const cache = createConversationKnowledgeSourceCache(256);
+    const candidate = {
+      manifest: { byteLength: 10_000_000, ownedByteLength: 32 },
+      checkpoint: { summary: "Small summary" },
+      groups: [{ admission: { byteLength: 10_000_000, ownedByteLength: 32, release: vi.fn() } }],
+    } as unknown as Parameters<typeof cache.stageCheckpoint>[0];
+    expect(cache.stageCheckpoint(candidate)).toBe(true);
+    cache.clearCheckpoint();
+    expect(
+      cache.stageCheckpoint({
+        ...candidate,
+        checkpoint: { ...candidate.checkpoint, summary: "x".repeat(256) },
+      }),
+    ).toBe(false);
+    expect(cache.preparedCheckpoint).toBeUndefined();
+  });
+  it("reports only bounded content-free complete prepared source frontiers", () => {
+    const cache = createConversationKnowledgeSourceCache();
+    for (let index = 0; index < 10; index++) {
+      cache.stage(`item-${index}`, 0, {
+        ...packet(),
+        through: { ...through, sessionId: `source-${index}`, rawSeq: index + 3 },
+      });
+    }
+    cache.stage("later", 0, {
+      ...packet(),
+      through: { ...through, sessionId: "source-0", rawSeq: 25 },
+    });
+    cache.stage("partial", 0, {
+      ...packet(),
+      part: { ...packet().part, complete: false },
+      through: { ...through, sessionId: "partial-source" },
+    });
+    const diagnostics = cache.diagnosticPreparedFrontiers();
+    expect(diagnostics).toHaveLength(8);
+    expect(diagnostics[0]).toEqual({ sourceHash: redactIdentifier("source-0"), throughSeq: 25 });
+    expect(JSON.stringify(diagnostics)).not.toContain("Source observation");
+    expect(JSON.stringify(diagnostics)).not.toContain("partial-source");
+  });
+  it("retires all checkpoint groups and retains failed native cleanup for retry", () => {
+    const cache = createConversationKnowledgeSourceCache();
+    const first = vi.fn().mockImplementationOnce(() => {
+      throw new Error("cleanup busy");
+    });
+    const second = vi.fn();
+    const candidate = {
+      manifest: { byteLength: 10, ownedByteLength: 10 },
+      checkpoint: { summary: "Synthetic summary" },
+      groups: [first, second].map((release) => ({
+        admission: { byteLength: 10, ownedByteLength: 10, release },
+      })),
+    } as unknown as Parameters<typeof cache.stageCheckpoint>[0];
+    expect(cache.stageCheckpoint(candidate)).toBe(true);
+    expect(() => cache.clearCheckpoint()).toThrow("cleanup remains pending");
+    expect(cache.preparedCheckpoint).toBeUndefined();
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+    cache.retryCleanup();
+    expect(first).toHaveBeenCalledTimes(2);
+    expect(second).toHaveBeenCalledOnce();
+  });
   it("shares bounded native custody across one donor's pending packets", () => {
     const cache = createConversationKnowledgeSourceCache<{ byteLength: number; release(): void }>(
       128,
@@ -172,6 +235,23 @@ describe("disposable conversation source preparation", () => {
     cache.clear();
     expect(admission.release).toHaveBeenCalledOnce();
     expect(replacement.release).toHaveBeenCalledOnce();
+  });
+
+  it("retains unsuccessful checkpoint cleanup until background retry or clear succeeds", () => {
+    const cache = createConversationKnowledgeSourceCache();
+    const failed = vi.fn().mockImplementationOnce(() => {
+      throw new Error("temporary");
+    });
+    const other = vi.fn();
+    cache.retainCleanup(failed);
+    cache.retainCleanup(other);
+    expect(() => cache.retryCleanup()).toThrow("cleanup remains pending");
+    expect(other).toHaveBeenCalledOnce();
+    cache.clear();
+    expect(failed).toHaveBeenCalledTimes(2);
+    expect(other).toHaveBeenCalledOnce();
+    cache.clear();
+    expect(failed).toHaveBeenCalledTimes(2);
   });
 
   it("reuses bytes only after fresh native range proof and the current caller's checks", async () => {

@@ -1,4 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
+import { snapshotConversationKnowledgeProgress } from "../../config/sessions/conversation-knowledge-checkpoint-context.js";
+import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import type { ConversationKnowledgePacketProgress } from "../../config/sessions/conversation-knowledge-packets.js";
 import type { PreparedKnowledgeRootCandidates } from "../../config/sessions/conversation-knowledge-store.js";
 import type { projectConversationKnowledge } from "../../config/sessions/conversation-knowledge.js";
@@ -9,6 +12,7 @@ import type { SessionTranscriptContextVersion } from "../../config/sessions/sess
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { PreparedPersonalConversationAdmission } from "../../gateway/session-transcript-personal-read.js";
+import type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-checkpoint-recipient.js";
 
 export type PreparedConversationKnowledgePacket = {
   part: NonNullable<ReturnType<typeof projectConversationKnowledge>>;
@@ -40,6 +44,20 @@ export function createConversationKnowledgeSourceCache<
   const admissions = new Map<string, Admission>();
   const admissionSources = new Map<string, string>();
   const retiringAdmissions = new Set<Admission>();
+  const retiringCleanups = new Set<() => void>();
+  const retryCleanup = () => {
+    const errors: unknown[] = [];
+    for (const release of retiringCleanups) {
+      try {
+        release();
+        retiringCleanups.delete(release);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length)
+      throw new AggregateError(errors, "Conversation checkpoint cleanup remains pending");
+  };
   const releaseAdmissions = (selected: Iterable<Admission>) => {
     for (const admission of selected) {
       retiringAdmissions.add(admission);
@@ -80,6 +98,15 @@ export function createConversationKnowledgeSourceCache<
   let stagedBytes = 0;
   let revision = 0;
   let consumptionRevision = 0;
+  let preparedCheckpoint: PreparedRecipientConversationCheckpoint | undefined;
+  const retireCheckpoint = () => {
+    const old = preparedCheckpoint;
+    preparedCheckpoint = undefined;
+    if (old) {
+      for (const group of old.groups) retiringCleanups.add(() => group.admission.release());
+    }
+  };
+  const checkpointCoverage = new Map<string, PreparedConversationKnowledgeCheckpointCoverage>();
   let clearEpoch = 0;
   let preparedRoot: PreparedKnowledgeRootCandidates | undefined;
   let inputRoot:
@@ -93,7 +120,7 @@ export function createConversationKnowledgeSourceCache<
     | {
         version: SessionTranscriptContextVersion;
         manifest: PreparedKnowledgeRootCandidates;
-        progress: Map<string, ConversationKnowledgePacketProgress>;
+        progress: ReadonlyMap<string, ConversationKnowledgePacketProgress>;
         bytes: number;
       }
     | undefined;
@@ -137,6 +164,62 @@ export function createConversationKnowledgeSourceCache<
     return bytes + inputBytes() + (preparedRoot?.byteLength ?? 0) + additional <= maxBytes;
   };
   return {
+    retainCleanup(release: () => void) {
+      retiringCleanups.add(release);
+    },
+    forgetCleanup(release: () => void) {
+      retiringCleanups.delete(release);
+    },
+    retryCleanup,
+    get preparedCheckpoint() {
+      return preparedCheckpoint;
+    },
+    stageCheckpoint(value: PreparedRecipientConversationCheckpoint) {
+      if (
+        value.manifest.ownedByteLength +
+          Buffer.byteLength(value.checkpoint.summary) +
+          value.groups.reduce((sum, group) => sum + group.admission.ownedByteLength, 0) >
+        maxBytes
+      )
+        return false;
+      if (preparedCheckpoint !== value) retireCheckpoint();
+      preparedCheckpoint = value;
+      revision++;
+      return true;
+    },
+    clearCheckpoint(expected?: PreparedRecipientConversationCheckpoint) {
+      // A paused owner may still finish its already-running preparation quantum.
+      // An older foreground failure must not retire that newly prepared candidate.
+      if (expected && preparedCheckpoint !== expected) return;
+      retireCheckpoint();
+      retryCleanup();
+    },
+    consumeCheckpoint(value: PreparedRecipientConversationCheckpoint) {
+      if (preparedCheckpoint === value) retireCheckpoint();
+      checkpointCoverage.set(value.checkpoint.checkpointId, value.coverage);
+      // Visit bounded prepared packets once, not the potentially year-long coverage set.
+      for (const [key, entry] of staged) {
+        if (value.coverage.has(entry.contributionId)) {
+          staged.delete(key);
+          stagedBytes -= entry.bytes;
+        }
+      }
+      inputProgress = undefined;
+      consumptionRevision++;
+      revision++;
+      retryCleanup();
+    },
+    checkpointCoverage(id: string) {
+      return checkpointCoverage.get(id);
+    },
+    retainCheckpointCoverage(
+      id: string,
+      coverage: PreparedConversationKnowledgeCheckpointCoverage,
+    ) {
+      // One shared immutable root proof, not recipient-owned text. A payload-cache
+      // limit must not turn a large exact coverage ledger into a permanent reread loop.
+      checkpointCoverage.set(id, coverage);
+    },
     preparedAdmission(source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string }) {
       return admissions.get(admissionKey(source));
     },
@@ -177,6 +260,19 @@ export function createConversationKnowledgeSourceCache<
     get consumptionRevision() {
       return consumptionRevision;
     },
+    diagnosticPreparedFrontiers() {
+      const frontiers = new Map<string, number>();
+      for (const slot of staged.values()) {
+        if (slot.offset !== 0 || !slot.value.part.complete) continue;
+        const sourceHash = redactIdentifier(slot.value.through.sessionId);
+        if (!frontiers.has(sourceHash) && frontiers.size >= 8) continue;
+        frontiers.set(
+          sourceHash,
+          Math.max(frontiers.get(sourceHash) ?? 0, slot.value.through.rawSeq),
+        );
+      }
+      return [...frontiers].map(([sourceHash, throughSeq]) => ({ sourceHash, throughSeq }));
+    },
     get preparedRoot() {
       return preparedRoot;
     },
@@ -214,27 +310,28 @@ export function createConversationKnowledgeSourceCache<
       return (
         inputProgress && {
           manifest: inputProgress.manifest,
-          progress: structuredClone(inputProgress.progress),
+          progress: inputProgress.progress,
         }
       );
     },
     retainPreparationProgress(
       version: SessionTranscriptContextVersion,
       manifest: PreparedKnowledgeRootCandidates,
-      progress: Map<string, ConversationKnowledgePacketProgress>,
+      progress: ReadonlyMap<string, ConversationKnowledgePacketProgress>,
       expectedConsumptionRevision: number,
     ) {
       if (consumptionRevision !== expectedConsumptionRevision) {
         return;
       }
       inputProgress = undefined;
+      const snapshot = snapshotConversationKnowledgeProgress(progress);
       const size =
-        manifest.byteLength + Buffer.byteLength(JSON.stringify([version, [...progress]]));
+        manifest.byteLength + Buffer.byteLength(JSON.stringify(version)) + snapshot.byteLength;
       if (reserveInputBytes(size)) {
         inputProgress = {
           version: structuredClone(version),
           manifest,
-          progress: structuredClone(progress),
+          progress: snapshot.progress,
           bytes: size,
         };
       }
@@ -372,6 +469,8 @@ export function createConversationKnowledgeSourceCache<
       releaseUnusedAdmissions();
     },
     clear() {
+      retireCheckpoint();
+      checkpointCoverage.clear();
       const retired = [...admissions.values()];
       admissions.clear();
       admissionSources.clear();
@@ -386,7 +485,19 @@ export function createConversationKnowledgeSourceCache<
       revision++;
       clearEpoch++;
       consumptionRevision++;
-      releaseAdmissions(retired);
+      const errors: unknown[] = [];
+      try {
+        releaseAdmissions(retired);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        retryCleanup();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length)
+        throw new AggregateError(errors, "Conversation source cache cleanup remains pending");
     },
     async read(params: {
       contributionId: string;

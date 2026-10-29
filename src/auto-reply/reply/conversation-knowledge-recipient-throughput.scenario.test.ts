@@ -89,16 +89,52 @@ const observationRepeat = simulationInteger(
 
 it("prepares long-source observations while idle and consumes them once through the admitted writer", async ({
   signal,
+  onTestFailed,
 }) => {
+  const diagnosticStarted = performance.now();
+  const diagnosticCpu = process.cpuUsage();
+  let phase = "state:create";
+  let phaseStarted = diagnosticStarted;
+  const phases: Array<{ phase: string; startedMs: number }> = [];
+  const mark = (next: string) => {
+    phase = next;
+    phaseStarted = performance.now();
+    phases.push({ phase, startedMs: Math.round(phaseStarted - diagnosticStarted) });
+    if (phases.length > 24) phases.shift();
+  };
+  let inspectFailure: () => unknown = () => ({});
+  onTestFailed(() => {
+    console.error(
+      JSON.stringify({
+        scenario: "knowledge-recipient-throughput-failure",
+        phase,
+        phaseElapsedMs: Math.round(performance.now() - phaseStarted),
+        elapsedMs: Math.round(performance.now() - diagnosticStarted),
+        aborted: signal.aborted,
+        cpuMicroseconds: process.cpuUsage(diagnosticCpu),
+        rssBytes: process.memoryUsage().rss,
+        phases,
+        state: inspectFailure(),
+      }),
+    );
+  });
   await withOpenClawTestState(
     { scenario: "minimal", label: "knowledge-recipient-throughput" },
     async (state) => {
       const setupStarted = performance.now();
+      mark("setup:create-native-fixture");
       const fixture = await createConversationKnowledgeScenario(state);
       const appendBatch = reportStorage.appendSessionTranscriptReportBatch;
       const batch = vi.spyOn(reportStorage, "appendSessionTranscriptReportBatch");
       const foreground = new AsyncLocalStorage<boolean>();
-      const newSpan = () => ({ calls: 0, ms: 0, maxMs: 0, entries: 0 });
+      const newSpan = () => ({
+        calls: 0,
+        ms: 0,
+        maxMs: 0,
+        entries: 0,
+        pending: 0,
+        lastStartedMs: 0,
+      });
       const newSpans = () => ({
         appendBatch: newSpan(),
         grant: newSpan(),
@@ -224,9 +260,12 @@ it("prepares long-source observations while idle and consumes them once through 
         span.calls++;
         span.entries += entries;
         const started = performance.now();
+        span.pending++;
+        span.lastStartedMs = Math.round(started - diagnosticStarted);
         try {
           return await run();
         } finally {
+          span.pending--;
           const elapsed = performance.now() - started;
           span.ms += elapsed;
           span.maxMs = Math.max(span.maxMs, elapsed);
@@ -250,6 +289,9 @@ it("prepares long-source observations while idle and consumes them once through 
       const reads = {
         background: {
           root: 0,
+          rootPending: 0,
+          progressPending: 0,
+          observePending: 0,
           progress: 0,
           rootMs: 0,
           progressMs: 0,
@@ -261,6 +303,9 @@ it("prepares long-source observations while idle and consumes them once through 
         },
         foreground: {
           root: 0,
+          rootPending: 0,
+          progressPending: 0,
+          observePending: 0,
           progress: 0,
           rootMs: 0,
           progressMs: 0,
@@ -281,10 +326,12 @@ it("prepares long-source observations while idle and consumes them once through 
         .mockImplementation(async (...args) => {
           const lane = foreground.getStore() ? reads.foreground : reads.background;
           lane.root++;
+          lane.rootPending++;
           const started = performance.now();
           try {
             return await readRoot(...args);
           } finally {
+            lane.rootPending--;
             lane.rootMs += performance.now() - started;
           }
         });
@@ -293,10 +340,12 @@ it("prepares long-source observations while idle and consumes them once through 
         .mockImplementation(async (...args) => {
           const lane = foreground.getStore() ? reads.foreground : reads.background;
           lane.progress++;
+          lane.progressPending++;
           const started = performance.now();
           try {
             return await readProgress(...args);
           } finally {
+            lane.progressPending--;
             lane.progressMs += performance.now() - started;
           }
         });
@@ -305,6 +354,7 @@ it("prepares long-source observations while idle and consumes them once through 
         .mockImplementation(async (...args) => {
           const lane = foreground.getStore() ? reads.foreground : reads.background;
           lane.observe++;
+          lane.observePending++;
           lane.observeQueries += args[1].length;
           lane.maxObserveQueries = Math.max(lane.maxObserveQueries, args[1].length);
           const started = performance.now();
@@ -315,13 +365,24 @@ it("prepares long-source observations while idle and consumes them once through 
             }
             return result;
           } finally {
+            lane.observePending--;
             lane.observeMs += performance.now() - started;
           }
         });
       let prefetch: ReturnType<typeof prepareConversationKnowledgeRecipient>;
       let releaseKnowledge = () => {};
+      inspectFailure = () => ({
+        spans,
+        reads,
+        prefetchRegistered: !!prefetch,
+        cacheRevision: prefetch?.cache.revision,
+        preparedRoot: !!prefetch?.cache.preparedRoot,
+        preparedCheckpoint: !!prefetch?.cache.preparedCheckpoint,
+        compactionCalls: budget.compact.mock.calls.length,
+      });
       budget.compact.mockClear();
       try {
+        mark("setup:create-three-native-branches");
         const chat = await fixture.branch("throughput-chat");
         const previousCall = await fixture.branch("throughput-prior-call");
         const recipient = await fixture.branch("throughput-recipient");
@@ -329,6 +390,7 @@ it("prepares long-source observations while idle and consumes them once through 
         const ledgerPacketIds = new Set(
           Array.from({ length: recipientLedgerEvents }, (_, index) => `ledger-packet-${index}`),
         );
+        mark("setup:write-recipient-ledger");
         await replaceTranscriptEvents(recipient, [
           { type: "session", id: recipient.sessionId, version: CURRENT_SESSION_VERSION },
           ...Array.from({ length: recipientLedgerEvents }, (_, index) => ({
@@ -350,6 +412,7 @@ it("prepares long-source observations while idle and consumes them once through 
             },
           })),
         ]);
+        mark("setup:write-source-history");
         await replaceTranscriptEvents(chat, [
           { type: "session", id: chat.sessionId, version: CURRENT_SESSION_VERSION },
           ...Array.from({ length: historyEvents }, (_, index) => ({
@@ -362,6 +425,7 @@ it("prepares long-source observations while idle and consumes them once through 
             },
           })),
         ]);
+        mark("setup:claim-original-sources");
         const chatClaim = await fixture.claim(chat);
         const previousCallClaim = await fixture.claim(previousCall);
         const markers = Array.from(
@@ -369,6 +433,7 @@ it("prepares long-source observations while idle and consumes them once through 
           (_, index) => `CHAT_MARKER_${String(index).padStart(2, "0")}`,
         );
         for (const [index, marker] of markers.entries()) {
+          mark(`setup:publish-source-${index}`);
           const terminal = await fixture.append(
             chat,
             `throughput-chat-${index}`,
@@ -386,6 +451,7 @@ it("prepares long-source observations while idle and consumes them once through 
           ).toBe(true);
         }
         const callMarker = "PRIOR_CALL_MARKER_VIOLET";
+        mark("setup:publish-prior-call");
         const previousTerminal = await fixture.append(
           previousCall,
           "throughput-prior-call",
@@ -399,6 +465,7 @@ it("prepares long-source observations while idle and consumes them once through 
             privateAudience: { participant: person, admission: previousTerminal.admission! },
           }),
         ).toBe(true);
+        mark("setup:resolve-and-claim-recipient-writer");
         const target = await resolveAgentRunSessionTarget({
           ...recipient,
           config: fixture.cfg,
@@ -431,6 +498,7 @@ it("prepares long-source observations while idle and consumes them once through 
         const rssBefore = process.memoryUsage().rss;
         const started = performance.now();
         const before = await loadTranscriptEvents(recipient);
+        mark("background:register-recipient-and-root-owner");
         prefetch = prepareConversationKnowledgeRecipient({
           branch,
           participant: person,
@@ -441,7 +509,9 @@ it("prepares long-source observations while idle and consumes them once through 
         if (!prefetch) {
           throw new Error("Expected native prepared recipient");
         }
+        mark("background:wait-initial-prefetch");
         await prefetch.owner.wait();
+        mark("background:initial-prefetch-finished");
         const firstPreparationMs = performance.now() - started;
         let livePublicationMs = 0;
         if (simulation) {
@@ -449,6 +519,7 @@ it("prepares long-source observations while idle and consumes them once through 
           // prepare fresh facts behind its backlog, without a user/model turn.
           const publishedAt = performance.now();
           for (let live = 0; live < 6; live++) {
+            mark(`background:publish-live-${live}`);
             const index = markers.length;
             const marker = `CHAT_MARKER_${String(index).padStart(2, "0")}`;
             markers.push(marker);
@@ -467,9 +538,11 @@ it("prepares long-source observations while idle and consumes them once through 
             ).toBe(true);
           }
           livePublicationMs = performance.now() - publishedAt;
+          mark("background:wait-live-prefetch");
           await prefetch.owner.wait();
         }
         const preparationMs = performance.now() - started - livePublicationMs;
+        mark("verify:idle-preparation");
         expect(await loadTranscriptEvents(recipient)).toEqual(before);
         expect(budget.compact).not.toHaveBeenCalled();
         const receipts = await fixture.receipts();
@@ -512,6 +585,7 @@ it("prepares long-source observations while idle and consumes them once through 
         if (!manifest) {
           throw new Error("Idle preparation must publish its native root provenance");
         }
+        mark("verify:rebind-prepared-root");
         const preparedRoot = await knowledgeStoreReads.readPreparedConversationKnowledgeRoot({
           ...recipientClaim,
           branch,
@@ -562,7 +636,9 @@ it("prepares long-source observations while idle and consumes them once through 
           lifecycleAdmissionByOperation.delete(replyOperation);
           knowledge.release();
         };
+        mark("foreground:prepare-native-turn");
         await knowledge.prepare(admission, signal);
+        mark("foreground:prepare-native-history");
         await withSessionTranscriptWriteAssertion(writer, recipientClaim.assertCurrent, () =>
           knowledge.prepareHistory({
             ...followupRun.run,
@@ -652,6 +728,7 @@ it("prepares long-source observations while idle and consumes them once through 
           );
         };
         for (; boundaryCount < 512; boundaryCount++) {
+          mark(`foreground:admit-boundary-${boundaryCount}`);
           signal.throwIfAborted();
           const previousPacketCount = packets.length;
           const previousRevision = prefetch.cache.revision;
@@ -664,6 +741,7 @@ it("prepares long-source observations while idle and consumes them once through 
           // after consuming packets. Join that work; do not create model calls,
           // synthetic root publications, polling sleeps or a second scheduler.
           const waitStarted = performance.now();
+          mark(`background:wait-after-boundary-${boundaryCount}`);
           await prefetch.owner.wait();
           continuationWaitMs += performance.now() - waitStarted;
           packets = await readPackets();
@@ -717,6 +795,7 @@ it("prepares long-source observations while idle and consumes them once through 
             "the actual preparation owner and natural boundary must make observable progress",
           ).toBe(true);
         }
+        mark("verify:native-drain");
         reportDiagnostic("after-native-drain");
         expect(
           boundaryCount,
@@ -755,15 +834,17 @@ it("prepares long-source observations while idle and consumes them once through 
               if (typeof packet!.content !== "string") {
                 throw new Error("Expected native quoted packet text");
               }
-              const quoted = asOptionalRecord(
-                JSON.parse(packet!.content.slice(packet!.content.indexOf("\n") + 1)),
-              );
-              if (!Array.isArray(quoted?.observations)) {
-                throw new Error("Expected native observation segments");
-              }
-              return quoted.observations
-                .map((observation) => {
-                  const observationText = asOptionalRecord(observation)?.text;
+              // This scenario creates new carriers; legacy byte preservation is
+              // independently covered by conversation-knowledge-packets.test.ts.
+              return packet!.content
+                .split("\n")
+                .slice(2)
+                .map((line) => {
+                  const match = /^(?:user|assistant): (.+)$/.exec(line);
+                  if (!match) {
+                    throw new Error("Expected native quoted observation role");
+                  }
+                  const observationText: unknown = JSON.parse(match[1]!);
                   if (typeof observationText !== "string") {
                     throw new Error("Expected native observation text");
                   }
@@ -795,8 +876,10 @@ it("prepares long-source observations while idle and consumes them once through 
           MAX_TRANSCRIPT_REPORT_BATCH_SIZE,
         );
         expect(reads.foreground.missing).toBeGreaterThanOrEqual(packets.length);
+        mark("foreground:retry-identical-context");
         await admit();
         expect(batch).toHaveBeenCalledTimes(batchCalls);
+        mark("foreground:retry-new-context");
         const retryPackets = await admit({});
         expect(retryPackets).toHaveLength(packets.length);
         expect(
@@ -811,6 +894,7 @@ it("prepares long-source observations while idle and consumes them once through 
             .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT),
         ).toHaveLength(recipientLedgerEvents + packets.length);
       } finally {
+        mark("cleanup:release-turn-and-spies");
         releaseKnowledge();
         batch.mockRestore();
         rootRead.mockRestore();
@@ -822,9 +906,13 @@ it("prepares long-source observations while idle and consumes them once through 
         reportWorker.mockRestore();
         reportSource.mockRestore();
         reportAccepted.mockRestore();
+        mark("cleanup:close-prefetch-and-root-owner");
         await prefetch?.owner.close();
+        mark("cleanup:close-native-fixture");
         await fixture.close();
+        mark("cleanup:fixture-closed");
       }
     },
   );
+  mark("complete");
 });

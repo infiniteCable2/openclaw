@@ -1,16 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { NativeKnowledgeRootEvidence } from "../config/sessions/conversation-knowledge-store.js";
+import {
+  conversationKnowledgeOrigin,
+  type ConversationKnowledgeReference,
+} from "../config/sessions/conversation-knowledge.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import { prepareSessionSourceAuthority } from "../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SessionSharingTarget } from "./session-sharing-policy.js";
 import {
   PersonalConversationReadRefusedError,
+  preparePersonalConversationContributionGroup,
   type PersonalConversationReadParams,
 } from "./session-transcript-personal-read.js";
 
-const mocks = vi.hoisted(() => ({ prepare: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  prepare: vi.fn(),
+  anchors: vi.fn(),
+  root: vi.fn(),
+  groupPrepare: vi.fn(),
+  groupAssert: vi.fn(),
+}));
 // mock-isolation: Exercise the actual native read API without starting a database worker or Gateway.
 vi.mock("./session-sharing-preparation.js", () => ({ prepareSessionMutationFacts: mocks.prepare }));
+// mock-isolation: Native root membership/anchor snapshots are supplied exact synthetic evidence;
+// this suite exercises the real personal grant and COMMIT predicate owner without a worker.
+vi.mock("../config/sessions/conversation-knowledge-store.js", () => ({
+  assertNativeKnowledgeRootContribution: mocks.root,
+  prepareNativeKnowledgeRootContributionGroup: mocks.groupPrepare,
+  assertNativeKnowledgeRootContributionGroup: mocks.groupAssert,
+}));
+vi.mock("../config/sessions/session-transcript-anchor-read.js", () => ({
+  readSessionTranscriptAnchorsAsync: mocks.anchors,
+}));
 import { prepareTranscriptReadAuthority } from "./session-transcript-read-authority.js";
 
 function fixture() {
@@ -131,6 +153,10 @@ function fixture() {
 
 beforeEach(() => {
   mocks.prepare.mockReset();
+  mocks.root.mockReset();
+  mocks.anchors.mockReset();
+  mocks.groupPrepare.mockReset();
+  mocks.groupAssert.mockReset();
 });
 
 describe("same-person conversation differences on native transcript read owner", () => {
@@ -536,5 +562,285 @@ describe("same-person conversation differences on native transcript read owner",
       }),
     ).rejects.toThrow();
     expect(mocks.prepare).not.toHaveBeenCalled();
+  });
+});
+
+function historicalFixture(count = 2, own = false) {
+  const f = fixture();
+  const source = own ? f.recipient : f.source;
+  const references: ConversationKnowledgeReference[] = Array.from({ length: count }, (_, index) => {
+    const original = {
+      agentId: f.params.personal.target.agentId,
+      sessionKey: source.canonicalKey,
+      sessionId: source.entry.sessionId,
+      lifecycleRevision: "before-reset",
+    };
+    const anchor = {
+      ...original,
+      storePath: f.params.personal.target.storePath,
+      generation: "original-generation",
+      entryId: `entry-${index}`,
+      rawSeq: index + 1,
+      activeMessagePosition: index + 1,
+      effectiveParentId: index ? `entry-${index - 1}` : null,
+    };
+    return {
+      version: 1,
+      kind: "utterance-observation",
+      role: "user",
+      sourceMode: "branches",
+      source: original,
+      origin: conversationKnowledgeOrigin(original, "utterance-observation"),
+      through: anchor,
+      privateAudience: { participant: f.params.personal.originalParticipant, admission: anchor },
+    };
+  });
+  const evidence = {} as NativeKnowledgeRootEvidence;
+  mocks.root.mockImplementation((value, _target, reference) => {
+    if (
+      value !== evidence ||
+      !references.some((item) => JSON.stringify(item) === JSON.stringify(reference))
+    ) {
+      throw new Error("No exact native root evidence");
+    }
+  });
+  mocks.groupPrepare.mockImplementation((value, target, references) => {
+    for (const reference of references) {
+      mocks.root(value, target, reference);
+    }
+    return Object.freeze({ evidence: value, root: JSON.stringify(target.root) });
+  });
+  mocks.groupAssert.mockImplementation((value, target, proof) => {
+    if (value !== proof.evidence || JSON.stringify(target.root) !== proof.root) {
+      throw new Error("Prepared root group scope changed");
+    }
+  });
+  const anchors = references.map((reference) => ({ ...reference.through }));
+  mocks.anchors.mockImplementation(async (_scope, selection) => {
+    if (
+      selection.contextValidation &&
+      anchors.some(
+        (anchor, index) => JSON.stringify(anchor) !== JSON.stringify(references[index]!.through),
+      )
+    ) {
+      throw new Error("Native prefix changed");
+    }
+    return {
+      anchors: anchors.filter((anchor) => selection.entryIds.includes(anchor.entryId)),
+      session: {
+        sessionId: source.entry.sessionId,
+        lifecycleRevision: source.entry.lifecycleRevision,
+      },
+      contextVersion: { generation: "original-generation", rawSeq: count + 2, updatedAt: 2 },
+      ...(selection.contextValidation ? { contextValidated: true } : {}),
+    };
+  });
+  const params = {
+    ...f.params,
+    sources: [{ agentId: f.params.personal.target.agentId, sessionKey: source.canonicalKey }],
+    personal: { ...f.params.personal, rootEvidence: evidence },
+  };
+  return {
+    ...f,
+    selectedSource: source,
+    references,
+    anchors,
+    params,
+    create: () =>
+      preparePersonalConversationContributionGroup({
+        ...params,
+        personal: { ...params.personal, contributions: references },
+      }),
+  };
+}
+
+describe("exact historical contribution groups", () => {
+  it("rebinds one native custody per group, keeps original provenance, and fences the current lifecycle at COMMIT", async () => {
+    const f = historicalFixture();
+    const group = await f.create();
+    expect(mocks.prepare).toHaveBeenCalledTimes(3);
+    expect(mocks.anchors).toHaveBeenCalledTimes(1);
+    const verifiedReferences = mocks.root.mock.calls.length;
+    const grant = await prepareTranscriptReadAuthority({
+      ...f.params,
+      personal: { ...f.params.personal, contributionGroup: group },
+    });
+    try {
+      expect(mocks.prepare).toHaveBeenCalledTimes(3);
+      expect(mocks.anchors).toHaveBeenCalledTimes(2);
+      expect(mocks.anchors.mock.calls[1]![1].entryIds).toEqual([]);
+      expect(mocks.root).toHaveBeenCalledTimes(verifiedReferences);
+      const before = mocks.root.mock.calls.length;
+      for (const reference of f.references) {
+        expect(grant.selectContribution(reference)).toMatchObject({
+          origin: reference.origin,
+          originalLifecycleRevision: "before-reset",
+          currentLifecycleRevision: f.source.entry.lifecycleRevision,
+          through: reference.through,
+        });
+      }
+      expect(mocks.root).toHaveBeenCalledTimes(before);
+      const prepared = await prepareSessionSourceAuthority(grant.assertCurrent);
+      try {
+        expect(
+          prepared.checks.find(({ predicate }) => predicate.sessionKey === f.source.canonicalKey)
+            ?.predicate,
+        ).toMatchObject({
+          expected: { lifecycleRevision: f.source.entry.lifecycleRevision },
+          transcript: {
+            sessionId: f.source.entry.sessionId,
+            consistency: "prefix",
+            version: { generation: "original-generation" },
+          },
+        });
+        f.source.entry.lifecycleRevision = "another-reset";
+        expect(() => grant.assertCurrent()).toThrow("changed after admission");
+      } finally {
+        await prepared.release?.();
+      }
+    } finally {
+      grant.release();
+      group.release();
+    }
+  });
+
+  it.each([
+    "unknown",
+    "another-person",
+    "shared",
+    "replacement",
+    "root",
+    "incomplete",
+    "two-people",
+  ] as const)("refuses historical continuity with %s current facts", async (change) => {
+    const f = historicalFixture();
+    if (change === "unknown") {
+      f.source.entry.participantCount = 0;
+      f.source.entry.participants = [];
+    }
+    if (change === "another-person") {
+      f.source.entry.participants = [{ identity: { type: "profile", id: "person-b" } }];
+    }
+    if (change === "shared") {
+      f.source.entry.chatType = "group";
+    }
+    if (change === "replacement") {
+      f.source.entry.sessionId = "replacement-id";
+    }
+    if (change === "root" && f.source.entry.conversationTopology?.role === "branch") {
+      f.source.entry.conversationTopology.rootSessionId = "other-root";
+    }
+    if (change === "incomplete") {
+      f.source.entry.participantCount = 2;
+    }
+    if (change === "two-people") {
+      f.source.entry.participantCount = 2;
+      f.source.entry.participants!.push({ identity: { type: "profile", id: "person-b" } });
+    }
+    await expect(f.create()).rejects.toBeInstanceOf(PersonalConversationReadRefusedError);
+    expect(mocks.anchors).not.toHaveBeenCalled();
+  });
+
+  it("accepts a complete current person roster with known internal agent actors", async () => {
+    const f = historicalFixture();
+    f.source.entry.participants!.push({ identity: { type: "agent", id: "internal-worker" } });
+    f.source.entry.participantCount = 2;
+    const group = await f.create();
+    group.release();
+  });
+
+  it("rejects changed native points, forged handles and range expansion", async () => {
+    const f = historicalFixture();
+    const group = await f.create();
+    const request = { ...f.params, personal: { ...f.params.personal, contributionGroup: group } };
+    try {
+      await expect(
+        prepareTranscriptReadAuthority({
+          ...request,
+          personal: { ...request.personal, rootEvidence: {} as NativeKnowledgeRootEvidence },
+        }),
+      ).rejects.toThrow("Prepared root group scope changed");
+      await expect(
+        prepareTranscriptReadAuthority({
+          ...request,
+          personal: { ...request.personal, contributionGroup: structuredClone(group) },
+        }),
+      ).rejects.toThrow("changed or expired");
+      const grant = await prepareTranscriptReadAuthority(request);
+      try {
+        const changed = {
+          ...f.references[0]!,
+          through: { ...f.references[0]!.through, rawSeq: 99 },
+        };
+        expect(grant.selectContribution(changed)).toBeUndefined();
+        const admission = grant.prepareAdmission();
+        try {
+          await expect(
+            prepareTranscriptReadAuthority({
+              ...f.params,
+              preparedAdmission: admission,
+              personal: { ...f.params.personal, contribution: f.references[0] },
+            }),
+          ).rejects.toThrow("changed or expired");
+        } finally {
+          admission.release();
+        }
+      } finally {
+        grant.release();
+      }
+      f.anchors[0]!.effectiveParentId = "rewritten-parent";
+      await expect(prepareTranscriptReadAuthority(request)).rejects.toThrow(
+        "Native prefix changed",
+      );
+    } finally {
+      group.release();
+    }
+    await expect(prepareTranscriptReadAuthority(request)).rejects.toThrow("changed or expired");
+  });
+
+  it("keeps native anchor queries within their cohort budget and fixes one prefix across pages", async () => {
+    const f = historicalFixture(70);
+    const group = await f.create();
+    try {
+      expect(mocks.anchors).toHaveBeenCalledTimes(2);
+      expect(mocks.anchors.mock.calls[0]![1].entryIds).toHaveLength(63);
+      expect(mocks.anchors.mock.calls[1]![1]).toMatchObject({
+        contextValidation: { version: { rawSeq: 72 } },
+      });
+      const grant = await prepareTranscriptReadAuthority({
+        ...f.params,
+        personal: { ...f.params.personal, contributionGroup: group },
+      });
+      try {
+        expect(mocks.anchors).toHaveBeenCalledTimes(3);
+        expect(mocks.anchors.mock.calls[2]![1].entryIds).toEqual([]);
+      } finally {
+        grant.release();
+      }
+    } finally {
+      group.release();
+    }
+  });
+
+  it("permits old own-reset history but never creates a current self grant", async () => {
+    const f = historicalFixture(1, true);
+    const group = await f.create();
+    try {
+      const grant = await prepareTranscriptReadAuthority({
+        ...f.params,
+        personal: { ...f.params.personal, contributionGroup: group },
+      });
+      try {
+        expect(grant.selectContribution(f.references[0]!)).toMatchObject({
+          originalLifecycleRevision: "before-reset",
+        });
+      } finally {
+        grant.release();
+      }
+    } finally {
+      group.release();
+    }
+    f.references[0]!.source.lifecycleRevision = f.recipient.entry.lifecycleRevision!;
+    await expect(f.create()).rejects.toThrow("original same-person branch source");
   });
 });

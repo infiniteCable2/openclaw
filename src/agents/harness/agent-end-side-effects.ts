@@ -14,6 +14,7 @@ import {
   completedTurnMessageAnchor,
   type CompletedTurnMessageAnchor,
 } from "../sessions/session-manager-message-anchor.js";
+import type { SessionEntry } from "../sessions/session-manager-types.js";
 import {
   awaitAgentHarnessAgentEndHook,
   runAgentHarnessAgentEndHook,
@@ -29,6 +30,8 @@ type AgentEndSideEffectsParams = Omit<BaseAgentEndSideEffectsParams, "ctx"> & {
     TranscriptEntryAnchor,
     "agentId" | "sessionId" | "sessionKey" | "storePath" | "entryId"
   >;
+  /** Completed native maintenance; distinct from the completed-turn evidence anchor. */
+  skillExperienceReviewContextTail?: readonly SessionEntry[];
   ctx: BaseAgentEndSideEffectsParams["ctx"] & {
     authProfileId?: string;
     modelIterations?: number;
@@ -61,6 +64,7 @@ function runCoreAgentEndSideEffects(
       usedSkills,
       config,
       source: anchor,
+      contextTail: params.skillExperienceReviewContextTail,
     });
   };
   const failed = (error: unknown) => {

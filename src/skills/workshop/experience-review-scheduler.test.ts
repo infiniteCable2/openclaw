@@ -44,6 +44,7 @@ function createHarness() {
         workspaceDir: "/workspace",
         modelProviderId: "openai",
         modelId: "gpt-test",
+        modelContextWindowTokens: 32_768,
         modelIterations,
         skillWorkshopAvailable: true,
         compacted: overrides.compacted,
@@ -67,6 +68,32 @@ function createHarness() {
 }
 
 describe("skill experience review scheduler", () => {
+  it("retains an immutable maintenance tail separately from the completed-turn anchor", async () => {
+    const { turn, fireTimers, runReview } = createHarness();
+    const contextTail: NonNullable<SkillExperienceReviewParams["contextTail"]> = [
+      {
+        type: "compaction",
+        id: "completed-compaction",
+        parentId: source.entryId,
+        timestamp: new Date(1).toISOString(),
+        summary: "Verified completed summary",
+        firstKeptEntryId: source.entryId,
+        tokensBefore: 100,
+      },
+    ];
+    turn(10, { contextTail });
+    const compaction = contextTail[0];
+    if (compaction.type === "compaction") {
+      compaction.summary = "Later mutable state";
+    }
+    fireTimers();
+    await vi.waitFor(() => expect(runReview).toHaveBeenCalledOnce());
+    expect(runReview.mock.calls[0]?.[0]).toMatchObject({
+      source,
+      contextTail: [{ summary: "Verified completed summary" }],
+    });
+  });
+
   it("accumulates model iterations across turns and reviews once the session reaches ten", async () => {
     const { turn, fireTimers, runReview, timers } = createHarness();
 
@@ -78,7 +105,10 @@ describe("skill experience review scheduler", () => {
     expect(timers).toHaveLength(1);
     fireTimers();
     await vi.waitFor(() => expect(runReview).toHaveBeenCalledTimes(1));
-    expect(runReview.mock.calls[0]?.[0]).toMatchObject({ source, ctx: { runId: "run-3" } });
+    expect(runReview.mock.calls[0]?.[0]).toMatchObject({
+      source,
+      ctx: { runId: "run-3", modelContextWindowTokens: 32_768 },
+    });
 
     // The counter restarts after scheduling.
     turn(9);

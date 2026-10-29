@@ -45,6 +45,8 @@ export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
     signal?: AbortSignal;
     /** Opaque hydrated attempt/compaction boundary; ordinary tool steps reuse it. */
     contextIdentity?: object;
+    /** Exact first-request SDK initialization values for bounded cold recipient admission. */
+    bootstrapInitialization?: import("../../../config/sessions/conversation-knowledge-checkpoint-admission.js").ConversationKnowledgeBootstrapInitialization;
     /** Reserve native request capacity before committing an observation. */
     canAdmit: (message: CustomMessage) => boolean;
   }) => Promise<CustomMessage[]>;

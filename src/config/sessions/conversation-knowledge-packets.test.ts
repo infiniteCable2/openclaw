@@ -5,6 +5,8 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
+  conversationKnowledgePacketId,
+  createConversationKnowledgePacketReport,
   readActiveConversationKnowledgePacketIds,
   readConversationKnowledgePacketProgress,
   retainConversationKnowledgePacket,
@@ -28,7 +30,17 @@ import * as sourceAuthority from "./session-source-authority.js";
 import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 import { readSessionTranscriptModelContextAsync } from "./session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
+import { createSessionTranscriptHeader } from "./transcript-header.js";
 import { withSessionTranscriptWriteAssertion } from "./transcript-write-context.js";
+
+function projection(receipt: ConversationKnowledgeReceipt, text: string) {
+  return JSON.stringify({
+    source: receipt.origin,
+    sourceSessionKey: receipt.source.sessionKey,
+    throughEntryId: receipt.through.entryId,
+    observations: [{ speaker: "assistant", text }],
+  });
+}
 
 describe("native retained conversation knowledge packets", () => {
   it("prepares each held source once per batch without merging distinct grants or source versions", async () => {
@@ -148,7 +160,7 @@ describe("native retained conversation knowledge packets", () => {
           const sourceVersion = context.version;
           const packets = Array.from({ length: 32 }, (_, offset) => ({
             receipt,
-            text: `Synthetic segment ${offset}.`,
+            text: projection(receipt, `Synthetic segment ${offset}.`),
             offset,
             nextOffset: offset + 1,
             complete: false,
@@ -224,10 +236,91 @@ describe("native retained conversation knowledge packets", () => {
       },
     );
   });
-  it("retains append-preserved source progress across compaction and refuses replaced authority", async () => {
+  it("retains append-preserved source progress across compaction and refuses replaced authority", async ({
+    onTestFailed,
+    onTestFinished,
+  }) => {
+    const started = performance.now();
+    const initialCpu = process.cpuUsage();
+    let currentPhase = "fixture-start";
+    let phaseStarted = started;
+    let nextOperation = 0;
+    const pending = new Map<number, { phase: string; startedMs: number }>();
+    const completed: Array<{ phase: string; elapsedMs: number; failed: boolean }> = [];
+    let firstFailure:
+      | { phase: string; name: string; message: string; stack: string[]; causes: string[] }
+      | undefined;
+    const mark = (phase: string) => {
+      currentPhase = phase;
+      phaseStarted = performance.now();
+    };
+    const trace = async <T>(phase: string, operation: () => Promise<T>): Promise<T> => {
+      mark(phase);
+      const id = ++nextOperation;
+      const before = performance.now();
+      pending.set(id, { phase, startedMs: Math.round(before - started) });
+      let failed = true;
+      try {
+        const result = await operation();
+        failed = false;
+        return result;
+      } catch (error) {
+        if (!firstFailure) {
+          const causes: string[] = [];
+          let cause = error instanceof Error ? error.cause : undefined;
+          const seen = new Set<unknown>([error]);
+          while (cause !== undefined && causes.length < 3 && !seen.has(cause)) {
+            seen.add(cause);
+            if (cause instanceof Error) {
+              causes.push(`${cause.name}: ${cause.message}`.slice(0, 1_000));
+              cause = cause.cause;
+            } else {
+              try {
+                causes.push((JSON.stringify(cause) ?? String(cause)).slice(0, 1_000));
+              } catch {
+                causes.push(String(cause).slice(0, 1_000));
+              }
+              break;
+            }
+          }
+          firstFailure = {
+            phase,
+            name: error instanceof Error ? error.name : typeof error,
+            message: (error instanceof Error ? error.message : String(error)).slice(0, 1_000),
+            stack: error instanceof Error ? (error.stack ?? "").split("\n").slice(0, 7) : [],
+            causes,
+          };
+          // Fixture cleanup must finish, but must not hide the original native refusal.
+          console.error(
+            JSON.stringify({ scenario: "knowledge-packet-first-failure", firstFailure }),
+          );
+        }
+        throw error;
+      } finally {
+        pending.delete(id);
+        completed.push({ phase, elapsedMs: Math.round(performance.now() - before), failed });
+        if (completed.length > 24) completed.shift();
+      }
+    };
+    onTestFailed(() => {
+      console.error(
+        JSON.stringify({
+          scenario: "knowledge-packet-compaction-authority",
+          phase: currentPhase,
+          phaseElapsedMs: Math.round(performance.now() - phaseStarted),
+          elapsedMs: Math.round(performance.now() - started),
+          pending: [...pending.values()],
+          completed,
+          firstFailure,
+          cpuMicros: process.cpuUsage(initialCpu),
+          rssBytes: process.memoryUsage().rss,
+        }),
+      );
+    });
     await withOpenClawTestState(
       { scenario: "minimal", label: "knowledge-packets" },
       async (state) => {
+        mark("setup-database");
         const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
         const root = {
           sessionKey: "agent:main:main",
@@ -249,6 +342,7 @@ describe("native retained conversation knowledge packets", () => {
           root,
         };
         for (const entry of [source, branch, root]) {
+          mark(`setup-entry-${entry.sessionId}`);
           await upsertSessionEntryCore(
             { ...base, ...entry },
             {
@@ -268,6 +362,7 @@ describe("native retained conversation knowledge packets", () => {
             },
           );
         }
+        mark("setup-source-messages");
         expect(
           appendTranscriptMessageSync(source, {
             message: { role: "user", content: "A complete source question.", timestamp: 1 },
@@ -293,7 +388,9 @@ describe("native retained conversation knowledge packets", () => {
           runId: "source-run",
           through: answer.value.anchor,
         };
-        const { databaseClaim } = await loadSessionEntryForAdmission(branch);
+        const { databaseClaim } = await trace("recipient-admission", () =>
+          loadSessionEntryForAdmission(branch),
+        );
         if (
           !("kind" in databaseClaim) ||
           databaseClaim.kind !== "worker" ||
@@ -313,14 +410,16 @@ describe("native retained conversation knowledge packets", () => {
           },
         );
         const version = async () => {
-          const context = await readSessionTranscriptModelContextAsync(source, (value) => value);
+          const context = await trace("source-version", () =>
+            readSessionTranscriptModelContextAsync(source, (value) => value),
+          );
           if (!context.version) {
             throw new Error("Synthetic native source version missing");
           }
           return context.version;
         };
         const reports = async () =>
-          (await loadTranscriptEvents(branch))
+          (await trace("recipient-reports", () => loadTranscriptEvents(branch)))
             .map(asOptionalRecord)
             .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT);
         try {
@@ -331,6 +430,7 @@ describe("native retained conversation knowledge packets", () => {
               message: { role: "user", content: "A later source question.", timestamp: 3 },
             }).ok,
           ).toBe(true);
+          mark("source-prefix-cohort");
           const exactSource = await reader.withRead(
             { sessionKeys: [source.sessionKey, branch.sessionKey] },
             authority,
@@ -353,6 +453,7 @@ describe("native retained conversation knowledge packets", () => {
               },
             ]).refusedSource,
           ).toBeUndefined();
+          mark("legacy-carrier-write");
           const partial = {
             branch,
             writeTarget: branch,
@@ -360,17 +461,41 @@ describe("native retained conversation knowledge packets", () => {
             reader,
             sourceVersion: originalVersion,
             source: authority,
-            text: "First fact.",
+            text: projection(receipt, "First fact."),
             offset: 0,
             nextOffset: 11,
             complete: false,
           };
-          await retainConversationKnowledgePacket(partial);
-          await retainConversationKnowledgePacket(partial);
+          const report = createConversationKnowledgePacketReport(partial);
+          expect(report.details.packetId).toBe(
+            conversationKnowledgePacketId(conversationKnowledgeContributionId(receipt), 0),
+          );
+          const legacyContent = `Retained related-conversation observations.\n${partial.text}`;
+          // Raw historical carrier insertion does not initialize a native transcript.
+          expect(
+            appendTranscriptEventSync(
+              branch,
+              createSessionTranscriptHeader({ sessionId: branch.sessionId }),
+            ).ok,
+          ).toBe(true);
+          expect(
+            appendTranscriptEventSync(branch, {
+              type: "custom_message",
+              id: "legacy-knowledge-packet",
+              ...report,
+              content: legacyContent,
+            }).ok,
+          ).toBe(true);
+          await trace("retain-partial", () => retainConversationKnowledgePacket(partial));
+          await trace("retain-partial", () => retainConversationKnowledgePacket(partial));
           expect(await reports()).toHaveLength(1);
+          // Receipt identity, not new rendering bytes, owns replay after an upgrade.
+          expect((await reports())[0]?.content).toBe(legacyContent);
           const contributionId = conversationKnowledgeContributionId(receipt);
           const progress = () =>
-            readConversationKnowledgePacketProgress({ branch, assertCurrent: authority });
+            trace("recipient-progress", () =>
+              readConversationKnowledgePacketProgress({ branch, assertCurrent: authority }),
+            );
           expect((await progress()).get(contributionId)).toEqual({
             complete: false,
             nextOffset: 11,
@@ -380,7 +505,9 @@ describe("native retained conversation knowledge packets", () => {
             throw new Error("Synthetic retained packet entry missing");
           }
           const activePacketIds = () =>
-            readActiveConversationKnowledgePacketIds({ branch, assertCurrent: authority });
+            trace("recipient-active-packets", () =>
+              readActiveConversationKnowledgePacketIds({ branch, assertCurrent: authority }),
+            );
           const firstPacketId = asOptionalRecord(firstPacket.details)?.packetId;
           expect(await activePacketIds()).toEqual([firstPacketId]);
           expect(
@@ -407,21 +534,25 @@ describe("native retained conversation knowledge packets", () => {
               tokensBefore: 100,
             }).ok,
           ).toBe(true);
+          mark("source-compaction-complete");
           const completion = {
             ...partial,
             offset: 11,
             nextOffset: 23,
-            text: " Second fact.",
+            text: projection(receipt, " Second fact."),
             complete: true,
           };
-          await expect(retainConversationKnowledgePacket(completion)).rejects.toThrow(
-            SessionTranscriptReadFenceError,
-          );
+          await expect(
+            trace("retain-stale-source", () => retainConversationKnowledgePacket(completion)),
+          ).rejects.toThrow(SessionTranscriptReadFenceError);
           expect(await reports()).toHaveLength(1);
-          await retainConversationKnowledgePacket({
-            ...completion,
-            sourceVersion: await version(),
-          });
+          const refreshedVersion = await version();
+          await trace("retain-refreshed-source", () =>
+            retainConversationKnowledgePacket({
+              ...completion,
+              sourceVersion: refreshedVersion,
+            }),
+          );
           expect(await reports()).toHaveLength(2);
           const completedPacket = (await reports())[1];
           const completedPacketId = asOptionalRecord(completedPacket?.details)?.packetId;
@@ -462,6 +593,7 @@ describe("native retained conversation knowledge packets", () => {
             runId: "second-source-run",
             through: nextAnswer.value.anchor,
           };
+          mark("writer-replacement-setup");
           const recipient = loadSessionEntry(branch);
           if (!recipient) {
             throw new Error("Synthetic recipient missing");
@@ -471,6 +603,7 @@ describe("native retained conversation knowledge packets", () => {
             activeWriterRunId: "recipient-native-one",
           });
           const nextVersion = await version();
+          mark("writer-replacement-assertion");
           await expect(
             withSessionTranscriptWriteAssertion(
               {
@@ -480,15 +613,17 @@ describe("native retained conversation knowledge packets", () => {
               },
               authority,
               async () => {
+                mark("writer-replacement-write");
                 await upsertSessionEntryCore(branch, {
                   ...recipient,
                   activeWriterRunId: "recipient-native-replacement",
                 });
+                mark("retain-replaced-writer");
                 await retainConversationKnowledgePacket({
                   ...completion,
                   receipt: nextReceipt,
                   offset: 0,
-                  text: "Another answer.",
+                  text: projection(nextReceipt, "Another answer."),
                   nextOffset: 15,
                   sourceVersion: nextVersion,
                 });
@@ -496,10 +631,12 @@ describe("native retained conversation knowledge packets", () => {
             ),
           ).rejects.toThrow();
           expect(await reports()).toHaveLength(2);
+          mark("source-revocation-setup");
           const revoked: SessionSourceAssertion = Object.assign(
             () => databaseClaim.assertCurrent(),
             {
               prepareSessionSource: async () => {
+                mark("source-revocation-write");
                 await upsertSessionEntryCore(source, {
                   sessionId: source.sessionId,
                   lifecycleRevision: "source-replaced",
@@ -509,11 +646,12 @@ describe("native retained conversation knowledge packets", () => {
               },
             },
           );
+          mark("retain-revoked-source");
           await expect(
             retainConversationKnowledgePacket({
               ...completion,
               receipt: nextReceipt,
-              text: "Another answer.",
+              text: projection(nextReceipt, "Another answer."),
               offset: 0,
               nextOffset: 15,
               sourceVersion: await version(),
@@ -526,7 +664,66 @@ describe("native retained conversation knowledge packets", () => {
             nextOffset: 23,
           });
         } finally {
-          await databaseClaim.release();
+          await trace("cleanup-claim", () => databaseClaim.release());
+          // Identify the actual native owner that has not settled. These wrappers
+          // delegate unchanged; never bypass fixture draining or its safety checks.
+          const scopes = await import("../../shared/async-work-scope.js");
+          const stateCleanup = await import("../../test-utils/session-state-cleanup.js");
+          const queues = await import("./store-writer-state.test-support.js");
+          const reconcile = await import("./session-transcript-reconcile.js");
+          const fileLocks = await import("../../infra/file-lock.js");
+          const agentDatabases = await import("../../state/openclaw-agent-db-lifecycle.js");
+          const stateDatabases = await import("../../state/openclaw-state-db.js");
+          const original = {
+            scope: scopes.AsyncWorkScope.prototype.drain,
+            cleanup: stateCleanup.cleanupSessionStateForTest,
+            queues: queues.drainSessionStoreWriterQueuesForTest,
+            reconcile: reconcile.waitForSessionTranscriptIndexReconcilesInStateDir,
+            locks: fileLocks.drainFileLockStateForTest,
+            agents: agentDatabases.closeOpenClawAgentDatabasesAsync,
+            state: stateDatabases.closeOpenClawStateDatabaseByPathAsync,
+          };
+          const cleanupSpies = [
+            vi.spyOn(scopes.AsyncWorkScope.prototype, "drain").mockImplementation(function (
+              this: InstanceType<typeof scopes.AsyncWorkScope>,
+            ) {
+              return trace("cleanup-work-scope", () => original.scope.call(this));
+            }),
+            vi
+              .spyOn(stateCleanup, "cleanupSessionStateForTest")
+              .mockImplementation((...args) =>
+                trace("cleanup-session-state", () => original.cleanup(...args)),
+              ),
+            vi
+              .spyOn(queues, "drainSessionStoreWriterQueuesForTest")
+              .mockImplementation((...args) =>
+                trace("cleanup-writer-queues", () => original.queues(...args)),
+              ),
+            vi
+              .spyOn(reconcile, "waitForSessionTranscriptIndexReconcilesInStateDir")
+              .mockImplementation((...args) =>
+                trace("cleanup-transcript-reconcile", () => original.reconcile(...args)),
+              ),
+            vi
+              .spyOn(fileLocks, "drainFileLockStateForTest")
+              .mockImplementation((...args) =>
+                trace("cleanup-file-locks", () => original.locks(...args)),
+              ),
+            vi
+              .spyOn(agentDatabases, "closeOpenClawAgentDatabasesAsync")
+              .mockImplementation((...args) =>
+                trace("cleanup-agent-databases", () => original.agents(...args)),
+              ),
+            vi
+              .spyOn(stateDatabases, "closeOpenClawStateDatabaseByPathAsync")
+              .mockImplementation((...args) =>
+                trace("cleanup-state-database", () => original.state(...args)),
+              ),
+          ];
+          onTestFinished(() => {
+            for (const spy of cleanupSpies.toReversed()) spy.mockRestore();
+          });
+          mark("cleanup-fixture");
         }
       },
     );

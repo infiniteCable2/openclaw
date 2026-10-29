@@ -44,10 +44,11 @@ export function selectConversationKnowledgeReceipts(
   currentSessionId: string,
   currentSessionKey?: string,
   consumerMode: "native" | "branches" = "branches",
+  currentLifecycleRevision?: string,
 ) {
   const selected = new Map<string, ConversationKnowledgeReference>();
   const retired = new Set<string>();
-  const incarnationByKey = new Map<string, string>();
+  const sessionByKey = new Map<string, string>();
   for (const event of events) {
     const record = asOptionalRecord(event);
     if (record?.type !== "custom_message") {
@@ -59,17 +60,26 @@ export function selectConversationKnowledgeReceipts(
         : record.customType === CONVERSATION_UTTERANCE_REPORT
           ? readConversationUtteranceObservation(record.details)
           : undefined;
-    if (
-      !receipt ||
+    if (!receipt) {
+      continue;
+    }
+    const sameRecipient =
       receipt.source.sessionId === currentSessionId ||
-      receipt.source.sessionKey === currentSessionKey
+      receipt.source.sessionKey === currentSessionKey;
+    if (
+      sameRecipient &&
+      (!currentLifecycleRevision ||
+        receipt.source.sessionId !== currentSessionId ||
+        receipt.source.sessionKey !== currentSessionKey ||
+        receipt.source.lifecycleRevision === currentLifecycleRevision)
     ) {
       continue;
     }
     const sourceKey = JSON.stringify([receipt.source.agentId, receipt.source.sessionKey]);
-    const incarnation = conversationKnowledgeOrigin(receipt.source);
-    const oldOrigin = incarnationByKey.get(sourceKey);
-    if (oldOrigin && oldOrigin !== incarnation) {
+    const oldSessionId = sessionByKey.get(sourceKey);
+    // A native reset keeps transcript identity. Historical lifecycles remain
+    // candidates only: fresh native historical admission still owns disclosure.
+    if (oldSessionId && oldSessionId !== receipt.source.sessionId) {
       for (const [origin, previous] of selected) {
         if (
           previous.source.agentId === receipt.source.agentId &&
@@ -79,7 +89,7 @@ export function selectConversationKnowledgeReceipts(
         }
       }
     }
-    incarnationByKey.set(sourceKey, incarnation);
+    sessionByKey.set(sourceKey, receipt.source.sessionId);
     const endpoint = JSON.stringify([
       receipt.origin,
       receipt.through.generation,

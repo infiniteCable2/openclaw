@@ -50,6 +50,8 @@ vi.mock("../../config/sessions/conversation-knowledge-packets.js", () => ({
   CONVERSATION_KNOWLEDGE_CONTEXT: "openclaw.conversation-knowledge-context.v1",
   createConversationKnowledgePacketReport: source.report,
   conversationKnowledgeContributionId: source.contribution,
+  conversationKnowledgePacketId: (contributionId: string, offset: number) =>
+    `${contributionId}:${offset}`,
   readConversationKnowledgePacketProgress: source.progress,
   readActiveConversationKnowledgePacketIds: async () => [],
   retainConversationKnowledgePackets: source.retain,
@@ -138,12 +140,18 @@ beforeEach(() => {
       text: string;
       receipt: { through: { entryId: string } };
       offset: number;
-    }) => ({
-      customType: "synthetic-knowledge-packet",
-      content: text,
-      display: false,
-      details: { packetId: `${receipt.through.entryId}:${offset}` },
-    }),
+    }) => {
+      // Native rendering rejects an empty projection: receipt lookups must not render.
+      if (!text) {
+        throw new Error("Conversation knowledge packet projection is invalid");
+      }
+      return {
+        customType: "synthetic-knowledge-packet",
+        content: text,
+        display: false,
+        details: { packetId: `${source.contribution(receipt)}:${offset}` },
+      };
+    },
   );
   preparationYield.mockReset().mockResolvedValue(undefined);
 });

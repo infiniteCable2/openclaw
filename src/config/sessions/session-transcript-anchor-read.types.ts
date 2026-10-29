@@ -1,4 +1,7 @@
-import type { SessionTranscriptWatermark } from "./session-transcript-context-version.types.js";
+import type {
+  SessionTranscriptWatermark,
+  SessionTranscriptContextVersion,
+} from "./session-transcript-context-version.types.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import type { InternalSessionEntry } from "./types.js";
 
@@ -9,6 +12,7 @@ export type SessionTranscriptAnchorFacts = {
   watermark?: SessionTranscriptWatermark;
   messagePresence?: boolean;
   contextValidated?: true;
+  contextVersion?: SessionTranscriptContextVersion;
   contextAuthority?: {
     entry?: Pick<
       InternalSessionEntry,

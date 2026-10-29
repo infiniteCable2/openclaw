@@ -478,6 +478,32 @@ describe("conversation knowledge prefetch lifecycle", () => {
     expect(f.prepare).toHaveBeenCalledOnce();
     expect(resources.size).toBe(0);
   });
+  it("retains native custody across asynchronous child cleanup failure and retries settlement", async () => {
+    const settle = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("synthetic child release failed"))
+      .mockResolvedValue(undefined);
+    const release = vi.fn(async () => {});
+    const clear = vi.fn();
+    boundary.capture.mockReturnValue({ assertCurrent() {}, release });
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      assertCurrent() {},
+      prepare: async () => {},
+      clear,
+      settle,
+    });
+    await owner.wait();
+    await expect(owner.close()).rejects.toThrow("cleanup remains pending");
+    expect(settle).toHaveBeenCalledOnce();
+    expect(clear).toHaveBeenCalledTimes(2);
+    expect(release).not.toHaveBeenCalled();
+    expect(resources.size).toBe(1);
+    await [...resources][0]!.close();
+    expect(settle).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledOnce();
+    expect(resources.size).toBe(0);
+  });
 
   it("releases registration when native generation capture refuses", () => {
     boundary.capture.mockImplementationOnce(() => {

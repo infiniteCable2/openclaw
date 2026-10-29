@@ -284,7 +284,7 @@ describe("embedded attempt phase lifecycle state", () => {
     expect(result.messagesSnapshot).toEqual(messages);
   });
 
-  it.each(["complete", "missing admission", "missing terminal"] as const)(
+  it.each(["complete", "compacted", "missing admission", "missing terminal"] as const)(
     "handles %s candidate anchors without skipping later lifecycle work",
     async (boundary) => {
       const dir = tempDirs.make();
@@ -343,6 +343,14 @@ describe("embedded attempt phase lifecycle state", () => {
       if (boundary === "complete" && !expectedTerminalAnchor) {
         throw new Error("expected persisted terminal anchor");
       }
+      const compactionId =
+        boundary === "compacted"
+          ? await sessionManager.appendCompactionAsync(
+              "Completed native summary",
+              terminalEntryId,
+              100,
+            )
+          : undefined;
       const afterTurn = vi.fn(async () => {});
       const maintain = vi.fn(async () => ({
         changed: false,
@@ -412,7 +420,7 @@ describe("embedded attempt phase lifecycle state", () => {
         },
       );
 
-      if (boundary === "complete") {
+      if (boundary === "complete" || boundary === "compacted") {
         expect(onContextEngineTurnCandidate).toHaveBeenCalledWith(
           expect.objectContaining({
             boundary: {
@@ -442,6 +450,21 @@ describe("embedded attempt phase lifecycle state", () => {
           ? { ...sessionManager.getSessionTarget(), entryId: terminalEntryId }
           : undefined,
       );
+      const reviewTail =
+        hoisted.runAgentEndSideEffects.mock.calls[0]?.[0].skillExperienceReviewContextTail;
+      if (compactionId) {
+        expect(reviewTail).toEqual([
+          expect.objectContaining({
+            id: compactionId,
+            type: "compaction",
+            parentId: terminalEntryId,
+            firstKeptEntryId: terminalEntryId,
+          }),
+          expect.objectContaining({ type: "custom", parentId: compactionId }),
+        ]);
+      } else {
+        expect(reviewTail).toBeUndefined();
+      }
       expect(afterTurn).not.toHaveBeenCalled();
       expect(maintain).not.toHaveBeenCalled();
     },

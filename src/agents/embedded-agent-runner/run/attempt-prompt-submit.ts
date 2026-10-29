@@ -48,7 +48,7 @@ type PromptSubmissionSession = {
   readonly isCompacting: boolean;
   [agentSessionQueuePromptContext]: AgentSession[typeof agentSessionQueuePromptContext];
   agent: {
-    state: { messages: AgentMessage[] };
+    state: { messages: AgentMessage[]; thinkingLevel?: string };
     streamFn: StreamFn;
     transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
     prepareNextTurn?: Agent["prepareNextTurn"];
@@ -265,6 +265,15 @@ export async function submitEmbeddedAttemptPrompt(input: {
           const packets = await input.refreshConversationContext({
             signal: options?.signal,
             canAdmit,
+            ...(!primaryRequestObserved && activeSession.agent.state.thinkingLevel !== undefined
+              ? {
+                  bootstrapInitialization: {
+                    provider: model.provider,
+                    modelId: model.id,
+                    thinkingLevel: activeSession.agent.state.thinkingLevel,
+                  },
+                }
+              : {}),
             contextIdentity:
               activeSession.messages.findLast((message) => message.role === "compactionSummary") ??
               activeSession,

@@ -325,9 +325,8 @@ describe("versioned background input snapshots", () => {
     );
     const manifests = new WeakMap<object, typeof events>();
     boundary.root.mockResolvedValue(events);
-    boundary.progress.mockResolvedValue(
-      new Map([["existing", { complete: true, nextOffset: 12 }]]),
-    );
+    const progress = new Map([["existing", { complete: true, nextOffset: 12 }]]);
+    boundary.progress.mockResolvedValue(progress);
     boundary.version.mockImplementation(async (target: { sessionId: "root" | "recipient" }) => ({
       kind: "transcript-maintenance",
       version: structuredClone(versions[target.sessionId]),
@@ -368,13 +367,13 @@ describe("versioned background input snapshots", () => {
         retainInHistory: false,
         sourceCache: cache,
       });
-    return { read, cache, versions, events, branch, receipt };
+    return { read, cache, versions, events, branch, receipt, progress };
   }
 
   it("reuses unchanged snapshots only after fresh native physical rebind", async () => {
     const f = inputs();
-    const first = await f.read();
-    first!.retained!.clear();
+    await f.read();
+    f.progress.clear();
     const second = await f.read();
     expect(second?.events).toEqual(f.events);
     expect(second?.retained?.get("existing")).toEqual({ complete: true, nextOffset: 12 });

@@ -39,6 +39,7 @@ vi.mock("./conversation-knowledge-store.js", async (importOriginal) => ({
 // mock-isolation: Supply opaque root receipts without opening a history worker.
 vi.mock("./conversation-knowledge-history.js", () => ({
   readConversationKnowledgeReports: mocks.reports,
+  readConversationKnowledgeRootReports: mocks.reports,
 }));
 // mock-isolation: Drive finite native page outcomes without retaining database resources.
 vi.mock("./session-transcript-delta-read.js", () => ({

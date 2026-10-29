@@ -1,10 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createConversationKnowledgeSourceCache } from "../../auto-reply/reply/conversation-knowledge-source-cache.js";
+import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
+import { prepareConversationKnowledgeCheckpointSelection } from "./conversation-knowledge-checkpoint-admission.js";
+import {
+  createConversationKnowledgeCheckpoint,
+  prepareConversationKnowledgeCheckpointCoverage,
+  PreparedConversationKnowledgeCheckpointCoverage,
+} from "./conversation-knowledge-checkpoint.js";
 import {
   assertNativeKnowledgeRootContribution,
+  assertNativeKnowledgeRootContributionGroup,
+  prepareNativeKnowledgeRootContributionGroup,
   issuePreparedKnowledgeRootCandidates,
   readConversationKnowledgeRoot,
   readPreparedConversationKnowledgeRoot,
+  readPreparedConversationKnowledgeRootEvidence,
   type ConversationKnowledgeBranch,
   type PreparedKnowledgeRootCandidates,
 } from "./conversation-knowledge-store.js";
@@ -22,7 +32,11 @@ const boundary = vi.hoisted(() => ({ reports: vi.fn() }));
 // The private provenance brands, exact reference selection and fresh rebind checks remain real.
 // mock-isolation: Supply native report/read facts without opening SQLite workers.
 vi.mock("./conversation-knowledge-history.js", () => ({
-  readConversationKnowledgeReports: boundary.reports,
+  readConversationKnowledgeRootReports: async (params: { revalidate(): Promise<void> }) => {
+    const reports = await boundary.reports(params);
+    await params.revalidate();
+    return reports;
+  },
 }));
 
 function fixture() {
@@ -166,6 +180,123 @@ function fixture() {
 beforeEach(() => boundary.reports.mockReset());
 
 describe("prepared native knowledge root candidates", () => {
+  it("shares an exact immutable checkpoint scope while retaining native recipient custody", async () => {
+    const f = fixture();
+    const references = Array.from({ length: 33 }, (_, index) => ({
+      ...f.receipt,
+      through: { ...f.receipt.through, entryId: `answer-${index}`, rawSeq: index + 3 },
+    }));
+    boundary.reports.mockResolvedValue(
+      references.map((details, index) => ({ ...f.events[0], id: `root-${index}`, details })),
+    );
+    const root = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    expect(() =>
+      issuePreparedKnowledgeRootCandidates(root.evidence, references, { maxBytes: 2_048 }),
+    ).toThrow(RangeError);
+    const manifest = issuePreparedKnowledgeRootCandidates(root.evidence, references, {
+      maxBytes: 2_048,
+      sharedMetadata: true,
+    });
+    expect(manifest.byteLength).toBeGreaterThan(2_048);
+    expect(manifest.ownedByteLength).toBeLessThan(2_048);
+    const first = await readPreparedConversationKnowledgeRoot({
+      ...f,
+      manifest,
+      assertCurrent() {},
+    });
+    const proof = prepareNativeKnowledgeRootContributionGroup(first.evidence, f.branch, references);
+    const secondManifest = issuePreparedKnowledgeRootCandidates(root.evidence, references, {
+      maxBytes: 2_048,
+      sharedMetadata: true,
+    });
+    const second = await readPreparedConversationKnowledgeRoot({
+      ...f,
+      manifest: secondManifest,
+      assertCurrent() {},
+    });
+    expect(second[0]).toBe(first[0]);
+    expect(Object.isFrozen(second[0])).toBe(true);
+    expect(() =>
+      assertNativeKnowledgeRootContributionGroup(second.evidence, f.branch, proof),
+    ).not.toThrow();
+    const audienceKey = conversationKnowledgeParticipantIdentity(
+      f.receipt.privateAudience!.participant,
+    )!;
+    const checkpoint = createConversationKnowledgeCheckpoint({
+      branch: f.branch,
+      audienceKey,
+      covered: references,
+      summary: "Synthetic shared summary.",
+    });
+    const coverage = prepareConversationKnowledgeCheckpointCoverage({
+      checkpoint,
+      records: [checkpoint],
+      assertCurrent() {},
+    });
+    const selection = prepareConversationKnowledgeCheckpointSelection({
+      branch: f.branch,
+      checkpoint,
+      coverage,
+      audienceKey,
+      manifest,
+      rootEvidence: first.evidence!,
+      availableReferences: references,
+      source() {},
+    })!;
+    expect(selection).toBeDefined();
+    const enumerate = vi
+      .spyOn(PreparedConversationKnowledgeCheckpointCoverage.prototype, "contributionIds")
+      .mockImplementation(() => {
+        throw new Error("ready enumerated historical membership");
+      });
+    const rehash = vi
+      .spyOn(PreparedConversationKnowledgeCheckpointCoverage.prototype, "matchesReference")
+      .mockImplementation(() => {
+        throw new Error("ready rehashed historical references");
+      });
+    try {
+      const readyEvidence = await readPreparedConversationKnowledgeRootEvidence({
+        ...f,
+        manifest,
+        assertCurrent() {},
+      });
+      expect(Array.isArray(readyEvidence)).toBe(false);
+      const binding = {
+        branch: f.branch,
+        checkpoint: selection.checkpoint,
+        coverage,
+        audienceKey,
+        manifest,
+        rootEvidence: readyEvidence,
+      };
+      expect(selection.validate(binding)).toBe(selection.checkpoint);
+      expect(() => selection.validate({ ...binding, checkpoint })).toThrow("selection changed");
+      expect(() => selection.validate({ ...binding, audienceKey: "different-person" })).toThrow(
+        "selection changed",
+      );
+      expect(enumerate).not.toHaveBeenCalled();
+      expect(rehash).not.toHaveBeenCalled();
+    } finally {
+      enumerate.mockRestore();
+      rehash.mockRestore();
+    }
+    const subset = issuePreparedKnowledgeRootCandidates(root.evidence, references.slice(1), {
+      maxBytes: 2_048,
+      sharedMetadata: true,
+    });
+    const different = await readPreparedConversationKnowledgeRoot({
+      ...f,
+      manifest: subset,
+      assertCurrent() {},
+    });
+    expect(() =>
+      assertNativeKnowledgeRootContributionGroup(different.evidence, f.branch, proof),
+    ).toThrow("root changed");
+    f.releaseReader();
+    expect(() =>
+      assertNativeKnowledgeRootContributionGroup(second.evidence, f.branch, proof),
+    ).toThrow("released");
+  });
   it("prepares more than one SQL batch of exact references within its byte budget", async () => {
     const f = fixture();
     const references = Array.from({ length: 33 }, (_, index) => ({

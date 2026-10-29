@@ -1,25 +1,78 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  ConversationKnowledgeRootCache,
+  type ConversationKnowledgeRootContinuation,
+} from "./conversation-knowledge-root-cache.js";
 import type { SessionTranscriptRuntimeTarget, TranscriptEvent } from "./session-accessor.types.js";
+import { assertCapturedSessionEntryReadSource } from "./session-entry-read-source.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import type { SessionTranscriptWatermark } from "./session-history-read.types.js";
 import { withSessionTranscriptDeltaReader } from "./session-transcript-delta-read.js";
 import { isSessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
 import { readSessionTranscriptWatermarkAsync } from "./session-transcript-watermark.js";
 
-/** Page a fixed native prefix, not the model's compacted/bounded context tail. */
-export async function readConversationKnowledgeReports(params: {
+type KnowledgeReportsRead = {
   target: SessionTranscriptRuntimeTarget;
   customTypes: readonly string[];
   modelContextOnly?: boolean;
   detailsOnly?: boolean;
   assertCurrent(): void;
   signal?: AbortSignal;
-}): Promise<TranscriptEvent[]> {
+};
+
+const rootCache = new ConversationKnowledgeRootCache();
+
+/** Only infrastructure roots opt in; recipients retain native compaction-aware reads. */
+export async function readConversationKnowledgeRootReports(
+  params: Omit<KnowledgeReportsRead, "modelContextOnly" | "detailsOnly"> & {
+    source: CapturedSessionEntryReadSource;
+    lifecycleRevision: string;
+    revalidate(): Promise<void>;
+    continuation?: ConversationKnowledgeRootContinuation;
+  },
+): Promise<TranscriptEvent[]> {
+  const target = { ...params.target, storePath: params.source.path };
+  const assertCurrent = () => {
+    params.signal?.throwIfAborted();
+    params.assertCurrent();
+    assertCapturedSessionEntryReadSource(params.source);
+  };
+  assertCurrent();
+  return withSessionTranscriptDeltaReader(
+    target,
+    (reader) =>
+      rootCache.read({
+        ...params,
+        ...target,
+        assertCurrent,
+        watermark: () => readSessionTranscriptWatermarkAsync(target),
+        raw: reader.raw,
+        full: (through) =>
+          readConversationKnowledgeReportsAt({ ...params, target, assertCurrent }, through),
+      }),
+    params.signal,
+  );
+}
+
+/** Page a fixed native prefix, not the model's compacted/bounded context tail. */
+export async function readConversationKnowledgeReports(
+  params: KnowledgeReportsRead,
+): Promise<TranscriptEvent[]> {
+  params.signal?.throwIfAborted();
+  params.assertCurrent();
+  const through = await readSessionTranscriptWatermarkAsync(params.target);
+  return readConversationKnowledgeReportsAt(params, through);
+}
+
+async function readConversationKnowledgeReportsAt(
+  params: KnowledgeReportsRead,
+  through: SessionTranscriptWatermark,
+): Promise<TranscriptEvent[]> {
   const check = () => {
     params.signal?.throwIfAborted();
     params.assertCurrent();
   };
-  check();
-  const through = await readSessionTranscriptWatermarkAsync(params.target);
   check();
   if (!through.generation || through.maxSeq === null) {
     return [];

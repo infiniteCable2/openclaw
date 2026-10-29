@@ -84,6 +84,7 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
         entryIds: ["question", "missing"],
         includeHeader: true,
         includeWatermark: true,
+        includeContextVersion: true,
       },
     };
     const read = (input = request) => operations["session.entry.read"](input, context);
@@ -108,6 +109,7 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
       watermark: { generation: expect.any(String), maxSeq: 1 },
     });
     const currentVersion = readTranscriptContextVersionInTransaction(database, scope.sessionId);
+    expect(first.transcript?.contextVersion).toEqual(currentVersion);
     const replayRequest: SessionEntryCohortRequest = {
       sessionKeys: [sessionKey],
       snapshotFields: [],

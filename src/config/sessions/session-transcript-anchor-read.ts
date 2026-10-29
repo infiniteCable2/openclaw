@@ -101,6 +101,7 @@ export async function readSessionTranscriptAnchorsAsync(
     includeSession: selection.includeSession,
     includeHeader: selection.includeHeader,
     includeWatermark: selection.includeWatermark,
+    includeContextVersion: selection.includeContextVersion,
     includeMessagePresence: selection.includeMessagePresence,
     contextValidation: selection.contextValidation && structuredClone(selection.contextValidation),
     contextAuthority: selection.contextAuthority && structuredClone(selection.contextAuthority),

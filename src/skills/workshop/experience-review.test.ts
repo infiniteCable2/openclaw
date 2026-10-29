@@ -47,6 +47,69 @@ afterEach(async () => {
 });
 
 describe("runSkillExperienceReview", () => {
+  it.each(["before", "after"] as const)(
+    "keeps native compaction %s the terminal message without copying later turns",
+    async (compactionTiming) => {
+      const candidate = await createExperienceReviewCandidate(
+        "review-compacted-prefix",
+        [
+          { role: "user", content: "Old work now covered by the summary.", timestamp: 1 },
+          { role: "user", content: "Retained procedure evidence.", timestamp: 2 },
+        ],
+        { workspaceDir: state.workspaceDir, modelId: "gpt-test" },
+      );
+      candidate.ctx.modelContextWindowTokens = 32_768;
+      candidate.ctx.foregroundPromptContext.promptCacheKey = "stable-foreground-prefix";
+      const source = await SessionManager.openAsync(candidate.source, state.workspaceDir);
+      const keptEntryId = candidate.source.entryId;
+      if (compactionTiming === "before") {
+        await source.appendCompactionAsync("Verified earlier procedure.", keptEntryId, 100);
+      }
+      candidate.source = (
+        await source.appendMessageWithTranscriptAnchorAsync(
+          { role: "user", content: "Completed reviewable turn.", timestamp: 3 },
+          { config: candidate.config },
+        )
+      ).anchor;
+      if (compactionTiming === "after") {
+        await source.appendCustomEntryAsync("native-maintenance", { complete: true });
+        await source.appendCompactionAsync("Verified earlier procedure.", keptEntryId, 100);
+        const branch = source.getBranch();
+        candidate.contextTail = structuredClone(
+          branch.slice(branch.findIndex((entry) => entry.id === candidate.source.entryId) + 1),
+        );
+      }
+      const foregroundMessages = source.buildSessionContext().messages;
+      await source.appendMessageWithTranscriptAnchorAsync(
+        {
+          role: "user",
+          content: "A later foreground turn must stay outside this review.",
+          timestamp: 4,
+        },
+        { config: candidate.config },
+      );
+      mocks.runSkillWorkshopReview.mockImplementation(
+        async (params: Parameters<typeof runSkillWorkshopReview>[0]) => {
+          expect(params.contextTokenBudget).toBe(32_768);
+          expect(params.promptCacheKey).toBe("stable-foreground-prefix");
+          expect(params.sessionManager?.buildSessionContext().messages).toEqual(foregroundMessages);
+          expect(params.sessionManager?.getSessionTarget()).toBeUndefined();
+          expect(foregroundMessages).toMatchObject([
+            { role: "compactionSummary", summary: "Verified earlier procedure." },
+            { role: "user", content: "Retained procedure evidence." },
+            { role: "user", content: "Completed reviewable turn." },
+          ]);
+          params.preparedRunAdmission.close();
+          return { meta: { durationMs: 1 } };
+        },
+      );
+
+      await runSkillExperienceReview(candidate);
+      expect(mocks.runSkillWorkshopReview).toHaveBeenCalledOnce();
+      expect(source.buildSessionContext().messages).toHaveLength(foregroundMessages.length + 1);
+    },
+  );
+
   it("announces changes committed before the review run failed", async () => {
     const workspaceDir = state.workspaceDir;
     const candidate = await createExperienceReviewCandidate(

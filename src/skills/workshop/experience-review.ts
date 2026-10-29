@@ -25,6 +25,7 @@ import {
 } from "../../process/gateway-work-admission.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
+import { restoreExperienceReviewContextTail } from "./experience-review-context.js";
 import { buildSkillExperienceReviewPrompt } from "./experience-review-prompt.js";
 import type { ExperienceReviewCandidate } from "./experience-review-scheduler.js";
 import { listWorkshopChanges } from "./library.js";
@@ -120,11 +121,16 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
     assertPhysicalCurrent: () => void,
     assertPreparationCurrent: () => void,
   ) => {
-    const sessionManager = await SessionManager.openModelContextAsync(source, {
+    const historical = await SessionManager.openModelContextAsync(source, {
       cwd: workspaceDir,
       through: candidate.source,
       signal: abortSignal,
     });
+    const sessionManager = restoreExperienceReviewContextTail(
+      historical,
+      candidate.source.entryId,
+      candidate.contextTail,
+    );
     assertPreparationCurrent();
     // Deleting, replacing, or resetting the source session must not revive its captured evidence.
     let sourceEntry:
@@ -223,6 +229,10 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
       prompt: buildSkillExperienceReviewPrompt(candidate),
       provider: candidate.ctx.modelProviderId,
       model: candidate.ctx.modelId,
+      // Preserve the foreground's effective cap, not just the wider catalog window.
+      // The native runner budgets the review's prompt/tools and compacts its detached
+      // context before submission; the source transcript remains untouched.
+      contextTokenBudget: candidate.ctx.modelContextWindowTokens,
       ...(candidate.ctx.authProfileId
         ? { authProfileId: candidate.ctx.authProfileId, authProfileIdSource: "user" as const }
         : {}),

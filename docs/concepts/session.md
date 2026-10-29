@@ -140,8 +140,8 @@ its next natural model step. Historical completed-turn receipts remain readable
 and quote only their validated exchanges; new terminal settlement does not publish
 another copy of messages already journaled independently.
 The two reference kinds use separate progress frontiers and deduplicate within
-their actual source incarnation and transcript generation. The root stores
-neither dialogue text nor fabricated model turns.
+their actual source incarnation and transcript generation. The root retains
+original references without copying whole dialogues or fabricating model turns.
 
 An exact-row transcript rewrite can renew the physical read anchors of an
 earlier, unchanged contribution in the same native worker transaction. The
@@ -186,10 +186,34 @@ storage-fact unavailability retries preparation instead of settling a source as 
 
 The root remains the authoritative source-reference ledger. Prepared segments are
 a rebuildable view, not a second root, durable admission receipt, or guarantee
-that a model has seen every contribution. Idle preparation neither acquires the
-model session lane nor writes recipient history, initializes a model runtime,
-compacts dialogue, or sends a response. A new opening rebuilds disposable preparation
-from the existing root and durable packet receipts.
+that a model has seen every contribution. Idle recipient preparation does not
+acquire the model session lane, write recipient history, compact dialogue, or
+send a response. A new opening rebuilds disposable preparation from the existing
+root and durable packet receipts.
+
+Root checkpoints bound the context offered to new branches. A separate background
+owner prepares an audience-scoped summary when the projected context reaches the
+native model token/compaction threshold. Cache byte limits do not trigger semantic
+compaction. Publication atomically records the summary and its exact newly covered
+original ranges; later contributions remain outside that checkpoint. Checkpoints
+form an immutable chain with delta coverage, preserving original session history
+and references. A summary remains a lossy interpretation, not a replacement for
+the historical record or permission to read it.
+
+A genuinely new recipient may adopt an already prepared checkpoint plus subsequent
+observations. Native creation/input proofs, current source permissions, exact range
+validation, prospective token accounting and an atomic recipient-version check
+protect that import. Preparation never forces a model request to wait for a new
+summary. Existing recipients retain their own imported progress and native
+compaction; publishing a root checkpoint does not rebase them, repeat earlier
+imports, or remove their local conversation. Their missing original contributions
+remain independently recoverable under the same permissions.
+
+Foreground conversation takes priority over root summarization. Checkpoint work
+uses native provider/authentication and compaction facilities without creating a
+speaking root session or exposing tools. Mandatory cloud-worker placement currently
+does not support this sessionless helper: it defers root summarization with an
+operational warning rather than bypassing the placement policy.
 
 The foreground consumes only a bounded prepared candidate view. Native provenance
 is rebound to the current recipient and physical database; source and audience

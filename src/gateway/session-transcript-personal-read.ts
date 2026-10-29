@@ -5,8 +5,14 @@ import {
   conversationKnowledgeAudienceIdentity,
   conversationKnowledgeParticipantIdentity,
   conversationKnowledgeContributionIdentity,
+  conversationKnowledgeHistoricalContributionIdentity,
   hasOnlyConversationAgentActorChanges,
 } from "../config/sessions/conversation-audience.js";
+import { conversationKnowledgeContributionId } from "../config/sessions/conversation-knowledge-identity.js";
+import {
+  issuePersonalConversationContributionRange,
+  type PersonalConversationContributionRange,
+} from "../config/sessions/conversation-knowledge-source-custody.js";
 import type {
   ConversationKnowledgeBranch,
   NativeKnowledgeRootEvidence,
@@ -14,22 +20,32 @@ import type {
 import type { ConversationKnowledgeReference } from "../config/sessions/conversation-knowledge.js";
 import { assertSessionConversationRootEntry } from "../config/sessions/session-conversation-admission.js";
 import { sessionCreatorProfileId } from "../config/sessions/session-entry-provenance.js";
-import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
   type PreparedSessionSourceAuthority,
   type SessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
+import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import { resolveSessionVisibility } from "./session-sharing-policy.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
+import {
+  PreparedPersonalConversationContributionGroup,
+  preparePersonalContributionMetadata,
+  type PersonalContributionMetadata,
+} from "./session-transcript-personal-contribution-group.js";
+import {
+  personalConversationReadFields as fields,
+  releasePersonalReadCustody,
+  type PersonalReadCustody,
+  type PersonalAdmissionBinding,
+} from "./session-transcript-personal-custody.js";
 
 /** An explicit native policy refusal, distinct from unavailable facts or worker failures. */
 export class PersonalConversationReadRefusedError extends SessionMutationAuthorizationChangedError {
@@ -41,6 +57,7 @@ export class PersonalConversationReadRefusedError extends SessionMutationAuthori
 
 export type PersonalConversationReadParams = {
   purpose: "conversation-differences";
+  signal?: AbortSignal;
   /** Internal native custody only; the current caller still supplies all disclosure proofs. */
   preparedAdmission?: PreparedPersonalConversationAdmission;
   personal: {
@@ -50,93 +67,13 @@ export type PersonalConversationReadParams = {
     targetAudience?: ConversationPrivateAudience;
     /** Selected native root report, not an arbitrary history range supplied by a tool. */
     contribution?: ConversationKnowledgeReference;
+    /** Exact immutable off-turn selection; cannot be combined with a single contribution. */
+    contributionGroup?: PreparedPersonalConversationContributionGroup;
     rootEvidence?: NativeKnowledgeRootEvidence;
   };
   getRuntimeConfig(): OpenClawConfig;
   sources: readonly { agentId: string; sessionKey: string }[];
 };
-
-// These are the native audience, membership and root-admission facts consumed below.
-const fields = [
-  "sessionId",
-  "lifecycleRevision",
-  "conversationTopology",
-  "chatType",
-  "publicShare",
-  "participantCount",
-  "participants",
-  "incognito",
-  "createdVia",
-  "createdActor",
-  "visibility",
-  "delivery",
-  "parentSessionKey",
-  "parentSessionId",
-  "parentSessionLifecycleRevision",
-  "spawnedBy",
-  "spawnedBySessionId",
-  "spawnDepth",
-  "forkSource",
-  "forkedFromParent",
-  "owner",
-  "archivedAt",
-  "initializationPending",
-  "mainRestartRecovery",
-  "modelSelectionLocked",
-  "pendingProjectGitUrl",
-  "pendingWorktree",
-  "providerReview",
-] as const satisfies readonly (keyof InternalSessionEntry)[];
-
-type PersonalReadSource = Readonly<{
-  agentId: string;
-  canonicalKey: string;
-  storePath: string;
-  sessionId: string;
-  lifecycleRevision: string | undefined;
-  readSource: CapturedSessionEntryReadSource;
-}>;
-type PersonalReadCustody = {
-  reads: Array<{
-    held: Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
-    expected: PersonalReadSource;
-    selectorPath: string;
-    storeKey: string;
-    members: string[];
-    entry: InternalSessionEntry;
-    root: boolean;
-    attested: boolean;
-  }>;
-  sources: PersonalReadSource[];
-  releases: Array<() => void>;
-  references: number;
-};
-type PersonalAdmissionBinding = {
-  target: ConversationKnowledgeBranch;
-  participant: SessionParticipantIdentity;
-  selected: readonly { agentId: string; sessionKey: string }[];
-  selectedMode: ReturnType<typeof resolveAgentConversationMode>;
-};
-
-function releasePersonalReadCustody(custody: PersonalReadCustody, retireView: boolean) {
-  if (retireView) {
-    custody.references--;
-  }
-  if (custody.references > 0) {
-    return;
-  }
-  const errors: unknown[] = [];
-  // Failed terminal cleanup retains native ownership for a later release retry.
-  for (let index = custody.releases.length - 1; index >= 0; index--) {
-    try {
-      custody.releases[index]!();
-      custody.releases.splice(index, 1);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  throwSqliteLifecycleErrors(errors, "Personal transcript read release failed");
-}
 
 const personalAdmissionIssuer = Symbol("native-personal-admission");
 /** Retains native row publications, never a former caller's execution or disclosure proof. */
@@ -189,16 +126,83 @@ Object.freeze(PreparedPersonalConversationAdmission);
 Object.freeze(PreparedPersonalConversationAdmission.prototype);
 export type { PreparedPersonalConversationAdmission };
 
+export type { PersonalConversationContributionRange } from "../config/sessions/conversation-knowledge-source-custody.js";
+
+export { preparePersonalConversationContributionGroup } from "./session-transcript-personal-contribution-group.js";
+export type { PreparedPersonalConversationContributionGroup } from "./session-transcript-personal-contribution-group.js";
+
 /** Internal purpose of the native read owner, never a general history or operator grant. */
 export async function preparePersonalConversationRead(params: PersonalConversationReadParams) {
+  if (params.personal.contributionGroup) {
+    if (params.personal.contribution || params.preparedAdmission) {
+      throw new PersonalConversationReadRefusedError(
+        "Contribution group cannot expand another admission",
+      );
+    }
+    const group = PreparedPersonalConversationContributionGroup.acquire(
+      params.personal.contributionGroup,
+    );
+    return preparePersonalConversationReadInternal(
+      { ...params, preparedAdmission: group.admission },
+      group.contributions,
+      group.version,
+      group.metadata,
+    );
+  }
+  return preparePersonalConversationReadInternal(params);
+}
+
+/** Group creation always validates every exact native point; no caller can supply a prefix proof. */
+export function preparePersonalConversationGroupRead(
+  params: PersonalConversationReadParams,
+  contributions: readonly ConversationKnowledgeReference[],
+) {
+  return preparePersonalConversationReadInternal(params, contributions);
+}
+
+async function preparePersonalConversationReadInternal(
+  params: PersonalConversationReadParams,
+  groupContributions?: readonly ConversationKnowledgeReference[],
+  preparedGroupVersion?: SessionTranscriptContextVersion,
+  preparedMetadata?: PersonalContributionMetadata,
+) {
   const target = structuredClone(params.personal.target);
   const participant = structuredClone(params.personal.originalParticipant);
   const selected = params.sources.map(({ agentId, sessionKey }) => ({ agentId, sessionKey }));
   const original = params.personal.assertCurrent;
   const destination = params.personal.targetAudience;
   const rootEvidence = params.personal.rootEvidence;
+  original();
+  const contributionMetadata =
+    preparedMetadata ??
+    (groupContributions
+      ? await preparePersonalContributionMetadata(
+          { ...params.personal, target, originalParticipant: participant },
+          groupContributions,
+        )
+      : undefined);
   const contribution =
     params.personal.contribution && structuredClone(params.personal.contribution);
+  const contributions = contributionMetadata
+    ? contributionMetadata.contributions
+    : contribution?.privateAudience || contribution?.readRange
+      ? [contribution]
+      : [];
+  const contributionById = new Map<string, ConversationKnowledgeReference>();
+  for (const reference of contributionMetadata ? [] : contributions) {
+    const id = conversationKnowledgeContributionId(reference);
+    if (
+      contributionById.has(id) ||
+      reference.retirement ||
+      (groupContributions && !reference.privateAudience)
+    ) {
+      throw new PersonalConversationReadRefusedError(
+        "Contribution group has invalid or duplicate ranges",
+      );
+    }
+    contributionById.set(id, reference);
+  }
+  const custodyContributions = contributionMetadata ? contributions.slice(0, 1) : contributions;
   original();
   const selectedMode = resolveAgentConversationMode(params.getRuntimeConfig(), target.agentId);
   if (
@@ -216,7 +220,16 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       (key) => isIncognitoSessionKey(key) || parseAgentSessionKey(key)?.agentId !== target.agentId,
     ) ||
     selected.some(
-      (source) => source.agentId !== target.agentId || source.sessionKey === target.sessionKey,
+      (source) =>
+        source.agentId !== target.agentId ||
+        (source.sessionKey === target.sessionKey &&
+          (!contributions.length ||
+            custodyContributions.some(
+              (reference) =>
+                reference.source.sessionKey !== target.sessionKey ||
+                reference.source.sessionId !== target.sessionId ||
+                reference.source.lifecycleRevision === target.lifecycleRevision,
+            ))),
     )
   ) {
     throw new PersonalConversationReadRefusedError(
@@ -224,13 +237,38 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     );
   }
   const audienceIdentity = conversationKnowledgeParticipantIdentity(participant);
-  const validateRootEvidence =
-    contribution?.privateAudience || contribution?.readRange
-      ? (await import("../config/sessions/conversation-knowledge-store.js"))
-          .assertNativeKnowledgeRootContribution
-      : undefined;
+  const rootValidation = contributions.length
+    ? await import("../config/sessions/conversation-knowledge-store.js")
+    : undefined;
+  const validateRootEvidence = rootValidation?.assertNativeKnowledgeRootContribution;
+  const validateGroup = () => {
+    if (contributionMetadata) {
+      rootValidation!.assertNativeKnowledgeRootContributionGroup(
+        rootEvidence,
+        target,
+        contributionMetadata.rootProof,
+      );
+    }
+  };
   original();
-  const binding = { target, participant, selected, selectedMode };
+  // Validate each immutable range exactly once for this fresh root binding.
+  // Subsequent guards recheck its issuer lifetime, not the whole range list.
+  validateGroup();
+  for (const reference of contributionMetadata ? [] : contributions) {
+    if (!rootEvidence || !validateRootEvidence) {
+      throw new PersonalConversationReadRefusedError(
+        "Personal contribution requires native root evidence",
+      );
+    }
+    validateRootEvidence(rootEvidence, target, reference);
+  }
+  const binding = {
+    target,
+    participant,
+    selected,
+    selectedMode,
+    ...(contributionMetadata ? { contributionGroupDigest: contributionMetadata.digest } : {}),
+  };
   const reusingAdmission = params.preparedAdmission !== undefined;
   const custody: PersonalReadCustody = reusingAdmission
     ? PreparedPersonalConversationAdmission.acquire(params.preparedAdmission, binding)
@@ -239,12 +277,14 @@ export async function preparePersonalConversationRead(params: PersonalConversati
   let active = true;
   let refusal: unknown;
   let revoked = false;
+  let contributionVersion: SessionTranscriptContextVersion | undefined;
   const refuse = (error: unknown): never => {
     revoked = true;
     refusal = error;
     throw error;
   };
   const policy = () => {
+    params.signal?.throwIfAborted();
     if (!active) {
       throw new PersonalConversationReadRefusedError(
         "Personal conversation read has been released",
@@ -255,13 +295,16 @@ export async function preparePersonalConversationRead(params: PersonalConversati
     }
     original();
     destination?.assertCurrent();
-    if (contribution?.privateAudience || contribution?.readRange) {
+    if (contributions.length) {
       if (!rootEvidence) {
         throw new PersonalConversationReadRefusedError(
           "Personal contribution requires native root evidence",
         );
       }
-      validateRootEvidence!(rootEvidence, target, contribution);
+      validateGroup();
+      for (const reference of contributionMetadata ? [] : custodyContributions) {
+        validateRootEvidence!(rootEvidence, target, reference);
+      }
     }
     const cfg = params.getRuntimeConfig();
     if (resolveAgentConversationMode(cfg, target.agentId) !== selectedMode) {
@@ -303,6 +346,27 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       );
     }
     const membership = entry.conversationTopology;
+    if (
+      sessionKey === target.sessionKey &&
+      selected.some((source) => source.sessionKey === sessionKey)
+    ) {
+      // Self-history is only the exact old lifecycle, independently confirmed by
+      // today's private enrollment. A current input endpoint alone is not proof.
+      for (const reference of custodyContributions) {
+        if (
+          conversationKnowledgeHistoricalContributionIdentity(
+            entry,
+            { agentId: target.agentId, sessionKey },
+            reference,
+            target.root,
+          ) !== audienceIdentity
+        ) {
+          throw new PersonalConversationReadRefusedError(
+            "Historical self contribution has no current same-person custody",
+          );
+        }
+      }
+    }
     const destinationIdentity =
       destination &&
       destination.agentId === target.agentId &&
@@ -310,16 +374,29 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       sessionKey === target.sessionKey &&
       entry.publicShare === undefined &&
       conversationKnowledgeParticipantIdentity(destination.participant);
-    const contributionIdentity =
-      sessionKey !== target.sessionKey &&
-      conversationKnowledgeContributionIdentity(
-        entry,
-        {
-          agentId: target.agentId,
-          sessionKey,
-        },
-        contribution,
-      );
+    let contributionIdentity: string | undefined;
+    if (sessionKey !== target.sessionKey && contributions.length) {
+      for (const reference of custodyContributions) {
+        const identity =
+          conversationKnowledgeContributionIdentity(
+            entry,
+            { agentId: target.agentId, sessionKey },
+            reference,
+          ) ??
+          conversationKnowledgeHistoricalContributionIdentity(
+            entry,
+            { agentId: target.agentId, sessionKey },
+            reference,
+            target.root,
+          );
+        if (identity !== audienceIdentity) {
+          throw new PersonalConversationReadRefusedError(
+            "Personal contribution has no current same-person source custody",
+          );
+        }
+        contributionIdentity = identity;
+      }
+    }
     if (
       entry.incognito ||
       !entry.lifecycleRevision ||
@@ -453,13 +530,13 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       }
     }
     assertCurrent();
-    if (contribution?.privateAudience || contribution?.readRange) {
+    for (const reference of custodyContributions) {
       if (
         selected.length !== 1 ||
-        selected[0]?.agentId !== contribution.source.agentId ||
-        selected[0]?.sessionKey !== contribution.source.sessionKey ||
-        (contribution.privateAudience &&
-          conversationKnowledgeParticipantIdentity(contribution.privateAudience.participant) !==
+        selected[0]?.agentId !== reference.source.agentId ||
+        selected[0]?.sessionKey !== reference.source.sessionKey ||
+        (reference.privateAudience &&
+          conversationKnowledgeParticipantIdentity(reference.privateAudience.participant) !==
             audienceIdentity)
       ) {
         throw new PersonalConversationReadRefusedError(
@@ -480,6 +557,17 @@ export async function preparePersonalConversationRead(params: PersonalConversati
         }
         sources.push(source);
       }
+    }
+    if (groupContributions) {
+      const { validatePersonalContributionGroupAnchors } =
+        await import("./session-transcript-personal-contribution-anchors.js");
+      contributionVersion = await validatePersonalContributionGroupAnchors({
+        contributions,
+        source: sources[0]!,
+        assertCurrent,
+        signal: params.signal,
+        preparedVersion: preparedGroupVersion,
+      });
     }
     const prepare = async (): Promise<PreparedSessionSourceAuthority> => {
       assertCurrent();
@@ -513,6 +601,17 @@ export async function preparePersonalConversationRead(params: PersonalConversati
                 participantCount: current.participantCount,
               }),
               members: [...read.members],
+              ...(!read.root &&
+              read.expected.canonicalKey === selected[0]?.sessionKey &&
+              contributionVersion
+                ? {
+                    transcript: {
+                      sessionId: read.expected.sessionId,
+                      version: contributionVersion,
+                      consistency: "prefix" as const,
+                    },
+                  }
+                : {}),
             },
             refuse: () =>
               refuse(
@@ -528,13 +627,55 @@ export async function preparePersonalConversationRead(params: PersonalConversati
       prepareSessionSource: prepare,
       prepareSessionSourceScope: prepare,
     });
+    const grantSource = composeSessionSourceAssertion([original, source]);
     return {
       audience: "private-direct" as const,
       audienceIdentity,
       sources: Object.freeze(sources),
+      contributionVersion,
+      contributionMetadata,
       prepareAdmission() {
         assertCurrent();
         return new PreparedPersonalConversationAdmission(personalAdmissionIssuer, custody, binding);
+      },
+      selectContribution(
+        reference: ConversationKnowledgeReference,
+      ): PersonalConversationContributionRange | undefined {
+        // Selection performs no custody or worker reads. The retained owner
+        // checks the grant at every disclosure and COMMIT boundary.
+        if (!active || revoked) {
+          throw new PersonalConversationReadRefusedError("Contribution selection has expired");
+        }
+        const id = conversationKnowledgeContributionId(reference);
+        const admitted = contributionMetadata
+          ? contributionMetadata.findContribution(id)
+          : contributionById.get(id);
+        if (!admitted || !isDeepStrictEqual(admitted, reference)) {
+          return undefined;
+        }
+        const current = sources.find((item) => item.canonicalKey === admitted.source.sessionKey);
+        if (!current?.lifecycleRevision || current.sessionId !== admitted.source.sessionId) {
+          return undefined;
+        }
+        return issuePersonalConversationContributionRange({
+          reference: admitted,
+          target,
+          source: grantSource,
+          range: {
+            origin: admitted.origin,
+            originalLifecycleRevision: admitted.source.lifecycleRevision,
+            currentLifecycleRevision: current.lifecycleRevision,
+            through: Object.freeze({ ...(admitted.readRange?.through ?? admitted.through) }),
+            ...(contributionVersion ? { version: contributionVersion } : {}),
+            ...(admitted.privateAudience
+              ? {
+                  from: Object.freeze({
+                    ...(admitted.readRange?.admission ?? admitted.privateAudience.admission),
+                  }),
+                }
+              : {}),
+          },
+        });
       },
       contributionRange:
         contribution?.privateAudience || contribution?.readRange
@@ -552,7 +693,7 @@ export async function preparePersonalConversationRead(params: PersonalConversati
               }),
             })
           : undefined,
-      assertCurrent: composeSessionSourceAssertion([original, source]),
+      assertCurrent: grantSource,
       release,
     };
   } catch (error) {

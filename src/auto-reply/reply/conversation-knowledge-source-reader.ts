@@ -1,9 +1,10 @@
 import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
-  createConversationKnowledgePacketReport,
+  conversationKnowledgePacketId,
   readConversationKnowledgePacketProgress,
 } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
@@ -253,9 +254,46 @@ export async function readConversationKnowledgeInputs(params: {
   };
   const events = await readRoot();
   check();
+  const readDurableProgress = () =>
+    readConversationKnowledgePacketProgress({
+      ...params,
+      async prepareCheckpointCoverage(checkpoints) {
+        // An already admitted summary is recipient history. Resolve its immutable
+        // coverage off-turn, without granting access to any original donor.
+        const {
+          readConversationKnowledgeCheckpointById,
+          readConversationKnowledgeCheckpointCoverage,
+        } = await import("../../config/sessions/conversation-knowledge-checkpoint-store.js");
+        check();
+        const prepared = new Map<string, PreparedConversationKnowledgeCheckpointCoverage>();
+        for (const receipt of checkpoints) {
+          check();
+          let coverage = cache?.checkpointCoverage(receipt.checkpointId);
+          if (!coverage) {
+            const checkpoint = await readConversationKnowledgeCheckpointById({
+              branch: params.branch,
+              checkpointId: receipt.checkpointId,
+              source: params.assertCurrent,
+              signal: params.signal,
+            });
+            coverage = await readConversationKnowledgeCheckpointCoverage({
+              reader: params.reader,
+              branch: params.branch,
+              checkpoint,
+              source: params.assertCurrent,
+              signal: params.signal,
+            });
+            check();
+            cache?.retainCheckpointCoverage(receipt.checkpointId, coverage);
+          }
+          prepared.set(receipt.checkpointId, coverage);
+        }
+        return prepared;
+      },
+    });
   const readProgress = async () => {
     if (!cache) {
-      return readConversationKnowledgePacketProgress(params);
+      return readDurableProgress();
     }
     let version = await readVersion(params.branch);
     const cached = cache.preparationProgress(version);
@@ -269,7 +307,7 @@ export async function readConversationKnowledgeInputs(params: {
       cache.preparationProgress(current);
       version = current;
     }
-    const progress = await readConversationKnowledgePacketProgress(params);
+    const progress = await readDurableProgress();
     const current = await readVersion(params.branch);
     if (isDeepStrictEqual(version, current)) {
       try {
@@ -336,15 +374,12 @@ export async function observePreparedConversationKnowledgePackets(params: {
       if (!receipt) {
         return [];
       }
-      const report = createConversationKnowledgePacketReport({
-        branch: params.branch,
-        receipt,
-        text: "",
-        offset: slot.offset,
-        nextOffset: slot.offset,
-        complete: false,
-      });
-      return [{ ...slot, packetId: report.details.packetId }];
+      return [
+        {
+          ...slot,
+          packetId: conversationKnowledgePacketId(slot.contributionId, slot.offset),
+        },
+      ];
     });
   if (!candidates.length) {
     return { readyPacketIds, activeCarriers, contributions };
@@ -445,12 +480,19 @@ export function createConversationKnowledgeSourceReader(params: {
       reads.push(read);
       grant.assertCurrent();
       const source = grant.sources[0];
+      const admitted =
+        source && source.lifecycleRevision !== receipt.source.lifecycleRevision
+          ? grant.selectContribution(receipt)
+          : undefined;
       if (
         !source ||
         source.agentId !== branch.agentId ||
         source.canonicalKey !== receipt.source.sessionKey ||
         source.sessionId !== receipt.source.sessionId ||
-        source.lifecycleRevision !== receipt.source.lifecycleRevision ||
+        (source.lifecycleRevision !== receipt.source.lifecycleRevision &&
+          (!admitted ||
+            admitted.originalLifecycleRevision !== receipt.source.lifecycleRevision ||
+            admitted.currentLifecycleRevision !== source.lifecycleRevision)) ||
         source.storePath !== branch.storePath ||
         source.storePath !== receipt.through.storePath ||
         grant.audienceIdentity !== targetFacts.audienceIdentity
@@ -471,9 +513,18 @@ export function createConversationKnowledgeSourceReader(params: {
         sessionId: source.sessionId,
         storePath: source.storePath,
       };
-      const through = grant.contributionRange?.through ?? receipt.through;
-      const from = grant.contributionRange?.from;
-      return { read, grant, sourceAssertion, projectionTarget, through, from, facts: grant };
+      const through = admitted?.through ?? grant.contributionRange?.through ?? receipt.through;
+      const from = admitted?.from ?? grant.contributionRange?.from;
+      return {
+        read,
+        grant,
+        sourceAssertion,
+        projectionTarget,
+        through,
+        from,
+        facts: grant,
+        historicalCustody: admitted,
+      };
     } catch (error) {
       if (read) {
         drop(read);

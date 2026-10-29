@@ -14,6 +14,17 @@ const preparation = vi.hoisted(() => ({
 vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
   createConversationKnowledgePrefetchOwner: preparation.create,
 }));
+// mock-isolation: Shared root summaries have their own scheduling and authority tests.
+vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
+  registerConversationKnowledgeCheckpointOwner: () => ({
+    retainAudience: vi.fn(),
+    request: vi.fn(),
+    pausePreparation: () => () => {},
+    latest: () => undefined,
+    projection: () => ({ tail: [] }),
+    close: async () => {},
+  }),
+}));
 // mock-isolation: The scheduler needs only a current worker-backed recipient claim.
 vi.mock("../../config/sessions/session-accessor.sqlite-entry-admission.js", () => ({
   loadSessionEntryForAdmission: preparation.load,
@@ -24,7 +35,11 @@ vi.mock("./conversation-knowledge.js", () => ({
 }));
 // mock-isolation: This boundary only schedules packets; cache/native range proofs have focused tests.
 vi.mock("./conversation-knowledge-source-cache.js", () => ({
-  createConversationKnowledgeSourceCache: () => ({ clear: vi.fn() }),
+  createConversationKnowledgeSourceCache: () => ({
+    clear: vi.fn(),
+    retryCleanup: vi.fn(),
+    diagnosticPreparedFrontiers: () => [],
+  }),
 }));
 // mock-isolation: Keep process-global recipient retention private to this test module.
 vi.mock("../../shared/global-singleton.js", () => ({

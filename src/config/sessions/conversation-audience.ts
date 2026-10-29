@@ -63,6 +63,19 @@ export function conversationKnowledgeAudienceIdentity(entry: Partial<InternalSes
   return conversationKnowledgeParticipantIdentity(entry.participants[0]?.identity);
 }
 
+/** A complete current roster can ignore known internal actors, never unknown speakers. */
+export function conversationKnowledgeCurrentPersonIdentity(entry: Partial<InternalSessionEntry>) {
+  if (!entry.participants || entry.participantCount !== entry.participants.length) {
+    return undefined;
+  }
+  const participants = entry.participants.filter((row) => row.identity.type !== "agent");
+  return conversationKnowledgeAudienceIdentity({
+    ...entry,
+    participants,
+    participantCount: participants.length,
+  });
+}
+
 /** A native saved contribution can attest only its exact turn, never the older session. */
 export function conversationKnowledgeContributionIdentity(
   entry: Partial<InternalSessionEntry>,
@@ -80,4 +93,36 @@ export function conversationKnowledgeContributionIdentity(
     return undefined;
   }
   return conversationKnowledgeParticipantIdentity(contribution.privateAudience.participant);
+}
+
+/** Current enrollment may authorize an old exact occurrence, never an old execution lease. */
+export function conversationKnowledgeHistoricalContributionIdentity(
+  entry: Partial<InternalSessionEntry>,
+  source: { agentId: string; sessionKey: string },
+  contribution: ConversationKnowledgeReference | undefined,
+  root: { sessionKey: string; sessionId: string; lifecycleRevision: string },
+) {
+  const membership = entry.conversationTopology;
+  if (
+    entry.incognito ||
+    !entry.lifecycleRevision ||
+    !contribution?.privateAudience ||
+    contribution.retirement ||
+    contribution.source.agentId !== source.agentId ||
+    contribution.source.sessionKey !== source.sessionKey ||
+    contribution.source.sessionId !== entry.sessionId ||
+    contribution.source.lifecycleRevision === entry.lifecycleRevision ||
+    membership?.role !== "branch" ||
+    membership.rootSessionKey !== root.sessionKey ||
+    membership.rootSessionId !== root.sessionId ||
+    membership.rootSessionLifecycleRevision !== root.lifecycleRevision
+  ) {
+    return undefined;
+  }
+  // This MUST be independent of the saved contribution's audience assertion.
+  const current = conversationKnowledgeCurrentPersonIdentity(entry);
+  return current &&
+    current === conversationKnowledgeParticipantIdentity(contribution.privateAudience.participant)
+    ? current
+    : undefined;
 }

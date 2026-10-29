@@ -66,6 +66,7 @@ import { assertCapturedSessionEntryReadSource } from "./session-entry-read-sourc
 import type { SessionSourcePredicate } from "./session-source-authority.js";
 import { createSessionSourceValidationScope } from "./session-source-predicate.worker.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
+import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
 import { SessionTranscriptWriterClaimReboundError } from "./transcript-write-context.js";
 
 /** Observe known producer receipts under native report authority, not prompt-history admission. */
@@ -339,6 +340,17 @@ export function bindSqliteWorkerBackend(
               if (refusal) {
                 admit("commit");
                 return err(refusal);
+              }
+              if (
+                command.input.expectedTranscriptVersion &&
+                !isDeepStrictEqual(
+                  { ...readTranscriptContextVersionInTransaction(database, resolved.sessionId) },
+                  command.input.expectedTranscriptVersion,
+                )
+              ) {
+                throw new SessionTranscriptReadFenceError(
+                  "Transcript changed before report batch admission",
+                );
               }
               const selection = prepareTranscriptReportBatchSelection(database, resolved, reports);
               let appendParentId = selection.appendParentId;
