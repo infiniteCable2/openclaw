@@ -5,6 +5,7 @@ import {
   conversationKnowledgeOrigin,
   type ConversationKnowledgeReference,
 } from "../../config/sessions/conversation-knowledge.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
@@ -50,7 +51,23 @@ vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
 }));
 // mock-isolation: Root reference and custody fixtures replace storage, never production histories or provider calls.
 vi.mock("../../config/sessions/conversation-knowledge-checkpoint-store.js", () => ({
-  readLatestConversationKnowledgeCheckpoint: async () => undefined,
+  readLatestConversationKnowledgeCheckpoint: async (params: { source: SessionSourceAssertion }) => {
+    // Preserve the native receipt reader's admission contract at this boundary.
+    // A lifetime-only closure must fail before any root projection is published.
+    if (!params.source.prepareSessionSource) {
+      throw new Error("Composed report sources require worker-prepared authority");
+    }
+    const prepared = await params.source.prepareSessionSource();
+    try {
+      if (prepared.nativeSource || prepared.hasOpaqueCheck) {
+        throw new Error("Composed report sources require worker-prepared authority");
+      }
+      prepared.assertCurrent();
+      return undefined;
+    } finally {
+      await prepared.release?.();
+    }
+  },
   readConversationKnowledgeCheckpointCoverage: vi.fn(),
   appendConversationKnowledgeCheckpoint: vi.fn(),
 }));
@@ -69,7 +86,10 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
       read: boundary.read,
       validate: vi.fn(async () => {}),
       verify: vi.fn(),
-      source: () => () => {},
+      source: () =>
+        Object.assign(() => {}, {
+          prepareSessionSource: async () => ({ assertCurrent() {}, checks: [] }),
+        }),
       release: boundary.sourceRelease,
     };
   },

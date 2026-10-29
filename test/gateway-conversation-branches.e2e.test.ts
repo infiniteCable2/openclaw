@@ -43,6 +43,16 @@ function config(mode: "native" | "branches", model: Model): OpenClawConfig {
         },
       },
       controlUi: { enabled: false, allowedOrigins: [BRANCH_GATEWAY_ORIGIN] },
+      roles: {
+        default: "limited",
+        definitions: {
+          limited: {
+            sessions: { others: "view" },
+            agents: "*",
+            scopes: BRANCH_GATEWAY_SCOPES,
+          },
+        },
+      },
     },
     logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
     agents: {
@@ -539,8 +549,11 @@ describe("isolated full Gateway conversation continuity", () => {
           }
           const privateInput = await send(owner, beta, "PRIVATE_RECIPIENT_PROBE_51");
           expect(privateInput).not.toContain(PRIVATE_CODE);
-          // Another authenticated human must not gain the owner's private session itself either.
-          await expect(other.call("sessions.describe", { key: beta })).rejects.toThrow();
+          // Native role-bound draft reads hide the target with an empty success response.
+          expect(await other.call("sessions.describe", { key: beta })).toMatchObject({
+            session: null,
+          });
+          expect(await other.call("sessions.get", { key: beta })).toMatchObject({ messages: [] });
 
           for (const client of clients.splice(0)) {
             await client.close();

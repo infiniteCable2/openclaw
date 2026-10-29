@@ -268,17 +268,33 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         ) {
           return false;
         }
-        const source = () => {
+        const scopeSource = () => {
           check();
           if (!held) {
             throw new Error("Checkpoint database custody ended");
           }
           held.databaseClaim.assertCurrent();
         };
+        const { prepareConversationKnowledgeCheckpointSources } =
+          await import("./conversation-knowledge-checkpoint-source.js");
+        sources = await prepareConversationKnowledgeCheckpointSources({
+          ...broker,
+          audience,
+          reader: held.databaseClaim.reader,
+          rootContinuation,
+          signal,
+          assertCurrent: scopeSource,
+          retainCleanup(release) {
+            releaseSources = release;
+          },
+        });
+        // Receipt reads require the existing prepared native row predicates,
+        // not only this owner's process/configuration lifetime check.
+        const checkpointSource = sources.source();
         const previous = await readLatestConversationKnowledgeCheckpoint({
           branch: broker.branch,
           audienceKey,
-          source,
+          source: checkpointSource,
           signal,
         });
         const previousCoverage = previous
@@ -288,15 +304,13 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
                 reader: held.databaseClaim.reader,
                 branch: broker.branch,
                 checkpoint: previous,
-                source,
+                source: checkpointSource,
                 signal,
               })
           : undefined;
         if (!previous) {
           latest = undefined;
         }
-        const { prepareConversationKnowledgeCheckpointSources } =
-          await import("./conversation-knowledge-checkpoint-source.js");
         const { planConversationKnowledgeCheckpointSummary } =
           await import("./conversation-knowledge-checkpoint-summary.js");
         const { estimateMessageTokenPressure, estimateRenderedPromptTokens } =
@@ -309,17 +323,6 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         const { renderConversationKnowledgeCheckpointSummary } =
           await import("../../config/sessions/conversation-knowledge-checkpoint-context.js");
         check();
-        sources = await prepareConversationKnowledgeCheckpointSources({
-          ...broker,
-          audience,
-          reader: held.databaseClaim.reader,
-          rootContinuation,
-          signal,
-          assertCurrent: source,
-          retainCleanup(release) {
-            releaseSources = release;
-          },
-        });
         const byId = new Map(
           sources.references.map((reference) => [
             conversationKnowledgeContributionId(reference),
@@ -520,7 +523,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           reader: held.databaseClaim.reader,
           branch: broker.branch,
           checkpoint,
-          source,
+          source: checkpointSource,
           signal,
         });
         check();
