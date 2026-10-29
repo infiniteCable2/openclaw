@@ -124,6 +124,7 @@ export function prepareConversationKnowledgeCheckpointSelection(
 export type ConversationKnowledgeBootstrapInitialization = {
   provider: string;
   modelId: string;
+  modelApi?: string;
   thinkingLevel: string;
 };
 /** Background eligibility is not read authority; the writer must still compare its exact version. */
@@ -239,7 +240,7 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
   }
   const page = await withSessionTranscriptDeltaReader(
     { ...params.branch, env: params.env },
-    (reader) => reader.raw({ maxEvents: 5, maxBytes: 1_000_000 }),
+    (reader) => reader.raw({ maxEvents: 6, maxBytes: 1_000_000 }),
     params.signal,
   );
   check();
@@ -248,7 +249,7 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
     page.hasMore ||
     page.requiredBytes !== undefined ||
     page.events.length < 1 ||
-    page.events.length > 4
+    page.events.length > 5
   ) {
     return undefined;
   }
@@ -262,6 +263,7 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
   let hasUser = false;
   let hasModel = false;
   let hasThinking = false;
+  let hasSnapshot = false;
   for (const row of page.events.slice(1)) {
     const event = asOptionalRecord(row.event);
     if (
@@ -310,13 +312,34 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
         return undefined;
       }
       hasThinking = true;
+    } else if (event.type === "custom" && event.customType === "model-snapshot") {
+      // Native replay hygiene records the selected model before first dispatch.
+      // This is one exact metadata record, never arbitrary custom context.
+      const data = asOptionalRecord(event.data);
+      if (
+        !params.initialization?.modelApi ||
+        hasSnapshot ||
+        !data ||
+        Object.keys(data).length !== 4 ||
+        typeof data.timestamp !== "number" ||
+        !Number.isFinite(data.timestamp) ||
+        data.provider !== params.initialization.provider ||
+        data.modelId !== params.initialization.modelId ||
+        data.modelApi !== params.initialization.modelApi
+      ) {
+        return undefined;
+      }
+      hasSnapshot = true;
     } else {
       return undefined;
     }
     parent = event.id;
     previousSeq = row.seq;
   }
-  if (before.appendParentId !== parent || ((expected || hasModel || hasThinking) && !hasUser)) {
+  if (
+    before.appendParentId !== parent ||
+    ((expected || hasModel || hasThinking || hasSnapshot) && !hasUser)
+  ) {
     return undefined;
   }
   const after = await facts();

@@ -270,6 +270,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
                   bootstrapInitialization: {
                     provider: model.provider,
                     modelId: model.id,
+                    modelApi: model.api,
                     thinkingLevel: activeSession.agent.state.thinkingLevel,
                   },
                 }

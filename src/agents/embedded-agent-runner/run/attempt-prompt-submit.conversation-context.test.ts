@@ -99,6 +99,7 @@ describe("prepared conversation context dispatch", () => {
     expect(refreshConversationContext.mock.calls[0]?.[0].bootstrapInitialization).toEqual({
       provider: testModel.provider,
       modelId: testModel.id,
+      modelApi: testModel.api,
       thinkingLevel: session.thinkingLevel,
     });
     expect(refreshConversationContext.mock.calls[1]?.[0].bootstrapInitialization).toBeUndefined();

@@ -32,13 +32,18 @@ describe("native SDK cold checkpoint eligibility", () => {
       { scenario: "minimal", label: "sdk-checkpoint-bootstrap" },
       async (state) => {
         const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
-        for (const userFirst of [false, true]) {
+        for (const [userFirst, trailing] of [
+          [false, "thinking"],
+          [true, "thinking"],
+          [true, "snapshot"],
+          [true, "custom"],
+        ] as const) {
           const branch: ConversationKnowledgeBranch = {
             agentId: "main",
             storePath: database.path,
-            sessionKey: `agent:main:initial-${userFirst}`,
-            sessionId: `initial-${userFirst}`,
-            lifecycleRevision: `life-${userFirst}`,
+            sessionKey: `agent:main:initial-${userFirst}-${trailing}`,
+            sessionId: `initial-${userFirst}-${trailing}`,
+            lifecycleRevision: `life-${userFirst}-${trailing}`,
             root: {
               sessionKey: "agent:main:root",
               sessionId: "root",
@@ -93,8 +98,17 @@ describe("native SDK cold checkpoint eligibility", () => {
             const initialization = {
               provider: model.provider,
               modelId: model.id,
+              modelApi: model.api,
               thinkingLevel: session.thinkingLevel,
             };
+            // The actual embedded replay owner appends this after SDK creation
+            // and before the first provider request, even for a brand-new user.
+            await manager.appendCustomEntryAsync("model-snapshot", {
+              timestamp: 2,
+              provider: model.provider,
+              modelId: model.id,
+              modelApi: model.api,
+            });
             expect(await prepareNewConversationKnowledgeBootstrap(input)).toBeUndefined();
             expect(
               await prepareNewConversationKnowledgeBootstrap({ ...input, initialization }),
@@ -105,16 +119,32 @@ describe("native SDK cold checkpoint eligibility", () => {
                 initialization: { ...initialization, thinkingLevel: "high" },
               }),
             ).toBeUndefined();
-            if (!userFirst) {
-              expect(
-                await prepareNewConversationKnowledgeBootstrap({
-                  ...input,
-                  initialization: { ...initialization, modelId: "different-model" },
-                }),
-              ).toBeUndefined();
+            expect(
+              await prepareNewConversationKnowledgeBootstrap({
+                ...input,
+                initialization: { ...initialization, modelId: "different-model" },
+              }),
+            ).toBeUndefined();
+            expect(
+              await prepareNewConversationKnowledgeBootstrap({
+                ...input,
+                initialization: { ...initialization, modelApi: "different-api" },
+              }),
+            ).toBeUndefined();
+            // Repeated initialization and unrelated custom metadata are not cold starts.
+            if (trailing === "thinking") {
+              await manager.appendThinkingLevelChange(session.thinkingLevel);
+            } else {
+              await manager.appendCustomEntryAsync(
+                trailing === "snapshot" ? "model-snapshot" : "unrelated-metadata",
+                {
+                  timestamp: 3,
+                  provider: model.provider,
+                  modelId: model.id,
+                  modelApi: model.api,
+                },
+              );
             }
-            // Even identical selected metadata repeated later is not initialization.
-            await manager.appendThinkingLevelChange(session.thinkingLevel);
             expect(
               await prepareNewConversationKnowledgeBootstrap({ ...input, initialization }),
             ).toBeUndefined();
