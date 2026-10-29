@@ -127,6 +127,7 @@ const reference: ConversationKnowledgeReference = {
   role: "user",
   privateAudience: { participant: person, admission: anchor },
 };
+const preparedRootEvidence = Object.freeze({ syntheticSelectedEvidence: true });
 function fixture(references = [reference]) {
   const checkpoint = createConversationKnowledgeCheckpoint({
     branch,
@@ -182,13 +183,18 @@ beforeEach(() => {
     branch,
     targetFacts: { assertCurrent() {}, release: native.releaseTarget },
   });
-  native.rebind.mockResolvedValue([
-    {
-      type: "custom_message",
-      customType: "openclaw.conversation-utterance.v1",
-      details: reference,
-    },
-  ]);
+  native.rebind.mockResolvedValue(
+    Object.assign(
+      [
+        {
+          type: "custom_message",
+          customType: "openclaw.conversation-utterance.v1",
+          details: reference,
+        },
+      ],
+      { evidence: preparedRootEvidence },
+    ),
+  );
   native.take.mockResolvedValue(true);
   native.retain.mockImplementation(async ({ source: check }) => {
     check();
@@ -331,7 +337,17 @@ describe("ready checkpoint recipient", () => {
         >[2],
       );
       expect(native.group).toHaveBeenCalledOnce();
+      expect(native.group).toHaveBeenCalledWith(
+        expect.objectContaining({
+          personal: expect.objectContaining({ rootEvidence: preparedRootEvidence }),
+        }),
+      );
       expect(native.groupRead).toHaveBeenCalledOnce();
+      expect(native.groupRead).toHaveBeenCalledWith(
+        expect.objectContaining({
+          personal: expect.objectContaining({ rootEvidence: preparedRootEvidence }),
+        }),
+      );
       expect(cache.stageCheckpoint).toHaveBeenCalledWith(
         expect.objectContaining({
           groups: [
