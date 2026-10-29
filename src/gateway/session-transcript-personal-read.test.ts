@@ -135,6 +135,7 @@ function fixture() {
   };
   return {
     params,
+    participant,
     recipient,
     source,
     rootRow,
@@ -592,7 +593,7 @@ function historicalFixture(count = 2, own = false) {
       source: original,
       origin: conversationKnowledgeOrigin(original, "utterance-observation"),
       through: anchor,
-      privateAudience: { participant: f.params.personal.originalParticipant, admission: anchor },
+      privateAudience: { participant: f.participant, admission: anchor },
     };
   });
   const evidence = {} as NativeKnowledgeRootEvidence;

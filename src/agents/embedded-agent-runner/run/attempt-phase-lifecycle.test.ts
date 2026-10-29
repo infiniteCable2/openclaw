@@ -420,7 +420,7 @@ describe("embedded attempt phase lifecycle state", () => {
         },
       );
 
-      if (boundary === "complete" || boundary === "compacted") {
+      if (boundary === "complete") {
         expect(onContextEngineTurnCandidate).toHaveBeenCalledWith(
           expect.objectContaining({
             boundary: {
@@ -436,6 +436,8 @@ describe("embedded attempt phase lifecycle state", () => {
           }),
         );
       } else {
+        // A compaction leaf is not a message candidate. The Skill review below
+        // separately retains the completed message and its compacted context.
         expect(onContextEngineTurnCandidate).not.toHaveBeenCalled();
       }
       expect(sessionManager.getEntries()).toContainEqual(
