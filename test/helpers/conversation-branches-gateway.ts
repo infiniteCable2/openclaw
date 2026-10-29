@@ -6,6 +6,7 @@ import { buildDeviceAuthPayloadV3 } from "../../packages/gateway-client/src/devi
 import { rawDataToString } from "../../packages/gateway-client/src/websocket-data.js";
 import type { ResponseFrame } from "../../packages/gateway-protocol/src/schema/frames.js";
 import { PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/version.js";
+import type { OperatorScope } from "../../src/gateway/operator-scopes.js";
 import {
   loadOrCreateDeviceIdentity,
   publicKeyRawBase64UrlFromPem,
@@ -19,7 +20,7 @@ import type { OpenClawTestInstance } from "./openclaw-test-instance.js";
 import { createDeferred } from "./promise.js";
 
 export const BRANCH_GATEWAY_ORIGIN = "https://conversation.example.test";
-export const BRANCH_GATEWAY_SCOPES = ["operator.read", "operator.write"];
+export const BRANCH_GATEWAY_SCOPES = ["operator.read", "operator.write"] satisfies OperatorScope[];
 
 /** Real provider transport; only the model itself is deterministic. No OpenClaw hooks are replaced. */
 export async function startConversationModel(
