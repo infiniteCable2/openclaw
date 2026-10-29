@@ -159,7 +159,7 @@ describe("isolated full Gateway conversation continuity", () => {
     let model: Model | undefined;
     let owner: Operator | undefined;
     context.onTestFailed(() => console.error(gateway?.logs()));
-    const markers = Array.from({ length: 8 }, (_, index) => `SUMMARY_FACT_${index}_73`);
+    const markers = Array.from({ length: 9 }, (_, index) => `SUMMARY_FACT_${index}_73`);
     await runQaGatewayTestFixture(
       context,
       async ({ signal, verifyCleanup }) => {
@@ -278,7 +278,21 @@ describe("isolated full Gateway conversation continuity", () => {
         }
         await vi.waitFor(
           () => {
-            expect(gateway!.logs()).toContain("Related-history checkpoint prepared");
+            // Cross two native generations. A nearly full quoted tail alone can
+            // fit the root yet exceed a recipient's additional system/tool costs.
+            const checkpoints = new Set(
+              gateway!
+                .logs()
+                .split("\n")
+                .filter((line) => line.includes("Related-history root projection ready"))
+                .flatMap((line) =>
+                  Array.from(
+                    line.replaceAll('\\"', '"').matchAll(/"checkpointId"\s*:\s*"([a-f0-9]{64})"/gu),
+                    (match) => match[1],
+                  ),
+                ),
+            );
+            expect(checkpoints.size).toBeGreaterThanOrEqual(2);
             expect(
               gateway!
                 .logs()

@@ -512,6 +512,7 @@ describe("related-history source custody without model status", () => {
         packetIds: ["saved-packet"],
       });
     }
+    let capacityAvailable = kind !== "capacity-deferred";
     const prepare = () =>
       prepareReplyConversationKnowledge({
         reader,
@@ -540,7 +541,7 @@ describe("related-history source custody without model status", () => {
           ? {
               readyOnly: true,
               sourceCache: cache,
-              canAdmitPacket: () => kind !== "capacity-deferred",
+              canAdmitPacket: () => capacityAvailable,
               onPacket: (packet: unknown) => packets.push(packet),
             }
           : {}),
@@ -671,6 +672,28 @@ describe("related-history source custody without model status", () => {
       if (kind === "capacity-deferred" || kind === "ready-stale" || kind === "source-changed") {
         expect(prepared?.pendingPackets).toBe(true);
       }
+      if (kind === "capacity-deferred") {
+        expect(cache.peek("synthetic-contribution", 0)).toBeDefined();
+        capacityAvailable = true;
+        source.retain.mockResolvedValue({
+          accepted: 1,
+          appended: 1,
+          deferred: false,
+          packetIds: ["saved-packet"],
+        });
+        const recovered = await prepare();
+        try {
+          expect(packets).toHaveLength(1);
+          expect(source.retain).toHaveBeenCalledOnce();
+          expect(cache.peek("synthetic-contribution", 0)).toBeUndefined();
+          const repeated = await prepare();
+          repeated?.release();
+          expect(packets).toHaveLength(1);
+          expect(source.retain).toHaveBeenCalledOnce();
+        } finally {
+          recovered?.release();
+        }
+      }
       if (kind === "lookahead-revoked") {
         expect(source.contextBatch).toHaveBeenCalledOnce();
         expect(source.context).not.toHaveBeenCalled();
@@ -699,12 +722,14 @@ describe("related-history source custody without model status", () => {
     expect(release).toHaveBeenCalledTimes(
       kind === "ready-historical" || kind === "snapshot-observed"
         ? 0
-        : lookaheadRevoked
-          ? kind === "queued-lookahead-revoked"
-            ? 4
-            : 2
-          : 1,
+        : kind === "capacity-deferred"
+          ? 2
+          : lookaheadRevoked
+            ? kind === "queued-lookahead-revoked"
+              ? 4
+              : 2
+            : 1,
     );
-    expect(targetRelease).toHaveBeenCalledOnce();
+    expect(targetRelease).toHaveBeenCalledTimes(kind === "capacity-deferred" ? 3 : 1);
   });
 });
