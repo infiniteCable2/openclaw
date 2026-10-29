@@ -226,6 +226,49 @@ beforeEach(() => {
 });
 
 describe("ready checkpoint recipient", () => {
+  it("preserves a ready checkpoint while an awaited replacement cannot prove bootstrap eligibility", async () => {
+    const f = fixture();
+    const cache = createConversationKnowledgeSourceCache();
+    const candidate = f.candidate as unknown as Parameters<typeof cache.stageCheckpoint>[0];
+    expect(cache.stageCheckpoint(candidate)).toBe(true);
+    const entered = createDeferredCore();
+    const resume = createDeferredCore();
+    native.bootstrap.mockImplementationOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return undefined;
+    });
+    const pending = prepareRecipientConversationCheckpoint(
+      {
+        ...f.params,
+        sourceCache: cache,
+        expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+      },
+      f.candidate,
+    );
+    try {
+      await entered.promise;
+      expect(cache.preparedCheckpoint).toBe(candidate);
+      expect(native.releaseGroup).not.toHaveBeenCalled();
+      resume.resolve();
+      await pending;
+      expect(cache.preparedCheckpoint).toBe(candidate);
+      expect(native.releaseGroup).not.toHaveBeenCalled();
+      expect(native.releaseTarget).toHaveBeenCalledOnce();
+      expect(native.group).not.toHaveBeenCalled();
+      expect(native.groupRead).not.toHaveBeenCalled();
+      expect(native.releaseSource).not.toHaveBeenCalled();
+    } finally {
+      resume.resolve();
+      try {
+        await pending;
+      } finally {
+        cache.clear();
+      }
+    }
+    expect(cache.preparedCheckpoint).toBeUndefined();
+    expect(native.releaseGroup).toHaveBeenCalledOnce();
+  });
   it("keeps a newer background candidate when an older awaited foreground rebind fails", async () => {
     const f = fixture();
     const cache = createConversationKnowledgeSourceCache();

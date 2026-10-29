@@ -212,7 +212,6 @@ export async function prepareRecipientConversationCheckpoint(
   if (!cache || !params.originalParticipant || !params.expectedAudienceIdentity) {
     return;
   }
-  cache.clearCheckpoint();
   const target = await prepareConversationKnowledgeTarget({
     ...params,
     participantIdentity: params.expectedAudienceIdentity,

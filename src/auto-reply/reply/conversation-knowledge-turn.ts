@@ -153,13 +153,13 @@ export function createReplyConversationKnowledgeTurn(params: {
               });
               resumeRootPreparation = recipient?.checkpoint.pausePreparation();
               const projection = recipient?.checkpoint.projection();
-              if (recipient && projection && !recipient.cache.preparedRoot) {
+              if (recipient && projection) {
                 const {
                   prepareRecipientConversationProjection,
                   prepareRecipientConversationCheckpoint,
                 } = await import("./conversation-knowledge-checkpoint-recipient.js");
-                // One cold admission can reuse already prepared root bytes. Existing
-                // recipients continue to consume only their asynchronous ready queue.
+                // The native bootstrap proves cold eligibility. A disposable
+                // read-ahead manifest may already exist before this turn starts.
                 const initialization = {
                   reader,
                   sessionId,
