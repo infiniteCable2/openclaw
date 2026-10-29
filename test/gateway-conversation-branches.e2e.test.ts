@@ -330,6 +330,7 @@ describe("isolated full Gateway conversation continuity", () => {
 
   it.for(["native", "branches"] as const)(
     "%s: real input, background preparation, private recipients and restart",
+    { timeout: 240_000 },
     async (mode, context) => {
       let gateway: OpenClawTestInstance | undefined;
       let model: Model | undefined;
@@ -557,6 +558,5 @@ describe("isolated full Gateway conversation continuity", () => {
         () => model?.stop(),
       );
     },
-    240_000,
   );
 });
