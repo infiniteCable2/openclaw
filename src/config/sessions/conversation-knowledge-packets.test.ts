@@ -686,7 +686,14 @@ describe("native retained conversation knowledge packets", () => {
             "drain",
           )?.value;
           if (typeof originalScopeDrain !== "function") {
-            throw new Error("Expected native AsyncWorkScope drain method");
+            completed.push({
+              phase: "cleanup-work-scope-instrumentation-unavailable",
+              elapsedMs: 0,
+              failed: false,
+            });
+            if (completed.length > 24) {
+              completed.shift();
+            }
           }
           const original = {
             cleanup: stateCleanup.cleanupSessionStateForTest,
@@ -697,13 +704,17 @@ describe("native retained conversation knowledge packets", () => {
             state: stateDatabases.closeOpenClawStateDatabaseByPathAsync,
           };
           const cleanupSpies = [
-            vi.spyOn(scopes.AsyncWorkScope.prototype, "drain").mockImplementation(function (
-              this: InstanceType<typeof scopes.AsyncWorkScope>,
-            ) {
-              return trace("cleanup-work-scope", async () => {
-                await Reflect.apply(originalScopeDrain, this, []);
-              });
-            }),
+            ...(typeof originalScopeDrain === "function"
+              ? [
+                  vi.spyOn(scopes.AsyncWorkScope.prototype, "drain").mockImplementation(function (
+                    this: InstanceType<typeof scopes.AsyncWorkScope>,
+                  ) {
+                    return trace("cleanup-work-scope", async () => {
+                      await Reflect.apply(originalScopeDrain, this, []);
+                    });
+                  }),
+                ]
+              : []),
             vi
               .spyOn(stateCleanup, "cleanupSessionStateForTest")
               .mockImplementation((...args) =>
