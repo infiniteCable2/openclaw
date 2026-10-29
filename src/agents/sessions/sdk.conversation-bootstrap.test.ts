@@ -53,10 +53,7 @@ describe("native SDK cold checkpoint eligibility", () => {
               updatedAt: 1,
             },
           );
-          const manager = await SessionManager.openAsync(
-            { ...branch, env: state.env },
-            state.workspaceDir,
-          );
+          const manager = await SessionManager.openAsync(branch, state.workspaceDir);
           const user = {
             role: "user" as const,
             content: "The first synthetic request",
@@ -76,6 +73,7 @@ describe("native SDK cold checkpoint eligibility", () => {
           });
           try {
             userId ??= await manager.appendMessageAsync(user);
+            if (!userId) throw new Error("Native SDK user entry missing");
             const facts = await readSessionTranscriptAnchorsAsync(
               { ...branch, env: state.env },
               { entryIds: [userId] },

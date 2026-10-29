@@ -63,7 +63,7 @@ describe("native historical contribution packet custody", () => {
               agentId: donor.agentId,
               storePath: donor.storePath,
               target: { canonicalKey: donor.sessionKey, storeKeys: [donor.sessionKey] },
-              resetBoundary: { context: "clear", reason: "reset" },
+              resetBoundary: { context: "clear", reason: "reset", cwd: state.workspaceDir },
               buildNextEntry: () => ({ ...before, lifecycleRevision: "after-reset" }),
             });
             expect(loadSessionEntry(donor)?.sessionId).toBe(donor.sessionId);
