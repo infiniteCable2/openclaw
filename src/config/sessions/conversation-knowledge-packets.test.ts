@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -276,9 +277,13 @@ describe("native retained conversation knowledge packets", () => {
               cause = cause.cause;
             } else {
               try {
-                causes.push((JSON.stringify(cause) ?? String(cause)).slice(0, 1_000));
+                causes.push(
+                  (
+                    JSON.stringify(cause) ?? inspect(cause, { customInspect: false, depth: 1 })
+                  ).slice(0, 1_000),
+                );
               } catch {
-                causes.push(String(cause).slice(0, 1_000));
+                causes.push(inspect(cause, { customInspect: false, depth: 1 }).slice(0, 1_000));
               }
               break;
             }
@@ -299,7 +304,9 @@ describe("native retained conversation knowledge packets", () => {
       } finally {
         pending.delete(id);
         completed.push({ phase, elapsedMs: Math.round(performance.now() - before), failed });
-        if (completed.length > 24) completed.shift();
+        if (completed.length > 24) {
+          completed.shift();
+        }
       }
     };
     onTestFailed(() => {
@@ -674,8 +681,14 @@ describe("native retained conversation knowledge packets", () => {
           const fileLocks = await import("../../infra/file-lock.js");
           const agentDatabases = await import("../../state/openclaw-agent-db-lifecycle.js");
           const stateDatabases = await import("../../state/openclaw-state-db.js");
+          const originalScopeDrain: unknown = Object.getOwnPropertyDescriptor(
+            scopes.AsyncWorkScope.prototype,
+            "drain",
+          )?.value;
+          if (typeof originalScopeDrain !== "function") {
+            throw new Error("Expected native AsyncWorkScope drain method");
+          }
           const original = {
-            scope: scopes.AsyncWorkScope.prototype.drain,
             cleanup: stateCleanup.cleanupSessionStateForTest,
             queues: queues.drainSessionStoreWriterQueuesForTest,
             reconcile: reconcile.waitForSessionTranscriptIndexReconcilesInStateDir,
@@ -687,7 +700,9 @@ describe("native retained conversation knowledge packets", () => {
             vi.spyOn(scopes.AsyncWorkScope.prototype, "drain").mockImplementation(function (
               this: InstanceType<typeof scopes.AsyncWorkScope>,
             ) {
-              return trace("cleanup-work-scope", () => original.scope.call(this));
+              return trace("cleanup-work-scope", async () => {
+                await Reflect.apply(originalScopeDrain, this, []);
+              });
             }),
             vi
               .spyOn(stateCleanup, "cleanupSessionStateForTest")
@@ -721,7 +736,9 @@ describe("native retained conversation knowledge packets", () => {
               ),
           ];
           onTestFinished(() => {
-            for (const spy of cleanupSpies.toReversed()) spy.mockRestore();
+            for (const spy of cleanupSpies.toReversed()) {
+              spy.mockRestore();
+            }
           });
           mark("cleanup-fixture");
         }

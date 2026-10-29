@@ -28,13 +28,17 @@ export async function acquireConversationKnowledgeCheckpointModel(params: {
   const { config, agentId } = params;
   params.assertCurrent();
   const blocked = requiredWorkerHelperError(config);
-  if (blocked) throw new Error(blocked.error);
+  if (blocked) {
+    throw new Error(blocked.error);
+  }
   const primary = await acquireSimpleCompletionModelForAgent({
     cfg: config,
     agentId,
     signal: params.signal,
   });
-  if ("error" in primary) throw new Error("Checkpoint primary model is unavailable");
+  if ("error" in primary) {
+    throw new Error("Checkpoint primary model is unavailable");
+  }
   let summaryModel: typeof primary = primary;
   let disposed = false;
   let primaryReleased = false;
@@ -58,8 +62,9 @@ export async function acquireConversationKnowledgeCheckpointModel(params: {
     } catch (error) {
       failures.push(error);
     }
-    if (failures.length)
+    if (failures.length) {
       throw new AggregateError(failures, "Checkpoint model cleanup remains pending");
+    }
   };
   params.retainCleanup?.(release);
   try {
@@ -85,7 +90,9 @@ export async function acquireConversationKnowledgeCheckpointModel(params: {
         modelRef: override,
         signal: params.signal,
       });
-      if ("error" in selected) throw new Error("Checkpoint compaction model is unavailable");
+      if ("error" in selected) {
+        throw new Error("Checkpoint compaction model is unavailable");
+      }
       summaryModel = selected;
       summaryReleased = false;
     }
@@ -125,7 +132,9 @@ export async function acquireConversationKnowledgeCheckpointModel(params: {
     const provider = providerId ? getCompactionProvider(providerId) : undefined;
     const budget = { contextTokenBudget, prompt: "" };
     const assertCurrent = () => {
-      if (disposed) throw new Error("Checkpoint model custody has ended");
+      if (disposed) {
+        throw new Error("Checkpoint model custody has ended");
+      }
       params.assertCurrent();
     };
     return {

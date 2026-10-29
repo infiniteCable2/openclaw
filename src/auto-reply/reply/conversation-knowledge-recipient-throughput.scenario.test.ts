@@ -100,7 +100,9 @@ it("prepares long-source observations while idle and consumes them once through 
     phase = next;
     phaseStarted = performance.now();
     phases.push({ phase, startedMs: Math.round(phaseStarted - diagnosticStarted) });
-    if (phases.length > 24) phases.shift();
+    if (phases.length > 24) {
+      phases.shift();
+    }
   };
   let inspectFailure: () => unknown = () => ({});
   onTestFailed(() => {
@@ -374,10 +376,10 @@ it("prepares long-source observations while idle and consumes them once through 
       inspectFailure = () => ({
         spans,
         reads,
-        prefetchRegistered: !!prefetch,
+        prefetchRegistered: Boolean(prefetch),
         cacheRevision: prefetch?.cache.revision,
-        preparedRoot: !!prefetch?.cache.preparedRoot,
-        preparedCheckpoint: !!prefetch?.cache.preparedCheckpoint,
+        preparedRoot: Boolean(prefetch?.cache.preparedRoot),
+        preparedCheckpoint: Boolean(prefetch?.cache.preparedCheckpoint),
         compactionCalls: budget.compact.mock.calls.length,
       });
       budget.compact.mockClear();

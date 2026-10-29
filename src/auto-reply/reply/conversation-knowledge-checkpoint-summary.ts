@@ -95,7 +95,8 @@ export function planConversationKnowledgeCheckpointSummary(
   const ids = new Set<string>();
   for (const contribution of params.contributions) {
     if (
-      contribution.complete !== true ||
+      typeof contribution.complete !== "boolean" ||
+      !contribution.complete ||
       !contribution.contributionId.trim() ||
       ids.has(contribution.contributionId) ||
       !contribution.text.trim()

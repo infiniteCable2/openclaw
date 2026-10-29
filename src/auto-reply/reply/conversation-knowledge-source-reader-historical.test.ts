@@ -82,7 +82,9 @@ function reader() {
   return { owner, reads, drop };
 }
 beforeEach(() => {
-  for (const mock of Object.values(native)) mock.mockReset();
+  for (const mock of Object.values(native)) {
+    mock.mockReset();
+  }
   native.select.mockReturnValue(admitted);
   native.prepare.mockResolvedValue({
     sources: [

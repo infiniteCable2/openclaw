@@ -56,7 +56,9 @@ describe("native historical contribution packet custody", () => {
               }),
             ).toBe(true);
             const [receipt] = await f.receipts();
-            if (!receipt) throw new Error("Expected exact original root reference");
+            if (!receipt) {
+              throw new Error("Expected exact original root reference");
+            }
             const originalReceipt = structuredClone(receipt);
             const before = loadSessionEntry(donor)!;
             await resetSessionEntryLifecycle({
@@ -78,7 +80,9 @@ describe("native historical contribution packet custody", () => {
             });
             const target = await f.claim(recipient);
             const branch = await readConversationKnowledgeBranch(target);
-            if (!branch) throw new Error("Expected native recipient branch");
+            if (!branch) {
+              throw new Error("Expected native recipient branch");
+            }
             const root = await readConversationKnowledgeRoot({ ...target, branch });
             grant = await preparePersonalConversationRead({
               purpose: "conversation-differences",
@@ -93,7 +97,9 @@ describe("native historical contribution packet custody", () => {
               sources: [receipt.source],
             });
             const proof = grant.selectContribution(receipt);
-            if (!proof) throw new Error("Expected native exact historical range proof");
+            if (!proof) {
+              throw new Error("Expected native exact historical range proof");
+            }
             expect(proof.originalLifecycleRevision).toBe(donor.lifecycleRevision);
             expect(proof.currentLifecycleRevision).toBe("after-reset");
             const projection = await readSessionTranscriptModelContextAsync(
@@ -104,7 +110,9 @@ describe("native historical contribution packet custody", () => {
               proof.through,
               { from: proof.from, maxBytes: 64 * 1024, maxEvents: 64 },
             );
-            if (!projection.version) throw new Error("Expected native historical prefix version");
+            if (!projection.version) {
+              throw new Error("Expected native historical prefix version");
+            }
             const writer = {
               ...branch,
               expectedLifecycleRevision: branch.lifecycleRevision,
@@ -126,11 +134,15 @@ describe("native historical contribution packet custody", () => {
               source: target.assertCurrent,
               historicalCustody: proof,
             };
-            if (mode === "fabricated") packet.historicalCustody = { ...proof };
+            if (mode === "fabricated") {
+              packet.historicalCustody = { ...proof };
+            }
             if (mode === "mismatch") {
               packet.receipt = { ...receipt, runId: "different-original-run" };
             }
-            if (mode === "released") grant.release();
+            if (mode === "released") {
+              grant.release();
+            }
             if (mode === "commit-race") {
               packet.source = Object.assign(() => target.assertCurrent(), {
                 prepareSessionSource: async () => {

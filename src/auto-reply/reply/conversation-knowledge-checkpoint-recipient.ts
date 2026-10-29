@@ -61,12 +61,16 @@ function checkpointReadCustody(releaseTarget: () => void, cache: ConversationKno
   let active = true;
   const drop = (read: ConversationKnowledgeHeldSource) => {
     const index = reads.indexOf(read);
-    if (index < 0) return;
+    if (index < 0) {
+      return;
+    }
     read.grant.release();
     reads.splice(index, 1);
   };
   const release = () => {
-    if (!active) return;
+    if (!active) {
+      return;
+    }
     const errors: unknown[] = [];
     for (const read of reads.toReversed()) {
       try {
@@ -115,13 +119,16 @@ export async function prepareRecipientConversationProjection(
     !tail.length ||
     !params.originalParticipant ||
     !params.expectedAudienceIdentity
-  )
+  ) {
     return;
+  }
   const target = await prepareConversationKnowledgeTarget({
     ...params,
     participantIdentity: params.expectedAudienceIdentity,
   });
-  if (!target || target.kind !== "ready") return;
+  if (!target || target.kind !== "ready") {
+    return;
+  }
   const { branch, targetFacts } = target;
   const { reads, drop, release } = checkpointReadCustody(() => targetFacts.release(), cache);
   const check = composeSessionSourceAssertion([params.assertCurrent, targetFacts.assertCurrent]);
@@ -150,15 +157,20 @@ export async function prepareRecipientConversationProjection(
     for (const item of tail) {
       const id = conversationKnowledgeContributionId(item.reference);
       const reference = current.get(id);
-      if (!reference || !isDeepStrictEqual(reference, item.reference)) continue;
+      if (!reference || !isDeepStrictEqual(reference, item.reference)) {
+        continue;
+      }
       const { source } = await reader.take(reference);
-      if (!source) continue;
+      if (!source) {
+        continue;
+      }
       try {
         if (
           !isDeepStrictEqual(source.through, item.packet.through) ||
           !isDeepStrictEqual(source.from, item.packet.from)
-        )
+        ) {
           continue;
+        }
         const sourceTarget = { ...reference.source, storePath: reference.through.storePath };
         if (
           !cache.retainAdmission(
@@ -166,9 +178,12 @@ export async function prepareRecipientConversationProjection(
             sourceTarget,
             cache.preparedAdmission(sourceTarget) ?? source.grant.prepareAdmission(),
           )
-        )
+        ) {
           break;
-        if (!cache.stage(id, 0, item.packet)) break;
+        }
+        if (!cache.stage(id, 0, item.packet)) {
+          break;
+        }
         ready.push(reference);
       } finally {
         drop(source.read);
@@ -194,13 +209,17 @@ export async function prepareRecipientConversationCheckpoint(
   initialBootstrap?: PreparedConversationKnowledgeBootstrap,
 ): Promise<void> {
   const cache = params.sourceCache;
-  if (!cache || !params.originalParticipant || !params.expectedAudienceIdentity) return;
+  if (!cache || !params.originalParticipant || !params.expectedAudienceIdentity) {
+    return;
+  }
   cache.clearCheckpoint();
   const target = await prepareConversationKnowledgeTarget({
     ...params,
     participantIdentity: params.expectedAudienceIdentity,
   });
-  if (!target || target.kind !== "ready") return;
+  if (!target || target.kind !== "ready") {
+    return;
+  }
   const { branch, targetFacts } = target;
   const { reads, drop, release } = checkpointReadCustody(() => targetFacts.release(), cache);
   const check = composeSessionSourceAssertion([params.assertCurrent, targetFacts.assertCurrent]);
@@ -213,7 +232,9 @@ export async function prepareRecipientConversationCheckpoint(
         source: check,
         signal: params.signal,
       }));
-    if (!bootstrap) return;
+    if (!bootstrap) {
+      return;
+    }
     const events = await readConversationKnowledgeRoot({ ...params, branch, assertCurrent: check });
     const references = selectConversationKnowledgeReceipts(
       events,
@@ -230,8 +251,9 @@ export async function prepareRecipientConversationCheckpoint(
         progress: new Map(),
         availableReferences: references,
       })
-    )
+    ) {
       return;
+    }
     const manifest = issuePreparedKnowledgeRootCandidates(events.evidence, references, {
       maxBytes: cache.maxPreparedRootBytes,
       sharedMetadata: true,
@@ -244,7 +266,9 @@ export async function prepareRecipientConversationCheckpoint(
       manifest,
       assertCurrent: check,
     });
-    if (!selectedEvents.evidence) return;
+    if (!selectedEvents.evidence) {
+      return;
+    }
     const bySource = new Map<string, ConversationKnowledgeReference[]>();
     for (const reference of references) {
       const key = JSON.stringify([reference.source, reference.through.storePath]);
@@ -283,7 +307,9 @@ export async function prepareRecipientConversationCheckpoint(
         reads.push(read);
         for (const reference of selected) {
           const range = grant.selectContribution(reference);
-          if (!range || !latest.coverage.matchesReference(reference, range)) return;
+          if (!range || !latest.coverage.matchesReference(reference, range)) {
+            return;
+          }
         }
         drop(read);
         groups.push(
@@ -307,7 +333,9 @@ export async function prepareRecipientConversationCheckpoint(
         availableReferences: references,
         source: check,
       });
-      if (!selection) return;
+      if (!selection) {
+        return;
+      }
       if (
         cache.stageCheckpoint(
           Object.freeze({
@@ -320,7 +348,9 @@ export async function prepareRecipientConversationCheckpoint(
           }),
         )
       ) {
-        for (const retire of retirements) cache.forgetCleanup(retire);
+        for (const retire of retirements) {
+          cache.forgetCleanup(retire);
+        }
       }
     } finally {
       cache.retryCleanup();
@@ -342,13 +372,16 @@ export async function admitRecipientConversationCheckpoint(
     !params.originalParticipant ||
     !params.retainInHistory ||
     !params.canAdmitPacket
-  )
-    return;
+  ) {
+    return undefined;
+  }
   const target = await prepareConversationKnowledgeTarget({
     ...params,
     participantIdentity: candidate.checkpoint.audienceKey,
   });
-  if (!target || target.kind !== "ready") return;
+  if (!target || target.kind !== "ready") {
+    return undefined;
+  }
   const { branch, targetFacts } = target;
   const custody = checkpointReadCustody(() => targetFacts.release(), cache);
   const { reads, release } = custody;
@@ -386,7 +419,9 @@ export async function admitRecipientConversationCheckpoint(
     const authority = composeSessionSourceAssertion(
       [check, ...reads.map((read) => read.grant.assertCurrent)],
       (assert) => {
-        if (!custody.active) throw new Error("Checkpoint recipient grant was released");
+        if (!custody.active) {
+          throw new Error("Checkpoint recipient grant was released");
+        }
         (params.retainedSignal ?? params.signal)?.throwIfAborted();
         assert();
       },
@@ -421,9 +456,11 @@ export async function admitRecipientConversationCheckpoint(
     }
     if (!bootstrap) {
       cache.clearCheckpoint(candidate);
-      return;
+      return undefined;
     }
-    if (!params.canAdmitPacket(message)) return;
+    if (!params.canAdmitPacket(message)) {
+      return undefined;
+    }
     const result = await retainConversationKnowledgeCheckpoint({
       ...candidate,
       bootstrap,
@@ -436,7 +473,9 @@ export async function admitRecipientConversationCheckpoint(
       signal: params.signal,
       contextLimits: params.retainInHistory.contextLimits,
     });
-    if (!result.accepted) return;
+    if (!result.accepted) {
+      return undefined;
+    }
     cache.consumeCheckpoint(candidate);
     params.onPacket?.(message);
     retained = true;
@@ -448,10 +487,13 @@ export async function admitRecipientConversationCheckpoint(
     if (
       error instanceof SessionTranscriptReadFenceError ||
       error instanceof SessionMutationAuthorizationChangedError
-    )
-      return;
+    ) {
+      return undefined;
+    }
     throw error;
   } finally {
-    if (!retained) release();
+    if (!retained) {
+      release();
+    }
   }
 }

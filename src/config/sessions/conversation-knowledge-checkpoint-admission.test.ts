@@ -192,7 +192,9 @@ describe("native conversation checkpoint storage and admission", () => {
               env: state.env,
               source,
             });
-            if (!bootstrap) return { accepted: false, appended: false, deferred: false };
+            if (!bootstrap) {
+              return { accepted: false, appended: false, deferred: false };
+            }
             return await retainConversationKnowledgeCheckpoint({
               branch: target,
               checkpoint,
@@ -205,7 +207,9 @@ describe("native conversation checkpoint storage and admission", () => {
               source,
             });
           } finally {
-            if (targetHeld !== held) await targetHeld.databaseClaim.release();
+            if (targetHeld !== held) {
+              await targetHeld.databaseClaim.release();
+            }
           }
         };
         try {
@@ -246,8 +250,9 @@ describe("native conversation checkpoint storage and admission", () => {
           const second = appendTranscriptMessageSync(donor, {
             message: { role: "user", content: "The later preference is green.", timestamp: 2 },
           });
-          if (!second.ok || !second.value?.anchor)
+          if (!second.ok || !second.value?.anchor) {
             throw new Error("Second synthetic anchor missing");
+          }
           const nextReference: ConversationKnowledgeReference = {
             ...reference,
             through: second.value.anchor,
@@ -308,8 +313,9 @@ describe("native conversation checkpoint storage and admission", () => {
               timestamp: 3,
             },
           });
-          if (!interveningInput.ok || !interveningInput.value?.anchor)
+          if (!interveningInput.ok || !interveningInput.value?.anchor) {
             throw new Error("Synthetic native input anchor missing");
+          }
           const admission = {
             ...interveningInput.value.anchor,
             role: "user" as const,
@@ -504,8 +510,9 @@ describe("native conversation checkpoint storage and admission", () => {
             const initial = appendTranscriptMessageSync(negative, {
               message: { role: "user", content: "Original local input.", timestamp: 1 },
             });
-            if (!initial.ok || !initial.value?.anchor)
+            if (!initial.ok || !initial.value?.anchor) {
               throw new Error("Negative bootstrap fixture lacks native anchor");
+            }
             const initialBootstrap = await prepareNewConversationKnowledgeBootstrap({
               branch: negative,
               env: state.env,
@@ -566,8 +573,9 @@ describe("native conversation checkpoint storage and admission", () => {
                   timestamp: 2,
                 },
               });
-              if (!appended.ok || !appended.value?.anchor)
+              if (!appended.ok || !appended.value?.anchor) {
                 throw new Error("Native negative message fixture failed");
+              }
               id = appended.value.anchor.entryId;
             } else {
               const event =
@@ -584,12 +592,13 @@ describe("native conversation checkpoint storage and admission", () => {
                     };
               expect(appendTranscriptEventSync(negative, event).ok).toBe(true);
             }
-            if (kind === "extra-user")
+            if (kind === "extra-user") {
               expect(
                 appendTranscriptMessageSync(negative, {
                   message: { role: "user", content: "A second separate input.", timestamp: 3 },
                 }).ok,
               ).toBe(true);
+            }
             expect(
               await advanceConversationKnowledgeBootstrapInput({
                 branch: negative,
@@ -626,8 +635,9 @@ describe("native conversation checkpoint storage and admission", () => {
               !("kind" in sealedHeld.databaseClaim) ||
               sealedHeld.databaseClaim.kind !== "worker" ||
               !sealedHeld.databaseClaim.reader
-            )
+            ) {
               throw new Error("Native sealed fixture requires worker cohorts");
+            }
             expect(
               await recordConversationUtteranceObservation({
                 reader: donorHeld.databaseClaim.reader,

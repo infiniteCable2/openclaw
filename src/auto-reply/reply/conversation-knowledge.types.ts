@@ -16,7 +16,7 @@ export type PreparedReplyConversationKnowledge = {
   fragments: RuntimeContextFragment[];
   observed: ConversationKnowledgeFrontier[];
   assertCurrent: SessionSourceAssertion;
-  release(): void;
+  release(this: void): void;
   pendingPackets?: boolean;
   nextSourceCursor?: string;
   /** Disposable preparation must await a new wakeup when pending packet storage is full. */

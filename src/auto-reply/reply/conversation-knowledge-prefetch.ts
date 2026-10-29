@@ -206,7 +206,7 @@ export function prepareConversationKnowledgeRecipient(params: {
               originalParticipant: participant,
               destinationAudience: audience,
               expectedAudienceIdentity: identity,
-              getRuntimeConfig: params.getRuntimeConfig,
+              getRuntimeConfig: () => params.getRuntimeConfig(),
               signal,
               sourceCache: cache,
               preparationOnly: true,

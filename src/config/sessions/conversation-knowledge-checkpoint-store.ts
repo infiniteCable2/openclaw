@@ -106,9 +106,12 @@ export async function readConversationKnowledgeCheckpointCoverage(
           recipient.lifecycleRevision !== params.branch.lifecycleRevision ||
           root?.sessionId !== params.branch.root.sessionId ||
           root.lifecycleRevision !== params.branch.root.lifecycleRevision
-        )
+        ) {
           throw new Error("Conversation checkpoint root changed before coverage preparation");
-        if (typeof read.source.databaseIdentity !== "string") return undefined;
+        }
+        if (typeof read.source.databaseIdentity !== "string") {
+          return undefined;
+        }
         return JSON.stringify([
           read.source,
           params.branch.agentId,
@@ -141,10 +144,13 @@ export async function readConversationKnowledgeCheckpointCoverage(
   const records: ConversationKnowledgeCheckpoint[] = [];
   for (const event of events) {
     const details = asOptionalRecord(asOptionalRecord(event)?.details);
-    if (details?.audienceKey !== params.checkpoint.audienceKey) continue;
+    if (details?.audienceKey !== params.checkpoint.audienceKey) {
+      continue;
+    }
     const record = readConversationKnowledgeCheckpoint(details);
-    if (!record)
+    if (!record) {
       throw new Error("Conversation checkpoint chain contains invalid persisted metadata");
+    }
     records.push(record);
   }
   check(params);
@@ -154,7 +160,11 @@ export async function readConversationKnowledgeCheckpointCoverage(
     assertCurrent: () => check(params),
   });
   if (key) {
-    for (const [oldKey, value] of sharedCoverage) if (!value.deref()) sharedCoverage.delete(oldKey);
+    for (const [oldKey, value] of sharedCoverage) {
+      if (!value.deref()) {
+        sharedCoverage.delete(oldKey);
+      }
+    }
     // A concurrent reader may already own this exact immutable content.
     const existing = sharedCoverage.get(key)?.deref();
     if (existing) {
@@ -162,8 +172,9 @@ export async function readConversationKnowledgeCheckpointCoverage(
       return existing;
     }
     sharedCoverage.set(key, new WeakRef(coverage));
-    while (sharedCoverage.size > MAX_SHARED_COVERAGE_KEYS)
+    while (sharedCoverage.size > MAX_SHARED_COVERAGE_KEYS) {
       sharedCoverage.delete(sharedCoverage.keys().next().value!);
+    }
   }
   return coverage;
 }

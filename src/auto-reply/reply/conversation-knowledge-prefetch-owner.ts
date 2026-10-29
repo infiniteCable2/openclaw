@@ -108,8 +108,9 @@ export function createConversationKnowledgePrefetchOwner(params: {
         failures.push(error);
       }
       // Failed child cleanup still needs this native owner; retry it before releasing custody.
-      if (failures.length)
+      if (failures.length) {
         throw new AggregateError(failures, "Conversation knowledge cleanup remains pending");
+      }
       await execution?.release();
       execution = undefined;
       unregister();

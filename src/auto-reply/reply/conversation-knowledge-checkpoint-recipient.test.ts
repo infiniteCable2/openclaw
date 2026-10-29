@@ -71,7 +71,9 @@ vi.mock("./conversation-knowledge-source-reader.js", () => ({
   createConversationKnowledgeSourceReader: (params: { reads: unknown[] }) => ({
     take: async (reference: ConversationKnowledgeReference) => {
       const allowed = await native.take();
-      if (!allowed) return {};
+      if (!allowed) {
+        return {};
+      }
       const read = {
         grant: {
           assertCurrent: native.checkSource,
@@ -178,7 +180,9 @@ function fixture(references = [reference]) {
   return { candidate, cache, params, canAdmitPacket, onPacket };
 }
 beforeEach(() => {
-  for (const mock of Object.values(native)) mock.mockReset();
+  for (const mock of Object.values(native)) {
+    mock.mockReset();
+  }
   native.target.mockResolvedValue({
     kind: "ready",
     branch,
@@ -429,13 +433,17 @@ describe("ready checkpoint recipient", () => {
     "does not acknowledge or publish %s",
     async (reason) => {
       const f = fixture();
-      if (reason === "missing-grant")
+      if (reason === "missing-grant") {
         native.groupRead.mockRejectedValue(new SessionTranscriptReadFenceError("changed source"));
-      if (reason === "capacity") f.canAdmitPacket.mockReturnValue(false);
-      if (reason === "missing-reference")
+      }
+      if (reason === "capacity") {
+        f.canAdmitPacket.mockReturnValue(false);
+      }
+      if (reason === "missing-reference") {
         native.validate.mockImplementation(() => {
           throw new SessionTranscriptReadFenceError("Native selection changed");
         });
+      }
       expect(await admitRecipientConversationCheckpoint(f.params)).toBeUndefined();
       expect(native.retain).not.toHaveBeenCalled();
       expect(f.cache.consumeCheckpoint).not.toHaveBeenCalled();

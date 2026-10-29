@@ -97,12 +97,15 @@ export function readConversationKnowledgeCheckpoint(
     record.coveredContributionIds.length === 0 ||
     !Array.isArray(record.coveredRangeDigests) ||
     record.coveredRangeDigests.length !== record.coveredContributionIds.length ||
-    record.coveredRangeDigests.some((value: unknown) => !validDigest(value))
-  )
+    record.coveredRangeDigests.some((digest: unknown) => !validDigest(digest))
+  ) {
     return undefined;
+  }
   const ids = new Set<string>();
   for (const id of record.coveredContributionIds) {
-    if (!validDigest(id) || ids.has(id)) return undefined;
+    if (!validDigest(id) || ids.has(id)) {
+      return undefined;
+    }
     ids.add(id);
   }
   const content: CheckpointContent = {
@@ -133,8 +136,9 @@ export class PreparedConversationKnowledgeCheckpointCoverage {
     checkpoint: ConversationKnowledgeCheckpointIdentity,
     ids: ReadonlyMap<string, string>,
   ) {
-    if (issuer !== coverageIssuer)
+    if (issuer !== coverageIssuer) {
       throw new Error("Checkpoint coverage must be prepared from an immutable chain");
+    }
     this.#checkpoint = {
       checkpointId: checkpoint.checkpointId,
       audienceKey: checkpoint.audienceKey,
@@ -172,8 +176,9 @@ export class PreparedConversationKnowledgeCheckpointCoverage {
       !canonical ||
       this.#ids.get(conversationKnowledgeContributionId(canonical)) !==
         conversationKnowledgeCheckpointRangeDigest(canonical)
-    )
+    ) {
       return false;
+    }
     // Root-attested readRange may renew only generation, never move the original interval.
     // This is data compatibility, not a grant: callers still validate native current anchors.
     return (
@@ -194,12 +199,16 @@ export function prepareConversationKnowledgeCheckpointCoverage(params: {
 }): PreparedConversationKnowledgeCheckpointCoverage {
   params.assertCurrent();
   const head = readConversationKnowledgeCheckpoint(params.checkpoint);
-  if (!head) throw new Error("Conversation checkpoint head is invalid");
+  if (!head) {
+    throw new Error("Conversation checkpoint head is invalid");
+  }
   const byId = new Map<string, ConversationKnowledgeCheckpoint>();
   for (const raw of params.records) {
     params.assertCurrent();
     const record = readConversationKnowledgeCheckpoint(raw);
-    if (!record) throw new Error("Conversation checkpoint chain contains an invalid record");
+    if (!record) {
+      throw new Error("Conversation checkpoint chain contains an invalid record");
+    }
     byId.set(record.checkpointId, record);
   }
   const seen = new Set<string>();
@@ -218,8 +227,9 @@ export function prepareConversationKnowledgeCheckpointCoverage(params: {
     }
     seen.add(id);
     for (const [index, contributionId] of record.coveredContributionIds.entries()) {
-      if (ids.has(contributionId))
+      if (ids.has(contributionId)) {
         throw new Error("Conversation checkpoint chain repeats an already summarized occurrence");
+      }
       ids.set(contributionId, record.coveredRangeDigests[index]!);
     }
     id = record.previousCheckpointId;
@@ -250,9 +260,11 @@ export function createConversationKnowledgeCheckpoint(params: {
   ) {
     throw new Error("Conversation checkpoint predecessor or prepared coverage changed");
   }
-  if (previous) params.previousCoverage!.assertCheckpoint(previous);
-  else if (params.previousCoverage)
+  if (previous) {
+    params.previousCoverage!.assertCheckpoint(previous);
+  } else if (params.previousCoverage) {
     throw new Error("Conversation checkpoint coverage has no predecessor");
+  }
   const ids = new Set<string>();
   const ranges: string[] = [];
   for (const raw of params.covered) {
@@ -267,8 +279,9 @@ export function createConversationKnowledgeCheckpoint(params: {
       throw new Error("Conversation checkpoint has invalid or mixed-audience coverage");
     }
     const id = conversationKnowledgeContributionId(reference);
-    if (ids.has(id) || params.previousCoverage?.has(id))
+    if (ids.has(id) || params.previousCoverage?.has(id)) {
       throw new Error("Conversation checkpoint cannot repeat previously summarized occurrences");
+    }
     ids.add(id);
     ranges.push(conversationKnowledgeCheckpointRangeDigest(reference));
   }
@@ -286,7 +299,9 @@ export function createConversationKnowledgeCheckpoint(params: {
     ...content,
     checkpointId: checkpointId(content),
   });
-  if (!result) throw new Error("Conversation checkpoint has invalid or empty coverage");
+  if (!result) {
+    throw new Error("Conversation checkpoint has invalid or empty coverage");
+  }
   return result;
 }
 /** Native report selection may retry. Equal writes are idempotent; stale writers lose CAS. */
@@ -300,9 +315,12 @@ export function selectConversationKnowledgeCheckpointReport(
   if (
     !validated ||
     (latest && (!previous || latest.customType !== CONVERSATION_KNOWLEDGE_CHECKPOINT))
-  )
+  ) {
     throw new Error("Conversation checkpoint record is invalid");
-  if (previous?.checkpointId === validated.checkpointId) return undefined;
+  }
+  if (previous?.checkpointId === validated.checkpointId) {
+    return undefined;
+  }
   if (
     (previous?.checkpointId ?? null) !== validated.previousCheckpointId ||
     (previous &&
@@ -312,8 +330,9 @@ export function selectConversationKnowledgeCheckpointReport(
     throw new Error("Conversation checkpoint predecessor changed before commit");
   }
   if (previous) {
-    if (!previousCoverage)
+    if (!previousCoverage) {
       throw new Error("Conversation checkpoint predecessor coverage is not prepared");
+    }
     previousCoverage.assertCheckpoint(previous);
     if (validated.coveredContributionIds.some((id) => previousCoverage.has(id))) {
       throw new Error("Conversation checkpoint cannot repeat previously summarized occurrences");
@@ -336,7 +355,9 @@ export function selectConversationKnowledgeCheckpointBootstrap(params: {
   hasCheckpointReceipt?: boolean;
   availableReferences: readonly ConversationKnowledgeReference[];
 }): ConversationKnowledgeCheckpoint | undefined {
-  if (params.progress.size !== 0 || params.hasCheckpointReceipt) return undefined;
+  if (params.progress.size !== 0 || params.hasCheckpointReceipt) {
+    return undefined;
+  }
   const checkpoint = readConversationKnowledgeCheckpoint(params.checkpoint);
   if (
     !checkpoint ||
@@ -344,13 +365,16 @@ export function selectConversationKnowledgeCheckpointBootstrap(params: {
     checkpoint.root.agentId !== params.branch.agentId ||
     checkpoint.root.sessionId !== params.branch.root.sessionId ||
     checkpoint.root.lifecycleRevision !== params.branch.root.lifecycleRevision
-  )
+  ) {
     return undefined;
+  }
   params.coverage.assertCheckpoint(checkpoint);
   const available = new Map<string, ConversationKnowledgeReference>();
   for (const raw of params.availableReferences) {
     const reference = canonicalReference(raw);
-    if (reference) available.set(conversationKnowledgeContributionId(reference), reference);
+    if (reference) {
+      available.set(conversationKnowledgeContributionId(reference), reference);
+    }
   }
   for (const id of params.coverage.contributionIds()) {
     const reference = available.get(id);
@@ -364,8 +388,9 @@ export function selectConversationKnowledgeCheckpointBootstrap(params: {
       !params.coverage.matchesReference(reference) ||
       conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) !==
         params.audienceKey
-    )
+    ) {
       return undefined;
+    }
   }
   return checkpoint;
 }

@@ -183,7 +183,7 @@ export function createReplyConversationKnowledgeTurn(params: {
                     signal,
                     admission: followupRun.userTurnTranscriptRecorder?.getAdmissionReceipt(),
                   });
-                  if (bootstrap)
+                  if (bootstrap) {
                     await prepareRecipientConversationCheckpoint(
                       initialization,
                       {
@@ -192,6 +192,7 @@ export function createReplyConversationKnowledgeTurn(params: {
                       },
                       bootstrap,
                     );
+                  }
                 }
                 await prepareRecipientConversationProjection(initialization, projection.tail);
               }

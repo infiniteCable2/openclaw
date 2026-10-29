@@ -63,8 +63,10 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   retainCleanup(release: () => void): void;
 }) {
   const audienceKey = conversationKnowledgeParticipantIdentity(params.participant);
-  if (!audienceKey) throw new Error("Checkpoint broker lacks a personal identity");
-  const target = await prepareConversationKnowledgeTarget({
+  if (!audienceKey) {
+    throw new Error("Checkpoint broker lacks a personal identity");
+  }
+  const brokerTarget = await prepareConversationKnowledgeTarget({
     reader: params.reader,
     sessionId: params.branch.sessionId,
     destinationAudience: params.audience,
@@ -72,17 +74,21 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
     expectedAudienceIdentity: audienceKey,
     signal: params.signal,
     assertCurrent: params.assertCurrent,
-    getRuntimeConfig: params.getRuntimeConfig,
+    getRuntimeConfig: () => params.getRuntimeConfig(),
   });
-  if (target?.kind !== "ready") throw new Error("Checkpoint broker is unavailable");
-  const { branch, targetFacts } = target;
+  if (brokerTarget?.kind !== "ready") {
+    throw new Error("Checkpoint broker is unavailable");
+  }
+  const { branch, targetFacts } = brokerTarget;
   const reads: ConversationKnowledgeHeldSource[] = [];
   const groups: PreparedPersonalConversationContributionGroup[] = [];
   const proofs: SessionSourceAssertion[] = [];
   let released = false;
   let targetReleased = false;
   const check = () => {
-    if (released) throw new Error("Checkpoint source custody has ended");
+    if (released) {
+      throw new Error("Checkpoint source custody has ended");
+    }
     params.signal.throwIfAborted();
     params.assertCurrent();
     targetFacts.assertCurrent();
@@ -91,7 +97,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   const drop = (read: ConversationKnowledgeHeldSource) => {
     const index = reads.indexOf(read);
     read.grant.release();
-    if (index >= 0) reads.splice(index, 1);
+    if (index >= 0) {
+      reads.splice(index, 1);
+    }
   };
   const release = () => {
     released = true;
@@ -119,8 +127,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         failures.push(error);
       }
     }
-    if (failures.length)
+    if (failures.length) {
       throw new AggregateError(failures, "Checkpoint source cleanup remains pending");
+    }
   };
   params.retainCleanup(release);
   try {
@@ -132,7 +141,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       rootContinuation: params.rootContinuation,
     });
     check();
-    const references = selectConversationKnowledgeReceipts(
+    const rootReferences = selectConversationKnowledgeReceipts(
       events,
       branch.root.sessionId,
       branch.root.sessionKey,
@@ -150,7 +159,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       rootEvidence: events.evidence,
       targetFacts,
       assertCurrent: check,
-      getRuntimeConfig: params.getRuntimeConfig,
+      getRuntimeConfig: () => params.getRuntimeConfig(),
       signal: params.signal,
       hasRetainedContribution: () => false,
       reads,
@@ -168,8 +177,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
             entry.sessionId !== branch.sessionId ||
             entry.lifecycleRevision !== branch.lifecycleRevision ||
             reference.source.sessionId !== branch.sessionId
-          )
+          ) {
             throw new Error("Checkpoint own source incarnation changed");
+          }
           if (
             reference.source.lifecycleRevision !== entry.lifecycleRevision &&
             conversationKnowledgeHistoricalContributionIdentity(
@@ -178,10 +188,11 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
               reference,
               branch.root,
             ) !== audienceKey
-          )
+          ) {
             throw new Error(
               "Checkpoint historical own source is not currently private to this person",
             );
+          }
           return facts.source;
         },
       );
@@ -225,10 +236,12 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
       const contributionId = conversationKnowledgeContributionId(reference);
       const cached = prepared.get(contributionId);
-      if (cached) return cached;
+      if (cached) {
+        return cached;
+      }
       let projection;
       let nativeSource: CapturedSessionEntryReadSource;
-      let currentLifecycle = reference.source.lifecycleRevision;
+      let currentLifecycle: string;
       let through = reference.readRange?.through ?? reference.through;
       let from = reference.readRange?.admission ?? reference.privateAudience?.admission;
       if (reference.source.sessionKey === branch.sessionKey) {
@@ -251,7 +264,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         );
       } else {
         const current = await sourceReader.take(reference);
-        if (!current.source) throw new Error("Checkpoint source authority is unavailable");
+        if (!current.source) {
+          throw new Error("Checkpoint source authority is unavailable");
+        }
         projection = await sourceReader.load(
           current.source,
           current.projection,
@@ -262,13 +277,17 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         proofs.push(current.source.sourceAssertion);
         nativeSource = current.source.grant.sources[0]!.readSource;
         const lifecycle = current.source.grant.sources[0]!.lifecycleRevision;
-        if (!lifecycle) throw new Error("Checkpoint current source lifecycle is unavailable");
+        if (!lifecycle) {
+          throw new Error("Checkpoint current source lifecycle is unavailable");
+        }
         currentLifecycle = lifecycle;
         through = current.source.through;
         from = current.source.from;
       }
       check();
-      if (!projection.version) throw new Error("Checkpoint source lacks a native version");
+      if (!projection.version) {
+        throw new Error("Checkpoint source lacks a native version");
+      }
       const version = projection.version;
       recordVersionProof(reference, nativeSource, version, currentLifecycle);
       const part = projectConversationKnowledge(
@@ -280,8 +299,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           maxChars: CONVERSATION_KNOWLEDGE_SOURCE_LIMITS.maxBytes,
         },
       );
-      if (!part?.frontier || part.complete !== true)
+      if (!part?.frontier || typeof part.complete !== "boolean" || !part.complete) {
         throw new Error("Checkpoint exact whole source range is unavailable");
+      }
       const value = {
         contributionId,
         complete: true as const,
@@ -289,7 +309,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         reference,
         packet: { part, version, through, from },
       };
-      if (retainText) prepared.set(contributionId, value);
+      if (retainText) {
+        prepared.set(contributionId, value);
+      }
       return value;
     };
     const validate = async (
@@ -299,7 +321,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       check();
       assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
       let nativeSource: CapturedSessionEntryReadSource;
-      let currentLifecycle = reference.source.lifecycleRevision;
+      let currentLifecycle: string;
       let through = reference.readRange?.through ?? reference.through;
       let from = reference.readRange?.admission ?? reference.privateAudience?.admission;
       let target = { ...reference.source, storePath: reference.through.storePath };
@@ -308,11 +330,15 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         currentLifecycle = branch.lifecycleRevision;
       } else {
         const current = await sourceReader.take(reference);
-        if (!current.source) throw new Error("Checkpoint source authority is unavailable");
+        if (!current.source) {
+          throw new Error("Checkpoint source authority is unavailable");
+        }
         proofs.push(current.source.sourceAssertion);
         nativeSource = current.source.grant.sources[0]!.readSource;
         const lifecycle = current.source.grant.sources[0]!.lifecycleRevision;
-        if (!lifecycle) throw new Error("Checkpoint current source lifecycle is unavailable");
+        if (!lifecycle) {
+          throw new Error("Checkpoint current source lifecycle is unavailable");
+        }
         currentLifecycle = lifecycle;
         through = current.source.through;
         from = current.source.from;
@@ -322,10 +348,11 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         packet &&
         conversationKnowledgeCheckpointRangeDigest(reference, { through, from }) !==
           conversationKnowledgeCheckpointRangeDigest(reference, packet)
-      )
+      ) {
         throw new Error("Checkpoint prepared source range changed");
+      }
       let valid = false;
-      const facts = await readSessionTranscriptAnchorsAsync(
+      const anchorFacts = await readSessionTranscriptAnchorsAsync(
         target,
         {
           entryIds: [],
@@ -339,13 +366,14 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         },
       );
       check();
-      if (!valid || !facts.contextVersion)
+      if (!valid || !anchorFacts.contextVersion) {
         throw new Error("Checkpoint prepared source prefix changed");
-      recordVersionProof(reference, nativeSource, facts.contextVersion, currentLifecycle);
+      }
+      recordVersionProof(reference, nativeSource, anchorFacts.contextVersion, currentLifecycle);
       return { through, from };
     };
     return {
-      references,
+      references: rootReferences,
       read,
       validate,
       async verify(reference: ConversationKnowledgeReference) {
@@ -394,7 +422,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           const common = {
             purpose: "conversation-differences" as const,
             signal: params.signal,
-            getRuntimeConfig: params.getRuntimeConfig,
+            getRuntimeConfig: () => params.getRuntimeConfig(),
             sources: [contributions[0]!.source],
           };
           const group = await preparePersonalConversationContributionGroup({
@@ -410,7 +438,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           proofs.push(grant.assertCurrent);
           for (const reference of contributions) {
             const range = grant.selectContribution(reference);
-            if (!range?.version) throw new Error("Checkpoint grouped source range is unavailable");
+            if (!range?.version) {
+              throw new Error("Checkpoint grouped source range is unavailable");
+            }
             verified(reference, range);
           }
           group.release();

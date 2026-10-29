@@ -51,14 +51,18 @@ function rootPayload(
 ): ImmutableRootPayload {
   const nativeSnapshot = readConversationKnowledgeRootSnapshot(events);
   const nativePrevious = nativeSnapshot && nativeRootPayloads.get(nativeSnapshot);
-  if (nativePrevious) return nativePrevious;
+  if (nativePrevious) {
+    return nativePrevious;
+  }
   const serialized = nativeSnapshot ? undefined : JSON.stringify(events);
   const key =
     serialized !== undefined && typeof source.databaseIdentity === "string"
       ? JSON.stringify([source, branch.agentId, branch.root, sha256Hex(serialized)])
       : undefined;
   const previous = key && sharedRootPayloads.get(key)?.deref();
-  if (previous) return previous;
+  if (previous) {
+    return previous;
+  }
   const owned = nativeSnapshot?.events ?? freezeJsonSnapshot(structuredClone([...events]));
   const references = new Map<string, ConversationKnowledgeReference>();
   const byKey = new Map<string, TranscriptEvent>();
@@ -70,9 +74,13 @@ function rootPayload(
         readConversationKnowledgeReceipt(row?.details) ??
         readConversationUtteranceObservation(row?.details) ??
         null;
-      if (row) parsedRootReferences.set(row, reference && freezeJsonSnapshot(reference));
+      if (row) {
+        parsedRootReferences.set(row, reference && freezeJsonSnapshot(reference));
+      }
     }
-    if (!reference) continue;
+    if (!reference) {
+      continue;
+    }
     const id = referenceKey(reference);
     references.set(id, freezeJsonSnapshot(reference));
     byKey.set(id, event);
@@ -83,13 +91,19 @@ function rootPayload(
     byKey,
     byteLength: nativeSnapshot?.bytes ?? Buffer.byteLength(serialized!),
   });
-  if (nativeSnapshot) nativeRootPayloads.set(nativeSnapshot, payload);
+  if (nativeSnapshot) {
+    nativeRootPayloads.set(nativeSnapshot, payload);
+  }
   if (key) {
-    for (const [oldKey, value] of sharedRootPayloads)
-      if (!value.deref()) sharedRootPayloads.delete(oldKey);
+    for (const [oldKey, value] of sharedRootPayloads) {
+      if (!value.deref()) {
+        sharedRootPayloads.delete(oldKey);
+      }
+    }
     sharedRootPayloads.set(key, new WeakRef(payload));
-    while (sharedRootPayloads.size > 128)
+    while (sharedRootPayloads.size > 128) {
       sharedRootPayloads.delete(sharedRootPayloads.keys().next().value!);
+    }
   }
   return payload;
 }
@@ -97,8 +111,9 @@ const contributionGroupProofIssuer = Symbol("native-root-contribution-group");
 class NativeKnowledgeRootContributionGroup {
   readonly #payload: ImmutableRootPayload;
   constructor(issuer: typeof contributionGroupProofIssuer, payload: ImmutableRootPayload) {
-    if (issuer !== contributionGroupProofIssuer)
+    if (issuer !== contributionGroupProofIssuer) {
       throw new Error("Contribution group requires native root evidence");
+    }
     this.#payload = payload;
     Object.freeze(this);
   }
@@ -164,10 +179,12 @@ class NativeKnowledgeRootEvidence {
     target: ConversationKnowledgeBranch,
     references: readonly ConversationKnowledgeReference[],
   ) {
-    for (const reference of references)
+    for (const reference of references) {
       NativeKnowledgeRootEvidence.assertContribution(evidence, target, reference);
-    if (!(evidence instanceof NativeKnowledgeRootEvidence))
+    }
+    if (!(evidence instanceof NativeKnowledgeRootEvidence)) {
       throw new Error("Contribution group requires native root evidence");
+    }
     return new NativeKnowledgeRootContributionGroup(
       contributionGroupProofIssuer,
       evidence.#payload,
@@ -181,16 +198,18 @@ class NativeKnowledgeRootEvidence {
     if (
       !(evidence instanceof NativeKnowledgeRootEvidence) ||
       !(proof instanceof NativeKnowledgeRootContributionGroup)
-    )
+    ) {
       throw new Error("Contribution group requires native root evidence");
+    }
     evidence.#assertCurrent();
     if (
       target.agentId !== evidence.#branch.agentId ||
       target.storePath !== evidence.#branch.storePath ||
       !isDeepStrictEqual(target.root, evidence.#branch.root) ||
       !NativeKnowledgeRootContributionGroup.matches(proof, evidence.#payload)
-    )
+    ) {
       throw new Error("Prepared contribution group root changed");
+    }
   }
 
   static prepareCandidates(

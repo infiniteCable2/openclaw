@@ -72,7 +72,9 @@ async function prepareReplyConversationKnowledgeInMode(
   params.signal?.throwIfAborted();
   if (params.readyOnly && params.sourceCache?.preparedCheckpoint) {
     const bootstrap = await admitRecipientConversationCheckpoint(params);
-    if (bootstrap) return bootstrap;
+    if (bootstrap) {
+      return bootstrap;
+    }
   }
   // Capture before source I/O so foreground consumption invalidates older disposable progress.
   const preparationConsumptionRevision = params.sourceCache?.consumptionRevision;

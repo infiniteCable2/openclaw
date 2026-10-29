@@ -55,8 +55,9 @@ export function createConversationKnowledgeSourceCache<
         errors.push(error);
       }
     }
-    if (errors.length)
+    if (errors.length) {
       throw new AggregateError(errors, "Conversation checkpoint cleanup remains pending");
+    }
   };
   const releaseAdmissions = (selected: Iterable<Admission>) => {
     for (const admission of selected) {
@@ -103,7 +104,9 @@ export function createConversationKnowledgeSourceCache<
     const old = preparedCheckpoint;
     preparedCheckpoint = undefined;
     if (old) {
-      for (const group of old.groups) retiringCleanups.add(() => group.admission.release());
+      for (const group of old.groups) {
+        retiringCleanups.add(() => group.admission.release());
+      }
     }
   };
   const checkpointCoverage = new Map<string, PreparedConversationKnowledgeCheckpointCoverage>();
@@ -180,9 +183,12 @@ export function createConversationKnowledgeSourceCache<
           Buffer.byteLength(value.checkpoint.summary) +
           value.groups.reduce((sum, group) => sum + group.admission.ownedByteLength, 0) >
         maxBytes
-      )
+      ) {
         return false;
-      if (preparedCheckpoint !== value) retireCheckpoint();
+      }
+      if (preparedCheckpoint !== value) {
+        retireCheckpoint();
+      }
       preparedCheckpoint = value;
       revision++;
       return true;
@@ -190,12 +196,16 @@ export function createConversationKnowledgeSourceCache<
     clearCheckpoint(expected?: PreparedRecipientConversationCheckpoint) {
       // A paused owner may still finish its already-running preparation quantum.
       // An older foreground failure must not retire that newly prepared candidate.
-      if (expected && preparedCheckpoint !== expected) return;
+      if (expected && preparedCheckpoint !== expected) {
+        return;
+      }
       retireCheckpoint();
       retryCleanup();
     },
     consumeCheckpoint(value: PreparedRecipientConversationCheckpoint) {
-      if (preparedCheckpoint === value) retireCheckpoint();
+      if (preparedCheckpoint === value) {
+        retireCheckpoint();
+      }
       checkpointCoverage.set(value.checkpoint.checkpointId, value.coverage);
       // Visit bounded prepared packets once, not the potentially year-long coverage set.
       for (const [key, entry] of staged) {
@@ -263,9 +273,13 @@ export function createConversationKnowledgeSourceCache<
     diagnosticPreparedFrontiers() {
       const frontiers = new Map<string, number>();
       for (const slot of staged.values()) {
-        if (slot.offset !== 0 || !slot.value.part.complete) continue;
+        if (slot.offset !== 0 || !slot.value.part.complete) {
+          continue;
+        }
         const sourceHash = redactIdentifier(slot.value.through.sessionId);
-        if (!frontiers.has(sourceHash) && frontiers.size >= 8) continue;
+        if (!frontiers.has(sourceHash) && frontiers.size >= 8) {
+          continue;
+        }
         frontiers.set(
           sourceHash,
           Math.max(frontiers.get(sourceHash) ?? 0, slot.value.through.rawSeq),
@@ -496,8 +510,9 @@ export function createConversationKnowledgeSourceCache<
       } catch (error) {
         errors.push(error);
       }
-      if (errors.length)
+      if (errors.length) {
         throw new AggregateError(errors, "Conversation source cache cleanup remains pending");
+      }
     },
     async read(params: {
       contributionId: string;

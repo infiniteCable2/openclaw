@@ -134,7 +134,9 @@ class ConversationKnowledgeProgressView implements ReadonlyMap<
   }
   get(id: string): ConversationKnowledgePacketProgress | undefined {
     const exact = this.#packets.get(id);
-    if (exact?.complete) return exact;
+    if (exact?.complete) {
+      return exact;
+    }
     return this.#coverage.some((coverage) => coverage.has(id)) ? summarizedProgress : exact;
   }
   has(id: string): boolean {
@@ -147,16 +149,21 @@ class ConversationKnowledgeProgressView implements ReadonlyMap<
         if (
           !this.#packets.has(id) &&
           !this.#coverage.slice(0, index).some((coverage) => coverage.has(id))
-        )
+        ) {
           yield id;
+        }
       }
     }
   }
   *entries(): MapIterator<[string, ConversationKnowledgePacketProgress]> {
-    for (const id of this.keys()) yield [id, this.get(id)!];
+    for (const id of this.keys()) {
+      yield [id, this.get(id)!];
+    }
   }
   *values(): MapIterator<ConversationKnowledgePacketProgress> {
-    for (const id of this.keys()) yield this.get(id)!;
+    for (const id of this.keys()) {
+      yield this.get(id)!;
+    }
   }
   [Symbol.iterator](): MapIterator<[string, ConversationKnowledgePacketProgress]> {
     return this.entries();
@@ -169,18 +176,27 @@ class ConversationKnowledgeProgressView implements ReadonlyMap<
     ) => void,
     thisArg?: unknown,
   ): void {
-    for (const [id, value] of this.entries()) callback.call(thisArg, value, id, this);
+    for (const [id, value] of this.entries()) {
+      callback.call(thisArg, value, id, this);
+    }
   }
   get size(): number {
     // Enumeration is explicit/diagnostic only; normal admission uses get/has.
     if (this.#coverage.length === 1) {
       const coverage = this.#coverage[0]!;
       let size = coverage.size;
-      for (const id of this.#packets.keys()) if (!coverage.has(id)) size++;
+      for (const id of this.#packets.keys()) {
+        if (!coverage.has(id)) {
+          size++;
+        }
+      }
       return size;
     }
     let size = 0;
-    for (const _id of this.keys()) size++;
+    const keys = this.keys();
+    while (!keys.next().done) {
+      size++;
+    }
     return size;
   }
 }

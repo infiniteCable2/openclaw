@@ -29,7 +29,9 @@ export class ConversationKnowledgeRootContinuation {
     continuationStates.delete(this);
   }
   assertCurrent(): void {
-    if (!this.#active) throw new Error("Root continuation owner has closed");
+    if (!this.#active) {
+      throw new Error("Root continuation owner has closed");
+    }
   }
 }
 
@@ -97,7 +99,9 @@ export class ConversationKnowledgeRootCache {
     if (!through.generation || through.maxSeq === null) {
       this.#cache.delete(key);
       this.#live.delete(key);
-      if (params.continuation) continuationStates.delete(params.continuation);
+      if (params.continuation) {
+        continuationStates.delete(params.continuation);
+      }
       await params.revalidate();
       params.assertCurrent();
       return [];
@@ -134,7 +138,9 @@ export class ConversationKnowledgeRootCache {
       const last = boundary.kind === "page" ? boundary.events[0] : undefined;
       const lastEvent = asOptionalRecord(last?.event);
       const events = await params.full(through);
-      for (const event of events) freezeJson(event);
+      for (const event of events) {
+        freezeJson(event);
+      }
       snapshot = {
         generation: through.generation,
         maxSeq: through.maxSeq,
@@ -181,9 +187,13 @@ export class ConversationKnowledgeRootCache {
         this.#live.set(key, new WeakRef(state));
       }
       for (const [oldKey, reference] of this.#live) {
-        if (!reference.deref()) this.#live.delete(oldKey);
+        if (!reference.deref()) {
+          this.#live.delete(oldKey);
+        }
       }
-      while (this.#live.size > 128) this.#live.delete(this.#live.keys().next().value!);
+      while (this.#live.size > 128) {
+        this.#live.delete(this.#live.keys().next().value!);
+      }
     } else if (concurrentState) {
       state = concurrentState;
     }

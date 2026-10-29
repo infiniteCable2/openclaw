@@ -569,44 +569,47 @@ describe("same-person conversation differences on native transcript read owner",
 function historicalFixture(count = 2, own = false) {
   const f = fixture();
   const source = own ? f.recipient : f.source;
-  const references: ConversationKnowledgeReference[] = Array.from({ length: count }, (_, index) => {
-    const original = {
-      agentId: f.params.personal.target.agentId,
-      sessionKey: source.canonicalKey,
-      sessionId: source.entry.sessionId,
-      lifecycleRevision: "before-reset",
-    };
-    const anchor = {
-      ...original,
-      storePath: f.params.personal.target.storePath,
-      generation: "original-generation",
-      entryId: `entry-${index}`,
-      rawSeq: index + 1,
-      activeMessagePosition: index + 1,
-      effectiveParentId: index ? `entry-${index - 1}` : null,
-    };
-    return {
-      version: 1,
-      kind: "utterance-observation",
-      role: "user",
-      sourceMode: "branches",
-      source: original,
-      origin: conversationKnowledgeOrigin(original, "utterance-observation"),
-      through: anchor,
-      privateAudience: { participant: f.participant, admission: anchor },
-    };
-  });
+  const historicalReferences: ConversationKnowledgeReference[] = Array.from(
+    { length: count },
+    (_, index) => {
+      const original = {
+        agentId: f.params.personal.target.agentId,
+        sessionKey: source.canonicalKey,
+        sessionId: source.entry.sessionId,
+        lifecycleRevision: "before-reset",
+      };
+      const anchor = {
+        ...original,
+        storePath: f.params.personal.target.storePath,
+        generation: "original-generation",
+        entryId: `entry-${index}`,
+        rawSeq: index + 1,
+        activeMessagePosition: index + 1,
+        effectiveParentId: index ? `entry-${index - 1}` : null,
+      };
+      return {
+        version: 1,
+        kind: "utterance-observation",
+        role: "user",
+        sourceMode: "branches",
+        source: original,
+        origin: conversationKnowledgeOrigin(original, "utterance-observation"),
+        through: anchor,
+        privateAudience: { participant: f.participant, admission: anchor },
+      };
+    },
+  );
   const evidence = {} as NativeKnowledgeRootEvidence;
   mocks.root.mockImplementation((value, _target, reference) => {
     if (
       value !== evidence ||
-      !references.some((item) => JSON.stringify(item) === JSON.stringify(reference))
+      !historicalReferences.some((item) => JSON.stringify(item) === JSON.stringify(reference))
     ) {
       throw new Error("No exact native root evidence");
     }
   });
-  mocks.groupPrepare.mockImplementation((value, target, references) => {
-    for (const reference of references) {
+  mocks.groupPrepare.mockImplementation((value, target, groupReferences) => {
+    for (const reference of groupReferences) {
       mocks.root(value, target, reference);
     }
     return Object.freeze({ evidence: value, root: JSON.stringify(target.root) });
@@ -616,12 +619,13 @@ function historicalFixture(count = 2, own = false) {
       throw new Error("Prepared root group scope changed");
     }
   });
-  const anchors = references.map((reference) => ({ ...reference.through }));
+  const anchors = historicalReferences.map((reference) => ({ ...reference.through }));
   mocks.anchors.mockImplementation(async (_scope, selection) => {
     if (
       selection.contextValidation &&
       anchors.some(
-        (anchor, index) => JSON.stringify(anchor) !== JSON.stringify(references[index]!.through),
+        (anchor, index) =>
+          JSON.stringify(anchor) !== JSON.stringify(historicalReferences[index]!.through),
       )
     ) {
       throw new Error("Native prefix changed");
@@ -644,13 +648,13 @@ function historicalFixture(count = 2, own = false) {
   return {
     ...f,
     selectedSource: source,
-    references,
+    references: historicalReferences,
     anchors,
     params,
     create: () =>
       preparePersonalConversationContributionGroup({
         ...params,
-        personal: { ...params.personal, contributions: references },
+        personal: { ...params.personal, contributions: historicalReferences },
       }),
   };
 }

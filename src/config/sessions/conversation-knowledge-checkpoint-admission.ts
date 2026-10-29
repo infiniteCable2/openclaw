@@ -59,8 +59,9 @@ export class PreparedConversationKnowledgeCheckpointSelection {
     params: CheckpointSelectionBinding,
     proof: NativeKnowledgeRootContributionGroup,
   ) {
-    if (issuer !== selectionIssuer)
+    if (issuer !== selectionIssuer) {
       throw new Error("Checkpoint selection requires verified preparation");
+    }
     this.checkpoint = freezeJsonSnapshot(structuredClone(params.checkpoint));
     this.#branch = structuredClone(params.branch);
     this.#coverage = params.coverage;
@@ -76,14 +77,16 @@ export class PreparedConversationKnowledgeCheckpointSelection {
       params.coverage !== this.#coverage ||
       params.audienceKey !== this.#audienceKey ||
       params.manifest !== this.#manifest
-    )
+    ) {
       throw new Error("Prepared checkpoint selection changed");
+    }
     assertNativeKnowledgeRootContributionGroup(params.rootEvidence, params.branch, this.#rootProof);
     return this.checkpoint;
   }
   static read(value: unknown, params: CheckpointSelectionBinding): ConversationKnowledgeCheckpoint {
-    if (typeof value !== "object" || value === null || !(#branch in value))
+    if (typeof value !== "object" || value === null || !(#branch in value)) {
       throw new Error("Checkpoint selection requires verified preparation");
+    }
     return value.validate(params);
   }
 }
@@ -102,7 +105,9 @@ export function prepareConversationKnowledgeCheckpointSelection(
     ...params,
     progress: new Map(),
   });
-  if (!checkpoint) return undefined;
+  if (!checkpoint) {
+    return undefined;
+  }
   const proof = prepareNativeKnowledgeRootContributionGroup(
     params.rootEvidence,
     params.branch,
@@ -132,16 +137,18 @@ export class PreparedConversationKnowledgeBootstrap {
     version: SessionTranscriptContextVersion,
     appendParentId: string | null,
   ) {
-    if (issuer !== bootstrapIssuer)
+    if (issuer !== bootstrapIssuer) {
       throw new Error("Checkpoint bootstrap requires native preparation");
+    }
     this.#branch = structuredClone(branch);
     this.#version = structuredClone(version);
     this.#appendParentId = appendParentId;
     Object.freeze(this);
   }
   version(branch: ConversationKnowledgeBranch): SessionTranscriptContextVersion {
-    if (!isDeepStrictEqual(branch, this.#branch))
+    if (!isDeepStrictEqual(branch, this.#branch)) {
       throw new Error("Checkpoint bootstrap recipient changed");
+    }
     return structuredClone(this.#version);
   }
   appendParentId(branch: ConversationKnowledgeBranch): string | null {
@@ -187,8 +194,9 @@ export async function prepareConversationKnowledgeBootstrap(params: {
     !isDeepStrictEqual(before, after) ||
     imports.packets.size ||
     imports.checkpoints.length
-  )
+  ) {
     return undefined;
+  }
   return new PreparedConversationKnowledgeBootstrap(
     bootstrapIssuer,
     params.branch,
@@ -226,8 +234,9 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
     !before.version?.generation ||
     before.appendParentId === undefined ||
     before.lifecycleRevision !== params.branch.lifecycleRevision
-  )
+  ) {
     return undefined;
+  }
   const page = await withSessionTranscriptDeltaReader(
     { ...params.branch, env: params.env },
     (reader) => reader.raw({ maxEvents: 5, maxBytes: 1_000_000 }),
@@ -240,10 +249,13 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
     page.requiredBytes !== undefined ||
     page.events.length < 1 ||
     page.events.length > 4
-  )
+  ) {
     return undefined;
+  }
   const header = asOptionalRecord(page.events[0]!.event);
-  if (header?.type !== "session" || header.id !== params.branch.sessionId) return undefined;
+  if (header?.type !== "session" || header.id !== params.branch.sessionId) {
+    return undefined;
+  }
   const expected = params.admission;
   let parent: string | null = null;
   let previousSeq = page.events[0]!.seq;
@@ -257,8 +269,9 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
       typeof event.id !== "string" ||
       event.parentId !== parent ||
       row.seq !== previousSeq + 1
-    )
+    ) {
       return undefined;
+    }
     if (event.type === "message") {
       if (
         hasUser ||
@@ -272,8 +285,9 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
         event.id !== expected.entryId ||
         expected.effectiveParentId !== parent ||
         asOptionalRecord(event.message)?.role !== "user"
-      )
+      ) {
         return undefined;
+      }
       hasUser = true;
     } else if (event.type === "model_change") {
       if (
@@ -283,26 +297,32 @@ export async function prepareNewConversationKnowledgeBootstrap(params: {
         hasUser ||
         event.provider !== params.initialization.provider ||
         event.modelId !== params.initialization.modelId
-      )
+      ) {
         return undefined;
+      }
       hasModel = true;
     } else if (event.type === "thinking_level_change") {
       if (
         !params.initialization ||
         hasThinking ||
         event.thinkingLevel !== params.initialization.thinkingLevel
-      )
+      ) {
         return undefined;
+      }
       hasThinking = true;
-    } else return undefined;
+    } else {
+      return undefined;
+    }
     parent = event.id;
     previousSeq = row.seq;
   }
-  if (before.appendParentId !== parent || ((expected || hasModel || hasThinking) && !hasUser))
+  if (before.appendParentId !== parent || ((expected || hasModel || hasThinking) && !hasUser)) {
     return undefined;
+  }
   const after = await facts();
-  if (!isDeepStrictEqual(before, after) || before.version.rawSeq !== page.events.at(-1)!.seq)
+  if (!isDeepStrictEqual(before, after) || before.version.rawSeq !== page.events.at(-1)!.seq) {
     return undefined;
+  }
   return new PreparedConversationKnowledgeBootstrap(
     bootstrapIssuer,
     params.branch,
@@ -334,7 +354,9 @@ export async function advanceConversationKnowledgeBootstrapInput(params: {
     params.signal,
   ).readMaintenance({ operation: "version" });
   check();
-  if (isDeepStrictEqual(before, current.version)) return params.bootstrap;
+  if (isDeepStrictEqual(before, current.version)) {
+    return params.bootstrap;
+  }
   if (
     !before.generation ||
     before.rawSeq === null ||
@@ -349,8 +371,9 @@ export async function advanceConversationKnowledgeBootstrapInput(params: {
     current.version.rawSeq !== admission.rawSeq ||
     current.appendParentId !== admission.entryId ||
     current.lifecycleRevision !== branch.lifecycleRevision
-  )
+  ) {
     return undefined;
+  }
   const page = await withSessionTranscriptDeltaReader(
     { ...branch, env: params.env },
     (reader) =>
@@ -372,8 +395,9 @@ export async function advanceConversationKnowledgeBootstrapInput(params: {
     page.requiredBytes !== undefined ||
     page.hasMore ||
     page.events.length !== 1
-  )
+  ) {
     return undefined;
+  }
   const row = page.events[0]!;
   const event = asOptionalRecord(row.event);
   if (
@@ -382,15 +406,18 @@ export async function advanceConversationKnowledgeBootstrapInput(params: {
     event.id !== admission.entryId ||
     event.parentId !== admission.effectiveParentId ||
     asOptionalRecord(event.message)?.role !== "user"
-  )
+  ) {
     return undefined;
+  }
   const after = await prepareSessionTranscriptHydration(
     { ...branch, env: params.env },
     undefined,
     params.signal,
   ).readMaintenance({ operation: "version" });
   check();
-  if (!isDeepStrictEqual(current, after)) return undefined;
+  if (!isDeepStrictEqual(current, after)) {
+    return undefined;
+  }
   return new PreparedConversationKnowledgeBootstrap(
     bootstrapIssuer,
     branch,

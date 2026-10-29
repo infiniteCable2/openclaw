@@ -73,13 +73,17 @@ describe("native SDK cold checkpoint eligibility", () => {
           });
           try {
             userId ??= await manager.appendMessageAsync(user);
-            if (!userId) throw new Error("Native SDK user entry missing");
+            if (!userId) {
+              throw new Error("Native SDK user entry missing");
+            }
             const facts = await readSessionTranscriptAnchorsAsync(
               { ...branch, env: state.env },
               { entryIds: [userId] },
             );
             const anchor = facts.anchors[0];
-            if (!anchor) throw new Error("Native SDK user anchor missing");
+            if (!anchor) {
+              throw new Error("Native SDK user anchor missing");
+            }
             const input = {
               branch,
               env: state.env,

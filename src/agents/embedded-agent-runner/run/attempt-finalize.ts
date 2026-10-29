@@ -342,7 +342,7 @@ export async function completeEmbeddedAttemptAfterTurn(
         terminalEntry &&
         reachedPromptBoundary &&
         reviewContextTail.some((item) => item.type === "compaction")
-          ? structuredClone(reviewContextTail.reverse())
+          ? structuredClone(reviewContextTail.toReversed())
           : undefined,
       event: bindAgentHarnessHookMessages(
         {
