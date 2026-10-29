@@ -39,7 +39,6 @@ export {
   CONVERSATION_KNOWLEDGE_NOTICE,
   conversationKnowledgeContributionId,
   conversationKnowledgePacketId,
-  resolveConversationKnowledgeImportProgress,
 };
 
 export type ConversationKnowledgePacketProgress = {

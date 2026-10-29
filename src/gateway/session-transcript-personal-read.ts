@@ -126,8 +126,6 @@ Object.freeze(PreparedPersonalConversationAdmission);
 Object.freeze(PreparedPersonalConversationAdmission.prototype);
 export type { PreparedPersonalConversationAdmission };
 
-export type { PersonalConversationContributionRange } from "../config/sessions/conversation-knowledge-source-custody.js";
-
 export { preparePersonalConversationContributionGroup } from "./session-transcript-personal-contribution-group.js";
 export type { PreparedPersonalConversationContributionGroup } from "./session-transcript-personal-contribution-group.js";
 

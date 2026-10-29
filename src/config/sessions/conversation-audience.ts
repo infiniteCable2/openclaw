@@ -64,7 +64,7 @@ export function conversationKnowledgeAudienceIdentity(entry: Partial<InternalSes
 }
 
 /** A complete current roster can ignore known internal actors, never unknown speakers. */
-export function conversationKnowledgeCurrentPersonIdentity(entry: Partial<InternalSessionEntry>) {
+function conversationKnowledgeCurrentPersonIdentity(entry: Partial<InternalSessionEntry>) {
   if (!entry.participants || entry.participantCount !== entry.participants.length) {
     return undefined;
   }
