@@ -46,6 +46,7 @@ const native = vi.hoisted(() => ({
 vi.mock("../../gateway/session-transcript-personal-read.js", () => ({
   preparePersonalConversationContributionGroup: native.group,
 }));
+// mock-isolation: Supply revocable grouped grants for recipient cleanup races without acquiring native sharing/database custody.
 vi.mock("../../gateway/session-transcript-read-authority.js", () => ({
   prepareTranscriptReadAuthority: native.groupRead,
 }));

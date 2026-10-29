@@ -23,13 +23,13 @@ const mocks = vi.hoisted(() => ({
 }));
 // mock-isolation: Exercise the actual native read API without starting a database worker or Gateway.
 vi.mock("./session-sharing-preparation.js", () => ({ prepareSessionMutationFacts: mocks.prepare }));
-// mock-isolation: Native root membership/anchor snapshots are supplied exact synthetic evidence;
-// this suite exercises the real personal grant and COMMIT predicate owner without a worker.
+// mock-isolation: Supply exact synthetic root membership to exercise real personal grants and COMMIT predicates without opening native root storage.
 vi.mock("../config/sessions/conversation-knowledge-store.js", () => ({
   assertNativeKnowledgeRootContribution: mocks.root,
   prepareNativeKnowledgeRootContributionGroup: mocks.groupPrepare,
   assertNativeKnowledgeRootContributionGroup: mocks.groupAssert,
 }));
+// mock-isolation: Control exact anchor/prefix revisions and count batching calls without spawning native transcript readers.
 vi.mock("../config/sessions/session-transcript-anchor-read.js", () => ({
   readSessionTranscriptAnchorsAsync: mocks.anchors,
 }));

@@ -55,9 +55,11 @@ vi.mock("../../config/sessions/conversation-knowledge-checkpoint-store.js", () =
   readConversationKnowledgeCheckpointCoverage: vi.fn(),
   appendConversationKnowledgeCheckpoint: vi.fn(),
 }));
+// mock-isolation: Supply revocable synthetic database custody without opening SQLite or starting admission workers.
 vi.mock("../../config/sessions/session-accessor.sqlite-entry-admission.js", () => ({
   loadSessionEntryForAdmission: boundary.load,
 }));
+// mock-isolation: Drive exact original-reference and cleanup transitions without reading private transcripts or native source workers.
 vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
   prepareConversationKnowledgeCheckpointSources: async (params: {
     retainCleanup(release: () => void): void;
@@ -77,12 +79,15 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
 vi.mock("./conversation-knowledge-checkpoint-model.js", () => ({
   acquireConversationKnowledgeCheckpointModel: boundary.acquire,
 }));
+// mock-isolation: Observe the owner's pressure-to-planning handoff without loading the summarizer/provider graph; summary tests cover native planning.
 vi.mock("./conversation-knowledge-checkpoint-summary.js", () => ({
   planConversationKnowledgeCheckpointSummary: boundary.plan,
 }));
+// mock-isolation: The fixture drives root quanta directly; registering process-wide background lanes would introduce unrelated scheduled work.
 vi.mock("../../process/background-work.js", () => ({
   createBackgroundWorkOwner: () => ({ enqueue: vi.fn() }),
 }));
+// mock-isolation: Count bounded owner warnings without initializing the process logger, terminal state or file log outputs.
 vi.mock("../../logging/subsystem.js", () => ({
   createSubsystemLogger: () => ({ warn: boundary.warn, debug() {} }),
 }));
