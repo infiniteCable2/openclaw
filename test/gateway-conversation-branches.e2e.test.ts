@@ -328,7 +328,7 @@ describe("isolated full Gateway conversation continuity", () => {
     );
   }, 300_000);
 
-  it.each(["native", "branches"] as const)(
+  it.for(["native", "branches"] as const)(
     "%s: real input, background preparation, private recipients and restart",
     async (mode, context) => {
       let gateway: OpenClawTestInstance | undefined;
