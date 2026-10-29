@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { bindConversationInputPublication } from "../../auto-reply/reply/conversation-publication-input.js";
 import { bindRequesterProfile } from "../../auto-reply/requester-profile.js";
 import type { RuntimeMsgContext as MsgContext } from "../../auto-reply/templating.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -7,7 +8,10 @@ import { bindConversationPrivateAudience } from "../../sessions/conversation-pri
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import type { UserTurnInput } from "../../sessions/user-turn-transcript.js";
-import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
+import type {
+  PersistedUserTurnMessage,
+  UserTurnTranscriptRecorder,
+} from "../../sessions/user-turn-transcript.types.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
   isBrowserOperatorUiClient,
@@ -38,6 +42,7 @@ import type { GatewayRequestContext, GatewayRequestHandlerOptions } from "./type
 type ChatSendUserTurnInputController = {
   baseInput: UserTurnInput;
   setInputPromise: (input: Promise<UserTurnInput>) => void;
+  recorder?: UserTurnTranscriptRecorder;
 };
 
 type PersistedChatSendMedia = Awaited<
@@ -106,7 +111,7 @@ export function prepareChatSendUserTurn(params: {
     | "toolBindings"
   >;
   session: Pick<PreparedChatSendSession, "agentId" | "clientRunId" | "sessionKey"> &
-    Partial<Pick<PreparedChatSendSession, "cfg" | "entry">>;
+    Partial<Pick<PreparedChatSendSession, "cfg" | "entry" | "storePath">>;
   admission: Pick<AdmittedChatSend, "originatingRoute"> &
     Partial<
       Pick<
@@ -322,6 +327,22 @@ export function prepareChatSendUserTurn(params: {
     });
     if (audience) {
       bindConversationPrivateAudience(ctx, audience);
+      const config = session.cfg ?? params.getConfig?.();
+      if (config) {
+        // Native Gateway admission may persist before model dispatch. Journal
+        // this original input there, using the same owner as queued/channel input.
+        bindConversationInputPublication({
+          config,
+          agentId: session.agentId,
+          recorder: userTurn.recorder,
+          participant,
+          audience,
+          entry: admission.admittedSessionEntry ?? admission.initialSessionEntry ?? session.entry,
+          sessionKey: session.sessionKey,
+          storePath: session.storePath,
+          assertCurrent: audience.assertCurrent,
+        });
+      }
     }
   }
   return {

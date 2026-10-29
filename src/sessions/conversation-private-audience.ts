@@ -172,14 +172,14 @@ export function collectConversationPrivateAudiences(
         });
         const grouped = new Map<object, RetainedConversationPrivateAudience[]>();
         for (const value of retained) {
-          const values = grouped.get(value.source) ?? [];
-          values.push(value);
-          grouped.set(value.source, values);
+          const sourceLeases = grouped.get(value.source) ?? [];
+          sourceLeases.push(value);
+          grouped.set(value.source, sourceLeases);
         }
         const signals = retained.flatMap((value) => (value.signal ? [value.signal] : []));
         const signal = signals.length ? AbortSignal.any(signals) : undefined;
-        return [...grouped].map(([source, values]) => {
-          const closed = values.flatMap((value) =>
+        return [...grouped].map(([source, sourceLeases]) => {
+          const closed = sourceLeases.flatMap((value) =>
             value.sourceClosed ? [value.sourceClosed] : [],
           );
           return Object.freeze({
@@ -189,7 +189,7 @@ export function collectConversationPrivateAudiences(
             sourceClosed: closed.length ? AbortSignal.any(closed) : undefined,
             release() {
               const errors: unknown[] = [];
-              for (const value of values.toReversed()) {
+              for (const value of sourceLeases.toReversed()) {
                 try {
                   value.release();
                 } catch (error) {

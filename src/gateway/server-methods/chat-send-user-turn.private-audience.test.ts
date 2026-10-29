@@ -9,6 +9,8 @@ import { prepareReplyConversationKnowledge } from "../../auto-reply/reply/conver
 import { createConversationKnowledgeScenario } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { recordConversationKnowledgeTurn } from "../../config/sessions/conversation-knowledge-store.js";
+import * as publicationWakeup from "../../config/sessions/conversation-publication-wakeup.js";
+import { openConversationPublicationStore } from "../../config/sessions/conversation-publication.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import { recordSessionParticipantInWorker } from "../../config/sessions/session-sharing-store.async.js";
 import { prepareSessionSourceAuthority } from "../../config/sessions/session-source-authority.js";
@@ -17,6 +19,7 @@ import {
   readConversationPrivateAudience,
   retainConversationPrivateAudience,
 } from "../../sessions/conversation-private-audience.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { captureGatewayPrivateConversationAudience } from "../session-input-participant.js";
 import { prepareChatSendUserTurn } from "./chat-send-user-turn.js";
@@ -258,6 +261,89 @@ describe("prepareChatSendUserTurn private browser audience", () => {
     }
     const prepared = prepareChatSendUserTurn(params);
     expect(readConversationPrivateAudience(prepared.ctx)).toBeUndefined();
+  });
+
+  it("journals the original private browser input before model dispatch", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "browser-private-input-publication" },
+      async (state) => {
+        const f = await createConversationKnowledgeScenario(state);
+        // mock-isolation: Observe the native COMMIT before independent background delivery.
+        const wake = vi
+          .spyOn(publicationWakeup, "wakeConversationPublication")
+          .mockImplementation(() => {});
+        try {
+          const person = { type: "profile" as const, id: "profile-ada" };
+          const chat = await f.branch("browser-input-publication", person);
+          const owner = await f.claim(chat);
+          const entry = loadSessionEntry(chat);
+          if (!entry) {
+            throw new Error("Expected the original enrolled browser branch");
+          }
+          const browser = privateBrowserTurnFixture();
+          const input = createUserTurnInputController(browser.params.request.inboundMessage);
+          const recorder = createUserTurnTranscriptRecorder({
+            resolveInput: input.readInput,
+            target: { ...chat, sessionEntry: entry, config: f.cfg },
+            assertOriginalInputCommit: owner.assertCurrent,
+          });
+          browser.params.session = { ...browser.params.session, ...chat, entry, cfg: f.cfg };
+          browser.params.userTurn = { ...input.controller, recorder };
+          browser.params.admission.originatingRoute.originatingTo = chat.sessionKey;
+          browser.params.admission.assertWorkAdmissionCurrent = owner.assertCurrent;
+          browser.params.admission.assertSessionTargetCurrent = owner.assertCurrent;
+          const prepared = prepareChatSendUserTurn(browser.params);
+          expect(readConversationPrivateAudience(prepared.ctx)).toBeDefined();
+
+          // Gateway restart-safe admission commits here, before any runner or terminal exists.
+          const saved = await recorder.persistApproved();
+          expect(saved?.appended).toBe(true);
+          expect(saved?.message.content).toBe(browser.params.request.inboundMessage);
+          expect(saved?.admission).toBeDefined();
+          const journal = openConversationPublicationStore({
+            agentId: chat.agentId,
+            path: chat.storePath,
+            env: chat.env,
+            assertCurrent: owner.assertCurrent,
+          });
+          const ready = await journal.readReadyHeads({ now: Date.now(), limit: 8 });
+          expect(ready).toHaveLength(1);
+          expect(await journal.stats()).toEqual([{ state: "ready", count: 1 }]);
+          expect(ready[0]).toMatchObject({
+            state: "ready",
+            anchor: {
+              entryId: saved!.admission.entryId,
+              generation: saved!.admission.generation,
+              rawSeq: saved!.admission.rawSeq,
+              idempotencyKey: input.controller.baseInput.idempotencyKey,
+            },
+            intent: {
+              version: 1,
+              kind: "utterance-observation",
+              role: "user",
+              inputKey: input.controller.baseInput.idempotencyKey,
+              sourceMode: "branches",
+              source: {
+                sessionKey: chat.sessionKey,
+                sessionId: chat.sessionId,
+                lifecycleRevision: chat.lifecycleRevision,
+              },
+              root: { sessionKey: f.root.sessionKey, sessionId: f.root.sessionId },
+              privateAudience: { participant: person },
+            },
+          });
+          expect(ready[0]!.intent.privateAudience?.admission).toEqual(ready[0]!.anchor);
+          expect(wake).toHaveBeenCalled();
+          await recorder.persistApproved();
+          expect(await journal.readReadyHeads({ now: Date.now(), limit: 8 })).toEqual(ready);
+          await journal.acknowledge(ready[0]!.id);
+          expect(await journal.stats()).toEqual([]);
+        } finally {
+          wake.mockRestore();
+          await f.close();
+        }
+      },
+    );
   });
 
   it("reads native personal differences after sessions_send without erasing recorded agent actors", async () => {

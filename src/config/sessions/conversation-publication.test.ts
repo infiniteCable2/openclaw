@@ -3,8 +3,7 @@ import {
   createConversationKnowledgeScenario,
   person,
 } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
-import { bindReplyConversationInputPublication } from "../../auto-reply/reply/conversation-publication-input.js";
-import { createMockFollowupRun } from "../../auto-reply/reply/test-helpers.js";
+import { bindConversationInputPublication } from "../../auto-reply/reply/conversation-publication-input.js";
 import {
   attachRuntimeUserTurnTranscriptRecorder,
   withRuntimeUserTurnTranscriptRecorder,
@@ -281,10 +280,14 @@ it("publishes original input, steered input and commentary before final completi
             input: { text, idempotencyKey: key },
             target: { ...source, sessionEntry: entry, config: fixture.cfg },
           });
-          const followupRun = createMockFollowupRun({
-            userTurnTranscriptRecorder: recorder,
-            conversationParticipant: person,
-            conversationAudience: {
+          bindConversationInputPublication({
+            ...source,
+            entry,
+            assertCurrent,
+            recorder,
+            config: fixture.cfg,
+            participant: person,
+            audience: {
               ...source,
               channelId: "matrix",
               accountId: "example",
@@ -292,9 +295,7 @@ it("publishes original input, steered input and commentary before final completi
               participant: person,
               assertCurrent,
             },
-            run: { ...source, config: fixture.cfg },
           });
-          bindReplyConversationInputPublication({ followupRun, entry, ...source, assertCurrent });
           return recorder;
         };
         const first = makeInput("input-one", "Remember the blue circle.");

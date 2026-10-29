@@ -148,7 +148,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     // A disconnected principal can keep an idle recipient warm until a new
     // independently admitted opening arrives, without accumulating reconnects.
     const installed = new Set(held.map((value) => value.source));
-    for (const previous of [...audiences.values()]) {
+    for (const previous of audiences.values()) {
       if (!installed.has(previous.source) && previous.sourceClosed?.aborted) {
         retireAudience(previous);
       }
@@ -195,7 +195,7 @@ export function prepareConversationKnowledgeRecipient(params: {
       assertCurrent: checkAudience,
       settle: () => rootCheckpoint.close(),
       clear: () => {
-        for (const proof of [...audiences.values()]) {
+        for (const proof of audiences.values()) {
           retireAudience(proof);
         }
         if (recipients.get(key)?.cache === cache) {
@@ -292,7 +292,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     recipients.set(key, recipient);
     return recipient;
   } catch (error) {
-    for (const proof of [...audiences.values()]) {
+    for (const proof of audiences.values()) {
       retireAudience(proof);
     }
     const failures: unknown[] = [error];
@@ -307,6 +307,8 @@ export function prepareConversationKnowledgeRecipient(params: {
     if (failures.length === 1) {
       throw error;
     }
-    throw new AggregateError(failures, "Recipient initialization cleanup remains pending");
+    throw new AggregateError(failures, "Recipient initialization cleanup remains pending", {
+      cause: error,
+    });
   }
 }

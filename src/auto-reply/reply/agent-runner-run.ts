@@ -54,7 +54,7 @@ import {
   createCompactionNoticePayload,
   shouldNotifyUserAboutCompaction,
 } from "./compaction-notice.js";
-import { bindReplyConversationInputPublication } from "./conversation-publication-input.js";
+import { bindConversationInputPublication } from "./conversation-publication-input.js";
 import { createFollowupRunner } from "./followup-runner.js";
 import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "./get-reply-run-queue.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
@@ -211,12 +211,19 @@ export async function runReplyAgent(
     releaseUnusedAdmission();
     throw error;
   }
-  bindReplyConversationInputPublication({
-    followupRun,
+  bindConversationInputPublication({
+    config: followupRun.run.config,
+    agentId: followupRun.run.agentId,
+    recorder: followupRun.userTurnTranscriptRecorder,
+    participant: followupRun.conversationParticipant,
+    audience: followupRun.conversationAudience,
     entry: restartRecoveryEntry,
     sessionKey,
     storePath,
-    assertCurrent: assertReadCurrent,
+    assertCurrent: composeSessionSourceAssertion([
+      assertReadCurrent,
+      followupRun.assertSourceCurrent,
+    ]),
   });
   if (
     restartRecoverySourceTurnId &&

@@ -1,27 +1,31 @@
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import { bindConversationPublicationInput } from "../../config/sessions/conversation-publication-context.js";
+import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import { readMessageIdempotencyKey } from "../../config/sessions/transcript-message-identity.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
-import type { AgentTurnParams } from "./agent-runner-execution.types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 
 /** Bind before native input admission/steering, not after a model run has started. */
-export function bindReplyConversationInputPublication(params: {
-  followupRun: AgentTurnParams["followupRun"];
+export function bindConversationInputPublication(params: {
+  config: OpenClawConfig;
+  agentId: string | undefined;
+  recorder?: UserTurnTranscriptRecorder;
+  participant?: SessionParticipantIdentity;
+  audience?: ConversationPrivateAudience;
   entry: InternalSessionEntry | undefined;
   sessionKey: string | undefined;
   storePath: string | undefined;
   assertCurrent: SessionSourceAssertion;
 }): void {
-  const { followupRun, entry, sessionKey } = params;
-  const recorder = followupRun.userTurnTranscriptRecorder;
+  const { entry, sessionKey, recorder, agentId, audience: proof } = params;
   const topology = entry?.conversationTopology;
-  const agentId = followupRun.run.agentId;
-  const proof = followupRun.conversationAudience;
   const participant = proof?.participant;
   const lifecycleRevision = entry?.lifecycleRevision;
   if (
@@ -38,14 +42,13 @@ export function bindReplyConversationInputPublication(params: {
     !participant ||
     (participant.type !== "remote" && participant.type !== "profile") ||
     conversationKnowledgeParticipantIdentity(participant) !==
-      conversationKnowledgeParticipantIdentity(followupRun.conversationParticipant)
+      conversationKnowledgeParticipantIdentity(params.participant)
   ) {
     return;
   }
-  const sourceMode = resolveAgentConversationMode(followupRun.run.config, agentId);
+  const sourceMode = resolveAgentConversationMode(params.config, agentId);
   const assertCurrent = composeSessionSourceAssertion([
     params.assertCurrent,
-    followupRun.assertSourceCurrent,
     () => proof.assertCurrent(),
   ]);
   const source = { agentId, sessionKey, sessionId: entry.sessionId };

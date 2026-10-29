@@ -637,9 +637,9 @@ export function registerConversationKnowledgeCheckpointOwner(params: Registratio
   if (existing) {
     return existing.add(params);
   }
-  let root: RootOwner | undefined;
-  root = createRootOwner(params, identity, () => {
-    if (root && owners.get(key) === root) {
+  const root = createRootOwner(params, identity, () => {
+    // Construction failure precedes installation; no root is selectable then.
+    if (owners.has(key) && owners.get(key) === root) {
       owners.delete(key);
     }
   });
