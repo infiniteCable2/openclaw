@@ -83,9 +83,10 @@ describe("skill experience review scheduler", () => {
     ];
     turn(10, { contextTail });
     const compaction = contextTail[0];
-    if (compaction.type === "compaction") {
-      compaction.summary = "Later mutable state";
+    if (!compaction || compaction.type !== "compaction") {
+      throw new Error("expected the scheduled compaction fixture");
     }
+    compaction.summary = "Later mutable state";
     fireTimers();
     await vi.waitFor(() => expect(runReview).toHaveBeenCalledOnce());
     expect(runReview.mock.calls[0]?.[0]).toMatchObject({

@@ -65,12 +65,14 @@ describe("runSkillExperienceReview", () => {
       if (compactionTiming === "before") {
         await source.appendCompactionAsync("Verified earlier procedure.", keptEntryId, 100);
       }
-      candidate.source = (
-        await source.appendMessageWithTranscriptAnchorAsync(
-          { role: "user", content: "Completed reviewable turn.", timestamp: 3 },
-          { config: candidate.config },
-        )
-      ).anchor;
+      const completedTurn = await source.appendMessageWithTranscriptAnchorAsync(
+        { role: "user", content: "Completed reviewable turn.", timestamp: 3 },
+        { config: candidate.config },
+      );
+      if (!completedTurn.anchor) {
+        throw new Error("expected the persisted completed-turn anchor");
+      }
+      candidate.source = completedTurn.anchor;
       if (compactionTiming === "after") {
         await source.appendCustomEntryAsync("native-maintenance", { complete: true });
         await source.appendCompactionAsync("Verified earlier procedure.", keptEntryId, 100);

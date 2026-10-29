@@ -80,9 +80,12 @@ describe("native root checkpoint summary adapter", () => {
     }
     expect(plan.coveredContributionIds).toEqual(["oldest", "middle"]);
     expect(plan.retainedContributionIds).toEqual(["latest"]);
-    expect(plan.messages.map((message) => message.content)).toEqual(
-      params.contributions.slice(0, 2).map((entry) => entry.text),
-    );
+    expect(
+      plan.messages.map((message) => {
+        if (message.role !== "user") throw new Error("Expected quoted contribution input");
+        return message.content;
+      }),
+    ).toEqual(params.contributions.slice(0, 2).map((entry) => entry.text));
     const candidate = await prepareConversationKnowledgeCheckpointSummary(params);
     expect(candidate).toMatchObject({
       kind: "candidate",
