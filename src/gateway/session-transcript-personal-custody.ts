@@ -38,7 +38,7 @@ export const personalConversationReadFields = [
   "providerReview",
 ] as const satisfies readonly (keyof InternalSessionEntry)[];
 
-export type PersonalReadSource = Readonly<{
+type PersonalReadSource = Readonly<{
   agentId: string;
   canonicalKey: string;
   storePath: string;

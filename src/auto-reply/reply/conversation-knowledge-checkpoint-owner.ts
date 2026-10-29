@@ -608,7 +608,3 @@ export function registerConversationKnowledgeCheckpointOwner(params: Registratio
   owners.set(key, root);
   return root.first;
 }
-
-export type ConversationKnowledgeCheckpointRegistration = ReturnType<
-  typeof registerConversationKnowledgeCheckpointOwner
->;

@@ -7,10 +7,7 @@ import {
 } from "../../config/sessions/conversation-knowledge.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
-import {
-  registerConversationKnowledgeCheckpointOwner,
-  type ConversationKnowledgeCheckpointRegistration,
-} from "./conversation-knowledge-checkpoint-owner.js";
+import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
 
 const boundary = vi.hoisted(() => ({
   owner: undefined as
@@ -132,7 +129,7 @@ function reference(index: number): ConversationKnowledgeReference {
     privateAudience: { participant: person, admission: through },
   };
 }
-const registrations: ConversationKnowledgeCheckpointRegistration[] = [];
+const registrations: ReturnType<typeof registerConversationKnowledgeCheckpointOwner>[] = [];
 const config: OpenClawConfig = {
   agents: { entries: { example: { conversationMode: "branches" } } },
 };
