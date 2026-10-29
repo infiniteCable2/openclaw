@@ -102,7 +102,7 @@ describe("native historical contribution packet custody", () => {
               undefined,
               undefined,
               proof.through,
-              { from: proof.from },
+              { from: proof.from, maxBytes: 64 * 1024, maxEvents: 64 },
             );
             if (!projection.version) throw new Error("Expected native historical prefix version");
             const writer = {
