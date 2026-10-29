@@ -29,6 +29,7 @@ export async function startConversationModel(
 ) {
   const claim = await acquireTestPortBlock({ offsets: [0], signal });
   const requests: Record<string, unknown>[] = [];
+  const requestTimes: number[] = [];
   const errors: unknown[] = [];
   const gates = new Set<{
     matches: (request: Record<string, unknown>) => boolean;
@@ -58,6 +59,7 @@ export async function startConversationModel(
         chunks.push(data);
       }
       const input = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      requestTimes.push(performance.now());
       requests.push(input);
       const index = requests.length;
       const gate = [...gates].find((entry) => !entry.claimed && entry.matches(input));
@@ -91,6 +93,7 @@ export async function startConversationModel(
   return {
     baseUrl: `http://127.0.0.1:${claim.port}/v1`,
     requests,
+    requestTimes,
     errors,
     holdNext(matches: (request: Record<string, unknown>) => boolean) {
       const gate = {
