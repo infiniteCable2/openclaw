@@ -13,8 +13,12 @@ import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import { recordSessionParticipantInWorker } from "../../config/sessions/session-sharing-store.async.js";
 import { prepareSessionSourceAuthority } from "../../config/sessions/session-source-authority.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
-import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import {
+  readConversationPrivateAudience,
+  retainConversationPrivateAudience,
+} from "../../sessions/conversation-private-audience.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { captureGatewayPrivateConversationAudience } from "../session-input-participant.js";
 import { prepareChatSendUserTurn } from "./chat-send-user-turn.js";
 import {
   createUserTurnInputController,
@@ -87,6 +91,85 @@ function privateBrowserTurnFixture() {
 }
 
 describe("prepareChatSendUserTurn private browser audience", () => {
+  it("keeps lazily retained native audience authority after the original turn ends", () => {
+    let foregroundCurrent = true;
+    const release = vi.fn();
+    const retain = vi.fn(() => release);
+    const nativeSource = Object.freeze({});
+    const endpoint = Object.freeze({});
+    const operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "profile-example",
+      scopes: ["operator.write"],
+      source: nativeSource,
+      assertCurrent() {},
+      retain,
+    });
+    const audience = captureGatewayPrivateConversationAudience({
+      agentId: "example",
+      sessionKey: "agent:example:browser",
+      participant: { type: "profile", id: operatorAuthority.profileId },
+      operatorAuthority,
+      retentionSource: endpoint,
+      entry: { chatType: "direct" },
+      assertCurrent() {
+        if (!foregroundCurrent) {
+          throw new Error("Original foreground target and work ended");
+        }
+      },
+    });
+    expect(audience).toBeDefined();
+    expect(retain).not.toHaveBeenCalled();
+    const leases = retainConversationPrivateAudience(audience!);
+    expect(leases).toHaveLength(1);
+    expect(leases[0]!.source).toBe(endpoint);
+    expect(retain).toHaveBeenCalledOnce();
+    try {
+      foregroundCurrent = false;
+      expect(() => audience!.assertCurrent()).toThrow("Original foreground target and work ended");
+      expect(() => leases[0]!.audience.assertCurrent()).not.toThrow();
+      // Retention never revives a source whose original admission already ended.
+      expect(() => retainConversationPrivateAudience(audience!)).toThrow();
+      expect(retain).toHaveBeenCalledOnce();
+    } finally {
+      leases[0]!.release();
+      leases[0]!.release();
+    }
+    expect(release).toHaveBeenCalledOnce();
+    expect(() => leases[0]!.audience.assertCurrent()).toThrow();
+  });
+
+  it("revokes retained browser evidence with its native operator source", () => {
+    const revocation = new AbortController();
+    const release = vi.fn();
+    const operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "profile-example",
+      scopes: ["operator.write"],
+      signal: revocation.signal,
+      assertCurrent() {},
+      retain: () => release,
+    });
+    const audience = captureGatewayPrivateConversationAudience({
+      agentId: "example",
+      sessionKey: "agent:example:browser",
+      participant: { type: "profile", id: operatorAuthority.profileId },
+      operatorAuthority,
+      entry: { chatType: "direct" },
+      assertCurrent() {},
+    });
+    const leases = retainConversationPrivateAudience(audience!);
+    try {
+      expect(leases[0]!.signal).toBe(revocation.signal);
+      revocation.abort(new Error("Native device or profile revoked"));
+      expect(() => leases[0]!.audience.assertCurrent()).toThrow("Native device or profile revoked");
+      expect(() => audience!.assertCurrent()).toThrow();
+    } finally {
+      for (const lease of leases.toReversed()) {
+        lease.release();
+      }
+    }
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("retains a personal browser recipient after normal close, never a successor connection", () => {
     const f = privateBrowserTurnFixture();
     const prepared = prepareChatSendUserTurn(f.params);

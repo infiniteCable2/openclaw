@@ -47,7 +47,6 @@ export type PreparedConversationKnowledgeRootCheckpoint = {
   checkpoint: ConversationKnowledgeCheckpoint;
   coverage: PreparedConversationKnowledgeCheckpointCoverage;
 };
-type Broker = Omit<Registration, "audience"> & { audiences: Set<ConversationPrivateAudience> };
 type RootOwner = ReturnType<typeof createRootOwner>;
 const owners = resolveGlobalSingleton(
   Symbol.for("openclaw.conversationKnowledgeCheckpointOwners"),
@@ -61,7 +60,7 @@ const log = createSubsystemLogger("conversation-knowledge");
 
 function createRootOwner(initial: Registration, audienceKey: string, dispose: () => void) {
   const rootContinuation = new ConversationKnowledgeRootContinuation();
-  const brokers = new Set<Broker>();
+  const brokers = new Set<Registration>();
   let latest: PreparedConversationKnowledgeRootCheckpoint | undefined;
   let inFlight: AbortController | undefined;
   let reportedWorkerPolicy = false;
@@ -142,19 +141,17 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   };
   const selectBroker = () => {
     for (const broker of brokers) {
-      for (const audience of broker.audiences) {
-        try {
-          audience.assertCurrent();
-          if (
-            resolveAgentConversationMode(broker.getRuntimeConfig(), broker.branch.agentId) !==
-            "branches"
-          ) {
-            continue;
-          }
-          return { broker, audience };
-        } catch {
-          broker.audiences.delete(audience);
+      try {
+        broker.audience.assertCurrent();
+        if (
+          resolveAgentConversationMode(broker.getRuntimeConfig(), broker.branch.agentId) !==
+          "branches"
+        ) {
+          continue;
         }
+        return { broker, audience: broker.audience };
+      } catch {
+        brokers.delete(broker);
       }
     }
     throw new Error("Checkpoint root has no current private broker");
@@ -163,7 +160,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     selectBroker();
   };
   // The caller installs its first proof before native scheduling begins.
-  const first: Broker = { ...initial, audiences: new Set([initial.audience]) };
+  const first = { ...initial };
   brokers.add(first);
   const owner = createConversationKnowledgePrefetchOwner({
     target: { ...initial.branch, env: initial.env },
@@ -178,9 +175,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       tail.clear();
       tailBytes = 0;
       rootContinuation.release();
-      if (!pendingCleanup.size) {
-        dispose();
-      }
+      // Native resource custody joins cleanup; this retired selector must not
+      // prevent a fresh same-root registration while that cleanup settles.
+      dispose();
     },
     async prepare(parentSignal) {
       await settle();
@@ -258,7 +255,6 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         ) {
           // A reset retires this broker incarnation, not another still-current connection.
           brokers.delete(broker);
-          broker.audiences.clear();
           return brokers.size > 0;
         }
         if (
@@ -556,23 +552,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       }
     },
   });
-  const registration = (broker: Broker) => {
+  const registration = (broker: Registration) => {
     let active = true;
     return {
-      retainAudience(audience: ConversationPrivateAudience) {
-        if (!active) {
-          throw new Error("Checkpoint broker registration ended");
-        }
-        audience.assertCurrent();
-        if (
-          audience.agentId !== broker.branch.agentId ||
-          audience.sessionKey !== broker.branch.sessionKey ||
-          conversationKnowledgeParticipantIdentity(audience.participant) !== audienceKey
-        ) {
-          throw new Error("Checkpoint broker audience changed");
-        }
-        broker.audiences.add(audience);
-      },
       request: owner.request,
       pausePreparation() {
         const resume = owner.pausePreparation();
@@ -607,7 +589,6 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         }
         active = false;
         brokers.delete(broker);
-        broker.audiences.clear();
         if (!brokers.size) {
           await owner.close();
         } else {
@@ -619,7 +600,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   return {
     first: registration(first),
     add(params: Registration) {
-      const broker = { ...params, audiences: new Set([params.audience]) };
+      const broker = { ...params };
       brokers.add(broker);
       try {
         owner.assertCurrent();
@@ -656,7 +637,12 @@ export function registerConversationKnowledgeCheckpointOwner(params: Registratio
   if (existing) {
     return existing.add(params);
   }
-  const root = createRootOwner(params, identity, () => owners.delete(key));
+  let root: RootOwner | undefined;
+  root = createRootOwner(params, identity, () => {
+    if (root && owners.get(key) === root) {
+      owners.delete(key);
+    }
+  });
   owners.set(key, root);
   return root.first;
 }

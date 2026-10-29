@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import {
@@ -8,6 +9,7 @@ import {
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
 
 const boundary = vi.hoisted(() => ({
@@ -43,6 +45,9 @@ vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
       pausePreparation: () => () => {},
       async close() {
         closed = true;
+        // Native revocation clears registry selection before joining cleanup;
+        // its second clear must not retire a later root incarnation.
+        params.clear();
         await params.settle?.();
         params.clear();
       },
@@ -337,6 +342,40 @@ describe("shared root projection preparation", () => {
     await quantum();
     expect(boundary.sourceRelease).toHaveBeenCalledTimes(3);
     expect(boundary.release).toHaveBeenCalledTimes(2);
+  });
+  it("keeps a replacement root registered while its predecessor finishes deferred cleanup", async () => {
+    const first = register();
+    const predecessor = boundary.owner;
+    const cleanupEntered = createDeferredCore();
+    const finishCleanup = createDeferredCore();
+    boundary.modelRelease
+      .mockRejectedValueOnce(new Error("Synthetic model cleanup needs retry"))
+      .mockImplementationOnce(() => {
+        cleanupEntered.resolve();
+        return finishCleanup.promise;
+      });
+    await expect(quantum()).rejects.toThrow("cleanup remains pending");
+    const closing = first.registration.close();
+    try {
+      await awaitGateBeforeSettlement(
+        cleanupEntered.promise,
+        closing,
+        "Predecessor cleanup settled before reaching its retained model lease",
+      );
+      const replacement = register();
+      const replacementOwner = boundary.owner;
+      expect(replacementOwner).not.toBe(predecessor);
+      await quantum();
+      expect(replacement.registration.projection().tail).toHaveLength(1);
+      finishCleanup.resolve();
+      await closing;
+      const sibling = register();
+      expect(boundary.owner).toBe(replacementOwner);
+      expect(sibling.registration.projection().tail).toHaveLength(1);
+    } finally {
+      finishCleanup.resolve();
+      await closing;
+    }
   });
   it("retains a model lease cleanup even when acquisition fails before returning a model", async () => {
     register();

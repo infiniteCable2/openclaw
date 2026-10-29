@@ -312,6 +312,8 @@ export function prepareChatSendUserTurn(params: {
       sessionKey: session.sessionKey,
       participant,
       operatorAuthority: admission.operatorAuthority,
+      retentionSource: client,
+      sourceClosed: client.connectionSignal,
       entry: admission.admittedSessionEntry ?? admission.initialSessionEntry ?? session.entry,
       assertCurrent() {
         assertTargetCurrent();

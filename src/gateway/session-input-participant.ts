@@ -53,6 +53,9 @@ export function captureGatewayPrivateConversationAudience(input: {
   sessionKey: string;
   participant?: SessionParticipantIdentity;
   operatorAuthority?: AdmittedRunOperatorAuthority;
+  /** Opaque original endpoint identity, never a channel label or successor connection. */
+  retentionSource?: object;
+  sourceClosed?: AbortSignal;
   entry?: Pick<InternalSessionEntry, "chatType" | "publicShare">;
   assertCurrent(this: void): void;
 }): ConversationPrivateAudience | undefined {
@@ -76,13 +79,54 @@ export function captureGatewayPrivateConversationAudience(input: {
     operatorAuthority.assertCurrent();
   };
   check();
-  return Object.freeze({
+  const metadata = {
     agentId: input.agentId,
     sessionKey: input.sessionKey,
     channelId: "webchat",
     accountId: DEFAULT_ACCOUNT_ID,
     nativeChannelId: input.sessionKey,
     participant: Object.freeze({ ...participant }),
+  };
+  const retainOperator = operatorAuthority.retain;
+  return Object.freeze({
+    ...metadata,
     assertCurrent: check,
+    ...(retainOperator
+      ? {
+          retain() {
+            check();
+            const release = retainOperator();
+            let active = true;
+            let released = false;
+            // Only native person/policy custody outlives this input. Every idle
+            // read still prepares exact current branch/root/privacy predicates.
+            const audience = Object.freeze({
+              ...metadata,
+              assertCurrent() {
+                if (!active) {
+                  throw new Error("Retained private audience has been released");
+                }
+                operatorAuthority.assertCurrent();
+              },
+            });
+            return [
+              Object.freeze({
+                source: input.retentionSource ?? operatorAuthority.source ?? operatorAuthority,
+                audience,
+                signal: operatorAuthority.signal,
+                sourceClosed: input.sourceClosed,
+                release() {
+                  if (released) {
+                    return;
+                  }
+                  active = false;
+                  release();
+                  released = true;
+                },
+              }),
+            ];
+          },
+        }
+      : {}),
   });
 }

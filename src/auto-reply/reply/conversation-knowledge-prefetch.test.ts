@@ -17,7 +17,6 @@ vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
 // mock-isolation: Shared root summaries have their own scheduling and authority tests.
 vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
   registerConversationKnowledgeCheckpointOwner: () => ({
-    retainAudience: vi.fn(),
     request: vi.fn(),
     pausePreparation: () => () => {},
     latest: () => undefined,
@@ -37,6 +36,8 @@ vi.mock("./conversation-knowledge.js", () => ({
 vi.mock("./conversation-knowledge-source-cache.js", () => ({
   createConversationKnowledgeSourceCache: () => ({
     clear: vi.fn(),
+    retainCleanup: vi.fn(),
+    forgetCleanup: vi.fn(),
     retryCleanup: vi.fn(),
     diagnosticPreparedFrontiers: () => [],
   }),
@@ -55,9 +56,204 @@ beforeEach(() => {
   for (const mock of Object.values(preparation.owner)) {
     mock.mockReset();
   }
+  preparation.owner.close.mockResolvedValue(undefined);
 });
 
 describe("recipient preparation scheduling", () => {
+  function retainedOpening() {
+    const branch = {
+      agentId: "example",
+      sessionKey: "agent:example:retained-opening",
+      sessionId: "retained-opening",
+      lifecycleRevision: "original",
+      storePath: "/synthetic/agent.sqlite",
+      root: {
+        sessionKey: "agent:example:root",
+        sessionId: "root",
+        lifecycleRevision: "original",
+      },
+    };
+    const participant = { type: "profile" as const, id: "example-person" };
+    const source = Object.freeze({});
+    const revocation = new AbortController();
+    let originalCurrent = true;
+    const releases: ReturnType<typeof vi.fn>[] = [];
+    const open = (endpoint?: { source: object; sourceClosed: AbortSignal }) => {
+      let retained = true;
+      const fields = {
+        agentId: branch.agentId,
+        sessionKey: branch.sessionKey,
+        channelId: "webchat",
+        accountId: "default",
+        nativeChannelId: "original-endpoint",
+        participant,
+      };
+      const release = vi.fn(() => {
+        retained = false;
+      });
+      releases.push(release);
+      const retain = vi.fn(() => [
+        {
+          source: endpoint?.source ?? source,
+          sourceClosed: endpoint?.sourceClosed,
+          signal: revocation.signal,
+          audience: {
+            ...fields,
+            assertCurrent() {
+              revocation.signal.throwIfAborted();
+              if (!retained) {
+                throw new Error("Retained opening released");
+              }
+            },
+          },
+          release,
+        },
+      ]);
+      return {
+        ...fields,
+        assertCurrent() {
+          if (!originalCurrent) {
+            throw new Error("Original turn ended");
+          }
+        },
+        retain,
+      };
+    };
+    const register = (audience = open()) =>
+      prepareConversationKnowledgeRecipient({
+        branch,
+        participant,
+        audience,
+        env: {},
+        getRuntimeConfig: () => ({
+          agents: { entries: { example: { conversationMode: "branches" } } },
+        }),
+      });
+    return {
+      branch,
+      open,
+      register,
+      releases,
+      revocation,
+      endTurn() {
+        originalCurrent = false;
+      },
+    };
+  }
+
+  it("retains an idle opening independently and replaces its native hold once per endpoint", () => {
+    const f = retainedOpening();
+    const recipient = f.register();
+    const scheduled = preparation.create.mock.calls[0]![0];
+    try {
+      for (let index = 0; index < 3; index++) {
+        expect(f.register()).toBe(recipient);
+      }
+      expect(preparation.create).toHaveBeenCalledOnce();
+      expect(f.releases.slice(0, 3).map((release) => release.mock.calls.length)).toEqual([1, 1, 1]);
+      expect(f.releases[3]).not.toHaveBeenCalled();
+      f.endTurn();
+      expect(() => scheduled.assertCurrent()).not.toThrow();
+      const before = preparation.owner.request.mock.calls.length;
+      f.revocation.abort(new Error("Native source revoked"));
+      expect(preparation.owner.request).toHaveBeenCalledTimes(before + 1);
+      expect(() => scheduled.assertCurrent()).toThrow("no current private audience");
+      expect(f.releases[3]).toHaveBeenCalledOnce();
+    } finally {
+      scheduled.clear();
+    }
+  });
+
+  it("keeps a disconnected idle opening until a valid reconnect replaces it", () => {
+    const f = retainedOpening();
+    let closed = new AbortController();
+    const recipient = f.register(
+      f.open({ source: Object.freeze({}), sourceClosed: closed.signal }),
+    );
+    const scheduled = preparation.create.mock.calls[0]![0];
+    try {
+      for (let index = 0; index < 5; index++) {
+        closed.abort();
+        expect(() => scheduled.assertCurrent()).not.toThrow();
+        expect(f.releases[index]).not.toHaveBeenCalled();
+        closed = new AbortController();
+        expect(f.register(f.open({ source: Object.freeze({}), sourceClosed: closed.signal }))).toBe(
+          recipient,
+        );
+        expect(f.releases[index]).toHaveBeenCalledOnce();
+        expect(f.releases[index + 1]).not.toHaveBeenCalled();
+      }
+    } finally {
+      scheduled.clear();
+    }
+    expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
+  });
+
+  it.each(["reset", "deleted", "archived"])(
+    "retires the exact recipient and native holds when %s",
+    async (change) => {
+      const f = retainedOpening();
+      f.register();
+      const scheduled = preparation.create.mock.calls[0]![0];
+      const entry =
+        change === "deleted"
+          ? undefined
+          : {
+              sessionId: f.branch.sessionId,
+              lifecycleRevision: change === "reset" ? "new-life" : "original",
+              ...(change === "archived" ? { archivedAt: 1 } : {}),
+            };
+      const release = vi.fn();
+      preparation.load.mockResolvedValue({
+        entry,
+        databaseClaim: { kind: "worker", reader: {}, assertCurrent() {}, release },
+      });
+      preparation.owner.close.mockImplementation(async () => {
+        scheduled.clear();
+        await scheduled.settle?.();
+      });
+      try {
+        expect(await scheduled.prepare(new AbortController().signal)).toBe(false);
+        expect(preparation.prepare).not.toHaveBeenCalled();
+        expect(preparation.owner.close).toHaveBeenCalledOnce();
+        expect(f.releases[0]).toHaveBeenCalledOnce();
+        expect(release).toHaveBeenCalledOnce();
+      } finally {
+        scheduled.clear();
+      }
+    },
+  );
+
+  it("does not install new native holds into an already closed recipient", () => {
+    const f = retainedOpening();
+    const first = f.register();
+    const old = preparation.create.mock.calls[0]![0];
+    preparation.owner.assertCurrent.mockImplementationOnce(() => {
+      throw new Error("Closed owner");
+    });
+    preparation.owner.close.mockImplementationOnce(async () => old.clear());
+    const incoming = f.open();
+    const replacement = f.register(incoming);
+    const current = preparation.create.mock.calls[1]![0];
+    try {
+      expect(replacement).not.toBe(first);
+      expect(incoming.retain).toHaveBeenCalledOnce();
+      expect(f.releases[0]).toHaveBeenCalledOnce();
+      expect(f.releases[1]).not.toHaveBeenCalled();
+    } finally {
+      current.clear();
+    }
+  });
+
+  it("releases native audience custody if the recipient owner cannot be initialized", () => {
+    const f = retainedOpening();
+    preparation.create.mockImplementationOnce(() => {
+      throw new Error("Synthetic owner initialization failed");
+    });
+    expect(() => f.register()).toThrow("Synthetic owner initialization failed");
+    expect(f.releases[0]).toHaveBeenCalledOnce();
+  });
+
   it("prepares every open recipient rather than starving readers outside the newest sixteen", async () => {
     const participant = { type: "profile" as const, id: "example-person" };
     const release = vi.fn();
