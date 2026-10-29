@@ -70,7 +70,9 @@ function config(mode: "native" | "branches", model: Model): OpenClawConfig {
         [provider.providerId]: {
           ...provider.config,
           request: { allowPrivateNetwork: true },
-          models: provider.config.models.map((entry) => ({ ...entry, input: [...entry.input] })),
+          models: provider.config.models.map((entry) =>
+            Object.assign({}, entry, { input: [...entry.input] }),
+          ),
         },
       },
     },
@@ -128,7 +130,9 @@ function preparedRootOriginals(gateway: OpenClawTestInstance) {
     .logs()
     .split("\n")
     .reduce((maximum, line) => {
-      if (!line.includes("Related-history root projection ready")) return maximum;
+      if (!line.includes("Related-history root projection ready")) {
+        return maximum;
+      }
       const count = /preparedTailCount\\?"\s*:\s*(\d+)/u.exec(line)?.[1];
       return count ? Math.max(maximum, Number(count)) : maximum;
     }, 0);
@@ -162,7 +166,9 @@ describe("isolated full Gateway conversation continuity", () => {
           qualityGuard: { enabled: false },
         };
         for (const provider of Object.values(selected.models!.providers!)) {
-          provider.models = provider.models.map((entry) => ({ ...entry, contextWindow: 32_768 }));
+          provider.models = provider.models.map((entry) =>
+            Object.assign({}, entry, { contextWindow: 32_768 }),
+          );
         }
         gateway = await createOpenClawTestInstance({
           name: "conversation-checkpoint-pressure",
@@ -224,8 +230,10 @@ describe("isolated full Gateway conversation continuity", () => {
         const firstSequence = firstHistory.messages.find(
           (message) =>
             message.role === "user" && JSON.stringify(message.content).includes(markers[0]!),
-        )?.__openclaw?.seq;
-        if (typeof firstSequence !== "number") throw new Error("Native source sequence is missing");
+        )?.["__openclaw"]?.seq;
+        if (typeof firstSequence !== "number") {
+          throw new Error("Native source sequence is missing");
+        }
         await vi.waitFor(() => {
           expect(
             preparedSourceReached(
@@ -249,8 +257,10 @@ describe("isolated full Gateway conversation continuity", () => {
         const lastOriginal = originalInputs.find((message) =>
           JSON.stringify(message.content).includes(markers.at(-1)!),
         );
-        const lastSequence = lastOriginal?.__openclaw?.seq;
-        if (typeof lastSequence !== "number") throw new Error("Native source sequence is missing");
+        const lastSequence = lastOriginal?.["__openclaw"]?.seq;
+        if (typeof lastSequence !== "number") {
+          throw new Error("Native source sequence is missing");
+        }
         await vi.waitFor(
           () => {
             expect(gateway!.logs()).toContain("Related-history checkpoint prepared");
@@ -278,7 +288,9 @@ describe("isolated full Gateway conversation continuity", () => {
         expect(requests).toHaveLength(1);
         const input = JSON.stringify(requests[0]);
         expect(input).toContain("Summary of related conversations");
-        for (const marker of markers) expect(input.split(marker).length - 1).toBe(1);
+        for (const marker of markers) {
+          expect(input.split(marker).length - 1).toBe(1);
+        }
         for (const marker of markers) {
           expect(
             originalInputs.filter((message) => JSON.stringify(message.content).includes(marker)),
@@ -319,7 +331,9 @@ describe("isolated full Gateway conversation continuity", () => {
         ).toBe(destinationDescription.session.sessionId);
         const restarted = JSON.stringify(await send(destination, "CHECKPOINT_RESTART_PROBE_73"));
         expect(restarted).toContain("Summary of related conversations");
-        for (const marker of markers) expect(restarted.split(marker).length - 1).toBe(1);
+        for (const marker of markers) {
+          expect(restarted.split(marker).length - 1).toBe(1);
+        }
         expect(model.errors).toEqual([]);
       },
       () => owner?.close(),
@@ -401,9 +415,11 @@ describe("isolated full Gateway conversation continuity", () => {
                 message.role === "user" && JSON.stringify(message.content).includes(marker),
             );
             expect(originals).toHaveLength(1);
-            const sequence = originals[0]?.__openclaw?.seq;
+            const sequence = originals[0]?.["__openclaw"]?.seq;
             expect(Number.isSafeInteger(sequence)).toBe(true);
-            if (typeof sequence !== "number") throw new Error("Native source sequence is missing");
+            if (typeof sequence !== "number") {
+              throw new Error("Native source sequence is missing");
+            }
             const requestCount = model!.requests.length;
             await vi.waitFor(() => {
               expect(
@@ -502,7 +518,7 @@ describe("isolated full Gateway conversation continuity", () => {
                 message.role === "user" && JSON.stringify(message.content).includes(PRIVATE_CODE),
             );
             expect(originals).toHaveLength(1);
-            const privateSequence = originals[0]?.__openclaw?.seq;
+            const privateSequence = originals[0]?.["__openclaw"]?.seq;
             if (typeof privateSequence !== "number" || !Number.isSafeInteger(privateSequence)) {
               throw new Error("Native private source sequence is missing");
             }

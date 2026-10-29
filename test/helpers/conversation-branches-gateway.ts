@@ -96,7 +96,7 @@ export async function startConversationModel(
       const gate = {
         matches,
         entered: createDeferred<Record<string, unknown>>(),
-        released: createDeferred<void>(),
+        released: createDeferred(),
         claimed: false,
       };
       gates.add(gate);
@@ -107,9 +107,9 @@ export async function startConversationModel(
       releaseGates();
       try {
         server.closeAllConnections();
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
       } finally {
         await claim.release();
       }
