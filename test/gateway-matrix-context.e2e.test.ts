@@ -397,6 +397,7 @@ it.for(["native", "branches"] as const)(
             currentMessageIdCopies: text.split(event.id).length - 1,
             runtimeBlocks: text.split("OpenClaw runtime context:").length - 1,
             runtimeCarriers: carriers.length,
+            runtimeText: runtime,
             markerLocations: items
               .map((value, position) => {
                 const item = value as Record<string, unknown>;
