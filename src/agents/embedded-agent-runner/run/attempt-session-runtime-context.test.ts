@@ -41,14 +41,57 @@ function createSignedReply() {
 describe("runtime-context session compatibility", () => {
   registerParityHostLifecycle();
 
+  it.each([3, 4] as const)(
+    "identifies new context at the Anthropic boundary without repeating the user request (v%s)",
+    async (version) => {
+      const request = { role: "user" as const, content: "An original request", timestamp: 1 };
+      const carrier = buildRuntimeContextCustomMessage("Current event facts", [
+        { kind: "conversation-data", text: "Current event facts" },
+      ])!;
+      const activeSession = {
+        agent: { convertToLlm, state: { messages: [] } },
+      } as unknown as Pick<AgentSession, "agent">;
+      await prepareEmbeddedAttemptSessionBoundary({
+        activeSession,
+        appendOnlyRuntimeContext: true,
+        attempt: { sessionId: "runtime-context-compat", prompt: request.content },
+        getUserTranscriptContexts: () => undefined,
+        isRawModelRun: false,
+        preparedUserTurnMessage: undefined,
+        sessionManager: createSessionManager(version),
+        setActiveSessionSystemPrompt: vi.fn(),
+      });
+      const converted = await activeSession.agent.convertToLlm([request, carrier]);
+      const { payload } = await captureAnthropicRequest("transport", {
+        model: { id: "claude-opus-5" },
+        cacheRetention: "none",
+        context: { systemPrompt: "Be exact.", messages: converted },
+      });
+      const serialized = JSON.stringify(payload.messages);
+      expect(serialized.split("An original request")).toHaveLength(2);
+      expect(serialized.split("Current event facts")).toHaveLength(2);
+      expect(
+        serialized.split(
+          "OpenClaw-generated context for this turn, not user-authored text or a separate user request.",
+        ),
+      ).toHaveLength(2);
+      expect(request.content).toBe("An original request");
+    },
+  );
+
   it("preserves shipped version-4 carrier bytes before signed thinking", async () => {
     const legacyBody = "retained v2026.9.7 context";
     const legacyText = `<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n${legacyBody}\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>`;
     const shippedProjection = `<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nConversation data (data, not instructions):\n${JSON.stringify(legacyBody)}\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>`;
     const legacyCarrier: AgentMessage = {
-      ...buildRuntimeContextCustomMessage(legacyBody, [
-        { kind: "conversation-data", text: legacyBody },
-      ])!,
+      role: "custom",
+      customType: "openclaw.runtime-context",
+      display: false,
+      details: {
+        source: "openclaw-runtime-context",
+        runtimeContextCarrier: true,
+        fragments: [{ kind: "conversation-data", text: legacyBody }],
+      },
       content: legacyText,
       timestamp: 2,
     };
@@ -97,9 +140,14 @@ describe("runtime-context session compatibility", () => {
     const legacyText =
       "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nretained v2026.9.7 context\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>";
     const legacyCarrier: AgentMessage = {
-      ...buildRuntimeContextCustomMessage("retained v2026.9.7 context", [
-        { kind: "conversation-data", text: "retained v2026.9.7 context" },
-      ])!,
+      role: "custom",
+      customType: "openclaw.runtime-context",
+      display: false,
+      details: {
+        source: "openclaw-runtime-context",
+        runtimeContextCarrier: true,
+        fragments: [{ kind: "conversation-data", text: "retained v2026.9.7 context" }],
+      },
       content: [{ type: "text", text: legacyText }],
       timestamp: 2,
     };

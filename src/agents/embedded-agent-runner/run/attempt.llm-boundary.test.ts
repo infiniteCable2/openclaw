@@ -59,7 +59,7 @@ describe("normalizeMessagesForLlmBoundary", () => {
       },
       {
         role: "user",
-        content: "Current facts",
+        content: runtime.content,
         timestamp: runtime.timestamp,
         operatorMessage: { turnScoped: true },
       },

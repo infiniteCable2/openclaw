@@ -19,6 +19,8 @@ import {
 import type { AgentMessage } from "../../runtime/index.js";
 
 const RETAIN_STEERING_RUNTIME_CONTEXT = Symbol.for("openclaw.retainSteeringRuntimeContext");
+const RUNTIME_CONTEXT_PROVENANCE =
+  "OpenClaw-generated context for this turn, not user-authored text or a separate user request.";
 
 /** Configure transcript retention for steering-owned runtime context. */
 export function setSteeringRuntimeContextRetention(session: object, retain: boolean): void {
@@ -177,17 +179,22 @@ export function buildRuntimeContextCustomMessage(
   if (!trimmedRuntimeContext) {
     return undefined;
   }
+  // Stamp new carriers only; replay must retain historical provider bytes.
+  const content = `${RUNTIME_CONTEXT_PROVENANCE}\n\n${trimmedRuntimeContext}`;
+  const currentFragments: RuntimeContextFragment[] | undefined = fragments?.length
+    ? [{ kind: "runtime-instruction", text: RUNTIME_CONTEXT_PROVENANCE }, ...fragments]
+    : undefined;
   if (inHistorySystemUpdates) {
     return buildSystemUpdateMessage(
-      fragments?.length ? projectRuntimeContextFragments(fragments) : trimmedRuntimeContext,
+      currentFragments ? projectRuntimeContextFragments(currentFragments) : content,
       "runtime-context",
       true,
     );
   }
-  return buildContextCustomMessage(trimmedRuntimeContext, OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE, {
+  return buildContextCustomMessage(content, OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE, {
     source: "openclaw-runtime-context",
     runtimeContextCarrier: true,
-    ...(fragments?.length ? { fragments } : {}),
+    ...(currentFragments ? { fragments: currentFragments } : {}),
   });
 }
 
