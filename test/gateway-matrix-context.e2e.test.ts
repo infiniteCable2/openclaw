@@ -239,9 +239,9 @@ async function homeserver(signal: AbortSignal) {
       abort();
       try {
         server.closeAllConnections();
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
       } finally {
         await claim.release();
       }
@@ -356,7 +356,7 @@ it("observes real Matrix ingress and the provider-bound current request without 
           currentMessageIdCopies: text.split(event.id).length - 1,
           runtimeBlocks: text.split("OpenClaw runtime context:").length - 1,
           currentTimestampInRuntime: runtime.includes(eventTimestamp),
-          eventTimestamp: eventTimestamp,
+          eventTimestamp,
           providerChars: text.length,
         });
       }
