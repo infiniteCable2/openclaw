@@ -3,6 +3,7 @@ import type { AgentMessage } from "../../runtime/index.js";
 import { createFreshLlmBoundaryTokenEstimator } from "../../sessions/context-token-pressure.js";
 import { convertToLlm, type CustomMessage } from "../../sessions/messages.js";
 import {
+  capturePreparedConversationContextBudget,
   createConversationContextCapacity,
   createPreparedConversationContextProjection,
 } from "./prepared-conversation-context.js";
@@ -71,6 +72,28 @@ describe("prepared conversation context projection", () => {
 });
 
 describe("prepared conversation request capacity", () => {
+  it("reuses the native system/tool footprint with fresh history and independent reservations", () => {
+    const systemPrompt = "Required instructions. ".repeat(100);
+    const tools = [
+      { name: "read", description: "Read a document", parameters: { text: "x".repeat(200) } },
+    ];
+    const options = { systemPrompt, tools, contextWindow: 900, reserveTokens: 100 };
+    const first = createConversationContextCapacity({ ...options, messages: [user("old turn")] });
+    const budget = capturePreparedConversationContextBudget(first)!;
+    expect(budget.contextWindow).toBe(options.contextWindow);
+    expect(budget.reserveTokens).toBe(options.reserveTokens);
+    const messages = [user("New canonical history.")];
+    const reused = budget.capacityForMessages(messages);
+    const fresh = createConversationContextCapacity({ ...options, messages });
+    for (const candidate of [packet("large", "x".repeat(2_000)), packet("small"), packet("last")]) {
+      expect(reused(candidate)).toBe(fresh(candidate));
+    }
+    expect(budget.capacityForMessages(messages)(packet("again"))).toBe(
+      createConversationContextCapacity({ ...options, messages })(packet("again")),
+    );
+    expect(capturePreparedConversationContextBudget(() => true)).toBeUndefined();
+  });
+
   it("uses native request costs and reserves accepted additions cumulatively", () => {
     const messages = [user("current user input")];
     const systemPrompt = "Current system instructions";

@@ -25,6 +25,7 @@ type SessionMaintenance = {
   owners: Set<MaintenanceOwner>;
   foreground: number;
   wake: Set<() => void>;
+  availabilityListeners?: Set<() => void>;
 };
 const log = createSubsystemLogger("agents/session-maintenance");
 function recordPhase(sessionKey: string, owner: MaintenanceOwner, phase: string): void {
@@ -47,6 +48,7 @@ const state = resolveGlobalSingleton(
   }),
   (current) => {
     for (const session of current.sessions.values()) {
+      session.availabilityListeners?.clear();
       for (const owner of session.owners) {
         owner.controller.abort(createAbortError("Session maintenance stopped with its host"));
       }
@@ -64,9 +66,39 @@ function sessionState(key: string): SessionMaintenance {
 }
 
 function releaseSessionState(key: string, session: SessionMaintenance): void {
-  if (!session.foreground && !session.owners.size && state.sessions.get(key) === session) {
+  if (
+    !session.foreground &&
+    !session.owners.size &&
+    !session.availabilityListeners?.size &&
+    state.sessions.get(key) === session
+  ) {
     state.sessions.delete(key);
   }
+}
+
+function notifySessionAvailability(session: SessionMaintenance): void {
+  if (session.foreground || session.owners.size) {
+    return;
+  }
+  for (const listener of session.availabilityListeners ?? []) {
+    try {
+      listener();
+    } catch {
+      // Scheduling observers cannot prevent the native writer from settling.
+      log.warn("Session maintenance availability observer failed");
+    }
+  }
+}
+
+/** A lifecycle-scoped scheduling wakeup, not permission to write an idle session. */
+export function onSessionMaintenanceAvailable(sessionKey: string, listener: () => void) {
+  const key = sessionKey.trim();
+  const session = sessionState(key);
+  (session.availabilityListeners ??= new Set()).add(listener);
+  return () => {
+    session.availabilityListeners?.delete(listener);
+    releaseSessionState(key, session);
+  };
 }
 
 function independentOwners(
@@ -92,6 +124,7 @@ function independentOwners(
 
 registerAgentEventLifecycleRotationHandler("session-maintenance", () => {
   for (const session of state.sessions.values()) {
+    session.availabilityListeners?.clear();
     for (const owner of session.owners) {
       owner.controller.abort(createAbortError("Session maintenance retired with its lifecycle"));
     }
@@ -103,6 +136,8 @@ export function createSessionMaintenanceOwner(params: {
   sessionKey: string;
   preemptible?: boolean;
   abortSignal?: AbortSignal;
+  /** Coalesced idle probes must not wake themselves again when capacity is unchanged. */
+  notifyOnSettlement?: boolean;
 }) {
   const key = params.sessionKey.trim();
   const session = sessionState(key);
@@ -172,9 +207,24 @@ export function createSessionMaintenanceOwner(params: {
         session.owners.delete(owner);
         recordPhase(key, owner, "settled");
         finish();
+        if (params.notifyOnSettlement !== false) {
+          notifySessionAvailability(session);
+        }
         releaseSessionState(key, session);
       }),
   };
+}
+
+/** Optional idle work must not queue behind a conversation or another maintenance writer. */
+export function tryCreateIdleSessionMaintenanceOwner(params: {
+  sessionKey: string;
+  abortSignal?: AbortSignal;
+}) {
+  const session = state.sessions.get(params.sessionKey.trim());
+  if (session && (session.foreground > 0 || session.owners.size > 0)) {
+    return undefined;
+  }
+  return createSessionMaintenanceOwner({ ...params, preemptible: true, notifyOnSettlement: false });
 }
 
 /** Reserve foreground priority before queueing so optional work cannot seize its lane. */
@@ -196,6 +246,7 @@ export async function beginForegroundSessionMaintenance(sessionKey?: string): Pr
       for (const wake of session.wake) {
         wake();
       }
+      notifySessionAvailability(session);
     }
     releaseSessionState(key, session);
   };

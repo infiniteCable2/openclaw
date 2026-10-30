@@ -9,6 +9,10 @@ const preparation = vi.hoisted(() => ({
     close: vi.fn(),
   },
   create: vi.fn(),
+  projection: vi.fn(),
+  checkpoint: vi.fn(),
+  rootProjection: vi.fn(),
+  idle: vi.fn(),
 }));
 // mock-isolation: Exercise recipient scheduling without starting background database resources.
 vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
@@ -20,9 +24,19 @@ vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
     request: vi.fn(),
     pausePreparation: () => () => {},
     latest: () => undefined,
-    projection: () => ({ tail: [] }),
+    projection: preparation.rootProjection,
+    watchesSource: () => false,
     close: async () => {},
   }),
+}));
+// mock-isolation: Native projection/authority behavior is covered by recipient and SQLite scenarios.
+vi.mock("./conversation-knowledge-checkpoint-recipient.js", () => ({
+  prepareRecipientConversationProjection: preparation.projection,
+  prepareRecipientConversationCheckpoint: preparation.checkpoint,
+}));
+// mock-isolation: Real idle lane/native writer fencing is covered by the idle-admission scenarios.
+vi.mock("./conversation-knowledge-idle.js", () => ({
+  admitPreparedConversationKnowledgeWhileIdle: preparation.idle,
 }));
 // mock-isolation: The scheduler needs only a current worker-backed recipient claim.
 vi.mock("../../config/sessions/session-accessor.sqlite-entry-admission.js", () => ({
@@ -54,6 +68,10 @@ beforeEach(() => {
   preparation.prepare.mockReset();
   preparation.load.mockReset();
   preparation.create.mockReset().mockReturnValue(preparation.owner);
+  preparation.projection.mockReset().mockResolvedValue(false);
+  preparation.checkpoint.mockReset().mockResolvedValue(undefined);
+  preparation.rootProjection.mockReset().mockReturnValue({ tail: [] });
+  preparation.idle.mockReset().mockResolvedValue(false);
   for (const mock of Object.values(preparation.owner)) {
     mock.mockReset();
   }
@@ -243,6 +261,68 @@ describe("recipient preparation scheduling", () => {
       expect(f.releases[1]).not.toHaveBeenCalled();
     } finally {
       current.clear();
+    }
+  });
+
+  it("reuses the complete shared projection before any per-recipient source hydration", async () => {
+    const f = retainedOpening();
+    f.register();
+    const scheduled = preparation.create.mock.calls[0]![0];
+    const release = vi.fn();
+    preparation.load.mockResolvedValue({
+      entry: { sessionId: f.branch.sessionId, lifecycleRevision: f.branch.lifecycleRevision },
+      databaseClaim: { kind: "worker", reader: {}, assertCurrent() {}, release },
+    });
+    const tail = [{ syntheticPreparedOriginal: true }];
+    const checkpoint = { syntheticCheckpoint: true };
+    const coverage = { syntheticCoverage: true };
+    preparation.rootProjection.mockReturnValue({ tail, checkpoint, coverage });
+    preparation.projection.mockResolvedValue(true);
+    try {
+      expect(await scheduled.prepare(new AbortController().signal)).toBe(false);
+      expect(preparation.checkpoint).toHaveBeenCalledWith(expect.any(Object), {
+        checkpoint,
+        coverage,
+      });
+      expect(preparation.projection).toHaveBeenCalledWith(expect.any(Object), tail);
+      expect(preparation.checkpoint.mock.invocationCallOrder[0]).toBeLessThan(
+        preparation.projection.mock.invocationCallOrder[0]!,
+      );
+      expect(preparation.prepare).not.toHaveBeenCalled();
+      expect(preparation.idle).toHaveBeenCalledWith(
+        expect.objectContaining({ branch: f.branch, preparationOnly: true }),
+      );
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      scheduled.clear();
+    }
+  });
+
+  it("continues preparing after idle admission frees a saturated cache", async () => {
+    const f = retainedOpening();
+    f.register();
+    const scheduled = preparation.create.mock.calls[0]![0];
+    const release = vi.fn();
+    preparation.load.mockResolvedValue({
+      entry: { sessionId: f.branch.sessionId, lifecycleRevision: f.branch.lifecycleRevision },
+      databaseClaim: { kind: "worker", reader: {}, assertCurrent() {}, release },
+    });
+    preparation.prepare.mockResolvedValue({
+      preparationSaturated: true,
+      nextSourceCursor: "next-original",
+      release() {},
+    });
+    preparation.idle.mockResolvedValueOnce(true);
+    try {
+      expect(await scheduled.prepare(new AbortController().signal)).toBe(true);
+      expect(preparation.idle).toHaveBeenCalledOnce();
+      expect(await scheduled.prepare(new AbortController().signal)).toBe(false);
+      expect(preparation.prepare.mock.calls[1]![0]).toMatchObject({
+        sourceCursor: "next-original",
+      });
+      expect(release).toHaveBeenCalledTimes(2);
+    } finally {
+      scheduled.clear();
     }
   });
 

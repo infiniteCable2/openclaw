@@ -1,5 +1,12 @@
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
+import {
+  capturePreparedConversationContextBudget,
+  type PreparedConversationContextBudget,
+} from "../../agents/embedded-agent-runner/run/prepared-conversation-context.js";
+import { onSessionMaintenanceAvailable } from "../../agents/session-maintenance/coordinator.js";
+import type { CustomMessage } from "../../agents/sessions/messages.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
+import { configSnapshotsMatch } from "../../config/runtime-config-snapshot-match.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
@@ -18,12 +25,17 @@ import {
   createConversationKnowledgeSourceCache,
   type ConversationKnowledgeSourceCache,
 } from "./conversation-knowledge-source-cache.js";
+import type { PreparedReplyConversationKnowledge } from "./conversation-knowledge.types.js";
 
 type Recipient = {
   owner: ReturnType<typeof createConversationKnowledgePrefetchOwner>;
   cache: ConversationKnowledgeSourceCache;
   checkpoint: ReturnType<typeof registerConversationKnowledgeCheckpointOwner>;
   retainAudience(audience: ConversationPrivateAudience): void;
+  retainContextBudget(
+    capacity: (message: CustomMessage) => boolean,
+    model: { provider: string; model: string; config: OpenClawConfig },
+  ): void;
 };
 const log = createSubsystemLogger("conversation-knowledge");
 const recipients = resolveGlobalSingleton(
@@ -31,7 +43,7 @@ const recipients = resolveGlobalSingleton(
   () => new Map<string, Recipient>(),
 );
 
-/** Prepare authorized source data without acquiring a model session or changing its history. */
+/** Prepare authorized sources off-turn; native idle maintenance may retain ready observations. */
 export function prepareConversationKnowledgeRecipient(params: {
   branch: ConversationKnowledgeBranch;
   participant?: SessionParticipantIdentity;
@@ -75,6 +87,30 @@ export function prepareConversationKnowledgeRecipient(params: {
     }
   }
   const cache = createConversationKnowledgeSourceCache();
+  let contextBudget:
+    | {
+        config: OpenClawConfig;
+        value: PreparedConversationContextBudget;
+        provider: string;
+        model: string;
+      }
+    | undefined;
+  const retainContextBudget = (
+    capacity: (message: CustomMessage) => boolean,
+    model: { provider: string; model: string; config: OpenClawConfig },
+  ) => {
+    const value = capturePreparedConversationContextBudget(capacity);
+    const current = params.getRuntimeConfig();
+    contextBudget =
+      value && configSnapshotsMatch(model.config, current)
+        ? {
+            config: current,
+            value,
+            provider: value.modelIdentity?.provider ?? model.provider,
+            model: value.modelIdentity?.model ?? model.model,
+          }
+        : undefined;
+  };
   const audiences = new Map<object, RetainedConversationPrivateAudience>();
   const retireAudience = (proof: RetainedConversationPrivateAudience) => {
     if (audiences.get(proof.source) === proof) {
@@ -156,6 +192,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     selectAudience();
   };
   let checkpoint: ReturnType<typeof registerConversationKnowledgeCheckpointOwner> | undefined;
+  let unsubscribeAvailability = () => {};
   try {
     retainAudience(incomingAudience);
     // Only independently current, same-person host proofs participate. Matching
@@ -193,8 +230,12 @@ export function prepareConversationKnowledgeRecipient(params: {
     const owner = createConversationKnowledgePrefetchOwner({
       target: { ...branch, env: params.env },
       assertCurrent: checkAudience,
+      watchesSource: rootCheckpoint.watchesSource,
       settle: () => rootCheckpoint.close(),
       clear: () => {
+        unsubscribeAvailability();
+        unsubscribeAvailability = () => {};
+        contextBudget = undefined;
         for (const proof of audiences.values()) {
           retireAudience(proof);
         }
@@ -237,9 +278,7 @@ export function prepareConversationKnowledgeRecipient(params: {
               .catch(() => log.debug("Related-history recipient retirement deferred"));
             return false;
           }
-          const { prepareReplyConversationKnowledge } = await import("./conversation-knowledge.js");
-          owner.assertCurrent();
-          const prepared = await prepareReplyConversationKnowledge({
+          const preparation = {
             reader,
             sessionId: branch.sessionId,
             assertCurrent,
@@ -250,9 +289,33 @@ export function prepareConversationKnowledgeRecipient(params: {
             signal,
             sourceCache: cache,
             preparationOnly: true,
-            sourceBudget: 8,
-            sourceCursor,
-          });
+          };
+          const { prepareRecipientConversationCheckpoint, prepareRecipientConversationProjection } =
+            await import("./conversation-knowledge-checkpoint-recipient.js");
+          const projection = rootCheckpoint.projection();
+          if (projection.checkpoint && projection.coverage) {
+            await prepareRecipientConversationCheckpoint(preparation, {
+              checkpoint: projection.checkpoint,
+              coverage: projection.coverage,
+            });
+          }
+          // Reuse the shared root before hydrating private source text again. A
+          // partial recipient manifest must grow as its root becomes prepared.
+          const sharedReady = await prepareRecipientConversationProjection(
+            preparation,
+            projection.tail,
+          );
+          let prepared: PreparedReplyConversationKnowledge | undefined;
+          if (!sharedReady) {
+            const { prepareReplyConversationKnowledge } =
+              await import("./conversation-knowledge.js");
+            owner.assertCurrent();
+            prepared = await prepareReplyConversationKnowledge({
+              ...preparation,
+              sourceBudget: 8,
+              sourceCursor,
+            });
+          }
           sourceCursor = prepared?.nextSourceCursor;
           if (log.isEnabled("debug")) {
             log.debug("Related-history source preparation settled", {
@@ -265,36 +328,35 @@ export function prepareConversationKnowledgeRecipient(params: {
             });
           }
           prepared?.release();
-          const latest = rootCheckpoint.latest();
-          if (latest) {
-            const { prepareRecipientConversationCheckpoint } =
-              await import("./conversation-knowledge-checkpoint-recipient.js");
-            await prepareRecipientConversationCheckpoint(
-              {
-                reader,
-                sessionId: branch.sessionId,
-                assertCurrent,
-                originalParticipant: participant,
-                destinationAudience: audience,
-                expectedAudienceIdentity: identity,
-                getRuntimeConfig: () => params.getRuntimeConfig(),
-                signal,
-                sourceCache: cache,
-                preparationOnly: true,
-              },
-              latest,
-            );
-          }
-          return sourceCursor !== undefined && !prepared?.preparationSaturated;
+          const { admitPreparedConversationKnowledgeWhileIdle } =
+            await import("./conversation-knowledge-idle.js");
+          const consumed = await admitPreparedConversationKnowledgeWhileIdle({
+            ...preparation,
+            branch,
+            budget: contextBudget?.config === params.getRuntimeConfig() ? contextBudget : undefined,
+          });
+          return consumed || (sourceCursor !== undefined && !prepared?.preparationSaturated);
         } finally {
           await held.databaseClaim.release();
         }
       },
     });
-    const recipient = { owner, cache, checkpoint: rootCheckpoint, retainAudience };
+    const recipient = {
+      owner,
+      cache,
+      checkpoint: rootCheckpoint,
+      retainAudience,
+      retainContextBudget,
+    };
     recipients.set(key, recipient);
+    unsubscribeAvailability = onSessionMaintenanceAvailable(branch.sessionKey, () => {
+      if (contextBudget && (cache.preparedCheckpoint || cache.preparedPackets(1).length)) {
+        owner.request();
+      }
+    });
     return recipient;
   } catch (error) {
+    unsubscribeAvailability();
     for (const proof of audiences.values()) {
       retireAudience(proof);
     }

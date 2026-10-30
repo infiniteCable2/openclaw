@@ -91,11 +91,13 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       value: PreparedRootKnowledgeContribution;
       tokens: number;
       bytes: number;
+      order: number;
     }
   >();
   let tailBytes = 0;
   let projectionRevision = 0;
   let loggedProjectionRevision = -1;
+  let sourceSessionKeys = new Set<string>();
   const evict = (id: string) => {
     const entry = tail.get(id);
     if (entry) {
@@ -167,6 +169,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     workOwner,
     settle,
     assertCurrent,
+    watchesSource: (sessionKey) => sourceSessionKeys.has(sessionKey),
     clear: () => {
       inFlight?.abort();
       brokers.clear();
@@ -174,6 +177,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       planning = undefined;
       tail.clear();
       tailBytes = 0;
+      sourceSessionKeys.clear();
       rootContinuation.release();
       // Native resource custody joins cleanup; this retired selector must not
       // prevent a fresh same-root registration while that cleanup settles.
@@ -325,33 +329,51 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             reference,
           ]),
         );
+        sourceSessionKeys = new Set(
+          sources.references.map((reference) => reference.source.sessionKey),
+        );
+        const referenceOrder = new Map(
+          sources.references.map((reference, index) => [
+            conversationKnowledgeContributionId(reference),
+            index,
+          ]),
+        );
         // A checkpoint is not authority for retired or unproven historical incarnations.
-        if (
+        const previousContinuityAvailable = !(
           previousCoverage &&
           [...previousCoverage.contributionIds()].some(
             (id) => !byId.has(id) || !previousCoverage.matchesReference(byId.get(id)!),
           )
-        ) {
+        );
+        if (!previousContinuityAvailable) {
+          if (latest) {
+            projectionRevision++;
+          }
           latest = undefined;
           log.debug("Related-history checkpoint deferred", {
             reason: "source-continuity-unavailable",
           });
-          return false;
         }
-        if (previous && previousCoverage) {
+        if (previous && previousCoverage && previousContinuityAvailable) {
           publish({ checkpoint: previous, coverage: previousCoverage });
         }
+        // A missing prior source prevents summary-chain reuse, not preparation
+        // of independently authorized current originals. Never rewrite coverage.
+        const reusableCoverage = previousContinuityAvailable ? previousCoverage : undefined;
         const remaining = sources.references.filter(
-          (reference) => !previousCoverage?.has(conversationKnowledgeContributionId(reference)),
+          (reference) => !reusableCoverage?.has(conversationKnowledgeContributionId(reference)),
         );
         for (const [id, cached] of tail) {
           const reference = byId.get(id);
           if (
             !reference ||
-            previousCoverage?.has(id) ||
+            reusableCoverage?.has(id) ||
             JSON.stringify(reference) !== cached.referenceKey
           ) {
             evict(id);
+          } else if (cached.order !== referenceOrder.get(id)) {
+            cached.order = referenceOrder.get(id)!;
+            projectionRevision++;
           }
         }
         if (!remaining.length) {
@@ -379,14 +401,11 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           await acquireModel();
         }
         const { budget, settings } = planning!.value;
-        if (!settings.enabled) {
-          return false;
-        }
         const maxTailBytes = Math.min(4 * 1024 * 1024, budget.contextTokenBudget * 32);
         const contributions: PreparedCheckpointContribution[] = [];
         const selectedContributions = new Map<string, PreparedRootKnowledgeContribution>();
         let tokens = estimateRenderedPromptTokens(budget);
-        if (previous?.summary) {
+        if (previousContinuityAvailable && previous?.summary) {
           tokens += estimateMessageTokenPressure({
             role: "user",
             timestamp: 0,
@@ -414,6 +433,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
               referenceKey: JSON.stringify(reference),
               value,
               bytes,
+              order: referenceOrder.get(id)!,
               tokens: estimateMessageTokenPressure({
                 role: "user",
                 timestamp: 0,
@@ -432,6 +452,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           selectedContributions.set(id, cached.value);
           tokens += cached.tokens;
           check();
+          if (!previousContinuityAvailable || !settings.enabled) {
+            continue;
+          }
           const pressure = prepareCompactionBudgetPreflight({
             ...budget,
             messages: [],
@@ -576,6 +599,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     let active = true;
     return {
       request: owner.request,
+      watchesSource: (sessionKey: string) => sourceSessionKeys.has(sessionKey),
       pausePreparation() {
         const resume = owner.pausePreparation();
         inFlight?.abort();
@@ -594,10 +618,12 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           ...(latest
             ? { checkpoint: structuredClone(latest.checkpoint), coverage: latest.coverage }
             : {}),
-          tail: [...tail.values()].map(({ value }) => ({
-            reference: structuredClone(value.reference),
-            packet: structuredClone(value.packet),
-          })),
+          tail: [...tail.values()]
+            .toSorted((left, right) => left.order - right.order)
+            .map(({ value }) => ({
+              reference: structuredClone(value.reference),
+              packet: structuredClone(value.packet),
+            })),
         };
       },
       async close() {

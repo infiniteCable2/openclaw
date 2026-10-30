@@ -385,14 +385,51 @@ describe("shared root projection preparation", () => {
     // incarnation replacement. It must neither authorize its old summary nor
     // prevent unrelated, currently verified originals from being prepared.
     boundary.refs = [reference(2)];
+    boundary.read.mockImplementationOnce(async (ref: ConversationKnowledgeReference) => ({
+      ...(await read(ref)),
+      text: "quoted ".repeat(2_000),
+    }));
     await quantum();
     await quantum();
     expect(f.registration.latest()).toBeUndefined();
     expect(boundary.latest).toEqual(previous);
     expect(boundary.summarize).toHaveBeenCalledOnce();
+    expect(boundary.append).toHaveBeenCalledOnce();
+    expect(boundary.plan).toHaveBeenCalledOnce();
     expect(f.registration.projection().tail.map((item) => item.reference.through.rawSeq)).toEqual([
       2,
     ]);
+
+    // Native source recovery restores the original immutable chain. Only the
+    // still-uncovered current original is summarized in the successor.
+    boundary.refs = [reference(1), reference(2)];
+    expect(await quantum()).toBe(true);
+    const recovered = f.registration.latest()!;
+    expect(recovered.checkpoint.previousCheckpointId).toBe(previous.checkpointId);
+    expect(recovered.checkpoint.coveredContributionIds).toEqual([
+      conversationKnowledgeContributionId(reference(2)),
+    ]);
+    expect(boundary.summarize.mock.calls[1]![0].previousSummary).toBe(previous.summary);
+    expect(boundary.summarize.mock.calls[1]![0].contributions).toHaveLength(1);
+  });
+  it("prepares complete originals when native compaction is disabled", async () => {
+    const f = register();
+    const acquire = boundary.acquire.getMockImplementation()!;
+    boundary.acquire.mockImplementation(async () => {
+      const model = await acquire();
+      return {
+        ...model,
+        planning: {
+          ...model.planning,
+          settings: { ...model.planning.settings, enabled: false },
+        },
+      };
+    });
+    await quantum();
+    expect(f.registration.projection().tail).toHaveLength(1);
+    expect(boundary.plan).not.toHaveBeenCalled();
+    expect(boundary.summarize).not.toHaveBeenCalled();
+    expect(boundary.append).not.toHaveBeenCalled();
   });
   it("hydrates only new originals, shares below-threshold packets and does not reacquire model auth on unchanged roots", async () => {
     const first = register();

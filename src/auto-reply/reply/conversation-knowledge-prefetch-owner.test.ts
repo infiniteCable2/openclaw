@@ -283,6 +283,38 @@ describe("conversation knowledge prefetch lifecycle", () => {
     expect(prepare).toHaveBeenCalledTimes(2);
   });
 
+  it("wakes on selected donor metadata without waiting for a root or recipient write", async () => {
+    const donor = "agent:example:donor";
+    const prepare = vi.fn(async () => {});
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      assertCurrent() {},
+      clear() {},
+      watchesSource: (key) => key === donor,
+      prepare,
+    });
+    await owner.wait();
+    const change = {
+      agentId: target.agentId,
+      storePath: target.storePath,
+      sessionKey: donor,
+      scope: "session-entry" as const,
+    };
+    sessionChanges.emit(change);
+    sessionChanges.emit(change);
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    sessionChanges.emit({ ...change, sessionKey: "agent:example:unrelated" });
+    sessionChanges.emit({ ...change, agentId: "other" });
+    sessionChanges.emit({ ...change, storePath: path.resolve("other.sqlite") });
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    await owner.close();
+    sessionChanges.emit(change);
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
   it("continues source pages and preserves new root wakeups", async () => {
     let pages = 0;
     const prepare = vi.fn(async () => {

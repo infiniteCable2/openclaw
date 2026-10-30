@@ -68,7 +68,6 @@ export function createReplyConversationKnowledgeTurn(params: {
   // These are receipts accepted by this logical turn, not another durable cursor
   // or a copy of source history. Native carrier observation owns replay eligibility.
   const acceptedPackets = new Map<string, { timestamp: number; customType: string }>();
-  let resumeRootPreparation: (() => void) | undefined;
   let replayContext: object | undefined;
   let replayPending: string[] = [];
   const selected = createDynamicSessionSourceAssertion(
@@ -151,7 +150,6 @@ export function createReplyConversationKnowledgeTurn(params: {
                 env: reader.database.env,
                 getRuntimeConfig,
               });
-              resumeRootPreparation = recipient?.checkpoint.pausePreparation();
               const projection = recipient?.checkpoint.projection();
               if (recipient && projection) {
                 const {
@@ -385,8 +383,6 @@ export function createReplyConversationKnowledgeTurn(params: {
               env: reader.database.env,
               getRuntimeConfig,
             });
-            resumeRootPreparation?.();
-            resumeRootPreparation = recipient?.checkpoint.pausePreparation();
             consumedRevision = -1;
           } catch {
             // A closed connection/cache cannot cancel already accepted work.
@@ -395,6 +391,11 @@ export function createReplyConversationKnowledgeTurn(params: {
         return [];
       }
       const revision = recipient.cache.revision;
+      recipient.retainContextBudget(input.canAdmit, {
+        provider: run.provider,
+        model: run.model,
+        config: run.config,
+      });
       if (input.contextIdentity && input.contextIdentity !== replayContext) {
         replayContext = input.contextIdentity;
         replayPending = [...acceptedPackets.keys()];
@@ -547,8 +548,6 @@ export function createReplyConversationKnowledgeTurn(params: {
         return;
       }
       phase = "released";
-      resumeRootPreparation?.();
-      resumeRootPreparation = undefined;
       acceptedPackets.clear();
       replayPending = [];
       prepared?.release();

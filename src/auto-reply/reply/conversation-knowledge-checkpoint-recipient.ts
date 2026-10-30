@@ -36,6 +36,8 @@ import type {
 } from "./conversation-knowledge-source-cache.js";
 import {
   createConversationKnowledgeSourceReader,
+  publishPreparedConversationKnowledgeRoot,
+  readConversationKnowledgeInputs,
   prepareConversationKnowledgeTarget,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
@@ -104,44 +106,57 @@ function checkpointReadCustody(releaseTarget: () => void, cache: ConversationKno
   };
 }
 
-/** Cold recipient admission borrows ready original bytes, never another recipient's read grants. */
+/** Reuse ready original bytes with recipient-owned native custody and durable progress. */
 export async function prepareRecipientConversationProjection(
   params: ReplyConversationKnowledgeParams,
   tail: readonly {
     reference: ConversationKnowledgeReference;
     packet: PreparedConversationKnowledgePacket;
   }[],
-): Promise<void> {
+): Promise<boolean> {
   const cache = params.sourceCache;
-  if (
-    !cache ||
-    cache.preparedRoot ||
-    !tail.length ||
-    !params.originalParticipant ||
-    !params.expectedAudienceIdentity
-  ) {
-    return;
+  if (!cache || !params.originalParticipant || !params.expectedAudienceIdentity) {
+    return false;
   }
   const target = await prepareConversationKnowledgeTarget({
     ...params,
     participantIdentity: params.expectedAudienceIdentity,
   });
   if (!target || target.kind !== "ready") {
-    return;
+    return false;
   }
   const { branch, targetFacts } = target;
   const { reads, drop, release } = checkpointReadCustody(() => targetFacts.release(), cache);
   const check = composeSessionSourceAssertion([params.assertCurrent, targetFacts.assertCurrent]);
+  const epoch = cache.consumptionRevision;
   try {
-    const events = await readConversationKnowledgeRoot({ ...params, branch, assertCurrent: check });
-    const current = new Map(
-      selectConversationKnowledgeReceipts(
-        events,
-        branch.sessionId,
-        branch.sessionKey,
-        "branches",
-        branch.lifecycleRevision,
-      ).map((reference) => [conversationKnowledgeContributionId(reference), reference]),
+    const inputs = await readConversationKnowledgeInputs({
+      ...params,
+      branch,
+      assertCurrent: check,
+      readyOnly: false,
+      preparationOnly: true,
+      retainInHistory: false,
+    });
+    if (!inputs) {
+      return false;
+    }
+    const { events, retained } = inputs;
+    const current = selectConversationKnowledgeReceipts(
+      events,
+      branch.sessionId,
+      branch.sessionKey,
+      "branches",
+      branch.lifecycleRevision,
+    );
+    if (cache.consumptionRevision !== epoch) {
+      return false;
+    }
+    // Shared reuse must retire obsolete slots just like fallback preparation,
+    // otherwise an old incarnation can hold the bounded cache indefinitely.
+    cache.retainContributions(new Set(current.map(conversationKnowledgeContributionId)));
+    const shared = new Map(
+      tail.map((item) => [conversationKnowledgeContributionId(item.reference), item]),
     );
     const reader = createConversationKnowledgeSourceReader({
       ...params,
@@ -151,24 +166,52 @@ export async function prepareRecipientConversationProjection(
       rootEvidence: events.evidence,
       reads,
       drop,
-      hasRetainedContribution: () => false,
+      hasRetainedContribution: (id) => retained?.get(id)?.complete === true,
     });
-    const ready: ConversationKnowledgeReference[] = [];
-    for (const item of tail) {
-      const id = conversationKnowledgeContributionId(item.reference);
-      const reference = current.get(id);
-      if (!reference || !isDeepStrictEqual(reference, item.reference)) {
+    let complete = true;
+    for (const reference of current) {
+      check();
+      params.signal?.throwIfAborted();
+      if (cache.consumptionRevision !== epoch) {
+        return false;
+      }
+      const id = conversationKnowledgeContributionId(reference);
+      if (retained?.get(id)?.complete || cache.preparedCheckpoint?.coverage.has(id)) {
+        if (retained?.get(id)?.complete && cache.hasContribution(id)) {
+          cache.invalidateContribution(id);
+        }
+        continue;
+      }
+      // Already staged bytes still undergo fresh native authorization at admission.
+      // Their presence must not suppress missing siblings in a partial manifest.
+      const staged = cache.peek(id, 0);
+      if (
+        staged?.part.complete &&
+        cache.preparedAdmission({ ...reference.source, storePath: reference.through.storePath })
+      ) {
+        continue;
+      }
+      const item = shared.get(id);
+      if (!item || !isDeepStrictEqual(reference, item.reference)) {
+        complete = false;
         continue;
       }
       const { source } = await reader.take(reference);
       if (!source) {
+        complete = false;
         continue;
       }
       try {
+        check();
+        params.signal?.throwIfAborted();
+        if (cache.consumptionRevision !== epoch) {
+          return false;
+        }
         if (
           !isDeepStrictEqual(source.through, item.packet.through) ||
           !isDeepStrictEqual(source.from, item.packet.from)
         ) {
+          complete = false;
           continue;
         }
         const sourceTarget = { ...reference.source, storePath: reference.through.storePath };
@@ -179,24 +222,29 @@ export async function prepareRecipientConversationProjection(
             cache.preparedAdmission(sourceTarget) ?? source.grant.prepareAdmission(),
           )
         ) {
+          complete = false;
           break;
         }
         if (!cache.stage(id, 0, item.packet)) {
+          complete = false;
           break;
         }
-        ready.push(reference);
+        complete &&= item.packet.part.complete;
       } finally {
         drop(source.read);
       }
     }
-    if (ready.length) {
-      check();
-      cache.setPreparedRoot(
-        issuePreparedKnowledgeRootCandidates(events.evidence, ready, {
-          maxBytes: cache.maxPreparedRootBytes,
-        }),
-      );
+    check();
+    params.signal?.throwIfAborted();
+    if (cache.consumptionRevision !== epoch) {
+      return false;
     }
+    publishPreparedConversationKnowledgeRoot({
+      evidence: events.evidence,
+      receipts: current,
+      cache,
+    });
+    return complete;
   } finally {
     release();
   }

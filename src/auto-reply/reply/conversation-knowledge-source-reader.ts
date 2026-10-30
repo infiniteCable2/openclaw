@@ -55,7 +55,10 @@ import {
   prepareConversationKnowledgeBranchFacts,
   unavailableConversationKnowledge,
 } from "./conversation-knowledge-authority.js";
-import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
+import type {
+  ConversationKnowledgeSourceCache,
+  PreparedConversationKnowledgePacket,
+} from "./conversation-knowledge-source-cache.js";
 import { logConversationKnowledgeTransfer } from "./conversation-knowledge-status.js";
 
 export type ConversationKnowledgeHeldSource = {
@@ -368,8 +371,16 @@ export async function observePreparedConversationKnowledgePackets(params: {
   const byId = new Map(
     params.receipts.map((receipt) => [conversationKnowledgeContributionId(receipt), receipt]),
   );
+  const order = new Map([...byId.keys()].map((id, index) => [id, index]));
   const candidates = params.cache
-    .preparedPackets(MAX_TRANSCRIPT_REPORT_BATCH_SIZE)
+    .preparedPackets(Number.MAX_SAFE_INTEGER)
+    .filter((slot) => byId.has(slot.contributionId))
+    .sort(
+      (left, right) =>
+        order.get(left.contributionId)! - order.get(right.contributionId)! ||
+        left.offset - right.offset,
+    )
+    .slice(0, MAX_TRANSCRIPT_REPORT_BATCH_SIZE)
     .flatMap((slot) => {
       const receipt = byId.get(slot.contributionId);
       if (!receipt) {
@@ -565,6 +576,20 @@ export function createConversationKnowledgeSourceReader(params: {
     throw new SessionTranscriptReadFenceError("Conversation source range is no longer verified");
   };
   return {
+    async validate(source: PreparedSource, staged: PreparedConversationKnowledgePacket) {
+      const { validatePreparedConversationKnowledgeSource } =
+        await import("./conversation-knowledge-source-validation.js");
+      return validatePreparedConversationKnowledgeSource({
+        ...source,
+        staged,
+        assertCurrent: composeSessionSourceAssertion([
+          params.assertCurrent,
+          targetFacts.assertCurrent,
+        ]),
+        signal: params.signal,
+        readyOnly: params.readyOnly,
+      });
+    },
     async stage(input: {
       source: PreparedSource;
       receipt: ConversationKnowledgeReference;

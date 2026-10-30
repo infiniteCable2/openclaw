@@ -189,6 +189,7 @@ async function prepareReplyConversationKnowledgeInMode(
     let preparationSaturated = false;
     let sources = 0;
     let batchBlocked = false;
+    let preparingRead: ConversationKnowledgeHeldSource | undefined;
     const committedReads = new Set<(typeof reads)[number]>();
     const queuedPackets: Array<{
       admission: ConversationKnowledgePacketAdmission;
@@ -211,6 +212,7 @@ async function prepareReplyConversationKnowledgeInMode(
               packets: batch.slice(0, count).map(({ admission }) => admission),
               signal: params.signal,
               contextLimits: params.retainInHistory?.contextLimits,
+              expectedTranscriptVersion: params.retainInHistory?.expectedTranscriptVersion,
             }),
         )
         .catch((error: unknown) => {
@@ -264,7 +266,25 @@ async function prepareReplyConversationKnowledgeInMode(
           gap(admission.receipt, "admission-deferred");
         }
       }
-      return !firstMissing;
+      if (params.readyOnly) {
+        // Keep the current source through its remaining packets; other ready
+        // grants need custody only until this exact native batch has settled.
+        for (const read of new Set(batch.map((packet) => packet.read))) {
+          if (read !== preparingRead) {
+            drop(read);
+          }
+        }
+      }
+      // An idle snapshot authorizes one native commit only. Mixed existing and
+      // missing carriers may otherwise split a batch around an existing entry
+      // and attempt a second write against our own now-obsolete version.
+      const committedSnapshot =
+        params.retainInHistory.expectedTranscriptVersion !== undefined && result.accepted > 0;
+      if (committedSnapshot) {
+        batchBlocked = true;
+        pendingPackets ||= Boolean(params.sourceCache?.preparedPackets(1).length);
+      }
+      return !firstMissing && !committedSnapshot;
     };
     const receipts = selectConversationKnowledgeReceipts(
       events,
@@ -361,8 +381,8 @@ async function prepareReplyConversationKnowledgeInMode(
         gap(receipt, "source-access-unavailable");
         continue;
       }
-      const { read, grant, sourceAssertion, projectionTarget, through, from, facts } =
-        preparedSource;
+      const { read, grant, sourceAssertion, through, from, facts } = preparedSource;
+      preparingRead = read;
       const loadProjection = () =>
         sourceReader.load(
           preparedSource,
@@ -378,37 +398,7 @@ async function prepareReplyConversationKnowledgeInMode(
         params.readyOnly && stagedOffset !== undefined
           ? params.sourceCache?.peek(contributionId, stagedOffset)
           : undefined;
-      let stagedValid = false;
-      if (
-        staged &&
-        isDeepStrictEqual(staged.through, through) &&
-        isDeepStrictEqual(staged.from, from)
-      ) {
-        const { readSessionTranscriptAnchorsAsync } =
-          await import("../../config/sessions/session-transcript-anchor-read.js");
-        await readSessionTranscriptAnchorsAsync(
-          projectionTarget,
-          {
-            entryIds: [],
-            contextValidation: { version: staged.version, through, from },
-          },
-          params.signal,
-          (anchorFacts) => {
-            sourceAssertion();
-            stagedValid = anchorFacts.contextValidated === true;
-          },
-        ).catch((error: unknown) => {
-          params.assertCurrent();
-          targetFacts.assertCurrent();
-          params.signal?.throwIfAborted();
-          if (
-            !(error instanceof SessionTranscriptReadFenceError) &&
-            !(params.readyOnly && error instanceof SessionMutationFactsUnavailableError)
-          ) {
-            throw error;
-          }
-        });
-      }
+      const stagedValid = staged && (await sourceReader.validate(preparedSource, staged));
       if (staged && !stagedValid) {
         params.sourceCache?.invalidateContribution(contributionId);
         pendingPackets = true;
@@ -620,11 +610,13 @@ async function prepareReplyConversationKnowledgeInMode(
           break;
         }
       }
-      if (params.retainInHistory && params.readyOnly) {
-        // Foreground ready-only reads must retain their grant until their packets commit.
-        await flushPackets();
-      }
-      if (!contributed || (params.retainInHistory && params.readyOnly)) {
+      preparingRead = undefined;
+      if (
+        !contributed ||
+        (params.retainInHistory &&
+          params.readyOnly &&
+          !queuedPackets.some((packet) => packet.read === read))
+      ) {
         drop(read);
       }
       if (batchBlocked) {

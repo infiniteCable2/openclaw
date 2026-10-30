@@ -186,10 +186,16 @@ storage-fact unavailability retries preparation instead of settling a source as 
 
 The root remains the authoritative source-reference ledger. Prepared segments are
 a rebuildable view, not a second root, durable admission receipt, or guarantee
-that a model has seen every contribution. Idle recipient preparation does not
-acquire the model session lane, write recipient history, compact dialogue, or
-send a response. A new opening rebuilds disposable preparation from the existing
-root and durable packet receipts.
+that a model has seen every contribution. Source preparation is read-only. After
+a real native request supplies its prepared system/tool budget, separate idle
+maintenance may retain one ready native packet batch under the session lane.
+It checks the exact recipient version and current source permissions at commit,
+yields to foreground input, and never starts inference or compaction. Missing
+budget, changed configuration, another writer or insufficient capacity leaves
+the observations prepared for a later safe boundary. Native owner availability
+and selected donor changes schedule retries without polling or a new user turn.
+A new opening rebuilds disposable preparation from the existing root and durable
+packet receipts.
 
 Root checkpoints bound the context offered to new branches. A separate background
 owner prepares an audience-scoped summary when the projected context reaches the

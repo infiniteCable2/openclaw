@@ -28,6 +28,8 @@ type PrefetchTarget = {
 export function createConversationKnowledgePrefetchOwner(params: {
   target: PrefetchTarget;
   assertCurrent(): void;
+  /** Scheduling hints only; each selected source still needs current native authority. */
+  watchesSource?(sessionKey: string): boolean;
   /** True continues disposable read-ahead; it is not a new root/input notification. */
   prepare(signal: AbortSignal): Promise<void | boolean>;
   /** Native background capacity owner; slow summarization must not occupy source read-ahead. */
@@ -299,7 +301,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
         "sessionKey" in change &&
         change.scope === "session-entry" &&
         change.agentId === target.agentId &&
-        change.sessionKey === target.sessionKey &&
+        (change.sessionKey === target.sessionKey || params.watchesSource?.(change.sessionKey)) &&
         change.storePath &&
         path.resolve(change.storePath) === target.storePath
       ) {

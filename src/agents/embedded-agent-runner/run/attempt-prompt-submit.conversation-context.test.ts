@@ -22,11 +22,40 @@ import { SettingsManager } from "../../sessions/settings-manager.js";
 import { clearEmbeddedSessionPromptStates } from "../session-prompt-state.js";
 import { submitEmbeddedAttemptPrompt } from "./attempt-prompt-submit.js";
 import { createBaseInput, createSession, sessionId } from "./attempt-prompt-submit.test-support.js";
+import { capturePreparedConversationContextBudget } from "./prepared-conversation-context.js";
 
 registerAgentSessionLoopTestLifecycle();
 afterEach(() => clearEmbeddedSessionPromptStates([sessionId]));
 
 describe("prepared conversation context dispatch", () => {
+  it("issues its native prompt footprint before any quiet-boundary packet reservation", async () => {
+    const { session } = await createTestSession();
+    let observedBudget: ReturnType<typeof capturePreparedConversationContextBudget>;
+    streamMocks.streamSimple.mockImplementation((model) =>
+      createAssistantResultStream(createAssistant(model, [{ type: "text", text: "done" }])),
+    );
+    await submitEmbeddedAttemptPrompt({
+      ...createBaseInput(),
+      activeSession: session,
+      compactionRequestBudget: createCompactionRequestBudget({
+        contextWindow: 8_000,
+        reserveTokens: 1_024,
+      }),
+      refreshConversationContext: async ({ canAdmit }) => {
+        observedBudget = capturePreparedConversationContextBudget(canAdmit);
+        return [];
+      },
+      promptActiveSession: (prompt, options) => session.prompt(prompt, options),
+    });
+    expect(observedBudget).toBeDefined();
+    expect(observedBudget?.reserveTokens).toBe(1_024);
+    expect(observedBudget?.modelIdentity).toEqual({
+      provider: testModel.provider,
+      model: testModel.id,
+    });
+    expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+  });
+
   it("silently installs durable observations only at existing model dispatches", async () => {
     const read = vi.fn(async () => ({
       content: [{ type: "text" as const, text: "Current status" }],

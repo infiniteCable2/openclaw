@@ -231,6 +231,7 @@ export async function retainConversationKnowledgePackets(params: {
   packets: readonly ConversationKnowledgePacketAdmission[];
   signal?: AbortSignal;
   contextLimits?: { maxBytes: number; maxEvents: number };
+  expectedTranscriptVersion?: SessionTranscriptContextVersion;
 }): Promise<{ accepted: number; appended: number; deferred: boolean; packetIds: string[] }> {
   params.signal?.throwIfAborted();
   const custody = params.packets.map((packet) =>
@@ -349,6 +350,7 @@ export async function retainConversationKnowledgePackets(params: {
     })),
     {
       source,
+      expectedTranscriptVersion: params.expectedTranscriptVersion,
       ...(params.contextLimits
         ? {
             contextAdmission: {

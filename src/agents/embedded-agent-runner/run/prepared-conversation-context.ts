@@ -7,6 +7,25 @@ import {
 } from "../../sessions/context-token-pressure.js";
 import { convertToLlm, type CustomMessage } from "../../sessions/messages.js";
 
+export type PreparedConversationContextBudget = Readonly<{
+  contextWindow: number;
+  reserveTokens: number;
+  modelIdentity?: Readonly<{ provider: string; model: string }>;
+  capacityForMessages(messages: AgentMessage[]): (message: CustomMessage) => boolean;
+}>;
+
+const issuedBudgets = new WeakMap<
+  (message: CustomMessage) => boolean,
+  PreparedConversationContextBudget
+>();
+
+/** Only a real native request can supply its prepared system/tool footprint for idle reuse. */
+export function capturePreparedConversationContextBudget(
+  capacity: (message: CustomMessage) => boolean,
+): PreparedConversationContextBudget | undefined {
+  return issuedBudgets.get(capacity);
+}
+
 /** Reserve optional additions without compacting or displacing the foreground request. */
 export function createConversationContextCapacity(params: {
   messages: AgentMessage[];
@@ -14,24 +33,39 @@ export function createConversationContextCapacity(params: {
   tools?: readonly { name: string; description: string; parameters: unknown }[];
   contextWindow: number;
   reserveTokens: number;
+  modelIdentity?: { provider: string; model: string };
 }): (message: CustomMessage) => boolean {
   const estimate = createFreshLlmBoundaryTokenEstimator(params);
-  let reservedTokens = estimate({ messages: params.messages, prompt: "" });
   const limit = params.contextWindow - params.reserveTokens;
-  return (message) => {
-    // Round each marginal addition upward; never round away previously reserved capacity.
-    const additionalTokens = Math.ceil(
-      convertToLlm([message]).reduce(
-        (tokens, projected) => tokens + estimateMessageTokenPressure(projected),
-        0,
-      ) * SAFETY_MARGIN,
-    );
-    if (reservedTokens + additionalTokens > limit) {
-      return false;
-    }
-    reservedTokens += additionalTokens;
-    return true;
-  };
+  // The estimator has already captured numeric system/tool overhead. The budget
+  // retains neither mutable tool definitions nor a previous conversation array.
+  const budget: PreparedConversationContextBudget = Object.freeze({
+    contextWindow: params.contextWindow,
+    reserveTokens: params.reserveTokens,
+    ...(params.modelIdentity ? { modelIdentity: Object.freeze({ ...params.modelIdentity }) } : {}),
+    capacityForMessages(messages: AgentMessage[]) {
+      let reservedTokens: number | undefined;
+      const capacity = (message: CustomMessage) => {
+        // Issuing a reusable footprint does not scan a quiet request's history.
+        reservedTokens ??= estimate({ messages, prompt: "" });
+        // Round each marginal addition upward; never round away reserved capacity.
+        const additionalTokens = Math.ceil(
+          convertToLlm([message]).reduce(
+            (tokens, projected) => tokens + estimateMessageTokenPressure(projected),
+            0,
+          ) * SAFETY_MARGIN,
+        );
+        if (reservedTokens + additionalTokens > limit) {
+          return false;
+        }
+        reservedTokens += additionalTokens;
+        return true;
+      };
+      issuedBudgets.set(capacity, budget);
+      return capacity;
+    },
+  });
+  return budget.capacityForMessages(params.messages);
 }
 
 function samePacket(left: AgentMessage, right: CustomMessage): boolean {

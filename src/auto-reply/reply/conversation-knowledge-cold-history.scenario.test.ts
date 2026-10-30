@@ -13,6 +13,7 @@ import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
 } from "../../config/sessions/conversation-knowledge-packets.js";
+import * as knowledgePackets from "../../config/sessions/conversation-knowledge-packets.js";
 import * as knowledgeSeed from "../../config/sessions/conversation-knowledge-seed.js";
 import {
   readConversationKnowledgeBranch,
@@ -86,6 +87,15 @@ it.for([
     const stages: Array<Record<string, string | number | boolean>> = [];
     const preparationFailures: Array<{ name: string; message: string }> = [];
     const preparationOutcomes: Array<Record<string, boolean | number>> = [];
+    const nativeBatchSizes: number[] = [];
+    const retainPackets = knowledgePackets.retainConversationKnowledgePackets;
+    const retention = vi
+      .spyOn(knowledgePackets, "retainConversationKnowledgePackets")
+      .mockImplementation((params) => {
+        nativeBatchSizes.push(params.packets.length);
+        return retainPackets(params);
+      });
+    onTestFinished(() => retention.mockRestore());
     const mark = (stage: string, counts: Record<string, number | boolean> = {}) => {
       phase = stage;
       stages.push({ stage, elapsedMs: Math.round(performance.now() - started), ...counts });
@@ -95,6 +105,27 @@ it.for([
         { scenario: "minimal", label: "knowledge-cold-history-simulation" },
         async (state) => {
           const fixture = await createConversationKnowledgeScenario(state);
+          fixture.cfg.agents!.defaults = { model: { primary: "synthetic/cold-model" } };
+          fixture.cfg.models = {
+            providers: {
+              synthetic: {
+                baseUrl: "https://model.example.invalid",
+                api: "openai-completions",
+                models: [
+                  {
+                    id: "cold-model",
+                    name: "Synthetic context budget",
+                    reasoning: false,
+                    input: ["text"],
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                    contextWindow: 1_000_000,
+                    maxTokens: 16_384,
+                  },
+                ],
+              },
+            },
+          };
+          await state.writeConfig(fixture.cfg);
           let checkpoint:
             | ReturnType<typeof registerConversationKnowledgeCheckpointOwner>
             | undefined;
@@ -270,6 +301,7 @@ it.for([
               sourceCache: recipient.cache,
               preparationOnly: true,
               sourceBudget: 1,
+              sourceCursor: conversationKnowledgeContributionId(projection.tail.at(-1)!.reference),
             });
             partial?.release();
             expect(recipient.cache.preparedPackets(originalCount + 1)).toHaveLength(1);
@@ -303,7 +335,12 @@ it.for([
             const followupRun = createMockFollowupRun({
               conversationParticipant: person,
               conversationAudience: audience,
-              run: { ...nativeTarget, config: fixture.cfg },
+              run: {
+                ...nativeTarget,
+                config: fixture.cfg,
+                provider: "synthetic",
+                model: "cold-model",
+              },
             });
             const admission = prepareAgentRunAdmission({
               cfg: fixture.cfg,
@@ -399,6 +436,14 @@ it.for([
               prospectiveModelOriginals: countMarkers(messages),
             });
             expect.soft(countMarkers(messages)).toBe(originalCount);
+            expect(
+              firstBoundary.map((message) => asOptionalRecord(message.details)?.contributionId),
+            ).toEqual(
+              projection.tail.map(({ reference }) =>
+                conversationKnowledgeContributionId(reference),
+              ),
+            );
+            expect(Math.max(...nativeBatchSizes)).toBeGreaterThan(1);
 
             resumeRecipient();
             resumeRecipient = () => {};
@@ -497,6 +542,7 @@ it.for([
           stages,
           preparationFailures,
           preparationOutcomes,
+          nativeBatchSizes,
           elapsedMs: Math.round(performance.now() - started),
           cpuMicroseconds: process.cpuUsage(cpu),
           processLifetimePeakRssKiB: process.resourceUsage().maxRSS,

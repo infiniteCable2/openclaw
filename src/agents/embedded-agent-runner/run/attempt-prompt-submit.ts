@@ -244,21 +244,17 @@ export async function submitEmbeddedAttemptPrompt(input: {
       }
       if (foregroundRequest && conversationProjection && input.refreshConversationContext) {
         const boundary = conversationProjection.capture();
-        let capacity: ReturnType<typeof createConversationContextCapacity> | undefined;
-        const canAdmit = (message: CustomMessage) => {
-          const budget = input.compactionRequestBudget;
-          if (!budget) {
-            return false;
-          }
-          // Most boundaries have no new prepared packets. Do not rescan the
-          // request until a producer actually asks to reserve an addition.
-          capacity ??= createConversationContextCapacity({
-            ...requestContext,
-            contextWindow: input.contextTokenBudget,
-            reserveTokens: budget.reserveTokens,
-          });
-          return capacity(message);
-        };
+        // Issue the native numeric footprint even on a quiet boundary. Its
+        // history scan stays lazy, and idle maintenance can reuse the same
+        // system/tool costs without retaining these definitions or run grants.
+        const canAdmit = input.compactionRequestBudget
+          ? createConversationContextCapacity({
+              ...requestContext,
+              contextWindow: input.contextTokenBudget,
+              reserveTokens: input.compactionRequestBudget.reserveTokens,
+              modelIdentity: { provider: model.provider, model: model.id },
+            })
+          : () => false;
         try {
           // The recipient's current native writer commits only prepared packets.
           // This boundary never waits for source hydration or starts compaction.

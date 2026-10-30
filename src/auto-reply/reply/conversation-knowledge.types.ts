@@ -54,5 +54,7 @@ export type ReplyConversationKnowledgeParams = {
   retainInHistory?: ConversationKnowledgeIngestionMaintenance & {
     /** Native writer selector; physical read provenance does not grant write custody. */
     writeTarget: BoundAgentRunSessionTarget;
+    /** Idle admission compares its exact budgeted recipient snapshot before any batch writes. */
+    expectedTranscriptVersion?: import("../../config/sessions/session-transcript-context-version.types.js").SessionTranscriptContextVersion;
   };
 };
