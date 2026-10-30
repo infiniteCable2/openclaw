@@ -22,7 +22,7 @@ import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
 
 type Model = Awaited<ReturnType<typeof startConversationModel>>;
 
-function config(model: Model): OpenClawConfig {
+function config(model: Model, mode: "native" | "branches" = "native"): OpenClawConfig {
   const provider = buildMockOpenAiResponsesProvider(model.baseUrl, "bidirectional-proof");
   return {
     gateway: {
@@ -49,7 +49,7 @@ function config(model: Model): OpenClawConfig {
     },
     logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
     agents: {
-      entries: { main: { conversationMode: "branches", skills: [] } },
+      entries: { main: { conversationMode: mode, skills: [] } },
       defaults: {
         maxConcurrent: 2,
         model: { primary: provider.modelRef, fallbacks: [] },
@@ -98,6 +98,7 @@ async function homeserver(signal: AbortSignal) {
   const sends: string[] = [];
   const errors: string[] = [];
   let syncCount = 0;
+  let firstSync = true;
   const state = [BOT, HUMAN].map((user) => ({
     type: "m.room.member",
     state_key: user,
@@ -107,6 +108,7 @@ async function homeserver(signal: AbortSignal) {
     origin_server_ts: Date.now(),
   }));
   const sync = (response: import("node:http").ServerResponse, first: boolean) => {
+    firstSync = false;
     response.writeHead(200, { "content-type": "application/json" }).end(
       JSON.stringify({
         next_batch: "batch-" + ++syncCount,
@@ -133,8 +135,8 @@ async function homeserver(signal: AbortSignal) {
       const path = decodeURIComponent(url.pathname);
       requests.push((request.method ?? "") + " " + path);
       if (path.endsWith("/sync")) {
-        if (syncCount === 0 || events.length) {
-          sync(response, syncCount === 0);
+        if (firstSync || events.length) {
+          sync(response, firstSync);
         } else {
           pending.add(response);
           response.on("close", () => pending.delete(response));
@@ -148,6 +150,10 @@ async function homeserver(signal: AbortSignal) {
         body = { user_id: BOT, device_id: "SYNTHETIC" };
       } else if (path.endsWith("/joined_rooms")) {
         body = { joined_rooms: [ROOM] };
+      } else if (path.endsWith("/rtc/transports")) {
+        body = { rtc_transports: [] };
+      } else if (path.includes("/state/m.room.member/")) {
+        body = state.find((entry) => path.endsWith(entry.state_key))?.content ?? {};
       } else if (path.endsWith("/joined_members")) {
         body = {
           joined: Object.fromEntries([BOT, HUMAN].map((user) => [user, { display_name: user }])),
@@ -212,6 +218,9 @@ async function homeserver(signal: AbortSignal) {
   }
   return {
     url: "http://127.0.0.1:" + claim.port,
+    beginConnection() {
+      firstSync = true;
+    },
     sends,
     errors,
     requests,
@@ -323,7 +332,19 @@ it("observes real Matrix ingress and the provider-bound current request without 
         interval: 50,
       });
       const reports = [];
-      for (const index of [1, 2]) {
+      for (const index of [1, 2, 3, 4]) {
+        if (index === 3) {
+          await gateway.stopGateway();
+          selected.agents!.entries!.main!.conversationMode = "branches";
+          await gateway.state.writeConfig(selected);
+          const previousSyncs = matrix.syncCount;
+          matrix.beginConnection();
+          await gateway.startGateway();
+          await vi.waitFor(() => expect(matrix!.syncCount).toBeGreaterThan(previousSyncs), {
+            timeout: 30_000,
+            interval: 50,
+          });
+        }
         const marker = "CURRENT_MATRIX_FULL_PAYLOAD_" + index;
         const before = model.requests.length;
         const event = matrix.push(marker, index);
@@ -338,6 +359,9 @@ it("observes real Matrix ingress and the provider-bound current request without 
         expect(matrix.sends[index - 1]).toContain("FIXTURE_REPLY_" + (before + 1));
         const input = model.requests[before]!;
         const text = strings([input.instructions, input.input]).join("\n");
+        if (index === 3) {
+          expect(text.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1).toBe(1);
+        }
         const runtime = Array.from(
           text.matchAll(/OpenClaw runtime context:\n([\s\S]*?)End OpenClaw runtime context\./gu),
           (match) => match[1] ?? "",
@@ -351,6 +375,7 @@ it("observes real Matrix ingress and the provider-bound current request without 
         }
         reports.push({
           index,
+          mode: index < 3 ? "native" : "branches",
           currentCopies: text.split(marker).length - 1,
           currentCopiesInRuntime: runtime.split(marker).length - 1,
           currentMessageIdCopies: text.split(event.id).length - 1,
@@ -381,4 +406,4 @@ it("observes real Matrix ingress and the provider-bound current request without 
     () => matrix?.stop(),
     () => model?.stop(),
   );
-}, 180_000);
+}, 240_000);
