@@ -200,6 +200,7 @@ async function retain(selected: Scope) {
         writeTarget: selected,
         maintainContext: async (source) => {
           source();
+          return { compacted: false, complete: true, canAdmitPending: true };
         },
       },
     });

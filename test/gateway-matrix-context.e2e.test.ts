@@ -433,6 +433,7 @@ it.each(["native", "branches"] as const)(
           expect(report.runtimeCarriers).toBeGreaterThan(0);
           expect(report.currentTimestampInRuntime).toBe(true);
           expect(report.currentCopies).toBe(1);
+          expect(report.currentMessageIdCopies).toBe(1);
           expect(report.currentCopiesInRuntime).toBe(0);
           expect(report.previousCopies).toEqual(Array(report.index - 1).fill(1));
           if (report.index === 3) {
