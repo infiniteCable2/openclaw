@@ -55,23 +55,28 @@ function fixture() {
     },
     lifecycleTimestamps: {},
   };
-  const read = vi.fn<SessionEntryCohortReader["withRead"]>(
-    async (_request, assertCurrent, consume) => {
-      assertCurrent();
-      return consume(facts, assertCurrent);
-    },
-  );
+  const read = vi.fn();
   const reader: SessionEntryCohortReader = {
     database: { agentId: branch.agentId, path: branch.storePath, env: {} },
     sessionKey: branch.sessionKey,
     logicalAgentId: branch.agentId,
     storePaths: [branch.storePath],
     assertCurrent: () => {},
-    withRead: read,
+    async withRead(request, assertCurrent, consume) {
+      read(request);
+      assertCurrent();
+      return consume(facts, assertCurrent);
+    },
   };
   const stage = () =>
     cache.stage("synthetic-contribution", 0, {
-      part: { origin: "synthetic-source", text: "Prepared fact.", complete: true },
+      part: {
+        origin: "synthetic-source",
+        text: "Prepared fact.",
+        complete: true,
+        nextOffset: undefined,
+        frontier: undefined,
+      },
       version: { generation: "source-generation", rawSeq: 1, updatedAt: 1 },
       through: {
         ...branch,

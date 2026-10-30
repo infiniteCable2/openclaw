@@ -22,7 +22,10 @@ import { withSessionTranscriptWriteAssertion } from "../../config/sessions/trans
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
+import {
+  createConversationKnowledgeSourceCache,
+  type ConversationKnowledgeSourceCache,
+} from "./conversation-knowledge-source-cache.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
 import {
   createConversationKnowledgeScenario,
@@ -44,7 +47,7 @@ it.for([
       async (state) => {
         const fixture = await createConversationKnowledgeScenario(state);
         const cache = createConversationKnowledgeSourceCache();
-        let auxiliaryCache: ReturnType<typeof createConversationKnowledgeSourceCache> | undefined;
+        let auxiliaryCache: ConversationKnowledgeSourceCache | undefined;
         let closed = false;
         const close = async () => {
           if (!closed) {
