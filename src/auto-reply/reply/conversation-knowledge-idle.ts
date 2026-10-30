@@ -128,7 +128,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                           (row) => row.sessionKey === branch.sessionKey,
                         )?.entry;
                         if (!isIdleEntry(entry, branch)) {
-                          return;
+                          throw createAbortError("Idle conversation recipient has an active owner");
                         }
                         const expected = structuredClone(entry);
                         source = composeSessionSourceAssertion([

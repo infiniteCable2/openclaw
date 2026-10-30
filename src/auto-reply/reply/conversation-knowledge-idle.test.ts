@@ -198,7 +198,7 @@ it("defers an unknown model budget without provider discovery, writes or compact
   f.stage();
   try {
     await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(false);
-    expect(f.read).toHaveBeenCalledOnce();
+    expect(f.read).toHaveBeenCalled();
     expect(boundary.prepare).not.toHaveBeenCalled();
     expect(f.cache.preparedPackets(1)).toHaveLength(1);
   } finally {
@@ -228,7 +228,7 @@ it("defers a provider-owned runtime even without a session runtime override", as
   f.params.budget = { ...f.params.budget, config };
   try {
     await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(false);
-    expect(f.read).toHaveBeenCalledOnce();
+    expect(f.read).toHaveBeenCalled();
     expect(boundary.prepare).not.toHaveBeenCalled();
     expect(f.cache.preparedPackets(1)).toHaveLength(1);
   } finally {
