@@ -104,6 +104,8 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
   }
   const assertCurrent = composeSessionSourceAssertion([params.assertCurrent, owner.assertCurrent]);
   const before = sourceCache.consumptionRevision;
+  const preparedBefore = sourceCache.diagnosticCapacity().preparedPackets;
+  const checkpointBefore = sourceCache.preparedCheckpoint;
   try {
     await owner.track(
       owner.run(() =>
@@ -262,7 +264,12 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                     });
                     check();
                     const prepared = await prepareReplyConversationKnowledge({
-                      ...params,
+                      reader,
+                      sourceCache,
+                      originalParticipant: params.originalParticipant,
+                      destinationAudience: params.destinationAudience,
+                      expectedAudienceIdentity: params.expectedAudienceIdentity,
+                      getRuntimeConfig: params.getRuntimeConfig,
                       sessionId: branch.sessionId,
                       signal: owner.signal,
                       assertCurrent: check,
@@ -309,5 +316,12 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
       throw error;
     }
   }
-  return sourceCache.consumptionRevision !== before;
+  // A failed native CAS can retire prepared packets without consuming history.
+  // Let the existing owner reprepare that lost work once; ordinary metadata
+  // publication and an unchanged over-budget queue must not create a retry loop.
+  return (
+    sourceCache.consumptionRevision !== before ||
+    sourceCache.diagnosticCapacity().preparedPackets < preparedBefore ||
+    (checkpointBefore !== undefined && sourceCache.preparedCheckpoint === undefined)
+  );
 }

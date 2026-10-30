@@ -30,6 +30,8 @@ import {
   replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import * as reportStorage from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
@@ -475,6 +477,49 @@ it.for([
             await withinTest(recipient.owner.wait(), signal);
             mark("idle-baseline-settled", { admitted: (await packets()).length });
 
+            // The small case also races a real SDK append against the first idle
+            // COMMIT. Recovery must restage itself without a new user/model turn.
+            let idleVersionRaced = false;
+            const interveningText = "Synthetic SDK input during idle admission.";
+            if (donorCount === 3) {
+              const nativeAppend = reportStorage.appendSessionTranscriptReportBatch;
+              const race = vi
+                .spyOn(reportStorage, "appendSessionTranscriptReportBatch")
+                .mockImplementation((scope, reports, options) => {
+                  const source = options?.source;
+                  if (
+                    !source?.prepareSessionSource ||
+                    !reports.every(
+                      (report) => report.report.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
+                    )
+                  ) {
+                    return nativeAppend(scope, reports, options);
+                  }
+                  const guarded: SessionSourceAssertion = Object.assign(() => source(), {
+                    async prepareSessionSource() {
+                      const prepared = await source.prepareSessionSource!();
+                      if (!idleVersionRaced) {
+                        idleVersionRaced = true;
+                        await withSessionTranscriptWriteAssertion(
+                          { ...target, expectedLifecycleRevision: target.lifecycleRevision },
+                          owner.assertCurrent,
+                          () =>
+                            appendTranscriptMessage(target, {
+                              message: {
+                                role: "user",
+                                content: interveningText,
+                                timestamp: Date.now(),
+                              },
+                            }),
+                        );
+                      }
+                      return prepared;
+                    },
+                  });
+                  return nativeAppend(scope, reports, { ...options, source: guarded });
+                });
+              onTestFinished(() => race.mockRestore());
+            }
             // Reuse the same idle recipient. Only committed source observations
             // trigger its existing background owners; no synthetic user turn runs.
             const liveIds: string[] = [];
@@ -520,10 +565,18 @@ it.for([
               admitted: admittedLive,
               expected: 2,
             });
-            expect(preparedLive).toBe(2);
+            expect(preparedLive).toBe(0);
             // Desired regression: existing silent recipients need an idle native
             // admission point; readiness alone is not completed synchronization.
             expect.soft(admittedLive).toBe(2);
+            if (donorCount === 3) {
+              expect(idleVersionRaced).toBe(true);
+              const matching = (await loadTranscriptEvents(target)).filter((event) => {
+                const message = asOptionalRecord(asOptionalRecord(event)?.message);
+                return message?.role === "user" && message.content === interveningText;
+              });
+              expect(matching).toHaveLength(1);
+            }
             expect(model.compact).not.toHaveBeenCalled();
             expect(model.summarize).not.toHaveBeenCalled();
           } finally {

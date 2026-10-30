@@ -14,10 +14,19 @@ import type { prepareReplyConversationKnowledge } from "./conversation-knowledge
 
 const boundary = vi.hoisted(() => ({
   prepare: vi.fn<typeof prepareReplyConversationKnowledge>(),
+  context: vi.fn(),
 }));
 // mock-isolation: Admission guards must defer before any source discovery or database write.
 vi.mock("./conversation-knowledge.js", () => ({
   prepareReplyConversationKnowledge: boundary.prepare,
+}));
+// mock-isolation: The positive orchestration case supplies a canonical snapshot;
+// actual physical context fencing and durable writes run in the native SQLite scenario.
+vi.mock("../../config/sessions/session-transcript-context-read.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../config/sessions/session-transcript-context-read.js")
+  >()),
+  readSessionTranscriptContextProjectionAsync: boundary.context,
 }));
 
 const branch = {
@@ -118,6 +127,7 @@ function fixture() {
 
 beforeEach(() => {
   boundary.prepare.mockReset();
+  boundary.context.mockReset();
 });
 
 afterEach(async () => {
@@ -148,6 +158,69 @@ it("prepares only when no native request has issued a reusable budget", async ()
     f.cache.clear();
   }
 });
+
+it.each(["consume", "invalidate", "unchanged"] as const)(
+  "does not forward preparation-only mode and continues only after changed work (%s)",
+  async (outcome) => {
+    const f = fixture();
+    f.stage();
+    const config = f.params.getRuntimeConfig();
+    config.models = {
+      providers: {
+        "synthetic-idle-provider": {
+          baseUrl: "https://provider.example.test/v1",
+          api: "openai-completions",
+          models: [
+            {
+              id: "unknown-model",
+              name: "Synthetic idle budget",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 100_000,
+              maxTokens: 10_000,
+            },
+          ],
+        },
+      },
+    };
+    const version = { generation: "recipient-generation", rawSeq: 1, updatedAt: 1 };
+    boundary.context.mockResolvedValue({ messages: [], version });
+    boundary.prepare.mockImplementation(async (input) => {
+      input.assertCurrent();
+      if (!input.preparationOnly) {
+        if (outcome === "consume") {
+          f.cache.consume("synthetic-contribution", 0);
+        } else if (outcome === "invalidate") {
+          f.cache.invalidateContribution("synthetic-contribution");
+        }
+      }
+      return undefined;
+    });
+    // Structural parameter types do not remove additional properties at runtime.
+    const preparation = { ...f.params, preparationOnly: true };
+    try {
+      await expect(admitPreparedConversationKnowledgeWhileIdle(preparation)).resolves.toBe(
+        outcome !== "unchanged",
+      );
+      expect(boundary.prepare).toHaveBeenCalledOnce();
+      expect(boundary.prepare.mock.calls[0]![0]).not.toHaveProperty("preparationOnly");
+      expect(boundary.prepare.mock.calls[0]![0]).toMatchObject({
+        readyOnly: true,
+        retainInHistory: { expectedTranscriptVersion: version },
+      });
+      expect(f.cache.consumptionRevision).toBe(outcome === "consume" ? 1 : 0);
+      expect(f.cache.preparedPackets(1)).toHaveLength(outcome === "unchanged" ? 1 : 0);
+      if (outcome !== "unchanged") {
+        boundary.prepare.mockClear();
+        await expect(admitPreparedConversationKnowledgeWhileIdle(preparation)).resolves.toBe(false);
+        expect(boundary.prepare).not.toHaveBeenCalled();
+      }
+    } finally {
+      f.cache.clear();
+    }
+  },
+);
 
 it("does not reuse a prompt footprint across a published configuration change", async () => {
   const f = fixture();

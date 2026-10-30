@@ -270,7 +270,10 @@ it.for([
             const transcript = await loadTranscriptEvents(target);
             expect(JSON.stringify(transcript)).toContain(interveningText);
             expect(loadSessionEntry(target)?.activeWriterRunId).toBe(runId);
-            expect(cache.preparedPackets(count + 1)).toHaveLength(count);
+            // A refused batch invalidates disposable prepared source grants.
+            // The retry below must reprepare the exact originals and preserve
+            // the intervening user message, rather than reuse stale custody.
+            expect(cache.preparedPackets(count + 1)).toHaveLength(0);
           }
 
           if (race === "donor") {
