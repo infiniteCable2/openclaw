@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isMainThread } from "node:worker_threads";
 import { normalizeInternalTurnContext } from "../../auto-reply/internal-turn-source.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
@@ -648,7 +649,10 @@ export async function recordInboundSessionMeta(
       // evaluation relies on updatedAt from actual session turns.
       preserveActivity: true,
       workerGuard: {},
-      ...(createIfMissing ? { fallbackEntry: mergeSessionEntry(undefined, {}) } : {}),
+      // First ingress creates the generation before conversation activation can retain it.
+      ...(createIfMissing
+        ? { fallbackEntry: mergeSessionEntry(undefined, { lifecycleRevision: randomUUID() }) }
+        : {}),
     },
   );
 }
@@ -712,7 +716,9 @@ export async function updateSessionLastRouteInScope(
       preserveActivity: true,
       ...commitGuard,
       workerGuard: { ...routeGuard, ...commitGuard.workerGuard },
-      ...(createIfMissing ? { fallbackEntry: mergeSessionEntry(undefined, {}) } : {}),
+      ...(createIfMissing
+        ? { fallbackEntry: mergeSessionEntry(undefined, { lifecycleRevision: randomUUID() }) }
+        : {}),
     },
     scope.databaseAgentId,
   );

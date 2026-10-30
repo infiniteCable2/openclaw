@@ -1012,7 +1012,94 @@ describe("appendAssistantMessageToSessionTranscript", () => {
       expect.objectContaining({ role: "assistant", text: "ordinary assistant" }),
       expect.objectContaining({ role: "assistant", text: "scheduled result" }),
     ]);
+    await expect(
+      readRecentUserAssistantTextForSession({
+        ...params,
+        includeCronDirectDeliveryContext: true,
+        onlyCronDirectDeliveryContext: true,
+      }),
+    ).resolves.toEqual([expect.objectContaining({ role: "assistant", text: "scheduled result" })]);
+    await persistSessionTranscriptTurn(createFixtureTranscriptScope(), {
+      updateMode: "none",
+      messages: [
+        { eventId: "later-user", message: { role: "user", content: "later ordinary user" } },
+      ],
+    });
+    await expect(
+      readRecentUserAssistantTextForSession({
+        ...params,
+        limit: 1,
+        includeCronDirectDeliveryContext: true,
+        onlyCronDirectDeliveryContext: true,
+      }),
+    ).resolves.toEqual([]);
   });
+
+  it.each(["compaction", "reset"] as const)(
+    "does not restore ordinary history across a native %s boundary",
+    async (boundaryType) => {
+      await writeTranscriptStore();
+      const scope = createFixtureTranscriptScope();
+      await persistSessionTranscriptTurn(scope, {
+        updateMode: "none",
+        messages: [
+          transcriptMessage("old-user", null, {
+            role: "user",
+            content: "original already owned by model history",
+            timestamp: 1_000,
+          }),
+          transcriptMessage("old-assistant", "old-user", {
+            role: "assistant",
+            content: "original assistant answer",
+            timestamp: 2_000,
+          }),
+          transcriptMessage("excluded-user", "old-assistant", {
+            role: "user",
+            content: "explicitly excluded original",
+            excludeFromContext: true,
+            timestamp: 3_000,
+          }),
+        ],
+      });
+      await appendTranscriptEvent(scope, {
+        type: boundaryType,
+        id: "native-boundary",
+        parentId: "excluded-user",
+        timestamp: new Date(4_000).toISOString(),
+        ...(boundaryType === "compaction"
+          ? { summary: "Native summary", firstKeptEntryId: "native-boundary", tokensBefore: 100 }
+          : { reason: "new" }),
+      });
+      await appendAssistantMessageToSessionTranscript({
+        sessionKey,
+        storePath: fixture.storePath(),
+        text: "new scheduled delivery",
+        idempotencyKey: "post-boundary-cron",
+        deliveryMirror: { kind: CRON_DIRECT_DELIVERY_CONTEXT_KIND },
+      });
+      await expect(
+        readRecentUserAssistantTextForSession({
+          agentId: "main",
+          sessionKey,
+          storePath: fixture.storePath(),
+          includeCronDirectDeliveryContext: true,
+          onlyCronDirectDeliveryContext: true,
+          limit: 10,
+        }),
+      ).resolves.toEqual([
+        expect.objectContaining({ role: "assistant", text: "new scheduled delivery" }),
+      ]);
+      const originals = await loadTranscriptEvents(scope);
+      expect(originals).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "old-user" }),
+          expect.objectContaining({ id: "old-assistant" }),
+          expect.objectContaining({ id: "excluded-user" }),
+          expect.objectContaining({ id: "native-boundary" }),
+        ]),
+      );
+    },
+  );
 
   it("reads recent context only from the active transcript branch", async () => {
     await writeTranscriptStore();

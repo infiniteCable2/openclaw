@@ -124,6 +124,8 @@ export type SessionRecentConversationText = {
 type ReadRecentSessionConversationTextOptions = {
   beforeTimestampMs?: number;
   includeCronDirectDeliveryContext?: boolean;
+  /** Supplemental channel context must not replay ordinary model-history turns. */
+  onlyCronDirectDeliveryContext?: boolean;
   limit?: number;
   minTimestampMs?: number;
   role?: "user" | "assistant";
@@ -166,7 +168,7 @@ function parseAssistantTranscriptText(line: string): LatestAssistantTranscriptTe
 function extractRecentConversationText(
   event: TranscriptEvent,
   options: ReadRecentSessionConversationTextOptions = {},
-): SessionRecentConversationText | undefined {
+): { entry: SessionRecentConversationText; isCronDirectDeliveryContext: boolean } | undefined {
   const parsed = event as {
     id?: unknown;
     message?: unknown;
@@ -190,13 +192,15 @@ function extractRecentConversationText(
     return undefined;
   }
   const deliveryMirror = message.openclawDeliveryMirror;
-  const includeCronDirectDeliveryContext =
-    options.includeCronDirectDeliveryContext === true &&
+  const isCronDirectDeliveryContext =
+    message.role === "assistant" &&
     deliveryMirror !== null &&
     typeof deliveryMirror === "object" &&
     !Array.isArray(deliveryMirror) &&
     "kind" in deliveryMirror &&
     deliveryMirror.kind === CRON_DIRECT_DELIVERY_CONTEXT_KIND;
+  const includeCronDirectDeliveryContext =
+    options.includeCronDirectDeliveryContext === true && isCronDirectDeliveryContext;
   if (
     message.role === "assistant" &&
     isTranscriptOnlyOpenClawAssistantMessage(message) &&
@@ -224,13 +228,16 @@ function extractRecentConversationText(
       : undefined;
   const timestamp = normalizeTranscriptTimestamp(message.timestamp);
   return {
-    ...(typeof parsed.id === "string" && parsed.id ? { id: parsed.id } : {}),
-    role: message.role,
-    text,
-    ...(timestamp !== undefined ? { timestamp } : {}),
-    ...(typeof provenance?.sourceChannel === "string" && provenance.sourceChannel.trim()
-      ? { sourceChannel: provenance.sourceChannel.trim() }
-      : {}),
+    isCronDirectDeliveryContext,
+    entry: {
+      ...(typeof parsed.id === "string" && parsed.id ? { id: parsed.id } : {}),
+      role: message.role,
+      text,
+      ...(timestamp !== undefined ? { timestamp } : {}),
+      ...(typeof provenance?.sourceChannel === "string" && provenance.sourceChannel.trim()
+        ? { sourceChannel: provenance.sourceChannel.trim() }
+        : {}),
+    },
   };
 }
 
@@ -248,7 +255,7 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
     };
     const { readRestoredSessionTranscript } = await import("./session-cold-storage-read.js");
     return await readRestoredSessionTranscript(readScope, () => {
-      const recent: SessionRecentConversationText[] = [];
+      const recent: Array<NonNullable<ReturnType<typeof extractRecentConversationText>>> = [];
       for (let offset = 0; recent.length < limit; offset += pageSize) {
         const page = readSessionTranscriptMessageEventPage(readScope, {
           maxMessages: pageSize,
@@ -259,7 +266,7 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
         }
         for (const event of page.events.toReversed()) {
           const entry = extractRecentConversationText(event.event, options);
-          if (entry && isWithinTranscriptWindow(entry.timestamp, options)) {
+          if (entry && isWithinTranscriptWindow(entry.entry.timestamp, options)) {
             recent.push(entry);
             if (recent.length >= limit) {
               break;
@@ -267,7 +274,14 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
           }
         }
       }
-      return recent.toReversed();
+      // Select delivery-only context after the native recent-turn bound. Searching
+      // until enough rare mirrors are found would rescan the entire session.
+      return recent
+        .toReversed()
+        .filter(
+          (item) => !options.onlyCronDirectDeliveryContext || item.isCronDirectDeliveryContext,
+        )
+        .map((item) => item.entry);
     });
   } catch (error) {
     if (isSessionTranscriptProjectionUnavailableError(error)) {

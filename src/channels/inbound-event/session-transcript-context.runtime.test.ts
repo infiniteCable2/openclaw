@@ -1,5 +1,4 @@
 import path from "node:path";
-import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { buildInboundUserContextPrefix } from "../../auto-reply/reply/inbound-meta.js";
@@ -8,6 +7,7 @@ import { readRecentUserAssistantTextForSession } from "../../config/sessions/tra
 import { runPreparedChannelTurn } from "../turn/execution.js";
 import { mergeSessionTranscriptContext } from "./session-transcript-context.runtime.js";
 
+// mock-isolation: This channel fixture keeps native database state outside its dispatch boundary.
 vi.mock("../../config/sessions/transcript.js", () => ({
   readRecentUserAssistantTextForSession: vi.fn(),
 }));
@@ -31,6 +31,14 @@ function context(overrides: Partial<FinalizedMsgContext> = {}): FinalizedMsgCont
   };
 }
 
+async function merge(ctx: FinalizedMsgContext) {
+  await mergeSessionTranscriptContext({
+    ctx,
+    sessionKey: ctx.SessionKey!,
+    storePath: "/tmp/sessions.json",
+  });
+}
+
 describe("session transcript inbound context", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -38,37 +46,27 @@ describe("session transcript inbound context", () => {
     readRecent.mockReset();
   });
 
-  it("restores Slack assistant context when the live window is empty after restart", async () => {
-    readRecent.mockResolvedValue([
-      { id: "u1", role: "user", text: "deploy at noon", timestamp: 1_000 },
-      { id: "a1", role: "assistant", text: "I will remind you at 11:50", timestamp: 2_000 },
-    ]);
-    const ctx = context();
-
+  it("leaves ambient pending messages intact without copying native model history", async () => {
+    const history = [
+      { sender: "Alice", body: "unaddressed discussion", timestamp: 1_000, messageId: "ambient" },
+    ];
+    const ctx = context({ InboundHistory: history });
+    const dispatch = vi.fn(async () => ({ queuedFinal: false }));
     await runPreparedChannelTurn({
       channel: "slack",
       routeSessionKey: ctx.SessionKey!,
       storePath: path.join(tempDirs.make("openclaw-session-transcript-context-"), "sessions.json"),
       ctxPayload: ctx,
       recordInboundSession: vi.fn(async () => undefined),
-      runDispatch: vi.fn(async () => ({ queuedFinal: false })),
+      runDispatch: dispatch,
     });
-
-    expect(ctx.InboundHistory).toEqual([
-      { messageId: "session:u1", sender: "User", body: "deploy at noon", timestamp: 1_000 },
-      {
-        messageId: "session:a1",
-        sender: "Assistant",
-        body: "I will remind you at 11:50",
-        timestamp: 2_000,
-      },
-    ]);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(ctx.InboundHistory).toBe(history);
+    expect(readRecent).not.toHaveBeenCalled();
+    expect(buildInboundUserContextPrefix(ctx)).toContain("unaddressed discussion");
   });
 
-  it("renders the configured native window without restoring stale transcript content", async () => {
-    readRecent.mockResolvedValue([
-      { id: "deleted", role: "user", text: "deleted platform message", timestamp: 3_000 },
-    ]);
+  it("preserves a configured platform-selected recent window without restoring transcript rows", async () => {
     const ctx = context({
       ChatType: "channel",
       SessionTranscriptContext: { historyLimit: 50, historyKind: "recent" },
@@ -78,243 +76,134 @@ describe("session transcript inbound context", () => {
         timestamp: index,
       })),
     });
-    let prompt = "";
-    await runPreparedChannelTurn({
-      channel: "slack",
-      routeSessionKey: ctx.SessionKey!,
-      storePath: path.join(tempDirs.make("openclaw-native-history-context-"), "sessions.json"),
-      ctxPayload: ctx,
-      recordInboundSession: vi.fn(async () => undefined),
-      runDispatch: async () => {
-        prompt = buildInboundUserContextPrefix(ctx);
-        return { queuedFinal: false };
-      },
-    });
-    expect(prompt.match(/native-line-\d{2}/g)).toEqual(
+    await merge(ctx);
+    expect(buildInboundUserContextPrefix(ctx).match(/native-line-\d{2}/g)).toEqual(
       Array.from({ length: 50 }, (_, index) => `native-line-${String(index + 5).padStart(2, "0")}`),
     );
-    expect(prompt).not.toContain("deleted platform message");
+    expect(readRecent).not.toHaveBeenCalled();
   });
 
-  it("restores marked Cron delivery context when no live chat window survives", async () => {
-    readRecent.mockImplementation(async (params) =>
-      params.includeCronDirectDeliveryContext
-        ? [{ id: "cron-1", role: "assistant", text: "scheduled payload", timestamp: 2_000 }]
-        : [],
-    );
-    const ctx = context({
-      SessionTranscriptContext: { chatWindow: true, historyLimit: 3 },
-    });
-
-    await mergeSessionTranscriptContext({
-      agentId: "main",
-      ctx,
-      sessionKey: ctx.SessionKey!,
-      storePath: "/tmp/sessions.json",
-    });
-
-    expect(ctx.ChannelStructuredContext).toEqual([
-      expect.objectContaining({
-        source: "session",
-        type: "chat_window",
-        payload: expect.objectContaining({
-          messages: [expect.objectContaining({ body: "scheduled payload" })],
-        }),
-      }),
-    ]);
-  });
-
-  it("dedupes the canonical turn against the live window and merges chronologically", async () => {
+  it("restores only explicitly marked non-model Cron delivery context without a live window", async () => {
     readRecent.mockResolvedValue([
-      { id: "u1", role: "user", text: "cached user turn", timestamp: 1_000 },
-      { id: "a1", role: "assistant", text: "canonical reply", timestamp: 2_000 },
+      { id: "cron-1", role: "assistant", text: "scheduled payload", timestamp: 2_000 },
     ]);
     const ctx = context({
-      InboundHistory: [
-        { sender: "Alice", body: "cached user turn", timestamp: 1_000, messageId: "m1" },
-        { sender: "Alice", body: "new live turn", timestamp: 3_000, messageId: "m2" },
-      ],
-    });
-
-    await mergeSessionTranscriptContext({
-      agentId: "main",
-      ctx,
-      sessionKey: ctx.SessionKey!,
-      storePath: "/tmp/sessions.json",
-    });
-
-    expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual([
-      "cached user turn",
-      "canonical reply",
-      "new live turn",
-    ]);
-  });
-
-  it("uses channel projection ids to avoid duplicating rendered assistant replies", async () => {
-    readRecent.mockResolvedValue([
-      { id: "a1", role: "assistant", text: "**same answer**", timestamp: 2_000 },
-      {
-        id: "a2",
-        role: "assistant",
-        text: "[[reply_to_current]]Legacy answer",
-        timestamp: 2_500,
-      },
-      { id: "u2", role: "user", text: "follow-up", timestamp: 3_000, sourceChannel: "gateway" },
-    ]);
-    const ctx = context({
+      InboundHistory: [{ messageId: "pending", sender: "Alice", body: "ambient pending" }],
       SessionTranscriptContext: {
+        chatWindow: true,
         historyLimit: 3,
+        beforeTimestampMs: 3_000,
+        minTimestampMs: 1_000,
         senderLabels: { assistant: "OpenClaw", user: "User" },
       },
-      ChannelStructuredContext: [
-        {
-          label: "Conversation context",
-          source: "telegram",
-          type: "chat_window",
-          sessionTranscriptDedupeMessageIds: ["a1"],
-          sessionTranscriptAssistantTextDedupeKeys: ["text:2500:Legacy answer"],
-          payload: {
-            order: "chronological",
-            relation: "selected_for_current_message",
-            messages: [
-              { message_id: "42", sender: "OpenClaw (you)", body: "same answer" },
-              {
-                message_id: "43",
-                sender: "OpenClaw (you)",
-                body: "Legacy answer",
-                timestamp_ms: 2_500,
-              },
-            ],
-          },
-        },
-      ],
     });
-
-    await mergeSessionTranscriptContext({
+    await merge(ctx);
+    expect(readRecent).toHaveBeenCalledExactlyOnceWith({
       agentId: "main",
-      ctx,
-      sessionKey: ctx.SessionKey!,
+      sessionKey: ctx.SessionKey,
       storePath: "/tmp/sessions.json",
+      limit: 3,
+      includeCronDirectDeliveryContext: true,
+      onlyCronDirectDeliveryContext: true,
+      beforeTimestampMs: 3_000,
+      minTimestampMs: 1_000,
     });
-
-    expect(readRecent.mock.calls[0]?.[0]).not.toHaveProperty("includeCronDirectDeliveryContext");
-    expect(ctx.ChannelStructuredContext?.[0]).toMatchObject({
-      source: "session",
-      payload: {
-        messages: [
-          { message_id: "42", body: "same answer" },
-          { message_id: "43", body: "Legacy answer" },
-          { message_id: "session:u2", sender: "User (gateway)", body: "follow-up" },
-        ],
-      },
-    });
-  });
-
-  it("keeps a reply target bounded when it consumes the full window", async () => {
-    readRecent.mockResolvedValue([
-      { id: "a1", role: "assistant", text: "older reply", timestamp: 1_000 },
-    ]);
-    const ctx = context({
-      SessionTranscriptContext: { chatWindow: true, historyLimit: 1 },
-      ChannelStructuredContext: [
-        {
-          label: "Conversation context",
-          type: "chat_window",
-          payload: { messages: [{ body: "target", is_reply_target: true }] },
+    expect(ctx.InboundHistory?.[0]?.body).toBe("ambient pending");
+    expect(ctx.ChannelStructuredContext).toEqual([
+      {
+        label: "Conversation context",
+        source: "session",
+        type: "chat_window",
+        payload: {
+          order: "chronological",
+          relation: "selected_for_current_message",
+          messages: [
+            {
+              message_id: "session:cron-1",
+              sender: "OpenClaw",
+              timestamp_ms: 2_000,
+              body: "scheduled payload",
+            },
+          ],
         },
-      ],
-    });
-
-    await mergeSessionTranscriptContext({
-      ctx,
-      sessionKey: ctx.SessionKey!,
-      storePath: "/tmp/sessions.json",
-    });
-
-    expect(ctx.ChannelStructuredContext?.[0]?.payload).toEqual({
-      messages: [{ body: "target", is_reply_target: true }],
-    });
+      },
+    ]);
   });
 
-  it("preserves a provider-owned thread window while enriching a populated session prompt", async () => {
-    readRecent.mockResolvedValue([
-      { id: "u1", role: "user", text: "canonical question", timestamp: 1_000 },
-      { id: "a1", role: "assistant", text: "canonical reply", timestamp: 2_000 },
-    ]);
-    const graphMessages = [
-      { message_id: "graph-parent", sender: "Parent", body: "Graph parent" },
-      { message_id: "graph-reply", sender: "Teammate", body: "Graph reply" },
+  it("preserves the complete live window and reply target without reading canonical turns", async () => {
+    const windows = [
+      {
+        label: "Conversation context",
+        source: "telegram",
+        type: "chat_window",
+        payload: {
+          messages: [
+            { message_id: "target", body: "reply target", is_reply_target: true },
+            { message_id: "ambient", body: "new discussion" },
+          ],
+        },
+      },
     ];
     const ctx = context({
-      ChatType: "channel",
-      InboundHistory: [
-        { messageId: "pending", sender: "Pending", body: "pending backlog", timestamp: 3_000 },
-      ],
-      SessionTranscriptContext: { historyLimit: 2 },
-      ChannelStructuredContext: [
-        {
-          label: "Thread history",
-          source: "msteams",
-          type: "chat_window",
-          sessionTranscriptMode: "preserve",
-          payload: {
-            order: "chronological",
-            relation: "before_current_message",
-            messages: graphMessages,
-          },
-        },
-      ],
+      SessionTranscriptContext: { chatWindow: true, historyLimit: 2 },
+      ChannelStructuredContext: windows,
     });
+    await merge(ctx);
+    expect(ctx.ChannelStructuredContext).toBe(windows);
+    expect(readRecent).not.toHaveBeenCalled();
+  });
 
-    let prompt = "";
-    await runPreparedChannelTurn({
-      channel: "msteams",
-      routeSessionKey: ctx.SessionKey!,
-      storePath: path.join(tempDirs.make("openclaw-teams-transcript-context-"), "sessions.json"),
-      ctxPayload: ctx,
-      recordInboundSession: vi.fn(async () => undefined),
-      runDispatch: vi.fn(async () => {
-        prompt = buildInboundUserContextPrefix(ctx, { timezone: "UTC" });
-        return { queuedFinal: false };
-      }),
-    });
-
-    expect(ctx.ChannelStructuredContext?.[0]?.source).toBe("msteams");
-    expect(asRecord(ctx.ChannelStructuredContext?.[0]?.payload).messages).toEqual(graphMessages);
-    expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual([
-      "canonical reply",
-      "pending backlog",
+  it("preserves independent thread history while adding only a missing delivery window", async () => {
+    const thread = {
+      label: "Thread history",
+      source: "msteams",
+      type: "chat_window",
+      sessionTranscriptMode: "preserve" as const,
+      payload: { messages: [{ message_id: "parent", body: "thread parent" }] },
+    };
+    readRecent.mockResolvedValue([
+      { id: "cron", role: "assistant", text: "scheduled result", timestamp: 2_000 },
     ]);
-    expect(prompt).toContain("Graph parent");
-    expect(prompt).toContain("Graph reply");
-    expect(prompt).toContain("canonical reply");
-    expect(prompt).toContain("pending backlog");
-  });
-
-  it("fails closed for an unscoped session key without a routed agent owner", async () => {
-    const ctx = context({ AgentId: undefined, SessionKey: "slack:channel:c1" });
-
-    await expect(
-      mergeSessionTranscriptContext({
-        ctx,
-        sessionKey: ctx.SessionKey!,
-        storePath: "/tmp/sessions.json",
-      }),
-    ).rejects.toThrow("Session transcript context requires an agent owner.");
-    expect(readRecent).not.toHaveBeenCalled();
-  });
-
-  it("skips canonical history for session-boundary commands", async () => {
-    const ctx = context({ CommandBody: "/new summarize this workspace" });
-
-    await mergeSessionTranscriptContext({
-      agentId: "main",
-      ctx,
-      sessionKey: ctx.SessionKey!,
-      storePath: "/tmp/sessions.json",
+    const ctx = context({
+      SessionTranscriptContext: { chatWindow: true, historyLimit: 2 },
+      ChannelStructuredContext: [thread],
     });
+    await merge(ctx);
+    expect(ctx.ChannelStructuredContext?.[0]).toBe(thread);
+    expect(ctx.ChannelStructuredContext).toHaveLength(2);
+    const prompt = buildInboundUserContextPrefix(ctx);
+    expect(prompt).toContain("thread parent");
+    expect(prompt).toContain("scheduled result");
+  });
 
+  it("fails closed for an unscoped delivery-context read without a routed owner", async () => {
+    const ctx = context({
+      AgentId: undefined,
+      SessionKey: "slack:channel:c1",
+      SessionTranscriptContext: { chatWindow: true, historyLimit: 3 },
+    });
+    await expect(merge(ctx)).rejects.toThrow("Session transcript context requires an agent owner.");
     expect(readRecent).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 3])(
+    "does not restore delivery context for a session boundary (limit=%i)",
+    async (limit) => {
+      await merge(
+        context({
+          CommandBody: "/new summarize this workspace",
+          SessionTranscriptContext: { chatWindow: true, historyLimit: limit },
+        }),
+      );
+      expect(readRecent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("leaves context unchanged when no classified delivery rows exist", async () => {
+    readRecent.mockResolvedValue([]);
+    const ctx = context({ SessionTranscriptContext: { chatWindow: true, historyLimit: 3 } });
+    await merge(ctx);
+    expect(ctx.ChannelStructuredContext).toBeUndefined();
     expect(ctx.InboundHistory).toBeUndefined();
   });
 });

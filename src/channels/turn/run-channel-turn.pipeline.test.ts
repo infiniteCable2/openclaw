@@ -333,7 +333,7 @@ describe("channel turn pipeline", () => {
         AgentId: "main",
         SessionKey: commandSessionKey,
         CommandTargetSessionKey: targetSessionKey,
-        SessionTranscriptContext: { historyLimit: 1 },
+        SessionTranscriptContext: { chatWindow: true, historyLimit: 1 },
       }),
       recordInboundSession,
       dispatchReplyWithBufferedBlockDispatcher: dispatch,

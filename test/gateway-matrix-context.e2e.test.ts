@@ -271,170 +271,179 @@ function strings(value: unknown): string[] {
   return [];
 }
 
-it("observes real Matrix ingress and the provider-bound current request without a text copy", async (context) => {
-  let gateway: OpenClawTestInstance | undefined;
-  let model: Model | undefined;
-  let matrix: Awaited<ReturnType<typeof homeserver>> | undefined;
-  context.onTestFailed(() => {
-    console.error(
-      JSON.stringify({
-        fixture: "matrix-context-diagnostics",
-        matrixRequests: matrix?.requests,
-        matrixErrors: matrix?.errors,
-        gateway: gateway?.logs(),
-      }),
-    );
-  });
-  await runQaGatewayTestFixture(
-    context,
-    async ({ signal, verifyCleanup }) => {
-      model = await startConversationModel(signal);
-      matrix = await homeserver(signal);
-      const selected = config(model);
-      selected.channels = {
-        matrix: {
-          enabled: true,
-          homeserver: matrix.url,
-          network: { dangerouslyAllowPrivateNetwork: true },
-          userId: BOT,
-          accessToken: "synthetic-matrix-token",
-          deviceId: "SYNTHETIC",
-          encryption: false,
-          startupVerification: "off",
-          autoJoin: "off",
-          joinIntro: false,
-          groupPolicy: "allowlist",
-          groupAllowFrom: [HUMAN],
-          historyLimit: 20,
-          rooms: { [ROOM]: { requireMention: false, users: [HUMAN] } },
-          streaming: { mode: "off" },
-          rtc: { enabled: false },
-        },
-      };
-      selected.plugins = { slots: { memory: "none" }, entries: { matrix: { enabled: true } } };
-      gateway = await createOpenClawTestInstance({
-        name: "matrix-current-context",
-        signal,
-        verifyCleanup,
-        config: selected,
-        env: {
-          OPENCLAW_SKIP_PROVIDERS: undefined,
-          OPENCLAW_SKIP_CHANNELS: undefined,
-          OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-          OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
-          OPENCLAW_LOG_LEVEL: "debug",
-        },
-      });
-      isolateConversationGatewayEnvironment(gateway);
-      await gateway.startGateway();
-      await vi.waitFor(() => expect(matrix!.syncCount).toBeGreaterThan(0), {
-        timeout: 30_000,
-        interval: 50,
-      });
-      const reports = [];
-      for (const index of [1, 2, 3, 4]) {
-        if (index === 3) {
-          await gateway.stopGateway();
-          selected.agents!.entries!.main!.conversationMode = "branches";
-          await gateway.state.writeConfig(selected);
-          const previousSyncs = matrix.syncCount;
-          matrix.beginConnection();
-          await gateway.startGateway();
-          await vi.waitFor(() => expect(matrix!.syncCount).toBeGreaterThan(previousSyncs), {
-            timeout: 30_000,
-            interval: 50,
-          });
-        }
-        const marker = "CURRENT_MATRIX_FULL_PAYLOAD_" + index;
-        const before = model.requests.length;
-        const event = matrix.push(marker, index);
-        await vi.waitFor(() => expect(model!.requests).toHaveLength(before + 1), {
-          timeout: 40_000,
-          interval: 50,
+it.each(["native", "branches"] as const)(
+  "preserves real Matrix context exactly once from %s ingress across restart",
+  async (initialMode, context) => {
+    let gateway: OpenClawTestInstance | undefined;
+    let model: Model | undefined;
+    let matrix: Awaited<ReturnType<typeof homeserver>> | undefined;
+    context.onTestFailed(() => {
+      console.error(
+        JSON.stringify({
+          fixture: "matrix-context-diagnostics",
+          matrixRequests: matrix?.requests,
+          matrixErrors: matrix?.errors,
+          gateway: gateway?.logs(),
+        }),
+      );
+    });
+    await runQaGatewayTestFixture(
+      context,
+      async ({ signal, verifyCleanup }) => {
+        model = await startConversationModel(signal);
+        matrix = await homeserver(signal);
+        const selected = config(model, initialMode);
+        selected.channels = {
+          matrix: {
+            enabled: true,
+            homeserver: matrix.url,
+            network: { dangerouslyAllowPrivateNetwork: true },
+            userId: BOT,
+            accessToken: "synthetic-matrix-token",
+            deviceId: "SYNTHETIC",
+            encryption: false,
+            startupVerification: "off",
+            autoJoin: "off",
+            joinIntro: false,
+            groupPolicy: "allowlist",
+            groupAllowFrom: [HUMAN],
+            historyLimit: 20,
+            rooms: { [ROOM]: { requireMention: false, users: [HUMAN] } },
+            streaming: { mode: "off" },
+            rtc: { enabled: false },
+          },
+        };
+        selected.plugins = { slots: { memory: "none" }, entries: { matrix: { enabled: true } } };
+        gateway = await createOpenClawTestInstance({
+          name: "matrix-current-context",
+          signal,
+          verifyCleanup,
+          config: selected,
+          env: {
+            OPENCLAW_SKIP_PROVIDERS: undefined,
+            OPENCLAW_SKIP_CHANNELS: undefined,
+            OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+            OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
+            OPENCLAW_LOG_LEVEL: "debug",
+          },
         });
-        await vi.waitFor(() => expect(matrix!.sends.length).toBe(index), {
+        isolateConversationGatewayEnvironment(gateway);
+        await gateway.startGateway();
+        await vi.waitFor(() => expect(matrix!.syncCount).toBeGreaterThan(0), {
           timeout: 30_000,
           interval: 50,
         });
-        expect(matrix.sends[index - 1]).toContain("FIXTURE_REPLY_" + (before + 1));
-        const input = model.requests[before]!;
-        const text = strings([input.instructions, input.input]).join("\n");
-        const items = Array.isArray(input.input) ? input.input : [];
-        const carriers = items.filter((item) => {
-          // This provider projects trusted runtime additions as system items.
-          // Ordinary native user envelopes can also contain Conversation info.
-          const message = item as Record<string, unknown>;
-          if (message.role !== "system") {
-            return false;
+        const reports = [];
+        for (const index of [1, 2, 3, 4]) {
+          if (index === 3) {
+            await gateway.stopGateway();
+            selected.agents!.entries!.main!.conversationMode = "branches";
+            await gateway.state.writeConfig(selected);
+            const previousSyncs = matrix.syncCount;
+            matrix.beginConnection();
+            await gateway.startGateway();
+            await vi.waitFor(() => expect(matrix!.syncCount).toBeGreaterThan(previousSyncs), {
+              timeout: 30_000,
+              interval: 50,
+            });
           }
-          const projected = strings(item).join("\n");
-          return (
-            projected.includes("Conversation info:") ||
-            projected.includes("OpenClaw runtime context:")
+          const marker = "CURRENT_MATRIX_FULL_PAYLOAD_" + index;
+          const before = model.requests.length;
+          const event = matrix.push(marker, index);
+          await vi.waitFor(() => expect(model!.requests).toHaveLength(before + 1), {
+            timeout: 40_000,
+            interval: 50,
+          });
+          await vi.waitFor(() => expect(matrix!.sends.length).toBe(index), {
+            timeout: 30_000,
+            interval: 50,
+          });
+          expect(matrix.sends[index - 1]).toContain("FIXTURE_REPLY_" + (before + 1));
+          const input = model.requests[before]!;
+          const text = strings([input.instructions, input.input]).join("\n");
+          const items = Array.isArray(input.input) ? input.input : [];
+          const carriers = items.filter((item) => {
+            // This provider projects trusted runtime additions as system items.
+            // Ordinary native user envelopes can also contain Conversation info.
+            const message = item as Record<string, unknown>;
+            if (message.role !== "system") {
+              return false;
+            }
+            const projected = strings(item).join("\n");
+            return (
+              projected.includes("Conversation info:") ||
+              projected.includes("OpenClaw runtime context:")
+            );
+          });
+          const runtime = strings(carriers).join("\n");
+          const eventTimestamp = formatAgentEnvelopeTimestamp(
+            event.timestamp,
+            resolveEnvelopeFormatOptions(selected),
           );
-        });
-        const runtime = strings(carriers).join("\n");
-        const eventTimestamp = formatAgentEnvelopeTimestamp(
-          event.timestamp,
-          resolveEnvelopeFormatOptions(selected),
-        );
-        if (!eventTimestamp) {
-          throw new Error("Missing native event timestamp projection");
-        }
-        reports.push({
-          index,
-          mode: index < 3 ? "native" : "branches",
-          currentCopies: text.split(marker).length - 1,
-          currentCopiesInRuntime: runtime.split(marker).length - 1,
-          previousNativeCopies:
-            index === 3 ? text.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1 : undefined,
-          currentMessageIdCopies: text.split(event.id).length - 1,
-          runtimeBlocks: text.split("OpenClaw runtime context:").length - 1,
-          runtimeCarriers: carriers.length,
-          markerLocations: items
-            .map((value, position) => {
-              const item = value as Record<string, unknown>;
-              const part = strings(item).join("\n");
-              return {
-                position,
-                role: item.role,
-                chars: part.length,
-                currentCopies: part.split(marker).length - 1,
-                priorNativeCopies: part.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1,
-                conversationInfo: part.includes("Conversation info:"),
-                quotedHistory: part.includes("Quoted conversation history"),
-              };
-            })
-            .filter(
-              (item) => item.currentCopies || item.priorNativeCopies || item.conversationInfo,
+          if (!eventTimestamp) {
+            throw new Error("Missing native event timestamp projection");
+          }
+          reports.push({
+            index,
+            mode: index < 3 ? initialMode : "branches",
+            currentCopies: text.split(marker).length - 1,
+            currentCopiesInRuntime: runtime.split(marker).length - 1,
+            previousNativeCopies:
+              index === 3 ? text.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1 : undefined,
+            previousCopies: Array.from(
+              { length: index - 1 },
+              (_, prior) => text.split("CURRENT_MATRIX_FULL_PAYLOAD_" + (prior + 1)).length - 1,
             ),
-          currentTimestampInRuntime: runtime.includes(eventTimestamp),
-          eventTimestamp,
-          providerChars: text.length,
-        });
-      }
-      console.info(
-        JSON.stringify({
-          fixture: "matrix-current-request-context",
-          reports,
-          homeserverErrors: matrix.errors,
-          providerErrors: model.errors.length,
-        }),
-      );
-      expect(matrix.errors).toEqual([]);
-      expect(model.errors).toEqual([]);
-      for (const report of reports) {
-        expect(report.runtimeCarriers).toBeGreaterThan(0);
-        expect(report.currentTimestampInRuntime).toBe(true);
-        expect(report.currentCopies).toBe(1);
-        expect(report.currentCopiesInRuntime).toBe(0);
-        if (report.index === 3) {
-          expect(report.previousNativeCopies).toBe(1);
+            currentMessageIdCopies: text.split(event.id).length - 1,
+            runtimeBlocks: text.split("OpenClaw runtime context:").length - 1,
+            runtimeCarriers: carriers.length,
+            markerLocations: items
+              .map((value, position) => {
+                const item = value as Record<string, unknown>;
+                const part = strings(item).join("\n");
+                return {
+                  position,
+                  role: item.role,
+                  chars: part.length,
+                  currentCopies: part.split(marker).length - 1,
+                  priorNativeCopies: part.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1,
+                  conversationInfo: part.includes("Conversation info:"),
+                  quotedHistory: part.includes("Quoted conversation history"),
+                };
+              })
+              .filter(
+                (item) => item.currentCopies || item.priorNativeCopies || item.conversationInfo,
+              ),
+            currentTimestampInRuntime: runtime.includes(eventTimestamp),
+            eventTimestamp,
+            providerChars: text.length,
+          });
         }
-      }
-    },
-    () => gateway?.cleanup(),
-    () => matrix?.stop(),
-    () => model?.stop(),
-  );
-}, 240_000);
+        console.info(
+          JSON.stringify({
+            fixture: "matrix-current-request-context",
+            reports,
+            homeserverErrors: matrix.errors,
+            providerErrors: model.errors.length,
+          }),
+        );
+        expect(matrix.errors).toEqual([]);
+        expect(model.errors).toEqual([]);
+        for (const report of reports) {
+          expect(report.runtimeCarriers).toBeGreaterThan(0);
+          expect(report.currentTimestampInRuntime).toBe(true);
+          expect(report.currentCopies).toBe(1);
+          expect(report.currentCopiesInRuntime).toBe(0);
+          expect(report.previousCopies).toEqual(Array(report.index - 1).fill(1));
+          if (report.index === 3) {
+            expect(report.previousNativeCopies).toBe(1);
+          }
+        }
+      },
+      () => gateway?.cleanup(),
+      () => matrix?.stop(),
+      () => model?.stop(),
+    );
+  },
+  240_000,
+);

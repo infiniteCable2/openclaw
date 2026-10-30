@@ -5,6 +5,8 @@ import {
   appendTranscriptMessage,
   loadSessionEntry,
   loadTranscriptEvents,
+  recordInboundSessionMeta,
+  updateSessionLastRoute,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { ensureAgentConversationRoot } from "../../config/sessions/session-conversation-root.js";
@@ -95,6 +97,68 @@ async function fixture(agentId = "main") {
 }
 
 describe("reply initialization with native copied context", () => {
+  it.each(["native", "branches"] as const)(
+    "initializes first ingress generations and preserves them until reset in %s mode",
+    async (conversationMode) => {
+      for (const produce of [recordInboundSessionMeta, updateSessionLastRoute]) {
+        const f = await fixture("ingress-init");
+        const cfg = {
+          ...f.cfg,
+          agents: {
+            ...f.cfg.agents,
+            entries: { [f.target.agentId]: { conversationMode } },
+          },
+        };
+        if (conversationMode === "branches") {
+          await ensureAgentConversationRoot({
+            cfg,
+            agentId: f.target.agentId,
+            env: state.env,
+            getConfig: () => cfg,
+          });
+        }
+        const created = await produce({
+          storePath: f.target.storePath,
+          sessionKey: f.target.sessionKey,
+          ctx: f.ctx,
+        });
+        expect(created?.lifecycleRevision).toEqual(expect.any(String));
+        const first = await initSessionState({ cfg, ctx: f.ctx, commandAuthorized: true });
+        expect(first.sessionEntry).toMatchObject({
+          sessionId: created?.sessionId,
+          lifecycleRevision: created?.lifecycleRevision,
+        });
+        expect(first.sessionEntry.conversationTopology?.role).toBe(
+          conversationMode === "branches" ? "branch" : undefined,
+        );
+        await appendTranscriptMessage(
+          { ...f.target, sessionId: first.sessionId },
+          {
+            message: { role: "user", content: "Preserve the original ingress history." },
+          },
+        );
+        const history = await loadTranscriptEvents({ ...f.target, sessionId: first.sessionId });
+        const reused = await initSessionState({ cfg, ctx: f.ctx, commandAuthorized: true });
+        expect(reused.sessionEntry.lifecycleRevision).toBe(first.sessionEntry.lifecycleRevision);
+        expect(await loadTranscriptEvents({ ...f.target, sessionId: first.sessionId })).toEqual(
+          history,
+        );
+        const reset = await initSessionState({
+          cfg,
+          ctx: finalizeInboundContext(
+            { ...f.ctx, Body: "/new", RawBody: "/new" },
+            { forceBodyForAgent: true, forceBodyForCommands: true },
+          ),
+          commandAuthorized: true,
+        });
+        expect(reset.sessionEntry.lifecycleRevision).not.toBe(first.sessionEntry.lifecycleRevision);
+        expect(reset.sessionEntry.conversationTopology).toEqual(
+          first.sessionEntry.conversationTopology,
+        );
+      }
+    },
+  );
+
   it.each(["native", "branches"] as const)(
     "keeps confirmed new private conversations private through /new and mode changes from %s",
     async (conversationMode) => {
