@@ -271,7 +271,7 @@ function strings(value: unknown): string[] {
   return [];
 }
 
-it.each(["native", "branches"] as const)(
+it.for(["native", "branches"] as const)(
   "preserves real Matrix context exactly once from %s ingress across restart",
   async (initialMode, context) => {
     let gateway: OpenClawTestInstance | undefined;
