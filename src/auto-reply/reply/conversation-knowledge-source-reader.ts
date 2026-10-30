@@ -375,7 +375,7 @@ export async function observePreparedConversationKnowledgePackets(params: {
   const candidates = params.cache
     .preparedPackets(Number.MAX_SAFE_INTEGER)
     .filter((slot) => byId.has(slot.contributionId))
-    .sort(
+    .toSorted(
       (left, right) =>
         order.get(left.contributionId)! - order.get(right.contributionId)! ||
         left.offset - right.offset,

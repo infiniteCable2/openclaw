@@ -66,13 +66,13 @@ const IDLE_FIELDS: SessionSourcePredicate["fields"] = [
 ];
 
 function isIdleEntry(entry: InternalSessionEntry | undefined, branch: ConversationKnowledgeBranch) {
-  return Boolean(
+  return (
     entry?.sessionId === branch.sessionId &&
     entry.lifecycleRevision === branch.lifecycleRevision &&
     entry.activeWriterRunId === undefined &&
     entry.pendingFinalDelivery === undefined &&
     !entry.pendingTranscriptRepair?.length &&
-    entry.archivedAt === undefined,
+    entry.archivedAt === undefined
   );
 }
 

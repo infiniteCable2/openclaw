@@ -559,7 +559,7 @@ describe("ready checkpoint recipient", () => {
   });
   it("does not restage an original when a foreground commit advances during preparation", async () => {
     const f = fixture();
-    const entered = createDeferredCore<void>();
+    const entered = createDeferredCore();
     const taken = createDeferredCore<boolean>();
     native.take.mockImplementationOnce(() => {
       entered.resolve();
