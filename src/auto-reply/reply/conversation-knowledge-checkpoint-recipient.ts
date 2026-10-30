@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import type { CustomMessage } from "../../agents/sessions/messages.js";
 import {
   prepareConversationKnowledgeBootstrap,
@@ -35,8 +36,6 @@ import type {
   PreparedConversationKnowledgePacket,
 } from "./conversation-knowledge-source-cache.js";
 import {
-  createConversationKnowledgeSourceReader,
-  publishPreparedConversationKnowledgeRoot,
   readConversationKnowledgeInputs,
   prepareConversationKnowledgeTarget,
   type ConversationKnowledgeHeldSource,
@@ -137,6 +136,9 @@ export async function prepareRecipientConversationProjection(
       readyOnly: false,
       preparationOnly: true,
       retainInHistory: false,
+    }).catch((error: unknown) => {
+      cache.clearPreparedRoot();
+      throw error;
     });
     if (!inputs) {
       return false;
@@ -158,16 +160,34 @@ export async function prepareRecipientConversationProjection(
     const shared = new Map(
       tail.map((item) => [conversationKnowledgeContributionId(item.reference), item]),
     );
-    const reader = createConversationKnowledgeSourceReader({
-      ...params,
-      branch,
-      originalParticipant: params.originalParticipant,
-      targetFacts,
-      rootEvidence: events.evidence,
-      reads,
-      drop,
-      hasRetainedContribution: (id) => retained?.get(id)?.complete === true,
-    });
+    let manifest: PreparedKnowledgeRootCandidates;
+    try {
+      const candidate = issuePreparedKnowledgeRootCandidates(events.evidence, current, {
+        maxBytes: cache.maxPreparedRootBytes,
+      });
+      // Progress consumes packets, not the canonical native source selection.
+      // Identical selection keeps its manifest and grouped custody across batches.
+      manifest = cache.setPreparedRoot(candidate, sha256Hex(JSON.stringify(current)));
+    } catch (error) {
+      if (!(error instanceof RangeError)) {
+        throw error;
+      }
+      cache.clearPreparedRoot();
+      return false;
+    }
+    let selectedEvents: Awaited<ReturnType<typeof readPreparedConversationKnowledgeRoot>>;
+    try {
+      selectedEvents = await readPreparedConversationKnowledgeRoot({
+        ...params,
+        branch,
+        manifest,
+        assertCurrent: check,
+      });
+    } catch (error) {
+      cache.clearPreparedRoot(manifest);
+      throw error;
+    }
+    const bySource = new Map<string, ConversationKnowledgeReference[]>();
     let complete = true;
     for (const reference of current) {
       check();
@@ -182,56 +202,127 @@ export async function prepareRecipientConversationProjection(
         }
         continue;
       }
-      // Already staged bytes still undergo fresh native authorization at admission.
-      // Their presence must not suppress missing siblings in a partial manifest.
-      const staged = cache.peek(id, 0);
+      const item = shared.get(id),
+        staged = cache.peek(id, 0);
+      // A previously imported or segmented original keeps its native offsets;
+      // whole-root reuse must not replace its remaining packet coordinates.
       if (
-        staged?.part.complete &&
-        cache.preparedAdmission({ ...reference.source, storePath: reference.through.storePath })
+        (retained?.get(id)?.nextOffset ?? 0) > 0 ||
+        (cache.firstPreparedOffset(id) !== undefined && (!staged || !staged.part.complete))
+      ) {
+        complete = false;
+        continue;
+      }
+      if (!staged?.part.complete && (!item || !isDeepStrictEqual(reference, item.reference))) {
+        complete = false;
+        continue;
+      }
+      const key = JSON.stringify([reference.source, reference.through.storePath]);
+      const references = bySource.get(key) ?? [];
+      references.push(reference);
+      bySource.set(key, references);
+    }
+    for (const references of bySource.values()) {
+      const first = references[0]!;
+      const sourceTarget = { ...first.source, storePath: first.through.storePath };
+      let group = cache.preparedContributionGroup(sourceTarget, manifest);
+      if (
+        group &&
+        references.every(
+          (reference) =>
+            cache.peek(conversationKnowledgeContributionId(reference), 0)?.part.complete &&
+            cache.preparedContributionGroup(
+              sourceTarget,
+              manifest,
+              conversationKnowledgeContributionId(reference),
+            ) === group,
+        )
       ) {
         continue;
       }
-      const item = shared.get(id);
-      if (!item || !isDeepStrictEqual(reference, item.reference)) {
-        complete = false;
-        continue;
-      }
-      const { source } = await reader.take(reference);
-      if (!source) {
-        complete = false;
-        continue;
-      }
+      const request = {
+        purpose: "conversation-differences",
+        personal: {
+          originalParticipant: params.originalParticipant,
+          assertCurrent: check,
+          target: branch,
+          targetAudience: params.destinationAudience,
+          rootEvidence: selectedEvents.evidence,
+        },
+        getRuntimeConfig: params.getRuntimeConfig,
+        sources: [first.source],
+        signal: params.signal,
+      } as const;
+      let transfer = false;
+      let retire: (() => void) | undefined;
       try {
+        // A new recovered original can enlarge the group without changing the
+        // canonical manifest. The replacement is still issued by the native owner.
+        group = await preparePersonalConversationContributionGroup({
+          ...request,
+          personal: { ...request.personal, contributions: references },
+        });
+        const retainedGroup = group;
+        retire = () => retainedGroup.release();
+        cache.retainCleanup(retire);
+        const grant = await prepareTranscriptReadAuthority({
+          ...request,
+          personal: { ...request.personal, contributionGroup: group },
+        });
+        const read = { grant };
+        reads.push(read);
         check();
         params.signal?.throwIfAborted();
         if (cache.consumptionRevision !== epoch) {
           return false;
         }
-        if (
-          !isDeepStrictEqual(source.through, item.packet.through) ||
-          !isDeepStrictEqual(source.from, item.packet.from)
-        ) {
+        const preparedIds: string[] = [];
+        for (const reference of references) {
+          const id = conversationKnowledgeContributionId(reference);
+          const packet = cache.peek(id, 0) ?? shared.get(id)?.packet;
+          const range = grant.selectContribution(reference);
+          if (
+            !packet ||
+            !range?.version ||
+            !isDeepStrictEqual(range.through, packet.through) ||
+            !isDeepStrictEqual(range.from, packet.from)
+          ) {
+            complete = false;
+            continue;
+          }
+          if (!cache.stage(id, 0, packet)) {
+            complete = false;
+            break;
+          }
+          preparedIds.push(id);
+        }
+        drop(read);
+        if (!preparedIds.length) {
           complete = false;
           continue;
         }
-        const sourceTarget = { ...reference.source, storePath: reference.through.storePath };
+        // The cache owns release even when bounded admission refuses the group.
+        transfer = true;
+        cache.forgetCleanup(retire);
+        if (!cache.retainContributionGroup(preparedIds, sourceTarget, group, manifest)) {
+          complete = false;
+        }
+      } catch (error) {
+        check();
+        params.signal?.throwIfAborted();
         if (
-          !cache.retainAdmission(
-            id,
-            sourceTarget,
-            cache.preparedAdmission(sourceTarget) ?? source.grant.prepareAdmission(),
-          )
+          !(error instanceof SessionTranscriptReadFenceError) &&
+          !(error instanceof SessionMutationAuthorizationChangedError)
         ) {
-          complete = false;
-          break;
+          throw error;
         }
-        if (!cache.stage(id, 0, item.packet)) {
-          complete = false;
-          break;
-        }
-        complete &&= item.packet.part.complete;
+        cache.invalidateAdmission(sourceTarget);
+        complete = false;
       } finally {
-        drop(source.read);
+        if (!transfer && retire) {
+          retire();
+          cache.forgetCleanup(retire);
+        }
       }
     }
     check();
@@ -239,11 +330,6 @@ export async function prepareRecipientConversationProjection(
     if (cache.consumptionRevision !== epoch) {
       return false;
     }
-    publishPreparedConversationKnowledgeRoot({
-      evidence: events.evidence,
-      receipts: current,
-      cache,
-    });
     return complete;
   } finally {
     release();

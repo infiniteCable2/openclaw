@@ -81,6 +81,116 @@ beforeEach(() => {
 });
 
 describe("disposable conversation source preparation", () => {
+  it("shares exact-manifest groups across consumed prefixes and releases the final pending original", () => {
+    const cache = createConversationKnowledgeSourceCache(4_096);
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const manifest = { byteLength: 64 } as Parameters<typeof cache.setPreparedRoot>[0];
+    const next = { byteLength: 64 } as Parameters<typeof cache.setPreparedRoot>[0];
+    const group = { byteLength: 64, release: vi.fn() } as unknown as Parameters<
+      typeof cache.retainContributionGroup
+    >[2];
+    cache.setPreparedRoot(manifest, "canonical-selection");
+    cache.stage("first", 0, packet());
+    cache.stage("second", 0, packet());
+    expect(cache.retainContributionGroup(["first", "second"], source, group, manifest)).toBe(true);
+    expect(cache.preparedAdmission(source)).toBeUndefined();
+    expect(cache.preparedContributionGroup(source, manifest, "foreign")).toBeUndefined();
+    cache.consume("first", 0);
+    expect(cache.setPreparedRoot(next, "canonical-selection")).toBe(manifest);
+    expect(cache.preparedContributionGroup(source, manifest, "second")).toBe(group);
+    expect(cache.preparedContributionGroup(source, next)).toBeUndefined();
+    expect(group.release).not.toHaveBeenCalled();
+    cache.consume("second", 0);
+    expect(group.release).toHaveBeenCalledOnce();
+    expect(cache.preparedContributionGroup(source, manifest)).toBeUndefined();
+    cache.clear();
+    expect(group.release).toHaveBeenCalledOnce();
+  });
+  it("retires replaced manifest groups without deleting pending bytes or unrelated single custody", () => {
+    const cache = createConversationKnowledgeSourceCache(4_096);
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const other = { ...source, sessionId: "other-source" };
+    const manifest = { byteLength: 64 } as Parameters<typeof cache.setPreparedRoot>[0];
+    const next = { byteLength: 64 } as Parameters<typeof cache.setPreparedRoot>[0];
+    const group = { byteLength: 64, release: vi.fn() } as unknown as Parameters<
+      typeof cache.retainContributionGroup
+    >[2];
+    const single = { byteLength: 64, release: vi.fn() } as unknown as Parameters<
+      typeof cache.retainAdmission
+    >[2];
+    cache.setPreparedRoot(manifest, "old-selection");
+    cache.stage("first", 0, packet());
+    cache.retainContributionGroup(["first"], source, group, manifest);
+    cache.retainAdmission("other", other, single);
+    cache.setPreparedRoot(next, "new-selection");
+    expect(group.release).toHaveBeenCalledOnce();
+    expect(cache.peek("first", 0)).toEqual(packet());
+    expect(cache.preparedContributionGroup(source, manifest)).toBeUndefined();
+    expect(cache.preparedAdmission(other)).toBe(single);
+    cache.clear();
+    expect(single.release).toHaveBeenCalledOnce();
+  });
+  it("replaces exact group associations and retires custody covered by an adopted checkpoint", () => {
+    const cache = createConversationKnowledgeSourceCache(4_096);
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const manifest = { byteLength: 64, ownedByteLength: 64 } as Parameters<
+      typeof cache.setPreparedRoot
+    >[0];
+    const first = { byteLength: 64, release: vi.fn() } as unknown as Parameters<
+      typeof cache.retainContributionGroup
+    >[2];
+    const second = { byteLength: 64, release: vi.fn() } as unknown as typeof first;
+    cache.setPreparedRoot(manifest, "selection");
+    cache.stage("first", 0, packet());
+    cache.stage("second", 0, packet());
+    cache.retainContributionGroup(["first", "second"], source, first, manifest);
+    cache.retainContributionGroup(["second"], source, second, manifest);
+    expect(first.release).toHaveBeenCalledOnce();
+    expect(cache.preparedContributionGroup(source, manifest, "first")).toBeUndefined();
+    expect(cache.preparedContributionGroup(source, manifest, "second")).toBe(second);
+    const checkpoint = {
+      manifest,
+      checkpoint: { checkpointId: "synthetic-checkpoint", summary: "Both originals are covered." },
+      groups: [],
+      coverage: { has: () => true },
+    } as unknown as Parameters<typeof cache.stageCheckpoint>[0];
+    expect(cache.stageCheckpoint(checkpoint)).toBe(true);
+    cache.consumeCheckpoint(checkpoint);
+    expect(cache.preparedPackets(2)).toHaveLength(0);
+    expect(second.release).toHaveBeenCalledOnce();
+    expect(cache.preparedContributionGroup(source, manifest)).toBeUndefined();
+    cache.clear();
+    expect(first.release).toHaveBeenCalledOnce();
+    expect(second.release).toHaveBeenCalledOnce();
+  });
+  it("fails closed before retrying group release and rejects over-budget or unrelated manifests", () => {
+    const cache = createConversationKnowledgeSourceCache(128);
+    const source = { ...target, lifecycleRevision: "source-life" };
+    const manifest = { byteLength: 64 } as Parameters<typeof cache.setPreparedRoot>[0];
+    const group = {
+      byteLength: 64,
+      release: vi.fn().mockImplementationOnce(() => {
+        throw new Error("Native group cleanup pending");
+      }),
+    } as unknown as Parameters<typeof cache.retainContributionGroup>[2];
+    cache.setPreparedRoot(manifest, "selection");
+    cache.retainContributionGroup(["first"], source, group, manifest);
+    expect(() => cache.clearPreparedRoot(manifest)).toThrow("cleanup remains pending");
+    expect(cache.preparedRoot).toBeUndefined();
+    expect(cache.preparedContributionGroup(source, manifest)).toBeUndefined();
+    cache.retryCleanup();
+    expect(group.release).toHaveBeenCalledTimes(2);
+    const refused = { byteLength: 129, release: vi.fn() } as unknown as Parameters<
+      typeof cache.retainContributionGroup
+    >[2];
+    cache.setPreparedRoot(manifest, "selection");
+    expect(cache.retainContributionGroup(["first"], source, refused, manifest)).toBe(false);
+    expect(refused.release).toHaveBeenCalledOnce();
+    const unrelated = { byteLength: 1 } as Parameters<typeof cache.setPreparedRoot>[0];
+    expect(cache.retainContributionGroup(["first"], source, refused, unrelated)).toBe(false);
+    expect(refused.release).toHaveBeenCalledTimes(2);
+    cache.clear();
+  });
   it("charges checkpoint-owned custody and summary bytes, not shared root metadata", () => {
     const cache = createConversationKnowledgeSourceCache(256);
     const candidate = {

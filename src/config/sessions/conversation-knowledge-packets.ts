@@ -244,8 +244,10 @@ export async function retainConversationKnowledgePackets(params: {
       : undefined,
   );
   const originalSources = composeSessionSourceAssertion([
-    ...new Set(params.packets.map((packet) => packet.source)),
-    ...new Set(custody.flatMap((held) => (held ? [held.source] : []))),
+    ...new Set([
+      ...params.packets.map((packet) => packet.source),
+      ...custody.flatMap((held) => (held ? [held.source] : [])),
+    ]),
   ]);
   originalSources();
   if (!params.packets.length) {

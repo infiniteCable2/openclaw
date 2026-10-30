@@ -335,6 +335,8 @@ async function prepareReplyConversationKnowledgeInMode(
       signal: params.signal,
       sourceCache: params.sourceCache,
       readyOnly: params.readyOnly,
+      retainInHistory: Boolean(params.retainInHistory),
+      preparedManifest: manifest,
       hasRetainedContribution: (id) => retained?.get(id)?.complete === true,
     });
     for (let index = startIndex; index < receipts.length; index++) {

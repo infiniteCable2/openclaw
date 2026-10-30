@@ -444,6 +444,11 @@ it.for([
               boundaryMs: Math.round(performance.now() - boundaryBegan),
             });
             expect.soft(countMarkers(messages)).toBe(originalCount);
+            // Each donor spans at most two native 32-packet quanta here. The
+            // fast path must rebind its prepared group, not reread every original.
+            const authorityCalls = boundaryProfile.snapshot().readAuthority?.calls ?? 0;
+            expect(authorityCalls).toBeGreaterThan(0);
+            expect(authorityCalls).toBeLessThanOrEqual(donorCount * 2);
             expect(
               firstBoundary.map((message) => asOptionalRecord(message.details)?.contributionId),
             ).toEqual(

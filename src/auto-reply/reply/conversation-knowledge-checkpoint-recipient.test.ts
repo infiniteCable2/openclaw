@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
   createConversationKnowledgeCheckpoint,
@@ -184,6 +184,24 @@ function fixture(references = [reference]) {
   } as unknown as ReplyConversationKnowledgeParams;
   return { candidate, cache, params, canAdmitPacket, onPacket };
 }
+function rawPacket(selected: ConversationKnowledgeReference): PreparedConversationKnowledgePacket {
+  return {
+    through: selected.readRange?.through ?? selected.through,
+    from: selected.readRange?.admission ?? selected.privateAudience?.admission,
+    version: { generation: "generation", rawSeq: selected.through.rawSeq, updatedAt: 1 },
+    part: {
+      origin: selected.origin,
+      text: "A complete synthetic observation.",
+      complete: true,
+      frontier: {
+        origin: selected.origin,
+        generation: "generation",
+        throughRawSeq: selected.through.rawSeq,
+        throughEntryId: selected.through.entryId,
+      },
+    },
+  };
+}
 beforeEach(() => {
   for (const mock of Object.values(native)) {
     mock.mockReset();
@@ -218,12 +236,13 @@ beforeEach(() => {
   native.publish.mockImplementation(({ evidence, receipts, cache }) => {
     cache.setPreparedRoot(native.issue(evidence, receipts));
   });
-  native.issue.mockReturnValue({ syntheticManifest: true });
+  native.issue.mockReturnValue({ syntheticManifest: true, byteLength: 100, ownedByteLength: 100 });
   native.evidence.mockResolvedValue({ syntheticEvidence: true });
   native.seal.mockImplementation(({ checkpoint }) => ({ checkpoint, validate: native.validate }));
   native.select.mockImplementation((selected: ConversationKnowledgeReference) => ({
     through: selected.readRange?.through ?? selected.through,
     from: selected.readRange?.admission ?? selected.privateAudience?.admission,
+    version: { generation: "generation", rawSeq: selected.through.rawSeq, updatedAt: 1 },
   }));
   native.group.mockResolvedValue({
     release: native.releaseGroup,
@@ -431,47 +450,35 @@ describe("ready checkpoint recipient", () => {
     expect(native.retain).not.toHaveBeenCalled();
     expect(native.releaseTarget).toHaveBeenCalledOnce();
   });
-  it.each([undefined, { existingPartialManifest: true }])(
-    "fills shared originals even when a partial recipient manifest already exists (%j)",
-    async (manifest) => {
+  it.each([false, true])(
+    "fills shared originals after a partial manifest (%j)",
+    async (partial) => {
       const f = fixture();
-      const cache = {
-        preparedRoot: manifest,
-        consumptionRevision: 0,
-        retainContributions: vi.fn(),
-        retainCleanup: vi.fn(),
-        forgetCleanup: vi.fn(),
-        maxPreparedRootBytes: 4_000_000,
-        preparedAdmission: vi.fn(),
-        retainAdmission: vi.fn(() => true),
-        stage: vi.fn(() => true),
-        setPreparedRoot: vi.fn(),
-        peek: vi.fn(),
-      };
-      const packet = {
-        through: anchor,
-        from: anchor,
-        version: { generation: "generation", rawSeq: 1, updatedAt: 1 },
-        part: { complete: true },
-      } as PreparedConversationKnowledgePacket;
-      const complete = await prepareRecipientConversationProjection(
-        {
-          ...f.params,
-          sourceCache: cache as unknown as ReplyConversationKnowledgeParams["sourceCache"],
-          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-        },
-        [{ reference, packet }],
-      );
-      expect(complete).toBe(true);
-      expect(native.scan).toHaveBeenCalledOnce();
-      expect(cache.stage).toHaveBeenCalledWith(expect.any(String), 0, packet);
-      expect(cache.setPreparedRoot).toHaveBeenCalledWith({ syntheticManifest: true });
+      const cache = createConversationKnowledgeSourceCache();
+      onTestFinished(() => cache.clear());
+      if (partial) {
+        cache.setPreparedRoot({ byteLength: 10 } as Parameters<typeof cache.setPreparedRoot>[0]);
+      }
+      const packet = rawPacket(reference);
+      expect(
+        await prepareRecipientConversationProjection(
+          {
+            ...f.params,
+            sourceCache: cache,
+            expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+          },
+          [{ reference, packet }],
+        ),
+      ).toBe(true);
+      expect(cache.peek(conversationKnowledgeContributionId(reference), 0)).toEqual(packet);
+      expect(native.group).toHaveBeenCalledOnce();
+      expect(native.groupRead).toHaveBeenCalledOnce();
+      expect(native.take).not.toHaveBeenCalled();
       expect(native.releaseSource).toHaveBeenCalledOnce();
       expect(native.retain).not.toHaveBeenCalled();
-      expect(native.bootstrap).not.toHaveBeenCalled();
     },
   );
-  it("keeps staged siblings in canonical root order while extending a partial manifest", async () => {
+  it("keeps a canonical group and manifest across progress-only recipient batches", async () => {
     const f = fixture();
     const secondAnchor = { ...anchor, entryId: "two", rawSeq: 2 };
     const second = {
@@ -489,110 +496,119 @@ describe("ready checkpoint recipient", () => {
         { evidence: preparedRootEvidence },
       ),
     );
-    const packet = {
-      through: anchor,
-      from: anchor,
-      version: { generation: "generation", rawSeq: 1, updatedAt: 1 },
-      part: { complete: true },
-    } as PreparedConversationKnowledgePacket;
-    const laterId = conversationKnowledgeContributionId(second);
-    const cache = {
-      consumptionRevision: 0,
-      retainContributions: vi.fn(),
-      preparedRoot: { oldPartial: true },
-      retainCleanup: vi.fn(),
-      forgetCleanup: vi.fn(),
-      preparedAdmission: vi.fn(() => ({ synthetic: true })),
-      retainAdmission: vi.fn(() => true),
-      stage: vi.fn(() => true),
-      setPreparedRoot: vi.fn(),
-      peek: vi.fn((id) => (id === laterId ? { part: { complete: true } } : undefined)),
+    const cache = createConversationKnowledgeSourceCache();
+    onTestFinished(() => cache.clear());
+    const params = {
+      ...f.params,
+      sourceCache: cache,
+      expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
     };
-    expect(
-      await prepareRecipientConversationProjection(
-        {
-          ...f.params,
-          sourceCache: cache as unknown as ReplyConversationKnowledgeParams["sourceCache"],
-          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-        },
-        [{ reference, packet }],
-      ),
-    ).toBe(true);
-    expect(native.take).toHaveBeenCalledOnce();
-    expect(cache.stage).toHaveBeenCalledWith(
-      conversationKnowledgeContributionId(reference),
-      0,
-      packet,
-    );
-    expect(native.publish).toHaveBeenCalledWith(
-      expect.objectContaining({ receipts: [reference, second] }),
-    );
-  });
-  it("does not restage originals already represented in durable recipient history", async () => {
-    const f = fixture();
-    const id = conversationKnowledgeContributionId(reference);
+    const tail = [reference, second].map((value) => ({
+      reference: value,
+      packet: rawPacket(value),
+    }));
+    expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+    const manifest = cache.preparedRoot;
+    expect(native.group).toHaveBeenCalledOnce();
+    expect(native.groupRead).toHaveBeenCalledOnce();
+    expect(native.select.mock.calls.map(([ref]) => ref)).toEqual([reference, second]);
+    const firstId = conversationKnowledgeContributionId(reference);
+    cache.consume(firstId, 0);
     native.inputs.mockImplementation(async () => ({
       events: await native.scan(),
-      retained: new Map([[id, { complete: true }]]),
+      retained: new Map([[firstId, { complete: true }]]),
     }));
-    const cache = {
-      consumptionRevision: 0,
-      retainContributions: vi.fn(),
-      hasContribution: vi.fn(() => true),
-      invalidateContribution: vi.fn(),
-      retainCleanup: vi.fn(),
-      forgetCleanup: vi.fn(),
-      setPreparedRoot: vi.fn(),
-    };
-    expect(
-      await prepareRecipientConversationProjection(
-        {
-          ...f.params,
-          sourceCache: cache as unknown as ReplyConversationKnowledgeParams["sourceCache"],
-          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-        },
-        [],
-      ),
-    ).toBe(true);
-    expect(cache.invalidateContribution).toHaveBeenCalledWith(id);
-    expect(native.take).not.toHaveBeenCalled();
+    expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+    expect(cache.preparedRoot).toBe(manifest);
+    expect(native.group).toHaveBeenCalledOnce();
+    expect(native.groupRead).toHaveBeenCalledOnce();
+    expect(cache.peek(firstId, 0)).toBeUndefined();
+    expect(cache.peek(conversationKnowledgeContributionId(second), 0)).toEqual(rawPacket(second));
   });
-  it("does not restage an original when a foreground commit advances during preparation", async () => {
-    const f = fixture();
-    const entered = createDeferredCore();
-    const taken = createDeferredCore<boolean>();
-    native.take.mockImplementationOnce(() => {
+  it("does not restage an original when a foreground commit advances during group preparation", async () => {
+    const f = fixture(),
+      cache = createConversationKnowledgeSourceCache();
+    onTestFinished(() => cache.clear());
+    const entered = createDeferredCore(),
+      resume = createDeferredCore();
+    native.groupRead.mockImplementationOnce(async () => {
       entered.resolve();
-      return taken.promise;
+      await resume.promise;
+      return {
+        assertCurrent: native.checkSource,
+        release: native.releaseSource,
+        selectContribution: native.select,
+      };
     });
-    const cache = {
-      consumptionRevision: 0,
-      retainContributions: vi.fn(),
-      retainCleanup: vi.fn(),
-      forgetCleanup: vi.fn(),
-      peek: vi.fn(),
-      stage: vi.fn(),
-    };
-    const packet = {
-      through: anchor,
-      from: anchor,
-      part: {},
-    } as PreparedConversationKnowledgePacket;
     const pending = prepareRecipientConversationProjection(
       {
         ...f.params,
-        sourceCache: cache as unknown as ReplyConversationKnowledgeParams["sourceCache"],
+        sourceCache: cache,
         expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
       },
-      [{ reference, packet }],
+      [{ reference, packet: rawPacket(reference) }],
     );
     await entered.promise;
-    cache.consumptionRevision++;
-    taken.resolve(true);
+    cache.consume(conversationKnowledgeContributionId(reference), 0);
+    resume.resolve();
     expect(await pending).toBe(false);
-    expect(cache.stage).not.toHaveBeenCalled();
-    expect(native.publish).not.toHaveBeenCalled();
+    expect(cache.preparedPackets(1)).toHaveLength(0);
     expect(native.releaseSource).toHaveBeenCalledOnce();
+    expect(native.releaseGroup).toHaveBeenCalledOnce();
+  });
+  it("retires a canonical manifest when native rebinding loses its physical source", async () => {
+    const f = fixture(),
+      cache = createConversationKnowledgeSourceCache();
+    onTestFinished(() => cache.clear());
+    const params = {
+      ...f.params,
+      sourceCache: cache,
+      expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+    };
+    const tail = [{ reference, packet: rawPacket(reference) }];
+    expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+    native.rebind.mockRejectedValueOnce(new Error("Synthetic physical source replacement"));
+    await expect(prepareRecipientConversationProjection(params, tail)).rejects.toThrow(
+      "physical source replacement",
+    );
+    expect(cache.preparedRoot).toBeUndefined();
+    expect(native.releaseGroup).toHaveBeenCalledOnce();
+  });
+  it("defers an oversized canonical manifest to bounded ordinary preparation", async () => {
+    const f = fixture(),
+      cache = createConversationKnowledgeSourceCache(128);
+    onTestFinished(() => cache.clear());
+    native.issue.mockReturnValue({ byteLength: 129 });
+    expect(
+      await prepareRecipientConversationProjection(
+        {
+          ...f.params,
+          sourceCache: cache,
+          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+        },
+        [{ reference, packet: rawPacket(reference) }],
+      ),
+    ).toBe(false);
+    expect(native.group).not.toHaveBeenCalled();
+    expect(cache.preparedRoot).toBeUndefined();
+  });
+  it("does not stage shared bytes after native grouped authorization is revoked", async () => {
+    const f = fixture(),
+      cache = createConversationKnowledgeSourceCache();
+    onTestFinished(() => cache.clear());
+    native.groupRead.mockRejectedValueOnce(new SessionTranscriptReadFenceError("revoked donor"));
+    expect(
+      await prepareRecipientConversationProjection(
+        {
+          ...f.params,
+          sourceCache: cache,
+          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+        },
+        [{ reference, packet: rawPacket(reference) }],
+      ),
+    ).toBe(false);
+    expect(cache.preparedPackets(1)).toHaveLength(0);
+    expect(native.releaseGroup).toHaveBeenCalledOnce();
   });
   it("retains a summary only with fresh donor grants and native prospective capacity", async () => {
     const f = fixture();

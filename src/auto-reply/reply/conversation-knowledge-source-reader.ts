@@ -46,10 +46,7 @@ import {
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
-import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
 import type { preparePersonalConversationRead } from "../../gateway/session-transcript-personal-read.js";
-import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import {
   prepareConversationKnowledgeBranchFacts,
@@ -59,6 +56,7 @@ import type {
   ConversationKnowledgeSourceCache,
   PreparedConversationKnowledgePacket,
 } from "./conversation-knowledge-source-cache.js";
+import { createConversationKnowledgeSourceCustody } from "./conversation-knowledge-source-custody.js";
 import { logConversationKnowledgeTransfer } from "./conversation-knowledge-status.js";
 
 export type ConversationKnowledgeHeldSource = {
@@ -212,6 +210,7 @@ export async function readConversationKnowledgeInputs(params: {
       return await readPreparedConversationKnowledgeRoot({ ...params, manifest });
     } catch (error) {
       cache?.clearPreparationInputs();
+      params.sourceCache?.clearPreparedRoot(manifest);
       throw error;
     }
   };
@@ -432,7 +431,7 @@ export async function observePreparedConversationKnowledgePackets(params: {
  * The caller owns retained grants, revocation and cleanup; this closure owns
  * only disposable look-ahead prepared under those exact grants.
  */
-export function createConversationKnowledgeSourceReader(params: {
+export type ConversationKnowledgeSourceReaderParams = {
   branch: ConversationKnowledgeBranch;
   originalParticipant: SessionParticipantIdentity;
   destinationAudience?: ConversationPrivateAudience;
@@ -443,125 +442,18 @@ export function createConversationKnowledgeSourceReader(params: {
   signal?: AbortSignal;
   sourceCache?: ConversationKnowledgeSourceCache;
   readyOnly?: boolean;
+  retainInHistory?: boolean;
+  preparedManifest?: PreparedKnowledgeRootCandidates;
   hasRetainedContribution(contributionId: string): boolean;
   reads: ConversationKnowledgeHeldSource[];
   drop: (read: ConversationKnowledgeHeldSource) => void;
-}) {
-  const { branch, originalParticipant, targetFacts, reads, drop } = params;
-  const prepareSource = async (receipt: ConversationKnowledgeReference) => {
-    const contributionId = conversationKnowledgeContributionId(receipt);
-    const sourceTarget = { ...receipt.source, storePath: receipt.through.storePath };
-    const preparedAdmission = params.sourceCache?.preparedAdmission(sourceTarget);
-    if (params.readyOnly && !preparedAdmission) {
-      return undefined;
-    }
-    let grant: ConversationKnowledgeHeldSource["grant"];
-    let read: ConversationKnowledgeHeldSource | undefined;
-    try {
-      const request = {
-        purpose: "conversation-differences",
-        personal: {
-          originalParticipant,
-          assertCurrent: composeSessionSourceAssertion([
-            params.assertCurrent,
-            targetFacts.assertCurrent,
-          ]),
-          target: branch,
-          targetAudience: params.destinationAudience,
-          contribution: receipt,
-          rootEvidence: params.rootEvidence,
-        },
-        getRuntimeConfig: params.getRuntimeConfig,
-        sources: [receipt.source],
-      } as const;
-      try {
-        grant = await prepareTranscriptReadAuthority({ ...request, preparedAdmission });
-      } catch (error) {
-        params.sourceCache?.invalidateAdmission(sourceTarget);
-        // Only background preparation may reacquire invalid native custody.
-        // A live boundary consumes ready work and never waits for discovery.
-        if (!preparedAdmission || params.readyOnly) {
-          throw error;
-        }
-        params.assertCurrent();
-        targetFacts.assertCurrent();
-        params.signal?.throwIfAborted();
-        grant = await prepareTranscriptReadAuthority(request);
-      }
-      read = { grant };
-      reads.push(read);
-      grant.assertCurrent();
-      const source = grant.sources[0];
-      const admitted =
-        source && source.lifecycleRevision !== receipt.source.lifecycleRevision
-          ? grant.selectContribution(receipt)
-          : undefined;
-      if (
-        !source ||
-        source.agentId !== branch.agentId ||
-        source.canonicalKey !== receipt.source.sessionKey ||
-        source.sessionId !== receipt.source.sessionId ||
-        (source.lifecycleRevision !== receipt.source.lifecycleRevision &&
-          (!admitted ||
-            admitted.originalLifecycleRevision !== receipt.source.lifecycleRevision ||
-            admitted.currentLifecycleRevision !== source.lifecycleRevision)) ||
-        source.storePath !== branch.storePath ||
-        source.storePath !== receipt.through.storePath ||
-        grant.audienceIdentity !== targetFacts.audienceIdentity
-      ) {
-        params.sourceCache?.invalidateContribution(contributionId);
-        drop(read);
-        return undefined;
-      }
-      targetFacts.assertCurrent();
-      const sourceAssertion = composeSessionSourceAssertion([
-        params.assertCurrent,
-        targetFacts.assertCurrent,
-        grant.assertCurrent,
-      ]);
-      const projectionTarget = {
-        agentId: source.agentId,
-        sessionKey: source.canonicalKey,
-        sessionId: source.sessionId,
-        storePath: source.storePath,
-      };
-      const through = admitted?.through ?? grant.contributionRange?.through ?? receipt.through;
-      const from = admitted?.from ?? grant.contributionRange?.from;
-      return {
-        read,
-        grant,
-        sourceAssertion,
-        projectionTarget,
-        through,
-        from,
-        facts: grant,
-        historicalCustody: admitted,
-      };
-    } catch (error) {
-      if (read) {
-        drop(read);
-      }
-      // A hidden, removed or now-unreadable source does not become a discovery result.
-      params.assertCurrent();
-      targetFacts.assertCurrent();
-      params.signal?.throwIfAborted();
-      params.sourceCache?.invalidateContribution(contributionId);
-      if (
-        !(error instanceof SessionMutationAuthorizationChangedError) &&
-        !(error instanceof SessionTranscriptReadFenceError) &&
-        !(
-          params.readyOnly &&
-          preparedAdmission &&
-          error instanceof SessionMutationFactsUnavailableError
-        )
-      ) {
-        // Unavailable facts and worker failures must reach the background owner's
-        // bounded retry instead of silently settling this source as prepared.
-        throw error;
-      }
-      return undefined;
-    }
-  };
+};
+
+export function createConversationKnowledgeSourceReader(
+  params: ConversationKnowledgeSourceReaderParams,
+) {
+  const { branch, targetFacts, reads } = params;
+  const prepareSource = createConversationKnowledgeSourceCustody(params);
   type PreparedSource = NonNullable<Awaited<ReturnType<typeof prepareSource>>>;
   const preparedSources = new Map<string, PreparedSource>();
   // At most the current and next range are hydrated; future grants are not an eager all-source scan.
@@ -577,6 +469,15 @@ export function createConversationKnowledgeSourceReader(params: {
   };
   return {
     async validate(source: PreparedSource, staged: PreparedConversationKnowledgePacket) {
+      if (source.grouped && params.readyOnly && params.retainInHistory) {
+        source.sourceAssertion();
+        // Native group custody proves these exact anchors. The atomic writer
+        // still validates every packet's original staged version before copying.
+        return (
+          isDeepStrictEqual(staged.through, source.through) &&
+          isDeepStrictEqual(staged.from, source.from)
+        );
+      }
       const { validatePreparedConversationKnowledgeSource } =
         await import("./conversation-knowledge-source-validation.js");
       return validatePreparedConversationKnowledgeSource({
