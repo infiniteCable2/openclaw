@@ -1,6 +1,6 @@
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { withinTest } from "../../../test/helpers/promise.js";
 import {
   createOperationalRunInstanceRef,
@@ -13,6 +13,7 @@ import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
 } from "../../config/sessions/conversation-knowledge-packets.js";
+import * as knowledgeSeed from "../../config/sessions/conversation-knowledge-seed.js";
 import {
   readConversationKnowledgeBranch,
   recordConversationUtteranceObservation,
@@ -38,7 +39,7 @@ import { registerConversationKnowledgeCheckpointOwner } from "./conversation-kno
 import { prepareRecipientConversationProjection } from "./conversation-knowledge-checkpoint-recipient.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
-import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
+import * as knowledgePreparation from "./conversation-knowledge.js";
 import {
   createConversationKnowledgeScenario,
   person,
@@ -83,6 +84,8 @@ it.for([
     const cpu = process.cpuUsage();
     let phase = "setup";
     const stages: Array<Record<string, string | number | boolean>> = [];
+    const preparationFailures: Array<{ name: string; message: string }> = [];
+    const preparationOutcomes: Array<Record<string, boolean | number>> = [];
     const mark = (stage: string, counts: Record<string, number | boolean> = {}) => {
       phase = stage;
       stages.push({ stage, elapsedMs: Math.round(performance.now() - started), ...counts });
@@ -203,6 +206,9 @@ it.for([
             await withinTest(rootReady.promise, signal);
             const projection = checkpoint.projection();
             expect(projection.tail).toHaveLength(originalCount);
+            expect(countMarkers(projection.tail.map((item) => item.packet.part.text))).toBe(
+              originalCount,
+            );
             expect(projection.checkpoint).toBeUndefined();
             mark("shared-root-ready", { prepared: projection.tail.length });
 
@@ -212,9 +218,12 @@ it.for([
             ]);
             const nativeTarget = await resolveAgentRunSessionTarget({
               ...target,
+              sessionTarget: target,
               config: fixture.cfg,
               missingSessionKey: "resolve-existing",
             });
+            expect(nativeTarget.storePath).toBe(target.storePath);
+            expect(nativeTarget.sessionId).toBe(target.sessionId);
             const runId = "synthetic-cold-recipient-run";
             const writer = {
               ...nativeTarget,
@@ -252,7 +261,7 @@ it.for([
             // Hold only recipient read-ahead while one real source quantum creates
             // the partial native manifest. No storage, grant or projection is faked.
             resumeRecipient = recipient.owner.pausePreparation();
-            const partial = await prepareReplyConversationKnowledge({
+            const partial = await knowledgePreparation.prepareReplyConversationKnowledge({
               ...owner,
               originalParticipant: person,
               destinationAudience: audience,
@@ -330,7 +339,38 @@ it.for([
                 lifecycleAdmissionByOperation.delete(replyOperation);
               }
             };
+            const seed = vi.spyOn(knowledgeSeed, "ensureConversationKnowledgeSeed");
+            const prepare = knowledgePreparation.prepareReplyConversationKnowledge;
+            const preparation = vi
+              .spyOn(knowledgePreparation, "prepareReplyConversationKnowledge")
+              .mockImplementation(async (input) => {
+                try {
+                  const value = await prepare(input);
+                  preparationOutcomes.push({
+                    readyOnly: input.readyOnly === true,
+                    retainInHistory: Boolean(input.retainInHistory),
+                    prepared: Boolean(value),
+                    pending: value?.pendingPackets === true,
+                  });
+                  return value;
+                } catch (error) {
+                  preparationFailures.push({
+                    name: error instanceof Error ? error.name : "unknown",
+                    message: error instanceof Error ? error.message : "non-error failure",
+                  });
+                  throw error;
+                }
+              });
+            onTestFinished(() => {
+              preparation.mockRestore();
+              seed.mockRestore();
+            });
             await knowledge.prepare(admission, signal);
+            const seedResult = seed.mock.results[0];
+            if (!seedResult) {
+              throw new Error("Expected native seed preparation before the model boundary");
+            }
+            expect((await seedResult.value).status).not.toBe("pending");
             await withSessionTranscriptWriteAssertion(writer, owner.assertCurrent, () =>
               knowledge.prepareHistory({
                 ...followupRun.run,
@@ -455,6 +495,8 @@ it.for([
           originalCount,
           phase,
           stages,
+          preparationFailures,
+          preparationOutcomes,
           elapsedMs: Math.round(performance.now() - started),
           cpuMicroseconds: process.cpuUsage(cpu),
           processLifetimePeakRssKiB: process.resourceUsage().maxRSS,
