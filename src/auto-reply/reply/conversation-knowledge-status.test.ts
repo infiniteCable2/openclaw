@@ -68,11 +68,28 @@ describe("operational-only conversation diagnostics", () => {
   });
 
   it("correlates prepared and admitted packets without exposing their identities or text", () => {
+    const source = {
+      agentId: "example",
+      sessionId: "private-source",
+      sessionKey: "agent:example:source",
+      lifecycleRevision: "original",
+    };
     const receipt = {
-      source: { sessionId: "private-source" },
+      version: 1,
+      sourceMode: "branches",
+      runId: "synthetic-run",
+      source,
       origin: "private-origin",
-      through: { generation: "private-generation", rawSeq: 17, entryId: "private-entry" },
-    } as Parameters<typeof logConversationKnowledgeTransfer>[0]["receipt"];
+      through: {
+        ...source,
+        storePath: "/synthetic/state.sqlite",
+        generation: "private-generation",
+        rawSeq: 17,
+        entryId: "private-entry",
+        activeMessagePosition: 17,
+        effectiveParentId: null,
+      },
+    } satisfies Parameters<typeof logConversationKnowledgeTransfer>[0]["receipt"];
     for (const phase of ["prepared", "admitted"] as const) {
       logConversationKnowledgeTransfer({
         phase,

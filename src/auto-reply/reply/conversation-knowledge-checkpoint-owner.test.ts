@@ -293,7 +293,7 @@ describe("shared root projection preparation", () => {
       f.registration
         .projection()
         .tail.map((item) => item.reference.through.rawSeq)
-        .toSorted(),
+        .toSorted((left, right) => left - right),
     ).toEqual([1, 2, 3]);
   });
   it("keeps infrastructure failures eligible for the background owner's retry", async () => {
