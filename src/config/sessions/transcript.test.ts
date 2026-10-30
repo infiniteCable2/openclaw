@@ -1,6 +1,5 @@
 // Transcript tests cover session transcript persistence and formatting.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { repairToolUseResultPairing } from "../../agents/session-transcript-repair.js";
@@ -32,7 +31,6 @@ import { waitForSessionTranscriptIndexReconcile } from "./session-transcript-rec
 import { useTempSessionsFixture } from "./test-helpers.js";
 import {
   createExactAssistantMessage,
-  transcriptMessage,
   type ExactAssistantMessage,
 } from "./transcript-message.test-support.js";
 import {
