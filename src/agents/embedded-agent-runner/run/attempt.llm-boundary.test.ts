@@ -80,19 +80,20 @@ describe("normalizeMessagesForLlmBoundary", () => {
           errorMessage: "Interrupted request",
         }),
       ];
+      const secondRuntime = buildRuntimeContextCustomMessage("Second turn facts", undefined, true)!;
       const second = normalizeMessagesForLlmBoundary(
         [
           firstUser,
           firstRuntime,
           ...interrupted,
           user("Second question", timestamp + 1),
-          buildRuntimeContextCustomMessage("Second turn facts", undefined, true)!,
+          secondRuntime,
         ],
         boundaryOptions,
       );
       expect(second.slice(0, first.length)).toEqual(first);
       const oldContextIndex = second.findIndex(
-        (message) => "content" in message && message.content === "First turn facts",
+        (message) => "content" in message && message.content === firstRuntime.content,
       );
       const nextUserIndex = second.findIndex(
         (message) => "content" in message && message.content === "Second question",
@@ -100,7 +101,7 @@ describe("normalizeMessagesForLlmBoundary", () => {
       expect(oldContextIndex).toBe(1);
       expect(nextUserIndex).toBeGreaterThan(oldContextIndex);
       expect(second.at(-1)).toMatchObject({
-        content: "Second turn facts",
+        content: secondRuntime.content,
         operatorMessage: { turnScoped: true },
       });
     },
