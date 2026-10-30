@@ -34,7 +34,7 @@ type Recipient = {
   retainAudience(audience: ConversationPrivateAudience): void;
   retainContextBudget(
     capacity: (message: CustomMessage) => boolean,
-    model: { provider: string; model: string; config: OpenClawConfig },
+    model?: { provider: string; model: string; config: OpenClawConfig },
   ): void;
 };
 const log = createSubsystemLogger("conversation-knowledge");
@@ -97,12 +97,12 @@ export function prepareConversationKnowledgeRecipient(params: {
     | undefined;
   const retainContextBudget = (
     capacity: (message: CustomMessage) => boolean,
-    model: { provider: string; model: string; config: OpenClawConfig },
+    model?: { provider: string; model: string; config: OpenClawConfig },
   ) => {
     const value = capturePreparedConversationContextBudget(capacity);
     const current = params.getRuntimeConfig();
     contextBudget =
-      value && configSnapshotsMatch(model.config, current)
+      value && model && configSnapshotsMatch(model.config, current)
         ? {
             config: current,
             value,

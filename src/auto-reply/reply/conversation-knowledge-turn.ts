@@ -391,11 +391,12 @@ export function createReplyConversationKnowledgeTurn(params: {
         return [];
       }
       const revision = recipient.cache.revision;
-      recipient.retainContextBudget(input.canAdmit, {
-        provider: run.provider,
-        model: run.model,
-        config: run.config,
-      });
+      recipient.retainContextBudget(
+        input.canAdmit,
+        run.provider && run.model && run.config
+          ? { provider: run.provider, model: run.model, config: run.config }
+          : undefined,
+      );
       if (input.contextIdentity && input.contextIdentity !== replayContext) {
         replayContext = input.contextIdentity;
         replayPending = [...acceptedPackets.keys()];

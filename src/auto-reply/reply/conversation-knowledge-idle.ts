@@ -16,6 +16,7 @@ import {
 } from "../../config/sessions/session-source-authority.js";
 import { readSessionTranscriptContextProjectionAsync } from "../../config/sessions/session-transcript-context-read.js";
 import { readSessionTranscriptContextMessagesInWorker } from "../../config/sessions/session-transcript-read-worker-runtime.js";
+import { captureSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createAbortError, isAbortError } from "../../infra/abort-signal.js";
@@ -81,6 +82,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
   params: IdleKnowledgeParams,
 ): Promise<boolean> {
   const { branch, reader, sourceCache, budget } = params;
+  const target = captureSessionTranscriptTargetBinding({ ...branch, env: reader.database.env });
   const lane = resolveSessionLane(branch.sessionKey);
   if (
     !budget ||
@@ -214,7 +216,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                     const compactionPolicy = structuredClone(cfg.agents?.defaults?.compaction);
                     const contextEngine = cfg.plugins?.slots?.contextEngine;
                     const snapshot = await readSessionTranscriptContextProjectionAsync(
-                      { ...branch, env: reader.database.env },
+                      target,
                       async (selected) => {
                         const value = await readSessionTranscriptContextMessagesInWorker(
                           selected.target,
@@ -269,8 +271,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                       canAdmitPacket: canAdmit,
                       retainInHistory: {
                         writeTarget: {
-                          ...branch,
-                          env: reader.database.env,
+                          ...target,
                           expectedLifecycleRevision: branch.lifecycleRevision,
                         },
                         contextLimits: resolveEmbeddedSessionContextLimits(contextWindow),

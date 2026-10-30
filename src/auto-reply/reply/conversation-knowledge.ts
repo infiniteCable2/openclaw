@@ -381,7 +381,8 @@ async function prepareReplyConversationKnowledgeInMode(
         gap(receipt, "source-access-unavailable");
         continue;
       }
-      const { read, grant, sourceAssertion, through, from, facts } = preparedSource;
+      const { read, grant, sourceAssertion, projectionTarget, through, from, facts } =
+        preparedSource;
       preparingRead = read;
       const loadProjection = () =>
         sourceReader.load(
