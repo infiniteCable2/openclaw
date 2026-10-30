@@ -38,6 +38,7 @@ import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { createConversationKnowledgeBoundaryProfiler } from "./conversation-knowledge-boundary-profile.test-support.js";
 import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
 import { prepareRecipientConversationProjection } from "./conversation-knowledge-checkpoint-recipient.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
@@ -90,12 +91,13 @@ it.for([
     const preparationFailures: Array<{ name: string; message: string }> = [];
     const preparationOutcomes: Array<Record<string, boolean | number>> = [];
     const nativeBatchSizes: number[] = [];
+    const boundaryProfile = createConversationKnowledgeBoundaryProfiler();
     const retainPackets = knowledgePackets.retainConversationKnowledgePackets;
     const retention = vi
       .spyOn(knowledgePackets, "retainConversationKnowledgePackets")
       .mockImplementation((params) => {
         nativeBatchSizes.push(params.packets.length);
-        return retainPackets(params);
+        return boundaryProfile.observe("nativePacketRetention", () => retainPackets(params));
       });
     onTestFinished(() => retention.mockRestore());
     const mark = (stage: string, counts: Record<string, number | boolean> = {}) => {
@@ -384,7 +386,9 @@ it.for([
               .spyOn(knowledgePreparation, "prepareReplyConversationKnowledge")
               .mockImplementation(async (input) => {
                 try {
-                  const value = await prepare(input);
+                  const value = await boundaryProfile.observe("knowledgePreparation", () =>
+                    prepare(input),
+                  );
                   preparationOutcomes.push({
                     readyOnly: input.readyOnly === true,
                     retainInHistory: Boolean(input.retainInHistory),
@@ -431,11 +435,13 @@ it.for([
                   }),
                 }),
               );
-            const firstBoundary = await refresh();
+            const boundaryBegan = performance.now();
+            const firstBoundary = await boundaryProfile.measure(target.sessionId, refresh);
             messages.push(...convertToLlm(firstBoundary));
             mark("first-model-boundary", {
               admitted: firstBoundary.length,
               prospectiveModelOriginals: countMarkers(messages),
+              boundaryMs: Math.round(performance.now() - boundaryBegan),
             });
             expect.soft(countMarkers(messages)).toBe(originalCount);
             expect(
@@ -596,6 +602,9 @@ it.for([
           preparationFailures,
           preparationOutcomes,
           nativeBatchSizes,
+          firstBoundaryTimings: boundaryProfile.snapshot(),
+          timingMeaning:
+            "Pass-through first refresh window; inclusive nested/background timings can overlap and are not additive; no native result or error substituted.",
           elapsedMs: Math.round(performance.now() - started),
           cpuMicroseconds: process.cpuUsage(cpu),
           processLifetimePeakRssKiB: process.resourceUsage().maxRSS,
