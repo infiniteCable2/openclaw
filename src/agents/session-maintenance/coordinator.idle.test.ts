@@ -126,3 +126,69 @@ it("preempts admitted idle work and settles its real writes before foreground", 
   }
   expect(events).toEqual(["cleanup", "foreground"]);
 });
+
+it("keeps other branches responsive while one recipient yields and joins cancelled work", async () => {
+  const key = "session:three-path-preempted";
+  const owner = tryCreateIdleSessionMaintenanceOwner({ sessionKey: key });
+  if (!owner) {
+    throw new Error("Expected idle owner");
+  }
+  const started = createDeferred();
+  const aborted = createDeferred();
+  const cleanup = createDeferred();
+  const events: string[] = [];
+  owner.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+  const work = owner.track(
+    owner.run(async () => {
+      started.resolve();
+      try {
+        await aborted.promise;
+        owner.assertCurrent();
+        events.push("late-write");
+      } finally {
+        events.push("cleanup-started");
+        await cleanup.promise;
+        events.push("cleanup-joined");
+      }
+    }),
+  );
+  const stopped = expect(work).rejects.toMatchObject({ name: "AbortError" });
+  await started.promise;
+  const foreground = beginForegroundSessionMaintenance(key).then((release) => {
+    events.push("first-foreground");
+    return release;
+  });
+  let releaseOther = () => {};
+  let releaseFirst = () => {};
+  try {
+    await aborted.promise;
+    releaseOther = await beginForegroundSessionMaintenance("session:three-path-second");
+    events.push("second-foreground");
+    const third = tryCreateIdleSessionMaintenanceOwner({ sessionKey: "session:three-path-third" });
+    if (!third) {
+      throw new Error("Unrelated third branch must remain available");
+    }
+    await third.track(third.run(async () => events.push("third-idle-commit")));
+    expect(events).not.toContain("first-foreground");
+    expect(events).not.toContain("late-write");
+  } finally {
+    cleanup.resolve();
+    releaseFirst = await foreground;
+    releaseFirst();
+    releaseOther();
+    await stopped;
+  }
+  expect(events).toEqual([
+    "cleanup-started",
+    "second-foreground",
+    "third-idle-commit",
+    "cleanup-joined",
+    "first-foreground",
+  ]);
+  const resumed = tryCreateIdleSessionMaintenanceOwner({ sessionKey: key });
+  if (!resumed) {
+    throw new Error("Recipient must be reusable after the foreground run");
+  }
+  await resumed.track(resumed.run(async () => events.push("resumed-idle-commit")));
+  expect(events.at(-1)).toBe("resumed-idle-commit");
+});

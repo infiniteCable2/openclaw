@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
+import { resolveSessionStorePathCore } from "../src/config/sessions/paths.js";
+import { loadTranscriptEvents } from "../src/config/sessions/session-transcript-events.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
 import {
@@ -23,6 +26,8 @@ type Description = { session: { sessionId: string; visibility: string; sharingRo
 const WAIT = { timeout: 30_000, interval: 50 } as const;
 const FACT_A = "BIDIRECTIONAL_ALPHA_COBALT_73";
 const FACT_B = "BIDIRECTIONAL_BETA_AMBER_94";
+const FACT_C = "BIDIRECTIONAL_GAMMA_TEAL_28";
+const IDLE_FACT = "IDLE_DELIVERY_WITHOUT_RECIPIENT_INPUT_62";
 
 function config(model: Model): OpenClawConfig {
   const provider = buildMockOpenAiResponsesProvider(model.baseUrl, "bidirectional-proof");
@@ -53,7 +58,7 @@ function config(model: Model): OpenClawConfig {
     agents: {
       entries: { main: { conversationMode: "branches", skills: [] } },
       defaults: {
-        maxConcurrent: 2,
+        maxConcurrent: 3,
         model: { primary: provider.modelRef, fallbacks: [] },
         modelPolicy: { allow: [provider.modelRef] },
         models: {
@@ -113,11 +118,20 @@ function sourceReady(
     });
 }
 
-it("synchronizes two simultaneously active reusable branches bidirectionally without a model wakeup", async (context) => {
+it("synchronizes active and idle reusable branches without blocking a third conversation", async (context) => {
   let gateway: OpenClawTestInstance | undefined;
   let model: Model | undefined;
   let owner: Operator | undefined;
   const gates: Array<{ release(): void }> = [];
+  const phases: Array<Record<string, unknown>> = [];
+  let phase = "startup";
+  const mark = (next: string, facts: Record<string, unknown> = {}) => {
+    phase = next;
+    phases.push({ phase, observedAt: performance.now(), ...facts });
+  };
+  context.onTestFailed(() =>
+    console.error(JSON.stringify({ fixture: "branch-activity-transitions", phase, phases })),
+  );
   context.onTestFailed(() => console.error(gateway?.logs()));
   await runQaGatewayTestFixture(
     context,
@@ -136,10 +150,12 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
         },
       });
       isolateConversationGatewayEnvironment(gateway);
+      gateway.state.applyEnv();
       await gateway.startGateway();
       owner = await connectConversationOperator(gateway, "alex@example.test", signal);
       const a = `agent:main:duplex-alpha-${randomUUID()}`;
       const b = `agent:main:duplex-beta-${randomUUID()}`;
+      const c = `agent:main:duplex-gamma-${randomUUID()}`;
       const start = async (key: string, message: string): Promise<Turn> => {
         const callStartedAt = performance.now();
         const result = await owner!.call<{ runId: string; status: string }>("chat.send", {
@@ -172,6 +188,18 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
         return { ...turn, input: JSON.stringify(model!.requests[index]), acceptedAt: acceptedAt! };
       };
       const describe = (key: string) => owner!.call<Description>("sessions.describe", { key });
+      const storePath = resolveSessionStorePathCore(undefined, {
+        agentId: "main",
+        env: gateway.state.env,
+      });
+      const retained = (sessionKey: string, sessionId: string) =>
+        loadTranscriptEvents({
+          agentId: "main",
+          storePath,
+          sessionKey,
+          sessionId,
+          env: gateway!.state.env,
+        });
       const sequence = async (key: string, marker: string) => {
         const history = await owner!.call<{
           messages: Array<{
@@ -193,6 +221,8 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
       };
       await send(a, "ALPHA_LOCAL_HISTORY_21");
       await send(b, "BETA_LOCAL_HISTORY_31");
+      await send(c, "GAMMA_LOCAL_HISTORY_35");
+      mark("three-ordinary-native-runs-completed");
       const [alpha, beta] = await Promise.all([describe(a), describe(b)]);
       for (const description of [alpha, beta]) {
         expect(description.session).toMatchObject({ visibility: "draft", sharingRole: "owner" });
@@ -246,10 +276,23 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
         ready("beta to alpha", alpha.session.sessionId, beta.session.sessionId, seqB),
       ]);
       expect(model.requests).toHaveLength(before + 2); // Sync must never dispatch a model itself.
+      // These are three generic conversation endpoints, not three physical media
+      // transports. Two real provider calls remain held while the third proceeds.
+      mark("two-provider-responses-held");
+      const healthStarted = performance.now();
+      await owner.call("health", {});
+      const healthMs = performance.now() - healthStarted;
+      const third = await send(c, `Remember this independent gamma fact: ${FACT_C}`);
+      expect(third.input).toContain(FACT_C);
+      expect(model.requests).toHaveLength(before + 3);
+      mark("third-conversation-finished-while-two-held", {
+        healthMs,
+        thirdDispatchMs: third.acceptedAt - third.callStartedAt,
+      });
       heldOne.release();
       heldTwo.release();
       await Promise.all([finish(turnA), finish(turnB)]);
-      expect(model.requests).toHaveLength(before + 2);
+      expect(model.requests).toHaveLength(before + 3);
 
       const exact = (input: string) => {
         for (const marker of [FACT_A, FACT_B]) {
@@ -268,6 +311,56 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
       exact((await send(b, "BETA_REPEAT_PROBE_71")).input);
       expect((await describe(a)).session.sessionId).toBe(alpha.session.sessionId);
       expect((await describe(b)).session.sessionId).toBe(beta.session.sessionId);
+      // Prove the observer can read ordinary originals before using it to judge
+      // synchronization. Reader setup failures must not become an idle timeout.
+      const [aBeforeIdle, bBeforeIdle] = await Promise.all([
+        retained(a, alpha.session.sessionId),
+        retained(b, beta.session.sessionId),
+      ]);
+      expect(JSON.stringify(aBeforeIdle)).toContain("ALPHA_LOCAL_HISTORY_21");
+      expect(JSON.stringify(bBeforeIdle)).toContain("BETA_LOCAL_HISTORY_31");
+      // A real completed run retains its native writer fence. Do not manufacture
+      // idleness by clearing that field in a fixture, or send another target turn
+      // to make foreground catch-up hide a broken background admission.
+      mark("publishing-to-settled-recipients");
+      const idleSource = await send(c, IDLE_FACT);
+      const idleRequests = model.requests.length;
+      let deliveries = { alpha: 0, beta: 0 };
+      let idleObservedAt: number | undefined;
+      try {
+        await vi.waitFor(async () => {
+          // chat.history intentionally hides display:false knowledge packets.
+          // Read only this fixture's canonical ledger through the native worker API.
+          const [aHistory, bHistory] = await Promise.all([
+            retained(a, alpha.session.sessionId),
+            retained(b, beta.session.sessionId),
+          ]);
+          const count = (events: typeof aHistory) =>
+            events
+              .map(asOptionalRecord)
+              .filter(
+                (row) =>
+                  row?.type === "custom_message" &&
+                  row.customType === "openclaw.conversation-knowledge-context.v1" &&
+                  typeof row.content === "string" &&
+                  row.content.includes(IDLE_FACT),
+              ).length;
+          deliveries = { alpha: count(aHistory), beta: count(bHistory) };
+          expect(model!.requests).toHaveLength(idleRequests);
+          expect(deliveries).toEqual({ alpha: 1, beta: 1 });
+          idleObservedAt = performance.now();
+        }, WAIT);
+      } finally {
+        mark("idle-durable-delivery", {
+          ...deliveries,
+          elapsedMs: performance.now() - idleSource.callStartedAt,
+          unexpectedModelRequests: model.requests.length - idleRequests,
+          busyRefusals:
+            gateway.logs().split("Idle conversation recipient has an active owner").length - 1,
+          observation: "durable history read, no recipient input or forced catch-up",
+        });
+      }
+      expect(idleObservedAt).toBeDefined();
       const metrics = (
         turn: Turn,
         readyAt: number,
@@ -286,6 +379,7 @@ it("synchronizes two simultaneously active reusable branches bidirectionally wit
       console.info(
         JSON.stringify({
           fixture: "two-active-reusable-branches",
+          activityTransitions: phases,
           clock: "single-test-process-performance.now",
           readyObservation: "upper-bound-includes-log-delivery-history-probes-and-50ms-polling",
           providerObservation: "request-body-accepted-before-response-gate; not inference latency",

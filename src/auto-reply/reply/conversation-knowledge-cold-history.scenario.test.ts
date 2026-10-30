@@ -76,11 +76,27 @@ const countMarkers = (messages: unknown) =>
   new Set(JSON.stringify(messages).match(/SYNTH_ORIGINAL_\d+_\d+/gu) ?? []).size;
 
 it.for([
-  { label: "15 originals across 3 donors", donorCount: 3, originalsPerDonor: 5 },
-  { label: "450 originals across 30 donors", donorCount: 30, originalsPerDonor: 15 },
+  {
+    label: "15 originals across 3 donors",
+    donorCount: 3,
+    originalsPerDonor: 5,
+    settledWriter: false,
+  },
+  {
+    label: "450 originals across 30 donors",
+    donorCount: 30,
+    originalsPerDonor: 15,
+    settledWriter: false,
+  },
+  {
+    label: "settled writer across 3 donors",
+    donorCount: 3,
+    originalsPerDonor: 5,
+    settledWriter: true,
+  },
 ])(
   "$label: exposes cold partial-manifest and reused idle-admission gaps",
-  async ({ label, donorCount, originalsPerDonor }, { signal }) => {
+  async ({ label, donorCount, originalsPerDonor, settledWriter }, { signal }) => {
     const originalCount = donorCount * originalsPerDonor;
     model.summarize.mockClear();
     model.compact.mockClear();
@@ -482,7 +498,11 @@ it.for([
             releaseTurn = () => {};
             await upsertSessionEntryCore(target, {
               ...loadSessionEntry(target)!,
-              activeWriterRunId: undefined,
+              // Native completion keeps the writer fence. Cover that actual row
+              // shape as well as metadata-only recipients with no previous run.
+              activeWriterRunId: settledWriter
+                ? loadSessionEntry(target)!.activeWriterRunId
+                : undefined,
               status: "done",
             });
             await withinTest(recipient.owner.wait(), signal);
