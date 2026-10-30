@@ -1,4 +1,5 @@
 import path from "node:path";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createBackgroundWorkOwner } from "../../process/background-work.js";
@@ -59,10 +60,27 @@ export function createConversationKnowledgePrefetchOwner(params: {
     params.assertCurrent();
     execution?.assertCurrent();
   };
-  const warn = (errorCode: "preparation-deferred" | "cleanup-pending") => {
+  const warn = (errorCode: "preparation-deferred" | "cleanup-pending", error?: unknown) => {
     if (!reportedFailures.has(errorCode)) {
       reportedFailures.add(errorCode);
-      log.warn("Related-history background preparation remains deferred.", { errorCode });
+      const failureClass =
+        error instanceof Error &&
+        [
+          "SessionTranscriptReadFenceError",
+          "SessionMutationFactsUnavailableError",
+          "SessionMutationAuthorizationChangedError",
+          "PersonalConversationReadRefusedError",
+          "RangeError",
+          "AbortError",
+        ].includes(error.name)
+          ? error.name
+          : "unknown";
+      log.warn("Related-history background preparation remains deferred.", {
+        errorCode,
+        recipientHash: redactIdentifier(target.sessionId),
+        rootHash: redactIdentifier(root.sessionId),
+        failureClass,
+      });
     }
   };
   const cancelRetry = () => {
@@ -186,7 +204,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
               },
               { abortSignal: controller.signal },
             );
-          } catch {
+          } catch (error) {
             if (controller.signal.aborted) {
               return;
             }
@@ -196,7 +214,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
               stop();
               return;
             }
-            warn("preparation-deferred");
+            warn("preparation-deferred", error);
             if (!requested) {
               retry();
             }

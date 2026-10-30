@@ -8,6 +8,7 @@ vi.mock("../../logging/subsystem.js", () => ({ createSubsystemLogger: () => log 
 import {
   createConversationKnowledgeGapCollector,
   logConversationKnowledgeDiagnostic,
+  logConversationKnowledgeTransfer,
 } from "./conversation-knowledge-status.js";
 
 beforeEach(() => {
@@ -63,6 +64,38 @@ describe("operational-only conversation diagnostics", () => {
     logConversationKnowledgeDiagnostic({ recipient: "example" });
     log.isEnabled.mockReturnValue(false);
     logConversationKnowledgeDiagnostic({ recipient: "example", pending: "context-window" });
+    expect(log.debug).not.toHaveBeenCalled();
+  });
+
+  it("correlates prepared and admitted packets without exposing their identities or text", () => {
+    const receipt = {
+      source: { sessionId: "private-source" },
+      origin: "private-origin",
+      through: { generation: "private-generation", rawSeq: 17, entryId: "private-entry" },
+    } as Parameters<typeof logConversationKnowledgeTransfer>[0]["receipt"];
+    for (const phase of ["prepared", "admitted"] as const) {
+      logConversationKnowledgeTransfer({
+        phase,
+        receipt,
+        recipient: "private-recipient",
+        offset: 0,
+        complete: true,
+      });
+    }
+    const events = log.debug.mock.calls.map(([, event]) => event);
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ phase: "prepared", throughSeq: 17 });
+    expect(events[1]).toEqual({ ...events[0], phase: "admitted" });
+    expect(JSON.stringify(events)).not.toContain("private-");
+    log.debug.mockClear();
+    log.isEnabled.mockReturnValue(false);
+    logConversationKnowledgeTransfer({
+      phase: "prepared",
+      receipt,
+      recipient: "private-recipient",
+      offset: 0,
+      complete: true,
+    });
     expect(log.debug).not.toHaveBeenCalled();
   });
 });

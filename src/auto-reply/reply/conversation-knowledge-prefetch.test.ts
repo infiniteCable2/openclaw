@@ -40,6 +40,7 @@ vi.mock("./conversation-knowledge-source-cache.js", () => ({
     forgetCleanup: vi.fn(),
     retryCleanup: vi.fn(),
     diagnosticPreparedFrontiers: () => [],
+    diagnosticCapacity: () => ({}),
   }),
 }));
 // mock-isolation: Keep process-global recipient retention private to this test module.

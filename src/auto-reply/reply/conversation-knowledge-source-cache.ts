@@ -270,6 +270,9 @@ export function createConversationKnowledgeSourceCache<
     get consumptionRevision() {
       return consumptionRevision;
     },
+    diagnosticCapacity() {
+      return { preparedPackets: staged.size, stagedBytes, admissionBytes, maxBytes };
+    },
     diagnosticPreparedFrontiers() {
       const frontiers = new Map<string, number>();
       for (const slot of staged.values()) {

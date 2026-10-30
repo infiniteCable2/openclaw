@@ -254,13 +254,16 @@ export function prepareConversationKnowledgeRecipient(params: {
             sourceCursor,
           });
           sourceCursor = prepared?.nextSourceCursor;
-          log.debug("Related-history source preparation settled", {
-            recipientHash: redactIdentifier(branch.sessionId),
-            preparedSourceFrontiers: cache.diagnosticPreparedFrontiers(),
-            elapsedMs: Math.round(performance.now() - startedAt),
-            hasContinuation: sourceCursor !== undefined,
-            saturated: prepared?.preparationSaturated === true,
-          });
+          if (log.isEnabled("debug")) {
+            log.debug("Related-history source preparation settled", {
+              recipientHash: redactIdentifier(branch.sessionId),
+              preparedSourceFrontiers: cache.diagnosticPreparedFrontiers(),
+              ...cache.diagnosticCapacity(),
+              elapsedMs: Math.round(performance.now() - startedAt),
+              hasContinuation: sourceCursor !== undefined,
+              saturated: prepared?.preparationSaturated === true,
+            });
+          }
           prepared?.release();
           const latest = rootCheckpoint.latest();
           if (latest) {

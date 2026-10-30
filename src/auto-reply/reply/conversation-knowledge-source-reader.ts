@@ -56,6 +56,7 @@ import {
   unavailableConversationKnowledge,
 } from "./conversation-knowledge-authority.js";
 import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
+import { logConversationKnowledgeTransfer } from "./conversation-knowledge-status.js";
 
 export type ConversationKnowledgeHeldSource = {
   grant: Awaited<ReturnType<typeof preparePersonalConversationRead>>;
@@ -564,6 +565,51 @@ export function createConversationKnowledgeSourceReader(params: {
     throw new SessionTranscriptReadFenceError("Conversation source range is no longer verified");
   };
   return {
+    async stage(input: {
+      source: PreparedSource;
+      receipt: ConversationKnowledgeReference;
+      projection: SessionTranscriptModelContext;
+      offset: number;
+      expectedConsumptionRevision: number | undefined;
+    }) {
+      const { source, receipt } = input;
+      const cache = params.sourceCache;
+      const id = conversationKnowledgeContributionId(receipt);
+      const target = { ...receipt.source, storePath: receipt.through.storePath };
+      const previouslyUsable =
+        cache?.firstPreparedOffset(id) !== undefined &&
+        cache.preparedAdmission(target) !== undefined;
+      const preparation = await stageConversationKnowledgeSource({
+        ...input,
+        audience: source.facts.audience,
+        through: source.through,
+        from: source.from,
+        assertCurrent: source.sourceAssertion,
+        signal: params.signal,
+        cache,
+      });
+      if (cache?.firstPreparedOffset(id) !== undefined) {
+        if (
+          !cache.retainAdmission(
+            id,
+            target,
+            cache.preparedAdmission(target) ?? source.grant.prepareAdmission(),
+          )
+        ) {
+          return "cache-full" as const;
+        }
+        if (!previouslyUsable) {
+          logConversationKnowledgeTransfer({
+            phase: "prepared",
+            recipient: branch.sessionId,
+            receipt,
+            offset: input.offset,
+            complete: preparation === "complete",
+          });
+        }
+      }
+      return preparation;
+    },
     async take(receipt: ConversationKnowledgeReference) {
       const contributionId = conversationKnowledgeContributionId(receipt);
       const cachedSource = preparedSources.get(contributionId);

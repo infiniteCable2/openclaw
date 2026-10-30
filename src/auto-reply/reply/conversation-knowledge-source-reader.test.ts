@@ -36,6 +36,8 @@ const boundary = vi.hoisted(() => ({
   progress: vi.fn(),
   version: vi.fn(),
   register: vi.fn<(resource: OpenClawAgentDatabaseAsyncResource) => () => void>(),
+  debug: vi.fn(),
+  logEnabled: false,
 }));
 
 // mock-isolation: Supply grant outcomes; native policy classification has its own owner regression.
@@ -90,7 +92,13 @@ vi.mock("../../state/openclaw-agent-execution.js", () => ({
 }));
 // mock-isolation: Synthetic failures must not create application logs or disclose source errors.
 vi.mock("../../logging/subsystem.js", () => ({
-  createSubsystemLogger: () => ({ debug() {}, warn() {}, error() {}, info() {} }),
+  createSubsystemLogger: () => ({
+    isEnabled: () => boundary.logEnabled,
+    debug: boundary.debug,
+    warn() {},
+    error() {},
+    info() {},
+  }),
 }));
 // mock-isolation: Keep real queue scheduling without external diagnostic side effects.
 vi.mock("../../logging/diagnostic-runtime.js", () => ({
@@ -139,6 +147,8 @@ function fixture(signal?: AbortSignal) {
     audienceIdentity: "person-example",
     assertCurrent: vi.fn(),
     release: vi.fn(),
+    // This fixture never passes retained custody to the real authority reader.
+    prepareAdmission: vi.fn(() => ({ byteLength: 0, release() {} })),
     sources: [
       { ...receipt.source, canonicalKey: receipt.source.sessionKey, storePath: branch.storePath },
     ],
@@ -191,6 +201,7 @@ function fixture(signal?: AbortSignal) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  boundary.logEnabled = false;
   boundary.grant.mockReset();
   boundary.facts.mockReset();
   resetCommandQueueStateForTest();
@@ -503,6 +514,39 @@ describe("bounded authorized source preparation", () => {
     };
     return { receipt, projection, text: question + answer };
   }
+
+  it("reports readiness only after native admission fits, including recovery of already staged bytes", async () => {
+    const f = fixture();
+    f.cache.invalidateContribution(f.receipt.origin);
+    const { source } = await f.reader.take(f.receipt);
+    if (!source) {
+      throw new Error("Expected current synthetic source authority");
+    }
+    const retain = vi.spyOn(f.cache, "retainAdmission").mockReturnValueOnce(false);
+    boundary.logEnabled = true;
+    const request = {
+      source,
+      receipt: f.receipt,
+      projection: longSource().projection,
+      offset: 0,
+      expectedConsumptionRevision: f.cache.consumptionRevision,
+    };
+    try {
+      expect(await f.reader.stage(request)).toBe("cache-full");
+      expect(f.cache.firstPreparedOffset(f.receipt.origin)).toBe(0);
+      expect(boundary.debug).not.toHaveBeenCalled();
+      expect(await f.reader.stage(request)).toBe("complete");
+      expect(boundary.debug).toHaveBeenCalledExactlyOnceWith(
+        "Conversation knowledge transfer",
+        expect.objectContaining({ phase: "prepared", complete: true, offset: 0 }),
+      );
+      expect(JSON.stringify(boundary.debug.mock.calls)).not.toContain(f.branch.sessionKey);
+    } finally {
+      retain.mockRestore();
+      f.drop(source.read);
+      f.cache.clear();
+    }
+  });
 
   it("fills beyond two segments, stops at its byte budget, and preserves the exact source prefix", async () => {
     const source = longSource();

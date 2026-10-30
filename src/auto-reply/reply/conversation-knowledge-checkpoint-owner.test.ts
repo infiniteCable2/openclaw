@@ -1,5 +1,10 @@
+import "../../test-utils/prepare-compiled-subprocesses.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
+import {
+  prepareConversationKnowledgeCheckpointCoverage,
+  type ConversationKnowledgeCheckpoint,
+} from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import {
@@ -20,6 +25,12 @@ const boundary = vi.hoisted(() => ({
     | undefined,
   refs: [] as ConversationKnowledgeReference[],
   read: vi.fn(),
+  validate: vi.fn(),
+  verifyAll: vi.fn(),
+  latest: undefined as ConversationKnowledgeCheckpoint | undefined,
+  records: [] as ConversationKnowledgeCheckpoint[],
+  coverage: vi.fn(),
+  append: vi.fn(),
   acquire: vi.fn(),
   release: vi.fn(),
   modelRelease: vi.fn(),
@@ -68,13 +79,13 @@ vi.mock("../../config/sessions/conversation-knowledge-checkpoint-store.js", () =
         throw new Error("Composed report sources require worker-prepared authority");
       }
       prepared.assertCurrent();
-      return undefined;
+      return boundary.latest;
     } finally {
       await prepared.release?.();
     }
   },
-  readConversationKnowledgeCheckpointCoverage: vi.fn(),
-  appendConversationKnowledgeCheckpoint: vi.fn(),
+  readConversationKnowledgeCheckpointCoverage: boundary.coverage,
+  appendConversationKnowledgeCheckpoint: boundary.append,
 }));
 // mock-isolation: Supply revocable synthetic database custody without opening SQLite or starting admission workers.
 vi.mock("../../config/sessions/session-accessor.sqlite-entry-admission.js", () => ({
@@ -89,8 +100,9 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
     return {
       references: boundary.refs,
       read: boundary.read,
-      validate: vi.fn(async () => {}),
+      validate: boundary.validate,
       verify: vi.fn(),
+      verifyAll: boundary.verifyAll,
       source: () =>
         Object.assign(() => {}, {
           prepareSessionSource: async () => ({ assertCurrent() {}, checks: [] }),
@@ -199,6 +211,31 @@ async function quantum() {
 beforeEach(() => {
   vi.resetAllMocks();
   boundary.refs = [reference(1)];
+  boundary.latest = undefined;
+  boundary.records = [];
+  boundary.coverage.mockImplementation(
+    ({ checkpoint }: { checkpoint: ConversationKnowledgeCheckpoint }) =>
+      prepareConversationKnowledgeCheckpointCoverage({
+        checkpoint,
+        records: boundary.records,
+        assertCurrent() {},
+      }),
+  );
+  boundary.append.mockImplementation(
+    async ({ checkpoint }: { checkpoint: ConversationKnowledgeCheckpoint }) => {
+      boundary.records.push(checkpoint);
+      boundary.latest = checkpoint;
+    },
+  );
+  boundary.verifyAll.mockImplementation(async (references, verified) => {
+    for (const ref of references) {
+      verified(ref, {
+        through: ref.readRange?.through ?? ref.through,
+        from: ref.readRange?.admission ?? ref.privateAudience?.admission,
+      });
+    }
+    return true;
+  });
   boundary.load.mockImplementation(async (target) => ({
     entry: { sessionId: target.sessionId, lifecycleRevision: target.lifecycleRevision },
     databaseClaim: { kind: "worker", reader: {}, assertCurrent() {}, release: boundary.release },
@@ -214,6 +251,10 @@ beforeEach(() => {
       through: ref.readRange?.through ?? ref.through,
       from: ref.readRange?.admission ?? ref.privateAudience?.admission,
     },
+  }));
+  boundary.validate.mockImplementation(async (ref: ConversationKnowledgeReference) => ({
+    through: ref.readRange?.through ?? ref.through,
+    from: ref.readRange?.admission ?? ref.privateAudience?.admission,
   }));
   boundary.acquire.mockImplementation(async () => ({
     planning: {
@@ -231,6 +272,86 @@ afterEach(async () => {
 });
 
 describe("shared root projection preparation", () => {
+  it("prepares later originals past an unavailable range without acknowledging or summarizing the gap", async () => {
+    const f = register();
+    boundary.refs = [reference(1), reference(2), reference(3)];
+    boundary.read.mockResolvedValueOnce(undefined);
+    expect(await quantum()).toBe(false);
+    expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2, 3]);
+    expect(f.registration.projection().tail.map((item) => item.reference.through.rawSeq)).toEqual([
+      2, 3,
+    ]);
+    expect(f.ready).toHaveBeenCalledOnce();
+    expect(boundary.plan).not.toHaveBeenCalled();
+    expect(boundary.summarize).not.toHaveBeenCalled();
+
+    // A later real notification can resolve the gap; prepared later originals
+    // remain cached and the original occurrence is never marked consumed.
+    expect(await quantum()).toBe(false);
+    expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2, 3, 1]);
+    expect(
+      f.registration
+        .projection()
+        .tail.map((item) => item.reference.through.rawSeq)
+        .toSorted(),
+    ).toEqual([1, 2, 3]);
+  });
+  it("keeps infrastructure failures eligible for the background owner's retry", async () => {
+    register();
+    const failure = new Error("Synthetic worker unavailable");
+    boundary.read.mockRejectedValueOnce(failure);
+    await expect(quantum()).rejects.toBe(failure);
+    expect(boundary.summarize).not.toHaveBeenCalled();
+    expect(boundary.sourceRelease).toHaveBeenCalledOnce();
+    expect(boundary.release).toHaveBeenCalledOnce();
+  });
+  it("summarizes valid originals across a gap and later adds only the recovered occurrence to coverage", async () => {
+    const f = register();
+    const missing = reference(1),
+      valid = reference(2);
+    boundary.refs = [missing, valid];
+    const read = boundary.read.getMockImplementation()!;
+    boundary.read.mockImplementation(async (ref: ConversationKnowledgeReference) => ({
+      ...(await read(ref)),
+      text: "quoted ".repeat(2_000),
+    }));
+    boundary.read.mockResolvedValueOnce(undefined);
+    boundary.acquire.mockImplementation(async () => ({
+      planning: {
+        budget: { contextTokenBudget: 1_000, prompt: "" },
+        settings: { enabled: true, reserveTokens: 100, keepRecentTokens: 100 },
+      },
+      summarize: boundary.summarize,
+      [Symbol.asyncDispose]: boundary.modelRelease,
+    }));
+    boundary.plan.mockReturnValue({ kind: "ready" });
+    boundary.summarize.mockImplementation(async ({ contributions }) => ({
+      kind: "candidate",
+      summary: "A summary of the supplied complete originals.",
+      coveredContributionIds: contributions.map(
+        (item: { contributionId: string }) => item.contributionId,
+      ),
+      retainedContributionIds: [],
+    }));
+    expect(await quantum()).toBe(true);
+    const first = f.registration.latest()!;
+    expect(first.checkpoint.coveredContributionIds).toEqual([
+      conversationKnowledgeContributionId(valid),
+    ]);
+    expect(first.coverage.has(conversationKnowledgeContributionId(missing))).toBe(false);
+    expect(boundary.summarize.mock.calls[0]![0].contributions).toHaveLength(1);
+
+    expect(await quantum()).toBe(true);
+    const next = f.registration.latest()!;
+    expect(next.checkpoint.previousCheckpointId).toBe(first.checkpoint.checkpointId);
+    expect(next.checkpoint.coveredContributionIds).toEqual([
+      conversationKnowledgeContributionId(missing),
+    ]);
+    expect([...next.coverage.contributionIds()].toSorted()).toEqual(
+      [missing, valid].map(conversationKnowledgeContributionId).toSorted(),
+    );
+    expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2, 1]);
+  });
   it("hydrates only new originals, shares below-threshold packets and does not reacquire model auth on unchanged roots", async () => {
     const first = register();
     await quantum();

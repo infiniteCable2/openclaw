@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -409,12 +411,17 @@ describe("conversation knowledge prefetch lifecycle", () => {
   it("retries a read failure without erasing valid cached ranges", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const f = fixture();
-    f.prepare.mockRejectedValueOnce(new Error("synthetic source changed"));
+    f.prepare.mockRejectedValueOnce(
+      new SessionTranscriptReadFenceError("synthetic source changed"),
+    );
     await f.owner.wait();
     expect(f.prepare).toHaveBeenCalledOnce();
     expect(f.clear).not.toHaveBeenCalled();
     expect(boundary.warn).toHaveBeenCalledWith(expect.any(String), {
       errorCode: "preparation-deferred",
+      recipientHash: redactIdentifier(target.sessionId),
+      rootHash: redactIdentifier(target.root.sessionId),
+      failureClass: "SessionTranscriptReadFenceError",
     });
     await vi.advanceTimersByTimeAsync(1_000);
     await f.owner.wait();

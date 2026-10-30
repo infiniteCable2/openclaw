@@ -31,12 +31,12 @@ import {
   publishPreparedConversationKnowledgeRoot,
   readConversationKnowledgeInputs,
   prepareConversationKnowledgeTarget,
-  stageConversationKnowledgeSource,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
 import {
   createConversationKnowledgeGapCollector,
   logConversationKnowledgeDiagnostic,
+  logConversationKnowledgeTransfer,
 } from "./conversation-knowledge-status.js";
 import type {
   PreparedReplyConversationKnowledge,
@@ -247,6 +247,13 @@ async function prepareReplyConversationKnowledgeInMode(
           conversationKnowledgeContributionId(admission.receipt),
           admission.offset,
         );
+        logConversationKnowledgeTransfer({
+          phase: "admitted",
+          recipient: branch.sessionId,
+          receipt: admission.receipt,
+          offset: admission.offset,
+          complete: admission.complete,
+        });
       }
       const firstMissing = batch[result.accepted];
       if (firstMissing) {
@@ -351,6 +358,7 @@ async function prepareReplyConversationKnowledgeInMode(
       const { source: preparedSource, projection: preparedProjection } =
         await sourceReader.take(receipt);
       if (!preparedSource) {
+        gap(receipt, "source-access-unavailable");
         continue;
       }
       const { read, grant, sourceAssertion, projectionTarget, through, from, facts } =
@@ -480,30 +488,13 @@ async function prepareReplyConversationKnowledgeInMode(
       grant.assertCurrent();
       facts.assertCurrent();
       if (params.preparationOnly) {
-        let preparation = await stageConversationKnowledgeSource({
+        const preparation = await sourceReader.stage({
+          source: preparedSource,
           receipt,
           projection,
-          audience: facts.audience,
           offset: admitted?.nextOffset ?? 0,
-          through,
-          from,
-          assertCurrent: sourceAssertion,
-          signal: params.signal,
-          cache: params.sourceCache,
           expectedConsumptionRevision: preparationConsumptionRevision,
         });
-        if (params.sourceCache?.firstPreparedOffset(contributionId) !== undefined) {
-          const sourceTarget = { ...receipt.source, storePath: receipt.through.storePath };
-          if (
-            !params.sourceCache.retainAdmission(
-              contributionId,
-              sourceTarget,
-              params.sourceCache.preparedAdmission(sourceTarget) ?? grant.prepareAdmission(),
-            )
-          ) {
-            preparation = "cache-full";
-          }
-        }
         drop(read);
         if (preparation !== "complete") {
           preparationSaturated = preparation === "cache-full";
@@ -587,6 +578,13 @@ async function prepareReplyConversationKnowledgeInMode(
           sourceAssertion();
           params.onPacket?.(message);
           params.sourceCache?.consume(contributionId, offset);
+          logConversationKnowledgeTransfer({
+            phase: "admitted",
+            recipient: branch.sessionId,
+            receipt,
+            offset,
+            complete: part.complete,
+          });
         } else {
           queuedPackets.push({
             admission: {

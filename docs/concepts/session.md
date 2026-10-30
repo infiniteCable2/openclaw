@@ -200,6 +200,12 @@ form an immutable chain with delta coverage, preserving original session history
 and references. A summary remains a lossy interpretation, not a replacement for
 the historical record or permission to read it.
 
+An unavailable original range remains outside new checkpoint coverage. It does
+not block preparation or summarization of later verified originals. If the range
+becomes verifiable later, a subsequent checkpoint can cover it as a new delta.
+Previously covered sources still require current authorization before their
+summary can be reused; unavailable storage facts retain the normal retry path.
+
 A genuinely new recipient may adopt an already prepared checkpoint plus subsequent
 observations. Native creation/input proofs, current source permissions, exact range
 validation, prospective token accounting and an atomic recipient-version check
@@ -268,7 +274,9 @@ A reset/replaced source is not silently treated as its previous incarnation.
 An exact source range that is no longer projectable is not marked consumed.
 Supplementary-history status stays in operational debug logs, never in model
 context or transcripts. Bounded diagnostics record closed reason codes, counts
-and hashed recipient/source references without dialogue text. Old unverified
+and hashed recipient/source references without dialogue text. Correlated debug
+events identify when a contribution becomes prepared and when a native recipient
+accepts it. Neither event creates a user input or another model request. Old unverified
 ranges need source revalidation, not a promise of success next turn. Missing
 reads, changed generations and denied access do not prove permanent data loss.
 This does not reconstruct deleted history.

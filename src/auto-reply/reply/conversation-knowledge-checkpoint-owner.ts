@@ -394,11 +394,18 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           });
         }
         let ready = false;
+        let unavailableContributions = 0;
         for (const reference of remaining) {
           const id = conversationKnowledgeContributionId(reference);
           let cached = tail.get(id);
           if (!cached) {
             const value = await sources.read(reference, false);
+            if (!value) {
+              // An unverified original cannot enter coverage, but must not
+              // prevent later valid originals from reaching the shared tail.
+              unavailableContributions++;
+              continue;
+            }
             const bytes =
               Buffer.byteLength(value.text, "utf8") +
               Buffer.byteLength(JSON.stringify(value.packet), "utf8") +
@@ -454,6 +461,13 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             }
           }
         }
+        if (unavailableContributions > 0) {
+          log.debug("Related-history checkpoint leaves source ranges pending", {
+            rootHash: redactIdentifier(JSON.stringify([broker.branch.agentId, broker.branch.root])),
+            reason: "source-range-unavailable",
+            unavailableContributions,
+          });
+        }
         if (!ready) {
           return false;
         }
@@ -471,12 +485,15 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             evict(contribution.contributionId);
             throw new Error("Checkpoint prepared source bytes changed");
           }
-          await sources.validate(current.reference, current.packet);
+          if (!(await sources.validate(current.reference, current.packet))) {
+            evict(contribution.contributionId);
+            return false;
+          }
         }
         // Prior summary disclosure needs every original source's current grant as well.
         // Those exact IDs stay outside model input and never become a second summary ledger.
         if (previousCoverage) {
-          await sources.verifyAll(
+          const verified = await sources.verifyAll(
             [...previousCoverage.contributionIds()].map((id) => byId.get(id)!),
             (reference, range) => {
               if (!previousCoverage.matchesReference(reference, range)) {
@@ -484,6 +501,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
               }
             },
           );
+          if (!verified) {
+            return false;
+          }
         }
         const sourceAuthority = sources.source();
         sourceAuthority();
