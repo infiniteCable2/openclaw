@@ -366,32 +366,51 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         sessionKey: _route.sessionKey,
       });
       const replayClaimAtDispatch = inboundReplayClaim;
-      // Active-run deferral outlives this handler. Transfer the exact replay claim to the
-      // reply lane so adoption commits it and abandonment reopens it for Matrix replay.
-      const turnAdoptionLifecycle = replayClaimAtDispatch
-        ? {
-            admission: "exclusive" as const,
-            onDeferred: () => {
-              if (inboundReplayClaim !== replayClaimAtDispatch) {
-                return false;
-              }
-              inboundReplayClaim = undefined;
-              return undefined;
-            },
-            onAdopted: async () => {
-              if (inboundReplayClaim === replayClaimAtDispatch) {
-                inboundReplayClaim = undefined;
-              }
-              await replayClaimAtDispatch.commit();
-            },
-            onAbandoned: () => {
-              if (inboundReplayClaim === replayClaimAtDispatch) {
-                inboundReplayClaim = undefined;
-              }
-              replayClaimAtDispatch.release();
-            },
-          }
-        : undefined;
+      // Adoption retires only this canonical input from pending room history.
+      // An optional replay claim follows the reply lane through deferral and abandonment.
+      const turnAdoptionLifecycle =
+        replayClaimAtDispatch || triggerSnapshot
+          ? {
+              ...(replayClaimAtDispatch
+                ? {
+                    admission: "exclusive" as const,
+                    onDeferred: () => {
+                      if (inboundReplayClaim !== replayClaimAtDispatch) {
+                        return false;
+                      }
+                      inboundReplayClaim = undefined;
+                      return undefined;
+                    },
+                    onAbandoned: () => {
+                      if (inboundReplayClaim === replayClaimAtDispatch) {
+                        inboundReplayClaim = undefined;
+                      }
+                      replayClaimAtDispatch.release();
+                    },
+                  }
+                : {}),
+              onAdopted: async () => {
+                // Native admission has persisted this input before invoking adoption.
+                // A visible reply can arrive before dispatch settlement; do not quote
+                // the input again while that settlement is still finishing.
+                if (isRoom && triggerSnapshot) {
+                  roomHistoryTracker.consumeTriggerInput(
+                    _route.agentId,
+                    roomId,
+                    triggerSnapshot,
+                    messageId,
+                    threadRootId ? thread.threadId : undefined,
+                  );
+                }
+                if (replayClaimAtDispatch) {
+                  if (inboundReplayClaim === replayClaimAtDispatch) {
+                    inboundReplayClaim = undefined;
+                  }
+                  await replayClaimAtDispatch.commit();
+                }
+              },
+            }
+          : undefined;
 
       const turnResultPromise = core.channel.inbound.run({
         channel: "matrix",

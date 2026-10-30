@@ -1,5 +1,7 @@
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
+import type { MatrixMonitorHandlerParams } from "./handler-types.js";
 import {
   createMatrixHandlerTestHarness,
   createMatrixTextMessageEvent,
@@ -45,6 +47,78 @@ function setup(options: HarnessOptions = {}) {
 beforeEach(() => installMatrixMonitorTestRuntime());
 
 describe("matrix group chat history", () => {
+  it.for([false, true])(
+    "does not re-quote an admitted input while dispatch is settling (replay claim=%s)",
+    async (withReplayClaim, { signal }) => {
+      const adopted = createDeferred<void>();
+      const settle = createDeferred<void>();
+      const observedHistory: string[][] = [];
+      const claim = { commit: vi.fn(async () => true), release: vi.fn() };
+      type InboundRun = MatrixMonitorHandlerParams["core"]["channel"]["inbound"]["run"];
+      const run = (async (params: Parameters<InboundRun>[0]) => {
+        const input = await params.adapter.ingest(params.raw);
+        if (!input) {
+          throw new Error("Expected admitted Matrix input");
+        }
+        const turn = await params.adapter.resolveTurn(
+          input,
+          { kind: "message", canStartAgentTurn: true },
+          {},
+        );
+        if (!("route" in turn) || "runDispatch" in turn) {
+          throw new Error("Expected routed Matrix turn");
+        }
+        observedHistory.push(turn.ctxPayload.InboundHistory?.map((item) => item.body) ?? []);
+        expect(params.turnAdoptionLifecycle).toBeDefined();
+        await params.turnAdoptionLifecycle?.onAdopted();
+        if (input.id === "$first") {
+          adopted.resolve();
+          await settle.promise;
+        }
+        return {
+          admission: { kind: "dispatch" as const },
+          dispatched: true as const,
+          ctxPayload: turn.ctxPayload,
+          routeSessionKey: turn.route.sessionKey,
+          dispatchResult: { queuedFinal: true, counts: { final: 1, block: 0, tool: 0 } },
+        };
+      }) as InboundRun;
+      const f = setup({
+        runChannelInboundEvent: run,
+        inboundDeduper: withReplayClaim
+          ? {
+              claim: vi.fn(async ({ eventId }) => ({
+                kind: "claimed" as const,
+                handle: { keys: [eventId] as const, ...claim },
+              })),
+            }
+          : undefined,
+      });
+      await f.text("$before", "ambient before", 1_000);
+      const first = f.trigger("$first", "first input", 2_000);
+      const release = () => settle.resolve();
+      signal.addEventListener("abort", release, { once: true });
+      try {
+        const outcome = await Promise.race([
+          adopted.promise.then(() => "adopted"),
+          first.then(() => "returned"),
+        ]);
+        expect(outcome).toBe("adopted");
+        await f.text("$after", "ambient after", 3_000);
+        await f.trigger("$second", "second input", 4_000);
+        expect(observedHistory).toEqual([["ambient before"], ["ambient before", "ambient after"]]);
+        if (withReplayClaim) {
+          expect(claim.commit).toHaveBeenCalled();
+          expect(claim.release).not.toHaveBeenCalled();
+        }
+      } finally {
+        signal.removeEventListener("abort", release);
+        release();
+        await first;
+      }
+    },
+  );
+
   it("respects historyLimit: caps to the most recent N entries", async () => {
     const f = setup({ historyLimit: 2 });
     for (let i = 1; i <= 4; i++) {

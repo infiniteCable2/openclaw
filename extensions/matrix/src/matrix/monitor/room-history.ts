@@ -339,6 +339,26 @@ export function createRoomHistoryTracker(
     discardPending,
     prepareTrigger,
 
+    /** The admitted input already lives in canonical history; ambient rows remain pending. */
+    consumeTriggerInput(
+      agentId: string,
+      roomId: string,
+      snapshot: HistorySnapshotToken,
+      messageId: string,
+      threadRootId?: string,
+    ) {
+      const queue = findScopedQueue(roomId, threadRootId);
+      if (!queue || queue.generation !== snapshot.queueGeneration || !messageId) {
+        return;
+      }
+      const current = queue.entries[snapshot.snapshotIdx - 1 - queue.baseIndex];
+      if (!current || current.reserved || current.discarded || current.messageId !== messageId) {
+        return;
+      }
+      current.consumedBy ??= new Set<string>();
+      current.consumedBy.add(wmKey(agentId, roomId, threadRootId));
+    },
+
     consumeHistory(
       agentId: string,
       roomId: string,

@@ -8,6 +8,90 @@ function entry(body: string, messageId?: string) {
   return { sender: "user", body, messageId };
 }
 
+describe("createRoomHistoryTracker — admitted inputs", () => {
+  it("omits the admitted input before settlement while retaining ambient history and retry context", () => {
+    const tracker = createRoomHistoryTracker();
+    tracker.recordPending(ROOM, entry("before", "$before"));
+    const first = tracker.prepareTrigger(AGENT, ROOM, 100, entry("first", "$first"));
+    tracker.consumeTriggerInput(AGENT, ROOM, first, "$first");
+    tracker.recordPending(ROOM, entry("after", "$after"));
+
+    const retried = tracker.prepareTrigger(AGENT, ROOM, 100, entry("first", "$first"));
+    expect(retried).toBe(first);
+    expect(retried.history.map((item) => item.body)).toEqual(["before"]);
+    const next = tracker.prepareTrigger(AGENT, ROOM, 100, entry("next", "$next"));
+    expect(next.history.map((item) => item.body)).toEqual(["before", "after"]);
+    const other = tracker.prepareTrigger("other", ROOM, 100, entry("other trigger", "$other"));
+    expect(other.history.map((item) => item.body)).toEqual(["before", "first", "after", "next"]);
+  });
+
+  it("does not consume a different message at the selected position", () => {
+    const tracker = createRoomHistoryTracker();
+    const snapshot = tracker.prepareTrigger(AGENT, ROOM, 100, entry("current", "$current"));
+    tracker.consumeTriggerInput(AGENT, ROOM, snapshot, "$wrong");
+    const next = tracker.prepareTrigger(AGENT, ROOM, 100, entry("next", "$next"));
+    expect(next.history.map((item) => item.body)).toEqual(["current"]);
+  });
+
+  it("does not consume a replacement row after the selected input is trimmed", () => {
+    const tracker = createRoomHistoryTracker(1);
+    const snapshot = tracker.prepareTrigger(AGENT, ROOM, 100, entry("old", "$same"));
+    tracker.recordPending(ROOM, entry("fresh", "$same"));
+    tracker.consumeTriggerInput(AGENT, ROOM, snapshot, "$same");
+    const next = tracker.prepareTrigger(AGENT, ROOM, 100, entry("next", "$next"));
+    expect(next.history.map((item) => item.body)).toEqual(["fresh"]);
+  });
+
+  it("does not consume a recreated queue with the same input id and position", () => {
+    const tracker = createRoomHistoryTracker(200, 1);
+    const snapshot = tracker.prepareTrigger(AGENT, ROOM, 100, entry("old", "$same"));
+    tracker.recordPending("!other:test", entry("evict old room"));
+    tracker.prepareTrigger(AGENT, ROOM, 100, entry("fresh", "$same"));
+    tracker.consumeTriggerInput(AGENT, ROOM, snapshot, "$same");
+    const next = tracker.prepareTrigger(AGENT, ROOM, 100, entry("next", "$next"));
+    expect(next.history.map((item) => item.body)).toEqual(["fresh"]);
+  });
+
+  it("keeps admission local to its thread and agent", () => {
+    const tracker = createRoomHistoryTracker();
+    const main = tracker.prepareTrigger(AGENT, ROOM, 100, entry("main input", "$same"));
+    const thread = tracker.prepareTrigger(
+      AGENT,
+      ROOM,
+      100,
+      entry("thread input", "$same"),
+      "$thread",
+    );
+    tracker.consumeTriggerInput(AGENT, ROOM, main, "$same", "$thread");
+    tracker.consumeTriggerInput(AGENT, ROOM, thread, "$same", "$missing");
+    expect(
+      tracker
+        .prepareTrigger("other", ROOM, 100, entry("observer", "$observer"), "$thread")
+        .history.map((item) => item.body),
+    ).toEqual(["thread input"]);
+    tracker.consumeTriggerInput(AGENT, ROOM, thread, "$same", "$thread");
+    expect(
+      tracker
+        .prepareTrigger(AGENT, ROOM, 100, entry("next", "$next"), "$thread")
+        .history.map((item) => item.body),
+    ).toEqual(["observer"]);
+    expect(
+      tracker
+        .prepareTrigger(AGENT, ROOM, 100, entry("main next", "$main-next"))
+        .history.map((item) => item.body),
+    ).toEqual(["main input"]);
+  });
+
+  it("does not consume an unresolved reserved input", () => {
+    const tracker = createRoomHistoryTracker();
+    const reserved = tracker.reservePending(AGENT, ROOM, entry("placeholder", "$audio"));
+    tracker.consumeTriggerInput(AGENT, ROOM, reserved, "$audio");
+    tracker.finalizePending(ROOM, reserved, entry("audio transcript", "$audio"));
+    const next = tracker.prepareTrigger(AGENT, ROOM, 100, entry("next", "$next"));
+    expect(next.history.map((item) => item.body)).toEqual(["audio transcript"]);
+  });
+});
+
 describe("createRoomHistoryTracker — watermark monotonicity", () => {
   it("consumeHistory is monotone: out-of-order completion does not regress the watermark", () => {
     const tracker = createRoomHistoryTracker();
