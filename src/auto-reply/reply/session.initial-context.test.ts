@@ -128,9 +128,8 @@ describe("reply initialization with native copied context", () => {
           sessionId: created?.sessionId,
           lifecycleRevision: created?.lifecycleRevision,
         });
-        expect(first.sessionEntry.conversationTopology?.role).toBe(
-          conversationMode === "branches" ? "branch" : undefined,
-        );
+        const initialTopology = loadSessionEntry(f.target)?.conversationTopology;
+        expect(initialTopology?.role).toBe(conversationMode === "branches" ? "branch" : undefined);
         await appendTranscriptMessage(
           { ...f.target, sessionId: first.sessionId },
           {
@@ -152,9 +151,7 @@ describe("reply initialization with native copied context", () => {
           commandAuthorized: true,
         });
         expect(reset.sessionEntry.lifecycleRevision).not.toBe(first.sessionEntry.lifecycleRevision);
-        expect(reset.sessionEntry.conversationTopology).toEqual(
-          first.sessionEntry.conversationTopology,
-        );
+        expect(loadSessionEntry(f.target)?.conversationTopology).toEqual(initialTopology);
       }
     },
   );
