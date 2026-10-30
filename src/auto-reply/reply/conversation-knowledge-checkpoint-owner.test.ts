@@ -289,12 +289,11 @@ describe("shared root projection preparation", () => {
     // remain cached and the original occurrence is never marked consumed.
     expect(await quantum()).toBe(false);
     expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2, 3, 1]);
-    expect(
-      f.registration
-        .projection()
-        .tail.map((item) => item.reference.through.rawSeq)
-        .toSorted((left, right) => left - right),
-    ).toEqual([1, 2, 3]);
+    // A newly opened receiver needs the same root order whether the first
+    // original was immediately available or recovered after later originals.
+    expect(f.registration.projection().tail.map((item) => item.reference.through.rawSeq)).toEqual([
+      1, 2, 3,
+    ]);
   });
   it("keeps infrastructure failures eligible for the background owner's retry", async () => {
     register();
@@ -351,6 +350,49 @@ describe("shared root projection preparation", () => {
       [missing, valid].map(conversationKnowledgeContributionId).toSorted(),
     );
     expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2, 1]);
+  });
+  it("continues preparing valid originals when previous checkpoint coverage leaves source selection", async () => {
+    const f = register();
+    const read = boundary.read.getMockImplementation()!;
+    boundary.read.mockImplementationOnce(async (ref: ConversationKnowledgeReference) => ({
+      ...(await read(ref)),
+      text: "quoted ".repeat(2_000),
+    }));
+    boundary.acquire.mockImplementation(async () => ({
+      planning: {
+        budget: { contextTokenBudget: 1_000, prompt: "" },
+        settings: { enabled: true, reserveTokens: 100, keepRecentTokens: 100 },
+      },
+      summarize: boundary.summarize,
+      [Symbol.asyncDispose]: boundary.modelRelease,
+    }));
+    boundary.plan.mockReturnValue({ kind: "ready" });
+    boundary.summarize.mockImplementation(async ({ contributions }) => ({
+      kind: "candidate",
+      summary: "A summary of the original selected source.",
+      coveredContributionIds: contributions.map(
+        (item: { contributionId: string }) => item.contributionId,
+      ),
+      retainedContributionIds: [],
+    }));
+    expect(await quantum()).toBe(true);
+    const previous = f.registration.latest()!.checkpoint;
+    expect(previous.coveredContributionIds).toEqual([
+      conversationKnowledgeContributionId(reference(1)),
+    ]);
+
+    // Selection may retire a summarized occurrence after source archival or
+    // incarnation replacement. It must neither authorize its old summary nor
+    // prevent unrelated, currently verified originals from being prepared.
+    boundary.refs = [reference(2)];
+    await quantum();
+    await quantum();
+    expect(f.registration.latest()).toBeUndefined();
+    expect(boundary.latest).toEqual(previous);
+    expect(boundary.summarize).toHaveBeenCalledOnce();
+    expect(f.registration.projection().tail.map((item) => item.reference.through.rawSeq)).toEqual([
+      2,
+    ]);
   });
   it("hydrates only new originals, shares below-threshold packets and does not reacquire model auth on unchanged roots", async () => {
     const first = register();
