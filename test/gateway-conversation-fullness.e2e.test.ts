@@ -119,7 +119,8 @@ const PARTS = Array.from({ length: PART_COUNT }, (_, index) => {
     " " +
     Array.from(
       { length: 32 },
-      (_, n) => "Archive-" + id + "-" + n + " records a synthetic cobalt item at shelf " + n + ".",
+      (_unused, n) =>
+        "Archive-" + id + "-" + n + " records a synthetic cobalt item at shelf " + n + ".",
     ).join(" ") +
     " FOREIGN_MIDDLE_" +
     id +
@@ -251,7 +252,7 @@ it("delivers every already prepared foreign part in the first safe request witho
         (row) => row.role === "user" && JSON.stringify(row.content).includes("FOREIGN_BEGIN_"),
       );
       expect(originals).toHaveLength(PART_COUNT);
-      const lastSequence = history.messages.filter((row) => row.role === "assistant").at(-1)?.[
+      const lastSequence = history.messages.findLast((row) => row.role === "assistant")?.[
         "__openclaw"
       ]?.transcriptPosition?.rawSeq;
       expect(Number.isSafeInteger(lastSequence)).toBe(true);
