@@ -73,30 +73,6 @@ vi.mock("./conversation-knowledge-source-reader.js", () => ({
   prepareConversationKnowledgeTarget: native.target,
   readConversationKnowledgeInputs: native.inputs,
   publishPreparedConversationKnowledgeRoot: native.publish,
-  createConversationKnowledgeSourceReader: (params: { reads: unknown[] }) => ({
-    take: async (reference: ConversationKnowledgeReference) => {
-      const allowed = await native.take();
-      if (!allowed) {
-        return {};
-      }
-      const read = {
-        grant: {
-          assertCurrent: native.checkSource,
-          release: native.releaseSource,
-          prepareAdmission: () => ({ synthetic: true }),
-        },
-      };
-      params.reads.push(read);
-      return {
-        source: {
-          read,
-          grant: read.grant,
-          through: reference.through,
-          from: reference.privateAudience?.admission,
-        },
-      };
-    },
-  }),
 }));
 
 const person = { type: "profile", id: "example-person" } as const;
@@ -193,6 +169,7 @@ function rawPacket(selected: ConversationKnowledgeReference): PreparedConversati
       origin: selected.origin,
       text: "A complete synthetic observation.",
       complete: true,
+      nextOffset: undefined,
       frontier: {
         origin: selected.origin,
         generation: "generation",
@@ -450,9 +427,13 @@ describe("ready checkpoint recipient", () => {
     expect(native.retain).not.toHaveBeenCalled();
     expect(native.releaseTarget).toHaveBeenCalledOnce();
   });
-  it.each([false, true])(
-    "fills shared originals after a partial manifest (%j)",
-    async (partial) => {
+  it.each([
+    [false, true],
+    [true, true],
+    [false, false],
+  ])(
+    "fills shared originals after a partial manifest (%j), complete: %j",
+    async (partial, complete) => {
       const f = fixture();
       const cache = createConversationKnowledgeSourceCache();
       onTestFinished(() => cache.clear());
@@ -460,6 +441,9 @@ describe("ready checkpoint recipient", () => {
         cache.setPreparedRoot({ byteLength: 10 } as Parameters<typeof cache.setPreparedRoot>[0]);
       }
       const packet = rawPacket(reference);
+      if (!complete) {
+        packet.part = { ...packet.part, complete: false, frontier: undefined, nextOffset: 10 };
+      }
       expect(
         await prepareRecipientConversationProjection(
           {
@@ -469,7 +453,7 @@ describe("ready checkpoint recipient", () => {
           },
           [{ reference, packet }],
         ),
-      ).toBe(true);
+      ).toBe(complete);
       expect(cache.peek(conversationKnowledgeContributionId(reference), 0)).toEqual(packet);
       expect(native.group).toHaveBeenCalledOnce();
       expect(native.groupRead).toHaveBeenCalledOnce();
@@ -478,53 +462,83 @@ describe("ready checkpoint recipient", () => {
       expect(native.retain).not.toHaveBeenCalled();
     },
   );
-  it("keeps a canonical group and manifest across progress-only recipient batches", async () => {
-    const f = fixture();
-    const secondAnchor = { ...anchor, entryId: "two", rawSeq: 2 };
-    const second = {
-      ...reference,
-      through: secondAnchor,
-      privateAudience: { participant: person, admission: secondAnchor },
-    };
-    native.rebind.mockResolvedValue(
-      Object.assign(
-        [reference, second].map((value) => ({
-          type: "custom_message",
-          customType: "openclaw.conversation-utterance.v1",
-          details: value,
-        })),
-        { evidence: preparedRootEvidence },
-      ),
-    );
-    const cache = createConversationKnowledgeSourceCache();
-    onTestFinished(() => cache.clear());
-    const params = {
-      ...f.params,
-      sourceCache: cache,
-      expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-    };
-    const tail = [reference, second].map((value) => ({
-      reference: value,
-      packet: rawPacket(value),
-    }));
-    expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
-    const manifest = cache.preparedRoot;
-    expect(native.group).toHaveBeenCalledOnce();
-    expect(native.groupRead).toHaveBeenCalledOnce();
-    expect(native.select.mock.calls.map(([ref]) => ref)).toEqual([reference, second]);
-    const firstId = conversationKnowledgeContributionId(reference);
-    cache.consume(firstId, 0);
-    native.inputs.mockImplementation(async () => ({
-      events: await native.scan(),
-      retained: new Map([[firstId, { complete: true }]]),
-    }));
-    expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
-    expect(cache.preparedRoot).toBe(manifest);
-    expect(native.group).toHaveBeenCalledOnce();
-    expect(native.groupRead).toHaveBeenCalledOnce();
-    expect(cache.peek(firstId, 0)).toBeUndefined();
-    expect(cache.peek(conversationKnowledgeContributionId(second), 0)).toEqual(rawPacket(second));
-  });
+  it.each([undefined, 0, 10])(
+    "keeps a canonical group through progress with segmented first offset %s",
+    async (firstOffset) => {
+      const f = fixture();
+      const secondAnchor = { ...anchor, entryId: "two", rawSeq: 2 };
+      const second = {
+        ...reference,
+        through: secondAnchor,
+        privateAudience: { participant: person, admission: secondAnchor },
+      };
+      native.rebind.mockResolvedValue(
+        Object.assign(
+          [reference, second].map((value) => ({
+            type: "custom_message",
+            customType: "openclaw.conversation-utterance.v1",
+            details: value,
+          })),
+          { evidence: preparedRootEvidence },
+        ),
+      );
+      const cache = createConversationKnowledgeSourceCache();
+      onTestFinished(() => cache.clear());
+      const params = {
+        ...f.params,
+        sourceCache: cache,
+        expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+      };
+      const tail = [reference, second].map((value) => ({
+        reference: value,
+        packet: rawPacket(value),
+      }));
+      const firstId = conversationKnowledgeContributionId(reference);
+      if (firstOffset !== undefined) {
+        cache.stage(firstId, firstOffset, {
+          ...rawPacket(reference),
+          part: {
+            ...rawPacket(reference).part,
+            text: "An exact prepared prefix.",
+            complete: false,
+            frontier: undefined,
+            nextOffset: firstOffset + 10,
+          },
+        });
+        cache.stage(firstId, firstOffset + 10, rawPacket(reference));
+        native.inputs.mockImplementation(async () => ({
+          events: await native.scan(),
+          retained: new Map([[firstId, { complete: false, nextOffset: firstOffset }]]),
+        }));
+      }
+      const fragments = cache.preparedPackets(100);
+      expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+      if (firstOffset !== undefined) {
+        expect(
+          cache.preparedPackets(100).filter((value) => value.contributionId === firstId),
+        ).toEqual(fragments);
+        expect(cache.peek(firstId, firstOffset)?.part.text).toBe("An exact prepared prefix.");
+      }
+      const manifest = cache.preparedRoot;
+      expect(native.group).toHaveBeenCalledOnce();
+      expect(native.groupRead).toHaveBeenCalledOnce();
+      expect(native.select.mock.calls.map(([ref]) => ref)).toEqual([reference, second]);
+      cache.consume(firstId, firstOffset ?? 0);
+      if (firstOffset !== undefined) {
+        cache.consume(firstId, firstOffset + 10);
+      }
+      native.inputs.mockImplementation(async () => ({
+        events: await native.scan(),
+        retained: new Map([[firstId, { complete: true }]]),
+      }));
+      expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+      expect(cache.preparedRoot).toBe(manifest);
+      expect(native.group).toHaveBeenCalledOnce();
+      expect(native.groupRead).toHaveBeenCalledOnce();
+      expect(cache.peek(firstId, 0)).toBeUndefined();
+      expect(cache.peek(conversationKnowledgeContributionId(second), 0)).toEqual(rawPacket(second));
+    },
+  );
   it("does not restage an original when a foreground commit advances during group preparation", async () => {
     const f = fixture(),
       cache = createConversationKnowledgeSourceCache();

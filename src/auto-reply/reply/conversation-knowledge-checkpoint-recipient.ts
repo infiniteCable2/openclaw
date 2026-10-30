@@ -188,6 +188,10 @@ export async function prepareRecipientConversationProjection(
       throw error;
     }
     const bySource = new Map<string, ConversationKnowledgeReference[]>();
+    const prepared = new Map<
+      string,
+      { offset: number; packet: PreparedConversationKnowledgePacket }
+    >();
     let complete = true;
     for (const reference of current) {
       check();
@@ -203,20 +207,34 @@ export async function prepareRecipientConversationProjection(
         continue;
       }
       const item = shared.get(id),
-        staged = cache.peek(id, 0);
-      // A previously imported or segmented original keeps its native offsets;
-      // whole-root reuse must not replace its remaining packet coordinates.
-      if (
-        (retained?.get(id)?.nextOffset ?? 0) > 0 ||
-        (cache.firstPreparedOffset(id) !== undefined && (!staged || !staged.part.complete))
-      ) {
+        firstOffset = cache.firstPreparedOffset(id),
+        staged = firstOffset === undefined ? undefined : cache.peek(id, firstOffset);
+      const nextOffset = retained?.get(id)?.nextOffset ?? 0;
+      if (!staged && (nextOffset > 0 || !item || !isDeepStrictEqual(reference, item.reference))) {
         complete = false;
         continue;
       }
-      if (!staged?.part.complete && (!item || !isDeepStrictEqual(reference, item.reference))) {
+      const packet = staged ?? item!.packet;
+      // Native custody covers the original range, including its already staged
+      // fragments. Keep their exact offsets and versions; never recreate offset
+      // zero after a durable prefix or replace a segmented range with whole text.
+      if (staged) {
+        let offset = firstOffset!;
+        let part: PreparedConversationKnowledgePacket["part"] | undefined = staged.part;
+        while (part && !part.complete) {
+          if (part.nextOffset === undefined || part.nextOffset <= offset) {
+            break;
+          }
+          offset = part.nextOffset;
+          part = cache.peek(id, offset)?.part;
+        }
+        if (firstOffset !== nextOffset || !part?.complete) {
+          complete = false;
+        }
+      } else if (!packet.part.complete) {
         complete = false;
-        continue;
       }
+      prepared.set(id, { offset: firstOffset ?? 0, packet });
       const key = JSON.stringify([reference.source, reference.through.storePath]);
       const references = bySource.get(key) ?? [];
       references.push(reference);
@@ -230,7 +248,7 @@ export async function prepareRecipientConversationProjection(
         group &&
         references.every(
           (reference) =>
-            cache.peek(conversationKnowledgeContributionId(reference), 0)?.part.complete &&
+            prepared.has(conversationKnowledgeContributionId(reference)) &&
             cache.preparedContributionGroup(
               sourceTarget,
               manifest,
@@ -279,7 +297,8 @@ export async function prepareRecipientConversationProjection(
         const preparedIds: string[] = [];
         for (const reference of references) {
           const id = conversationKnowledgeContributionId(reference);
-          const packet = cache.peek(id, 0) ?? shared.get(id)?.packet;
+          const selected = prepared.get(id);
+          const packet = selected?.packet;
           const range = grant.selectContribution(reference);
           if (
             !packet ||
@@ -290,7 +309,7 @@ export async function prepareRecipientConversationProjection(
             complete = false;
             continue;
           }
-          if (!cache.stage(id, 0, packet)) {
+          if (!cache.stage(id, selected!.offset, packet)) {
             complete = false;
             break;
           }
