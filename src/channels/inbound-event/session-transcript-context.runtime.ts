@@ -62,12 +62,18 @@ export async function mergeSessionTranscriptContext(params: {
       payload: {
         order: "chronological",
         relation: "selected_for_current_message",
-        messages: turns.map((turn) => ({
-          ...(turn.id ? { message_id: `session:${turn.id}` } : {}),
-          sender: `${labels[turn.role]}${turn.sourceChannel ? ` (${turn.sourceChannel})` : ""}`,
-          ...(turn.timestamp !== undefined ? { timestamp_ms: turn.timestamp } : {}),
-          body: turn.text,
-        })),
+        messages: turns.map((turn) => {
+          const message: Record<string, unknown> = {};
+          if (turn.id) {
+            message.message_id = `session:${turn.id}`;
+          }
+          message.sender = `${labels[turn.role]}${turn.sourceChannel ? ` (${turn.sourceChannel})` : ""}`;
+          if (turn.timestamp !== undefined) {
+            message.timestamp_ms = turn.timestamp;
+          }
+          message.body = turn.text;
+          return message;
+        }),
       },
     },
   ];
