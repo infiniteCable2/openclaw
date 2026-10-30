@@ -361,6 +361,12 @@ it("observes real Matrix ingress and the provider-bound current request without 
         const text = strings([input.instructions, input.input]).join("\n");
         const items = Array.isArray(input.input) ? input.input : [];
         const carriers = items.filter((item) => {
+          // This provider projects trusted runtime additions as system items.
+          // Ordinary native user envelopes can also contain Conversation info.
+          const message = item as Record<string, unknown>;
+          if (message.role !== "system") {
+            return false;
+          }
           const projected = strings(item).join("\n");
           return (
             projected.includes("Conversation info:") ||
