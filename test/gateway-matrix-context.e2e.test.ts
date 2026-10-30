@@ -359,13 +359,15 @@ it("observes real Matrix ingress and the provider-bound current request without 
         expect(matrix.sends[index - 1]).toContain("FIXTURE_REPLY_" + (before + 1));
         const input = model.requests[before]!;
         const text = strings([input.instructions, input.input]).join("\n");
-        if (index === 3) {
-          expect(text.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1).toBe(1);
-        }
-        const runtime = Array.from(
-          text.matchAll(/OpenClaw runtime context:\n([\s\S]*?)End OpenClaw runtime context\./gu),
-          (match) => match[1] ?? "",
-        ).join("\n");
+        const items = Array.isArray(input.input) ? input.input : [];
+        const carriers = items.filter((item) => {
+          const projected = strings(item).join("\n");
+          return (
+            projected.includes("Conversation info:") ||
+            projected.includes("OpenClaw runtime context:")
+          );
+        });
+        const runtime = strings(carriers).join("\n");
         const eventTimestamp = formatAgentEnvelopeTimestamp(
           event.timestamp,
           resolveEnvelopeFormatOptions(selected),
@@ -378,8 +380,28 @@ it("observes real Matrix ingress and the provider-bound current request without 
           mode: index < 3 ? "native" : "branches",
           currentCopies: text.split(marker).length - 1,
           currentCopiesInRuntime: runtime.split(marker).length - 1,
+          previousNativeCopies:
+            index === 3 ? text.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1 : undefined,
           currentMessageIdCopies: text.split(event.id).length - 1,
           runtimeBlocks: text.split("OpenClaw runtime context:").length - 1,
+          runtimeCarriers: carriers.length,
+          markerLocations: items
+            .map((value, position) => {
+              const item = value as Record<string, unknown>;
+              const part = strings(item).join("\n");
+              return {
+                position,
+                role: item.role,
+                chars: part.length,
+                currentCopies: part.split(marker).length - 1,
+                priorNativeCopies: part.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1,
+                conversationInfo: part.includes("Conversation info:"),
+                quotedHistory: part.includes("Quoted conversation history"),
+              };
+            })
+            .filter(
+              (item) => item.currentCopies || item.priorNativeCopies || item.conversationInfo,
+            ),
           currentTimestampInRuntime: runtime.includes(eventTimestamp),
           eventTimestamp,
           providerChars: text.length,
@@ -396,10 +418,13 @@ it("observes real Matrix ingress and the provider-bound current request without 
       expect(matrix.errors).toEqual([]);
       expect(model.errors).toEqual([]);
       for (const report of reports) {
-        expect(report.runtimeBlocks).toBeGreaterThan(0);
+        expect(report.runtimeCarriers).toBeGreaterThan(0);
         expect(report.currentTimestampInRuntime).toBe(true);
         expect(report.currentCopies).toBe(1);
         expect(report.currentCopiesInRuntime).toBe(0);
+        if (report.index === 3) {
+          expect(report.previousNativeCopies).toBe(1);
+        }
       }
     },
     () => gateway?.cleanup(),
