@@ -1,5 +1,6 @@
 import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import type { PreparedConversationBranchCreation } from "../../config/sessions/conversation-branch-creation.js";
 import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../../config/sessions/conversation-knowledge-selection.js";
 import {
   issuePreparedKnowledgeRootCandidates,
+  prepareConversationKnowledgeRootSubset,
   readConversationKnowledgeRoot,
   readConversationKnowledgeBranch,
   readPreparedConversationKnowledgeRoot,
@@ -55,6 +57,7 @@ import {
 } from "./conversation-knowledge-authority.js";
 import type {
   ConversationKnowledgeSourceCache,
+  ConversationKnowledgeSourceSelection,
   PreparedConversationKnowledgePacket,
 } from "./conversation-knowledge-source-cache.js";
 import { createConversationKnowledgeSourceCustody } from "./conversation-knowledge-source-custody.js";
@@ -340,20 +343,67 @@ export async function readConversationKnowledgeInputs(params: {
   return { events, retained, previous: selectConversationKnowledgeObserved(events, params.branch) };
 }
 
+/** Native scope is separate from the per-donor ordered selection used only for cache invalidation. */
+export function prepareConversationKnowledgeSourceSelection(params: {
+  evidence: NativeKnowledgeRootEvidence | undefined;
+  branch: ConversationKnowledgeBranch;
+  receipts: readonly ConversationKnowledgeReference[];
+  audienceIdentity: string | undefined;
+  maxBytes: number;
+}): ConversationKnowledgeSourceSelection {
+  if (!params.audienceIdentity) {
+    throw new Error("Prepared source selection requires a confirmed private audience");
+  }
+  const scope = prepareConversationKnowledgeRootSubset({
+    evidence: params.evidence,
+    branch: params.branch,
+    references: [],
+    maxBytes: params.maxBytes,
+  });
+  const sources = new Map<
+    string,
+    {
+      source: ConversationKnowledgeSourceSelection["sources"][number]["source"];
+      references: ConversationKnowledgeReference[];
+    }
+  >();
+  for (const reference of params.receipts) {
+    const source = { ...reference.source, storePath: reference.through.storePath };
+    const key = JSON.stringify(source);
+    const selected = sources.get(key) ?? { source, references: [] };
+    selected.references.push(reference);
+    sources.set(key, selected);
+  }
+  return {
+    scopeKey: JSON.stringify([scope.scopeKey, params.audienceIdentity]),
+    sources: [...sources.values()].map(({ source, references }) => ({
+      source,
+      selectionKey: sha256Hex(JSON.stringify(references)),
+    })),
+  };
+}
+
 /** Publish immutable provenance while the original background read is still current. */
 export function publishPreparedConversationKnowledgeRoot(params: {
   evidence: NativeKnowledgeRootEvidence | undefined;
   receipts: readonly ConversationKnowledgeReference[];
   cache: ConversationKnowledgeSourceCache;
+  branch: ConversationKnowledgeBranch;
+  audienceIdentity: string | undefined;
 }) {
   // Provenance is byte-bounded by the cache, not by the SQL query batch size.
-  const ready = new Set(params.cache.preparedContributionIds(Number.MAX_SAFE_INTEGER));
+  // Packet consumption never changes which original ranges a native group
+  // selected. Keep canonical provenance whole; the existing byte cap still applies.
+  const receipts = params.receipts;
   params.cache.setPreparedRoot(
-    issuePreparedKnowledgeRootCandidates(
-      params.evidence,
-      params.receipts.filter((receipt) => ready.has(conversationKnowledgeContributionId(receipt))),
-      { maxBytes: params.cache.maxPreparedRootBytes },
-    ),
+    issuePreparedKnowledgeRootCandidates(params.evidence, receipts, {
+      maxBytes: params.cache.maxPreparedRootBytes,
+    }),
+    sha256Hex(JSON.stringify(receipts)),
+    prepareConversationKnowledgeSourceSelection({
+      ...params,
+      maxBytes: params.cache.maxPreparedRootBytes,
+    }),
   );
 }
 

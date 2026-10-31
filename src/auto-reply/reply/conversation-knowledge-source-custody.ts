@@ -1,4 +1,5 @@
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-packets.js";
+import { prepareConversationKnowledgeRootSubset } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
 import {
   composeSessionSourceAssertion,
@@ -130,6 +131,20 @@ export function createConversationKnowledgeSourceCustody(
       } as const;
       try {
         if (group) {
+          const manifest =
+            params.preparedManifest &&
+            params.sourceCache?.preparedContributionGroupManifest(
+              sourceTarget,
+              params.preparedManifest,
+            );
+          if (!manifest) {
+            throw new SessionTranscriptReadFenceError("Prepared donor subset is unavailable");
+          }
+          const subset = prepareConversationKnowledgeRootSubset({
+            evidence: params.rootEvidence,
+            branch,
+            manifest,
+          });
           const selected = await leaseGroup(group, () =>
             prepareTranscriptReadAuthority({
               ...request,
@@ -139,7 +154,7 @@ export function createConversationKnowledgeSourceCustody(
                 target: branch,
                 targetAudience: params.destinationAudience,
                 targetCreation: params.targetCreation,
-                rootEvidence: params.rootEvidence,
+                rootEvidence: subset.evidence,
                 contributionGroup: group,
               },
             }),

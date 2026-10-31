@@ -48,6 +48,8 @@ const native = vi.hoisted(() => ({
   releaseGroup: vi.fn(),
   inputs: vi.fn(),
   publish: vi.fn(),
+  subset: vi.fn(),
+  sourceSelection: vi.fn(),
 }));
 // mock-isolation: Exact native grouped range/ACL validation is covered by personal-read integration tests.
 vi.mock("../../gateway/session-transcript-personal-read.js", () => ({
@@ -71,12 +73,14 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readPreparedConversationKnowledgeRootEvidence: native.evidence,
   readConversationKnowledgeRoot: native.scan,
   issuePreparedKnowledgeRootCandidates: native.issue,
+  prepareConversationKnowledgeRootSubset: native.subset,
 }));
 // mock-isolation: Revocable donor grants exercise orchestration; native authorization has integration tests.
 vi.mock("./conversation-knowledge-source-reader.js", () => ({
   prepareConversationKnowledgeTarget: native.target,
   readConversationKnowledgeInputs: native.inputs,
   publishPreparedConversationKnowledgeRoot: native.publish,
+  prepareConversationKnowledgeSourceSelection: native.sourceSelection,
 }));
 
 const person = { type: "profile", id: "example-person" } as const;
@@ -200,7 +204,12 @@ beforeEach(() => {
   native.target.mockResolvedValue({
     kind: "ready",
     branch,
-    targetFacts: { assertCurrent() {}, release: native.releaseTarget },
+    targetFacts: {
+      assertCurrent() {},
+      release: native.releaseTarget,
+      audience: "private-direct",
+      audienceIdentity: conversationKnowledgeParticipantIdentity(person),
+    },
   });
   native.rebind.mockResolvedValue(
     Object.assign(
@@ -228,6 +237,25 @@ beforeEach(() => {
     cache.setPreparedRoot(native.issue(evidence, receipts));
   });
   native.issue.mockReturnValue({ syntheticManifest: true, byteLength: 100, ownedByteLength: 100 });
+  native.subset.mockImplementation((input) => ({
+    manifest: input.manifest ?? { syntheticSubset: true, byteLength: 100, ownedByteLength: 100 },
+    evidence: preparedRootEvidence,
+    scopeKey: "synthetic-native-root",
+  }));
+  native.sourceSelection.mockImplementation((input) => {
+    const grouped = new Map<string, ConversationKnowledgeReference[]>();
+    for (const selected of input.receipts) {
+      const key = JSON.stringify(selected.source);
+      grouped.set(key, [...(grouped.get(key) ?? []), selected]);
+    }
+    return {
+      scopeKey: JSON.stringify([input.branch, input.audienceIdentity]),
+      sources: [...grouped.values()].map((references) => ({
+        source: { ...references[0]!.source, storePath: references[0]!.through.storePath },
+        selectionKey: JSON.stringify(references),
+      })),
+    };
+  });
   native.evidence.mockResolvedValue({ syntheticEvidence: true });
   native.seal.mockImplementation(({ checkpoint }) => ({ checkpoint, validate: native.validate }));
   native.select.mockImplementation((selected: ConversationKnowledgeReference) => ({
@@ -248,6 +276,82 @@ beforeEach(() => {
 });
 
 describe("ready checkpoint recipient", () => {
+  it("keeps a consumed donor prefix across unrelated appends and retires it on explicit selection change", async () => {
+    const f = fixture(),
+      cache = createConversationKnowledgeSourceCache();
+    onTestFinished(() => cache.clear());
+    const secondA: ConversationKnowledgeReference = {
+      ...reference,
+      through: { ...reference.through, entryId: "a-two", rawSeq: 2 },
+    };
+    const donorB = { ...source, sessionKey: "agent:example:donor-b", sessionId: "donor-b" };
+    const throughB = { ...anchor, ...donorB, entryId: "b-one" };
+    const firstB: ConversationKnowledgeReference = {
+      ...reference,
+      source: donorB,
+      origin: conversationKnowledgeOrigin(donorB, "utterance-observation"),
+      through: throughB,
+      privateAudience: { participant: person, admission: throughB },
+    };
+    const secondB: ConversationKnowledgeReference = {
+      ...firstB,
+      through: { ...throughB, entryId: "b-two", rawSeq: 2 },
+    };
+    let current = [reference, secondA, firstB];
+    const retained = new Map<string, { complete: boolean }>();
+    native.rebind.mockImplementation(async () =>
+      Object.assign(
+        current.map((details) => ({
+          type: "custom_message",
+          customType: "openclaw.conversation-utterance.v1",
+          details,
+        })),
+        { evidence: preparedRootEvidence },
+      ),
+    );
+    native.inputs.mockImplementation(async () => ({ events: await native.rebind(), retained }));
+    const groups: Array<{
+      release: ReturnType<typeof vi.fn>;
+      byteLength: number;
+      ownedByteLength: number;
+    }> = [];
+    native.group.mockImplementation(async () => {
+      const group = { release: vi.fn(), byteLength: 100, ownedByteLength: 100 };
+      groups.push(group);
+      return group;
+    });
+    const params = preparedParams(f, cache);
+    const tail = () =>
+      current.map((selected) => ({ reference: selected, packet: rawPacket(selected) }));
+    expect(await prepareRecipientConversationProjection(params, tail())).toBe(true);
+    expect(native.group).toHaveBeenCalledTimes(2);
+    const manifest = cache.preparedRoot!;
+    const originalA = cache.preparedContributionGroup(
+      { ...source, storePath: branch.storePath },
+      manifest,
+    );
+    cache.consume(conversationKnowledgeContributionId(reference), 0);
+    retained.set(conversationKnowledgeContributionId(reference), { complete: true });
+    current = [reference, secondA, firstB, secondB];
+    native.group.mockClear();
+    expect(await prepareRecipientConversationProjection(params, tail())).toBe(true);
+    expect(native.group).toHaveBeenCalledOnce();
+    expect(native.group.mock.calls[0]![0].personal.contributions).toEqual([firstB, secondB]);
+    expect(
+      cache.preparedContributionGroup(
+        { ...source, storePath: branch.storePath },
+        cache.preparedRoot!,
+      ),
+    ).toBe(originalA);
+    expect(groups[0]!.release).not.toHaveBeenCalled();
+    expect(groups[1]!.release).toHaveBeenCalledOnce();
+    current = [secondA, firstB, secondB];
+    native.group.mockClear();
+    expect(await prepareRecipientConversationProjection(params, tail())).toBe(true);
+    expect(native.group).toHaveBeenCalledOnce();
+    expect(native.group.mock.calls[0]![0].personal.contributions).toEqual([secondA]);
+    expect(groups[0]!.release).toHaveBeenCalledOnce();
+  });
   it("preserves a ready checkpoint while an awaited replacement cannot prove bootstrap eligibility", async () => {
     const f = fixture();
     const cache = createConversationKnowledgeSourceCache();

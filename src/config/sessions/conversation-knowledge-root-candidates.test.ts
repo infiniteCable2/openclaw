@@ -11,6 +11,7 @@ import {
   assertNativeKnowledgeRootContribution,
   assertNativeKnowledgeRootContributionGroup,
   prepareNativeKnowledgeRootContributionGroup,
+  prepareConversationKnowledgeRootSubset,
   issuePreparedKnowledgeRootCandidates,
   readConversationKnowledgeRoot,
   readPreparedConversationKnowledgeRoot,
@@ -180,6 +181,113 @@ function fixture() {
 beforeEach(() => boundary.reports.mockReset());
 
 describe("prepared native knowledge root candidates", () => {
+  it("rebinds an unchanged donor subset across an unrelated root append without another native read", async () => {
+    const f = fixture();
+    const original = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    const subset = prepareConversationKnowledgeRootSubset({
+      evidence: original.evidence,
+      branch: f.branch,
+      references: [f.receipt],
+      maxBytes: 4096,
+    });
+    const proof = prepareNativeKnowledgeRootContributionGroup(subset.evidence, f.branch, [
+      f.receipt,
+    ]);
+    const otherSource = {
+      ...f.receipt.source,
+      sessionKey: "agent:example:other",
+      sessionId: "other-donor",
+    };
+    const otherThrough = { ...f.receipt.through, ...otherSource, entryId: "unrelated" };
+    const unrelated = {
+      ...f.receipt,
+      source: otherSource,
+      origin: conversationKnowledgeOrigin(otherSource),
+      through: otherThrough,
+      privateAudience: {
+        participant: f.receipt.privateAudience!.participant,
+        admission: {
+          ...otherThrough,
+          entryId: "other-question",
+          rawSeq: 2,
+          activeMessagePosition: 1,
+          effectiveParentId: null,
+        },
+      },
+    };
+    boundary.reports.mockResolvedValue([
+      ...f.events,
+      { ...f.events[0], id: "unrelated-report", details: unrelated },
+    ]);
+    const current = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    expect(() =>
+      assertNativeKnowledgeRootContribution(current.evidence, f.branch, unrelated),
+    ).not.toThrow();
+    const before = f.cohorts();
+    const rebound = prepareConversationKnowledgeRootSubset({
+      evidence: current.evidence,
+      branch: f.branch,
+      manifest: subset.manifest,
+    });
+    expect(rebound.manifest).toBe(subset.manifest);
+    expect(rebound.scopeKey).toBe(subset.scopeKey);
+    expect(() =>
+      assertNativeKnowledgeRootContributionGroup(rebound.evidence, f.branch, proof),
+    ).not.toThrow();
+    expect(f.cohorts()).toBe(before);
+    f.releaseReader();
+    expect(() =>
+      assertNativeKnowledgeRootContributionGroup(rebound.evidence, f.branch, proof),
+    ).toThrow("released");
+  });
+
+  it("refuses forged or no-longer-current subset references, physical owners and recipient scopes", async () => {
+    const f = fixture();
+    const original = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    const subset = prepareConversationKnowledgeRootSubset({
+      evidence: original.evidence,
+      branch: f.branch,
+      references: [f.receipt],
+      maxBytes: 4096,
+    });
+    const rebind = (evidence = original.evidence) =>
+      prepareConversationKnowledgeRootSubset({
+        evidence,
+        branch: f.branch,
+        manifest: subset.manifest,
+      });
+    expect(() => rebind(Object.create(Object.getPrototypeOf(original.evidence!)))).toThrow(
+      "native root evidence",
+    );
+    expect(() =>
+      prepareConversationKnowledgeRootSubset({
+        evidence: original.evidence,
+        branch: f.branch,
+        manifest: Object.create(Object.getPrototypeOf(subset.manifest)),
+      }),
+    ).toThrow("native candidate manifest");
+    expect(() =>
+      prepareConversationKnowledgeRootSubset({
+        evidence: original.evidence,
+        branch: { ...f.branch, sessionId: "other-recipient" },
+        manifest: subset.manifest,
+      }),
+    ).toThrow("recipient changed");
+    boundary.reports.mockResolvedValue([]);
+    expect(() =>
+      prepareConversationKnowledgeRootSubset({
+        evidence: undefined,
+        branch: f.branch,
+        manifest: subset.manifest,
+      }),
+    ).toThrow("native root evidence");
+    const retired = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    expect(() => rebind(retired.evidence)).toThrow("changed or retired");
+    boundary.reports.mockResolvedValue(f.events);
+    f.source.databaseIdentity = "replacement-native-owner";
+    const replacement = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    expect(() => rebind(replacement.evidence)).toThrow("physical source");
+  });
   it("shares an exact immutable checkpoint scope while retaining native recipient custody", async () => {
     const f = fixture();
     const references = Array.from({ length: 33 }, (_, index) => ({

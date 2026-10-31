@@ -247,6 +247,48 @@ class NativeKnowledgeRootEvidence {
       sharedMetadata,
     );
   }
+
+  static rebindSubset(
+    evidence: unknown,
+    target: ConversationKnowledgeBranch,
+    selected: {
+      branch: ConversationKnowledgeBranch;
+      source: CapturedSessionEntryReadSource;
+      payload: ImmutableRootPayload;
+    },
+  ) {
+    if (typeof evidence !== "object" || evidence === null || !(#branch in evidence)) {
+      throw new Error("Prepared subset requires current native root evidence");
+    }
+    evidence.#assertCurrent();
+    if (
+      !isDeepStrictEqual(target, evidence.#branch) ||
+      !isDeepStrictEqual(selected.branch, evidence.#branch) ||
+      !isDeepStrictEqual(selected.source, evidence.#source)
+    ) {
+      throw new Error("Prepared subset root, physical source or recipient changed");
+    }
+    for (const reference of selected.payload.references.values()) {
+      if (
+        reference.retirement ||
+        !isDeepStrictEqual(evidence.#payload.references.get(referenceKey(reference)), reference)
+      ) {
+        throw new Error("Prepared subset contains a changed or retired original");
+      }
+    }
+    evidence.#assertCurrent();
+    return {
+      evidence: new NativeKnowledgeRootEvidence(
+        rootEvidenceIssuer,
+        target,
+        evidence.#source,
+        [],
+        evidence.#assertCurrent,
+        selected.payload,
+      ),
+      scopeKey: JSON.stringify([evidence.#source, evidence.#branch]),
+    };
+  }
 }
 Object.freeze(NativeKnowledgeRootEvidence);
 Object.freeze(NativeKnowledgeRootEvidence.prototype);
@@ -288,6 +330,38 @@ class PreparedKnowledgeRootCandidates {
   }
   get ownedByteLength(): number {
     return this.#byteLength;
+  }
+
+  static subset(
+    this: void,
+    params: {
+      evidence: NativeKnowledgeRootEvidence | undefined;
+      branch: ConversationKnowledgeBranch;
+    } & (
+      | { manifest: PreparedKnowledgeRootCandidates }
+      | { references: readonly ConversationKnowledgeReference[]; maxBytes: number }
+    ),
+  ) {
+    const manifest =
+      "manifest" in params
+        ? params.manifest
+        : NativeKnowledgeRootEvidence.prepareCandidates(
+            params.evidence,
+            params.references,
+            params.maxBytes,
+            true,
+          );
+    if (typeof manifest !== "object" || manifest === null || !(#payload in manifest)) {
+      throw new Error("Prepared subset requires a native candidate manifest");
+    }
+    return {
+      manifest,
+      ...NativeKnowledgeRootEvidence.rebindSubset(params.evidence, params.branch, {
+        branch: manifest.#branch,
+        source: manifest.#source,
+        payload: manifest.#payload,
+      }),
+    };
   }
 
   static async evidence(params: KnowledgeRootReadParams & { manifest: unknown }) {
@@ -341,6 +415,9 @@ class PreparedKnowledgeRootCandidates {
 Object.freeze(PreparedKnowledgeRootCandidates);
 Object.freeze(PreparedKnowledgeRootCandidates.prototype);
 export type { PreparedKnowledgeRootCandidates };
+
+/** Reuse one immutable native subset only while every original remains in the current full selection. */
+export const prepareConversationKnowledgeRootSubset = PreparedKnowledgeRootCandidates.subset;
 
 export function prepareNativeKnowledgeRootContributionGroup(
   evidence: unknown,

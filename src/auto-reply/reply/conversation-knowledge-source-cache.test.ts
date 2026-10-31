@@ -149,6 +149,44 @@ describe("disposable conversation source preparation", () => {
     cache.clear();
     expect(singleRelease).toHaveBeenCalledOnce();
   });
+  it("retains only unchanged donor selections under the same native root and person scope", () => {
+    const cache = createConversationKnowledgeSourceCache(4096);
+    const first = { ...target, lifecycleRevision: "source-life" };
+    const second = { ...first, sessionKey: "agent:example:other", sessionId: "other" };
+    const manifest = { byteLength: 64 } as Parameters<typeof cache.setPreparedRoot>[0];
+    const next = { byteLength: 64 } as typeof manifest;
+    const own = { byteLength: 64 } as typeof manifest;
+    const releaseA = vi.fn(),
+      releaseB = vi.fn();
+    const groupA = { byteLength: 64, release: releaseA } as unknown as Parameters<
+      typeof cache.retainContributionGroup
+    >[2];
+    const groupB = { byteLength: 64, release: releaseB } as unknown as typeof groupA;
+    const selection = (key: string, changed = "b-original") => ({
+      scopeKey: key,
+      sources: [
+        { source: first, selectionKey: "a-original" },
+        { source: second, selectionKey: changed },
+      ],
+    });
+    cache.setPreparedRoot(manifest, "root-one", selection("native-root-and-person"));
+    cache.retainContributionGroup(["a"], first, groupA, manifest, own);
+    cache.retainContributionGroup(["b"], second, groupB, manifest, own);
+    cache.setPreparedRoot(next, "root-two", selection("native-root-and-person", "b-changed"));
+    expect(cache.preparedContributionGroup(first, next)).toBe(groupA);
+    expect(cache.preparedContributionGroupManifest(first, next)).toBe(own);
+    expect(cache.preparedContributionGroup(second, next)).toBeUndefined();
+    expect(releaseA).not.toHaveBeenCalled();
+    expect(releaseB).toHaveBeenCalledOnce();
+    cache.setPreparedRoot(
+      manifest,
+      "root-two",
+      selection("other-native-root-or-person", "b-changed"),
+    );
+    expect(cache.preparedContributionGroup(first, manifest)).toBeUndefined();
+    expect(releaseA).toHaveBeenCalledOnce();
+    cache.clear();
+  });
   it("replaces exact group associations and retires custody covered by an adopted checkpoint", () => {
     const cache = createConversationKnowledgeSourceCache(4_096);
     const source = { ...target, lifecycleRevision: "source-life" };

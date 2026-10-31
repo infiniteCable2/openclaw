@@ -33,6 +33,7 @@ export {
   assertNativeKnowledgeRootContribution,
   assertNativeKnowledgeRootContributionGroup,
   issuePreparedKnowledgeRootCandidates,
+  prepareConversationKnowledgeRootSubset,
   prepareNativeKnowledgeRootContributionGroup,
   readConversationKnowledgeRoot,
   readPreparedConversationKnowledgeRoot,

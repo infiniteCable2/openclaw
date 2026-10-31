@@ -4,25 +4,25 @@ import { snapshotConversationKnowledgeProgress } from "../../config/sessions/con
 import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import type { ConversationKnowledgePacketProgress } from "../../config/sessions/conversation-knowledge-packets.js";
 import type { PreparedKnowledgeRootCandidates } from "../../config/sessions/conversation-knowledge-store.js";
-import type { projectConversationKnowledge } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
-import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
-import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type {
   PreparedPersonalConversationAdmission,
   PreparedPersonalConversationContributionGroup,
 } from "../../gateway/session-transcript-personal-read.js";
 import type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-checkpoint-recipient.js";
-
-export type PreparedConversationKnowledgePacket = {
-  part: NonNullable<ReturnType<typeof projectConversationKnowledge>>;
-  version: SessionTranscriptContextVersion;
-  through: TranscriptEntryAnchor;
-  from?: TranscriptEntryAnchor;
-};
+import type {
+  PreparedConversationKnowledgePacket,
+  ConversationKnowledgeSourceSelection,
+  ConversationKnowledgeCachedAdmission,
+} from "./conversation-knowledge-source-cache.types.js";
+import { validateConversationKnowledgeCachedContext } from "./conversation-knowledge-source-validation.js";
+export type {
+  PreparedConversationKnowledgePacket,
+  ConversationKnowledgeSourceSelection,
+} from "./conversation-knowledge-source-cache.types.js";
 
 /** Disposable bytes and native read preparation; every disclosure still needs a fresh grant. */
 export function createConversationKnowledgeSourceCache<
@@ -44,11 +44,8 @@ export function createConversationKnowledgeSourceCache<
   >();
   let bytes = 0;
   let admissionBytes = 0;
-  type CachedAdmission =
-    | { kind: "single"; value: Admission }
-    | { kind: "group"; value: PreparedPersonalConversationContributionGroup };
   type ReleasableAdmission = Admission | PreparedPersonalConversationContributionGroup;
-  const admissions = new Map<string, CachedAdmission>();
+  const admissions = new Map<string, ConversationKnowledgeCachedAdmission<Admission>>();
   const admissionSources = new Map<string, string>();
   const retiringAdmissions = new Set<ReleasableAdmission>();
   const retiringCleanups = new Set<() => void>();
@@ -99,11 +96,11 @@ export function createConversationKnowledgeSourceCache<
   const releaseUnusedAdmissions = () => {
     const selected = new Set(admissionSources.values());
     const retired: ReleasableAdmission[] = [];
-    for (const [key, { value: admission }] of admissions) {
+    for (const [key, entry] of admissions) {
       if (!selected.has(key)) {
         admissions.delete(key);
-        admissionBytes -= admission.byteLength;
-        retired.push(admission);
+        admissionBytes -= entry.bytes;
+        retired.push(entry.value);
       }
     }
     releaseAdmissions(retired);
@@ -126,14 +123,19 @@ export function createConversationKnowledgeSourceCache<
   let clearEpoch = 0;
   let preparedRoot: PreparedKnowledgeRootCandidates | undefined;
   let preparedRootSelection: string | undefined;
-  const retireGroups = () => {
+  let preparedSourceScope: string | undefined;
+  let preparedSourceSelections = new Map<string, string>();
+  const retireGroups = (current?: ReadonlyMap<string, string>) => {
     const retired: ReleasableAdmission[] = [];
     for (const [key, entry] of admissions) {
       if (entry.kind !== "group") {
         continue;
       }
+      if (entry.selectionKey !== undefined && entry.selectionKey === current?.get(key)) {
+        continue;
+      }
       admissions.delete(key);
-      admissionBytes -= entry.value.byteLength;
+      admissionBytes -= entry.bytes;
       retired.push(entry.value);
     }
     for (const [id, key] of admissionSources) {
@@ -282,24 +284,39 @@ export function createConversationKnowledgeSourceCache<
         ? entry.value
         : undefined;
     },
+    preparedContributionGroupManifest(
+      source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string },
+      manifest: PreparedKnowledgeRootCandidates,
+    ) {
+      const entry = admissions.get(admissionKey(source));
+      return entry?.kind === "group" && preparedRoot === manifest ? entry.manifest : undefined;
+    },
     retainContributionGroup(
       contributionIds: readonly string[],
       source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string },
       group: PreparedPersonalConversationContributionGroup,
       manifest: PreparedKnowledgeRootCandidates,
+      sourceManifest: PreparedKnowledgeRootCandidates = manifest,
     ): boolean {
       const key = admissionKey(source);
       const existing = admissions.get(key);
+      const size = group.byteLength + (sourceManifest === manifest ? 0 : sourceManifest.byteLength);
       if (
         !contributionIds.length ||
         preparedRoot !== manifest ||
-        group.byteLength > maxBytes - admissionBytes + (existing?.value.byteLength ?? 0)
+        size > maxBytes - admissionBytes + (existing?.bytes ?? 0)
       ) {
         releaseAdmissions([group]);
         return false;
       }
-      admissions.set(key, { kind: "group", value: group });
-      admissionBytes += group.byteLength - (existing?.value.byteLength ?? 0);
+      admissions.set(key, {
+        kind: "group",
+        value: group,
+        bytes: size,
+        manifest: sourceManifest,
+        selectionKey: preparedSourceSelections.get(key),
+      });
+      admissionBytes += size - (existing?.bytes ?? 0);
       for (const [id, sourceKey] of admissionSources) {
         if (sourceKey === key) {
           admissionSources.delete(id);
@@ -322,12 +339,9 @@ export function createConversationKnowledgeSourceCache<
         if (existing.value !== admission) {
           releaseAdmissions([admission]);
         }
-      } else if (
-        admission.byteLength <=
-        maxBytes - admissionBytes + (existing?.value.byteLength ?? 0)
-      ) {
-        admissions.set(key, { kind: "single", value: admission });
-        admissionBytes += admission.byteLength - (existing?.value.byteLength ?? 0);
+      } else if (admission.byteLength <= maxBytes - admissionBytes + (existing?.bytes ?? 0)) {
+        admissions.set(key, { kind: "single", value: admission, bytes: admission.byteLength });
+        admissionBytes += admission.byteLength - (existing?.bytes ?? 0);
         if (existing) {
           releaseAdmissions([existing.value]);
         }
@@ -343,7 +357,7 @@ export function createConversationKnowledgeSourceCache<
       const existing = admissions.get(key);
       if (existing) {
         admissions.delete(key);
-        admissionBytes -= existing.value.byteLength;
+        admissionBytes -= existing.bytes;
         revision++;
         releaseAdmissions([existing.value]);
       }
@@ -438,11 +452,20 @@ export function createConversationKnowledgeSourceCache<
         };
       }
     },
-    setPreparedRoot(value: PreparedKnowledgeRootCandidates, selectionKey?: string) {
+    setPreparedRoot(
+      value: PreparedKnowledgeRootCandidates,
+      selectionKey?: string,
+      sourceSelection?: ConversationKnowledgeSourceSelection,
+    ) {
       if (value.byteLength > maxBytes) {
         throw new RangeError("Prepared conversation provenance exceeds its cache budget");
       }
-      if (selectionKey && selectionKey === preparedRootSelection && preparedRoot) {
+      if (
+        selectionKey &&
+        selectionKey === preparedRootSelection &&
+        preparedRoot &&
+        preparedSourceScope === sourceSelection?.scopeKey
+      ) {
         return preparedRoot;
       }
       // Provenance shares the disposable raw-byte budget; pending packets retain
@@ -459,10 +482,18 @@ export function createConversationKnowledgeSourceCache<
       }
       preparedRoot = value;
       preparedRootSelection = selectionKey;
+      const retain = sourceSelection && sourceSelection.scopeKey === preparedSourceScope;
+      preparedSourceScope = sourceSelection?.scopeKey;
+      preparedSourceSelections = new Map(
+        sourceSelection?.sources.map((selected) => [
+          admissionKey(selected.source),
+          selected.selectionKey,
+        ]),
+      );
       // A foreground read can observe staged bytes before this proof publishes.
       // Publishing readiness must wake the next boundary even without new text.
       revision++;
-      retireGroups();
+      retireGroups(retain ? preparedSourceSelections : undefined);
       return value;
     },
     clearPreparedRoot(expected?: PreparedKnowledgeRootCandidates) {
@@ -471,6 +502,8 @@ export function createConversationKnowledgeSourceCache<
       }
       preparedRoot = undefined;
       preparedRootSelection = undefined;
+      preparedSourceScope = undefined;
+      preparedSourceSelections.clear();
       revision++;
       retireGroups();
     },
@@ -598,6 +631,8 @@ export function createConversationKnowledgeSourceCache<
       stagedBytes = 0;
       preparedRoot = undefined;
       preparedRootSelection = undefined;
+      preparedSourceScope = undefined;
+      preparedSourceSelections.clear();
       inputRoot = undefined;
       inputProgress = undefined;
       revision++;
@@ -632,29 +667,10 @@ export function createConversationKnowledgeSourceCache<
       ]);
       const cached = entries.get(key);
       if (cached?.value.version) {
-        let valid = false;
-        try {
-          await readSessionTranscriptAnchorsAsync(
-            params.target,
-            {
-              entryIds: [],
-              contextValidation: {
-                version: cached.value.version,
-                through: params.through,
-                from: params.from,
-              },
-            },
-            params.signal,
-            (facts) => {
-              params.assertCurrent();
-              valid = facts.contextValidated === true;
-            },
-          );
-        } catch (error) {
-          if (!(error instanceof SessionTranscriptReadFenceError)) {
-            throw error;
-          }
-        }
+        const valid = await validateConversationKnowledgeCachedContext(
+          params,
+          cached.value.version,
+        );
         params.assertCurrent();
         params.signal?.throwIfAborted();
         if (valid) {

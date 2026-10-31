@@ -6,6 +6,7 @@ import { conversationKnowledgeContributionId } from "../../config/sessions/conve
 import {
   readConversationKnowledgeBranch,
   readPreparedConversationKnowledgeRoot,
+  prepareConversationKnowledgeRootSubset,
   recordConversationKnowledgeTurn,
 } from "../../config/sessions/conversation-knowledge-store.js";
 import { readConversationKnowledgeReceipt } from "../../config/sessions/conversation-knowledge.js";
@@ -92,7 +93,13 @@ it("renews one stale recipient group from prepared bytes and still refuses a new
           }
           return { reference, packet };
         });
-        expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+        const preparation = new AbortController();
+        expect(
+          await prepareRecipientConversationProjection(
+            { ...params, signal: preparation.signal },
+            tail,
+          ),
+        ).toBe(true);
         const manifest = cache.preparedRoot!;
         const old = cache.preparedContributionGroup(donor, manifest);
         expect(old).toBeDefined();
@@ -101,6 +108,13 @@ it("renews one stale recipient group from prepared bytes and still refuses a new
         const singleContext = vi.spyOn(transcriptContext, "readSessionTranscriptModelContextAsync");
         const batchContext = vi.spyOn(transcriptContext, "readSessionTranscriptModelContextsAsync");
         probes.push(prepareGroup, readAuthority, singleContext, batchContext);
+        preparation.abort();
+        expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+        expect(cache.preparedContributionGroup(donor, manifest)).toBe(old);
+        expect(prepareGroup).not.toHaveBeenCalled();
+        expect(readAuthority).toHaveBeenCalledOnce();
+        prepareGroup.mockClear();
+        readAuthority.mockClear();
 
         // Native row publication updates held facts. Old custody must be refused,
         // then renewed once for all three ranges, without reading donor text again.
@@ -126,6 +140,15 @@ it("renews one stale recipient group from prepared bytes and still refuses a new
           branch,
           manifest,
         });
+        const sourceManifest = cache.preparedContributionGroupManifest(donor, manifest);
+        if (!sourceManifest) {
+          throw new Error("Native donor subset unavailable");
+        }
+        const subset = prepareConversationKnowledgeRootSubset({
+          evidence: selected.evidence,
+          branch,
+          manifest: sourceManifest,
+        });
         const grant = await transcriptAuthority.prepareTranscriptReadAuthority({
           purpose: "conversation-differences",
           personal: {
@@ -133,7 +156,7 @@ it("renews one stale recipient group from prepared bytes and still refuses a new
             assertCurrent: owner.assertCurrent,
             target: branch,
             targetAudience: audience,
-            rootEvidence: selected.evidence,
+            rootEvidence: subset.evidence,
             contributionGroup: current,
           },
           getRuntimeConfig: () => fixture.cfg,
@@ -181,5 +204,145 @@ it("renews one stale recipient group from prepared bytes and still refuses a new
       originalRanges: 3,
       donorContentReadsDuringRebind: 0,
     }),
+  );
+});
+
+it("refreshes only the changed donor and keeps independent native custody for a third recipient", async ({
+  signal,
+}) => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "recipient-donor-subsets" },
+    async (state) => {
+      const fixture = await createConversationKnowledgeScenario(state);
+      const cache = createConversationKnowledgeSourceCache(),
+        otherCache = createConversationKnowledgeSourceCache(),
+        stagingCache = createConversationKnowledgeSourceCache();
+      const probes: Array<{ mockRestore(): void }> = [];
+      try {
+        const donorA = await fixture.branch("subset-a"),
+          donorB = await fixture.branch("subset-b");
+        const ownerA = await fixture.claim(donorA),
+          ownerB = await fixture.claim(donorB);
+        const record = async (donor: typeof donorA, owner: typeof ownerA, runId: string) => {
+          const terminal = await fixture.append(donor, runId);
+          if (!terminal.admission) {
+            throw new Error("Native source admission unavailable");
+          }
+          expect(
+            await recordConversationKnowledgeTurn({
+              ...owner,
+              ...terminal,
+              privateAudience: { participant: person, admission: terminal.admission },
+            }),
+          ).toBe(true);
+        };
+        await record(donorA, ownerA, "subset-a-one");
+        await record(donorB, ownerB, "subset-b-one");
+        const target = await fixture.branch("subset-recipient"),
+          owner = await fixture.claim(target);
+        const audience: ConversationPrivateAudience = {
+          agentId: target.agentId,
+          sessionKey: target.sessionKey,
+          channelId: "test",
+          accountId: "default",
+          nativeChannelId: "native-subset-recipient",
+          participant: person,
+          assertCurrent: owner.assertCurrent,
+        };
+        const params = {
+          ...owner,
+          signal,
+          originalParticipant: person,
+          destinationAudience: audience,
+          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+          getRuntimeConfig: () => fixture.cfg,
+          sourceCache: cache,
+          preparationOnly: true,
+        };
+        const stage = async () => {
+          const prepared = await prepareReplyConversationKnowledge({
+            ...params,
+            sourceCache: stagingCache,
+          });
+          prepared?.release();
+          return (await loadTranscriptEvents(fixture.root)).flatMap((raw) => {
+            const reference = readConversationKnowledgeReceipt(asOptionalRecord(raw)?.details);
+            if (!reference) {
+              return [];
+            }
+            const packet = stagingCache.peek(conversationKnowledgeContributionId(reference), 0);
+            if (!packet) {
+              throw new Error("Native staged donor text unavailable");
+            }
+            return [{ reference, packet }];
+          });
+        };
+        expect(await prepareRecipientConversationProjection(params, await stage())).toBe(true);
+        const oldA = cache.preparedContributionGroup(donorA, cache.preparedRoot!);
+        expect(oldA).toBeDefined();
+        await record(donorB, ownerB, "subset-b-two");
+        const tail = await stage();
+        const groups = vi.spyOn(personalRead, "preparePersonalConversationContributionGroup");
+        const context = vi.spyOn(transcriptContext, "readSessionTranscriptModelContextAsync");
+        const contexts = vi.spyOn(transcriptContext, "readSessionTranscriptModelContextsAsync");
+        probes.push(groups, context, contexts);
+        const started = performance.now();
+        expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+        expect(groups).toHaveBeenCalledOnce();
+        expect(groups.mock.calls[0]![0].sources).toEqual([
+          expect.objectContaining({ sessionKey: donorB.sessionKey }),
+        ]);
+        expect(cache.preparedContributionGroup(donorA, cache.preparedRoot!)).toBe(oldA);
+        expect(context).not.toHaveBeenCalled();
+        expect(contexts).not.toHaveBeenCalled();
+        const reusedMs = performance.now() - started;
+        const third = await fixture.branch("subset-third"),
+          thirdOwner = await fixture.claim(third);
+        groups.mockClear();
+        expect(
+          await prepareRecipientConversationProjection(
+            {
+              ...params,
+              ...thirdOwner,
+              sourceCache: otherCache,
+              destinationAudience: {
+                ...audience,
+                sessionKey: third.sessionKey,
+                assertCurrent: thirdOwner.assertCurrent,
+              },
+            },
+            tail,
+          ),
+        ).toBe(true);
+        expect(groups).toHaveBeenCalledTimes(2);
+        expect(context).not.toHaveBeenCalled();
+        expect(contexts).not.toHaveBeenCalled();
+        expect(otherCache.preparedContributionGroup(donorA, otherCache.preparedRoot!)).not.toBe(
+          oldA,
+        );
+        console.info(
+          JSON.stringify({
+            scenario: "native-donor-subset-reuse",
+            donorSources: 2,
+            originalRanges: tail.length,
+            changedDonorGroups: 1,
+            independentThirdRecipientGroups: 2,
+            sourceTextReadsDuringRebind: 0,
+            reusedMs: Math.round(reusedMs),
+          }),
+        );
+      } finally {
+        for (const probe of probes.toReversed()) {
+          probe.mockRestore();
+        }
+        try {
+          cache.clear();
+          otherCache.clear();
+          stagingCache.clear();
+        } finally {
+          await fixture.close();
+        }
+      }
+    },
   );
 });

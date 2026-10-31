@@ -641,6 +641,8 @@ async function prepareReplyConversationKnowledgeInMode(
     params.signal?.throwIfAborted();
     if (params.preparationOnly && params.sourceCache) {
       publishPreparedConversationKnowledgeRoot({
+        branch,
+        audienceIdentity: targetFacts.audienceIdentity,
         evidence: events.evidence,
         receipts,
         cache: params.sourceCache,

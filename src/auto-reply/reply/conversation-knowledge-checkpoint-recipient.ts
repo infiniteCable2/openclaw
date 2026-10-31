@@ -7,15 +7,15 @@ import {
   prepareConversationKnowledgeCheckpointSelection,
   advanceConversationKnowledgeBootstrapInput,
   retainConversationKnowledgeCheckpoint,
-  type PreparedConversationKnowledgeBootstrap,
-  type PreparedConversationKnowledgeCheckpointSelection,
 } from "../../config/sessions/conversation-knowledge-checkpoint-admission.js";
+import type { PreparedConversationKnowledgeBootstrap } from "../../config/sessions/conversation-knowledge-checkpoint-admission.js";
 import { createConversationKnowledgeCheckpointContext } from "../../config/sessions/conversation-knowledge-checkpoint-context.js";
 import { selectConversationKnowledgeCheckpointBootstrap } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import { selectConversationKnowledgeReceipts } from "../../config/sessions/conversation-knowledge-selection.js";
 import {
   issuePreparedKnowledgeRootCandidates,
+  prepareConversationKnowledgeRootSubset,
   readConversationKnowledgeRoot,
   readPreparedConversationKnowledgeRoot,
   readPreparedConversationKnowledgeRootEvidence,
@@ -26,19 +26,18 @@ import { composeSessionSourceAssertion } from "../../config/sessions/session-sou
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
-import {
-  preparePersonalConversationContributionGroup,
-  type PreparedPersonalConversationContributionGroup,
-} from "../../gateway/session-transcript-personal-read.js";
+import { preparePersonalConversationContributionGroup } from "../../gateway/session-transcript-personal-read.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
 import type { PreparedConversationKnowledgeRootCheckpoint } from "./conversation-knowledge-checkpoint-owner.js";
 import type {
   ConversationKnowledgeSourceCache,
   PreparedConversationKnowledgePacket,
 } from "./conversation-knowledge-source-cache.js";
+import type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-source-cache.types.js";
 import {
   readConversationKnowledgeInputs,
   prepareConversationKnowledgeTarget,
+  prepareConversationKnowledgeSourceSelection,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
 import type {
@@ -46,16 +45,7 @@ import type {
   ReplyConversationKnowledgeParams,
 } from "./conversation-knowledge.types.js";
 
-export type PreparedRecipientConversationCheckpoint =
-  PreparedConversationKnowledgeRootCheckpoint & {
-    manifest: PreparedKnowledgeRootCandidates;
-    bootstrap: PreparedConversationKnowledgeBootstrap;
-    selection: PreparedConversationKnowledgeCheckpointSelection;
-    groups: readonly {
-      source: Readonly<Pick<ConversationKnowledgeReference["source"], "agentId" | "sessionKey">>;
-      admission: PreparedPersonalConversationContributionGroup;
-    }[];
-  };
+export type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-source-cache.types.js";
 
 function checkpointReadCustody(releaseTarget: () => void, cache: ConversationKnowledgeSourceCache) {
   const reads: ConversationKnowledgeHeldSource[] = [];
@@ -171,7 +161,17 @@ export async function prepareRecipientConversationProjection(
       });
       // Progress consumes packets, not the canonical native source selection.
       // Identical selection keeps its manifest and grouped custody across batches.
-      manifest = cache.setPreparedRoot(candidate, sha256Hex(JSON.stringify(current)));
+      manifest = cache.setPreparedRoot(
+        candidate,
+        sha256Hex(JSON.stringify(current)),
+        prepareConversationKnowledgeSourceSelection({
+          evidence: events.evidence,
+          branch,
+          receipts: current,
+          audienceIdentity: targetFacts.audienceIdentity,
+          maxBytes: cache.maxPreparedRootBytes,
+        }),
+      );
     } catch (error) {
       if (!(error instanceof RangeError)) {
         throw error;
@@ -263,6 +263,15 @@ export async function prepareRecipientConversationProjection(
         )
           ? group
           : undefined;
+      const retainedManifest =
+        cachedGroup && cache.preparedContributionGroupManifest(sourceTarget, manifest);
+      const subset = prepareConversationKnowledgeRootSubset({
+        evidence: selectedEvents.evidence,
+        branch,
+        ...(retainedManifest
+          ? { manifest: retainedManifest }
+          : { references, maxBytes: cache.maxPreparedRootBytes }),
+      });
       const request = {
         purpose: "conversation-differences",
         personal: {
@@ -270,7 +279,7 @@ export async function prepareRecipientConversationProjection(
           assertCurrent: check,
           target: branch,
           targetAudience: params.destinationAudience,
-          rootEvidence: selectedEvents.evidence,
+          rootEvidence: subset.evidence,
         },
         getRuntimeConfig: params.getRuntimeConfig,
         sources: [first.source],
@@ -365,7 +374,15 @@ export async function prepareRecipientConversationProjection(
         // The cache owns release even when bounded admission refuses the group.
         if (retire && group) {
           transfer = true;
-          if (!cache.retainContributionGroup(preparedIds, sourceTarget, group, manifest)) {
+          if (
+            !cache.retainContributionGroup(
+              preparedIds,
+              sourceTarget,
+              group,
+              manifest,
+              subset.manifest,
+            )
+          ) {
             complete = false;
           }
         }
