@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 import * as reportStorage from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
+import * as sourceAuthority from "../../config/sessions/session-source-authority.js";
 import * as transcriptAnchors from "../../config/sessions/session-transcript-anchor-read.js";
 import * as transcriptAuthority from "../../gateway/session-transcript-read-authority.js";
 import * as knowledgeSource from "./conversation-knowledge-source-reader.js";
@@ -64,6 +65,7 @@ export function createConversationKnowledgeBoundaryProfiler() {
       const nativeInputs = knowledgeSource.readConversationKnowledgeInputs;
       const nativeObserve = reportStorage.readSessionTranscriptReportReceipts;
       const nativeAppend = reportStorage.appendSessionTranscriptReportBatch;
+      const nativeSourceAuthority = sourceAuthority.prepareSessionSourceAuthority;
       const probes: Array<{ mockRestore(): void }> = [];
       try {
         probes.push(
@@ -98,6 +100,13 @@ export function createConversationKnowledgeBoundaryProfiler() {
             .spyOn(reportStorage, "readSessionTranscriptReportReceipts")
             .mockImplementation((...args) =>
               observe("nativeReceiptObservation", () => nativeObserve(...args)),
+            ),
+        );
+        probes.push(
+          vi
+            .spyOn(sourceAuthority, "prepareSessionSourceAuthority")
+            .mockImplementation((input) =>
+              observe("preparedSourceAuthority", () => nativeSourceAuthority(input)),
             ),
         );
         probes.push(

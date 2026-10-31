@@ -300,9 +300,9 @@ export function createConversationKnowledgePrefetchOwner(params: {
       held = false;
       preparationPauses--;
       if (preparationPauses === 0) {
-        // A drain may have committed before cancellation. Refresh its progress
-        // once, together with every notification received while paused.
-        request();
+        // Refresh recipient progress without inventing a donor change. Pending
+        // source notifications and cancelled source work retain their own intent.
+        request("recipient");
       }
     };
   };

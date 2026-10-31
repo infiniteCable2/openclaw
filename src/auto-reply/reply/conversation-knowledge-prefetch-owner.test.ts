@@ -117,6 +117,23 @@ afterEach(async () => {
 });
 
 describe("conversation knowledge prefetch lifecycle", () => {
+  it("resumes settled recipient work without rebuilding unchanged sources", async () => {
+    const f = fixture();
+    await f.owner.wait();
+    expect(f.prepare.mock.calls.map((call) => call[1])).toEqual([true]);
+    for (let index = 0; index < 3; index++) {
+      const resume = f.owner.pausePreparation();
+      resume();
+      await f.owner.wait();
+    }
+    expect(f.prepare.mock.calls.map((call) => call[1])).toEqual([true, false, false, false]);
+    const resume = f.owner.pausePreparation();
+    rootUpdate();
+    resume();
+    await f.owner.wait();
+    expect(f.prepare.mock.calls.map((call) => call[1])).toEqual([true, false, false, false, true]);
+  });
+
   it("defers a queued quantum and coalesces root wakeups until the drain resumes", async () => {
     const queued = createDeferredCore();
     const dispatch = gate();
