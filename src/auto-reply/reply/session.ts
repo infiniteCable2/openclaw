@@ -12,7 +12,7 @@ import { cleanupBrowserSessionsForLifecycleEnd } from "../../browser-lifecycle-c
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveSessionParentSessionKey } from "../../channels/plugins/session-conversation.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
-import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
+import { createRuntimeConfigReader } from "../../config/runtime-snapshot.js";
 import { conversationRouteContextFromMsgContext } from "../../config/sessions/conversation-route-context.js";
 import { hasProviderOwnedSession } from "../../config/sessions/entry-freshness.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
@@ -363,6 +363,7 @@ async function initSessionStateAttemptLocked(
 ): Promise<InitSessionStateAttemptOutcome> {
   params.assertSourceCurrent?.();
   const { ctx, cfg, commandAuthorized } = params;
+  const getRuntimeConfig = createRuntimeConfigReader(cfg, { capture: true });
   const {
     agentId,
     conversationBindingContext,
@@ -836,7 +837,7 @@ async function initSessionStateAttemptLocked(
               ...sessionTarget,
               sessionEntry: entryToCommit,
               cfg,
-              getRuntimeConfig: () => getRuntimeConfigSnapshot({ capture: true }) ?? cfg,
+              getRuntimeConfig,
               audience: creation.audience,
               assertCurrent: composeSessionSourceAssertion(
                 [params.assertSourceCurrent],

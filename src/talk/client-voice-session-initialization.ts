@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatType } from "../channels/chat-type.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
-import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+import { createRuntimeConfigReader } from "../config/runtime-snapshot.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import {
   commitReplySessionInitialization,
@@ -54,6 +54,8 @@ async function ensureConversationSession(
   params: VoiceSessionInitializationParams & { cfg: OpenClawConfig },
 ): Promise<string> {
   const cfg = params.cfg;
+  const getRuntimeConfig =
+    params.getRuntimeConfig ?? createRuntimeConfigReader(cfg, { capture: true });
   const mode = resolveAgentConversationMode(cfg, params.agentId);
   const rootSessionKey =
     mode === "branches"
@@ -133,9 +135,7 @@ async function ensureConversationSession(
                 ...target,
                 sessionEntry: entry,
                 cfg,
-                getRuntimeConfig:
-                  params.getRuntimeConfig ??
-                  (() => getRuntimeConfigSnapshot({ capture: true }) ?? cfg),
+                getRuntimeConfig,
                 audience: privateAudience,
                 assertCurrent,
               });

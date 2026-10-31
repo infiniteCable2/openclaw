@@ -12,6 +12,7 @@ import { createConversationKnowledgeCheckpoint } from "./conversation-knowledge-
 import { readConversationKnowledgeImportProgress } from "./conversation-knowledge-packets.js";
 import {
   conversationKnowledgeOrigin,
+  projectConversationKnowledge,
   type ConversationKnowledgeReference,
 } from "./conversation-knowledge.js";
 import {
@@ -356,6 +357,15 @@ async function withProjectedContext(
           if (!rootFacts.contextVersion || !donorFacts.contextVersion) {
             throw new Error("Synthetic projection requires exact native source versions");
           }
+          const part = projectConversationKnowledge(
+            references[1]!,
+            await loadTranscriptEvents(donor),
+            undefined,
+            "private-direct",
+          );
+          if (!part?.complete) {
+            throw new Error("Synthetic packet requires its actual native source projection");
+          }
           const projection: PreparedProjectedInitialSessionContext["projection"] = {
             branch,
             checkpoint,
@@ -370,10 +380,10 @@ async function withProjectedContext(
             packets: [
               {
                 receipt: references[1]!,
-                text: "A later original fact.",
+                text: part.text,
                 offset: 0,
-                nextOffset: 22,
-                complete: true,
+                nextOffset: part.nextOffset ?? 0,
+                complete: part.complete,
                 sourceClaim: 1,
               },
             ],
@@ -434,7 +444,7 @@ describe("native reply initial context", () => {
         assertCurrent() {},
       });
       expect(progress.packets.size).toBe(1);
-      expect([...progress.packets.values()]).toEqual([{ complete: true, nextOffset: 22 }]);
+      expect([...progress.packets.values()]).toEqual([{ complete: true, nextOffset: 0 }]);
       expect(progress.checkpoints.map((value) => value.checkpointId)).toEqual([
         context.projection.checkpoint!.checkpointId,
       ]);
@@ -456,11 +466,16 @@ describe("native reply initial context", () => {
     "root-reset",
     "permission",
     "late-permission",
+    "target-visibility",
+    "target-share",
+    "target-parent",
+    "target-spawn",
+    "target-incognito",
     "missing-predicate",
   ] as const)(
     "refuses an initial root projection after %s without partial creation",
     async (change) => {
-      await withProjectedContext(async ({ source, donor, target, context, authority, commit }) => {
+      await withProjectedContext(async ({ source, donor, target, context, commit }) => {
         const overrides: Partial<Parameters<typeof commitReplySessionInitialization>[0]> = {};
         if (change === "donor-reset" || change === "root-reset") {
           const selected = change === "donor-reset" ? donor : source;
@@ -479,8 +494,26 @@ describe("native reply initial context", () => {
               visibility: "shared",
             });
           };
+        } else if (change.startsWith("target-")) {
+          const mutation: Partial<InternalSessionEntry> =
+            change === "target-visibility"
+              ? { visibility: "shared" }
+              : change === "target-share"
+                ? {
+                    publicShare: {
+                      id: "synthetic-share",
+                      sessionId: target.sessionId,
+                      createdAt: 1,
+                    },
+                  }
+                : change === "target-parent"
+                  ? { parentSessionKey: "agent:main:synthetic-parent" }
+                  : change === "target-spawn"
+                    ? { spawnedBy: "agent:main:synthetic-task" }
+                    : { incognito: true };
+          overrides.prepareSessionEntry = ({ sessionEntry }) =>
+            Object.assign(sessionEntry, mutation);
         } else {
-          overrides.contextSourceAuthority = authority;
           overrides.initialContext = {
             ...context,
             projection: {
@@ -536,7 +569,7 @@ describe("native reply initial context", () => {
       // read tests separately prove who may issue a historical-custody translation.
       await replaceTranscriptEvents(donor, [{ type: "session", id: donor.sessionId, version: 3 }]);
       const current = await appendTranscriptMessage(donor, {
-        message: { role: "user", content: packet.text },
+        message: { role: "user", content: "A later original fact." },
       });
       const facts = await readSessionTranscriptAnchorsAsync(donor, {
         entryIds: [],

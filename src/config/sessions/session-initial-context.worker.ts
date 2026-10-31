@@ -46,6 +46,16 @@ function assertInitialRootProjection(
     topology.rootSessionKey !== branch.root.sessionKey ||
     topology.rootSessionId !== branch.root.sessionId ||
     topology.rootSessionLifecycleRevision !== branch.root.lifecycleRevision ||
+    entry.visibility !== "draft" ||
+    entry.publicShare !== undefined ||
+    entry.incognito ||
+    entry.parentSessionKey !== undefined ||
+    entry.parentSessionId !== undefined ||
+    entry.parentSessionLifecycleRevision !== undefined ||
+    entry.spawnedBy !== undefined ||
+    entry.spawnedBySessionId !== undefined ||
+    entry.spawnDepth !== undefined ||
+    entry.forkedFromParent === true ||
     entry.forkSource ||
     typeof header?.timestamp !== "string" ||
     typeof header.cwd !== "string" ||
