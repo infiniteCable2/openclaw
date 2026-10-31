@@ -18,6 +18,7 @@ import {
 } from "./conversation-knowledge-checkpoint-recipient.js";
 import {
   createConversationKnowledgeSourceCache,
+  type ConversationKnowledgeSourceCache,
   type PreparedConversationKnowledgePacket,
 } from "./conversation-knowledge-source-cache.js";
 import type { ReplyConversationKnowledgeParams } from "./conversation-knowledge.types.js";
@@ -162,7 +163,7 @@ function fixture(references = [reference]) {
 }
 function preparedParams(
   f: ReturnType<typeof fixture>,
-  sourceCache: ReturnType<typeof createConversationKnowledgeSourceCache>,
+  sourceCache: ConversationKnowledgeSourceCache,
 ) {
   return {
     ...f.params,
