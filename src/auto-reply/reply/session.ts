@@ -1,8 +1,5 @@
 import crypto from "node:crypto";
-import {
-  normalizeOptionalLowercaseString,
-  normalizeOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { clearBootstrapSnapshotOnSessionBoundary } from "../../agents/bootstrap-cache.js";
@@ -45,11 +42,7 @@ import {
   isRecoverableTerminalSessionStatus,
   recoverTerminalSessionEntryForVisibleTurn,
 } from "../../config/sessions/terminal-status.js";
-import {
-  DEFAULT_RESET_TRIGGERS,
-  SESSION_TOTAL_TOKENS_VERSION,
-  type SessionEntry,
-} from "../../config/sessions/types.js";
+import { SESSION_TOTAL_TOKENS_VERSION, type SessionEntry } from "../../config/sessions/types.js";
 import {
   forgetActiveSessionForShutdown,
   noteActiveSessionForShutdown,
@@ -101,18 +94,13 @@ import {
 } from "../../utils/delivery-context.read.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
-import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { FinalizedTemplateContext as TemplateContext } from "../templating.js";
-import { resolveEffectiveResetTargetSessionKey } from "./acp-reset-target.js";
 import { readBeforeResetMessages } from "./commands-reset-hooks.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { replyRunRegistry } from "./reply-run-registry.js";
 import { acknowledgeReplySessionTransition } from "./reply-run-registry.state.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
-import {
-  resolveSessionDefaultAccountId,
-  resolveBoundAcpSessionForCommandReset,
-} from "./session-conversation-binding.js";
+import { resolveSessionDefaultAccountId } from "./session-conversation-binding.js";
 import {
   maybeRetireLegacyMainDeliveryRoute,
   resolveSessionDeliveryRoute,
@@ -147,7 +135,7 @@ import {
   createSessionResetCleanupGuard,
   stopSessionResetSubagents,
 } from "./session-reset-cleanup.js";
-import { resolveAuthorizedSessionResetCommand } from "./session-reset-command.js";
+import { resolveSessionResetRouting } from "./session-reset-command.js";
 import { resolveReplySessionRolloverState } from "./session-rollover-state.js";
 import { withoutThreadDelivery } from "./session-route-reset.js";
 
@@ -384,48 +372,23 @@ async function initSessionStateAttemptLocked(
   const normalizedChatType = normalizeChatType(ctx.ChatType);
   const isGroup =
     normalizedChatType != null && normalizedChatType !== "direct" ? true : Boolean(groupResolution);
-  const { resetAuthorized, resetCommand } = resolveAuthorizedSessionResetCommand({
+  const {
+    matchedResetTriggerLower,
+    resetTriggered,
+    originalResetTriggered,
+    bodyStripped,
+    triggerBodyNormalized,
+    softResetAllowed,
+  } = await resolveSessionResetRouting({
     ctx,
     cfg,
     agentId,
     isGroup,
     commandAuthorized,
-  });
-  const boundAcpSessionForCommandReset = await resolveBoundAcpSessionForCommandReset({
-    cfg,
-    ctx: sessionCtxForState,
+    sessionKey,
+    routedContext: sessionCtxForState,
     bindingContext: conversationBindingContext,
   });
-  // Escaped commands initialize under the transport session, but the bound
-  // handler owns the reset. Do not rotate or drain that unrelated source first.
-  const shouldDeferResetToBoundAcpCommand =
-    Boolean(boundAcpSessionForCommandReset) &&
-    resetCommand.matchedResetTriggerLower !== undefined &&
-    DEFAULT_RESET_TRIGGERS.some(
-      (defaultTrigger) =>
-        normalizeOptionalLowercaseString(defaultTrigger) === resetCommand.matchedResetTriggerLower,
-    );
-  const matchedResetTriggerLower = shouldDeferResetToBoundAcpCommand
-    ? undefined
-    : resetCommand.matchedResetTriggerLower;
-  const { softResetMatched, triggerBodyNormalized } = resetCommand;
-  const resetTriggered = matchedResetTriggerLower !== undefined;
-  const bodyStripped = resetTriggered ? (resetCommand.payload ?? "") : undefined;
-
-  // Settle binding reads before taking the session snapshot.
-  const softResetAllowed =
-    softResetMatched &&
-    resetAuthorized &&
-    !isAcpSessionKey(
-      (await resolveEffectiveResetTargetSessionKey({
-        cfg,
-        ...conversationBindingContext,
-        commandTargetSessionKey: resolveCommandTurnTargetSessionKey(sessionCtxForState),
-        activeSessionKey: sessionKey,
-        allowNonAcpBindingSessionKey: false,
-        skipConfiguredFallbackWhenActiveSessionNonAcp: false,
-      })) ?? "",
-    );
 
   params.signal?.throwIfAborted();
   const sessionStoreLoadStartMs = ingressTimingEnabled ? Date.now() : 0;
@@ -467,7 +430,7 @@ async function initSessionStateAttemptLocked(
   const initialContext = resolveInitializationContextSeed(params, attemptContext, {
     entry,
     // A bound ACP handler can own the reset while source rollover is suppressed.
-    resetTriggered: resetCommand.matchedResetTriggerLower !== undefined,
+    resetTriggered: originalResetTriggered,
   });
   if (
     attemptContext.storeWriterIdentity &&

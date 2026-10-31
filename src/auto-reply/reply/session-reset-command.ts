@@ -1,7 +1,12 @@
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalLowercaseString,
+} from "@openclaw/normalization-core/string-coerce";
 import { DEFAULT_RESET_TRIGGERS } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { isAcpSessionKey } from "../../routing/session-key.js";
 import { isResetAuthorizedForContext } from "../command-auth.js";
+import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import { normalizeCommandBody } from "../commands-registry.js";
 import type { MsgContext } from "../templating.js";
 import { parseSoftResetCommand } from "./commands-reset-mode.js";
@@ -11,6 +16,7 @@ import {
   RECENT_HISTORY_CONTEXT_MARKER,
 } from "./history.js";
 import { stripMentions } from "./mentions.js";
+import type { resolveSessionConversationBindingContext } from "./session-conversation-binding.js";
 
 type ResolvedSessionResetCommand = {
   matchedResetTriggerLower?: string;
@@ -271,5 +277,59 @@ export function resolveAuthorizedSessionResetCommand(
         : DEFAULT_RESET_TRIGGERS,
       resetAuthorized,
     }),
+  };
+}
+
+/** Settle reset ownership before initialization reads or rotates the target session. */
+export async function resolveSessionResetRouting(
+  params: SessionResetCommandContext & {
+    commandAuthorized: boolean;
+    sessionKey: string;
+    routedContext: MsgContext;
+    bindingContext: ReturnType<typeof resolveSessionConversationBindingContext>;
+  },
+) {
+  const { resetAuthorized, resetCommand } = resolveAuthorizedSessionResetCommand(params);
+  const { resolveBoundAcpSessionForCommandReset } =
+    await import("./session-conversation-binding.js");
+  const boundAcpSessionForCommandReset = await resolveBoundAcpSessionForCommandReset({
+    cfg: params.cfg,
+    ctx: params.routedContext,
+    bindingContext: params.bindingContext,
+  });
+  // Escaped commands initialize under the transport session, but the bound
+  // handler owns the reset. Do not rotate or drain that unrelated source first.
+  const shouldDeferResetToBoundAcpCommand =
+    Boolean(boundAcpSessionForCommandReset) &&
+    resetCommand.matchedResetTriggerLower !== undefined &&
+    DEFAULT_RESET_TRIGGERS.some(
+      (defaultTrigger) =>
+        normalizeOptionalLowercaseString(defaultTrigger) === resetCommand.matchedResetTriggerLower,
+    );
+  const matchedResetTriggerLower = shouldDeferResetToBoundAcpCommand
+    ? undefined
+    : resetCommand.matchedResetTriggerLower;
+  const resetTriggered = matchedResetTriggerLower !== undefined;
+  const { resolveEffectiveResetTargetSessionKey } = await import("./acp-reset-target.js");
+  const softResetAllowed =
+    resetCommand.softResetMatched &&
+    resetAuthorized &&
+    !isAcpSessionKey(
+      (await resolveEffectiveResetTargetSessionKey({
+        cfg: params.cfg,
+        ...params.bindingContext,
+        commandTargetSessionKey: resolveCommandTurnTargetSessionKey(params.routedContext),
+        activeSessionKey: params.sessionKey,
+        allowNonAcpBindingSessionKey: false,
+        skipConfiguredFallbackWhenActiveSessionNonAcp: false,
+      })) ?? "",
+    );
+  return {
+    matchedResetTriggerLower,
+    resetTriggered,
+    originalResetTriggered: resetCommand.matchedResetTriggerLower !== undefined,
+    bodyStripped: resetTriggered ? (resetCommand.payload ?? "") : undefined,
+    triggerBodyNormalized: resetCommand.triggerBodyNormalized,
+    softResetAllowed,
   };
 }
