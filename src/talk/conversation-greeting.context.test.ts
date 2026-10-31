@@ -24,6 +24,14 @@ it("detaches only recent greeting cues from a large source without truncating it
     }
     await waitForSessionTranscriptProjection(target);
     const before = source.getPersistedEntries();
+    const previousStarted = performance.now();
+    const previous = await SessionManager.openDetachedBoundedAsync(target, {
+      maxBytes: 64 * 1024 * 1024,
+      maxEvents: 10_000,
+    });
+    const previousContext = previous.buildSessionContext();
+    const previousElapsedMs = Math.round(performance.now() - previousStarted);
+    expect(previousContext.messages).toHaveLength(48);
     const started = performance.now();
     const truncated = vi.fn();
     const detached = await SessionManager.openDetachedBoundedAsync(target, {
@@ -46,6 +54,8 @@ it("detaches only recent greeting cues from a large source without truncating it
         scenario: "bounded-greeting-context",
         sourceMessages: 48,
         sourceTextBytesAtLeast: 32 * 96 * 1024,
+        previousContextBytes: Buffer.byteLength(JSON.stringify(previousContext.messages)),
+        previousElapsedMs,
         detachedMessages: context.messages.length,
         detachedContextBytes: Buffer.byteLength(JSON.stringify(context.messages)),
         elapsedMs,
