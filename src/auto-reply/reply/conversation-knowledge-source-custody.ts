@@ -206,13 +206,9 @@ export function createConversationKnowledgeSourceCustody(
         return undefined;
       }
       targetFacts.assertCurrent();
-      const sourceAssertion =
-        groupedSourceAssertion ??
-        composeSessionSourceAssertion([
-          params.assertCurrent,
-          targetFacts.assertCurrent,
-          grant.assertCurrent,
-        ]);
+      // Both native personal grants retain the original recipient and target
+      // predicates. Rewrapping them repeats ingress work for every contribution.
+      const sourceAssertion = groupedSourceAssertion ?? grant.assertCurrent;
       const projectionTarget = {
         agentId: source.agentId,
         sessionKey: source.canonicalKey,

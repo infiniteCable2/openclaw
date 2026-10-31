@@ -122,15 +122,20 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   const proofs: SessionSourceAssertion[] = [];
   let released = false;
   let targetReleased = false;
-  const check = () => {
-    if (released) {
-      throw new Error("Checkpoint source custody has ended");
-    }
-    authority.signal.throwIfAborted();
-    authority.assertCurrent();
-    targetFacts.assertCurrent();
-    params.audience.assertCurrent();
-  };
+  // Carry the native predicates with their owner check. Repeating these parents
+  // beside an opaque wrapper multiplied the same ingress checks for every donor.
+  const custody = composeSessionSourceAssertion(
+    [authority.assertCurrent, targetFacts.assertCurrent],
+    (assertSources) => {
+      if (released) {
+        throw new Error("Checkpoint source custody has ended");
+      }
+      authority.signal.throwIfAborted();
+      assertSources();
+      params.audience.assertCurrent();
+    },
+  );
+  const check = () => custody();
   const { record: recordVersionProof, nativeRanges } = createCheckpointRangeRecorder({
     branch,
     check,
@@ -138,7 +143,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   });
   const workCheck = () => {
     params.signal.throwIfAborted();
-    params.assertCurrent();
+    if (params.assertCurrent !== authority.assertCurrent) {
+      params.assertCurrent();
+    }
     check();
   };
   const drop = (read: ConversationKnowledgeHeldSource) => {
@@ -529,11 +536,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
               manifest: groupManifest,
               targetCreation: params.targetCreation,
               signal: authority.signal,
-              assertCurrent: composeSessionSourceAssertion([
-                authority.assertCurrent,
-                targetFacts.assertCurrent,
-                check,
-              ]),
+              assertCurrent: custody,
               workCheck,
               getRuntimeConfig: () => params.getRuntimeConfig(),
               groups,
@@ -623,12 +626,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       },
       // Snapshot only after every required source has been acquired.
       source: (selectedProofs: readonly SessionSourceAssertion[] = proofs) =>
-        composeSessionSourceAssertion([
-          authority.assertCurrent,
-          targetFacts.assertCurrent,
-          check,
-          ...selectedProofs,
-        ]),
+        composeSessionSourceAssertion([custody, ...selectedProofs]),
       release,
       async prepareInitialContextFrame(
         input: import("./conversation-knowledge-checkpoint-frame-source.js").CheckpointInitialFrameInput,

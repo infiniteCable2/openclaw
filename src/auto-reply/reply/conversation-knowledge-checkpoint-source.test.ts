@@ -9,6 +9,7 @@ import type { SessionEntryCohortReader } from "../../config/sessions/session-ent
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
 import {
   prepareSessionSourceAuthority,
+  type PreparedSessionSourceAuthority,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
@@ -113,6 +114,7 @@ async function sources(
   options?: {
     signal?: AbortSignal;
     authority?: { signal: AbortSignal; assertCurrent: () => void };
+    audienceAssertCurrent?: () => void;
     onReadRequest?: (request: { sessionKeys: readonly string[] }) => void;
   },
 ) {
@@ -151,7 +153,8 @@ async function sources(
       accountId: "default",
       nativeChannelId: "private-endpoint",
       participant: person,
-      assertCurrent: options?.authority?.assertCurrent ?? assertCurrent,
+      assertCurrent:
+        options?.audienceAssertCurrent ?? options?.authority?.assertCurrent ?? assertCurrent,
     },
     reader,
     signal: options?.signal ?? new AbortController().signal,
@@ -190,6 +193,111 @@ afterEach(() => {
 });
 
 describe("checkpoint unavailable source custody", () => {
+  it("checks each source owner once while retaining both native predicates and live revocation", async () => {
+    const live = { parent: true, target: true, audience: true };
+    const parent = Object.assign(
+      vi.fn(() => {
+        if (!live.parent) {
+          throw new Error("Original input authority revoked");
+        }
+      }),
+      {
+        prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
+          assertCurrent: parent,
+          checks: [
+            {
+              predicate: {
+                source: nativeSource,
+                sessionKey: branch.root.sessionKey,
+                fields: ["sessionId" as const],
+                expected: { sessionId: branch.root.sessionId },
+              },
+              refuse(): never {
+                throw new Error("Original native root changed");
+              },
+            },
+          ],
+        }),
+      },
+    );
+    const target = Object.assign(
+      vi.fn(() => {
+        if (!live.target) {
+          throw new Error("Original target authority revoked");
+        }
+      }),
+      {
+        prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
+          assertCurrent: target,
+          checks: [
+            {
+              predicate: {
+                source: nativeSource,
+                sessionKey: branch.sessionKey,
+                fields: ["sessionId" as const],
+                expected: { sessionId: branch.sessionId },
+              },
+              refuse(): never {
+                throw new Error("Original native recipient changed");
+              },
+            },
+          ],
+        }),
+      },
+    );
+    const audience = vi.fn(() => {
+      if (!live.audience) {
+        throw new Error("Original private audience revoked");
+      }
+    });
+    boundary.target.mockResolvedValueOnce({
+      kind: "ready",
+      branch,
+      targetFacts: { assertCurrent: target, release: boundary.targetRelease },
+    });
+    const held = await sources(parent, { audienceAssertCurrent: audience });
+    parent.mockClear();
+    target.mockClear();
+    audience.mockClear();
+    const source = held.source();
+    source();
+    expect(parent).toHaveBeenCalledOnce();
+    expect(target).toHaveBeenCalledOnce();
+    expect(audience).toHaveBeenCalledOnce();
+    const prepared = await prepareSessionSourceAuthority(source);
+    expect(prepared.checks.map(({ predicate }) => predicate)).toEqual([
+      {
+        source: nativeSource,
+        sessionKey: branch.root.sessionKey,
+        fields: ["sessionId"],
+        expected: { sessionId: branch.root.sessionId },
+      },
+      {
+        source: nativeSource,
+        sessionKey: branch.sessionKey,
+        fields: ["sessionId"],
+        expected: { sessionId: branch.sessionId },
+      },
+    ]);
+    parent.mockClear();
+    target.mockClear();
+    audience.mockClear();
+    prepared.assertCurrent();
+    expect(parent).toHaveBeenCalledOnce();
+    expect(target).toHaveBeenCalledOnce();
+    expect(audience).toHaveBeenCalledOnce();
+    for (const owner of ["parent", "target", "audience"] as const) {
+      live[owner] = false;
+      expect(() => source()).toThrow("revoked");
+      expect(() => prepared.assertCurrent()).toThrow("revoked");
+      live[owner] = true;
+    }
+    held.release();
+    expect(() => source()).toThrow("custody has ended");
+    expect(() => prepared.assertCurrent()).toThrow("custody has ended");
+    expect(boundary.targetRelease).toHaveBeenCalledOnce();
+  });
+
   it("keeps the admitted broker in the initial root snapshot's native cohort", async () => {
     const requests: string[][] = [];
     await sources(() => {}, {
