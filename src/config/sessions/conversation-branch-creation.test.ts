@@ -284,19 +284,19 @@ describe("native private conversation creation capability", () => {
         throw new Error("Original audience revoked");
       }
     });
-    f.audience.assertCurrent = original;
+    const audience = { ...f.audience, assertCurrent: original };
     const independent = {
-      ...f.audience,
+      ...audience,
       assertCurrent: vi.fn(() => {
         if (!current.independent) {
           throw new Error("Independent audience revoked");
         }
       }),
     };
-    const creation = await prepareConversationBranchCreation(f.params);
+    const creation = await prepareConversationBranchCreation({ ...f.params, audience });
     try {
       original.mockClear();
-      assertConversationBranchCreation({ creation, branch: f.branch, audience: f.audience });
+      assertConversationBranchCreation({ creation, branch: f.branch, audience });
       expect(original).toHaveBeenCalledOnce();
       original.mockClear();
       assertConversationBranchCreation({ creation, branch: f.branch, audience: independent });
