@@ -222,7 +222,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // MeetingRealtimeBindingsV2Params, resolveAgentSpeechConversationRoute.
       // +1: fork-maintainer-approved owned readonly-config copy (2026-10-18):
       // cloneRuntimeConfigSnapshot preserves the supplied snapshot's resolution facts.
-      3655,
+      // +1: reuse the native config snapshot matcher for startup admission across no-op publications.
+      3656,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -239,7 +240,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: fork-maintainer-approved async PNG encoding and speech-profile resolution (2026-10-15).
       // +2: fork-maintainer-approved V2 meeting bindings and speech route resolver (2026-10-18).
       // +1: fork-maintainer-approved native readonly-config copy (2026-10-18).
-      2118,
+      // +1: existing native config snapshot matcher; no duplicate plugin-side provenance comparison.
+      2119,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
