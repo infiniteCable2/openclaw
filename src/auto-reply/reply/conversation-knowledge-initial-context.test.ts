@@ -179,6 +179,7 @@ const sources = {
   references: [first.reference, second.reference],
   read: vi.fn(),
   validate: vi.fn(),
+  verifyAll: vi.fn(),
   source: () => donorSource,
 };
 function params() {
@@ -239,6 +240,17 @@ beforeEach(() => {
   sources.validate.mockImplementation(async (reference) =>
     reference === first.reference ? first.claim : second.claim,
   );
+  sources.verifyAll.mockImplementation(async (references, verified) => {
+    for (const reference of references) {
+      const selected = reference === first.reference ? first : second;
+      verified(reference, {
+        through: selected.packet.through,
+        from: selected.packet.from,
+        claim: selected.claim,
+      });
+    }
+    return true;
+  });
 });
 
 it("prepares the whole ordered brokerless tail before creation and retains exact source authority", async () => {
@@ -282,7 +294,33 @@ it("reuses warm text only after fresh source validation", async () => {
   }));
   const prepared = await prepareConversationKnowledgeInitialContext(params());
   expect(sources.read).not.toHaveBeenCalled();
-  expect(sources.validate).toHaveBeenCalledTimes(2);
+  expect(sources.validate).not.toHaveBeenCalled();
+  expect(sources.verifyAll).toHaveBeenCalledOnce();
+  expect(prepared?.context.events).toHaveLength(3);
+  await prepared?.release();
+});
+
+it("rereads an unverified warm group instead of installing unchecked cached text", async () => {
+  boundary.warm.mockReturnValue({ audienceKey, tail: [first, second] });
+  sources.verifyAll.mockResolvedValue(false);
+  const prepared = await prepareConversationKnowledgeInitialContext(params());
+  expect(sources.read).toHaveBeenCalledTimes(2);
+  expect(prepared?.context.events).toHaveLength(3);
+  await prepared?.release();
+});
+
+it("keeps a later validated warm donor when the aggregate bulk result is incomplete", async () => {
+  boundary.warm.mockReturnValue({ audienceKey, tail: [first, second] });
+  sources.verifyAll.mockImplementation(async (_references, verified) => {
+    verified(second.reference, {
+      through: second.packet.through,
+      from: second.packet.from,
+      claim: second.claim,
+    });
+    return false;
+  });
+  const prepared = await prepareConversationKnowledgeInitialContext(params());
+  expect(sources.read).toHaveBeenCalledExactlyOnceWith(first.reference);
   expect(prepared?.context.events).toHaveLength(3);
   await prepared?.release();
 });
@@ -429,7 +467,7 @@ it.each([
   { spawnDepth: 1 },
   { forkSource: { sessionKey: "agent:example:parent", sessionId: "explicit-fork" } },
   { forkedFromParent: true },
-  { incognito: true },
+  { incognito: true as const },
 ])("preserves intentional lineage without opening root projection: %j", async (lineage) => {
   const input = params();
   expect(

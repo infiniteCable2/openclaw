@@ -208,6 +208,32 @@ export async function prepareConversationKnowledgeInitialContext(params: {
         availableReferences: sources.references,
       });
     }
+    const cached = new Map(
+      warm?.tail.map((value) => [conversationKnowledgeContributionId(value.reference), value]),
+    );
+    const cachedPackets = new Map(
+      sources.references.flatMap((reference) => {
+        const id = conversationKnowledgeContributionId(reference);
+        const prior = cached.get(id);
+        return prior && isDeepStrictEqual(prior.reference, reference)
+          ? [[id, prior.packet] as const]
+          : [];
+      }),
+    );
+    const verified = new Map<string, NonNullable<Awaited<ReturnType<typeof sources.validate>>>>();
+    const toVerify = sources.references.filter((reference) => {
+      const id = conversationKnowledgeContributionId(reference);
+      return (checkpoint && coverage?.has(id)) || cachedPackets.has(id);
+    });
+    if (toVerify.length) {
+      await sources.verifyAll(
+        toVerify,
+        (reference, range) => {
+          verified.set(conversationKnowledgeContributionId(reference), range);
+        },
+        cachedPackets,
+      );
+    }
     const claims: PreparedInitialSessionContextSourceClaim[] = [];
     if (checkpoint && coverage) {
       // A summary is indivisible: every original it covers needs fresh custody.
@@ -215,7 +241,7 @@ export async function prepareConversationKnowledgeInitialContext(params: {
         if (!coverage.has(conversationKnowledgeContributionId(reference))) {
           continue;
         }
-        const range = await sources.validate(reference);
+        const range = verified.get(conversationKnowledgeContributionId(reference));
         if (!range || !coverage.matchesReference(reference, range)) {
           checkpoint = undefined;
           coverage = undefined;
@@ -225,9 +251,6 @@ export async function prepareConversationKnowledgeInitialContext(params: {
         claims.push(range.claim);
       }
     }
-    const cached = new Map(
-      warm?.tail.map((value) => [conversationKnowledgeContributionId(value.reference), value]),
-    );
     const packets: PreparedProjectedInitialSessionContext["projection"]["packets"][number][] = [];
     for (const reference of sources.references) {
       check();
@@ -235,10 +258,9 @@ export async function prepareConversationKnowledgeInitialContext(params: {
         continue;
       }
       const prior = cached.get(conversationKnowledgeContributionId(reference));
-      const valid =
-        prior && isDeepStrictEqual(prior.reference, reference)
-          ? await sources.validate(reference, prior.packet)
-          : undefined;
+      const valid = cachedPackets.has(conversationKnowledgeContributionId(reference))
+        ? verified.get(conversationKnowledgeContributionId(reference))
+        : undefined;
       const fresh = valid ? undefined : await sources.read(reference);
       const packet = valid ? prior!.packet : fresh?.packet;
       const claim = valid?.claim ?? fresh?.claim;

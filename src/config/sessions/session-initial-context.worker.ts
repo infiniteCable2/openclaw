@@ -21,7 +21,7 @@ import {
   type PreparedProjectedInitialSessionContext,
 } from "./session-initial-context.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 function assertInitialRootProjection(
   database: OpenClawAgentDatabase,

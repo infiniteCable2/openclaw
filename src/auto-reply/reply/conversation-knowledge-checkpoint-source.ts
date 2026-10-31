@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import {
   conversationKnowledgeParticipantIdentity,
@@ -117,6 +118,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   const reads: ConversationKnowledgeHeldSource[] = [];
   const groups: PreparedPersonalConversationContributionGroup[] = [];
   const proofs: SessionSourceAssertion[] = [];
+  const versionProofs = new Map<string, SessionSourceAssertion>();
   let released = false;
   let targetReleased = false;
   const check = () => {
@@ -293,8 +295,15 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           consistency: "prefix" as const,
         },
       };
-      proofs.push(
-        Object.assign(() => check(), {
+      const proofKey = JSON.stringify([
+        nativeSource,
+        predicate.sessionKey,
+        predicate.expected,
+        version,
+      ]);
+      const retained = versionProofs.get(proofKey);
+      if (!retained || !proofs.includes(retained)) {
+        const proof = Object.assign(() => check(), {
           prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
             assertCurrent: check,
             checks: [
@@ -306,8 +315,10 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
               },
             ],
           }),
-        }),
-      );
+        });
+        proofs.push(proof);
+        versionProofs.set(proofKey, proof);
+      }
       return {
         reference,
         predicate: { ...predicate, fields: [...predicate.fields] },
@@ -491,9 +502,12 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           range: {
             through: ConversationKnowledgeReference["through"];
             from?: ConversationKnowledgeReference["through"];
+            claim: PreparedInitialSessionContextSourceClaim;
           },
         ) => void,
+        cachedPackets?: ReadonlyMap<string, PreparedConversationKnowledgePacket>,
       ) {
+        let complete = true;
         const bySource = new Map<string, ConversationKnowledgeReference[]>();
         for (const reference of references) {
           check();
@@ -503,9 +517,15 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
             reference.source.sessionId === branch.sessionId &&
             reference.source.lifecycleRevision === branch.lifecycleRevision
           ) {
-            const range = await readAvailableSource(reference, () => validate(reference));
+            const range = await readAvailableSource(reference, () =>
+              validate(
+                reference,
+                cachedPackets?.get(conversationKnowledgeContributionId(reference)),
+              ),
+            );
             if (!range) {
-              return false;
+              complete = false;
+              continue;
             }
             verified(reference, range);
             continue;
@@ -547,6 +567,14 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
             });
             reads.push({ grant });
             proofs.push(grant.assertCurrent);
+            const source = grant.sources[0];
+            if (!source?.lifecycleRevision) {
+              throw new SessionTranscriptReadFenceError(
+                "Checkpoint grouped source lifecycle is unavailable",
+              );
+            }
+            const checkedVersions = new Set<string>();
+            const selected = [];
             for (const reference of contributions) {
               const range = grant.selectContribution(reference);
               if (!range?.version) {
@@ -554,17 +582,82 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                   "Checkpoint grouped source range is unavailable",
                 );
               }
-              verified(reference, range);
+              const packet = cachedPackets?.get(conversationKnowledgeContributionId(reference));
+              if (
+                packet &&
+                conversationKnowledgeCheckpointRangeDigest(reference, range) !==
+                  conversationKnowledgeCheckpointRangeDigest(reference, packet)
+              ) {
+                throw new SessionTranscriptReadFenceError(
+                  "Checkpoint prepared source range changed",
+                );
+              }
+              if (packet) {
+                const versionKey = JSON.stringify([
+                  packet.version.generation,
+                  packet.version.rawSeq,
+                  packet.version.updatedAt,
+                ]);
+                if (
+                  !checkedVersions.has(versionKey) &&
+                  !isDeepStrictEqual(packet.version, range.version)
+                ) {
+                  // The native group already proved all current anchors. Revalidate
+                  // each distinct cached prefix once, never one RPC per original.
+                  const facts = await readSessionTranscriptAnchorsAsync(
+                    {
+                      agentId: source.agentId,
+                      sessionKey: source.canonicalKey,
+                      sessionId: source.sessionId,
+                      storePath: source.readSource.path,
+                    },
+                    {
+                      entryIds: [],
+                      includeContextVersion: true,
+                      contextValidation: { version: packet.version },
+                    },
+                    params.signal,
+                  );
+                  check();
+                  grant.assertCurrent();
+                  if (facts.contextValidated !== true) {
+                    throw new SessionTranscriptReadFenceError(
+                      "Checkpoint prepared source prefix changed",
+                    );
+                  }
+                }
+                checkedVersions.add(versionKey);
+                recordVersionProof(
+                  reference,
+                  source.readSource,
+                  packet.version,
+                  source.lifecycleRevision,
+                  range,
+                );
+              }
+              const claim = recordVersionProof(
+                reference,
+                source.readSource,
+                range.version,
+                source.lifecycleRevision,
+                range,
+              );
+              selected.push({ reference, range: { ...range, claim } });
             }
+            grant.assertCurrent();
             group.release();
             groups.splice(groups.indexOf(group), 1);
+            grant.assertCurrent();
+            for (const value of selected) {
+              verified(value.reference, value.range);
+            }
             return true;
           });
           if (!available) {
-            return false;
+            complete = false;
           }
         }
-        return true;
+        return complete;
       },
       // Snapshot only after every required source has been acquired.
       source: () =>

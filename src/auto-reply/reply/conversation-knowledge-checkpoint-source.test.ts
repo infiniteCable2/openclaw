@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import {
   conversationKnowledgeOrigin,
@@ -6,11 +7,13 @@ import {
 } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
+import { prepareSessionSourceAuthority } from "../../config/sessions/session-source-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { PersonalConversationReadRefusedError } from "../../gateway/session-mutation-authorization-error.js";
 import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
 import { prepareConversationKnowledgeCheckpointSources } from "./conversation-knowledge-checkpoint-source.js";
+import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
 
 const boundary = vi.hoisted(() => ({
   target: vi.fn(),
@@ -246,5 +249,185 @@ describe("checkpoint unavailable source custody", () => {
     expect(verified).not.toHaveBeenCalled();
     held.release();
     expect(release).toHaveBeenCalledOnce();
+  });
+});
+
+describe("grouped checkpoint prefix validation", () => {
+  function groupFixture(count: number, cachedVersions: number[]) {
+    const donor = {
+      ...reference().source,
+      sessionKey: "agent:example:donor",
+      sessionId: "donor-instance",
+    };
+    const references: ConversationKnowledgeReference[] = Array.from(
+      { length: count },
+      (_, index) => {
+        const through = {
+          ...reference().through,
+          ...donor,
+          entryId: `original-${index}`,
+          rawSeq: index + 1,
+        };
+        return {
+          ...reference(),
+          source: donor,
+          origin: conversationKnowledgeOrigin(donor, "utterance-observation"),
+          through,
+          privateAudience: { participant: person, admission: through },
+        };
+      },
+    );
+    const current = { generation: "current", rawSeq: 200, updatedAt: 200 };
+    const packets = new Map<string, PreparedConversationKnowledgePacket>(
+      references.map((value, index) => {
+        const rawSeq = cachedVersions[index % cachedVersions.length]!;
+        return [
+          conversationKnowledgeContributionId(value),
+          {
+            part: {
+              origin: value.origin,
+              text: "synthetic",
+              complete: true,
+              nextOffset: undefined,
+              frontier: undefined,
+            },
+            version: { ...current, rawSeq, updatedAt: rawSeq },
+            through: value.through,
+            from: value.privateAudience!.admission,
+          },
+        ];
+      }),
+    );
+    const release = vi.fn();
+    boundary.group.mockResolvedValue({ release });
+    boundary.personal.mockResolvedValue({
+      sources: [
+        {
+          ...donor,
+          agentId: branch.agentId,
+          canonicalKey: donor.sessionKey,
+          lifecycleRevision: "current-donor-life",
+          readSource: nativeSource,
+        },
+      ],
+      assertCurrent() {},
+      release: vi.fn(),
+      selectContribution: (value: ConversationKnowledgeReference) => ({
+        through: value.through,
+        from: value.privateAudience!.admission,
+        version: current,
+      }),
+    });
+    boundary.anchors.mockResolvedValue({
+      anchors: [],
+      contextValidated: true,
+      contextVersion: current,
+    });
+    return { references, packets, current, release };
+  }
+
+  it.each([
+    { versions: [200], anchorReads: 0, predicates: 1 },
+    { versions: [100], anchorReads: 1, predicates: 2 },
+    { versions: [100, 120], anchorReads: 2, predicates: 3 },
+  ])(
+    "validates 80 originals once per donor and distinct prefix: %j",
+    async ({ versions, anchorReads, predicates }) => {
+      const fixture = groupFixture(80, versions);
+      const held = await sources();
+      const verified = vi.fn();
+      expect(await held.verifyAll(fixture.references, verified, fixture.packets)).toBe(true);
+      expect(boundary.group).toHaveBeenCalledOnce();
+      expect(boundary.personal).toHaveBeenCalledOnce();
+      expect(boundary.anchors).toHaveBeenCalledTimes(anchorReads);
+      expect(verified).toHaveBeenCalledTimes(80);
+      expect(verified.mock.calls[0]![1].claim).toMatchObject({
+        reference: fixture.references[0],
+        version: fixture.current,
+        predicate: { expected: { lifecycleRevision: "current-donor-life" } },
+      });
+      const prepared = await prepareSessionSourceAuthority(held.source());
+      expect(prepared.checks.filter(({ predicate }) => predicate.transcript)).toHaveLength(
+        predicates,
+      );
+      expect(fixture.release).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("publishes no partial group on failed prefix validation and can retry under fresh custody", async () => {
+    const fixture = groupFixture(80, [100, 120]);
+    const held = await sources();
+    const verified = vi.fn();
+    boundary.anchors
+      .mockResolvedValueOnce({
+        anchors: [],
+        contextValidated: true,
+        contextVersion: fixture.current,
+      })
+      .mockResolvedValueOnce({ anchors: [] });
+    expect(await held.verifyAll(fixture.references, verified, fixture.packets)).toBe(false);
+    expect(verified).not.toHaveBeenCalled();
+    expect((await prepareSessionSourceAuthority(held.source())).checks).toHaveLength(0);
+    expect(await held.verifyAll(fixture.references, verified, fixture.packets)).toBe(true);
+    expect(verified).toHaveBeenCalledTimes(80);
+    expect(
+      (await prepareSessionSourceAuthority(held.source())).checks.filter(
+        ({ predicate }) => predicate.transcript,
+      ),
+    ).toHaveLength(3);
+  });
+
+  it("does not reuse cached text when its granted range differs", async () => {
+    const fixture = groupFixture(2, [200]);
+    const first = fixture.references[0]!;
+    const id = conversationKnowledgeContributionId(first);
+    const packet = fixture.packets.get(id)!;
+    fixture.packets.set(id, {
+      ...packet,
+      through: { ...packet.through, generation: "stale-generation" },
+    });
+    const held = await sources();
+    const verified = vi.fn();
+    expect(await held.verifyAll(fixture.references, verified, fixture.packets)).toBe(false);
+    expect(verified).not.toHaveBeenCalled();
+    expect(boundary.anchors).not.toHaveBeenCalled();
+  });
+
+  it("continues independent healthy donors after an earlier group is unavailable", async () => {
+    const fixture = groupFixture(80, [200]);
+    const original = fixture.references[0]!;
+    const missingSource = {
+      ...original.source,
+      sessionKey: "agent:example:missing",
+      sessionId: "missing-instance",
+    };
+    const through = { ...original.through, ...missingSource };
+    const unavailable: ConversationKnowledgeReference = {
+      ...original,
+      source: missingSource,
+      origin: conversationKnowledgeOrigin(missingSource, "utterance-observation"),
+      through,
+      privateAudience: { participant: person, admission: through },
+    };
+    boundary.group.mockRejectedValueOnce(
+      new PersonalConversationReadRefusedError("Missing original source"),
+    );
+    const held = await sources();
+    const verified = vi.fn();
+    expect(
+      await held.verifyAll([unavailable, ...fixture.references], verified, fixture.packets),
+    ).toBe(false);
+    expect(boundary.group).toHaveBeenCalledTimes(2);
+    expect(boundary.personal).toHaveBeenCalledOnce();
+    expect(boundary.anchors).not.toHaveBeenCalled();
+    expect(verified).toHaveBeenCalledTimes(80);
+    expect(
+      verified.mock.calls.every(([value]) => value.source.sessionId === "donor-instance"),
+    ).toBe(true);
+    expect(
+      (await prepareSessionSourceAuthority(held.source())).checks.filter(
+        ({ predicate }) => predicate.transcript,
+      ),
+    ).toHaveLength(1);
   });
 });
