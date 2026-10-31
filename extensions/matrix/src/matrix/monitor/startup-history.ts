@@ -215,7 +215,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
         assertCurrent: check,
         signal: scope?.signal ?? params.signal,
         retainCleanup: (close) => params.retainCleanup(close),
-        onRootPreparationState: scope?.onState,
+        onRootPreparationState: scope ? (state) => scope.onState(state) : undefined,
       });
       check();
     } catch {
@@ -256,7 +256,10 @@ export function createMatrixStartupRootPreparation(
       return;
     }
     const task = params.runTask(async () => {
-      while ((all || pending.size > 0) && !closed && !params.signal.aborted) {
+      while (all || pending.size > 0) {
+        if (closed || params.signal.aborted) {
+          break;
+        }
         params.assertCurrent();
         const roomIds = all ? undefined : new Set(pending);
         all = false;
