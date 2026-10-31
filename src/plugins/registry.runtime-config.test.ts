@@ -622,11 +622,14 @@ describe("plugin registry runtime config scope", () => {
       replaceScope = getPluginRuntimeGatewayRequestScope();
       return replaceResult;
     };
+    const unsubscribe = vi.fn();
+    const subscribe = vi.fn<PluginRuntime["config"]["subscribe"]>(() => unsubscribe);
     const configRuntime = {
       current: vi.fn(() => {
         currentScope = getPluginRuntimeGatewayRequestScope();
         return config;
       }),
+      subscribe,
       mutateConfigFile,
       replaceConfigFile,
     } satisfies PluginRuntime["config"];
@@ -637,6 +640,10 @@ describe("plugin registry runtime config scope", () => {
     const api = pluginRegistry.createApi(record, { config });
 
     expect(api.runtime.config.current()).toBe(config);
+    const listener = vi.fn();
+    expect(api.runtime.config.subscribe).toBe(subscribe);
+    expect(api.runtime.config.subscribe(listener)).toBe(unsubscribe);
+    expect(subscribe).toHaveBeenCalledExactlyOnceWith(listener);
     await api.runtime.config.mutateConfigFile({
       afterWrite: { mode: "none", reason: "test" },
       mutate: () => undefined,

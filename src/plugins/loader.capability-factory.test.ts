@@ -201,6 +201,7 @@ describe("capability factory registration", () => {
           runtime: {
             config: {
               current: () => options.config ?? {},
+              subscribe: () => () => {},
               mutateConfigFile: async () => {
                 throw new Error("restricted registration cannot mutate config");
               },
