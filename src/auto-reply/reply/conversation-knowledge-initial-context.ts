@@ -29,7 +29,10 @@ import { isIncognitoSessionKey, isSubagentSessionKey } from "../../routing/sessi
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { readPreparedConversationKnowledgeRootProjection } from "./conversation-knowledge-checkpoint-owner.js";
-import { prepareConversationKnowledgeCheckpointSources } from "./conversation-knowledge-checkpoint-source.js";
+import {
+  prepareConversationKnowledgeCheckpointSources,
+  type PreparedRootKnowledgeRange,
+} from "./conversation-knowledge-checkpoint-source.js";
 
 /** The absent recipient has no read grant; its native creation capability owns this disclosure. */
 export async function prepareConversationKnowledgeInitialContext(params: {
@@ -38,7 +41,7 @@ export async function prepareConversationKnowledgeInitialContext(params: {
   sessionKey: string;
   sessionEntry: InternalSessionEntry;
   cfg: OpenClawConfig;
-  getRuntimeConfig(): OpenClawConfig;
+  getRuntimeConfig: () => OpenClawConfig;
   audience?: ConversationPrivateAudience;
   assertCurrent: SessionSourceAssertion;
   signal?: AbortSignal;
@@ -220,7 +223,7 @@ export async function prepareConversationKnowledgeInitialContext(params: {
           : [];
       }),
     );
-    const verified = new Map<string, NonNullable<Awaited<ReturnType<typeof sources.validate>>>>();
+    const verified = new Map<string, PreparedRootKnowledgeRange>();
     const toVerify = sources.references.filter((reference) => {
       const id = conversationKnowledgeContributionId(reference);
       return (checkpoint && coverage?.has(id)) || cachedPackets.has(id);

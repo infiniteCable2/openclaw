@@ -62,6 +62,12 @@ export type PreparedRootKnowledgeContribution = {
   packet: PreparedConversationKnowledgePacket;
 };
 
+export type PreparedRootKnowledgeRange = {
+  through: ConversationKnowledgeReference["through"];
+  from?: ConversationKnowledgeReference["through"];
+  claim: PreparedInitialSessionContextSourceClaim;
+};
+
 const log = createSubsystemLogger("conversation-knowledge");
 
 /** Current broker custody authorizes root preparation; saved checkpoint provenance never does. */
@@ -499,11 +505,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         references: readonly ConversationKnowledgeReference[],
         verified: (
           reference: ConversationKnowledgeReference,
-          range: {
-            through: ConversationKnowledgeReference["through"];
-            from?: ConversationKnowledgeReference["through"];
-            claim: PreparedInitialSessionContextSourceClaim;
-          },
+          range: PreparedRootKnowledgeRange,
         ) => void,
         cachedPackets?: ReadonlyMap<string, PreparedConversationKnowledgePacket>,
       ) {
