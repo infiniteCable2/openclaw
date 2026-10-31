@@ -154,6 +154,12 @@ function fixture() {
       version,
     },
   });
+  const packetText = JSON.stringify({
+    source: reference.origin,
+    sourceSessionKey: reference.source.sessionKey,
+    throughEntryId: reference.through.entryId,
+    observations: [{ speaker: "user", text: "A genuine prepared original." }],
+  });
   const params = {
     context: {
       source: physical,
@@ -169,9 +175,9 @@ function fixture() {
         packets: [
           {
             receipt: reference,
-            text: "A genuine prepared original.",
+            text: packetText,
             offset: 0,
-            nextOffset: 29,
+            nextOffset: packetText.length,
             complete: true,
             sourceClaim: 0,
           },
