@@ -400,6 +400,26 @@ describe("createDirectRoomTracker", () => {
     expect(() => first?.assertCurrent()).toThrow("no longer current");
   });
 
+  it("refreshes routing only for an explicit native direct-mapping change", async () => {
+    const client = createMockClient({ isDm: true });
+    const tracker = createDirectRoomTracker(client);
+    try {
+      await expect(checkDefaultRoom(tracker)).resolves.toBe(true);
+      const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+      expect(first).toBeDefined();
+      const membershipReads = client.getJoinedRoomMembers.mock.calls.length;
+      const dmReads = client.dms.update.mock.calls.length;
+      client.dms.isDm.mockReturnValue(false);
+      tracker.invalidatePrivateAudiences(undefined, "routing-change");
+      expect(() => first?.assertCurrent()).toThrow("no longer current");
+      await expect(checkDefaultRoom(tracker)).resolves.toBe(false);
+      expect(client.dms.update).toHaveBeenCalledTimes(dmReads + 1);
+      expect(client.getJoinedRoomMembers).toHaveBeenCalledTimes(membershipReads);
+    } finally {
+      tracker.dispose();
+    }
+  });
+
   it("revokes a room's private evidence without revoking another room", async () => {
     const client = createMockClient({});
     client.dms.isDm.mockReturnValue(true);

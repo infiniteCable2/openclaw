@@ -287,7 +287,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   let rootPreparation: AbortController | undefined;
   let startRootPreparation = () => {};
   let requestRootPreparation = (_roomId?: string) => {};
-  const onDirectRoomsChanged = () => directTracker?.invalidatePrivateAudiences();
+  const onDirectRoomsChanged = () =>
+    directTracker?.invalidatePrivateAudiences(undefined, "routing-change");
   const onSyncState = (state: MatrixSyncState) => {
     const at = Date.now();
     if (isMatrixReadySyncState(state)) {

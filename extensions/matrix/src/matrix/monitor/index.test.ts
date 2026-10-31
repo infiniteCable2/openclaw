@@ -164,7 +164,14 @@ describe("monitorMatrixProvider", () => {
         "expected startup preparation",
       );
       const first = hoisted.prepareMatrixStartupConversationRoots.mock.calls[0]![0];
+      const tracker = hoisted.createDirectRoomTracker.mock.results[0]!.value;
+      hoisted.client.emit("direct.rooms.changed");
+      expect(tracker.invalidatePrivateAudiences).toHaveBeenLastCalledWith(
+        undefined,
+        "routing-change",
+      );
       hoisted.client.emit("sync.state", "RECONNECTING");
+      expect(tracker.invalidatePrivateAudiences).toHaveBeenLastCalledWith();
       expect(first.signal.aborted).toBe(true);
       expect(() => first.assertCurrent()).toThrow();
       hoisted.client.emit("sync.state", "PREPARED");

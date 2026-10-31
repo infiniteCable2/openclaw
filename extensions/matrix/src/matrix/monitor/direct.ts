@@ -286,12 +286,16 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
       active = false;
       privateAudienceRooms.clear();
     },
-    invalidatePrivateAudiences: (roomId?: string): void => {
+    invalidatePrivateAudiences: (roomId?: string, cause?: "routing-change"): void => {
       if (roomId === undefined) {
         privateAudienceRooms.clear();
-        lastDmUpdateMs = 0;
       } else {
         privateAudienceRooms.delete(roomId);
+      }
+      // Sync/privacy revocation must not turn a routing cache into a TTL poll.
+      // A real m.direct change independently invalidates the routing snapshot.
+      if (cause === "routing-change") {
+        lastDmUpdateMs = 0;
       }
       opts.onAudienceInvalidated?.(roomId);
     },
