@@ -94,6 +94,7 @@ import {
 } from "../../utils/delivery-context.read.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
+import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { FinalizedTemplateContext as TemplateContext } from "../templating.js";
 import { readBeforeResetMessages } from "./commands-reset-hooks.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
