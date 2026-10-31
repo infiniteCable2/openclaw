@@ -65,7 +65,9 @@ async function fixture() {
     nativeChannelId: "example-connection",
     participant,
     assertCurrent() {
-      if (!hostCurrent) throw new Error("Original host audience revoked");
+      if (!hostCurrent) {
+        throw new Error("Original host audience revoked");
+      }
     },
   };
   const recipient = () => ({
@@ -122,7 +124,9 @@ async function fixture() {
     originalSource: source,
     getRuntimeConfig: () => cfg,
   });
-  if (!turn) throw new Error("Expected the original reader-bound knowledge turn");
+  if (!turn) {
+    throw new Error("Expected the original reader-bound knowledge turn");
+  }
   onTestFinished(() => {
     turn.release();
     admission.close();
