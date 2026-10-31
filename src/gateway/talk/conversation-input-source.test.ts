@@ -140,7 +140,8 @@ describe("native Gateway speech participant", () => {
           provenance: context.InputProvenance,
         });
         // Exercise the native persistence shape rather than a hand-authored checkpoint.
-        const restored: unknown = JSON.parse(JSON.stringify(persisted));
+        const storedJson = JSON.stringify(persisted);
+        const restored: unknown = JSON.parse(storedJson);
         expect(selectMainSessionRecoveryCheckpoint((read) => read(restored))).toEqual({
           replaySafe: false,
           source: purpose === "greeting" ? undefined : "external_user",
@@ -170,7 +171,8 @@ describe("native Gateway speech participant", () => {
           timestamp: 1235,
         });
         const preserved = applyInputProvenanceToUserMessage(delegated, context.InputProvenance);
-        const restored: unknown[] = JSON.parse(JSON.stringify([spoken, preserved]));
+        const storedJson = JSON.stringify([spoken, preserved]);
+        const restored: unknown[] = JSON.parse(storedJson);
         expect(selectMainSessionRecoveryCheckpoint((read) => restored.forEach(read))).toEqual({
           replaySafe: false,
           source: kind,
