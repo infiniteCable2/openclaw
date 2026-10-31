@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asOptionalRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
+import { sql } from "kysely";
 import {
   encodeSqliteStringSet,
   iterateSqliteQuerySync,
@@ -89,7 +90,11 @@ class TranscriptReportNavigation extends SessionEntryNavigation<ReportNavigation
   }
 }
 
-export function readReportBranch(database: OpenClawAgentDatabase, sessionId: string) {
+function readReportBranchSnapshot(
+  database: OpenClawAgentDatabase,
+  sessionId: string,
+  onParsedIdentity?: (seq: number, event: unknown) => void,
+) {
   function rows() {
     return iterateSqliteQuerySync(
       database.db,
@@ -130,19 +135,33 @@ export function readReportBranch(database: OpenClawAgentDatabase, sessionId: str
   if (hasRows) {
     assertCurrentSessionTranscriptHeader(header);
   }
-  return new TranscriptReportNavigation(
+  const compressedSequences = new Set<number>();
+  const branch = new TranscriptReportNavigation(
     (function* () {
       for (const row of rows()) {
+        let facts: SessionTranscriptReportFacts;
+        if (row.event_json === null) {
+          if (onParsedIdentity) {
+            compressedSequences.add(row.seq);
+          }
+          facts = compressedFacts(row.report_json);
+        } else {
+          const event: unknown = JSON.parse(row.event_json);
+          onParsedIdentity?.(row.seq, event);
+          facts = projectSessionTranscriptReportFacts(event);
+        }
         yield {
           seq: row.seq,
-          facts:
-            row.event_json === null
-              ? compressedFacts(row.report_json)
-              : projectSessionTranscriptReportFacts(JSON.parse(row.event_json)),
+          facts,
         };
       }
     })(),
   ).facts();
+  return { branch, compressedSequences };
+}
+
+export function readReportBranch(database: OpenClawAgentDatabase, sessionId: string) {
+  return readReportBranchSnapshot(database, sessionId).branch;
 }
 
 type ReportEventRow = { seq: number; event: ReturnType<typeof asOptionalRecord> };
@@ -233,13 +252,94 @@ export function transcriptReportBatchReceiptKey(
   return JSON.stringify([entry.customType, entry.receipt.field, entry.receipt.value]);
 }
 
+type ReceiptFields = Map<string, Set<string>>;
+type ReceiptMatch = { field: string; value: string };
+
+function matchingReportReceipts(details: unknown, fields: ReceiptFields): ReceiptMatch[] {
+  const record = asOptionalRecord(details);
+  if (!record) {
+    return [];
+  }
+  return [...fields].flatMap(([field, values]) => {
+    const value = Object.hasOwn(record, field) ? record[field] : undefined;
+    return typeof value === "string" && values.has(value) ? [{ field, value }] : [];
+  });
+}
+
+/** These selectors round-trip identically through JSON1; exceptional JS strings stay native. */
+function supportsNativeReceiptMatch(fields: ReceiptFields): boolean {
+  return [...fields].every(
+    ([field, values]) =>
+      /^[A-Za-z_][A-Za-z0-9_]*$/u.test(field) &&
+      [...values].every((value) => /^[\x20-\x7e]+$/u.test(value)),
+  );
+}
+
+/** Compressed payloads are admitted UTF-8 JSON; retain only receipt details, never old bodies. */
+function readCompressedReceiptMatches(
+  database: OpenClawAgentDatabase,
+  sessionId: string,
+  sequences: readonly number[],
+  receipts: readonly TranscriptReportReceiptSelection[],
+) {
+  const requested = sqliteStringSetEntries(encodeSqliteStringSet(sequences.map(String))).as(
+    "requested",
+  );
+  const db = getSessionKysely(database.db);
+  // The compressed owner rejects escaped Unicode/NUL and non-roundtripping UTF-8.
+  // Last property occurrences preserve JSON.parse/Object.hasOwn semantics even
+  // for retained envelopes containing duplicate root or receipt keys.
+  const query = db
+    .with(
+      (cte) => cte("receipt_details").materialized(),
+      (builder) =>
+        builder
+          .selectFrom("transcript_events")
+          .select([
+            "seq",
+            /* kysely-allow-raw: bound canonical candidates project the last direct details value once per compressed frame. */
+            sql<string | null>`(SELECT json_object('type', member.type, 'value', member.value)
+              FROM json_each(${transcriptEventJsonSql(database.db)}) AS member
+              WHERE member.key = 'details' ORDER BY member.id DESC LIMIT 1)`.as("envelope"),
+          ])
+          .where("session_id", "=", sessionId)
+          .where("seq", "in", (eb) =>
+            eb
+              .selectFrom(requested)
+              .select((item) => item.cast<number>("requested.value", "integer").as("seq")),
+          ),
+    )
+    .selectFrom("receipt_details as candidate")
+    .innerJoin(
+      /* kysely-allow-raw: scalar/array details never satisfy the native direct-object receipt contract. */
+      sql<{ key: string; value: string; type: string; id: number }>`json_each(
+        CASE WHEN json_extract(candidate.envelope, '$.type') = 'object'
+          THEN json_extract(candidate.envelope, '$.value') ELSE '{}' END)`.as("detail"),
+      (join) => join.onTrue(),
+    )
+    .select(["candidate.seq", "detail.key as field", "detail.value"])
+    .where("detail.type", "=", "text")
+    .where(
+      /* kysely-allow-raw: receipt selectors are bound data and match strictly typed direct keys, never JSON paths. */
+      sql<boolean>`EXISTS (SELECT 1 FROM json_each(${JSON.stringify(receipts)}) AS wanted
+        WHERE json_extract(wanted.value, '$.field') = detail.key
+          AND json_extract(wanted.value, '$.value') = detail.value)`,
+    )
+    .where(
+      /* kysely-allow-raw: JSON.parse keeps the final duplicate property, including a non-string replacement. */
+      sql<boolean>`NOT EXISTS (SELECT 1 FROM json_each(
+        json_extract(candidate.envelope, '$.value')) AS later
+        WHERE later.key = detail.key AND later.id > detail.id)`,
+    );
+  return iterateSqliteQuerySync(database.db, query);
+}
+
 /** One native branch snapshot selects a whole bounded batch without rereading old bodies per ID. */
 export function prepareTranscriptReportBatchSelection(
   database: OpenClawAgentDatabase,
   resolved: ResolvedTranscriptScope,
   reports: readonly PreparedTranscriptReportBatchEntry[],
 ) {
-  const branch = readReportBranch(database, resolved.sessionId);
   const wanted = new Map<string, Map<string, Set<string>>>();
   for (const report of reports) {
     let fields = wanted.get(report.customType);
@@ -254,6 +354,21 @@ export function prepareTranscriptReportBatchSelection(
     }
     values.add(report.receipt.value);
   }
+  const identityMatches = new Map<number, ReceiptMatch[]>();
+  const { branch, compressedSequences } = readReportBranchSnapshot(
+    database,
+    resolved.sessionId,
+    (seq, event) => {
+      const record = asOptionalRecord(event);
+      const fields = typeof record?.customType === "string" && wanted.get(record.customType);
+      if (fields) {
+        const matches = matchingReportReceipts(record.details, fields);
+        if (matches.length) {
+          identityMatches.set(seq, matches);
+        }
+      }
+    },
+  );
   const existing = new Set<string>();
   const selected = new Map(
     branch.path.flatMap((entry) => {
@@ -267,20 +382,46 @@ export function prepareTranscriptReportBatchSelection(
   if (!selected.size) {
     return { appendParentId: branch.appendParentId, existing };
   }
-  // Stream only canonical matching bodies through one native query. Repeated
-  // missing receipts must not issue one payload SELECT per old ledger entry.
-  for (const row of readReportEvent(database, resolved.sessionId, [...selected.keys()])) {
-    const { customType, fields } = selected.get(row.seq)!;
-    const details = asOptionalRecord(row.event?.details);
-    for (const [field, values] of fields) {
-      const value = details && Object.hasOwn(details, field) ? details[field] : undefined;
-      if (typeof value === "string" && values.has(value)) {
-        existing.add(
-          transcriptReportBatchReceiptKey({
-            customType,
-            receipt: { field, value },
-          }),
-        );
+  const compressed: number[] = [];
+  const exceptional: number[] = [];
+  const accept = (seq: number, receipt: ReceiptMatch) => {
+    const { customType, fields } = selected.get(seq)!;
+    if (fields.get(receipt.field)?.has(receipt.value)) {
+      existing.add(transcriptReportBatchReceiptKey({ customType, receipt }));
+    }
+  };
+  for (const [seq, { fields }] of selected) {
+    if (!compressedSequences.has(seq)) {
+      for (const receipt of identityMatches.get(seq) ?? []) {
+        accept(seq, receipt);
+      }
+    } else if (supportsNativeReceiptMatch(fields)) {
+      compressed.push(seq);
+    } else {
+      exceptional.push(seq);
+    }
+  }
+  if (compressed.length) {
+    for (const match of readCompressedReceiptMatches(
+      database,
+      resolved.sessionId,
+      compressed,
+      reports
+        .map((report) => report.receipt)
+        .filter(
+          ({ field, value }) =>
+            /^[A-Za-z_][A-Za-z0-9_]*$/u.test(field) && /^[\x20-\x7e]+$/u.test(value),
+        ),
+    )) {
+      accept(match.seq, match);
+    }
+  }
+  // Exceptional receipt selectors retain exact JavaScript string/property semantics.
+  if (exceptional.length) {
+    for (const row of readReportEvent(database, resolved.sessionId, exceptional)) {
+      const { fields } = selected.get(row.seq)!;
+      for (const receipt of matchingReportReceipts(row.event?.details, fields)) {
+        accept(row.seq, receipt);
       }
     }
   }

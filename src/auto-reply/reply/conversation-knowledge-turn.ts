@@ -367,6 +367,13 @@ export function createReplyConversationKnowledgeTurn(params: {
       if (!recipient || !run || !execution || phase === "released") {
         return [];
       }
+      const retainContextBudget = () =>
+        recipient?.retainContextBudget(
+          input.canAdmit,
+          run.provider && run.model && run.config
+            ? { provider: run.provider, model: run.model, config: run.config }
+            : undefined,
+        );
       try {
         recipient.owner.assertCurrent();
       } catch {
@@ -384,6 +391,10 @@ export function createReplyConversationKnowledgeTurn(params: {
               getRuntimeConfig,
             });
             consumedRevision = -1;
+            // Reopening keeps the actual request's issued footprint. Otherwise
+            // the replacement cannot admit idle context until another request.
+            retainContextBudget();
+            recipient?.owner.request("recipient");
           } catch {
             // A closed connection/cache cannot cancel already accepted work.
           }
@@ -391,12 +402,7 @@ export function createReplyConversationKnowledgeTurn(params: {
         return [];
       }
       const revision = recipient.cache.revision;
-      recipient.retainContextBudget(
-        input.canAdmit,
-        run.provider && run.model && run.config
-          ? { provider: run.provider, model: run.model, config: run.config }
-          : undefined,
-      );
+      retainContextBudget();
       if (input.contextIdentity && input.contextIdentity !== replayContext) {
         replayContext = input.contextIdentity;
         replayPending = [...acceptedPackets.keys()];

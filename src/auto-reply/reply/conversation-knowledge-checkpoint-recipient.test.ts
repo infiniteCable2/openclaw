@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
   createConversationKnowledgeCheckpoint,
@@ -10,6 +11,8 @@ import {
   type ConversationKnowledgeReference,
 } from "../../config/sessions/conversation-knowledge.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
+import { PersonalConversationReadRefusedError } from "../../gateway/session-mutation-authorization-error.js";
+import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   admitRecipientConversationCheckpoint,
@@ -557,9 +560,156 @@ describe("ready checkpoint recipient", () => {
       expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
       expect(cache.preparedRoot).toBe(manifest);
       expect(native.group).toHaveBeenCalledOnce();
-      expect(native.groupRead).toHaveBeenCalledOnce();
+      expect(native.groupRead).toHaveBeenCalledTimes(2);
       expect(cache.peek(firstId, 0)).toBeUndefined();
       expect(cache.peek(conversationKnowledgeContributionId(second), 0)).toEqual(rawPacket(second));
+    },
+  );
+  it.each(["metadata", "resident-facts"] as const)(
+    "renews cached %s custody while preserving the exact prepared bytes",
+    async (change) => {
+      const f = fixture(),
+        cache = createConversationKnowledgeSourceCache();
+      onTestFinished(() => cache.clear());
+      const oldRelease = vi.fn(),
+        newRelease = vi.fn();
+      const old = { release: oldRelease, byteLength: 100, ownedByteLength: 100 };
+      const replacement = { release: newRelease, byteLength: 100, ownedByteLength: 100 };
+      native.group.mockResolvedValueOnce(old).mockResolvedValueOnce(replacement);
+      const params = preparedParams(f, cache);
+      const tail = [{ reference, packet: rawPacket(reference) }];
+      expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+      const manifest = cache.preparedRoot!;
+      native.groupRead.mockRejectedValueOnce(
+        change === "metadata"
+          ? new PersonalConversationReadRefusedError("Native recipient delivery changed")
+          : new SessionMutationFactsUnavailableError(),
+      );
+      expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+      expect(cache.preparedRoot).toBe(manifest);
+      expect(cache.peek(conversationKnowledgeContributionId(reference), 0)).toEqual(
+        tail[0]!.packet,
+      );
+      expect(
+        cache.preparedContributionGroup({ ...source, storePath: branch.storePath }, manifest),
+      ).toBe(replacement);
+      expect(native.group).toHaveBeenCalledTimes(2);
+      expect(native.groupRead).toHaveBeenCalledTimes(3);
+      expect(oldRelease).toHaveBeenCalledOnce();
+      expect(newRelease).not.toHaveBeenCalled();
+      expect(native.releaseSource).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("does not turn refused old custody into a grant for a now-foreign source", async () => {
+    const f = fixture(),
+      cache = createConversationKnowledgeSourceCache();
+    onTestFinished(() => cache.clear());
+    const params = preparedParams(f, cache);
+    const tail = [{ reference, packet: rawPacket(reference) }];
+    expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+    const manifest = cache.preparedRoot!;
+    native.groupRead.mockRejectedValueOnce(
+      new PersonalConversationReadRefusedError("Source person changed"),
+    );
+    native.group.mockRejectedValueOnce(
+      new PersonalConversationReadRefusedError("Current source belongs to another person"),
+    );
+    expect(await prepareRecipientConversationProjection(params, tail)).toBe(false);
+    expect(
+      cache.preparedContributionGroup({ ...source, storePath: branch.storePath }, manifest),
+    ).toBeUndefined();
+    expect(native.group).toHaveBeenCalledTimes(2);
+    expect(native.groupRead).toHaveBeenCalledTimes(2);
+    expect(native.releaseGroup).toHaveBeenCalledOnce();
+    expect(native.retain).not.toHaveBeenCalled();
+  });
+  it("does not invalidate a newer cache group when an older rebind is refused", async () => {
+    const f = fixture(),
+      cache = createConversationKnowledgeSourceCache();
+    onTestFinished(() => cache.clear());
+    const params = preparedParams(f, cache);
+    const tail = [{ reference, packet: rawPacket(reference) }];
+    expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+    const manifest = cache.preparedRoot!;
+    const entered = createDeferredCore(),
+      resume = createDeferredCore();
+    native.groupRead.mockImplementationOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      throw new PersonalConversationReadRefusedError("Older recipient snapshot changed");
+    });
+    const pending = prepareRecipientConversationProjection(params, tail);
+    try {
+      await awaitGateBeforeSettlement(entered.promise, pending, "Cached custody was not rebound");
+      const release = vi.fn();
+      const replacement = {
+        release,
+        byteLength: 100,
+        ownedByteLength: 100,
+      } as unknown as NonNullable<ReturnType<typeof cache.preparedContributionGroup>>;
+      expect(
+        cache.retainContributionGroup(
+          [conversationKnowledgeContributionId(reference)],
+          { ...source, storePath: branch.storePath },
+          replacement,
+          manifest,
+        ),
+      ).toBe(true);
+      resume.resolve();
+      expect(await pending).toBe(false);
+      expect(
+        cache.preparedContributionGroup({ ...source, storePath: branch.storePath }, manifest),
+      ).toBe(replacement);
+      expect(release).not.toHaveBeenCalled();
+      expect(native.group).toHaveBeenCalledOnce();
+    } finally {
+      resume.resolve();
+      await pending;
+    }
+  });
+  it.each(["preparation", "read"] as const)(
+    "preserves newer custody when an older fresh group %s fails",
+    async (phase) => {
+      const f = fixture(),
+        cache = createConversationKnowledgeSourceCache();
+      onTestFinished(() => cache.clear());
+      const params = preparedParams(f, cache);
+      const tail = [{ reference, packet: rawPacket(reference) }];
+      const oldRelease = vi.fn(),
+        replacementRelease = vi.fn();
+      const old = { release: oldRelease, byteLength: 100, ownedByteLength: 100 };
+      const replacement = { release: replacementRelease, byteLength: 100, ownedByteLength: 100 };
+      const entered = createDeferredCore(),
+        resume = createDeferredCore();
+      const rejectOld = async () => {
+        entered.resolve();
+        await resume.promise;
+        throw new PersonalConversationReadRefusedError("Older native preparation was refused");
+      };
+      native.group.mockResolvedValue(replacement);
+      if (phase === "preparation") {
+        native.group.mockImplementationOnce(rejectOld);
+      } else {
+        native.group.mockResolvedValueOnce(old);
+        native.groupRead.mockImplementationOnce(rejectOld);
+      }
+      const pending = prepareRecipientConversationProjection(params, tail);
+      try {
+        await awaitGateBeforeSettlement(entered.promise, pending, "Fresh custody was not prepared");
+        expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+        const manifest = cache.preparedRoot!;
+        resume.resolve();
+        expect(await pending).toBe(false);
+        expect(
+          cache.preparedContributionGroup({ ...source, storePath: branch.storePath }, manifest),
+        ).toBe(replacement);
+        expect(replacementRelease).not.toHaveBeenCalled();
+        expect(oldRelease).toHaveBeenCalledTimes(phase === "read" ? 1 : 0);
+        expect(native.group).toHaveBeenCalledTimes(2);
+      } finally {
+        resume.resolve();
+        await pending;
+      }
     },
   );
   it("does not restage an original when a foreground commit advances during group preparation", async () => {

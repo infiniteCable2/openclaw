@@ -25,6 +25,7 @@ import type { ConversationKnowledgeReference } from "../../config/sessions/conve
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
+import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
 import {
   preparePersonalConversationContributionGroup,
   type PreparedPersonalConversationContributionGroup,
@@ -248,7 +249,8 @@ export async function prepareRecipientConversationProjection(
       const first = references[0]!;
       const sourceTarget = { ...first.source, storePath: first.through.storePath };
       let group = cache.preparedContributionGroup(sourceTarget, manifest);
-      if (
+      let expectedGroup = group;
+      const cachedGroup =
         group &&
         references.every(
           (reference) =>
@@ -259,9 +261,8 @@ export async function prepareRecipientConversationProjection(
               conversationKnowledgeContributionId(reference),
             ) === group,
         )
-      ) {
-        continue;
-      }
+          ? group
+          : undefined;
       const request = {
         purpose: "conversation-differences",
         personal: {
@@ -278,23 +279,61 @@ export async function prepareRecipientConversationProjection(
       let transfer = false;
       let retire: (() => void) | undefined;
       try {
-        // A new recovered original can enlarge the group without changing the
-        // canonical manifest. The replacement is still issued by the native owner.
-        group = await preparePersonalConversationContributionGroup({
-          ...request,
-          personal: { ...request.personal, contributions: references },
-        });
-        const retainedGroup = group;
-        retire = () => retainedGroup.release();
-        const grant = await prepareTranscriptReadAuthority({
-          ...request,
-          personal: { ...request.personal, contributionGroup: group },
-        });
+        let grant: Awaited<ReturnType<typeof prepareTranscriptReadAuthority>> | undefined;
+        if (cachedGroup) {
+          try {
+            grant = await prepareTranscriptReadAuthority({
+              ...request,
+              personal: { ...request.personal, contributionGroup: cachedGroup },
+            });
+          } catch (error) {
+            check();
+            params.signal?.throwIfAborted();
+            if (
+              !(error instanceof SessionTranscriptReadFenceError) &&
+              !(error instanceof SessionMutationAuthorizationChangedError) &&
+              !(error instanceof SessionMutationFactsUnavailableError)
+            ) {
+              throw error;
+            }
+            if (
+              cache.preparedRoot !== manifest ||
+              cache.preparedContributionGroup(sourceTarget, manifest) !== cachedGroup
+            ) {
+              return false;
+            }
+            // Recipient delivery/ownership metadata can retire native custody
+            // while the exact prepared source bytes remain unchanged. Renew
+            // the group under today's full authority before any live boundary.
+            cache.invalidateAdmission(sourceTarget);
+            expectedGroup = undefined;
+          }
+        }
+        if (!grant) {
+          // New ranges and stale custody both need one fresh native source group;
+          // the immutable shared/staged text is not read from source history again.
+          group = await preparePersonalConversationContributionGroup({
+            ...request,
+            personal: { ...request.personal, contributions: references },
+          });
+          const retainedGroup = group;
+          retire = () => retainedGroup.release();
+          grant = await prepareTranscriptReadAuthority({
+            ...request,
+            personal: { ...request.personal, contributionGroup: group },
+          });
+        }
         const read = { grant };
         reads.push(read);
         check();
         params.signal?.throwIfAborted();
-        if (cache.consumptionRevision !== epoch) {
+        if (
+          cache.consumptionRevision !== epoch ||
+          cache.preparedRoot !== manifest ||
+          (cachedGroup &&
+            !retire &&
+            cache.preparedContributionGroup(sourceTarget, manifest) !== cachedGroup)
+        ) {
           return false;
         }
         const preparedIds: string[] = [];
@@ -324,9 +363,11 @@ export async function prepareRecipientConversationProjection(
           continue;
         }
         // The cache owns release even when bounded admission refuses the group.
-        transfer = true;
-        if (!cache.retainContributionGroup(preparedIds, sourceTarget, group, manifest)) {
-          complete = false;
+        if (retire && group) {
+          transfer = true;
+          if (!cache.retainContributionGroup(preparedIds, sourceTarget, group, manifest)) {
+            complete = false;
+          }
         }
       } catch (error) {
         check();
@@ -337,7 +378,12 @@ export async function prepareRecipientConversationProjection(
         ) {
           throw error;
         }
-        cache.invalidateAdmission(sourceTarget);
+        if (
+          cache.preparedRoot === manifest &&
+          cache.preparedContributionGroup(sourceTarget, manifest) === expectedGroup
+        ) {
+          cache.invalidateAdmission(sourceTarget);
+        }
         complete = false;
       } finally {
         if (!transfer && retire) {
