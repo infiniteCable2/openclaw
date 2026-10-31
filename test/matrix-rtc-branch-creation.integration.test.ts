@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import {
   createMatrixRtcConversationInputSource,
@@ -241,7 +242,7 @@ it(
                   sessionId: entry.sessionId,
                 });
                 const packets = events.filter(
-                  (event) => event.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
+                  (event) => isRecord(event) && event.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
                 );
                 expect(packets).toHaveLength(requested);
                 measurements.push({
