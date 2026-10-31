@@ -24,6 +24,7 @@ import {
 } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import type { InvalidCheckpointCachedPacket } from "./conversation-knowledge-checkpoint-range.js";
 import type {
   PreparedRootKnowledgeContribution,
   PreparedRootKnowledgeRange,
@@ -34,6 +35,7 @@ export type CheckpointInitialFrameInput = {
   checkpoint?: ConversationKnowledgeCheckpoint;
   coverage?: PreparedConversationKnowledgeCheckpointCoverage;
   tail: readonly PreparedRootKnowledgeContribution[];
+  invalidCached?: InvalidCheckpointCachedPacket;
 };
 export type PreparedInitialFrameRange = {
   claim: PreparedInitialSessionContextSourceClaim;
@@ -50,6 +52,7 @@ type FrameSources = {
     ) => void,
     cachedPackets?: ReadonlyMap<string, PreparedConversationKnowledgePacket>,
     retainProof?: (source: SessionSourceAssertion) => void,
+    invalidCached?: InvalidCheckpointCachedPacket,
   ): Promise<boolean>;
 };
 
@@ -128,6 +131,10 @@ export async function prepareCheckpointInitialFrame(
   );
   const verified = new Map<string, PreparedRootKnowledgeRange>();
   const frameProofs = new Set<SessionSourceAssertion>();
+  const invalid = new Map<
+    string,
+    { reference: ConversationKnowledgeReference; packet: PreparedConversationKnowledgePacket }
+  >();
   const complete = await sources.verifyAll(
     sources.references,
     (reference, range) => {
@@ -135,8 +142,13 @@ export async function prepareCheckpointInitialFrame(
     },
     cachedPackets,
     (proof) => frameProofs.add(proof),
+    (reference, packet) =>
+      invalid.set(conversationKnowledgeContributionId(reference), { reference, packet }),
   );
   params.workCheck();
+  for (const { reference, packet } of invalid.values()) {
+    params.invalidCached?.(reference, packet);
+  }
   if (!complete || verified.size !== sources.references.length) {
     return undefined;
   }

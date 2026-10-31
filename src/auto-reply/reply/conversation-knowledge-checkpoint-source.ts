@@ -1,11 +1,9 @@
-import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
   assertConversationBranchCreation,
   type PreparedConversationBranchCreation,
 } from "../../config/sessions/conversation-branch-creation.js";
-import { conversationKnowledgeCheckpointRangeDigest } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeRootContinuation } from "../../config/sessions/conversation-knowledge-root-cache.js";
 import { selectConversationKnowledgeReceipts } from "../../config/sessions/conversation-knowledge-selection.js";
@@ -32,20 +30,25 @@ import { readSessionTranscriptModelContextAsync } from "../../config/sessions/se
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
-import {
-  preparePersonalConversationContributionGroup,
-  preparePersonalConversationRead,
-  type PreparedPersonalConversationContributionGroup,
-} from "../../gateway/session-transcript-personal-read.js";
+import type { PreparedPersonalConversationContributionGroup } from "../../gateway/session-transcript-personal-read.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import {
+  prepareCheckpointGroupCache,
+  prepareCheckpointGroupRead,
+} from "./conversation-knowledge-checkpoint-group.js";
+import {
   createCheckpointRangeRecorder,
   readCheckpointOwnSource,
+  validateCheckpointCachedPackets,
+  type InvalidCheckpointCachedPacket,
   type PreparedRootKnowledgeContribution,
   type PreparedRootKnowledgeRange,
 } from "./conversation-knowledge-checkpoint-range.js";
-import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
+import type {
+  PreparedConversationKnowledgePacket,
+  ConversationKnowledgeSourceCache,
+} from "./conversation-knowledge-source-cache.js";
 import {
   createConversationKnowledgeSourceReader,
   prepareConversationKnowledgeTarget,
@@ -71,6 +74,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   authority?: { signal: AbortSignal; assertCurrent: SessionSourceAssertion };
   getRuntimeConfig(): OpenClawConfig;
   rootContinuation?: ConversationKnowledgeRootContinuation;
+  sourceCache?: ConversationKnowledgeSourceCache;
   targetCreation?: PreparedConversationBranchCreation;
   /** Retains cleanup even if preparation fails before returning its sources. */
   retainCleanup(release: () => void): void;
@@ -202,6 +206,14 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) ===
           audienceKey,
     );
+    const groupManifest = prepareCheckpointGroupCache({
+      cache: params.sourceCache,
+      evidence: events.evidence,
+      branch,
+      references: rootReferences,
+      audienceIdentity: audienceKey,
+      workCheck,
+    });
     const sourceReader = createConversationKnowledgeSourceReader({
       branch,
       originalParticipant: params.participant,
@@ -363,6 +375,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       reference: ConversationKnowledgeReference,
       packet?: PreparedConversationKnowledgePacket,
       retainProof?: (source: SessionSourceAssertion) => void,
+      invalidCached?: InvalidCheckpointCachedPacket,
     ) => {
       check();
       assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
@@ -393,36 +406,6 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         from = current.source.from;
         target = { ...target, ...current.source.projectionTarget };
       }
-      if (
-        packet &&
-        conversationKnowledgeCheckpointRangeDigest(reference, { through, from }) !==
-          conversationKnowledgeCheckpointRangeDigest(reference, packet)
-      ) {
-        throw new SessionTranscriptReadFenceError("Checkpoint prepared source range changed");
-      }
-      if (packet) {
-        const prefix = await readSessionTranscriptAnchorsAsync(
-          target,
-          {
-            entryIds: [],
-            contextValidation: { version: packet.version },
-          },
-          params.signal,
-        );
-        workCheck();
-        if (prefix.contextValidated !== true) {
-          throw new SessionTranscriptReadFenceError("Checkpoint prepared source prefix changed");
-        }
-        recordVersionProof(
-          reference,
-          nativeSource,
-          packet.version,
-          currentLifecycle,
-          nativeAuthority,
-          { through, from },
-          retainProof,
-        );
-      }
       let valid = false;
       const anchorFacts = await readSessionTranscriptAnchorsAsync(
         target,
@@ -440,6 +423,35 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       check();
       if (!valid || !anchorFacts.contextVersion) {
         throw new SessionTranscriptReadFenceError("Checkpoint prepared source prefix changed");
+      }
+      if (
+        !(await validateCheckpointCachedPackets({
+          selected: [
+            { reference, range: { through, from, version: anchorFacts.contextVersion }, packet },
+          ],
+          target,
+          signal: params.signal,
+          check: () => {
+            workCheck();
+            nativeAuthority();
+          },
+          invalidCached,
+        }))
+      ) {
+        throw new SessionTranscriptReadFenceError(
+          "Checkpoint cached source range or prefix changed",
+        );
+      }
+      if (packet) {
+        recordVersionProof(
+          reference,
+          nativeSource,
+          packet.version,
+          currentLifecycle,
+          nativeAuthority,
+          { through, from },
+          retainProof,
+        );
       }
       const claim = recordVersionProof(
         reference,
@@ -472,6 +484,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         ) => void,
         cachedPackets?: ReadonlyMap<string, PreparedConversationKnowledgePacket>,
         retainProof?: (source: SessionSourceAssertion) => void,
+        invalidCached?: InvalidCheckpointCachedPacket,
       ) {
         let complete = true;
         const bySource = new Map<string, ConversationKnowledgeReference[]>();
@@ -488,6 +501,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                 reference,
                 cachedPackets?.get(conversationKnowledgeContributionId(reference)),
                 retainProof,
+                invalidCached,
               ),
             );
             if (!range) {
@@ -505,34 +519,28 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         for (const contributions of bySource.values()) {
           check();
           const available = await readAvailableSource(contributions[0]!, async () => {
-            const personal = {
-              originalParticipant: params.participant,
+            const selectedGroup = await prepareCheckpointGroupRead({
+              branch,
+              participant: params.participant,
+              audience: params.audience,
+              contributions,
+              evidence: events.evidence,
+              cache: params.sourceCache,
+              manifest: groupManifest,
+              targetCreation: params.targetCreation,
+              signal: authority.signal,
               assertCurrent: composeSessionSourceAssertion([
                 authority.assertCurrent,
                 targetFacts.assertCurrent,
                 check,
               ]),
-              target: branch,
-              targetAudience: params.audience,
-              targetCreation: params.targetCreation,
-              rootEvidence: events.evidence,
-            };
-            const common = {
-              purpose: "conversation-differences" as const,
-              signal: authority.signal,
+              workCheck,
               getRuntimeConfig: () => params.getRuntimeConfig(),
-              sources: [contributions[0]!.source],
-            };
-            const group = await preparePersonalConversationContributionGroup({
-              ...common,
-              personal: { ...personal, contributions },
+              groups,
+              reads,
+              drop,
             });
-            groups.push(group);
-            const grant = await preparePersonalConversationRead({
-              ...common,
-              personal: { ...personal, contributionGroup: group },
-            });
-            reads.push({ grant });
+            const { grant } = selectedGroup;
             proofs.push(grant.assertCurrent);
             retainProof?.(grant.assertCurrent);
             const source = grant.sources[0];
@@ -541,60 +549,43 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                 "Checkpoint grouped source lifecycle is unavailable",
               );
             }
-            const checkedVersions = new Set<string>();
-            const selected = [];
-            for (const reference of contributions) {
+            const selectedRanges = contributions.map((reference) => {
               const range = grant.selectContribution(reference);
               if (!range?.version) {
                 throw new SessionTranscriptReadFenceError(
                   "Checkpoint grouped source range is unavailable",
                 );
               }
-              const packet = cachedPackets?.get(conversationKnowledgeContributionId(reference));
-              if (
-                packet &&
-                conversationKnowledgeCheckpointRangeDigest(reference, range) !==
-                  conversationKnowledgeCheckpointRangeDigest(reference, packet)
-              ) {
-                throw new SessionTranscriptReadFenceError(
-                  "Checkpoint prepared source range changed",
-                );
-              }
-              if (packet) {
-                const versionKey = JSON.stringify([
-                  packet.version.generation,
-                  packet.version.rawSeq,
-                  packet.version.updatedAt,
-                ]);
-                if (
-                  !checkedVersions.has(versionKey) &&
-                  !isDeepStrictEqual(packet.version, range.version)
-                ) {
-                  // The native group already proved all current anchors. Revalidate
-                  // each distinct cached prefix once, never one RPC per original.
-                  const facts = await readSessionTranscriptAnchorsAsync(
-                    {
-                      agentId: source.agentId,
-                      sessionKey: source.canonicalKey,
-                      sessionId: source.sessionId,
-                      storePath: source.readSource.path,
-                    },
-                    {
-                      entryIds: [],
-                      includeContextVersion: true,
-                      contextValidation: { version: packet.version },
-                    },
-                    params.signal,
-                  );
-                  check();
+              return {
+                reference,
+                range: { ...range, version: range.version },
+                packet: cachedPackets?.get(conversationKnowledgeContributionId(reference)),
+              };
+            });
+            if (
+              !(await validateCheckpointCachedPackets({
+                selected: selectedRanges,
+                target: {
+                  agentId: source.agentId,
+                  sessionKey: source.canonicalKey,
+                  sessionId: source.sessionId,
+                  storePath: source.readSource.path,
+                },
+                signal: params.signal,
+                check: () => {
+                  workCheck();
                   grant.assertCurrent();
-                  if (facts.contextValidated !== true) {
-                    throw new SessionTranscriptReadFenceError(
-                      "Checkpoint prepared source prefix changed",
-                    );
-                  }
-                }
-                checkedVersions.add(versionKey);
+                },
+                invalidCached,
+              }))
+            ) {
+              throw new SessionTranscriptReadFenceError(
+                "Checkpoint cached source range or prefix changed",
+              );
+            }
+            const selected = [];
+            for (const { reference, range, packet } of selectedRanges) {
+              if (packet) {
                 recordVersionProof(
                   reference,
                   source.readSource,
@@ -617,8 +608,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
               selected.push({ reference, range: { ...range, claim } });
             }
             grant.assertCurrent();
-            group.release();
-            groups.splice(groups.indexOf(group), 1);
+            selectedGroup.finish();
             grant.assertCurrent();
             for (const value of selected) {
               verified(value.reference, value.range);

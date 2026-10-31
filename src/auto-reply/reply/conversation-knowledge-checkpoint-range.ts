@@ -1,8 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
 import { conversationKnowledgeHistoricalContributionIdentity } from "../../config/sessions/conversation-audience.js";
+import { conversationKnowledgeCheckpointRangeDigest } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import { issuePersonalConversationContributionRange } from "../../config/sessions/conversation-knowledge-source-custody.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
+import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import type { PreparedInitialSessionContextSourceClaim } from "../../config/sessions/session-initial-context.js";
@@ -11,6 +14,7 @@ import {
   type PreparedSessionSourceAuthority,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
+import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { PersonalConversationReadRefusedError } from "../../gateway/session-mutation-authorization-error.js";
 import type { PreparedInitialFrameRange } from "./conversation-knowledge-checkpoint-frame-source.js";
 import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
@@ -27,6 +31,67 @@ export type PreparedRootKnowledgeRange = {
   from?: ConversationKnowledgeReference["through"];
   claim: PreparedInitialSessionContextSourceClaim;
 };
+
+export type InvalidCheckpointCachedPacket = (
+  reference: ConversationKnowledgeReference,
+  packet: PreparedConversationKnowledgePacket,
+) => void;
+
+/** Current range custody must be proven before an obsolete cache value can trigger a reread. */
+export async function validateCheckpointCachedPackets(params: {
+  selected: readonly {
+    reference: ConversationKnowledgeReference;
+    range: Pick<PreparedConversationKnowledgePacket, "through" | "from" | "version">;
+    packet?: PreparedConversationKnowledgePacket;
+  }[];
+  target: SessionTranscriptRuntimeTarget;
+  signal: AbortSignal;
+  check: () => void;
+  invalidCached?: InvalidCheckpointCachedPacket;
+}) {
+  const prefixes = new Map<string, boolean>();
+  const invalid: Array<{
+    reference: ConversationKnowledgeReference;
+    packet: PreparedConversationKnowledgePacket;
+  }> = [];
+  for (const { reference, range, packet } of params.selected) {
+    params.check();
+    if (!packet) {
+      continue;
+    }
+    if (
+      conversationKnowledgeCheckpointRangeDigest(reference, range) !==
+      conversationKnowledgeCheckpointRangeDigest(reference, packet)
+    ) {
+      invalid.push({ reference, packet });
+      continue;
+    }
+    const key = JSON.stringify(packet.version);
+    let valid = prefixes.get(key);
+    if (valid === undefined) {
+      if (isDeepStrictEqual(packet.version, range.version)) {
+        valid = true;
+      } else {
+        const facts = await readSessionTranscriptAnchorsAsync(
+          params.target,
+          { entryIds: [], contextValidation: { version: packet.version } },
+          params.signal,
+        );
+        params.check();
+        valid = facts.contextValidated === true;
+      }
+      prefixes.set(key, valid);
+    }
+    if (!valid) {
+      invalid.push({ reference, packet });
+    }
+  }
+  params.check();
+  for (const { reference, packet } of invalid) {
+    params.invalidCached?.(reference, packet);
+  }
+  return invalid.length === 0;
+}
 
 /** Native read owners record exact range custody separately from disposable hydration. */
 export function createCheckpointRangeRecorder(params: {

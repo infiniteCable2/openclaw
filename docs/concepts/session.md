@@ -249,6 +249,12 @@ it does not reuse the former caller's grant or repeat source discovery. Native
 revocation, physical identity, exact ranges and atomic write predicates still apply.
 Consumption, retirement and recipient closure release unused custody. Stale donor
 preparation is deferred without rebuilding it on the foreground path.
+The shared root retains the same per-donor preparation across background quanta;
+an unrelated contribution does not repeat unchanged donor discovery. If current
+native authority disproves a cached text range or prefix, preparation discards
+only the matching cache values and schedules one fresh pass. Missing permission
+or unavailable history alone does not schedule a repair loop. Original receipts
+and session history remain unchanged.
 
 An existing embedded model request may consume ready observations, including at
 the next natural model step after tools. It does not wait for full freshness or

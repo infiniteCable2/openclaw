@@ -16,6 +16,28 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
+import type { PreparedRootKnowledgeContribution } from "./conversation-knowledge-checkpoint-source.js";
+
+type FrameInput = {
+  tail: readonly PreparedRootKnowledgeContribution[];
+  invalidCached(
+    reference: ConversationKnowledgeReference,
+    packet: PreparedRootKnowledgeContribution["packet"],
+  ): void;
+};
+function nativeFrame() {
+  let active = true;
+  return {
+    assertCurrent() {
+      if (!active) {
+        throw new Error("Frame released");
+      }
+    },
+    release: vi.fn(async () => {
+      active = false;
+    }),
+  };
+}
 
 const boundary = vi.hoisted(() => ({
   owner: undefined as
@@ -282,6 +304,125 @@ afterEach(async () => {
 });
 
 describe("shared root projection preparation", () => {
+  it("repairs all disproven same-version packets in one follow-up without rereading healthy originals", async () => {
+    const f = register();
+    boundary.refs = [reference(1), reference(2), reference(3)];
+    const first = nativeFrame();
+    const unpublished = nativeFrame();
+    const replacement = nativeFrame();
+    boundary.frame.mockResolvedValueOnce(first);
+    expect(await quantum()).toBe(false);
+    const initial = boundary.frame.mock.calls[0]![0] as FrameInput;
+    const healthy = initial.tail[2]!.packet;
+    boundary.frame.mockImplementationOnce((input: FrameInput) => {
+      for (const item of input.tail.slice(0, 2)) {
+        input.invalidCached(item.reference, item.packet);
+      }
+      return unpublished;
+    });
+    expect(await quantum()).toBe(true);
+    expect(boundary.read).toHaveBeenCalledTimes(3);
+    expect(f.registration.projection().tail.map((item) => item.reference.through.rawSeq)).toEqual([
+      3,
+    ]);
+    expect(f.registration.acquireInitialFrame()).toBeUndefined();
+    expect(unpublished.release).toHaveBeenCalledOnce();
+    boundary.frame.mockResolvedValueOnce(replacement);
+    expect(await quantum()).toBe(false);
+    const repaired = boundary.frame.mock.calls[2]![0] as FrameInput;
+    expect(repaired.tail.map((item) => item.reference.through.rawSeq)).toEqual([1, 2, 3]);
+    expect(repaired.tail[2]!.packet).toBe(healthy);
+    expect(repaired.tail[0]!.packet).not.toBe(initial.tail[0]!.packet);
+    expect(repaired.tail[1]!.packet).not.toBe(initial.tail[1]!.packet);
+    expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2, 3, 1, 2]);
+    expect(first.release).toHaveBeenCalledOnce();
+    // Without another exact invalidation there is no retry loop or further hydration.
+    expect(await quantum()).toBe(false);
+    expect(boundary.read).toHaveBeenCalledTimes(5);
+  });
+
+  it("does not evict a current cached packet when invalidation names a clone or replaced packet", async () => {
+    const f = register();
+    expect(await quantum()).toBe(false);
+    const initial = boundary.frame.mock.calls[0]![0] as FrameInput;
+    const previous = initial.tail[0]!;
+    boundary.frame.mockImplementationOnce((input: FrameInput) => {
+      input.invalidCached(previous.reference, structuredClone(previous.packet));
+    });
+    expect(await quantum()).toBe(false);
+    expect(boundary.read).toHaveBeenCalledOnce();
+    expect(f.registration.projection().tail).toHaveLength(1);
+    boundary.refs = [
+      {
+        ...previous.reference,
+        readRange: { through: reference(2).through, admission: previous.reference.through },
+      },
+    ];
+    boundary.frame.mockImplementationOnce((input: FrameInput) => {
+      expect(input.tail[0]!.packet).not.toBe(previous.packet);
+      input.invalidCached(previous.reference, previous.packet);
+    });
+    expect(await quantum()).toBe(false);
+    expect(boundary.read).toHaveBeenCalledTimes(2);
+    expect(f.registration.projection().tail[0]!.packet.through.rawSeq).toBe(2);
+    expect(await quantum()).toBe(false);
+    expect(boundary.read).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not force a repair quantum for an unavailable frame without disproven cached packets", async () => {
+    const f = register();
+    boundary.frame.mockResolvedValue(undefined);
+    expect(await quantum()).toBe(false);
+    expect(await quantum()).toBe(false);
+    expect(boundary.frame).toHaveBeenCalledTimes(2);
+    expect(boundary.read).toHaveBeenCalledOnce();
+    expect(f.registration.projection().tail).toHaveLength(1);
+    expect(f.registration.acquireInitialFrame()).toBeUndefined();
+  });
+
+  it("keeps old cache and frame when cancellation wins before post-await invalidation", async () => {
+    const f = register();
+    const existing = nativeFrame();
+    const unpublished = nativeFrame();
+    boundary.frame.mockResolvedValueOnce(existing);
+    expect(await quantum()).toBe(false);
+    const initial = boundary.frame.mock.calls[0]![0] as FrameInput;
+    const entered = createDeferredCore();
+    const finish = createDeferredCore();
+    boundary.frame.mockImplementationOnce(async (input: FrameInput) => {
+      input.invalidCached(input.tail[0]!.reference, input.tail[0]!.packet);
+      entered.resolve();
+      await finish.promise;
+      return unpublished;
+    });
+    const controller = new AbortController();
+    const preparing = boundary.owner!.prepare(controller.signal);
+    try {
+      await awaitGateBeforeSettlement(
+        entered.promise,
+        preparing,
+        "Frame preparation did not reach its gate",
+      );
+      controller.abort(new Error("Foreground activity paused preparation"));
+      finish.resolve();
+      await expect(preparing).rejects.toThrow("Foreground activity paused preparation");
+    } finally {
+      finish.resolve();
+      await preparing.catch(() => {});
+    }
+    expect(unpublished.release).toHaveBeenCalledOnce();
+    expect(existing.release).not.toHaveBeenCalled();
+    expect(f.registration.projection().tail).toHaveLength(1);
+    const current = f.registration.acquireInitialFrame();
+    expect(current?.frame).toBe(existing);
+    await current?.release();
+    boundary.frame.mockImplementationOnce((input: FrameInput) => {
+      expect(input.tail[0]!.packet).toBe(initial.tail[0]!.packet);
+    });
+    expect(await quantum()).toBe(false);
+    expect(boundary.read).toHaveBeenCalledOnce();
+  });
+
   it("publishes the complete tail before slow summarization and keeps its authority across a foreground yield", async () => {
     const f = register();
     boundary.refs = [reference(1), reference(2), reference(3)];

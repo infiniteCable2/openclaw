@@ -36,7 +36,9 @@ import type {
   PreparedRootKnowledgeContribution,
 } from "./conversation-knowledge-checkpoint-source.js";
 import type { PreparedCheckpointContribution } from "./conversation-knowledge-checkpoint-summary.js";
+import { createConversationKnowledgeCheckpointTail } from "./conversation-knowledge-checkpoint-tail.js";
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
+import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 
 type Registration = {
   branch: ConversationKnowledgeBranch;
@@ -66,6 +68,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   const rootContinuation = new ConversationKnowledgeRootContinuation();
   const authorityLifetime = new AbortController();
   const frames = createConversationKnowledgeCheckpointFrameSlot();
+  const sourceCache = createConversationKnowledgeSourceCache();
   const brokers = new Set<Registration>();
   let latest: PreparedConversationKnowledgeRootCheckpoint | undefined;
   let inFlight: AbortController | undefined;
@@ -75,6 +78,11 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     const failures: unknown[] = [];
     try {
       await frames.settle(authorityLifetime.signal.aborted);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      sourceCache.retryCleanup();
     } catch (error) {
       failures.push(error);
     }
@@ -94,46 +102,27 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   let planning:
     | { config: OpenClawConfig; value: ConversationKnowledgeCheckpointModel["planning"] }
     | undefined;
-  // Disposable complete originals only; current permission is acquired again before synthesis.
-  const tail = new Map<
-    string,
-    {
-      referenceKey: string;
-      value: PreparedRootKnowledgeContribution;
-      bytes: number;
-      order: number;
-    }
-  >();
-  let tailBytes = 0;
-  let projectionRevision = 0;
+  const tail = createConversationKnowledgeCheckpointTail();
   let loggedProjectionRevision = -1;
   let sourceSessionKeys = new Set<string>();
-  const evict = (id: string) => {
-    const entry = tail.get(id);
-    if (entry) {
-      tailBytes -= entry.bytes;
-      tail.delete(id);
-      projectionRevision++;
-    }
-  };
   const notify = () => {
-    if (loggedProjectionRevision !== projectionRevision) {
+    if (loggedProjectionRevision !== tail.revision) {
       const frontiers = new Map<string, number>();
-      for (const { value } of tail.values()) {
+      for (const value of tail.values()) {
         const { sessionId, rawSeq } = value.packet.through;
         const sourceHash = redactIdentifier(sessionId);
         frontiers.set(sourceHash, Math.max(frontiers.get(sourceHash) ?? -1, rawSeq));
       }
       log.debug("Related-history root projection ready", {
         rootHash: redactIdentifier(JSON.stringify([initial.branch.agentId, initial.branch.root])),
-        revision: projectionRevision,
+        revision: tail.revision,
         preparedTailCount: tail.size,
         checkpointId: latest?.checkpoint.checkpointId ?? null,
         preparedSourceFrontiers: [...frontiers]
           .slice(0, 8)
           .map(([sourceHash, throughSeq]) => ({ sourceHash, throughSeq })),
       });
-      loggedProjectionRevision = projectionRevision;
+      loggedProjectionRevision = tail.revision;
     }
     for (const broker of brokers) {
       try {
@@ -147,7 +136,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     const changed = latest?.checkpoint.checkpointId !== value.checkpoint.checkpointId;
     latest = value;
     if (changed) {
-      projectionRevision++;
+      tail.changed();
       notify();
     }
   };
@@ -188,12 +177,12 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       latest = undefined;
       planning = undefined;
       tail.clear();
-      tailBytes = 0;
       sourceSessionKeys.clear();
       rootContinuation.release();
       // Native resource custody joins cleanup; this retired selector must not
       // prevent a fresh same-root registration while that cleanup settles.
       dispose();
+      sourceCache.clear();
     },
     async prepare(parentSignal) {
       await settle();
@@ -290,6 +279,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           audience,
           reader: held.databaseClaim.reader,
           rootContinuation,
+          sourceCache,
           signal,
           assertCurrent: scopeSource,
           authority: { signal: authorityLifetime.signal, assertCurrent: scopeSource },
@@ -299,19 +289,34 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         });
         const preparedSources = sources;
         const retainFrame = async (selectedTail: readonly PreparedRootKnowledgeContribution[]) => {
+          const invalid = new Map<string, PreparedRootKnowledgeContribution["packet"]>();
           const frame = await preparedSources.prepareInitialContextFrame({
             ...(latest ? { checkpoint: latest.checkpoint, coverage: latest.coverage } : {}),
             tail: selectedTail,
+            invalidCached(reference, packet) {
+              invalid.set(conversationKnowledgeContributionId(reference), packet);
+            },
           });
-          if (frame) {
-            try {
-              check();
+          try {
+            check();
+            let repaired = false;
+            for (const [id, packet] of invalid) {
+              if (tail.get(id)?.packet === packet) {
+                repaired = tail.evict(id) || repaired;
+              }
+            }
+            if (repaired) {
+              frames.clear();
+              return true;
+            }
+            if (frame) {
               frames.publish(frame, releaseCustody);
               retained = true;
-            } finally {
-              if (!retained) {
-                await frame.release();
-              }
+            }
+            return false;
+          } finally {
+            if (!retained) {
+              await frame?.release();
             }
           }
         };
@@ -365,7 +370,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         );
         if (!previousContinuityAvailable) {
           if (latest) {
-            projectionRevision++;
+            tail.changed();
           }
           latest = undefined;
           log.debug("Related-history checkpoint deferred", {
@@ -381,22 +386,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         const remaining = sources.references.filter(
           (reference) => !reusableCoverage?.has(conversationKnowledgeContributionId(reference)),
         );
-        for (const [id, cached] of tail) {
-          const reference = byId.get(id);
-          if (
-            !reference ||
-            reusableCoverage?.has(id) ||
-            JSON.stringify(reference) !== cached.referenceKey
-          ) {
-            evict(id);
-          } else if (cached.order !== referenceOrder.get(id)) {
-            cached.order = referenceOrder.get(id)!;
-            projectionRevision++;
-          }
-        }
+        tail.reconcile(sources.references, reusableCoverage);
         if (!remaining.length) {
-          await retainFrame([]);
-          return false;
+          return retainFrame([]);
         }
         const acquireModel = async () => {
           if (!model) {
@@ -436,26 +428,12 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
               unavailableContributions++;
               continue;
             }
-            const bytes =
-              Buffer.byteLength(value.text, "utf8") +
-              Buffer.byteLength(JSON.stringify(value.packet), "utf8") +
-              Buffer.byteLength(JSON.stringify(reference), "utf8");
-            cached = {
-              referenceKey: JSON.stringify(reference),
-              value,
-              bytes,
-              order: referenceOrder.get(id)!,
-            };
-            // This bounds reusable memory only; uncached whole originals still participate
-            // in native token-pressure planning and never trigger byte-based compaction.
-            if (tailBytes + bytes <= maxTailBytes) {
-              tail.set(id, cached);
-              tailBytes += bytes;
-              projectionRevision++;
-            }
+            cached = value;
+            // Cache admission does not limit whole-source native token planning.
+            tail.put(value, referenceOrder.get(id)!, maxTailBytes);
           }
-          contributions.push(cached.value);
-          selectedContributions.set(id, cached.value);
+          contributions.push(cached);
+          selectedContributions.set(id, cached);
           check();
         }
         if (unavailableContributions > 0) {
@@ -465,8 +443,12 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             unavailableContributions,
           });
         }
-        await retainFrame([...selectedContributions.values()]);
-        if (projectionRevision !== loggedProjectionRevision) {
+        if (await retainFrame([...selectedContributions.values()])) {
+          // Only a disproven, still-current cache value schedules one repair
+          // quantum. Unavailable originals wait for native source notifications.
+          return true;
+        }
+        if (tail.revision !== loggedProjectionRevision) {
           notify();
         }
         if (requiredWorkerHelperError(broker.getRuntimeConfig())) {
@@ -507,11 +489,11 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
                 current.reference.privateAudience?.admission,
             })
           ) {
-            evict(contribution.contributionId);
+            tail.evict(contribution.contributionId);
             throw new Error("Checkpoint prepared source bytes changed");
           }
           if (!(await sources.validate(current.reference, current.packet))) {
-            evict(contribution.contributionId);
+            tail.evict(contribution.contributionId);
             return false;
           }
         }
@@ -570,7 +552,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         check();
         publish({ checkpoint, coverage });
         for (const id of candidate.coveredContributionIds) {
-          evict(id);
+          tail.evict(id);
         }
         log.debug("Related-history checkpoint prepared", {
           summarizedContributions: candidate.coveredContributionIds.length,
@@ -590,7 +572,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           if (inFlight === controller) {
             inFlight = undefined;
           }
-          if (projectionRevision !== loggedProjectionRevision) {
+          if (tail.revision !== loggedProjectionRevision) {
             notify();
           }
         }
@@ -620,12 +602,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           ...(latest
             ? { checkpoint: structuredClone(latest.checkpoint), coverage: latest.coverage }
             : {}),
-          tail: [...tail.values()]
-            .toSorted((left, right) => left.order - right.order)
-            .map(({ value }) => ({
-              reference: structuredClone(value.reference),
-              packet: structuredClone(value.packet),
-            })),
+          tail: tail.projection(),
         };
       },
       acquireInitialFrame() {

@@ -296,20 +296,22 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
           session: { store: fixture.root.storePath, dmScope: "per-channel-peer" },
         };
         await state.writeConfig(cfg);
-        const donor = await fixture.branch("frame-donor");
-        const donorOwner = await fixture.claim(donor);
-        const publish = async (runId: string) => {
-          const terminal = await fixture.append(donor, runId);
+        const donorA = await fixture.branch("frame-donor-a");
+        const donorB = await fixture.branch("frame-donor-b");
+        const donors = [donorA, donorB] as const;
+        const donorOwners = [await fixture.claim(donorA), await fixture.claim(donorB)] as const;
+        const publish = async (runId: string, donorIndex: 0 | 1 = 0) => {
+          const terminal = await fixture.append(donors[donorIndex], runId);
           expect(
             await recordConversationKnowledgeTurn({
-              ...donorOwner,
+              ...donorOwners[donorIndex],
               ...terminal,
               privateAudience: { participant: person, admission: terminal.admission! },
             }),
           ).toBe(true);
         };
         for (let index = 0; index < 3; index++) {
-          await publish(`sealed-original-${index}`);
+          await publish(`sealed-original-${index}`, index === 2 ? 1 : 0);
         }
         const broker = await fixture.branch("frame-broker");
         const brokerOwner = await fixture.claim(broker);
@@ -365,6 +367,8 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
               return result;
             }),
         );
+        const groups = vi.spyOn(personalReads, "preparePersonalConversationContributionGroup");
+        spies.push(groups);
         stages.push("register-root");
         registration = registerConversationKnowledgeCheckpointOwner({
           branch,
@@ -410,15 +414,25 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
         });
         await withinTest(ready.promise, signal);
         stages.push("initial-frame-ready");
+        expect(groups).toHaveBeenCalledTimes(2);
+        expect(
+          groups.mock.calls
+            .map(([input]) => input.sources[0]?.sessionKey)
+            .toSorted((left, right) => (left ?? "").localeCompare(right ?? "")),
+        ).toEqual(
+          [donorA.sessionKey, donorB.sessionKey].toSorted((left, right) =>
+            left.localeCompare(right),
+          ),
+        );
+        groups.mockClear();
         sourceAttempts.mockClear();
         const discovery = vi.spyOn(
           checkpointSources,
           "prepareConversationKnowledgeCheckpointSources",
         );
-        const groups = vi.spyOn(personalReads, "preparePersonalConversationContributionGroup");
         const bodies = vi.spyOn(sourceContexts, "readSessionTranscriptModelContextAsync");
         const borrowing = vi.spyOn(frameBorrow, "borrowPreparedConversationKnowledgeInitialFrame");
-        spies.push(discovery, groups, bodies, borrowing);
+        spies.push(discovery, bodies, borrowing);
         const create = async (suffix: string, count: number) => {
           stages.push(`create-${suffix}`);
           const target = {
@@ -510,6 +524,8 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
         await publish("sealed-later-delta");
         resumes.shift()!();
         await withinTest(ready.promise, signal);
+        expect(groups).toHaveBeenCalledOnce();
+        expect(groups.mock.calls[0]![0].sources[0]?.sessionKey).toBe(donorA.sessionKey);
         discovery.mockClear();
         groups.mockClear();
         bodies.mockClear();

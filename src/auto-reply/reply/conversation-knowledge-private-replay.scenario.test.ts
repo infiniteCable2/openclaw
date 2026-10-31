@@ -817,7 +817,7 @@ it.skipIf(!replayPath)(
           rootPreparationTimings: rootPreparationProfile.snapshot(),
           successorRootPreparationTimings: successorRootProfile.snapshot(),
           timingMeaning:
-            "Pass-through asynchronous phase windows include nested/background work; durations overlap, are not additive and are not CPU time.",
+            "Pass-through phase windows include nested/background work; durations overlap, are not additive and are not CPU time. Raw mutable fixture configuration guard costs are included; production immutable captures can reuse their validated comparisons. Host metrics do not instrument worker internals.",
           substituted:
             "host ingress fixture and model planning only; no private payloads, providers, tools or channels invoked",
           summarizes: planning.summarize.mock.calls.length,

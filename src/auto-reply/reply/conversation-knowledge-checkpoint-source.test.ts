@@ -221,16 +221,37 @@ describe("checkpoint unavailable source custody", () => {
   it("checks a cached prefix separately even when its original range anchors still match", async () => {
     const held = await sources();
     const packet = (await held.read(reference()))!.packet;
-    boundary.anchors.mockImplementation(async (_target, selection) => ({
-      anchors: [],
-      contextValidated: !selection.contextValidation.version,
-      contextVersion: { generation: "current", rawSeq: 1, updatedAt: 1 },
-    }));
-    await expect(held.validate(reference(), packet)).resolves.toBeUndefined();
-    expect(boundary.anchors).toHaveBeenCalledOnce();
+    boundary.anchors.mockImplementation(async (_target, selection, _signal, consume) => {
+      const facts = {
+        anchors: [],
+        contextValidated: !selection.contextValidation.version,
+        contextVersion: { generation: "current", rawSeq: 1, updatedAt: 2 },
+      };
+      consume?.(facts);
+      return facts;
+    });
+    const original = reference(),
+      invalid = vi.fn(),
+      verified = vi.fn();
+    await expect(
+      held.verifyAll(
+        [original],
+        verified,
+        new Map([[conversationKnowledgeContributionId(original), packet]]),
+        undefined,
+        invalid,
+      ),
+    ).resolves.toBe(false);
+    expect(boundary.anchors).toHaveBeenCalledTimes(2);
     expect(boundary.anchors.mock.calls[0]![1].contextValidation).toEqual({
+      through: original.through,
+      from: original.privateAudience!.admission,
+    });
+    expect(boundary.anchors.mock.calls[1]![1].contextValidation).toEqual({
       version: packet.version,
     });
+    expect(verified).not.toHaveBeenCalled();
+    expect(invalid).toHaveBeenCalledExactlyOnceWith(original, packet);
   });
   it("leaves a stale own anchor unresolved and still reads a later valid original", async () => {
     const held = await sources();
@@ -277,6 +298,34 @@ describe("checkpoint unavailable source custody", () => {
     await expect(held.validate(reference())).resolves.toBeUndefined();
     await expect(held.verifyAll([reference()], verified)).resolves.toBe(false);
     expect(verified).not.toHaveBeenCalled();
+  });
+  it("does not classify an unavailable current own range as stale cached data", async () => {
+    const held = await sources(),
+      original = reference();
+    const packet = (await held.read(original))!.packet;
+    boundary.anchors.mockImplementation(async (_target, _selection, _signal, consume) => {
+      const facts = {
+        anchors: [],
+        contextValidated: false,
+        contextVersion: { generation: "current", rawSeq: 1, updatedAt: 2 },
+      };
+      consume?.(facts);
+      return facts;
+    });
+    const invalid = vi.fn(),
+      verified = vi.fn();
+    expect(
+      await held.verifyAll(
+        [original],
+        verified,
+        new Map([[conversationKnowledgeContributionId(original), packet]]),
+        undefined,
+        invalid,
+      ),
+    ).toBe(false);
+    expect(invalid).not.toHaveBeenCalled();
+    expect(verified).not.toHaveBeenCalled();
+    expect(boundary.anchors).toHaveBeenCalledOnce();
   });
   it("releases a newly acquired group when native personal read refuses its range", async () => {
     const held = await sources();
@@ -499,9 +548,66 @@ describe("grouped checkpoint prefix validation", () => {
     });
     const held = await sources();
     const verified = vi.fn();
-    expect(await held.verifyAll(fixture.references, verified, fixture.packets)).toBe(false);
+    const invalid = vi.fn();
+    expect(
+      await held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
+    ).toBe(false);
     expect(verified).not.toHaveBeenCalled();
     expect(boundary.anchors).not.toHaveBeenCalled();
+    expect(invalid).toHaveBeenCalledExactlyOnceWith(first, fixture.packets.get(id));
+  });
+
+  it("reports every stale cached prefix once per source group without publishing a partial group", async () => {
+    const fixture = groupFixture(80, [100, 120]);
+    const held = await sources(),
+      verified = vi.fn(),
+      invalid = vi.fn();
+    boundary.anchors.mockResolvedValue({ anchors: [], contextValidated: false });
+    expect(
+      await held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
+    ).toBe(false);
+    expect(boundary.anchors).toHaveBeenCalledTimes(2);
+    expect(invalid).toHaveBeenCalledTimes(80);
+    expect(
+      new Set(invalid.mock.calls.map(([value]) => conversationKnowledgeContributionId(value))).size,
+    ).toBe(80);
+    expect(verified).not.toHaveBeenCalled();
+    expect((await prepareSessionSourceAuthority(held.source())).checks).toHaveLength(0);
+    const refreshed = new Map(
+      [...fixture.packets].map(([id, packet]) => [id, { ...packet, version: fixture.current }]),
+    );
+    invalid.mockClear();
+    boundary.anchors.mockClear();
+    expect(await held.verifyAll(fixture.references, verified, refreshed, undefined, invalid)).toBe(
+      true,
+    );
+    expect(verified).toHaveBeenCalledTimes(80);
+    expect(invalid).not.toHaveBeenCalled();
+    expect(boundary.anchors).not.toHaveBeenCalled();
+  });
+
+  it("does not request cache repair when a donor is unavailable or validation is canceled", async () => {
+    const fixture = groupFixture(4, [100, 120]);
+    const quantum = new AbortController();
+    const held = await sources(() => {}, { signal: quantum.signal });
+    const verified = vi.fn(),
+      invalid = vi.fn();
+    boundary.group.mockRejectedValueOnce(
+      new PersonalConversationReadRefusedError("Permission ended"),
+    );
+    expect(
+      await held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
+    ).toBe(false);
+    expect(invalid).not.toHaveBeenCalled();
+    boundary.anchors.mockImplementationOnce(async () => {
+      quantum.abort(new Error("Foreground work resumed"));
+      return { anchors: [], contextValidated: false };
+    });
+    await expect(
+      held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
+    ).rejects.toThrow("Foreground work resumed");
+    expect(invalid).not.toHaveBeenCalled();
+    expect(verified).not.toHaveBeenCalled();
   });
 
   it("continues independent healthy donors after an earlier group is unavailable", async () => {
