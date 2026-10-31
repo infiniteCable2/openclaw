@@ -12,6 +12,7 @@ import { createConversationKnowledgePrefetchOwner } from "./conversation-knowled
 const boundary = vi.hoisted(() => ({
   register: vi.fn<(resource: OpenClawAgentDatabaseAsyncResource) => () => void>(),
   capture: vi.fn(() => ({ assertCurrent() {}, release: async () => {} })),
+  warn: vi.fn(),
 }));
 
 // mock-isolation: Exercise the real background queue without opening native agent databases.
@@ -24,7 +25,7 @@ vi.mock("../../state/openclaw-agent-execution.js", () => ({
 }));
 // mock-isolation: Keep synthetic queue scenarios from creating application log files.
 vi.mock("../../logging/subsystem.js", () => ({
-  createSubsystemLogger: () => ({ debug() {}, warn() {}, error() {}, info() {} }),
+  createSubsystemLogger: () => ({ debug() {}, warn: boundary.warn, error() {}, info() {} }),
 }));
 // mock-isolation: Retain the actual queue while suppressing its external diagnostics.
 vi.mock("../../logging/diagnostic-runtime.js", () => ({
@@ -83,6 +84,57 @@ afterEach(async () => {
 });
 
 describe("automatic recipient preparation scenarios", () => {
+  it("yields an active preparation to foreground without publishing or retrying while paused", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const started = gate();
+    const finish = gate();
+    const signals: AbortSignal[] = [];
+    const published: boolean[] = [];
+    const prepare = vi.fn(async (signal: AbortSignal, prepareSources?: boolean) => {
+      signals.push(signal);
+      if (signals.length === 1) {
+        started.resolve();
+        // The retained I/O completion is independent of cancellation. It must
+        // join eventually, but cannot delay the pause or publish a stale result.
+        await finish.promise;
+      }
+      signal.throwIfAborted();
+      published.push(prepareSources === true);
+    });
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      prepare,
+      assertCurrent() {},
+      clear() {},
+    });
+    await started.promise;
+    const resume = owner.pausePreparation();
+    expect(signals[0]?.aborted).toBe(true);
+    await expect(enqueueCommandInLane("main", async () => "foreground-ready")).resolves.toBe(
+      "foreground-ready",
+    );
+    rootUpdate();
+    rootUpdate();
+    owner.request("recipient");
+    finish.resolve();
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(published).toEqual([]);
+    expect(boundary.warn).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledOnce();
+    resume();
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
+    expect(published).toEqual([true]);
+    expect(signals[1]?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(boundary.warn).not.toHaveBeenCalled();
+  });
+
   it("retries recipient delivery when its native execution owner settles without a row write", async () => {
     const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
     const owner = createConversationKnowledgePrefetchOwner({

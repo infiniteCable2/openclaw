@@ -148,6 +148,7 @@ export function createConversationKnowledgeSourceCustody(
           grant = await prepareTranscriptReadAuthority({ ...request, preparedAdmission });
         }
       } catch (error) {
+        params.signal?.throwIfAborted();
         params.sourceCache?.invalidateAdmission(sourceTarget);
         // Only background preparation may reacquire invalid native custody.
         // A live boundary consumes ready work and never waits for discovery.
@@ -161,6 +162,8 @@ export function createConversationKnowledgeSourceCustody(
       }
       read = { grant };
       reads.push(read);
+      params.assertCurrent();
+      params.signal?.throwIfAborted();
       grant.assertCurrent();
       const source = grant.sources[0];
       const admitted =

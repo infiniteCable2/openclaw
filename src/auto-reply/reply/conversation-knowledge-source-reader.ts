@@ -209,6 +209,7 @@ export async function readConversationKnowledgeInputs(params: {
     try {
       return await readPreparedConversationKnowledgeRoot({ ...params, manifest });
     } catch (error) {
+      params.signal?.throwIfAborted();
       cache?.clearPreparationInputs();
       params.sourceCache?.clearPreparedRoot(manifest);
       throw error;
@@ -514,6 +515,8 @@ export function createConversationKnowledgeSourceReader(
         signal: params.signal,
         cache,
       });
+      params.assertCurrent();
+      params.signal?.throwIfAborted();
       if (cache?.firstPreparedOffset(id) !== undefined) {
         if (
           !cache.retainAdmission(

@@ -137,12 +137,15 @@ export async function prepareRecipientConversationProjection(
       preparationOnly: true,
       retainInHistory: false,
     }).catch((error: unknown) => {
+      params.signal?.throwIfAborted();
       cache.clearPreparedRoot();
       throw error;
     });
     if (!inputs) {
       return false;
     }
+    check();
+    params.signal?.throwIfAborted();
     const { events, retained } = inputs;
     const current = selectConversationKnowledgeReceipts(
       events,
@@ -184,6 +187,7 @@ export async function prepareRecipientConversationProjection(
         assertCurrent: check,
       });
     } catch (error) {
+      params.signal?.throwIfAborted();
       cache.clearPreparedRoot(manifest);
       throw error;
     }

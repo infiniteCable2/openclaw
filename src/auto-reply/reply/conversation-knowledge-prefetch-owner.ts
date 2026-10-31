@@ -54,6 +54,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
   let requested = false;
   let sourcesRequested = false;
   let preparationPauses = 0;
+  let activePreparation: AbortController | undefined;
   let completion: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -190,6 +191,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
           }
           requested = false;
           let preparingSources = false;
+          let yielded = false;
           try {
             check();
             // Each batch releases shared capacity before a coalesced successor is queued.
@@ -204,7 +206,25 @@ export function createConversationKnowledgePrefetchOwner(params: {
                 signal.throwIfAborted();
                 preparingSources = sourcesRequested;
                 sourcesRequested = false;
-                const more = await params.prepare(signal, preparingSources);
+                const quantum = new AbortController();
+                activePreparation = quantum;
+                let more: void | boolean;
+                try {
+                  more = await params.prepare(
+                    AbortSignal.any([signal, quantum.signal]),
+                    preparingSources,
+                  );
+                } finally {
+                  yielded = quantum.signal.aborted;
+                  if (activePreparation === quantum) {
+                    activePreparation = undefined;
+                  }
+                }
+                if (yielded) {
+                  sourcesRequested ||= preparingSources;
+                  requested = true;
+                  return;
+                }
                 signal.throwIfAborted();
                 check();
                 reportedFailures.delete("preparation-deferred");
@@ -220,6 +240,12 @@ export function createConversationKnowledgePrefetchOwner(params: {
             // A failed quantum cannot consume its source notification. Keep it
             // through the existing backoff and any recipient-only wakeup.
             sourcesRequested ||= preparingSources;
+            if (yielded) {
+              // Foreground ownership supersedes this disposable quantum. Resume
+              // its source intent after release, without warning or timed polling.
+              requested = true;
+              continue;
+            }
             try {
               check();
             } catch {
@@ -264,6 +290,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
       return () => {};
     }
     preparationPauses++;
+    activePreparation?.abort();
     cancelRetry();
     let held = true;
     return () => {

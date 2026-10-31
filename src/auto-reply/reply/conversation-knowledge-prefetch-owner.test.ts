@@ -171,17 +171,25 @@ describe("conversation knowledge prefetch lifecycle", () => {
     expect(f.prepare).toHaveBeenCalledOnce();
   });
 
-  it("joins the active quantum without aborting it and holds its successor until resume", async () => {
+  it("cancels the active quantum, joins its cleanup and holds its successor until resume", async () => {
     const began = createDeferredCore();
     const finish = gate();
     const f = fixture();
+    let cleanupFinished = false;
+    let published = false;
     f.prepare.mockImplementationOnce(async (signal) => {
       began.resolve();
-      await finish.promise;
-      expect(signal.aborted).toBe(false);
+      try {
+        await finish.promise;
+        signal.throwIfAborted();
+        published = true;
+      } finally {
+        cleanupFinished = true;
+      }
     });
     await began.promise;
     const resume = f.owner.pausePreparation();
+    expect(f.prepare.mock.calls[0]?.[0].aborted).toBe(true);
     rootUpdate();
     let joined = false;
     const waiting = f.owner.wait().then(() => {
@@ -189,13 +197,19 @@ describe("conversation knowledge prefetch lifecycle", () => {
     });
     await Promise.resolve();
     expect(joined).toBe(false);
+    expect(cleanupFinished).toBe(false);
+    expect(published).toBe(false);
     finish.resolve();
     await waiting;
+    expect(cleanupFinished).toBe(true);
+    expect(published).toBe(false);
     expect(f.prepare).toHaveBeenCalledOnce();
     expect(f.clear).not.toHaveBeenCalled();
     resume();
     await f.owner.wait();
     expect(f.prepare).toHaveBeenCalledTimes(2);
+    expect(f.prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
+    expect(f.prepare.mock.calls[1]?.[0].aborted).toBe(false);
   });
 
   it("holds scheduled failure retries and cannot revive a closed paused owner", async () => {

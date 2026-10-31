@@ -160,6 +160,8 @@ async function prepareReplyConversationKnowledgeInMode(
       return undefined;
     }
     const { events, previous, retained } = inputs;
+    params.assertCurrent();
+    params.signal?.throwIfAborted();
     const parts: NonNullable<ReturnType<typeof projectConversationKnowledge>>[] = [];
     const ingestion = params.retainInHistory
       ? createConversationKnowledgeIngestion({
@@ -402,6 +404,8 @@ async function prepareReplyConversationKnowledgeInMode(
           ? params.sourceCache?.peek(contributionId, stagedOffset)
           : undefined;
       const stagedValid = staged && (await sourceReader.validate(preparedSource, staged));
+      params.assertCurrent();
+      params.signal?.throwIfAborted();
       if (staged && !stagedValid) {
         params.sourceCache?.invalidateContribution(contributionId);
         pendingPackets = true;
@@ -633,6 +637,8 @@ async function prepareReplyConversationKnowledgeInMode(
       }
     }
     await flushPackets();
+    params.assertCurrent();
+    params.signal?.throwIfAborted();
     if (params.preparationOnly && params.sourceCache) {
       publishPreparedConversationKnowledgeRoot({
         evidence: events.evidence,
