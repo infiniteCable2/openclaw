@@ -74,6 +74,7 @@ import {
   transcriptEventJsonSql,
   type PreparedTranscriptPayload,
 } from "./transcript-payload.js";
+import { isSessionTranscriptContextControl } from "./transcript-tree.js";
 
 type TranscriptAppendOptions = {
   /** Exact event bytes, including canonical media, prepared by the message append owner. */
@@ -95,6 +96,7 @@ export type TranscriptAppendCursor = {
   updateWindow?: (createdAt: number) => unknown;
   insertEvent?: ReturnType<typeof createTranscriptEventInserter>;
   insertIdentity?: ReturnType<typeof createTranscriptIdentityInserter>;
+  contextChanged?: true;
 };
 
 export function createTranscriptIdentityInserter(
@@ -248,8 +250,16 @@ export function appendTranscriptEventInTransaction(
     cursor.insertIdentity({ ...identity, seq, createdAt });
   }
   advanceCliHistoryBoundaryInTransaction(database, scope, seq);
+  if (isSessionTranscriptContextControl(persistedEvent)) {
+    cursor.contextChanged = true;
+  }
   if (options.touchMutation !== false) {
-    touchTranscriptMutationInTransaction(database, scope.sessionId);
+    touchTranscriptMutationInTransaction(
+      database,
+      scope.sessionId,
+      undefined,
+      cursor.contextChanged,
+    );
   }
   scheduleTranscriptProjectionReconcile(database, scope.sessionId, projectionNeedsRebuild, options);
   return eventJson;
@@ -320,7 +330,12 @@ export function appendTranscriptEventsInTransaction(
   }
   if (appended > 0) {
     if (options.touchMutation !== false) {
-      touchTranscriptMutationInTransaction(database, scope.sessionId);
+      touchTranscriptMutationInTransaction(
+        database,
+        scope.sessionId,
+        undefined,
+        cursor.contextChanged,
+      );
     }
     scheduleTranscriptProjectionReconcile(
       database,
@@ -428,13 +443,14 @@ function recordTranscriptReplacementMutation(
   preservedUpdatedAt: number | null | undefined,
 ): void {
   if (preservedUpdatedAt === undefined || preservedUpdatedAt === null) {
-    touchTranscriptMutationInTransaction(database, sessionId);
+    touchTranscriptMutationInTransaction(database, sessionId, undefined, true);
     return;
   }
   // Maintenance rewrites must invalidate in-flight projections without making an old session
   // look newly active. A one-tick advance preserves ordering while changing the snapshot key.
   advanceTranscriptMutationAtInTransaction(database, sessionId, preservedUpdatedAt, {
     strictly: true,
+    contextChanged: true,
   });
 }
 
@@ -530,6 +546,7 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
           beforeRawSeq: rows.reduce((first, row) => Math.min(first, row.seq), Infinity),
         }
       : undefined,
+    true,
   );
   if (previousGeneration) {
     renewConversationKnowledgeAfterExactRewriteInTransaction({

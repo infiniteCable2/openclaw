@@ -239,7 +239,9 @@ function register(selected = branch, getRuntimeConfig = () => config) {
 async function quantum() {
   return boundary.owner!.prepare(new AbortController().signal);
 }
-beforeEach(() => {
+beforeEach(async () => {
+  // Initialize the lazy module mock before selecting its real native planner.
+  await import("./conversation-knowledge-checkpoint-summary.js");
   vi.resetAllMocks();
   boundary.plan.mockImplementation(boundary.nativePlan!);
   boundary.refs = [reference(1)];

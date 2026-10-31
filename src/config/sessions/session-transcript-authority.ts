@@ -37,6 +37,8 @@ export type SessionTranscriptAuthority = SessionTranscriptContextVersion & {
   indexedSeq: number | null;
   activeMessageCount: number | null;
   needsRebuild: number | null;
+  /** Internal scheduling hint only; current native range/prefix guards still decide reuse. */
+  contextChanged?: true;
   /** Worker-issued exact rewrite proof, never a grant to reinterpret changed rows. */
   unchangedPrefix?: { previousGeneration: string; beforeRawSeq: number };
 };
@@ -97,14 +99,23 @@ function publishTranscriptFact(
   if (!source) {
     return;
   }
+  const records = staged.get(database.db) ?? new Map<string, SessionTranscriptAuthorityReceipt>();
+  const previous = records.get(sessionKey);
+  // Keep a boundary hint when a later ordinary append shares this outer transaction.
+  // The same staged owner restores its predecessor on savepoint/outer rollback.
+  const previousFact = previous?.facts.get(sessionKey);
+  const publishedFact: SqliteCommittedFact<SessionTranscriptAuthority> =
+    fact.kind === "postimage" &&
+    previousFact?.kind === "postimage" &&
+    previousFact.value.contextChanged
+      ? { kind: "postimage", value: Object.freeze({ ...fact.value, contextChanged: true }) }
+      : fact;
   const receipt = createSqliteCommitReceipt({
     source,
     domain: "session-transcript-context",
     keys: [sessionKey],
-    readFact: () => fact,
+    readFact: () => publishedFact,
   });
-  const records = staged.get(database.db) ?? new Map<string, SessionTranscriptAuthorityReceipt>();
-  const previous = records.get(sessionKey);
   // Content-preserving materialization must not replace an earlier mutation's postimage.
   if (fact.kind === "unchanged" && previous) {
     return;
@@ -229,6 +240,7 @@ function isTranscriptReceipt(value: unknown): value is SessionTranscriptAuthorit
       (row.leafEventId !== null && typeof row.leafEventId !== "string") ||
       ![row.rawSeq, row.updatedAt, row.indexedSeq, row.activeMessageCount].every(nullableNumber) ||
       (row.needsRebuild !== null && row.needsRebuild !== 0 && row.needsRebuild !== 1) ||
+      (row.contextChanged !== undefined && row.contextChanged !== true) ||
       (row.unchangedPrefix !== undefined &&
         (!isRecord(row.unchangedPrefix) ||
           typeof row.unchangedPrefix.previousGeneration !== "string" ||

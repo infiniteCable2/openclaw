@@ -357,6 +357,7 @@ export function advanceTranscriptMutationAtInTransaction(
   options: {
     strictly?: boolean;
     unchangedPrefix?: SessionTranscriptAuthority["unchangedPrefix"];
+    contextChanged?: true;
   } = {},
 ): void {
   let transcriptUpdatedAt = Math.floor(value);
@@ -438,6 +439,7 @@ export function advanceTranscriptMutationAtInTransaction(
     publishSessionTranscriptAuthority(database, {
       ...context,
       ...(options.unchangedPrefix ? { unchangedPrefix: options.unchangedPrefix } : {}),
+      ...(options.contextChanged ? { contextChanged: true } : {}),
     });
   }
 }
@@ -446,10 +448,12 @@ export function touchTranscriptMutationInTransaction(
   database: OpenClawAgentDatabase,
   sessionId: string,
   unchangedPrefix?: SessionTranscriptAuthority["unchangedPrefix"],
+  contextChanged?: true,
 ): void {
   advanceTranscriptMutationAtInTransaction(database, sessionId, Date.now(), {
     strictly: true,
     unchangedPrefix,
+    contextChanged,
   });
 }
 

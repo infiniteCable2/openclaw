@@ -66,6 +66,15 @@ export function isSessionTranscriptLeafControl(
   );
 }
 
+/** Controls can change bounded context even when they extend a clean active path. */
+export function isSessionTranscriptContextControl(record: unknown): boolean {
+  return (
+    isSessionTranscriptLeafControl(record) ||
+    (isCanonicalSessionTranscriptEntry(record) &&
+      (record.type === "compaction" || record.type === "reset" || record.type === "branch_summary"))
+  );
+}
+
 /**
  * Parse one parent-linked transcript row.
  *

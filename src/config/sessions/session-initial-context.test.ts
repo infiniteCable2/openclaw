@@ -464,6 +464,7 @@ describe("native reply initial context", () => {
   it.each([
     "donor-reset",
     "root-reset",
+    "donor-model-lock",
     "permission",
     "late-permission",
     "target-visibility",
@@ -482,6 +483,11 @@ describe("native reply initial context", () => {
           await replaceTranscriptEvents(selected, [
             { type: "session", id: selected.sessionId, version: 3 },
           ]);
+        } else if (change === "donor-model-lock") {
+          await upsertSessionEntryCore(donor, {
+            ...loadSessionEntry(donor)!,
+            modelSelectionLocked: true,
+          });
         } else if (change === "permission") {
           await upsertSessionEntryCore(donor, {
             ...loadSessionEntry(donor)!,

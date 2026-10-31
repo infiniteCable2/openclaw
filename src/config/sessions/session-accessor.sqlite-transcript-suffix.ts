@@ -600,5 +600,5 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     projection.onProjectionReconcileNeeded?.();
     scheduleTranscriptProjectionReconcile(database, resolved.sessionId, true, projection);
   }
-  touchTranscriptMutationInTransaction(database, resolved.sessionId);
+  touchTranscriptMutationInTransaction(database, resolved.sessionId, undefined, true);
 }

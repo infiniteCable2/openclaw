@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionTranscriptAuthority } from "../../config/sessions/session-transcript-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
@@ -10,6 +11,10 @@ import type { OpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-ag
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
 
 const boundary = vi.hoisted(() => ({
+  transcriptFact:
+    vi.fn<
+      typeof import("../../config/sessions/session-transcript-authority.js").readPreparedSessionTranscriptChange
+    >(),
   register: vi.fn<(resource: OpenClawAgentDatabaseAsyncResource) => () => void>(),
   capture: vi.fn<
     (target: { agentId: string; path: string; env?: NodeJS.ProcessEnv }) => {
@@ -25,6 +30,11 @@ const boundary = vi.hoisted(() => ({
       ) => Promise<void>
     >(),
   warn: vi.fn(),
+}));
+
+// mock-isolation: Native publication tests prove the hint producer; this suite controls scheduling only.
+vi.mock("../../config/sessions/session-transcript-authority.js", () => ({
+  readPreparedSessionTranscriptChange: boundary.transcriptFact,
 }));
 
 // mock-isolation: Test ownership and settlement without native databases or process-wide close fences.
@@ -117,6 +127,76 @@ afterEach(async () => {
 });
 
 describe("conversation knowledge prefetch lifecycle", () => {
+  it("refreshes watched donor context controls without waking on ordinary transcript appends", async () => {
+    const prepare = vi.fn(async () => {});
+    const donorKey = "agent:example:donor";
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      prepare,
+      clear() {},
+      assertCurrent() {},
+      watchesSource: (key) => key === donorKey,
+    });
+    await owner.wait();
+    const value: SessionTranscriptAuthority = {
+      sessionId: "donor-instance",
+      sessionKey: donorKey,
+      generation: "donor-generation",
+      rawSeq: 3,
+      updatedAt: 1,
+      leafEventId: "donor-leaf",
+      indexedSeq: 3,
+      activeMessageCount: 2,
+      needsRebuild: 0,
+    };
+    const hint = (
+      overrides: { agentId?: string; storePath?: string; sessionKey?: string } = {},
+    ) => {
+      sessionChanges.emit({
+        ...target,
+        sessionKey: donorKey,
+        scope: "transcript",
+        ...overrides,
+      });
+    };
+    boundary.transcriptFact.mockReturnValue({ kind: "postimage", value });
+    hint();
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledOnce();
+    boundary.transcriptFact.mockReturnValue({
+      kind: "postimage",
+      value: { ...value, contextChanged: true },
+    });
+    const resume = owner.pausePreparation();
+    hint({ agentId: "other" });
+    hint({ storePath: path.resolve("other.sqlite") });
+    hint({ sessionKey: "agent:example:unrelated" });
+    hint();
+    hint();
+    resume();
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    boundary.transcriptFact.mockReturnValue({ kind: "postimage", value });
+    hint();
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    boundary.transcriptFact.mockReturnValue({
+      kind: "postimage",
+      value: { ...value, needsRebuild: 1 },
+    });
+    hint();
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(3);
+    boundary.transcriptFact.mockReturnValue({ kind: "unknown" });
+    hint();
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(4);
+    await owner.close();
+    hint();
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(4);
+  });
+
   it("resumes settled recipient work without rebuilding unchanged sources", async () => {
     const f = fixture();
     await f.owner.wait();

@@ -19,10 +19,20 @@ import { readPreparedSessionEntryChange } from "./session-accessor.sqlite-entry-
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { assignSessionOwner } from "./session-accessor.sqlite-owner.js";
-import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
+import { resolveSqliteTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import {
+  readTranscriptContextVersionInTransaction,
+  touchTranscriptMutationInTransaction,
+} from "./session-accessor.sqlite-transcript-state.js";
+import {
+  appendTranscriptEventsInTransaction,
+  appendTranscriptEventInTransaction,
+} from "./session-accessor.sqlite-transcript-store.js";
 import {
   readPreparedSessionTranscriptChange,
   publishUnchangedSessionTranscriptAuthority,
+  readStagedSessionTranscriptAuthority,
+  parseSessionTranscriptAuthorityReceipts,
   type SessionTranscriptAuthority,
 } from "./session-transcript-authority.js";
 
@@ -82,7 +92,11 @@ it.each(["native", "worker"] as const)(
       const manager =
         realm === "native" ? SessionManager.open(scope) : await SessionManager.openAsync(scope);
       const values = observe(scope.sessionKey);
-      const invoke = async (native: () => unknown, worker: () => Promise<unknown>) => {
+      const invoke = async (
+        native: () => unknown,
+        worker: () => Promise<unknown>,
+        contextChanged = false,
+      ) => {
         const count = values.length;
         if (realm === "native") {
           native();
@@ -96,6 +110,7 @@ it.each(["native", "worker"] as const)(
           sessionId: scope.sessionId,
           sessionKey: scope.sessionKey,
         });
+        expect(values.at(-1)?.contextChanged).toBe(contextChanged ? true : undefined);
       };
       await invoke(
         () => manager.appendMessage({ role: "user", content: "seed", timestamp: 1 }),
@@ -135,22 +150,27 @@ it.each(["native", "worker"] as const)(
       await invoke(
         () => manager.appendCompaction("summary", seed, 12),
         () => manager.appendCompactionAsync("summary", seed, 12),
+        true,
       );
       await invoke(
         () => manager.appendResetBoundary("reset", seed),
         () => manager.appendResetBoundaryAsync("reset", seed),
+        true,
       );
       await invoke(
         () => manager.appendLeafControl({ targetId: seed, appendParentId: seed }),
         () => manager.appendLeafControlAsync({ targetId: seed, appendParentId: seed }),
+        true,
       );
       await invoke(
         () => manager.branchWithSummary(seed, "branch"),
         () => manager.branchWithSummaryAsync(seed, "branch"),
+        true,
       );
       await invoke(
         () => manager.removeTrailingEntries((entry) => entry.type === "branch_summary"),
         () => manager.removeTrailingEntriesAsync((entry) => entry.type === "branch_summary"),
+        true,
       );
       const raw = {
         type: "custom" as const,
@@ -198,6 +218,7 @@ it.each(["native", "worker"] as const)(
           const rewrite = await refreshed.prepareTranscriptRewriteAsync();
           await rewrite.commit(populateRewrite(rewrite.sessionManager));
         },
+        true,
       );
     });
   },
@@ -258,6 +279,95 @@ it("installs final transcript facts before entry observers and discards nested r
       }, options),
     ).toThrow("Outer rollback");
     expect(values).toEqual([]);
+  });
+});
+
+it("keeps context hints in the native transaction receipt without leaking rolled-back controls", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+    const scope = {
+      agentId: "main",
+      sessionKey: "agent:main:authority-context-hint",
+      sessionId: "authority-context-hint",
+      storePath: database.path,
+      env: state.env,
+    };
+    const options = { agentId: scope.agentId, path: database.path, env: state.env };
+    replaceSessionEntrySync(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const initial = SessionManager.open(scope);
+    const seed = initial.appendMessage({ role: "user", content: "seed", timestamp: 1 });
+    const values = observe(scope.sessionKey);
+    const resolved = resolveSqliteTranscriptScope(scope);
+    runOpenClawAgentWriteTransaction((current) => {
+      appendTranscriptEventsInTransaction(current, resolved, [
+        {
+          type: "compaction",
+          id: "batch-summary",
+          parentId: seed,
+          summary: "Native summary",
+          firstKeptEntryId: seed,
+          tokensBefore: 12,
+        },
+        {
+          type: "custom",
+          id: "batch-ordinary",
+          parentId: "batch-summary",
+          customType: "ordinary-after-control",
+        },
+      ]);
+      appendTranscriptEventInTransaction(current, resolved, {
+        type: "custom",
+        id: "separate-ordinary",
+        parentId: "batch-ordinary",
+        customType: "ordinary-after-batch",
+      });
+      publishUnchangedSessionTranscriptAuthority(current, scope.sessionKey);
+      const transferred = parseSessionTranscriptAuthorityReceipts(
+        structuredClone(readStagedSessionTranscriptAuthority(database)),
+      );
+      const fact = transferred?.flatMap((receipt) => Array.from(receipt.facts.values())).at(-1);
+      expect(fact).toMatchObject({ kind: "postimage", value: { contextChanged: true } });
+      expect(values).toHaveLength(0);
+    }, options);
+    expect(values.at(-1)?.contextChanged).toBe(true);
+
+    values.length = 0;
+    const ordinary = SessionManager.open(scope);
+    runOpenClawAgentWriteTransaction(() => {
+      ordinary.appendCustomEntry("retained-ordinary");
+      expect(() =>
+        runOpenClawAgentWriteTransaction(() => {
+          ordinary.appendResetBoundary("rolled-back reset", seed);
+          throw new Error("Rollback nested control");
+        }, options),
+      ).toThrow("Rollback nested control");
+    }, options);
+    expect(values.at(-1)?.contextChanged).toBeUndefined();
+
+    values.length = 0;
+    const rolledBack = SessionManager.open(scope);
+    expect(() =>
+      runOpenClawAgentWriteTransaction(() => {
+        rolledBack.appendCompaction("Rolled-back summary", seed, 12);
+        rolledBack.appendCustomEntry("rolled-back ordinary");
+        throw new Error("Rollback outer controls");
+      }, options),
+    ).toThrow("Rollback outer controls");
+    expect(values).toHaveLength(0);
+    SessionManager.open(scope).appendCustomEntry("ordinary-after-rollback");
+    expect(values.at(-1)?.contextChanged).toBeUndefined();
+
+    // A revalidation hint is independent from a native unchanged-prefix fact.
+    // This transaction leaves every existing row untouched.
+    const before = readTranscriptContextVersionInTransaction(database, scope.sessionId);
+    const unchangedPrefix = {
+      previousGeneration: before.generation!,
+      beforeRawSeq: before.rawSeq! + 1,
+    };
+    runOpenClawAgentWriteTransaction((current) => {
+      touchTranscriptMutationInTransaction(current, scope.sessionId, unchangedPrefix, true);
+    }, options);
+    expect(values.at(-1)).toMatchObject({ contextChanged: true, unchangedPrefix });
   });
 });
 

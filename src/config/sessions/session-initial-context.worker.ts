@@ -77,13 +77,19 @@ function assertInitialRootProjection(
     throw new Error("Initial root projection changed its canonical observation carriers.");
   }
   const validatedPrefixes = new Set<string>();
+  const validatedDonors = new Set<string>();
   for (const claim of projection.claims) {
     assertCapturedSessionEntryReadSource(claim.predicate.source, database);
-    const current = readExactSessionEntryRow(database, claim.predicate.sessionKey)?.entry;
-    if (!current) {
-      throw new Error("Initial root projection donor is unavailable.");
+    if (!validatedDonors.has(claim.predicate.sessionKey)) {
+      const current = readExactSessionEntryRow(database, claim.predicate.sessionKey)?.entry;
+      if (!current) {
+        throw new Error("Initial root projection donor is unavailable.");
+      }
+      assertModelSelectionUnlocked(current);
+      // This synchronous validator never changes donors. Reuse only within this
+      // transaction; every claim still proves its physical source and exact prefix.
+      validatedDonors.add(claim.predicate.sessionKey);
     }
-    assertModelSelectionUnlocked(current);
     const scope = {
       agentId: database.agentId,
       path: database.path,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isSessionTranscriptContextControl,
   isSessionTranscriptLeafControl,
   mergeSessionTranscriptVisiblePathWithOpaqueAppendPath,
   scanSessionTranscriptTree,
@@ -8,6 +9,30 @@ import {
 } from "./transcript-tree.js";
 
 describe("session transcript tree helpers", () => {
+  it.each(["compaction", "reset", "branch_summary"])(
+    "recognizes %s as a context control even on a clean parent-linked path",
+    (type) => {
+      expect(isSessionTranscriptContextControl({ type, id: "control", parentId: "previous" })).toBe(
+        true,
+      );
+    },
+  );
+  it("distinguishes context controls from ordinary messages and custom reports", () => {
+    expect(
+      isSessionTranscriptContextControl({
+        type: "leaf",
+        id: "leaf",
+        parentId: "previous",
+        targetId: "previous",
+      }),
+    ).toBe(true);
+    expect(isSessionTranscriptContextControl({ type: "leaf", id: "invalid" })).toBe(false);
+    for (const type of ["message", "custom", "custom_message", "session_info", "label"]) {
+      expect(
+        isSessionTranscriptContextControl({ type, id: "ordinary", parentId: "previous" }),
+      ).toBe(false);
+    }
+  });
   it("recognizes only valid leaf controls", () => {
     expect(
       isSessionTranscriptLeafControl({

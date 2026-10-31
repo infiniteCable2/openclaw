@@ -255,6 +255,9 @@ native authority disproves a cached text range or prefix, preparation discards
 only the matching cache values and schedules one fresh pass. Missing permission
 or unavailable history alone does not schedule a repair loop. Original receipts
 and session history remain unchanged.
+Native compaction, navigation, reset and rewrite notifications also wake watched
+source preparation without a new user turn or root receipt. Clean message and
+report appends do not trigger a redundant source scan.
 
 An existing embedded model request may consume ready observations, including at
 the next natural model step after tools. It does not wait for full freshness or

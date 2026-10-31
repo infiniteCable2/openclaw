@@ -27,7 +27,11 @@ import {
   readConversationKnowledgeImportProgress,
 } from "./conversation-knowledge-packets.js";
 import { recordConversationKnowledgeTurn } from "./conversation-knowledge-store.js";
-import { loadSessionEntry, loadTranscriptEvents } from "./session-accessor.js";
+import {
+  appendTranscriptEvent,
+  loadSessionEntry,
+  loadTranscriptEvents,
+} from "./session-accessor.js";
 import {
   commitReplySessionInitialization,
   loadReplySessionInitializationSnapshot,
@@ -37,6 +41,7 @@ import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-en
 import { prepareSessionGenerationFacts } from "./session-delivery-generation.js";
 import * as frameBorrow from "./session-initial-context-frame.js";
 import * as sourceContexts from "./session-transcript-context-read.js";
+import { readSessionTranscriptWatermarkAsync } from "./session-transcript-watermark.js";
 
 // Real native generation custody, personal source grants and lifecycle/transcript workers.
 // Controlled original transcript commits replace generation, not storage or admission.
@@ -328,6 +333,7 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
           },
         };
         let expectedOriginals = 3;
+        const donorVersionGate: { minimumRawSeq?: number } = {};
         let ready = createDeferredCore();
         let previousFrame:
           | NonNullable<
@@ -387,7 +393,19 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
           onReady() {
             stages.push(`root-notified:${registration?.projection().tail.length ?? -1}`);
             try {
-              if (!registration || registration.projection().tail.length !== expectedOriginals) {
+              const projection = registration?.projection();
+              const minimumDonorSeq = donorVersionGate.minimumRawSeq;
+              if (
+                !registration ||
+                !projection ||
+                projection.tail.length !== expectedOriginals ||
+                (minimumDonorSeq !== undefined &&
+                  projection.tail.some(
+                    ({ reference, packet }) =>
+                      reference.source.sessionKey === donorA.sessionKey &&
+                      (packet.version.rawSeq ?? -1) < minimumDonorSeq,
+                  ))
+              ) {
                 return;
               }
               const candidate = acquirePreparedConversationKnowledgeInitialFrame({
@@ -536,6 +554,59 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
         expect(JSON.stringify(await loadTranscriptEvents(third.initialized))).toContain(
           "sealed-later-delta answer",
         );
+        expect(borrowing).toHaveBeenCalledOnce();
+        expect(discovery).not.toHaveBeenCalled();
+        expect(groups).not.toHaveBeenCalled();
+        expect(bodies).not.toHaveBeenCalled();
+        expect((await fixture.receipts()).length).toBe(4);
+
+        // Native source compaction alone must refresh retained custody and bytes.
+        // Keep every original active; the root receives no new publication or turn.
+        const healthyB = registration
+          .projection()
+          .tail.find(({ reference }) => reference.source.sessionKey === donorB.sessionKey)!.packet;
+        const donorEvents = await loadTranscriptEvents(donorA);
+        const firstMessageId = donorEvents
+          .map(asOptionalRecord)
+          .find((event) => event?.type === "message" && typeof event.id === "string")?.id;
+        if (typeof firstMessageId !== "string") {
+          throw new Error("Expected an actual retained donor message for native compaction");
+        }
+        const beforeControl = await readSessionTranscriptWatermarkAsync(donorA);
+        if (beforeControl.maxSeq === null) {
+          throw new Error("Expected the populated native donor watermark");
+        }
+        donorVersionGate.minimumRawSeq = beforeControl.maxSeq + 1;
+        ready = createDeferredCore();
+        for (const held of heldFrames.splice(0)) {
+          await held.release();
+        }
+        resumes.shift()!();
+        await appendTranscriptEvent(donorA, {
+          type: "compaction",
+          id: "sealed-donor-compaction",
+          summary: "All original exchanges remain retained below this native boundary.",
+          firstKeptEntryId: firstMessageId,
+          tokensBefore: 100,
+        });
+        await withinTest(ready.promise, signal);
+        expect(groups).toHaveBeenCalledOnce();
+        expect(groups.mock.calls[0]![0].sources[0]?.sessionKey).toBe(donorA.sessionKey);
+        expect(bodies.mock.calls.some(([scope]) => scope.sessionKey === donorB.sessionKey)).toBe(
+          false,
+        );
+        expect(
+          registration
+            .projection()
+            .tail.find(({ reference }) => reference.source.sessionKey === donorB.sessionKey)!
+            .packet,
+        ).toEqual(healthyB);
+        discovery.mockClear();
+        groups.mockClear();
+        bodies.mockClear();
+        borrowing.mockClear();
+        const fourth = await create("compacted-source", 4);
+        expect(fourth.packetIds).toEqual(third.packetIds);
         expect(borrowing).toHaveBeenCalledOnce();
         expect(discovery).not.toHaveBeenCalled();
         expect(groups).not.toHaveBeenCalled();
