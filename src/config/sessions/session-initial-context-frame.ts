@@ -42,6 +42,13 @@ type FramePreparation = {
   getRuntimeConfig(): OpenClawConfig;
 };
 const frameIssuer = Symbol("native-initial-root-frame");
+const rootFields = [
+  "sessionId",
+  "lifecycleRevision",
+  "createdActor",
+  "visibility",
+  "incognito",
+] as const;
 const borrowed = new WeakMap<
   SessionSourcePredicate,
   {
@@ -77,9 +84,7 @@ class PreparedConversationKnowledgeInitialFrame {
         isDeepStrictEqual(predicate.source, params.context.source) &&
         predicate.expected?.sessionId === params.context.sourceEntry.sessionId &&
         predicate.expected?.lifecycleRevision === params.context.sourceEntry.lifecycleRevision &&
-        ["sessionId", "lifecycleRevision", "createdActor", "visibility", "incognito"].every(
-          (field) => predicate.fields.includes(field as keyof typeof predicate.expected),
-        ),
+        rootFields.every((field) => predicate.fields.includes(field)),
     )?.predicate;
     if (!rootPredicate) {
       throw new Error("Initial root frame lacks native root custody");
