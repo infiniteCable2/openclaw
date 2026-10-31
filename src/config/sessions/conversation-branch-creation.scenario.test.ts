@@ -252,7 +252,7 @@ it("copies populated root knowledge through ordinary ingress before its first mo
         const events = await loadTranscriptEvents(initialized);
         expect(JSON.stringify(events)).toContain("ingress-original-fact answer");
         expect(JSON.stringify(events)).not.toContain("First actual ingress request.");
-        const topology = result.sessionEntry.conversationTopology;
+        const topology = loadSessionEntry(initialized)?.conversationTopology;
         if (topology?.role !== "branch" || !result.sessionEntry.lifecycleRevision) {
           throw new Error("Expected a fully initialized native ingress branch");
         }

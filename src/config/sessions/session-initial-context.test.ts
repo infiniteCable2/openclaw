@@ -48,6 +48,7 @@ import {
   type SessionTranscriptAuthority,
 } from "./session-transcript-authority.js";
 import { prepareSessionTranscriptHydration } from "./session-transcript-hydration.js";
+import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import type { InternalSessionEntry } from "./types.js";
 
 let state: OpenClawTestState;
@@ -263,7 +264,7 @@ async function withProjectedContext(
         createdActor: { type: "human", source: "profile", id: "source-owner" },
         visibility: "draft",
       });
-      const originals = [];
+      const originals: TranscriptEntryAnchor[] = [];
       for (const text of ["A summarized earlier fact.", "A later original fact."]) {
         const original = await appendTranscriptMessage(donor, {
           message: { role: "user", content: text },
