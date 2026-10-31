@@ -48,8 +48,8 @@ import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const planning = vi.hoisted(() => ({ summarize: vi.fn(), compact: vi.fn() }));
-// mock-isolation: Only model execution is replaced; all SQLite, sharing facts,
-// native grants, publications, root projection and recipient owners remain real.
+// Native SQLite, sharing facts, grants, publications and recipient owners remain real.
+// mock-isolation: Replace model execution so this replay never calls live providers.
 vi.mock("./conversation-knowledge-checkpoint-model.js", () => ({
   acquireConversationKnowledgeCheckpointModel: async () => ({
     planning: {
