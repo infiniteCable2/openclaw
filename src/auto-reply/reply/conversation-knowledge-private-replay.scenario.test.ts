@@ -95,18 +95,18 @@ async function readReplay(file: string): Promise<Replay> {
   if (value?.version !== 1 || !Array.isArray(value.references) || !Array.isArray(value.sources)) {
     throw new Error("Private replay contract unavailable");
   }
-  const sources = value.sources.map((raw) => {
+  const sources = value.sources.map((raw): Replay["sources"][number] => {
     const row = asOptionalRecord(raw);
     if (
       typeof row?.alias !== "string" ||
-      !["direct", "group", "channel"].includes(String(row.chatType))
+      (row.chatType !== "direct" && row.chatType !== "group" && row.chatType !== "channel")
     ) {
       throw new Error("Private replay source contract invalid");
     }
-    return { alias: row.alias, chatType: row.chatType as Replay["sources"][number]["chatType"] };
+    return { alias: row.alias, chatType: row.chatType };
   });
   const aliases = new Set(sources.map((source) => source.alias));
-  const references = value.references.map((raw) => {
+  const references = value.references.map((raw): Replay["references"][number] => {
     const row = asOptionalRecord(raw);
     if (
       typeof row?.source !== "string" ||
@@ -142,7 +142,7 @@ async function readReplay(file: string): Promise<Replay> {
     value.receipts === undefined
       ? undefined
       : Array.isArray(value.receipts)
-        ? value.receipts.map((raw) => {
+        ? value.receipts.map((raw): NonNullable<Replay["receipts"]>[number] => {
             const row = asOptionalRecord(raw);
             if (
               !row ||
