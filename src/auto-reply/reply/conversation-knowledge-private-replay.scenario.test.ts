@@ -90,7 +90,9 @@ type Replay = {
 
 async function readReplay(file: string): Promise<Replay> {
   const bytes = await readFile(file);
-  if (bytes.length > 32 * 1024 * 1024) throw new Error("Private replay exceeds approved bound");
+  if (bytes.length > 32 * 1024 * 1024) {
+    throw new Error("Private replay exceeds approved bound");
+  }
   const value = asOptionalRecord(JSON.parse(bytes.toString("utf8")));
   if (value?.version !== 1 || !Array.isArray(value.references) || !Array.isArray(value.sources)) {
     throw new Error("Private replay contract unavailable");
@@ -118,15 +120,16 @@ async function readReplay(file: string): Promise<Replay> {
     ) {
       throw new Error("Private replay reference contract invalid");
     }
-    if (row.runAlias !== undefined && typeof row.runAlias !== "string")
+    if (row.runAlias !== undefined && typeof row.runAlias !== "string") {
       throw new Error("Private replay run alias invalid");
+    }
     return {
       source: row.source,
       role: row.role,
       text: row.text,
       at: row.at,
       ordinal: row.ordinal,
-      ...(typeof row.runAlias === "string" ? { runAlias: row.runAlias } : {}),
+      runAlias: row.runAlias,
     };
   });
   if (
@@ -159,11 +162,13 @@ async function readReplay(file: string): Promise<Replay> {
               !Number.isSafeInteger(row.omittedNonText) ||
               row.omittedNonText < 0 ||
               (row.runAlias !== undefined && typeof row.runAlias !== "string")
-            )
+            ) {
               throw new Error("Private replay receipt contract invalid");
+            }
             const messageOrdinals = row.messageOrdinals.map((ordinal) => {
-              if (typeof ordinal !== "number" || messages.get(ordinal)?.source !== row.source)
+              if (typeof ordinal !== "number" || messages.get(ordinal)?.source !== row.source) {
                 throw new Error("Private replay receipt message unavailable");
+              }
               return ordinal;
             });
             const admission = messages.get(row.admissionOrdinal);
@@ -174,8 +179,9 @@ async function readReplay(file: string): Promise<Replay> {
               !messageOrdinals.includes(row.throughOrdinal) ||
               (row.kind === "completed" &&
                 (admission.role !== "user" || through.role !== "assistant"))
-            )
+            ) {
               throw new Error("Private replay receipt boundary invalid");
+            }
             return {
               rootOrdinal: row.rootOrdinal,
               source: row.source,
@@ -185,7 +191,7 @@ async function readReplay(file: string): Promise<Replay> {
               throughOrdinal: row.throughOrdinal,
               messageOrdinals,
               omittedNonText: row.omittedNonText,
-              ...(typeof row.runAlias === "string" ? { runAlias: row.runAlias } : {}),
+              runAlias: row.runAlias,
             };
           })
         : (() => {
@@ -194,8 +200,9 @@ async function readReplay(file: string): Promise<Replay> {
   if (
     receipts &&
     (!receipts.length || new Set(receipts.map((row) => row.rootOrdinal)).size !== receipts.length)
-  )
+  ) {
     throw new Error("Private replay receipt sequence invalid");
+  }
   return { version: 1, sources, references, ...(receipts ? { receipts } : {}) };
 }
 
@@ -255,6 +262,7 @@ it.skipIf(!replayPath)(
           };
           await state.writeConfig(fixture.cfg);
           const cleanup: Array<() => void | Promise<void>> = [() => fixture.close()];
+          const failures: unknown[] = [];
           try {
             const donors = new Map<
               string,
@@ -269,18 +277,24 @@ it.skipIf(!replayPath)(
             }
             const runs = new Map<number, string>();
             for (const receipt of replay.receipts ?? []) {
-              if (receipt.kind !== "completed") continue;
+              if (receipt.kind !== "completed") {
+                continue;
+              }
               const alias = receipt.runAlias ?? `replay-completed-${receipt.rootOrdinal}`;
               for (const ordinal of receipt.messageOrdinals) {
                 const message = replay.references.find((row) => row.ordinal === ordinal);
-                if (message?.role !== "assistant") continue;
+                if (message?.role !== "assistant") {
+                  continue;
+                }
                 const run = message.runAlias ?? alias;
-                if (runs.has(ordinal) && runs.get(ordinal) !== run)
+                if (runs.has(ordinal) && runs.get(ordinal) !== run) {
                   throw new Error("Private replay run grouping conflicts");
+                }
                 runs.set(ordinal, run);
               }
-              if (runs.get(receipt.throughOrdinal) !== alias)
+              if (runs.get(receipt.throughOrdinal) !== alias) {
                 throw new Error("Private replay terminal run mismatch");
+              }
             }
             const anchors = new Map<number, TranscriptEntryAnchor>();
             for (const reference of replay.references) {
@@ -309,9 +323,13 @@ it.skipIf(!replayPath)(
                           : {}),
                       },
               });
-              if (!saved.anchor) throw new Error("Private replay native source anchor unavailable");
+              if (!saved.anchor) {
+                throw new Error("Private replay native source anchor unavailable");
+              }
               anchors.set(reference.ordinal, saved.anchor);
-              if (replay.receipts) continue;
+              if (replay.receipts) {
+                continue;
+              }
               expect(
                 await recordConversationUtteranceObservation({
                   ...donor.owner,
@@ -321,15 +339,16 @@ it.skipIf(!replayPath)(
                 }),
               ).toBe(true);
             }
-            for (const receipt of [...(replay.receipts ?? [])].sort(
+            for (const receipt of (replay.receipts ?? []).toSorted(
               (a, b) => a.rootOrdinal - b.rootOrdinal,
             )) {
               signal.throwIfAborted();
               const donor = donors.get(receipt.source)!;
               const admission = anchors.get(receipt.admissionOrdinal);
               const through = anchors.get(receipt.throughOrdinal);
-              if (!admission || !through)
+              if (!admission || !through) {
                 throw new Error("Private replay receipt anchors unavailable");
+              }
               const shared = {
                 ...donor.owner,
                 sourceMode: receipt.sourceMode,
@@ -368,11 +387,12 @@ it.skipIf(!replayPath)(
             const keeper = await fixture.branch("private-replay-root-broker");
             const keeperOwner = await fixture.claim(keeper);
             const keeperBranch = await readConversationKnowledgeBranch(keeperOwner);
-            if (!keeperBranch)
+            if (!keeperBranch) {
               throw new Error("Private replay native broker enrollment unavailable");
+            }
             const ready = createDeferredCore();
             const idleRootReady = createDeferredCore();
-            let idleEntryId: string | undefined;
+            const idleUpdate: { entryId?: string } = {};
             const checkpoint = registerConversationKnowledgeCheckpointOwner({
               branch: keeperBranch,
               participant: person,
@@ -388,12 +408,14 @@ it.skipIf(!replayPath)(
               env: state.env,
               getRuntimeConfig: () => fixture.cfg,
               onReady() {
-                if (checkpoint.projection().tail.length === rootReceipts) ready.resolve();
+                if (checkpoint.projection().tail.length === rootReceipts) {
+                  ready.resolve();
+                }
                 if (
-                  idleEntryId &&
+                  idleUpdate.entryId &&
                   checkpoint
                     .projection()
-                    .tail.some(({ reference }) => reference.through.entryId === idleEntryId)
+                    .tail.some(({ reference }) => reference.through.entryId === idleUpdate.entryId)
                 ) {
                   idleRootReady.resolve();
                 }
@@ -403,8 +425,9 @@ it.skipIf(!replayPath)(
             await withinTest(ready.promise, signal);
             mark("shared-root-prepared", { prepared: checkpoint.projection().tail.length });
             const reused = recipientSource ? donors.get(recipientSource) : undefined;
-            if (recipientSource && !reused)
+            if (recipientSource && !reused) {
               throw new Error("Private replay recipient source unavailable");
+            }
             const target = reused?.target ?? (await fixture.branch("private-replay-recipient"));
             const owner = reused?.owner ?? (await fixture.claim(target));
             const native = await prepareSessionMutationFacts({
@@ -426,8 +449,9 @@ it.skipIf(!replayPath)(
                 if (
                   current.entry.sessionId !== target.sessionId ||
                   current.entry.lifecycleRevision !== target.lifecycleRevision
-                )
+                ) {
                   throw new Error("Private replay native recipient changed");
+                }
               },
             };
             await openConversationKnowledgeRecipient({
@@ -439,7 +463,9 @@ it.skipIf(!replayPath)(
               signal,
             });
             const branch = await readConversationKnowledgeBranch(owner);
-            if (!branch) throw new Error("Private replay native recipient enrollment unavailable");
+            if (!branch) {
+              throw new Error("Private replay native recipient enrollment unavailable");
+            }
             const recipient = prepareConversationKnowledgeRecipient({
               branch,
               participant: person,
@@ -447,7 +473,9 @@ it.skipIf(!replayPath)(
               env: state.env,
               getRuntimeConfig: () => fixture.cfg,
             });
-            if (!recipient) throw new Error("Private replay recipient owner unavailable");
+            if (!recipient) {
+              throw new Error("Private replay recipient owner unavailable");
+            }
             cleanup.push(() => recipient.owner.close());
             const packets = async () =>
               (await loadTranscriptEvents(target)).flatMap((raw) => {
@@ -546,7 +574,9 @@ it.skipIf(!replayPath)(
               originalSource: owner.assertCurrent,
               getRuntimeConfig: () => fixture.cfg,
             });
-            if (!knowledge) throw new Error("Private replay native turn unavailable");
+            if (!knowledge) {
+              throw new Error("Private replay native turn unavailable");
+            }
             cleanup.push(() => knowledge.release());
             await knowledge.prepare(admission, signal);
             await withSessionTranscriptWriteAssertion(writer, owner.assertCurrent, () =>
@@ -566,8 +596,9 @@ it.skipIf(!replayPath)(
                 row?.type !== "message" ||
                 !message ||
                 (message.role !== "user" && message.role !== "assistant")
-              )
+              ) {
                 return [];
+              }
               if (!isReadableSessionMessage(message)) {
                 unreadableNativeMessages++;
                 return [];
@@ -580,8 +611,9 @@ it.skipIf(!replayPath)(
               unreadableNativeMessages,
               systemAndToolsFootprintCaptured: false,
             });
-            if (unreadableNativeMessages)
+            if (unreadableNativeMessages) {
               throw new Error("Private replay native context footprint unavailable");
+            }
             mark("before-first-native-model-boundary", {
               ...recipient.cache.diagnosticCapacity(),
               sharedProjectionPackets: checkpoint.projection().tail.length,
@@ -627,7 +659,9 @@ it.skipIf(!replayPath)(
             const donor = [...donors.values()].find(
               (candidate) => candidate.target.sessionId !== target.sessionId,
             );
-            if (!donor) throw new Error("Private replay donor unavailable");
+            if (!donor) {
+              throw new Error("Private replay donor unavailable");
+            }
             const idleAt = performance.now();
             const added = await appendTranscriptMessage(donor.target, {
               message: {
@@ -636,8 +670,10 @@ it.skipIf(!replayPath)(
                 timestamp: Date.now(),
               },
             });
-            if (!added.anchor) throw new Error("Private replay idle source anchor unavailable");
-            idleEntryId = added.anchor.entryId;
+            if (!added.anchor) {
+              throw new Error("Private replay idle source anchor unavailable");
+            }
+            idleUpdate.entryId = added.anchor.entryId;
             expect(
               await recordConversationUtteranceObservation({
                 ...donor.owner,
@@ -659,8 +695,9 @@ it.skipIf(!replayPath)(
               nativeSharing: classify(() => native.readCurrent(fixture.cfg)),
             });
             expect(after.length - new Set(after).size).toBe(0);
+          } catch (error) {
+            failures.push(error);
           } finally {
-            const failures: unknown[] = [];
             for (const release of cleanup.toReversed()) {
               try {
                 await release();
@@ -668,8 +705,14 @@ it.skipIf(!replayPath)(
                 failures.push(error);
               }
             }
-            if (failures.length)
-              throw new AggregateError(failures, "Private replay owner cleanup incomplete");
+          }
+          if (failures.length === 1) {
+            throw failures[0];
+          }
+          if (failures.length > 1) {
+            throw new AggregateError(failures, "Private replay or native cleanup failed", {
+              cause: failures[0],
+            });
           }
         },
       );
