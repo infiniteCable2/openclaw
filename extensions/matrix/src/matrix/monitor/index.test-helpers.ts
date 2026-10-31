@@ -1,14 +1,8 @@
 import { vi } from "vitest";
 import type { MatrixRoomInfo } from "./room-info.js";
 
-export type DirectRoomTrackerOptions = {
-  isExplicitlyConfiguredRoom?: (roomId: string) => boolean | Promise<boolean>;
-  canPromoteRecentInvite?: (roomId: string) => boolean | Promise<boolean>;
-  canPromoteUnmappedStrictRoom?: (roomId: string) => boolean | Promise<boolean>;
-  shouldKeepLocallyPromotedDirectRoom?:
-    | ((roomId: string) => boolean | undefined | Promise<boolean | undefined>)
-    | undefined;
-};
+type DirectRoomTrackerFactory = typeof import("./direct.js").createDirectRoomTracker;
+export type DirectRoomTrackerOptions = NonNullable<Parameters<DirectRoomTrackerFactory>[1]>;
 
 type MonitorRetirement = {
   closeTaskAdmission: () => void;
@@ -74,11 +68,15 @@ const hoisted = vi.hoisted(() => {
     drainPendingDecryptions: vi.fn(async () => undefined),
   });
   const createMatrixRoomMessageHandler = vi.fn(() => vi.fn());
-  const createDirectRoomTracker = vi.fn(
-    (_clientForTest: unknown, _opts?: DirectRoomTrackerOptions) => ({
-      isDirectMessage: vi.fn(async () => false),
-    }),
-  );
+  const createDirectRoomTrackerStub = (): ReturnType<DirectRoomTrackerFactory> => ({
+    dispose: vi.fn(),
+    invalidatePrivateAudiences: vi.fn(),
+    invalidateRoom: vi.fn(),
+    rememberInvite: vi.fn(),
+    preparePrivateAudience: vi.fn(async () => undefined),
+    isDirectMessage: vi.fn(async () => false),
+  });
+  const createDirectRoomTracker = vi.fn<DirectRoomTrackerFactory>(createDirectRoomTrackerStub);
   const getRoomInfo = vi.fn<
     (roomId: string, opts?: { includeAliases?: boolean }) => Promise<MatrixRoomInfo>
   >(async () => ({
@@ -192,6 +190,7 @@ const hoisted = vi.hoisted(() => {
     callOrder,
     client,
     createDirectRoomTracker,
+    createDirectRoomTrackerStub,
     createMatrixInboundEventDeduper,
     createMatrixRoomMessageHandler,
     createThreadBindingManager,

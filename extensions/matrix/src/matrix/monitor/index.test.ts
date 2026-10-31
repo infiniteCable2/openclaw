@@ -105,9 +105,9 @@ describe("monitorMatrixProvider", () => {
     hoisted.resolveSharedMatrixClient
       .mockReset()
       .mockImplementation(hoisted.resolveSharedMatrixClientImpl);
-    hoisted.createDirectRoomTracker.mockReset().mockReturnValue({
-      isDirectMessage: vi.fn(async () => false),
-    });
+    hoisted.createDirectRoomTracker
+      .mockReset()
+      .mockImplementation(hoisted.createDirectRoomTrackerStub);
     hoisted.createThreadBindingManager.mockReset().mockImplementation(async () => {
       hoisted.callOrder.push("create-manager");
       return {
