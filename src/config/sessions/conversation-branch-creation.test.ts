@@ -366,4 +366,25 @@ describe("native private conversation creation capability", () => {
       }),
     ).rejects.toThrow("private same-person");
   });
+
+  it("does not grant personal custody when an optional copy has an unconfirmed creator", async () => {
+    const f = fixture();
+    await expect(
+      prepareConversationBranchCreation({
+        ...f.params,
+        audience: {
+          ...f.audience,
+          participant: {
+            type: "remote",
+            pluginId: "example",
+            domain: "example.test",
+            idKind: "user-id",
+            id: "remote-person",
+          },
+        },
+      }),
+    ).rejects.toThrow("private same-person");
+    expect(native.generation).not.toHaveBeenCalled();
+    expect(native.sharing).not.toHaveBeenCalled();
+  });
 });

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { createRuntimeConfigSnapshotMatcher } from "../../config/runtime-config-snapshot-match.js";
+import { isConversationBranchCreationAudienceConfirmed } from "../../config/sessions/conversation-branch-creation-audience.js";
 import { prepareConversationBranchCreation } from "../../config/sessions/conversation-branch-creation.js";
 import {
   readLatestConversationKnowledgeCheckpoint,
@@ -59,14 +60,18 @@ export async function prepareConversationKnowledgeInitialContext(params: {
     params.sessionEntry.forkSource !== undefined ||
     params.sessionEntry.forkedFromParent === true ||
     !params.audience ||
-    params.audience.agentId !== params.agentId ||
-    params.audience.sessionKey !== params.sessionKey
+    !isConversationBranchCreationAudienceConfirmed({
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      entry: params.sessionEntry,
+      audience: params.audience,
+    })
   ) {
     return undefined;
   }
   const audience = params.audience;
   const matchesConfig = createRuntimeConfigSnapshotMatcher(params.cfg);
-  const branch: ConversationKnowledgeBranch = {
+  const requestedBranch: ConversationKnowledgeBranch = {
     agentId: params.agentId,
     storePath: params.storePath,
     sessionKey: params.sessionKey,
@@ -92,7 +97,11 @@ export async function prepareConversationKnowledgeInitialContext(params: {
   };
   check();
   const { databaseClaim } = await loadSessionEntryForAdmission(
-    { agentId: branch.agentId, sessionKey: branch.root.sessionKey, storePath: branch.storePath },
+    {
+      agentId: requestedBranch.agentId,
+      sessionKey: requestedBranch.root.sessionKey,
+      storePath: requestedBranch.storePath,
+    },
     { signal: params.signal, assertCurrent: check },
   );
   const cleanups: Array<() => void | Promise<void>> = [() => databaseClaim.release()];
@@ -118,6 +127,12 @@ export async function prepareConversationKnowledgeInitialContext(params: {
       return undefined;
     }
     const reader = databaseClaim.reader;
+    // The requested locator may be a logical sessions.json marker. Only the
+    // admitted reader supplies the physical owner used by creation and grants.
+    const branch: ConversationKnowledgeBranch = {
+      ...requestedBranch,
+      storePath: reader.database.path,
+    };
     const creation = await prepareConversationBranchCreation({
       branch,
       entry: params.sessionEntry,

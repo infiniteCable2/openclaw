@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { isIncognitoSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
@@ -7,6 +6,7 @@ import { resolveAgentConversationMode } from "../agent-conversation-mode.js";
 import { createRuntimeConfigSnapshotMatcher } from "../runtime-config-snapshot-match.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
+import { isConversationBranchCreationAudienceConfirmed } from "./conversation-branch-creation-audience.js";
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-entry-cache.types.js";
 import {
@@ -16,7 +16,6 @@ import {
 import { resolveAgentConversationRootSessionKey } from "./session-conversation-root-key.js";
 import { prepareSessionGenerationFacts } from "./session-delivery-generation.js";
 import { assertSessionEntryCohortScope } from "./session-entry-cohort-scope.js";
-import { sessionCreatorProfileId } from "./session-entry-provenance.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type { SessionParticipantIdentity } from "./session-participant-identity.js";
@@ -280,20 +279,17 @@ export async function prepareConversationBranchCreation(
   audience.assertCurrent();
   const participant = freezeJsonSnapshot(structuredClone(audience.participant));
   const matchesConfig = createRuntimeConfigSnapshotMatcher(params.getRuntimeConfig());
-  const creator = sessionCreatorProfileId(entry.createdActor);
   const identity = conversationKnowledgeParticipantIdentity(participant);
   if (
-    !identity ||
-    (participant.type === "profile" && participant.id === GATEWAY_OWNER_PROFILE_ID) ||
-    !participant.id.trim() ||
-    audience.agentId !== branch.agentId ||
-    audience.sessionKey !== branch.sessionKey ||
+    !isConversationBranchCreationAudienceConfirmed({
+      agentId: branch.agentId,
+      sessionKey: branch.sessionKey,
+      entry,
+      audience,
+    }) ||
     entry.sessionId !== branch.sessionId ||
     !branch.lifecycleRevision ||
     entry.lifecycleRevision !== branch.lifecycleRevision ||
-    entry.visibility !== "draft" ||
-    entry.publicShare !== undefined ||
-    entry.incognito ||
     entry.parentSessionKey !== undefined ||
     entry.parentSessionId !== undefined ||
     entry.parentSessionLifecycleRevision !== undefined ||
@@ -305,15 +301,6 @@ export async function prepareConversationBranchCreation(
     isIncognitoSessionKey(branch.sessionKey) ||
     isSubagentSessionKey(branch.sessionKey) ||
     resolveSessionWorkStartError(branch.sessionKey, entry) !== undefined ||
-    (creator &&
-      creator !== GATEWAY_OWNER_PROFILE_ID &&
-      (participant.type !== "profile" || creator !== participant.id)) ||
-    (entry.participantCount ?? 0) !== (entry.participants?.length ?? 0) ||
-    entry.participants?.some(
-      ({ identity: candidate }) =>
-        candidate.type !== "agent" &&
-        conversationKnowledgeParticipantIdentity(candidate) !== identity,
-    ) ||
     resolveAgentConversationMode(params.getRuntimeConfig(), branch.agentId) !== "branches" ||
     params.getRuntimeConfig().session?.scope === "global" ||
     resolveAgentConversationRootSessionKey({

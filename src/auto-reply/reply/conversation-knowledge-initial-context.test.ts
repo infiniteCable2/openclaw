@@ -191,6 +191,7 @@ function params() {
       sessionId: branch.sessionId,
       lifecycleRevision: branch.lifecycleRevision,
       updatedAt: 1,
+      visibility: "draft" as const,
       conversationTopology: {
         version: 1 as const,
         role: "branch" as const,
@@ -206,6 +207,9 @@ function params() {
       sessionKey: branch.sessionKey,
       participant,
       assertCurrent,
+      channelId: "example",
+      accountId: "default",
+      nativeChannelId: "private-example",
     },
     assertCurrent,
   };
@@ -283,6 +287,43 @@ it("reuses warm text only after fresh source validation", async () => {
   await prepared?.release();
 });
 
+it("selects a logical store locator once and binds projection custody to its admitted physical owner", async () => {
+  const logicalStore = "/synthetic/agents/example/sessions/sessions.json";
+  boundary.creation.mockImplementation(async (input) => {
+    // Preserve the strict native equality instead of accepting locator aliases.
+    if (input.branch.storePath !== input.reader.database.path) {
+      throw new Error("Conversation creation absence or root changed");
+    }
+    return {
+      branch: input.branch,
+      participant,
+      source: assertCurrent,
+      bindCreation: boundary.bind,
+      assertEntry: boundary.entry,
+      release: boundary.releaseCreation,
+    };
+  });
+  const prepared = await prepareConversationKnowledgeInitialContext({
+    ...params(),
+    storePath: logicalStore,
+  });
+  expect(boundary.admission.mock.calls[0]?.[0].storePath).toBe(logicalStore);
+  expect(boundary.creation.mock.calls[0]?.[0].branch.storePath).toBe(rootReader.database.path);
+  expect(boundary.sources.mock.calls[0]?.[0].branch.storePath).toBe(rootReader.database.path);
+  if (prepared?.context.kind !== "root-projection") {
+    throw new Error("Expected projected context");
+  }
+  expect(prepared.context.projection.branch.storePath).toBe(rootReader.database.path);
+  expect(prepared.context.source.path).toBe(rootReader.database.path);
+  expect(
+    prepared.context.projection.claims.every(
+      ({ predicate }) => predicate.source.path === rootReader.database.path,
+    ),
+  ).toBe(true);
+  await prepared.release();
+  expect(boundary.releaseAdmission).toHaveBeenCalledOnce();
+});
+
 it("uses a real checkpoint only after authorizing its entire covered range", async () => {
   const checkpoint = createConversationKnowledgeCheckpoint({
     audienceKey,
@@ -317,6 +358,65 @@ it("does not open a root or disclose projection data without a verified private 
   expect(
     await prepareConversationKnowledgeInitialContext({ ...params(), audience: undefined }),
   ).toBeUndefined();
+  expect(boundary.admission).not.toHaveBeenCalled();
+});
+
+it("declines optional copying when a remote person is not the destination's Gateway creator", async () => {
+  const input = params();
+  const sessionEntry = {
+    ...input.sessionEntry,
+    createdActor: { type: "human" as const, source: "profile" as const, id: "profile-owner" },
+  };
+  expect(
+    await prepareConversationKnowledgeInitialContext({
+      ...input,
+      sessionEntry,
+      audience: {
+        ...input.audience,
+        participant: {
+          type: "remote",
+          pluginId: "example",
+          domain: "example.test",
+          idKind: "user-id",
+          id: "remote-person",
+        },
+      },
+    }),
+  ).toBeUndefined();
+  expect(boundary.admission).not.toHaveBeenCalled();
+  expect(boundary.creation).not.toHaveBeenCalled();
+  expect(boundary.sources).not.toHaveBeenCalled();
+  expect(sessionEntry.createdActor.id).toBe("profile-owner");
+  expect(sessionEntry.visibility).toBe("draft");
+});
+
+it("still prepares optional copying for its confirmed profile creator", async () => {
+  const input = params();
+  const prepared = await prepareConversationKnowledgeInitialContext({
+    ...input,
+    sessionEntry: {
+      ...input.sessionEntry,
+      createdActor: { type: "human", source: "profile", id: participant.id },
+    },
+  });
+  expect(prepared?.context.kind).toBe("root-projection");
+  expect(boundary.creation).toHaveBeenCalledOnce();
+  await prepared?.release();
+});
+
+it("does not turn revoked host audience proof into optional ineligibility", async () => {
+  const input = params();
+  await expect(
+    prepareConversationKnowledgeInitialContext({
+      ...input,
+      audience: {
+        ...input.audience,
+        assertCurrent() {
+          throw new Error("Original host audience revoked");
+        },
+      },
+    }),
+  ).rejects.toThrow("Original host audience revoked");
   expect(boundary.admission).not.toHaveBeenCalled();
 });
 
