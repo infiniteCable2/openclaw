@@ -25,7 +25,13 @@ async function expectCommandAccess(
 }
 
 describe("resolveMatrixMonitorAccessState", () => {
-  it.each([
+  const endpointPolicyCases: Array<{
+    direct: boolean;
+    dmEnabled?: boolean;
+    groupPolicy: Parameters<typeof resolveMatrixEndpointPolicy>[0]["groupPolicy"];
+    rooms?: Parameters<typeof resolveMatrixRoomConfig>[0]["rooms"];
+    reason: ReturnType<typeof resolveMatrixEndpointPolicy>;
+  }> = [
     { direct: true, dmEnabled: false, groupPolicy: "open", reason: "dm-disabled" },
     { direct: false, dmEnabled: false, groupPolicy: "open", reason: undefined },
     { direct: false, groupPolicy: "disabled", reason: "group-disabled" },
@@ -48,20 +54,24 @@ describe("resolveMatrixMonitorAccessState", () => {
       rooms: { "!target:example.test": { enabled: false } },
       reason: "room-disabled",
     },
-  ] as const)("uses the same endpoint gate for input and registration (%j)", (entry) => {
-    expect(
-      resolveMatrixEndpointPolicy({
-        isDirectMessage: entry.direct,
-        dmEnabled: "dmEnabled" in entry ? entry.dmEnabled : undefined,
-        groupPolicy: entry.groupPolicy,
-        room: resolveMatrixRoomConfig({
-          roomId: "!target:example.test",
-          aliases: [],
-          rooms: "rooms" in entry ? entry.rooms : undefined,
+  ];
+  it.each(endpointPolicyCases)(
+    "uses the same endpoint gate for input and registration (%j)",
+    (entry) => {
+      expect(
+        resolveMatrixEndpointPolicy({
+          isDirectMessage: entry.direct,
+          dmEnabled: entry.dmEnabled,
+          groupPolicy: entry.groupPolicy,
+          room: resolveMatrixRoomConfig({
+            roomId: "!target:example.test",
+            aliases: [],
+            rooms: entry.rooms,
+          }),
         }),
-      }),
-    ).toBe(entry.reason);
-  });
+      ).toBe(entry.reason);
+    },
+  );
 
   it("publishes the SDK sender identity without strengthening text command authentication", async () => {
     const runtime = createPluginRuntimeMock();

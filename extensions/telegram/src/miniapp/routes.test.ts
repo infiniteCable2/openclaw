@@ -100,6 +100,7 @@ function createRoute(
   if (currentConfig) {
     api.runtime.config = {
       current: currentConfig,
+      subscribe: () => () => {},
       mutateConfigFile: vi.fn(),
       replaceConfigFile: vi.fn(),
     };

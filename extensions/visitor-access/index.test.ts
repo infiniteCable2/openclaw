@@ -200,6 +200,7 @@ describe("visitor-access plugin lifecycle", () => {
     const gatewayRequest = directory.request;
     api.runtime.config = {
       current: () => config,
+      subscribe: () => () => {},
       async mutateConfigFile() {
         throw new Error("Visitor operations must not change Gateway configuration");
       },

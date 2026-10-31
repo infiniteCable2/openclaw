@@ -327,6 +327,7 @@ export function visitorFixture(
     gateway: options.gateway ?? directory.gateway,
     config: {
       current: () => gatewayConfig,
+      subscribe: () => () => {},
       async mutateConfigFile() {
         throw new Error("Visitor operations must not change Gateway configuration");
       },
