@@ -46,6 +46,20 @@ const scope = {
 };
 
 type RootState = "registered" | "prepared" | "unavailable" | "invalidated";
+type RootRegistration = Pick<
+  NonNullable<
+    Awaited<
+      ReturnType<
+        typeof import("../../auto-reply/reply/conversation-knowledge-open.js").openConversationKnowledgeRoot
+      >
+    >
+  >,
+  "close" | "acquireInitialFrame"
+>;
+
+function emptyRootRegistration(close: RootRegistration["close"]): RootRegistration {
+  return { close, acquireInitialFrame: () => undefined };
+}
 
 async function fixture(
   run: (f: {
@@ -202,7 +216,7 @@ describe("registered channel connection preparation", () => {
 
   it("warms only an existing root from the native conversation handoff and joins its account cleanup", async () => {
     const close = vi.fn(async () => {});
-    mocks.openRoot.mockResolvedValue({ close });
+    mocks.openRoot.mockResolvedValue(emptyRootRegistration(close));
     await fixture(async ({ prepareRoot, abort, cleanup, cleanupCount }) => {
       await prepareRoot();
       expect(mocks.openRoot).toHaveBeenCalledOnce();
@@ -292,7 +306,7 @@ describe("registered channel connection preparation", () => {
       await invalidated;
       expect(cleanupCount()).toBe(0);
       const close = vi.fn(async () => {});
-      mocks.openRoot.mockResolvedValue({ close });
+      mocks.openRoot.mockResolvedValue(emptyRootRegistration(close));
       await prepareRoot();
       expect(mocks.openRoot).toHaveBeenCalledTimes(2);
       expect(mocks.ensureSession).not.toHaveBeenCalled();
@@ -307,7 +321,7 @@ describe("registered channel connection preparation", () => {
       finish = resolve;
     });
     const close = vi.fn(async () => {});
-    mocks.openRoot.mockResolvedValue({ close });
+    mocks.openRoot.mockResolvedValue(emptyRootRegistration(close));
     await fixture(async ({ prepareRoot, abort, cleanup }) => {
       const states: RootState[] = [];
       await prepareRoot({
@@ -353,7 +367,7 @@ describe("registered channel connection preparation", () => {
       .fn()
       .mockRejectedValueOnce(new Error("cleanup unavailable"))
       .mockResolvedValue(undefined);
-    mocks.openRoot.mockResolvedValue({ close });
+    mocks.openRoot.mockResolvedValue(emptyRootRegistration(close));
     await fixture(async ({ prepareRoot, abort, cleanup, cleanupCount }) => {
       const states: RootState[] = [];
       await prepareRoot({
@@ -373,11 +387,11 @@ describe("registered channel connection preparation", () => {
 
   it("joins pending enrollment before announcing invalidation and never publishes a stale registration", async () => {
     let start = () => {};
-    let finish = (_value: { close: () => Promise<void> }) => {};
+    let finish = (_value: RootRegistration) => {};
     const started = new Promise<void>((resolve) => {
       start = resolve;
     });
-    const opening = new Promise<{ close: () => Promise<void> }>((resolve) => {
+    const opening = new Promise<RootRegistration>((resolve) => {
       finish = resolve;
     });
     mocks.openRoot.mockImplementation(() => {
@@ -402,7 +416,7 @@ describe("registered channel connection preparation", () => {
       sessionChanges.emit({ all: true, scope: "config" });
       expect(states).toEqual([]);
       const close = vi.fn(async () => {});
-      finish({ close });
+      finish(emptyRootRegistration(close));
       await prepared;
       await invalidated;
       expect(close).toHaveBeenCalled();
@@ -430,7 +444,7 @@ describe("registered channel connection preparation", () => {
       expect(mocks.openRoot).not.toHaveBeenCalled();
       mocks.openRoot.mockImplementation(async () => {
         revoke();
-        return { close };
+        return emptyRootRegistration(close);
       });
       await expect(prepareRoot()).rejects.toThrow("Connection closed");
       expect(close).toHaveBeenCalledOnce();
