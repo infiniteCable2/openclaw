@@ -108,12 +108,12 @@ class PreparedConversationBranchCreation {
     this.participant = freezeJsonSnapshot(structuredClone(participant));
     this.#readSource = freezeJsonSnapshot(structuredClone(readSource));
     this.#generation = generation;
-    this.#check = () => {
+    const check = (assertOriginal?: () => void) => {
       if (!this.#active || this.#publicationRefused) {
         throw new Error("Conversation creation custody was released");
       }
       params.signal?.throwIfAborted();
-      params.assertCurrent();
+      assertOriginal?.();
       params.reader.assertCurrent();
       params.audience.assertCurrent();
       generation.assertCurrent();
@@ -127,6 +127,8 @@ class PreparedConversationBranchCreation {
         throw new Error("Conversation creation identity or configuration changed");
       }
     };
+    this.#check = () => check(params.assertCurrent);
+    const assertLocalCurrent = () => check();
     // The lifecycle worker checks these before its own absent-to-created mutation.
     // The generation owner alone adopts the exact bound creation publication.
     const predicates: SessionSourcePredicate[] = freezeJsonSnapshot([
@@ -146,14 +148,16 @@ class PreparedConversationBranchCreation {
     ]);
     this.source = composeSessionSourceAssertion([
       params.assertCurrent,
-      Object.assign(this.#check, {
+      Object.assign(assertLocalCurrent, {
         prepareSessionSource: async () => {
           this.#check();
           if (generation.isCreationAdopted()) {
             throw new Error("Conversation creation was already committed");
           }
           return {
-            assertCurrent: this.#check,
+            assertCurrent: assertLocalCurrent,
+            // Preserve the full native/prepared-scope guard when a parent
+            // assertion is intentionally deferred by its own native contract.
             assertPreparedCurrent: this.#check,
             checks: predicates.map((predicate) => ({
               predicate,
@@ -183,7 +187,9 @@ class PreparedConversationBranchCreation {
       throw new Error("Conversation creation requires native preparation");
     }
     creation.#check();
-    params.audience?.assertCurrent();
+    if (params.audience !== creation.audience) {
+      params.audience?.assertCurrent();
+    }
     if (
       !isDeepStrictEqual(params.branch, creation.branch) ||
       (params.participant &&

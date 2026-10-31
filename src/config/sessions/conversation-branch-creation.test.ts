@@ -15,7 +15,11 @@ import { createSessionEntryCreationOperation } from "./session-accessor.sqlite-e
 import type { prepareSessionGenerationFacts } from "./session-delivery-generation.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import type { SessionEntryCohortResult } from "./session-entry-read.types.js";
-import type { SessionSourceAssertion } from "./session-source-authority.js";
+import {
+  prepareSessionSourceAuthority,
+  type PreparedSessionSourceAuthority,
+  type SessionSourceAssertion,
+} from "./session-source-authority.js";
 import type { InternalSessionEntry } from "./types.js";
 
 const native = vi.hoisted(() => ({ generation: vi.fn(), sharing: vi.fn() }));
@@ -200,6 +204,120 @@ beforeEach(() => {
 });
 
 describe("native private conversation creation capability", () => {
+  it("checks the original owner once without losing its native predicate or prepared guard", async () => {
+    const f = fixture();
+    let current = true;
+    const original = Object.assign(
+      vi.fn(() => {
+        if (!current) {
+          throw new Error("Original caller revoked");
+        }
+      }),
+      {
+        nativeSource: true,
+        prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
+          nativeSource: true,
+          assertCurrent: original,
+          checks: [
+            {
+              predicate: {
+                source: f.source,
+                sessionKey: "agent:example:original-owner",
+                fields: ["sessionId"],
+                expected: { sessionId: "original-owner" },
+              },
+              refuse(): never {
+                throw new Error("Original native caller changed");
+              },
+            },
+          ],
+        }),
+      },
+    );
+    const creation = await prepareConversationBranchCreation({
+      ...f.params,
+      assertCurrent: original,
+    });
+    try {
+      original.mockClear();
+      creation.source();
+      expect(original).toHaveBeenCalledOnce();
+      const prepared = await prepareSessionSourceAuthority(creation.source);
+      expect(prepared.nativeSource).toBe(true);
+      expect(prepared.checks).toHaveLength(3);
+      expect(prepared.checks[0]!.predicate).toMatchObject({
+        sessionKey: "agent:example:original-owner",
+        expected: { sessionId: "original-owner" },
+      });
+      expect(prepared.checks[1]!.predicate).toMatchObject({
+        sessionKey: f.branch.sessionKey,
+        expected: undefined,
+        members: [],
+      });
+      expect(prepared.checks[2]!.predicate.fields).toContain("publicShare");
+      original.mockClear();
+      prepared.assertCurrent();
+      expect(original).toHaveBeenCalledOnce();
+      original.mockClear();
+      // A native parent may be deferred by assertPreparedSources. Creation's
+      // existing complete guard must still refuse its revocation at this boundary.
+      prepared.assertPreparedCurrent!();
+      expect(original).toHaveBeenCalledOnce();
+      await Promise.resolve();
+      current = false;
+      expect(() => creation.source()).toThrow("Original caller revoked");
+      expect(() => prepared.assertCurrent()).toThrow("Original caller revoked");
+      expect(() => prepared.assertPreparedCurrent!()).toThrow("Original caller revoked");
+      current = true;
+      f.revoke();
+      expect(() => prepared.assertCurrent()).toThrow("Native generation revoked");
+    } finally {
+      creation.release();
+    }
+  });
+
+  it("checks a reused audience once and independently validates a distinct audience after yielding", async () => {
+    const f = fixture();
+    const current = { original: true, independent: true };
+    const original = vi.fn(() => {
+      if (!current.original) {
+        throw new Error("Original audience revoked");
+      }
+    });
+    f.audience.assertCurrent = original;
+    const independent = {
+      ...f.audience,
+      assertCurrent: vi.fn(() => {
+        if (!current.independent) {
+          throw new Error("Independent audience revoked");
+        }
+      }),
+    };
+    const creation = await prepareConversationBranchCreation(f.params);
+    try {
+      original.mockClear();
+      assertConversationBranchCreation({ creation, branch: f.branch, audience: f.audience });
+      expect(original).toHaveBeenCalledOnce();
+      original.mockClear();
+      assertConversationBranchCreation({ creation, branch: f.branch, audience: independent });
+      expect(original).toHaveBeenCalledOnce();
+      expect(independent.assertCurrent).toHaveBeenCalledOnce();
+      await Promise.resolve();
+      current.independent = false;
+      expect(() =>
+        assertConversationBranchCreation({ creation, branch: f.branch, audience: independent }),
+      ).toThrow("Independent audience revoked");
+      expect(() => creation.source()).not.toThrow();
+      current.original = false;
+      expect(() => creation.source()).toThrow("Original audience revoked");
+      expect(() =>
+        assertConversationBranchCreation({ creation, branch: f.branch, audience: independent }),
+      ).toThrow("Original audience revoked");
+    } finally {
+      creation.release();
+    }
+  });
+
   it("retains root and absence predicates without inventing an existing destination", async () => {
     const f = fixture();
     const creation = await prepareConversationBranchCreation(f.params);
