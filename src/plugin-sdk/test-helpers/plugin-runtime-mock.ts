@@ -27,6 +27,7 @@ import {
   resolveInboundMentionDecision,
 } from "../channel-mention-gating.js";
 import { createPluginGatewayRuntimeMock } from "./plugin-runtime-gateway-mock.js";
+import { createGenericMock } from "./plugin-runtime-generic-mock.js";
 import {
   mergePluginRuntimeMockOverrides,
   type PluginRuntimeMockOverrides,
@@ -66,16 +67,6 @@ type ChannelStructuredContextEntries = NonNullable<
 type ChannelStructuredContextResolution =
   | { kind: "absent" }
   | { kind: "present"; entries: ChannelStructuredContextEntries };
-
-type GenericMockProcedure = (...args: never[]) => unknown;
-
-// Vitest's Mock<T> erases generic and overload relationships. Keep that conversion in one
-// test-only boundary while ordinary runtime methods continue to use exact vi.fn<T> checking.
-function createGenericMock<T extends GenericMockProcedure>(
-  implementation?: T | GenericMockProcedure,
-): T {
-  return (implementation ? vi.fn(implementation) : vi.fn()) as ReturnType<typeof vi.fn> & T;
-}
 
 function normalizeUntrustedGroupPrompt(value: unknown): string | undefined {
   if (typeof value !== "string") {
