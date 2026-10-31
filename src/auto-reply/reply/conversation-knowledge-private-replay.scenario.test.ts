@@ -34,6 +34,7 @@ import type { ConversationPrivateAudience } from "../../sessions/conversation-pr
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareConversationKnowledgeBranchFacts } from "./conversation-knowledge-authority.js";
+import { createConversationKnowledgeBoundaryProfiler } from "./conversation-knowledge-boundary-profile.test-support.js";
 import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
 import { openConversationKnowledgeRecipient } from "./conversation-knowledge-open.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
@@ -208,6 +209,9 @@ it.skipIf(!replayPath)(
     );
     const recipientSource = process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_RECIPIENT_SOURCE;
     const recipientMode = recipientSource ? "reused-source" : "fresh";
+    const metadataChanges = process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_METADATA_CHANGES !== "off";
+    const boundaryProfile = createConversationKnowledgeBoundaryProfiler();
+    const initialIdleProfile = createConversationKnowledgeBoundaryProfiler();
     expect(Number.isSafeInteger(contextWindow) && contextWindow > 20_000).toBe(true);
     const started = performance.now();
     const cpu = process.cpuUsage();
@@ -474,24 +478,26 @@ it.skipIf(!replayPath)(
               nativeSharing: classify(() => native.readCurrent(fixture.cfg)),
               branchAuthority: classify(facts.assertCurrent),
             });
-            await recordSessionParticipantInWorker(target, {
-              identity: { type: "agent", id: "synthetic-helper" },
-              promptedAt: Date.now(),
-              sessionAgentId: target.agentId,
-              expectedSession: target,
-            });
-            mark("native-agent-actor-change", {
-              nativeSharing: classify(() => native.readCurrent(fixture.cfg)),
-              branchAuthority: classify(facts.assertCurrent),
-            });
-            await upsertSessionEntryCore(target, {
-              ...loadSessionEntry(target)!,
-              delivery: { kind: "internal" },
-            });
-            mark("native-delivery-row-change", {
-              nativeSharing: classify(() => native.readCurrent(fixture.cfg)),
-              branchAuthority: classify(facts.assertCurrent),
-            });
+            if (metadataChanges) {
+              await recordSessionParticipantInWorker(target, {
+                identity: { type: "agent", id: "synthetic-helper" },
+                promptedAt: Date.now(),
+                sessionAgentId: target.agentId,
+                expectedSession: target,
+              });
+              mark("native-agent-actor-change", {
+                nativeSharing: classify(() => native.readCurrent(fixture.cfg)),
+                branchAuthority: classify(facts.assertCurrent),
+              });
+              await upsertSessionEntryCore(target, {
+                ...loadSessionEntry(target)!,
+                delivery: { kind: "internal" },
+              });
+              mark("native-delivery-row-change", {
+                nativeSharing: classify(() => native.readCurrent(fixture.cfg)),
+                branchAuthority: classify(facts.assertCurrent),
+              });
+            }
             facts.release();
 
             const nativeTarget = await resolveAgentRunSessionTarget({
@@ -576,11 +582,14 @@ it.skipIf(!replayPath)(
             });
             if (unreadableNativeMessages)
               throw new Error("Private replay native context footprint unavailable");
+            mark("before-first-native-model-boundary", {
+              ...recipient.cache.diagnosticCapacity(),
+              sharedProjectionPackets: checkpoint.projection().tail.length,
+              recipientProjectionPackets: recipient.checkpoint.projection().tail.length,
+            });
             const boundaryAt = performance.now();
-            const boundary = await withSessionTranscriptWriteAssertion(
-              writer,
-              owner.assertCurrent,
-              () =>
+            const boundary = await boundaryProfile.measure(target.sessionId, () =>
+              withSessionTranscriptWriteAssertion(writer, owner.assertCurrent, () =>
                 knowledge.refreshPrepared({
                   signal,
                   canAdmit: createConversationContextCapacity({
@@ -590,6 +599,7 @@ it.skipIf(!replayPath)(
                     modelIdentity: { provider: "synthetic", model: "replay-model" },
                   }),
                 }),
+              ),
             );
             mark("first-native-model-boundary", {
               boundaryMs: Math.round(performance.now() - boundaryAt),
@@ -602,7 +612,17 @@ it.skipIf(!replayPath)(
             // This diagnostic has an admitted native boundary, not an actual
             // embedded execution owner. Closing admission settles its fixture work;
             // the persisted writer ID remains the native CAS fence.
-            await withinTest(recipient.owner.wait(), signal);
+            const initialIdleAt = performance.now();
+            await initialIdleProfile.measure(target.sessionId, () =>
+              withinTest(recipient.owner.wait(), signal),
+            );
+            mark("initial-idle-backlog-settled", {
+              idleWaitMs: Math.round(performance.now() - initialIdleAt),
+              retainedPackets: (await packets()).length,
+              ...recipient.cache.diagnosticCapacity(),
+              sharedProjectionPackets: checkpoint.projection().tail.length,
+              recipientProjectionPackets: recipient.checkpoint.projection().tail.length,
+            });
             const before = new Set(await packets());
             const donor = [...donors.values()].find(
               (candidate) => candidate.target.sessionId !== target.sessionId,
@@ -662,12 +682,17 @@ it.skipIf(!replayPath)(
           groupedReceipts: Boolean(replay.receipts),
           requestedRootReceipts: replay.receipts?.length ?? replay.references.length,
           recipientMode,
+          metadataChanges,
           embeddedExecutionOwnerUsed: false,
           contextWindow,
           stages,
           elapsedMs: Math.round(performance.now() - started),
           cpuMicroseconds: process.cpuUsage(cpu),
           processLifetimePeakRssKiB: process.resourceUsage().maxRSS,
+          firstBoundaryTimings: boundaryProfile.snapshot(),
+          initialIdleTimings: initialIdleProfile.snapshot(),
+          timingMeaning:
+            "Pass-through asynchronous phase windows include nested/background work; durations overlap, are not additive and are not CPU time.",
           substituted:
             "host ingress fixture and model planning only; no private payloads, providers, tools or channels invoked",
           summarizes: planning.summarize.mock.calls.length,
