@@ -18,8 +18,8 @@ const boundary = vi.hoisted(() => ({
   context: vi.fn(),
   busy: vi.fn(() => false),
 }));
-// mock-isolation: Probe native ownership decisions without creating model backends;
-// real settled/queued runtime and worker admission run in the Gateway scenarios.
+// The Gateway scenarios cover real settled/queued runtime and worker admission.
+// mock-isolation: Probe native ownership decisions without creating model backends.
 vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
   isEmbeddedAgentRunActive: boundary.busy,
 }));
