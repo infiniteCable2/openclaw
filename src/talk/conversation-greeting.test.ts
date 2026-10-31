@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { MsgContext } from "../auto-reply/templating.js";
+import {
+  MAX_VISIBLE_MESSAGE_MAX_BYTES,
+  MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
+} from "../config/sessions/session-accessor.sqlite-visible-cursor.js";
 import { prepareSessionParticipantInput } from "../sessions/session-participant-input.js";
 import { prepareConversationGreeting } from "./conversation-greeting.js";
 import {
@@ -166,7 +170,10 @@ describe("native detached greeting preparation", () => {
             sessionId: fixture.target.entry.sessionId,
             storePath: fixture.target.storePath,
           },
-          expect.objectContaining({ maxBytes: 32 * 1024, maxEvents: 16 }),
+          expect.objectContaining({
+            maxBytes: MAX_VISIBLE_MESSAGE_MAX_BYTES,
+            maxEvents: MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
+          }),
         );
       }
       const run = mocks.run.mock.calls[0]![0] as RunEmbeddedAgentParams;
