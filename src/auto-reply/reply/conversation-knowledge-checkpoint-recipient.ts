@@ -279,7 +279,7 @@ export async function prepareRecipientConversationProjection(
       let transfer = false;
       let retire: (() => void) | undefined;
       try {
-        let grant: Awaited<ReturnType<typeof prepareTranscriptReadAuthority>> | undefined;
+        let grant: ConversationKnowledgeHeldSource["grant"] | undefined;
         if (cachedGroup) {
           try {
             grant = await prepareTranscriptReadAuthority({
