@@ -1,5 +1,9 @@
 import type { AgentMessage } from "@openclaw/agent-core";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
+import {
+  parseDateFirstTimestampMs,
+  timestampMsToIsoString,
+} from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   classifyToolUseResultPairing,
@@ -7,6 +11,7 @@ import {
 } from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";
 import { normalizeInputProvenance } from "../../sessions/input-provenance.js";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
+import { hasValidIsoCalendarComponents, isOffsetlessIsoDateTime } from "../../shared/iso-time.js";
 import {
   readConversationKnowledgeRetirement,
   type ConversationKnowledgeRetirement,
@@ -457,6 +462,17 @@ export function isConversationKnowledgeReferenceObserved(
   );
 }
 
+/** Saved original instants only; offsetless imports cannot identify a timezone. */
+function originalConversationTimestamp(value: unknown): string | undefined {
+  if (
+    typeof value === "string" &&
+    (isOffsetlessIsoDateTime(value) || !hasValidIsoCalendarComponents(value))
+  ) {
+    return undefined;
+  }
+  return timestampMsToIsoString(parseDateFirstTimestampMs(value));
+}
+
 export function projectConversationKnowledge(
   receipt: ConversationKnowledgeReference,
   events: readonly TranscriptEvent[],
@@ -476,7 +492,12 @@ export function projectConversationKnowledge(
   if (start === undefined) {
     return undefined;
   }
-  const rows: Array<{ speaker: "user" | "assistant"; text: string; routedInput: boolean }> = [];
+  const rows: Array<{
+    speaker: "user" | "assistant";
+    text: string;
+    routedInput: boolean;
+    timestamp?: string;
+  }> = [];
   const previous =
     frontier?.origin === receipt.origin && frontier.generation === receipt.through.generation
       ? events.findIndex((event) => asOptionalRecord(event)?.id === frontier.throughEntryId)
@@ -513,9 +534,13 @@ export function projectConversationKnowledge(
       const text = messageText(message);
       if (text.trim() && sawUser) {
         const provenance = normalizeInputProvenance(message.provenance);
+        const timestamp =
+          originalConversationTimestamp(message.timestamp) ??
+          originalConversationTimestamp(record.timestamp);
         rows.push({
           speaker: message.role,
           text,
+          ...(timestamp ? { timestamp } : {}),
           routedInput:
             message.role === "user" &&
             provenance !== undefined &&
@@ -597,7 +622,7 @@ export function projectConversationKnowledge(
         Math.min(row.text.length, end - rowStart),
       );
       return !row.routedInput && position > offset && rowStart < end && text
-        ? [{ speaker: row.speaker, text }]
+        ? [{ speaker: row.speaker, text, ...(row.timestamp ? { timestamp: row.timestamp } : {}) }]
         : [];
     });
     // Each packet remains quoted data. Only its exact consumed offset advances;
@@ -689,7 +714,8 @@ export function renderConversationKnowledgePacketText(
       throw new Error("Conversation knowledge packet observation is invalid");
     }
     // JSON quoting keeps multiline text and apparent role headers inside the observation.
-    return `${observation.speaker}: ${JSON.stringify(observation.text)}`;
+    const timestamp = originalConversationTimestamp(observation.timestamp);
+    return `${observation.speaker}${timestamp ? ` [${timestamp}]` : ""}: ${JSON.stringify(observation.text)}`;
   });
   return [`Conversation ${JSON.stringify(receipt.source.sessionKey)}:`, ...lines].join("\n");
 }

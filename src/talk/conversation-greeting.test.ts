@@ -166,7 +166,7 @@ describe("native detached greeting preparation", () => {
             sessionId: fixture.target.entry.sessionId,
             storePath: fixture.target.storePath,
           },
-          expect.objectContaining({ maxBytes: expect.any(Number), maxEvents: expect.any(Number) }),
+          expect.objectContaining({ maxBytes: 32 * 1024, maxEvents: 16 }),
         );
       }
       const run = mocks.run.mock.calls[0]![0] as RunEmbeddedAgentParams;
@@ -197,6 +197,23 @@ describe("native detached greeting preparation", () => {
       expect(fixture.close).toHaveBeenCalledOnce();
     },
   );
+
+  it("marks a bounded greeting snapshot without changing the source conversation", async () => {
+    const fixture = await setup();
+    mocks.detached.mockImplementation(async (_target, options) => {
+      options.onTruncated();
+      return fixture.snapshot;
+    });
+    await prepareConversationGreeting(fixture.params);
+    const run = mocks.run.mock.calls[0]![0] as RunEmbeddedAgentParams;
+    expect(run.extraSystemPrompt).toContain(
+      "Only a bounded native conversation snapshot is available.",
+    );
+    expect(run.sessionPersistence).toBe("detached");
+    expect(run.sandboxSessionKey).toBe(fixture.target.canonicalKey);
+    expect(run.sessionKey).not.toBe(fixture.target.canonicalKey);
+    expect(fixture.release).toHaveBeenCalledOnce();
+  });
 
   it("rejects a replaced target after its native snapshot read before starting a model", async () => {
     const fixture = await setup();

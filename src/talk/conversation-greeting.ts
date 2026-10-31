@@ -13,10 +13,6 @@ import {
   readChannelContextGatewayContextResolver,
 } from "../channels/message-access/admission-evidence.js";
 import { resolveInternalSessionEffectsIdentity } from "../config/sessions/internal-session-key.js";
-import {
-  MAX_VISIBLE_MESSAGE_MAX_BYTES,
-  MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
-} from "../config/sessions/session-accessor.sqlite-visible-cursor.js";
 import { sessionPersonalProfileId } from "../config/sessions/session-entry-provenance.js";
 import { withSessionContextAdmission } from "../config/sessions/session-transcript-read-fence.js";
 import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
@@ -34,6 +30,12 @@ import type { RealtimeVoiceAgentConsultResult } from "./agent-consult-runtime.js
 import { createRealtimeVoiceConsultSpeechDelivery } from "./agent-consult-speech-delivery.js";
 import type { ConsumedConversationInput } from "./conversation-input-admission.js";
 import type { ConversationReplyParams } from "./conversation-reply.js";
+
+// A ringing call needs recent conversational cues, not a second full model
+// context. Keep the detached greeting small even when its source has a long
+// history or large media entries; the actual conversation keeps its full context.
+const GREETING_CONTEXT_MAX_BYTES = 32 * 1024;
+const GREETING_CONTEXT_MAX_EVENTS = 16;
 
 /** Generate an unplayed greeting in one native detached run, never a durable user turn. */
 export async function prepareConversationGreeting(params: {
@@ -146,8 +148,8 @@ export async function prepareConversationGreeting(params: {
           SessionManager.openDetachedBoundedAsync(originalTarget, {
             signal: params.signal,
             cwd: workspaceDir,
-            maxBytes: MAX_VISIBLE_MESSAGE_MAX_BYTES,
-            maxEvents: MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
+            maxBytes: GREETING_CONTEXT_MAX_BYTES,
+            maxEvents: GREETING_CONTEXT_MAX_EVENTS,
             onTruncated: () => {
               truncated = true;
             },

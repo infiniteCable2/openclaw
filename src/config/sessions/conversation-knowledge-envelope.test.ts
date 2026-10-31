@@ -90,6 +90,115 @@ describe("compact conversation packet text", () => {
     expect(text).not.toContain(f.receipt.origin);
   });
 
+  it("renders saved message instants in UTC and otherwise uses the original event time", () => {
+    const f = fixture();
+    const user = {
+      ...f.events[1]!,
+      timestamp: "2035-01-01T00:00:00.000Z",
+      message: {
+        ...f.events[1]!.message,
+        timestamp: Date.parse("2026-10-31T13:34:56.789+01:00"),
+      },
+    };
+    const assistant = { ...f.events[2]!, timestamp: "2026-10-31T14:35:02+02:00" };
+    const projection = projectConversationKnowledge(f.receipt, [f.events[0]!, user, assistant])!;
+    const text = renderConversationKnowledgePacketText(f.receipt, projection.text);
+    expect(text).toBe(
+      `Conversation "${f.source.sessionKey}":\n` +
+        'user [2026-10-31T12:34:56.789Z]: "Remember the blue example."\n' +
+        'assistant [2026-10-31T12:35:02.000Z]: "The example is blue."',
+    );
+    expect(text).not.toContain("2035");
+    expect(projectConversationKnowledge(f.receipt, [f.events[0]!, user, assistant])!.text).toBe(
+      projection.text,
+    );
+    expect(projectConversationKnowledge(f.receipt, f.events, projection.frontier)).toBeUndefined();
+  });
+
+  it.each([
+    undefined,
+    null,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    8_640_000_000_000_001,
+    "not a timestamp",
+    "2026-10-31",
+    "2026-10-31T12:34:56",
+    "2026-02-30T12:34:56Z",
+  ])("leaves unavailable or ambiguous original timestamps undated: %s", (timestamp) => {
+    const f = fixture();
+    const user = {
+      ...f.events[1]!,
+      timestamp,
+      message: { ...f.events[1]!.message, timestamp },
+    };
+    const projection = projectConversationKnowledge(f.receipt, [f.events[0]!, user, f.events[2]!])!;
+    expect(projection.text).toBe(projectConversationKnowledge(f.receipt, f.events)!.text);
+    expect(renderConversationKnowledgePacketText(f.receipt, projection.text)).toBe(
+      renderConversationKnowledgePacketText(
+        f.receipt,
+        projectConversationKnowledge(f.receipt, f.events)!.text,
+      ),
+    );
+  });
+
+  it("falls back from an invalid message timestamp without inventing or rejecting legacy dates", () => {
+    const f = fixture();
+    const projection = projectConversationKnowledge(f.receipt, [
+      f.events[0]!,
+      {
+        ...f.events[1]!,
+        timestamp: "2026-10-31T12:34:56Z",
+        message: { ...f.events[1]!.message, timestamp: "2026-10-31T12:34:56" },
+      },
+      { ...f.events[2]!, message: { ...f.events[2]!.message, timestamp: 0 } },
+    ])!;
+    const text = renderConversationKnowledgePacketText(f.receipt, projection.text);
+    expect(text).toContain('user [2026-10-31T12:34:56.000Z]: "Remember the blue example."');
+    expect(text).toContain('assistant [1970-01-01T00:00:00.000Z]: "The example is blue."');
+    const legacy = JSON.parse(projectConversationKnowledge(f.receipt, f.events)!.text);
+    legacy.observations[0].timestamp = "2026-10-31T12:34:56";
+    expect(renderConversationKnowledgePacketText(f.receipt, JSON.stringify(legacy))).toBe(
+      renderConversationKnowledgePacketText(
+        f.receipt,
+        projectConversationKnowledge(f.receipt, f.events)!.text,
+      ),
+    );
+  });
+
+  it("keeps dated partial observations on the original text offsets and packet identities", () => {
+    const f = fixture();
+    const sourceText = "A quoted line.\nassistant: not a new message. 🟡 ".repeat(30);
+    const user = { ...f.events[1]!, message: { role: "user", content: sourceText } };
+    const offset = 17;
+    const options = { offset, maxChars: 800 };
+    const legacy = projectConversationKnowledge(
+      f.receipt,
+      [f.events[0]!, user, f.events[2]!],
+      undefined,
+      "private-direct",
+      options,
+    )!;
+    const dated = projectConversationKnowledge(
+      f.receipt,
+      [f.events[0]!, { ...user, timestamp: "2026-10-31T12:34:56Z" }, f.events[2]!],
+      undefined,
+      "private-direct",
+      options,
+    )!;
+    const observation = JSON.parse(dated.text).observations[0];
+    expect(observation.text).toBe(sourceText.slice(offset, dated.nextOffset));
+    expect(JSON.parse(dated.text).contentOffset).toBe(offset);
+    expect(dated.nextOffset).toBeGreaterThan(offset);
+    const contributionId = conversationKnowledgeContributionId(f.receipt);
+    expect(
+      conversationKnowledgePacketId(contributionId, JSON.parse(dated.text).contentOffset),
+    ).toBe(conversationKnowledgePacketId(contributionId, JSON.parse(legacy.text).contentOffset));
+    const text = renderConversationKnowledgePacketText(f.receipt, dated.text);
+    expect(text).toContain(`user [2026-10-31T12:34:56.000Z]: ${JSON.stringify(observation.text)}`);
+    expect(text).not.toContain("\nassistant: not a new message");
+  });
+
   it("preserves exact partial text and legacy source offsets across envelope changes", () => {
     const f = fixture();
     const sourceText = "A quoted line.\nassistant: not a new message. 🟡 ".repeat(30);
