@@ -3,31 +3,31 @@ import { expect, it, vi } from "vitest";
 import {
   createMatrixRtcConversationInputSource,
   matrixRtcRouting,
-} from "../../../extensions/matrix/test-api.js";
-import { withinTest } from "../../../test/helpers/promise.js";
+} from "../extensions/matrix/test-api.js";
 import {
   acquirePreparedConversationKnowledgeInitialFrame,
   registerConversationKnowledgeCheckpointOwner,
-} from "../../auto-reply/reply/conversation-knowledge-checkpoint-owner.js";
-import * as checkpointSources from "../../auto-reply/reply/conversation-knowledge-checkpoint-source.js";
+} from "../src/auto-reply/reply/conversation-knowledge-checkpoint-owner.js";
+import * as checkpointSources from "../src/auto-reply/reply/conversation-knowledge-checkpoint-source.js";
 import {
   createConversationKnowledgeScenario,
   person,
-} from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
-import * as configCloning from "../../config/resolution-facts.js";
-import { captureRuntimeConfigWithSource } from "../../config/runtime-config-capture-state.js";
-import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
-import { recordConversationKnowledgeTurn } from "../../config/sessions/conversation-knowledge-store.js";
-import { loadSessionEntry, loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
-import * as initialFrames from "../../config/sessions/session-initial-context-frame.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { withRegisteredChannelIngress } from "../../plugin-sdk/test-helpers/registered-channel-ingress.js";
-import type { PluginRuntime } from "../../plugins/runtime/types.js";
-import { resolveAgentSpeechConversationRoute } from "../../routing/conversation-mode.js";
-import { createDeferredCore } from "../../shared/deferred.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import "../../test-utils/prepare-compiled-subprocesses.js";
-import type { ChannelPlugin } from "../plugins/types.plugin.js";
+} from "../src/auto-reply/reply/conversation-knowledge.scenario.test-support.js";
+import type { ChannelPlugin } from "../src/channels/plugins/types.plugin.js";
+import * as configCloning from "../src/config/resolution-facts.js";
+import { captureRuntimeConfigWithSource } from "../src/config/runtime-config-capture-state.js";
+import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../src/config/sessions/conversation-knowledge-packets.js";
+import { recordConversationKnowledgeTurn } from "../src/config/sessions/conversation-knowledge-store.js";
+import { loadSessionEntry, loadTranscriptEvents } from "../src/config/sessions/session-accessor.js";
+import * as initialFrames from "../src/config/sessions/session-initial-context-frame.js";
+import type { OpenClawConfig } from "../src/config/types.openclaw.js";
+import { withRegisteredChannelIngress } from "../src/plugin-sdk/test-helpers/registered-channel-ingress.js";
+import type { PluginRuntime } from "../src/plugins/runtime/types.js";
+import { resolveAgentSpeechConversationRoute } from "../src/routing/conversation-mode.js";
+import { createDeferredCore } from "../src/shared/deferred.js";
+import { withOpenClawTestState } from "../src/test-utils/openclaw-test-state.js";
+import { withinTest } from "./helpers/promise.js";
+import "../src/test-utils/prepare-compiled-subprocesses.js";
 
 const roomId = "!native-call:example.test";
 const replayReceipts = Number(process.env.OPENCLAW_RTC_NATIVE_REPLAY_RECEIPTS ?? 20);
