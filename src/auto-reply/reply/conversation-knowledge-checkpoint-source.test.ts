@@ -113,6 +113,7 @@ async function sources(
   options?: {
     signal?: AbortSignal;
     authority?: { signal: AbortSignal; assertCurrent: () => void };
+    onReadRequest?: (request: { sessionKeys: readonly string[] }) => void;
   },
 ) {
   const reader: SessionEntryCohortReader = {
@@ -121,7 +122,8 @@ async function sources(
     storePaths: [branch.storePath],
     sessionKey: branch.sessionKey,
     assertCurrent: options?.authority?.assertCurrent ?? assertCurrent,
-    async withRead(_request, check, consume) {
+    async withRead(request, check, consume) {
+      options?.onReadRequest?.(request);
       check();
       return consume(
         {
@@ -188,6 +190,19 @@ afterEach(() => {
 });
 
 describe("checkpoint unavailable source custody", () => {
+  it("keeps the admitted broker in the initial root snapshot's native cohort", async () => {
+    const requests: string[][] = [];
+    await sources(() => {}, {
+      authority: { signal: new AbortController().signal, assertCurrent() {} },
+      onReadRequest(request) {
+        // Native cohort expected.sessions names this reader's broker, so every
+        // snapshot must return it alongside the root whose transcript is read.
+        expect(request.sessionKeys).toContain(branch.sessionKey);
+        requests.push([...request.sessionKeys]);
+      },
+    });
+    expect(requests[0]).toEqual([branch.sessionKey, branch.root.sessionKey]);
+  });
   it("keeps published source authority after quantum cancellation while stopping further hydration", async () => {
     const quantum = new AbortController();
     const lifetime = new AbortController();

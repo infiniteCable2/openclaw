@@ -61,7 +61,7 @@ export function readCheckpointInitialRootSnapshot(
 ) {
   return reader.withRead(
     {
-      sessionKeys: [branch.root.sessionKey],
+      sessionKeys: [...new Set([reader.sessionKey, branch.root.sessionKey])],
       transcript: { sessionKey: branch.root.sessionKey, entryIds: [], includeContextVersion: true },
     },
     source,
