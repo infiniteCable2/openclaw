@@ -520,7 +520,10 @@ it("matches exact own receipts on the canonical branch with compressed and excep
         { ...scope, path: database.path },
         queries,
       );
-      expect(selected.appendParentId).toBe("compact");
+      // Native side appends advance the physical append parent while leaving
+      // the selected model branch at the compaction entry.
+      expect(selected.appendParentId).toBe("side");
+      expect(readReportBranch(database, scope.sessionId).path.at(-1)?.id).toBe("compact");
       const expected = queries.filter(({ customType: type, receipt }) =>
         type === customType
           ? ["kept-field", "kept-root", 'value"with-quote', "own-prototype"].includes(receipt.value)
