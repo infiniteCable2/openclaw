@@ -586,6 +586,114 @@ describe("grouped checkpoint prefix validation", () => {
     expect(boundary.anchors).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])(
+    "requalifies a native thrown old-prefix fence before cache repair (observer=%s)",
+    async (observe) => {
+      const fixture = groupFixture(4, [100]);
+      const held = await sources(),
+        verified = vi.fn(),
+        invalid = vi.fn();
+      boundary.anchors.mockRejectedValueOnce(
+        new SessionTranscriptReadFenceError("Native old prefix changed"),
+      );
+      expect(
+        await held.verifyAll(
+          fixture.references,
+          verified,
+          fixture.packets,
+          undefined,
+          observe ? invalid : undefined,
+        ),
+      ).toBe(false);
+      expect(boundary.anchors).toHaveBeenCalledTimes(2);
+      expect(
+        boundary.anchors.mock.calls.map(([, request]) => request.contextValidation.version),
+      ).toEqual([fixture.packets.values().next().value!.version, fixture.current]);
+      expect(invalid).toHaveBeenCalledTimes(observe ? 4 : 0);
+      expect(verified).not.toHaveBeenCalled();
+      expect((await prepareSessionSourceAuthority(held.source())).checks).toHaveLength(0);
+    },
+  );
+
+  it.each(["fence", "false", "transport"] as const)(
+    "does not repair cached bytes when current native requalification fails: %s",
+    async (failure) => {
+      const fixture = groupFixture(4, [100]);
+      const held = await sources(),
+        verified = vi.fn(),
+        invalid = vi.fn();
+      const currentFailure =
+        failure === "fence"
+          ? new SessionTranscriptReadFenceError("Current prefix changed too")
+          : new Error("Current native probe unavailable");
+      boundary.anchors.mockRejectedValueOnce(
+        new SessionTranscriptReadFenceError("Old prefix changed"),
+      );
+      if (failure === "false") {
+        boundary.anchors.mockResolvedValueOnce({ anchors: [], contextValidated: false });
+      } else {
+        boundary.anchors.mockRejectedValueOnce(currentFailure);
+      }
+      const pending = held.verifyAll(
+        fixture.references,
+        verified,
+        fixture.packets,
+        undefined,
+        invalid,
+      );
+      if (failure === "transport") {
+        await expect(pending).rejects.toBe(currentFailure);
+      } else {
+        await expect(pending).resolves.toBe(false);
+      }
+      expect(boundary.anchors).toHaveBeenCalledTimes(2);
+      expect(invalid).not.toHaveBeenCalled();
+      expect(verified).not.toHaveBeenCalled();
+    },
+  );
+
+  it("stops native cache requalification if the quantum ends", async () => {
+    const fixture = groupFixture(4, [100]);
+    const quantum = new AbortController();
+    const held = await sources(() => {}, { signal: quantum.signal });
+    const verified = vi.fn(),
+      invalid = vi.fn();
+    boundary.anchors
+      .mockRejectedValueOnce(new SessionTranscriptReadFenceError("Old prefix changed"))
+      .mockImplementationOnce(async () => {
+        quantum.abort(new Error("Foreground admitted during current prefix probe"));
+        return { anchors: [], contextValidated: true };
+      });
+    await expect(
+      held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
+    ).rejects.toThrow("Foreground admitted during current prefix probe");
+    expect(invalid).not.toHaveBeenCalled();
+    expect(verified).not.toHaveBeenCalled();
+  });
+
+  it("does not reinterpret an authority failure as a stale cached prefix", async () => {
+    const fixture = groupFixture(4, [100]);
+    const failure = new SessionTranscriptReadFenceError("Current authority ended");
+    let current = true;
+    const held = await sources(() => {
+      if (!current) {
+        throw failure;
+      }
+    });
+    const invalid = vi.fn(),
+      verified = vi.fn();
+    boundary.anchors.mockImplementationOnce(async () => {
+      current = false;
+      throw new SessionTranscriptReadFenceError("Old prefix changed");
+    });
+    await expect(
+      held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
+    ).rejects.toBe(failure);
+    expect(boundary.anchors).toHaveBeenCalledOnce();
+    expect(invalid).not.toHaveBeenCalled();
+    expect(verified).not.toHaveBeenCalled();
+  });
+
   it("does not request cache repair when a donor is unavailable or validation is canceled", async () => {
     const fixture = groupFixture(4, [100, 120]);
     const quantum = new AbortController();

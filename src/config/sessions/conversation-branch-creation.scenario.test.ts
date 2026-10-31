@@ -334,6 +334,11 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
         };
         let expectedOriginals = 3;
         const donorVersionGate: { minimumRawSeq?: number } = {};
+        const diagnose = (stage: string) => {
+          if (donorVersionGate.minimumRawSeq !== undefined && stages.length < 180) {
+            stages.push(stage);
+          }
+        };
         let ready = createDeferredCore();
         let previousFrame:
           | NonNullable<
@@ -348,7 +353,37 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
             stages.push("prepare-sources");
             const result = prepareSources(input);
             void result.then(
-              () => stages.push("sources-prepared"),
+              (sources) => {
+                stages.push("sources-prepared");
+                const verifyAll = sources.verifyAll.bind(sources);
+                sources.verifyAll = async (...args) => {
+                  let verified = 0;
+                  let invalid = 0;
+                  const [references, verify, packets, retain, invalidate] = args;
+                  try {
+                    const complete = await verifyAll(
+                      references,
+                      (reference, range) => {
+                        verified++;
+                        verify(reference, range);
+                      },
+                      packets,
+                      retain,
+                      (reference, packet) => {
+                        invalid++;
+                        invalidate?.(reference, packet);
+                      },
+                    );
+                    diagnose(
+                      `verify-all:${Number(complete)}:requested=${references.length}:verified=${verified}:invalid=${invalid}`,
+                    );
+                    return complete;
+                  } catch (error) {
+                    diagnose(`verify-error:${error instanceof Error ? error.name : "unknown"}`);
+                    throw error;
+                  }
+                };
+              },
               (error: unknown) =>
                 stages.push(
                   `sources-refused:${error instanceof Error ? error.message : "unknown"}`,
@@ -362,6 +397,9 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
             .spyOn(checkpointFrames, "prepareCheckpointInitialFrame")
             .mockImplementation((input) => {
               stages.push("prepare-frame");
+              diagnose(
+                `frame-input:references=${input.sources.references.length}:tail=${input.tail.length}:checkpoint=${Number(Boolean(input.checkpoint))}`,
+              );
               const result = prepareFrame(input);
               void result.then(
                 (value) => stages.push(value ? "frame-prepared" : "frame-unavailable"),
@@ -373,7 +411,34 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
               return result;
             }),
         );
-        const groups = vi.spyOn(personalReads, "preparePersonalConversationContributionGroup");
+        const prepareGroup = personalReads.preparePersonalConversationContributionGroup;
+        const prepareRead = personalReads.preparePersonalConversationRead;
+        const groups = vi
+          .spyOn(personalReads, "preparePersonalConversationContributionGroup")
+          .mockImplementation(async (...args) => {
+            try {
+              const result = await prepareGroup(...args);
+              diagnose("group-prepared");
+              return result;
+            } catch (error) {
+              diagnose(`group-error:${error instanceof Error ? error.name : "unknown"}`);
+              throw error;
+            }
+          });
+        spies.push(
+          vi
+            .spyOn(personalReads, "preparePersonalConversationRead")
+            .mockImplementation(async (...args) => {
+              try {
+                const result = await prepareRead(...args);
+                diagnose("grant-prepared");
+                return result;
+              } catch (error) {
+                diagnose(`grant-error:${error instanceof Error ? error.name : "unknown"}`);
+                throw error;
+              }
+            }),
+        );
         spies.push(groups);
         stages.push("register-root");
         registration = registerConversationKnowledgeCheckpointOwner({

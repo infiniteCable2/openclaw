@@ -15,6 +15,7 @@ import {
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
+import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { PersonalConversationReadRefusedError } from "../../gateway/session-mutation-authorization-error.js";
 import type { PreparedInitialFrameRange } from "./conversation-knowledge-checkpoint-frame-source.js";
 import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
@@ -72,13 +73,32 @@ export async function validateCheckpointCachedPackets(params: {
       if (isDeepStrictEqual(packet.version, range.version)) {
         valid = true;
       } else {
-        const facts = await readSessionTranscriptAnchorsAsync(
-          params.target,
-          { entryIds: [], contextValidation: { version: packet.version } },
-          params.signal,
-        );
+        try {
+          const facts = await readSessionTranscriptAnchorsAsync(
+            params.target,
+            { entryIds: [], contextValidation: { version: packet.version } },
+            params.signal,
+          );
+          valid = facts.contextValidated === true;
+        } catch (error) {
+          params.check();
+          if (!(error instanceof SessionTranscriptReadFenceError)) {
+            throw error;
+          }
+          // The native reader throws for a stale prefix. Prove today's exact
+          // granted prefix still exists before classifying only the cache as old.
+          const current = await readSessionTranscriptAnchorsAsync(
+            params.target,
+            { entryIds: [], contextValidation: { version: range.version } },
+            params.signal,
+          );
+          params.check();
+          if (current.contextValidated !== true) {
+            throw error;
+          }
+          valid = false;
+        }
         params.check();
-        valid = facts.contextValidated === true;
       }
       prefixes.set(key, valid);
     }
