@@ -244,6 +244,7 @@ vi.mock("../../resolve-targets.js", () => ({
   resolveMatrixTargets: vi.fn(async () => []),
 }));
 
+// mock-isolation: monitor lifecycle tests own the runtime config and must not share the installed plugin singleton.
 vi.mock("../../runtime.js", () => ({
   getMatrixRuntime: () => ({
     config: {
