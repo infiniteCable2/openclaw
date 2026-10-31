@@ -54,7 +54,7 @@ function fixture() {
   const params: Parameters<typeof prepareMatrixStartupConversationRoots>[0] = {
     client: nativeClient,
     core,
-    runtime: { log: vi.fn() },
+    runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
     accountId: "default",
     groupPolicy: "disabled",
     directTracker: tracker,
