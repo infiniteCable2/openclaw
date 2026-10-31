@@ -18,7 +18,10 @@ import {
   assertNativeKnowledgeRootContribution,
   type NativeKnowledgeRootEvidence,
 } from "./conversation-knowledge-store.js";
-import type { PreparedProjectedInitialSessionContext } from "./session-initial-context.js";
+import {
+  createProjectedInitialSessionContextEvents,
+  type PreparedProjectedInitialSessionContext,
+} from "./session-initial-context.js";
 import type { SessionParticipantIdentity } from "./session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
@@ -170,8 +173,6 @@ class PreparedConversationKnowledgeInitialFrame {
         audience: params.audience,
       });
     };
-    const { createProjectedInitialSessionContextEvents } =
-      await import("./session-initial-context.js");
     check();
     const projection = { ...frame.#context.projection, branch: creation.branch };
     const context: PreparedProjectedInitialSessionContext = freezeJsonSnapshot({
