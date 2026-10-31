@@ -273,6 +273,7 @@ function strings(value: unknown): string[] {
 
 it.for(["native", "branches"] as const)(
   "preserves real Matrix context exactly once from %s ingress across restart",
+  { timeout: 240_000 },
   async (initialMode, context) => {
     let gateway: OpenClawTestInstance | undefined;
     let model: Model | undefined;
@@ -447,5 +448,4 @@ it.for(["native", "branches"] as const)(
       () => model?.stop(),
     );
   },
-  240_000,
 );

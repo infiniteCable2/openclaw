@@ -81,6 +81,22 @@ beforeEach(() => {
 });
 
 describe("disposable conversation source preparation", () => {
+  it("reports retired preparation independently of successful consumption in the same quantum", () => {
+    const cache = createConversationKnowledgeSourceCache();
+    cache.stage("retired", 0, packet());
+    cache.stage("consumed", 0, packet());
+    const invalidation = cache.invalidationRevision;
+    const consumption = cache.consumptionRevision;
+    cache.invalidateContribution("retired");
+    cache.consume("consumed", 0);
+    expect(cache.invalidationRevision).toBeGreaterThan(invalidation);
+    expect(cache.consumptionRevision).toBeGreaterThan(consumption);
+    const settled = cache.invalidationRevision;
+    cache.invalidateContribution("absent");
+    expect(cache.invalidationRevision).toBe(settled);
+    cache.clear();
+  });
+
   it("shares exact-manifest groups across consumed prefixes and releases the final pending original", () => {
     const cache = createConversationKnowledgeSourceCache(4_096);
     const source = { ...target, lifecycleRevision: "source-life" };

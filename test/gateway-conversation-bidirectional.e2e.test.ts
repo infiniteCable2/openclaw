@@ -227,6 +227,13 @@ it("synchronizes active and idle reusable branches without blocking a third conv
       for (const description of [alpha, beta]) {
         expect(description.session).toMatchObject({ visibility: "draft", sharingRole: "owner" });
       }
+      // Prove the observer can read originals before any background-delivery wait.
+      const [aBeforeIdle, bBeforeIdle] = await Promise.all([
+        retained(a, alpha.session.sessionId),
+        retained(b, beta.session.sessionId),
+      ]);
+      expect(JSON.stringify(aBeforeIdle)).toContain("ALPHA_LOCAL_HISTORY_21");
+      expect(JSON.stringify(bBeforeIdle)).toContain("BETA_LOCAL_HISTORY_31");
       // Both endpoints are enrolled before measuring new source input.
       await vi.waitFor(() => {
         for (const id of [alpha.session.sessionId, beta.session.sessionId]) {
@@ -249,10 +256,10 @@ it("synchronizes active and idle reusable branches without blocking a third conv
       const heldTwo = model.holdNext(() => true);
       gates.push(heldOne, heldTwo);
       const before = model.requests.length;
-      const [turnA, turnB] = await Promise.all([
-        start(a, `Remember this short alpha fact: ${FACT_A}`),
-        start(b, `Remember this short beta fact: ${FACT_B}`),
-      ]);
+      const turnA = await start(a, `Remember this short alpha fact: ${FACT_A}`);
+      await heldOne.entered;
+      const turnB = await start(b, `Remember this short beta fact: ${FACT_B}`);
+      await heldTwo.entered;
       await vi.waitFor(() => expect(model!.requests).toHaveLength(before + 2), WAIT);
       await Promise.all([heldOne.entered, heldTwo.entered]);
       // Neither completion is released: both actual provider requests are active.
@@ -289,9 +296,32 @@ it("synchronizes active and idle reusable branches without blocking a third conv
         healthMs,
         thirdDispatchMs: third.acceptedAt - third.callStartedAt,
       });
+      const containsPacket = async (key: string, id: string, marker: string) =>
+        (await retained(key, id))
+          .map(asOptionalRecord)
+          .some(
+            (row) =>
+              row?.type === "custom_message" &&
+              row.customType === "openclaw.conversation-knowledge-context.v1" &&
+              typeof row.content === "string" &&
+              row.content.includes(marker),
+          );
       heldOne.release();
+      await finish(turnA);
+      await vi.waitFor(async () => {
+        expect(await containsPacket(a, alpha.session.sessionId, FACT_C)).toBe(true);
+        expect(model!.requests).toHaveLength(before + 3);
+      }, WAIT);
+      // B still has its original model call in flight. Background maintenance
+      // must wait for B, independently of A's completed delivery and C's response.
+      expect(await containsPacket(b, beta.session.sessionId, FACT_C)).toBe(false);
+      mark("one-recipient-settled-other-still-active");
       heldTwo.release();
-      await Promise.all([finish(turnA), finish(turnB)]);
+      await finish(turnB);
+      await vi.waitFor(async () => {
+        expect(await containsPacket(b, beta.session.sessionId, FACT_C)).toBe(true);
+        expect(model!.requests).toHaveLength(before + 3);
+      }, WAIT);
       expect(model.requests).toHaveLength(before + 3);
 
       const exact = (input: string) => {
@@ -311,14 +341,6 @@ it("synchronizes active and idle reusable branches without blocking a third conv
       exact((await send(b, "BETA_REPEAT_PROBE_71")).input);
       expect((await describe(a)).session.sessionId).toBe(alpha.session.sessionId);
       expect((await describe(b)).session.sessionId).toBe(beta.session.sessionId);
-      // Prove the observer can read ordinary originals before using it to judge
-      // synchronization. Reader setup failures must not become an idle timeout.
-      const [aBeforeIdle, bBeforeIdle] = await Promise.all([
-        retained(a, alpha.session.sessionId),
-        retained(b, beta.session.sessionId),
-      ]);
-      expect(JSON.stringify(aBeforeIdle)).toContain("ALPHA_LOCAL_HISTORY_21");
-      expect(JSON.stringify(bBeforeIdle)).toContain("BETA_LOCAL_HISTORY_31");
       // A real completed run retains its native writer fence. Do not manufacture
       // idleness by clearing that field in a fixture, or send another target turn
       // to make foreground catch-up hide a broken background admission.

@@ -7,6 +7,7 @@ import { beginForegroundSessionMaintenance } from "../../agents/session-maintena
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionEntryCohortResult } from "../../config/sessions/session-entry-read.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import * as runRegistry from "../../infra/agent-run-registry.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { admitPreparedConversationKnowledgeWhileIdle } from "./conversation-knowledge-idle.js";
 import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
@@ -15,6 +16,12 @@ import type { prepareReplyConversationKnowledge } from "./conversation-knowledge
 const boundary = vi.hoisted(() => ({
   prepare: vi.fn<typeof prepareReplyConversationKnowledge>(),
   context: vi.fn(),
+  busy: vi.fn(() => false),
+}));
+// mock-isolation: Probe native ownership decisions without creating model backends;
+// real settled/queued runtime and worker admission run in the Gateway scenarios.
+vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
+  isEmbeddedAgentRunActive: boundary.busy,
 }));
 // mock-isolation: Admission guards must defer before any source discovery or database write.
 vi.mock("./conversation-knowledge.js", () => ({
@@ -128,9 +135,11 @@ function fixture() {
 beforeEach(() => {
   boundary.prepare.mockReset();
   boundary.context.mockReset();
+  boundary.busy.mockReset().mockReturnValue(false);
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await drainGlobalSingletonLifecycleState("close");
 });
 
@@ -159,11 +168,13 @@ it("prepares only when no native request has issued a reusable budget", async ()
   }
 });
 
-it.each(["consume", "invalidate", "unchanged"] as const)(
+it.each(["consume", "invalidate", "unchanged", "execution-started-during-read"] as const)(
   "does not forward preparation-only mode and continues only after changed work (%s)",
   async (outcome) => {
     const f = fixture();
     f.stage();
+    f.facts.entries[0]!.entry.activeWriterRunId = "settled-user-run";
+    f.facts.entries[0]!.entry.status = "done";
     const config = f.params.getRuntimeConfig();
     config.models = {
       providers: {
@@ -185,7 +196,12 @@ it.each(["consume", "invalidate", "unchanged"] as const)(
       },
     };
     const version = { generation: "recipient-generation", rawSeq: 1, updatedAt: 1 };
-    boundary.context.mockResolvedValue({ messages: [], version });
+    boundary.context.mockImplementation(async () => {
+      if (outcome === "execution-started-during-read") {
+        boundary.busy.mockReturnValue(true);
+      }
+      return { messages: [], version };
+    });
     boundary.prepare.mockImplementation(async (input) => {
       input.assertCurrent();
       if (!input.preparationOnly) {
@@ -201,8 +217,14 @@ it.each(["consume", "invalidate", "unchanged"] as const)(
     const preparation = { ...f.params, preparationOnly: true };
     try {
       await expect(admitPreparedConversationKnowledgeWhileIdle(preparation)).resolves.toBe(
-        outcome !== "unchanged",
+        outcome === "consume" || outcome === "invalidate",
       );
+      expect(f.facts.entries[0]!.entry.activeWriterRunId).toBe("settled-user-run");
+      if (outcome === "execution-started-during-read") {
+        expect(boundary.prepare).not.toHaveBeenCalled();
+        expect(f.cache.preparedPackets(1)).toHaveLength(1);
+        return;
+      }
       expect(boundary.prepare).toHaveBeenCalledOnce();
       expect(boundary.prepare.mock.calls[0]![0]).not.toHaveProperty("preparationOnly");
       expect(boundary.prepare.mock.calls[0]![0]).toMatchObject({
@@ -252,13 +274,53 @@ it("returns without waiting for a foreground reservation", async () => {
   }
 });
 
-it("retains prepared work while the exact recipient has an active writer", async () => {
+it("retains prepared work while the saved writer still has an execution owner", async () => {
   const f = fixture();
   f.stage();
   f.facts.entries[0]!.entry.activeWriterRunId = "active-user-run";
+  vi.spyOn(runRegistry, "hasAgentRunContextExecutionOwner").mockReturnValue(true);
   try {
     await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(false);
     expect(f.read).toHaveBeenCalledOnce();
+    expect(boundary.prepare).not.toHaveBeenCalled();
+    expect(f.cache.preparedPackets(1)).toHaveLength(1);
+  } finally {
+    f.cache.clear();
+  }
+});
+
+it("returns before a recipient read while native session work still owns the target", async () => {
+  const f = fixture();
+  f.stage();
+  boundary.busy.mockReturnValue(true);
+  try {
+    await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(false);
+    expect(f.read).not.toHaveBeenCalled();
+    expect(boundary.context).not.toHaveBeenCalled();
+    expect(boundary.prepare).not.toHaveBeenCalled();
+    expect(f.cache.preparedPackets(1)).toHaveLength(1);
+  } finally {
+    f.cache.clear();
+  }
+});
+
+it("defers pending delivery independently of a settled writer fence", async () => {
+  const f = fixture();
+  f.stage();
+  Object.assign(f.facts.entries[0]!.entry, {
+    activeWriterRunId: "settled-writer",
+    status: "done",
+    pendingFinalDelivery: {
+      kind: "transport-only",
+      intentId: "pending-fixture-delivery",
+      deliveries: [],
+      createdAt: 1,
+    },
+  });
+  try {
+    await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(false);
+    expect(f.read).toHaveBeenCalledOnce();
+    expect(boundary.context).not.toHaveBeenCalled();
     expect(boundary.prepare).not.toHaveBeenCalled();
     expect(f.cache.preparedPackets(1)).toHaveLength(1);
   } finally {

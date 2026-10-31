@@ -111,6 +111,7 @@ export function createConversationKnowledgeSourceCache<
   let stagedBytes = 0;
   let revision = 0;
   let consumptionRevision = 0;
+  let invalidationRevision = 0;
   let preparedCheckpoint: PreparedRecipientConversationCheckpoint | undefined;
   const retireCheckpoint = () => {
     const old = preparedCheckpoint;
@@ -179,6 +180,7 @@ export function createConversationKnowledgeSourceCache<
     for (const [key, entry] of staged) {
       if (entry.contributionId === id) {
         staged.delete(key);
+        invalidationRevision++;
         stagedBytes -= entry.bytes;
         revision++;
       }
@@ -229,6 +231,7 @@ export function createConversationKnowledgeSourceCache<
       if (expected && preparedCheckpoint !== expected) {
         return;
       }
+      invalidationRevision += preparedCheckpoint ? 1 : 0;
       retireCheckpoint();
       retryCleanup();
     },
@@ -351,6 +354,9 @@ export function createConversationKnowledgeSourceCache<
     get consumptionRevision() {
       return consumptionRevision;
     },
+    get invalidationRevision() {
+      return invalidationRevision;
+    },
     diagnosticCapacity() {
       return { preparedPackets: staged.size, stagedBytes, admissionBytes, maxBytes };
     },
@@ -360,14 +366,12 @@ export function createConversationKnowledgeSourceCache<
         if (slot.offset !== 0 || !slot.value.part.complete) {
           continue;
         }
-        const sourceHash = redactIdentifier(slot.value.through.sessionId);
+        const { sessionId, rawSeq } = slot.value.through;
+        const sourceHash = redactIdentifier(sessionId);
         if (!frontiers.has(sourceHash) && frontiers.size >= 8) {
           continue;
         }
-        frontiers.set(
-          sourceHash,
-          Math.max(frontiers.get(sourceHash) ?? 0, slot.value.through.rawSeq),
-        );
+        frontiers.set(sourceHash, Math.max(frontiers.get(sourceHash) ?? 0, rawSeq));
       }
       return [...frontiers].map(([sourceHash, throughSeq]) => ({ sourceHash, throughSeq }));
     },
@@ -600,6 +604,7 @@ export function createConversationKnowledgeSourceCache<
       clearEpoch++;
       consumptionRevision++;
       // One cleanup pass attempts every owner once and retains all failures.
+      invalidationRevision++;
       for (const admission of retired) {
         retiringAdmissions.add(admission);
       }

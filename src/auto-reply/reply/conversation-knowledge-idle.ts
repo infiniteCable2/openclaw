@@ -20,6 +20,7 @@ import { captureSessionTranscriptTargetBinding } from "../../config/sessions/tra
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createAbortError, isAbortError } from "../../infra/abort-signal.js";
+import { hasAgentRunContextExecutionOwner } from "../../infra/agent-run-registry.js";
 import { enqueueCommandInLane, getQueueSize } from "../../process/command-queue.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../../process/gateway-work-admission.js";
 import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
@@ -70,7 +71,6 @@ function isIdleEntry(entry: InternalSessionEntry | undefined, branch: Conversati
   return (
     entry?.sessionId === branch.sessionId &&
     entry.lifecycleRevision === branch.lifecycleRevision &&
-    entry.activeWriterRunId === undefined &&
     entry.pendingFinalDelivery === undefined &&
     !entry.pendingTranscriptRepair?.length &&
     entry.archivedAt === undefined
@@ -92,6 +92,17 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
     getQueueSize(lane) > 0 ||
     isSessionWorkAdmissionActive(branch.storePath, [branch.sessionKey, branch.sessionId])
   ) {
+    return false;
+  }
+  // The persisted writer ID fences future commits; native completion need not
+  // clear it. Runtime owners, rather than that durable ID, establish activity.
+  const { isEmbeddedAgentRunActive } = await import("../../agents/embedded-agent-runner/runs.js");
+  params.assertCurrent();
+  const executing = (entry?: InternalSessionEntry) =>
+    isEmbeddedAgentRunActive(branch.sessionId) ||
+    (entry?.activeWriterRunId !== undefined &&
+      hasAgentRunContextExecutionOwner(entry.activeWriterRunId));
+  if (executing()) {
     return false;
   }
   const queued = new AbortController();
@@ -117,48 +128,58 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                 assertCurrent();
                 let entry: InternalSessionEntry | undefined;
                 let source: SessionSourceAssertion | undefined;
+                const assertIdle = () => {
+                  assertCurrent();
+                  if (executing(entry)) {
+                    throw createAbortError("Idle conversation yielded to a native execution owner");
+                  }
+                };
+                await reader.withRead(
+                  { sessionKeys: [branch.sessionKey], snapshotFields: [] },
+                  assertCurrent,
+                  (facts) => {
+                    entry = facts.entries.find(
+                      (row) => row.sessionKey === branch.sessionKey,
+                    )?.entry;
+                    if (!isIdleEntry(entry, branch) || executing(entry)) {
+                      // Ordinary contention retains prepared work for the
+                      // next owner-settlement signal; it is not a lane error.
+                      return;
+                    }
+                    const expected = structuredClone(entry);
+                    source = composeSessionSourceAssertion([
+                      assertIdle,
+                      Object.assign(() => assertIdle(), {
+                        prepareSessionSource: async () => ({
+                          assertCurrent: assertIdle,
+                          checks: [
+                            {
+                              predicate: {
+                                source: facts.source,
+                                sessionKey: branch.sessionKey,
+                                fields: IDLE_FIELDS,
+                                expected,
+                              },
+                              refuse: (): never => {
+                                throw new Error(
+                                  "Idle conversation recipient changed before commit",
+                                );
+                              },
+                            },
+                          ],
+                        }),
+                      }),
+                    ]);
+                  },
+                );
+                if (!source || !entry) {
+                  return;
+                }
                 const admission = await beginSessionWorkAdmission({
                   scope: branch.storePath,
                   identities: [branch.sessionKey, branch.sessionId],
                   signal: owner.signal,
-                  assertAllowed: async () => {
-                    await reader.withRead(
-                      { sessionKeys: [branch.sessionKey], snapshotFields: [] },
-                      assertCurrent,
-                      (facts) => {
-                        entry = facts.entries.find(
-                          (row) => row.sessionKey === branch.sessionKey,
-                        )?.entry;
-                        if (!isIdleEntry(entry, branch)) {
-                          throw createAbortError("Idle conversation recipient has an active owner");
-                        }
-                        const expected = structuredClone(entry);
-                        source = composeSessionSourceAssertion([
-                          assertCurrent,
-                          Object.assign(() => assertCurrent(), {
-                            prepareSessionSource: async () => ({
-                              assertCurrent,
-                              checks: [
-                                {
-                                  predicate: {
-                                    source: facts.source,
-                                    sessionKey: branch.sessionKey,
-                                    fields: IDLE_FIELDS,
-                                    expected,
-                                  },
-                                  refuse: (): never => {
-                                    throw new Error(
-                                      "Idle conversation recipient changed before commit",
-                                    );
-                                  },
-                                },
-                              ],
-                            }),
-                          }),
-                        ]);
-                      },
-                    );
-                  },
+                  assertAllowed: assertIdle,
                 });
                 try {
                   await admission.run(async () => {

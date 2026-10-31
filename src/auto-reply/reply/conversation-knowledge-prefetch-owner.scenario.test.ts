@@ -1,5 +1,6 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { claimAgentRunContext, releaseAgentRunContext } from "../../infra/agent-run-registry.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
@@ -82,9 +83,183 @@ afterEach(async () => {
 });
 
 describe("automatic recipient preparation scenarios", () => {
+  it("retries recipient delivery when its native execution owner settles without a row write", async () => {
+    const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      prepare,
+      watchRecipientRuntime: true,
+      assertCurrent() {},
+      clear() {},
+    });
+    await owner.wait();
+    const runId = "synthetic-recipient-runtime-release";
+    const claim = claimAgentRunContext(
+      runId,
+      { agentId: target.agentId, sessionKey: target.sessionKey, sessionId: target.sessionId },
+      { trackOwner: true, ownsContext: true, exclusive: true },
+    );
+    try {
+      expect(claim).toBeDefined();
+      await owner.wait();
+      expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, false]);
+      // The native registry publishes scope:runtime with no storePath on release.
+      releaseAgentRunContext(runId, claim);
+      await owner.wait();
+      expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, false, false]);
+      sessionChanges.emit({ sessionKey: target.sessionKey, scope: "runtime" });
+      await owner.wait();
+      expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, false, false, false]);
+      for (const change of [
+        { sessionKey: "agent:example:other", scope: "runtime" as const },
+        { sessionKey: target.sessionKey, agentId: "other", scope: "runtime" as const },
+        {
+          sessionKey: target.sessionKey,
+          storePath: path.resolve("another-runtime-store.sqlite"),
+          scope: "runtime" as const,
+        },
+      ]) {
+        sessionChanges.emit(change);
+      }
+      await owner.wait();
+      expect(prepare).toHaveBeenCalledTimes(4);
+      await owner.close();
+      sessionChanges.emit({ sessionKey: target.sessionKey, scope: "runtime" });
+      await owner.wait();
+      expect(prepare).toHaveBeenCalledTimes(4);
+    } finally {
+      releaseAgentRunContext(runId, claim);
+    }
+  });
+
+  it("does not make shared source preparation watch recipient runtime by default", async () => {
+    const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      prepare,
+      assertCurrent() {},
+      clear() {},
+    });
+    await owner.wait();
+    sessionChanges.emit({
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      scope: "runtime",
+    });
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true]);
+    rootUpdate();
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
+  });
+
+  it("distinguishes recipient availability from committed source changes", async () => {
+    const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      prepare,
+      watchesSource: () => true,
+      assertCurrent() {},
+      clear() {},
+    });
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true]);
+    sessionChanges.emit({ ...target, scope: "session-entry" });
+    await owner.wait();
+    // The recipient can also be watched as a source; its own row still only
+    // announces local availability/progress, not new root source selection.
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, false]);
+    sessionChanges.emit({
+      ...target,
+      sessionKey: "agent:example:source",
+      scope: "session-entry",
+    });
+    await owner.wait();
+    rootUpdate();
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, false, true, true]);
+  });
+
+  it("coalesces mixed wakeups without losing paused source preparation", async () => {
+    const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      prepare,
+      assertCurrent() {},
+      clear() {},
+    });
+    await owner.wait();
+    owner.request("recipient");
+    owner.request("source");
+    owner.request("recipient");
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
+    const resume = owner.pausePreparation();
+    owner.request("recipient");
+    rootUpdate();
+    owner.request("recipient");
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    resume();
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true, true]);
+    const resumeRecipient = owner.pausePreparation();
+    resumeRecipient();
+    await owner.wait();
+    // A foreground drain can invalidate staged sources without publishing a
+    // source change, so its explicit resume remains a recovery refresh.
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true, true, true]);
+  });
+
+  it("restores failed source intent through recipient wakeups and existing backoff", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
+    prepare.mockRejectedValueOnce(new Error("Synthetic source preparation failure"));
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      prepare,
+      assertCurrent() {},
+      clear() {},
+    });
+    await owner.wait();
+    owner.request("recipient");
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    prepare.mockRejectedValueOnce(new Error("Synthetic recipient admission failure"));
+    owner.request("recipient");
+    await owner.wait();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true, false, false]);
+  });
+
+  it("continues prepared work without inventing source dirtiness or reviving closed work", async () => {
+    const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => false);
+    prepare.mockResolvedValueOnce(true);
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      prepare,
+      assertCurrent() {},
+      clear() {},
+    });
+    await owner.wait();
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, false]);
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    await owner.close();
+    owner.request("source");
+    owner.request("recipient");
+    rootUpdate();
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
   it("recovers a transient read failure without another input or notification", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const prepare = vi.fn(async (_signal: AbortSignal) => {});
+    const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
     prepare.mockRejectedValueOnce(new Error("synthetic transient read failure"));
     const owner = createConversationKnowledgePrefetchOwner({
       target,
@@ -98,6 +273,7 @@ describe("automatic recipient preparation scenarios", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await owner.wait();
     expect(prepare).toHaveBeenCalledTimes(2);
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
     await vi.advanceTimersByTimeAsync(60_000);
     await owner.wait();
     expect(prepare).toHaveBeenCalledTimes(2);

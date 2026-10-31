@@ -13,6 +13,11 @@ const preparation = vi.hoisted(() => ({
   checkpoint: vi.fn(),
   rootProjection: vi.fn(),
   idle: vi.fn(),
+  caches: [] as Array<{
+    consumptionRevision: number;
+    invalidationRevision: number;
+    preparedRoot: undefined;
+  }>,
 }));
 // mock-isolation: Exercise recipient scheduling without starting background database resources.
 vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
@@ -48,14 +53,21 @@ vi.mock("./conversation-knowledge.js", () => ({
 }));
 // mock-isolation: This boundary only schedules packets; cache/native range proofs have focused tests.
 vi.mock("./conversation-knowledge-source-cache.js", () => ({
-  createConversationKnowledgeSourceCache: () => ({
-    clear: vi.fn(),
-    retainCleanup: vi.fn(),
-    forgetCleanup: vi.fn(),
-    retryCleanup: vi.fn(),
-    diagnosticPreparedFrontiers: () => [],
-    diagnosticCapacity: () => ({}),
-  }),
+  createConversationKnowledgeSourceCache: () => {
+    const cache = {
+      consumptionRevision: 0,
+      invalidationRevision: 0,
+      preparedRoot: undefined,
+      clear: vi.fn(),
+      retainCleanup: vi.fn(),
+      forgetCleanup: vi.fn(),
+      retryCleanup: vi.fn(),
+      diagnosticPreparedFrontiers: () => [],
+      diagnosticCapacity: () => ({}),
+    };
+    preparation.caches.push(cache);
+    return cache;
+  },
 }));
 // mock-isolation: Keep process-global recipient retention private to this test module.
 vi.mock("../../shared/global-singleton.js", () => ({
@@ -72,6 +84,7 @@ beforeEach(() => {
   preparation.checkpoint.mockReset().mockResolvedValue(undefined);
   preparation.rootProjection.mockReset().mockReturnValue({ tail: [] });
   preparation.idle.mockReset().mockResolvedValue(false);
+  preparation.caches.length = 0;
   for (const mock of Object.values(preparation.owner)) {
     mock.mockReset();
   }
@@ -159,6 +172,92 @@ describe("recipient preparation scheduling", () => {
       },
     };
   }
+
+  function sourcePreparationOpening() {
+    const f = retainedOpening();
+    f.register();
+    const scheduled = preparation.create.mock.calls[0]![0];
+    const release = vi.fn();
+    preparation.load.mockResolvedValue({
+      entry: { sessionId: f.branch.sessionId, lifecycleRevision: f.branch.lifecycleRevision },
+      databaseClaim: { kind: "worker", reader: {}, assertCurrent() {}, release },
+    });
+    preparation.prepare.mockResolvedValue({ release() {} });
+    return { scheduled, release, cache: preparation.caches.at(-1)! };
+  }
+
+  it("reuses prepared sources for recipient-only metadata wakeups", async () => {
+    const f = sourcePreparationOpening();
+    const signal = new AbortController().signal;
+    try {
+      expect(await f.scheduled.prepare(signal)).toBe(false);
+      for (let wakeup = 0; wakeup < 3; wakeup++) {
+        expect(await f.scheduled.prepare(signal, false)).toBe(false);
+      }
+      expect(preparation.rootProjection).toHaveBeenCalledOnce();
+      expect(preparation.projection).toHaveBeenCalledOnce();
+      expect(preparation.prepare).toHaveBeenCalledOnce();
+      expect(preparation.idle).toHaveBeenCalledTimes(4);
+      expect(f.release).toHaveBeenCalledTimes(4);
+      expect(await f.scheduled.prepare(signal, true)).toBe(false);
+      expect(preparation.projection).toHaveBeenCalledTimes(2);
+      expect(preparation.prepare).toHaveBeenCalledTimes(2);
+    } finally {
+      f.scheduled.clear();
+    }
+  });
+
+  it("reconstructs retired sources even when the same idle quantum consumed another packet", async () => {
+    const f = sourcePreparationOpening();
+    const signal = new AbortController().signal;
+    try {
+      expect(await f.scheduled.prepare(signal)).toBe(false);
+      preparation.idle.mockImplementationOnce(async () => {
+        // Match the independent native cache counters: one valid original
+        // committed while another staged source failed validation and retired.
+        f.cache.consumptionRevision++;
+        f.cache.invalidationRevision++;
+        return true;
+      });
+      expect(await f.scheduled.prepare(signal, false)).toBe(true);
+      expect(preparation.projection).toHaveBeenCalledOnce();
+      expect(preparation.prepare).toHaveBeenCalledOnce();
+      expect(await f.scheduled.prepare(signal, false)).toBe(false);
+      expect(preparation.projection).toHaveBeenCalledTimes(2);
+      expect(preparation.prepare).toHaveBeenCalledTimes(2);
+      expect(await f.scheduled.prepare(signal, false)).toBe(false);
+      expect(preparation.prepare).toHaveBeenCalledTimes(2);
+    } finally {
+      f.scheduled.clear();
+    }
+  });
+
+  it.each([false, true])(
+    "reconstructs after a recipient-only admission throws (retired source: %s)",
+    async (retired) => {
+      const f = sourcePreparationOpening();
+      const signal = new AbortController().signal;
+      try {
+        expect(await f.scheduled.prepare(signal)).toBe(false);
+        preparation.idle.mockImplementationOnce(async () => {
+          if (retired) {
+            f.cache.invalidationRevision++;
+          }
+          throw new Error("Synthetic idle admission failure");
+        });
+        await expect(f.scheduled.prepare(signal, false)).rejects.toThrow(
+          "Synthetic idle admission failure",
+        );
+        expect(preparation.prepare).toHaveBeenCalledOnce();
+        expect(await f.scheduled.prepare(signal, false)).toBe(false);
+        expect(preparation.projection).toHaveBeenCalledTimes(2);
+        expect(preparation.prepare).toHaveBeenCalledTimes(2);
+        expect(f.release).toHaveBeenCalledTimes(3);
+      } finally {
+        f.scheduled.clear();
+      }
+    },
+  );
 
   it("retains an idle opening independently and replaces its native hold once per endpoint", () => {
     const f = retainedOpening();

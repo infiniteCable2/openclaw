@@ -397,14 +397,25 @@ it.for([
               }
             };
             const seed = vi.spyOn(knowledgeSeed, "ensureConversationKnowledgeSeed");
+            let retireNextIdle: string | undefined;
+            let mixedInvalidationAndConsumption = false;
             const prepare = knowledgePreparation.prepareReplyConversationKnowledge;
             const preparation = vi
               .spyOn(knowledgePreparation, "prepareReplyConversationKnowledge")
               .mockImplementation(async (input) => {
                 try {
+                  const beforeConsumption = recipient!.cache.consumptionRevision;
+                  const beforeInvalidation = recipient!.cache.invalidationRevision;
+                  if (retireNextIdle && input.readyOnly && input.retainInHistory) {
+                    recipient!.cache.invalidateContribution(retireNextIdle);
+                    retireNextIdle = undefined;
+                  }
                   const value = await boundaryProfile.observe("knowledgePreparation", () =>
                     prepare(input),
                   );
+                  mixedInvalidationAndConsumption ||=
+                    recipient!.cache.invalidationRevision > beforeInvalidation &&
+                    recipient!.cache.consumptionRevision > beforeConsumption;
                   preparationOutcomes.push({
                     readyOnly: input.readyOnly === true,
                     retainInHistory: Boolean(input.retainInHistory),
@@ -512,7 +523,7 @@ it.for([
             // COMMIT. Recovery must restage itself without a new user/model turn.
             let idleVersionRaced = false;
             const interveningText = "Synthetic SDK input during idle admission.";
-            if (donorCount === 3) {
+            if (donorCount === 3 && !settledWriter) {
               const nativeAppend = reportStorage.appendSessionTranscriptReportBatch;
               const race = vi
                 .spyOn(reportStorage, "appendSessionTranscriptReportBatch")
@@ -554,6 +565,7 @@ it.for([
             // Reuse the same idle recipient. Only committed source observations
             // trigger its existing background owners; no synthetic user turn runs.
             const liveIds: string[] = [];
+            resumeRecipient = recipient.owner.pausePreparation();
             for (const [index, donor] of donors.slice(0, 2).entries()) {
               signal.throwIfAborted();
               const saved = await appendTranscriptMessage(donor.target, {
@@ -585,6 +597,11 @@ it.for([
               }
               liveIds.push(conversationKnowledgeContributionId(reference));
             }
+            if (settledWriter) {
+              retireNextIdle = liveIds[0];
+            }
+            resumeRecipient();
+            resumeRecipient = () => {};
             await withinTest(recipient.owner.wait(), signal);
             const preparedLive = liveIds.filter(
               (id) => recipient!.cache.peek(id, 0)?.part.complete,
@@ -595,12 +612,15 @@ it.for([
               prepared: preparedLive,
               admitted: admittedLive,
               expected: 2,
+              mixedInvalidationAndConsumption,
             });
             expect(preparedLive).toBe(0);
             // Desired regression: existing silent recipients need an idle native
             // admission point; readiness alone is not completed synchronization.
             expect.soft(admittedLive).toBe(2);
-            if (donorCount === 3) {
+            if (settledWriter) {
+              expect(mixedInvalidationAndConsumption).toBe(true);
+            } else if (donorCount === 3) {
               expect(idleVersionRaced).toBe(true);
               const matching = (await loadTranscriptEvents(target)).filter((event) => {
                 const message = asOptionalRecord(asOptionalRecord(event)?.message);

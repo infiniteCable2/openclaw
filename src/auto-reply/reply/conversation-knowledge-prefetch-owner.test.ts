@@ -80,7 +80,7 @@ function rootUpdate(
 }
 
 function fixture() {
-  const prepare = vi.fn(async (_signal: AbortSignal) => {});
+  const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
   const clear = vi.fn();
   const assertCurrent = vi.fn();
   const owner = createConversationKnowledgePrefetchOwner({ target, prepare, clear, assertCurrent });
@@ -137,6 +137,7 @@ describe("conversation knowledge prefetch lifecycle", () => {
     resume();
     await f.owner.wait();
     expect(f.prepare).toHaveBeenCalledOnce();
+    expect(f.prepare.mock.calls[0]?.[1]).toBe(true);
     expect(boundary.enqueue).toHaveBeenCalledTimes(2);
     expect(f.clear).not.toHaveBeenCalled();
   });
@@ -209,6 +210,7 @@ describe("conversation knowledge prefetch lifecycle", () => {
     resume();
     await f.owner.wait();
     expect(f.prepare).toHaveBeenCalledTimes(2);
+    expect(f.prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
     const lateResume = f.owner.pausePreparation();
     await f.owner.close();
     lateResume();

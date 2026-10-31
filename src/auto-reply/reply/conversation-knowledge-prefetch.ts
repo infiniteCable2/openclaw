@@ -213,6 +213,7 @@ export function prepareConversationKnowledgeRecipient(params: {
       assertCurrent: () => void selectAudience(),
     });
     let sourceCursor: string | undefined;
+    let sourcePreparationPending = true;
     const checkAudience = () => {
       audience.assertCurrent();
       if (resolveAgentConversationMode(params.getRuntimeConfig(), branch.agentId) !== "branches") {
@@ -229,6 +230,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     const rootCheckpoint = checkpoint;
     const owner = createConversationKnowledgePrefetchOwner({
       target: { ...branch, env: params.env },
+      watchRecipientRuntime: true,
       assertCurrent: checkAudience,
       watchesSource: rootCheckpoint.watchesSource,
       settle: () => rootCheckpoint.close(),
@@ -247,7 +249,8 @@ export function prepareConversationKnowledgeRecipient(params: {
           .catch(() => log.debug("Related-history checkpoint owner cleanup deferred"));
         cache.clear();
       },
-      async prepare(signal) {
+      async prepare(signal, prepareSources = true) {
+        sourcePreparationPending ||= prepareSources;
         cache.retryCleanup();
         const startedAt = performance.now();
         const held = await loadSessionEntryForAdmission(
@@ -290,36 +293,48 @@ export function prepareConversationKnowledgeRecipient(params: {
             sourceCache: cache,
             preparationOnly: true,
           };
-          const { prepareRecipientConversationCheckpoint, prepareRecipientConversationProjection } =
-            await import("./conversation-knowledge-checkpoint-recipient.js");
-          const projection = rootCheckpoint.projection();
-          if (projection.checkpoint && projection.coverage) {
-            await prepareRecipientConversationCheckpoint(preparation, {
-              checkpoint: projection.checkpoint,
-              coverage: projection.coverage,
-            });
-          }
-          // Reuse the shared root before hydrating private source text again. A
-          // partial recipient manifest must grow as its root becomes prepared.
-          const sharedReady = await prepareRecipientConversationProjection(
-            preparation,
-            projection.tail,
-          );
           let prepared: PreparedReplyConversationKnowledge | undefined;
-          if (!sharedReady) {
-            const { prepareReplyConversationKnowledge } =
-              await import("./conversation-knowledge.js");
-            owner.assertCurrent();
-            prepared = await prepareReplyConversationKnowledge({
-              ...preparation,
-              sourceBudget: 8,
-              sourceCursor,
-            });
+          const preparingSources = sourcePreparationPending || sourceCursor !== undefined;
+          if (preparingSources) {
+            sourcePreparationPending = false;
+            try {
+              const {
+                prepareRecipientConversationCheckpoint,
+                prepareRecipientConversationProjection,
+              } = await import("./conversation-knowledge-checkpoint-recipient.js");
+              const projection = rootCheckpoint.projection();
+              if (projection.checkpoint && projection.coverage) {
+                await prepareRecipientConversationCheckpoint(preparation, {
+                  checkpoint: projection.checkpoint,
+                  coverage: projection.coverage,
+                });
+              }
+              // Reuse the shared root before hydrating private source text again. A
+              // partial recipient manifest must grow as its root becomes prepared.
+              const sharedReady = await prepareRecipientConversationProjection(
+                preparation,
+                projection.tail,
+              );
+              if (!sharedReady) {
+                const { prepareReplyConversationKnowledge } =
+                  await import("./conversation-knowledge.js");
+                owner.assertCurrent();
+                prepared = await prepareReplyConversationKnowledge({
+                  ...preparation,
+                  sourceBudget: 8,
+                  sourceCursor,
+                });
+              }
+              sourceCursor = prepared?.nextSourceCursor;
+            } catch (error) {
+              sourcePreparationPending = true;
+              throw error;
+            }
           }
-          sourceCursor = prepared?.nextSourceCursor;
           if (log.isEnabled("debug")) {
             log.debug("Related-history source preparation settled", {
               recipientHash: redactIdentifier(branch.sessionId),
+              preparingSources,
               preparedSourceFrontiers: cache.diagnosticPreparedFrontiers(),
               ...cache.diagnosticCapacity(),
               elapsedMs: Math.round(performance.now() - startedAt),
@@ -330,12 +345,31 @@ export function prepareConversationKnowledgeRecipient(params: {
           prepared?.release();
           const { admitPreparedConversationKnowledgeWhileIdle } =
             await import("./conversation-knowledge-idle.js");
-          const consumed = await admitPreparedConversationKnowledgeWhileIdle({
-            ...preparation,
-            branch,
-            budget: contextBudget?.config === params.getRuntimeConfig() ? contextBudget : undefined,
-          });
-          return consumed || (sourceCursor !== undefined && !prepared?.preparationSaturated);
+          const invalidationBefore = cache.invalidationRevision;
+          const rootBefore = cache.preparedRoot;
+          let consumed = false;
+          try {
+            consumed = await admitPreparedConversationKnowledgeWhileIdle({
+              ...preparation,
+              branch,
+              budget:
+                contextBudget?.config === params.getRuntimeConfig() ? contextBudget : undefined,
+            });
+          } catch (error) {
+            // A failed admission may already have retired source custody. Its
+            // existing backoff must rebuild lost preparation, even on an idle wake.
+            sourcePreparationPending = true;
+            throw error;
+          } finally {
+            sourcePreparationPending ||=
+              cache.invalidationRevision !== invalidationBefore ||
+              (rootBefore !== undefined && cache.preparedRoot === undefined);
+          }
+          return (
+            consumed ||
+            sourcePreparationPending ||
+            (sourceCursor !== undefined && !prepared?.preparationSaturated)
+          );
         } finally {
           await held.databaseClaim.release();
         }
@@ -351,7 +385,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     recipients.set(key, recipient);
     unsubscribeAvailability = onSessionMaintenanceAvailable(branch.sessionKey, () => {
       if (contextBudget && (cache.preparedCheckpoint || cache.preparedPackets(1).length)) {
-        owner.request();
+        owner.request("recipient");
       }
     });
     return recipient;

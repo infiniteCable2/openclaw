@@ -30,8 +30,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
   assertCurrent(): void;
   /** Scheduling hints only; each selected source still needs current native authority. */
   watchesSource?(sessionKey: string): boolean;
-  /** True continues disposable read-ahead; it is not a new root/input notification. */
-  prepare(signal: AbortSignal): Promise<void | boolean>;
+  /** Recipient delivery waits on runtime settlement; shared source preparation does not. */
+  watchRecipientRuntime?: boolean;
+  /** The hint avoids repeating source reads for recipient-only availability changes. */
+  prepare(signal: AbortSignal, prepareSources?: boolean): Promise<void | boolean>;
   /** Native background capacity owner; slow summarization must not occupy source read-ahead. */
   workOwner?: Pick<ReturnType<typeof createBackgroundWorkOwner>, "enqueue">;
   /** Join retained asynchronous cleanup before releasing native database custody. */
@@ -50,6 +52,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
   let unsubscribe = () => {};
   let unsubscribeRecipient = () => {};
   let requested = false;
+  let sourcesRequested = false;
   let preparationPauses = 0;
   let completion: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
@@ -95,6 +98,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
     controller.abort();
     cancelRetry();
     requested = false;
+    sourcesRequested = false;
     unsubscribe();
     unsubscribeRecipient();
     try {
@@ -185,6 +189,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
             break;
           }
           requested = false;
+          let preparingSources = false;
           try {
             check();
             // Each batch releases shared capacity before a coalesced successor is queued.
@@ -197,7 +202,9 @@ export function createConversationKnowledgePrefetchOwner(params: {
                 }
                 check();
                 signal.throwIfAborted();
-                const more = await params.prepare(signal);
+                preparingSources = sourcesRequested;
+                sourcesRequested = false;
+                const more = await params.prepare(signal, preparingSources);
                 signal.throwIfAborted();
                 check();
                 reportedFailures.delete("preparation-deferred");
@@ -210,6 +217,9 @@ export function createConversationKnowledgePrefetchOwner(params: {
             if (controller.signal.aborted) {
               return;
             }
+            // A failed quantum cannot consume its source notification. Keep it
+            // through the existing backoff and any recipient-only wakeup.
+            sourcesRequested ||= preparingSources;
             try {
               check();
             } catch {
@@ -239,13 +249,14 @@ export function createConversationKnowledgePrefetchOwner(params: {
       stop();
     });
   };
-  const request = () => {
+  const request = (kind: "source" | "recipient" = "source") => {
     if (controller.signal.aborted) {
       return;
     }
     // Committed-root publishers only mark work; even authority checks run off their stack.
     cancelRetry();
     requested = true;
+    sourcesRequested ||= kind === "source";
     schedule();
   };
   const pausePreparation = () => {
@@ -298,6 +309,19 @@ export function createConversationKnowledgePrefetchOwner(params: {
     });
     unsubscribeRecipient = sessionChanges.subscribe((change) => {
       if (
+        params.watchRecipientRuntime === true &&
+        "sessionKey" in change &&
+        change.scope === "runtime" &&
+        change.sessionKey === target.sessionKey &&
+        (change.agentId === undefined || change.agentId === target.agentId) &&
+        (change.storePath === undefined || path.resolve(change.storePath) === target.storePath)
+      ) {
+        // Runtime settlement omits the store path. This is only an exact-key
+        // wakeup; native recipient reads and commit guards still decide authority.
+        request("recipient");
+        return;
+      }
+      if (
         "sessionKey" in change &&
         change.scope === "session-entry" &&
         change.agentId === target.agentId &&
@@ -305,7 +329,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
         change.storePath &&
         path.resolve(change.storePath) === target.storePath
       ) {
-        request();
+        request(change.sessionKey === target.sessionKey ? "recipient" : "source");
       }
     });
   } catch (error) {
