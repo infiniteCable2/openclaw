@@ -216,6 +216,7 @@ export function createConversationKnowledgeSourceCustody(
         grouped: group !== undefined,
       };
     } catch (error) {
+      console.log("synthetic-source-custody-error", error);
       if (read) {
         drop(read);
       }
