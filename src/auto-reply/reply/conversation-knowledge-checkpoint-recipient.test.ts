@@ -405,7 +405,7 @@ describe("ready checkpoint recipient", () => {
           );
     const joined = pending.then(
       () => false,
-      (error) => {
+      (error: unknown) => {
         expect(error).toMatchObject({ name: "AbortError" });
         return true;
       },
@@ -414,7 +414,9 @@ describe("ready checkpoint recipient", () => {
       await entered.promise;
       cache.retryCleanup(); // Another background quantum must not own this live group.
       expect(native.releaseGroup).not.toHaveBeenCalled();
-      if (outcome === "abort") controller.abort();
+      if (outcome === "abort") {
+        controller.abort();
+      }
       resume.resolve();
       expect(await joined).toBe(outcome === "abort");
       cache.retryCleanup();
