@@ -1,6 +1,7 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { withinTest } from "../../../test/helpers/promise.js";
+import * as checkpointFrames from "../../auto-reply/reply/conversation-knowledge-checkpoint-frame-source.js";
 import {
   acquirePreparedConversationKnowledgeInitialFrame,
   registerConversationKnowledgeCheckpointOwner,
@@ -285,6 +286,7 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
       >[] = [];
       const resumes: (() => void)[] = [];
       const spies: { mockRestore(): void }[] = [];
+      const stages: string[] = [];
       try {
         const cfg: OpenClawConfig = {
           agents: {
@@ -330,6 +332,40 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
               ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>
             >["frame"]
           | undefined;
+        const prepareFrame = checkpointFrames.prepareCheckpointInitialFrame;
+        const prepareSources = checkpointSources.prepareConversationKnowledgeCheckpointSources;
+        const sourceAttempts = vi
+          .spyOn(checkpointSources, "prepareConversationKnowledgeCheckpointSources")
+          .mockImplementation((input) => {
+            stages.push("prepare-sources");
+            const result = prepareSources(input);
+            void result.then(
+              () => stages.push("sources-prepared"),
+              (error: unknown) =>
+                stages.push(
+                  `sources-refused:${error instanceof Error ? error.message : "unknown"}`,
+                ),
+            );
+            return result;
+          });
+        spies.push(sourceAttempts);
+        spies.push(
+          vi
+            .spyOn(checkpointFrames, "prepareCheckpointInitialFrame")
+            .mockImplementation((input) => {
+              stages.push("prepare-frame");
+              const result = prepareFrame(input);
+              void result.then(
+                (value) => stages.push(value ? "frame-prepared" : "frame-unavailable"),
+                (error: unknown) =>
+                  stages.push(
+                    `frame-refused:${error instanceof Error ? error.message : "unknown"}`,
+                  ),
+              );
+              return result;
+            }),
+        );
+        stages.push("register-root");
         registration = registerConversationKnowledgeCheckpointOwner({
           branch,
           participant: person,
@@ -345,6 +381,7 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
             assertCurrent: brokerOwner.assertCurrent,
           },
           onReady() {
+            stages.push(`root-notified:${registration?.projection().tail.length ?? -1}`);
             try {
               if (!registration || registration.projection().tail.length !== expectedOriginals) {
                 return;
@@ -372,6 +409,8 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
           },
         });
         await withinTest(ready.promise, signal);
+        stages.push("initial-frame-ready");
+        sourceAttempts.mockClear();
         const discovery = vi.spyOn(
           checkpointSources,
           "prepareConversationKnowledgeCheckpointSources",
@@ -381,6 +420,7 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
         const borrowing = vi.spyOn(frameBorrow, "borrowPreparedConversationKnowledgeInitialFrame");
         spies.push(discovery, groups, bodies, borrowing);
         const create = async (suffix: string, count: number) => {
+          stages.push(`create-${suffix}`);
           const target = {
             agentId: broker.agentId,
             storePath: broker.storePath,
@@ -422,6 +462,7 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
             }),
             signal,
           );
+          stages.push(`created-${suffix}`);
           expect(result.sessionEntry.visibility).toBe("draft");
           expect(result.sessionEntry.forkSource).toBeUndefined();
           expect(result.sessionEntry.parentSessionKey).toBeUndefined();
@@ -485,6 +526,7 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
         expect(bodies).not.toHaveBeenCalled();
         expect((await fixture.receipts()).length).toBe(4);
       } finally {
+        console.log(JSON.stringify({ scenario: "native-shared-initial-frame", stages }));
         for (const spy of spies.toReversed()) {
           spy.mockRestore();
         }
