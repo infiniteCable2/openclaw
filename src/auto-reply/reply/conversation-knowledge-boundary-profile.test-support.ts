@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import * as reportStorage from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
 import * as sourceAuthority from "../../config/sessions/session-source-authority.js";
 import * as transcriptAnchors from "../../config/sessions/session-transcript-anchor-read.js";
+import * as personalAuthority from "../../gateway/session-transcript-personal-read.js";
 import * as transcriptAuthority from "../../gateway/session-transcript-read-authority.js";
 import * as knowledgeSource from "./conversation-knowledge-source-reader.js";
 
@@ -60,6 +61,8 @@ export function createConversationKnowledgeBoundaryProfiler() {
     },
     async measure<T>(recipientSessionId: string, run: () => Promise<T>): Promise<T> {
       const nativeAuthority = transcriptAuthority.prepareTranscriptReadAuthority;
+      const nativePersonalRead = personalAuthority.preparePersonalConversationRead;
+      const nativePersonalGroup = personalAuthority.preparePersonalConversationContributionGroup;
       const nativeAnchors = transcriptAnchors.readSessionTranscriptAnchorsAsync;
       const nativePrepareTarget = knowledgeSource.prepareConversationKnowledgeTarget;
       const nativeInputs = knowledgeSource.readConversationKnowledgeInputs;
@@ -68,6 +71,18 @@ export function createConversationKnowledgeBoundaryProfiler() {
       const nativeSourceAuthority = sourceAuthority.prepareSessionSourceAuthority;
       const probes: Array<{ mockRestore(): void }> = [];
       try {
+        probes.push(
+          vi
+            .spyOn(personalAuthority, "preparePersonalConversationRead")
+            .mockImplementation((input) =>
+              observe("personalRead", () => nativePersonalRead(input)),
+            ),
+          vi
+            .spyOn(personalAuthority, "preparePersonalConversationContributionGroup")
+            .mockImplementation((input) =>
+              observe("personalGroup", () => nativePersonalGroup(input)),
+            ),
+        );
         probes.push(
           vi
             .spyOn(transcriptAuthority, "prepareTranscriptReadAuthority")

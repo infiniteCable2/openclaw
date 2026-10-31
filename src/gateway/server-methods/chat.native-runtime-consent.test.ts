@@ -7,6 +7,7 @@ import {
   registerNative,
   useNativeProcessFixture,
 } from "../../agents/harness/acp-native-process.test-support.js";
+import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import * as replyInitialization from "../../config/sessions/session-accessor.reset.js";
 import { ensureAgentConversationRoot } from "../../config/sessions/session-conversation-root.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -277,12 +278,20 @@ it("keeps private branch identity when first-send native consent precreates the 
           }),
         }),
       );
-      const persisted = expectDefined(
+      const listed = expectDefined(
         listSessionEntries({ agentId: "main", readOnly: true }).find(
           (row) => row.sessionKey === sessionKey,
         )?.entry,
-        "private consent-bound branch",
+        "public private-branch projection",
       );
+      // The public SDK deliberately hides internal topology; verify the actual
+      // durable row without broadening that public projection.
+      expect(listed).not.toHaveProperty("conversationTopology");
+      const persisted = expectDefined(
+        loadSessionEntry({ agentId: "main", sessionKey, storePath: database.path }),
+        "stored private consent-bound branch",
+      );
+      expect(persisted.sessionId).toBe(listed.sessionId);
       expect(persisted).toMatchObject({
         visibility: "draft",
         createdActor: { type: "human", source: "profile", id: profile.id },

@@ -4,12 +4,17 @@ import {
   createConversationKnowledgeScenario,
   person,
 } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
-import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
+import { initSessionState } from "../../auto-reply/reply/session.js";
+import {
+  bindConversationPrivateAudience,
+  type ConversationPrivateAudience,
+} from "../../sessions/conversation-private-audience.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { readConversationKnowledgeImportProgress } from "./conversation-knowledge-packets.js";
 import { recordConversationKnowledgeTurn } from "./conversation-knowledge-store.js";
-import { loadTranscriptEvents } from "./session-accessor.js";
+import { loadSessionEntry, loadTranscriptEvents } from "./session-accessor.js";
 import {
   commitReplySessionInitialization,
   loadReplySessionInitializationSnapshot,
@@ -148,3 +153,107 @@ it("adopts both original and projected-context generation claims on the same nat
     },
   );
 });
+
+it("copies populated root knowledge through ordinary ingress before its first model input", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "native-branch-ingress" },
+    async (state) => {
+      const fixture = await createConversationKnowledgeScenario(state);
+      try {
+        const cfg: OpenClawConfig = {
+          agents: {
+            defaults: { workspace: state.workspaceDir },
+            entries: { main: { conversationMode: "branches" } },
+          },
+          session: { store: fixture.root.storePath, dmScope: "per-channel-peer" },
+        };
+        await state.writeConfig(cfg);
+        const donor = await fixture.branch("ingress-donor");
+        const owner = await fixture.claim(donor);
+        const terminal = await fixture.append(donor, "ingress-original-fact");
+        expect(
+          await recordConversationKnowledgeTurn({
+            ...owner,
+            ...terminal,
+            privateAudience: { participant: person, admission: terminal.admission! },
+          }),
+        ).toBe(true);
+        const originals = await loadTranscriptEvents(donor);
+        const target = {
+          agentId: fixture.root.agentId,
+          storePath: fixture.root.storePath,
+          env: state.env,
+          sessionKey: "agent:main:matrix:direct:ingress-positive",
+        };
+        expect(loadSessionEntry(target)).toBeUndefined();
+        const ctx = finalizeInboundContext({
+          Body: "First actual ingress request.",
+          RawBody: "First actual ingress request.",
+          ChatType: "direct",
+          SessionKey: target.sessionKey,
+          Provider: "matrix",
+          Surface: "matrix",
+          From: `matrix:${person.id}`,
+          To: "room:private-ingress",
+          SenderId: person.id,
+          SessionCreation: {
+            via: "channel",
+            actor: { type: "human", source: "channel", id: person.id },
+          },
+        });
+        bindConversationPrivateAudience(ctx, {
+          agentId: target.agentId,
+          sessionKey: target.sessionKey,
+          channelId: "matrix",
+          accountId: "default",
+          nativeChannelId: "private-ingress",
+          participant: person,
+          assertCurrent: owner.assertCurrent,
+        });
+        // This enters the real outer session writer; projection preparation must
+        // not queue a nested writer against that same held initialization lane.
+        const result = await initSessionState({
+          cfg,
+          ctx,
+          commandAuthorized: true,
+          assertSourceCurrent: owner.assertCurrent,
+        });
+        expect(result.isNewSession).toBe(true);
+        expect(result.sessionKey).toBe(target.sessionKey);
+        expect(result.sessionEntry).toMatchObject({
+          visibility: "draft",
+          createdActor: { type: "human", source: "channel", id: person.id },
+          conversationTopology: { role: "branch" },
+        });
+        expect(result.sessionEntry.forkSource).toBeUndefined();
+        expect(result.sessionEntry.parentSessionKey).toBeUndefined();
+        expect(result.sessionEntry.spawnedBy).toBeUndefined();
+        const initialized = { ...target, sessionId: result.sessionId };
+        const events = await loadTranscriptEvents(initialized);
+        expect(JSON.stringify(events)).toContain("ingress-original-fact answer");
+        expect(JSON.stringify(events)).not.toContain("First actual ingress request.");
+        const topology = result.sessionEntry.conversationTopology;
+        if (topology?.role !== "branch" || !result.sessionEntry.lifecycleRevision) {
+          throw new Error("Expected a fully initialized native ingress branch");
+        }
+        const progress = await readConversationKnowledgeImportProgress({
+          branch: {
+            ...initialized,
+            lifecycleRevision: result.sessionEntry.lifecycleRevision,
+            root: {
+              sessionKey: topology.rootSessionKey,
+              sessionId: topology.rootSessionId,
+              lifecycleRevision: topology.rootSessionLifecycleRevision,
+            },
+          },
+          assertCurrent: owner.assertCurrent,
+        });
+        expect(progress.packets.size).toBe(1);
+        expect([...progress.packets.values()].every((packet) => packet.complete)).toBe(true);
+        expect(await loadTranscriptEvents(donor)).toEqual(originals);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+}, 30_000);

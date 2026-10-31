@@ -227,6 +227,7 @@ it.skipIf(!replayPath)(
     }
     const metadataChanges = process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_METADATA_CHANGES !== "off";
     const boundaryProfile = createConversationKnowledgeBoundaryProfiler();
+    const creationProfile = createConversationKnowledgeBoundaryProfiler();
     const initialIdleProfile = createConversationKnowledgeBoundaryProfiler();
     expect(Number.isSafeInteger(contextWindow) && contextWindow > 20_000).toBe(true);
     const started = performance.now();
@@ -446,22 +447,24 @@ it.skipIf(!replayPath)(
                       sessionKey: "agent:main:private-replay-created",
                     };
                     const createAt = performance.now();
-                    const sessionId = await ensureClientVoiceAgentSessionEntry({
-                      ...absent,
-                      cfg: fixture.cfg,
-                      getRuntimeConfig: () => fixture.cfg,
-                      chatType: "direct",
-                      privateAudience: {
-                        agentId: absent.agentId,
-                        sessionKey: absent.sessionKey,
-                        channelId: "test",
-                        accountId: "default",
-                        nativeChannelId: "private-replay-created",
-                        participant: person,
-                        assertCurrent: () => signal.throwIfAborted(),
-                      },
-                      assertCommitAllowed: () => signal.throwIfAborted(),
-                    });
+                    const sessionId = await creationProfile.measure("not-yet-created", () =>
+                      ensureClientVoiceAgentSessionEntry({
+                        ...absent,
+                        cfg: fixture.cfg,
+                        getRuntimeConfig: () => fixture.cfg,
+                        chatType: "direct",
+                        privateAudience: {
+                          agentId: absent.agentId,
+                          sessionKey: absent.sessionKey,
+                          channelId: "test",
+                          accountId: "default",
+                          nativeChannelId: "private-replay-created",
+                          participant: person,
+                          assertCurrent: () => signal.throwIfAborted(),
+                        },
+                        assertCommitAllowed: () => signal.throwIfAborted(),
+                      }),
+                    );
                     const entry = loadSessionEntry(absent);
                     if (!entry?.lifecycleRevision || entry.sessionId !== sessionId) {
                       throw new Error("Native replay creation was not published");
@@ -792,6 +795,7 @@ it.skipIf(!replayPath)(
           cpuMicroseconds: process.cpuUsage(cpu),
           processLifetimePeakRssKiB: process.resourceUsage().maxRSS,
           firstBoundaryTimings: boundaryProfile.snapshot(),
+          creationTimings: creationProfile.snapshot(),
           initialIdleTimings: initialIdleProfile.snapshot(),
           timingMeaning:
             "Pass-through asynchronous phase windows include nested/background work; durations overlap, are not additive and are not CPU time.",

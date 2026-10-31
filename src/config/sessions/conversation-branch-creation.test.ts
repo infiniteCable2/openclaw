@@ -295,6 +295,68 @@ describe("native private conversation creation capability", () => {
     expect(() => creation.source()).toThrow("released");
   });
 
+  it("never reuses creation-only custody as an ordinary recipient admission", async () => {
+    const f = fixture();
+    const creation = await prepareConversationBranchCreation(f.params);
+    const request = {
+      purpose: "conversation-differences" as const,
+      personal: {
+        originalParticipant: f.participant,
+        assertCurrent: f.params.assertCurrent,
+        target: f.branch,
+        targetAudience: f.audience,
+      },
+      getRuntimeConfig: f.params.getRuntimeConfig,
+      sources: [{ agentId: f.branch.agentId, sessionKey: f.donorKey }],
+    };
+    const grant = await preparePersonalConversationRead({
+      ...request,
+      personal: { ...request.personal, targetCreation: creation },
+    });
+    const preparedAdmission = grant.prepareAdmission();
+    grant.release();
+    native.sharing.mockClear();
+    try {
+      await expect(
+        preparePersonalConversationRead({ ...request, preparedAdmission }),
+      ).rejects.toThrow("changed or expired");
+      expect(native.sharing).not.toHaveBeenCalled();
+      const rebound = await preparePersonalConversationRead({
+        ...request,
+        personal: { ...request.personal, targetCreation: creation },
+        preparedAdmission,
+      });
+      rebound.assertCurrent();
+      rebound.release();
+      expect(native.sharing).not.toHaveBeenCalled();
+      creation.bindCreation(createSessionEntryCreationOperation());
+      f.adopt();
+      f.rows.set(f.branch.sessionKey, { ...f.entry, visibility: "shared" });
+      await expect(
+        preparePersonalConversationRead({
+          ...request,
+          personal: { ...request.personal, targetCreation: creation },
+          preparedAdmission,
+        }),
+      ).rejects.toThrow("already committed");
+      // Removing the now-consumed capability must not bypass that refusal.
+      await expect(
+        preparePersonalConversationRead({ ...request, preparedAdmission }),
+      ).rejects.toThrow("changed or expired");
+      expect(native.sharing).not.toHaveBeenCalled();
+      // A genuinely fresh ordinary grant must hold and check the actual target row.
+      await expect(preparePersonalConversationRead(request)).rejects.toThrow(
+        "visible to other Gateway readers",
+      );
+      expect(native.sharing).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ sessionKey: f.branch.sessionKey }),
+      );
+    } finally {
+      preparedAdmission.release();
+      creation.release();
+    }
+  });
+
   it("rejects substituted publication, person, incarnation and final draft bytes", async () => {
     const f = fixture();
     const creation = await prepareConversationBranchCreation(f.params);
