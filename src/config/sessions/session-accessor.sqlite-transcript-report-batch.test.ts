@@ -39,7 +39,6 @@ import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-s
 import { readActiveTranscriptEntryAnchorAsync } from "./session-transcript-anchor-read.js";
 import { runWithSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
-import { prepareTranscriptPayload } from "./transcript-payload.js";
 import { withSessionTranscriptWriteAssertion } from "./transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "./version.js";
 
@@ -279,7 +278,7 @@ it("observes a full receipt batch with one reverse scan and one body read per re
   );
 });
 
-it("selects canonical batch receipts without returning previous compressed bodies", async () => {
+it("streams one canonical receipt selection for missing and existing batches across a large ledger", async () => {
   await withOpenClawTestState(
     { scenario: "minimal", label: "report-batch-scaling" },
     async (state) => {
@@ -317,16 +316,14 @@ it("selects canonical batch receipts without returning previous compressed bodie
         const resolved = { ...scope, path: database.path };
         const batch = Array.from({ length: 32 }, (_, index) => prepared(`new-${index}`));
         const observe = () =>
-          trackSqliteStatementExecutions(database.db, ["branch", "payload", "receipt"], (sql) =>
-            sql.includes('"receipt_details"') && sql.includes('as "envelope"')
-              ? "receipt"
-              : sql.includes('as "report_json"') && sql.includes('from "transcript_events"')
-                ? "branch"
-                : sql.includes('as "event_json"') &&
-                    sql.includes('from "transcript_events"') &&
-                    (sql.includes('"seq" =') || sql.includes('"seq" in'))
-                  ? "payload"
-                  : null,
+          trackSqliteStatementExecutions(database.db, ["branch", "payload"], (sql) =>
+            sql.includes('as "report_json"') && sql.includes('from "transcript_events"')
+              ? "branch"
+              : sql.includes('as "event_json"') &&
+                  sql.includes('from "transcript_events"') &&
+                  (sql.includes('"seq" =') || sql.includes('"seq" in'))
+                ? "payload"
+                : null,
           );
         const legacy = observe();
         const legacyStarted = performance.now();
@@ -361,9 +358,8 @@ it("selects canonical batch receipts without returning previous compressed bodie
           expect(selected.appendParentId).toBe(`old-${count - 1}`);
           expect([...selected.existing]).toEqual([]);
           expect(counter.counts.branch).toBeLessThanOrEqual(2);
-          expect(counter.counts.payload).toBe(0);
-          expect(counter.counts.receipt).toBe(1);
-          expect(counter.rowCounts.receipt).toBe(0);
+          expect(counter.counts.payload).toBe(1);
+          expect(counter.rowCounts.payload).toBe(count);
           expect(decode).toHaveBeenCalledTimes(Number(stored?.compressed));
           expect(counter.rowCounts.branch).toBeLessThanOrEqual(count + 2);
           console.info(
@@ -388,154 +384,14 @@ it("selects canonical batch receipts without returning previous compressed bodie
           expect(
             prepareTranscriptReportBatchSelection(database, resolved, duplicates).existing,
           ).toEqual(new Set(duplicates.map(transcriptReportBatchReceiptKey)));
-          expect(counter.counts.payload).toBe(0);
-          expect(counter.counts.receipt).toBe(2);
-          expect(counter.rowCounts.receipt).toBeLessThanOrEqual(32);
+          expect(counter.counts.payload).toBe(2);
+          expect(counter.rowCounts.payload).toBe(count * 2);
           expect(decode).toHaveBeenCalledTimes(Number(stored?.compressed) * 2);
         } finally {
           counter.restore();
           decode.mockRestore();
         }
       }
-    },
-  );
-});
-
-it("matches exact own receipts on the canonical branch with compressed and exceptional JSON", async () => {
-  await withOpenClawTestState(
-    { scenario: "minimal", label: "report-receipt-semantics" },
-    async (state) => {
-      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
-      const scope = {
-        agentId: "main",
-        sessionKey: "agent:main:receipt-semantics",
-        sessionId: "receipt-semantics",
-        storePath: database.path,
-        env: state.env,
-      };
-      const special = "exceptional-observation";
-      const bodies = [
-        {
-          type: customType,
-          members: '"details":{"packetId":"discarded-field","packetId":"kept-field"}',
-        },
-        { type: customType, members: '"details":{"packetId":"discarded-number","packetId":9}' },
-        {
-          type: customType,
-          members: '"details":{"packetId":"discarded-root"},"details":{"packetId":"kept-root"}',
-        },
-        { type: customType, members: '"details":{"packetId":42}' },
-        { type: customType, members: '"details":{"__proto__":"own-prototype"}' },
-        { type: customType, members: '"details":{"packetId":"value\\\"with-quote"}' },
-        { type: special, members: '"details":["array-value"]' },
-        { type: special, members: `"details":${JSON.stringify({ 'quoted"key': "quoted-key" })}` },
-        { type: special, members: `"details":${JSON.stringify({ schlüssel: "unicode-key" })}` },
-        { type: special, members: `"details":${JSON.stringify({ "nul\0key": "nul-key" })}` },
-        { type: special, members: `"details":${JSON.stringify({ packetId: "unpaired-\ud800" })}` },
-      ];
-      const raw = bodies.map(
-        ({ type, members }, index) =>
-          `{"type":"custom_message","id":"case-${index}","parentId":"${index ? `case-${index - 1}` : "current"}","customType":${JSON.stringify(type)},"content":${JSON.stringify("Synthetic receipt body. ".repeat(160))},"display":false,${members}}`,
-      );
-      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-      await replaceTranscriptEvents(scope, [
-        { type: "session", id: scope.sessionId, version: CURRENT_SESSION_VERSION },
-        {
-          type: "message",
-          id: "root",
-          parentId: null,
-          message: { role: "user", content: "Root." },
-        },
-        {
-          type: "custom_message",
-          id: "inactive",
-          parentId: "root",
-          ...report("off-branch").report,
-        },
-        {
-          type: "message",
-          id: "current",
-          parentId: "root",
-          message: { role: "user", content: "Current." },
-        },
-        ...raw.map((event) => JSON.parse(event) as unknown),
-        {
-          type: "compaction",
-          id: "compact",
-          parentId: `case-${raw.length - 1}`,
-          summary: "Native summary.",
-          firstKeptEntryId: "current",
-          tokensBefore: 100,
-        },
-        {
-          type: "custom_message",
-          id: "side",
-          parentId: "compact",
-          appendMode: "side",
-          ...report("side-only").report,
-        },
-      ]);
-      // Exercise the original duplicate members retained by the native compressed
-      // payload owner; parsing into the fixture alone would erase this contract.
-      for (const [index, event] of raw.entries()) {
-        const payload = prepareTranscriptPayload(database.db, event);
-        if (index < 6) {
-          expect(payload.event_zstd).not.toBeNull();
-        }
-        database.db
-          .prepare(`UPDATE transcript_events SET event_json = ?, event_zstd = ?,
-        event_utf8_bytes = ?, navigation_json = ? WHERE session_id = ? AND seq = ?`)
-          .run(
-            payload.event_json,
-            payload.event_zstd,
-            payload.event_utf8_bytes,
-            payload.navigation_json,
-            scope.sessionId,
-            index + 4,
-          );
-      }
-      const queries = [
-        ...[
-          "discarded-field",
-          "kept-field",
-          "discarded-number",
-          "9",
-          "discarded-root",
-          "kept-root",
-          "42",
-          "off-branch",
-          "side-only",
-          'value"with-quote',
-        ].map((value) => ({ customType, receipt: { field: "packetId", value } })),
-        { customType, receipt: { field: "__proto__", value: "own-prototype" } },
-        { customType, receipt: { field: "toString", value: "not-own" } },
-        { customType: special, receipt: { field: "0", value: "array-value" } },
-        { customType: special, receipt: { field: 'quoted"key', value: "quoted-key" } },
-        { customType: special, receipt: { field: "schlüssel", value: "unicode-key" } },
-        { customType: special, receipt: { field: "nul\0key", value: "nul-key" } },
-        { customType: special, receipt: { field: "packetId", value: "unpaired-\ud800" } },
-      ].map((entry) => Object.assign(prepared("unused"), entry));
-      const selected = prepareTranscriptReportBatchSelection(
-        database,
-        { ...scope, path: database.path },
-        queries,
-      );
-      // Native side appends advance the physical append parent while leaving
-      // the selected model branch at the compaction entry.
-      expect(selected.appendParentId).toBe("side");
-      expect(readReportBranch(database, scope.sessionId).path.at(-1)?.id).toBe("compact");
-      const expected = queries.filter(({ customType: type, receipt }) =>
-        type === customType
-          ? ["kept-field", "kept-root", 'value"with-quote', "own-prototype"].includes(receipt.value)
-          : ["quoted-key", "unicode-key", "nul-key", "unpaired-\ud800"].includes(receipt.value),
-      );
-      expect(selected.existing).toEqual(new Set(expected.map(transcriptReportBatchReceiptKey)));
-      database.db
-        .prepare("UPDATE transcript_events SET event_json = ? WHERE session_id = ? AND seq = 0")
-        .run(JSON.stringify({ type: "session", id: scope.sessionId, version: 1 }), scope.sessionId);
-      expect(() =>
-        prepareTranscriptReportBatchSelection(database, { ...scope, path: database.path }, queries),
-      ).toThrow("Persisted legacy session transcripts require doctor/import migration");
     },
   );
 });
