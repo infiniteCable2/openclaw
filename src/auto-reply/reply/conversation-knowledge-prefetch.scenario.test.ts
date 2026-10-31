@@ -639,6 +639,24 @@ describe("native branch prefetch and model-boundary composition", () => {
           if (!prefetch) {
             throw new Error("Expected actual eligible native prefetch recipient");
           }
+          const invalidation = prefetch.cache.invalidateContribution;
+          const consumption = prefetch.cache.consume;
+          const invalidationSpy = vi
+            .spyOn(prefetch.cache, "invalidateContribution")
+            .mockImplementation((id) => {
+              console.log("synthetic-invalidate", new Error().stack);
+              return invalidation(id);
+            });
+          const consumptionSpy = vi
+            .spyOn(prefetch.cache, "consume")
+            .mockImplementation((id, offset) => {
+              console.log("synthetic-consume", new Error().stack);
+              return consumption(id, offset);
+            });
+          onTestFinished(() => {
+            invalidationSpy.mockRestore();
+            consumptionSpy.mockRestore();
+          });
           await prefetch.owner.wait();
           const publish = async (id: string, text: string) => {
             const terminal = await fixture.append(donor, id, "stop", text);
@@ -691,8 +709,23 @@ describe("native branch prefetch and model-boundary composition", () => {
           if (!knowledge) {
             throw new Error("Expected actual native knowledge turn");
           }
-          const refreshReady = (request: Parameters<typeof knowledge.refreshPrepared>[0]) =>
-            foregroundPhase.run(true, () => knowledge.refreshPrepared(request));
+          const refreshReady = async (request: Parameters<typeof knowledge.refreshPrepared>[0]) => {
+            console.log("synthetic-refresh-start", {
+              count: prefetch!.cache.diagnosticCapacity(),
+              revision: prefetch!.cache.revision,
+              consumption: prefetch!.cache.consumptionRevision,
+              invalidation: prefetch!.cache.invalidationRevision,
+            });
+            const value = await foregroundPhase.run(true, () => knowledge.refreshPrepared(request));
+            console.log("synthetic-refresh-end", {
+              count: prefetch!.cache.diagnosticCapacity(),
+              revision: prefetch!.cache.revision,
+              consumption: prefetch!.cache.consumptionRevision,
+              invalidation: prefetch!.cache.invalidationRevision,
+              returned: value.length,
+            });
+            return value;
+          };
           const logicalTurn = new AbortController();
           try {
             await knowledge.prepare(admission, AbortSignal.any([signal, logicalTurn.signal]));
