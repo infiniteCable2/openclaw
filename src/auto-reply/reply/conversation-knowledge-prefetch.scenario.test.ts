@@ -691,8 +691,39 @@ describe("native branch prefetch and model-boundary composition", () => {
           if (!knowledge) {
             throw new Error("Expected actual native knowledge turn");
           }
-          const refreshReady = (request: Parameters<typeof knowledge.refreshPrepared>[0]) =>
-            foregroundPhase.run(true, () => knowledge.refreshPrepared(request));
+          const refreshReady = async (request: Parameters<typeof knowledge.refreshPrepared>[0]) => {
+            const before = {
+              capacity: prefetch!.cache.diagnosticCapacity(),
+              frontiers: prefetch!.cache.diagnosticPreparedFrontiers(),
+              root: !!prefetch!.cache.preparedRoot,
+            };
+            const result = await foregroundPhase.run(true, () =>
+              knowledge.refreshPrepared(request),
+            );
+            console.log(
+              "synthetic-refresh",
+              JSON.stringify({
+                before,
+                after: prefetch!.cache.diagnosticCapacity(),
+                frontiers: prefetch!.cache.diagnosticPreparedFrontiers(),
+                root: !!prefetch!.cache.preparedRoot,
+                result: result.length,
+              }),
+            );
+            return result;
+          };
+          const originalPrepare = knowledgePreparation.prepareReplyConversationKnowledge;
+          const observePrepare = vi
+            .spyOn(knowledgePreparation, "prepareReplyConversationKnowledge")
+            .mockImplementation(async (...args) => {
+              try {
+                return await originalPrepare(...args);
+              } catch (error) {
+                console.log("synthetic-prepare-error", error);
+                throw error;
+              }
+            });
+          onTestFinished(() => observePrepare.mockRestore());
           const logicalTurn = new AbortController();
           try {
             await knowledge.prepare(admission, AbortSignal.any([signal, logicalTurn.signal]));
