@@ -2,6 +2,7 @@
  * Runtime SDK subpath for config snapshot and config cache access.
  */
 export { cloneRuntimeConfigSnapshot } from "../config/resolution-facts.js";
+export { createRuntimeConfigSnapshotMatcher } from "../config/runtime-config-snapshot-match.js";
 export {
   clearRuntimeConfigSnapshot,
   createRuntimeConfigReader,

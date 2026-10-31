@@ -1,5 +1,6 @@
 // Runtime config tests cover plugin runtime config normalization and lookup.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 
 const getRuntimeConfigMock = vi.fn();
 const mutateConfigFileMock = vi.fn();
@@ -29,6 +30,23 @@ describe("createRuntimeConfig", () => {
     getRuntimeConfigMock.mockReturnValue(runtimeConfig);
 
     expect(createRuntimeConfig().current()).toBe(runtimeConfig);
+  });
+
+  it("observes installed config publications without session or transcript churn", () => {
+    const listener = vi.fn();
+    const unsubscribe = createRuntimeConfig().subscribe(listener);
+    try {
+      sessionChanges.emit({ sessionKey: "agent:example:main", scope: "runtime" });
+      sessionChanges.emit({ all: true, scope: "profiles" });
+      expect(listener).not.toHaveBeenCalled();
+      sessionChanges.emit({ all: true, scope: "config" });
+      sessionChanges.emit({ all: true, scope: "config-profiles" });
+      expect(listener).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+    }
+    sessionChanges.emit({ all: true, scope: "config" });
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 
   it("exposes canonical mutation helpers", async () => {

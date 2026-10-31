@@ -3,9 +3,11 @@ import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helper
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setMatrixRuntime } from "../../runtime.js";
 import {
+  resolveMatrixEndpointPolicy,
   resolveMatrixMonitorAccessState,
   resolveMatrixMonitorCommandAccess,
 } from "./access-state.js";
+import { resolveMatrixRoomConfig } from "./rooms.js";
 
 beforeEach(() => {
   setMatrixRuntime(createPluginRuntimeMock());
@@ -23,6 +25,44 @@ async function expectCommandAccess(
 }
 
 describe("resolveMatrixMonitorAccessState", () => {
+  it.each([
+    { direct: true, dmEnabled: false, groupPolicy: "open", reason: "dm-disabled" },
+    { direct: false, dmEnabled: false, groupPolicy: "open", reason: undefined },
+    { direct: false, groupPolicy: "disabled", reason: "group-disabled" },
+    { direct: false, groupPolicy: "allowlist", reason: "room-allowlist-missing" },
+    {
+      direct: false,
+      groupPolicy: "allowlist",
+      rooms: { "!other:example.test": {} },
+      reason: "room-not-allowlisted",
+    },
+    {
+      direct: false,
+      groupPolicy: "open",
+      rooms: { "!other:example.test": {} },
+      reason: undefined,
+    },
+    {
+      direct: false,
+      groupPolicy: "open",
+      rooms: { "!target:example.test": { enabled: false } },
+      reason: "room-disabled",
+    },
+  ] as const)("uses the same endpoint gate for input and registration (%j)", (entry) => {
+    expect(
+      resolveMatrixEndpointPolicy({
+        isDirectMessage: entry.direct,
+        dmEnabled: "dmEnabled" in entry ? entry.dmEnabled : undefined,
+        groupPolicy: entry.groupPolicy,
+        room: resolveMatrixRoomConfig({
+          roomId: "!target:example.test",
+          aliases: [],
+          rooms: "rooms" in entry ? entry.rooms : undefined,
+        }),
+      }),
+    ).toBe(entry.reason);
+  });
+
   it("publishes the SDK sender identity without strengthening text command authentication", async () => {
     const runtime = createPluginRuntimeMock();
     const createResolver = vi.spyOn(runtime.channel.inbound.ingress, "createResolver");

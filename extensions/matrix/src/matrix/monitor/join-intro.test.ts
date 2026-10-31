@@ -184,6 +184,22 @@ beforeEach(() => {
 });
 
 describe("Matrix join introductions through the SDK bridge", () => {
+  it("announces only changed post-startup direct routing without forwarding account data", () => {
+    const h = createHarness();
+    const changed = vi.fn();
+    h.emitter.on("direct.rooms.changed", changed);
+    const previous = new MatrixEvent({ type: "m.direct", content: { [remoteUserId]: [roomId] } });
+    const current = new MatrixEvent({ type: "m.direct", content: {} });
+    h.sdk.emit(ClientEvent.AccountData, current, previous);
+    expect(changed).not.toHaveBeenCalled();
+    h.ready();
+    h.sdk.emit(ClientEvent.AccountData, current, current);
+    expect(changed).not.toHaveBeenCalled();
+    h.sdk.emit(ClientEvent.AccountData, current, previous);
+    expect(changed.mock.calls).toEqual([[]]);
+    expect(reportJoin).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])(
     "never introduces into an already-joined room during startup, including recovery=%s",
     async (recovering) => {

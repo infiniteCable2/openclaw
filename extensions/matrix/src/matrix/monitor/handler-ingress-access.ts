@@ -1,7 +1,7 @@
 import type { ChannelBotLoopProtectionFacts } from "openclaw/plugin-sdk/channel-inbound";
 import { mergePairLoopGuardConfig } from "openclaw/plugin-sdk/pair-loop-guard-runtime";
 import { resolveMatrixThreadRootId } from "../relations.js";
-import { resolveMatrixMonitorAccessState } from "./access-state.js";
+import { resolveMatrixEndpointPolicy, resolveMatrixMonitorAccessState } from "./access-state.js";
 import { resolveMatrixAllowBotsMode } from "./handler-helpers.js";
 import { loadMatrixReactionEvents, loadMatrixSendModule } from "./handler-runtime.js";
 import type { createMatrixHandlerState } from "./handler-state.js";
@@ -152,18 +152,25 @@ export async function resolveMatrixIngressAccess(config: {
         }
       : undefined;
 
-  if (isRoom && roomConfig && !roomConfigInfo?.allowed) {
+  const endpointPolicy = resolveMatrixEndpointPolicy({
+    isDirectMessage,
+    dmEnabled,
+    dmPolicy,
+    groupPolicy,
+    room: roomConfigInfo,
+  });
+  if (endpointPolicy === "room-disabled") {
     logVerboseMessage(`matrix: room disabled room=${roomId} (${roomMatchMeta})`);
     await commitInboundEventIfClaimedAndDiscardReserved();
     return undefined;
   }
   if (isRoom && groupPolicy === "allowlist") {
-    if (!roomConfigInfo?.allowlistConfigured) {
+    if (endpointPolicy === "room-allowlist-missing") {
       logVerboseMessage(`matrix: drop room message (no allowlist, ${roomMatchMeta})`);
       await commitInboundEventIfClaimedAndDiscardReserved();
       return undefined;
     }
-    if (!roomConfig) {
+    if (endpointPolicy === "room-not-allowlisted") {
       logVerboseMessage(`matrix: drop room message (not in allowlist, ${roomMatchMeta})`);
       await commitInboundEventIfClaimedAndDiscardReserved();
       return undefined;
@@ -198,7 +205,7 @@ export async function resolveMatrixIngressAccess(config: {
   const ingressDecision = messageIngress.ingress;
 
   if (isDirectMessage) {
-    if (!dmEnabled || dmPolicy === "disabled") {
+    if (endpointPolicy === "dm-disabled") {
       await commitInboundEventIfClaimedAndDiscardReserved();
       return undefined;
     }

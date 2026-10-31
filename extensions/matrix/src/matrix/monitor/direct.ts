@@ -24,6 +24,8 @@ type DirectRoomTrackerOptions = {
   isCurrent?: () => boolean;
   /** A temporarily unhealthy sync cannot hold private audience evidence. */
   isAudienceCurrent?: () => boolean;
+  /** Scheduling hint from original room/account invalidation, never a read failure. */
+  onAudienceInvalidated?: (roomId?: string) => void;
   isExplicitlyConfiguredRoom?: (roomId: string) => boolean | Promise<boolean>;
   canPromoteRecentInvite?: (roomId: string) => boolean | Promise<boolean>;
   canPromoteUnmappedStrictRoom?: (roomId: string) => boolean | Promise<boolean>;
@@ -287,9 +289,11 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
     invalidatePrivateAudiences: (roomId?: string): void => {
       if (roomId === undefined) {
         privateAudienceRooms.clear();
+        lastDmUpdateMs = 0;
       } else {
         privateAudienceRooms.delete(roomId);
       }
+      opts.onAudienceInvalidated?.(roomId);
     },
     invalidateRoom: (roomId: string): void => {
       privateAudienceRooms.delete(roomId);
@@ -300,6 +304,7 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
         }
       }
       lastDmUpdateMs = 0;
+      opts.onAudienceInvalidated?.(roomId);
       log(`matrix: invalidated dm cache room=${roomId}`);
     },
     rememberInvite: (roomId: string, remoteUserId: string): void => {
@@ -443,6 +448,7 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
           });
           if (promotion.classifyAsDirect) {
             rememberLocallyPromotedDirectRoom(roomId, senderId ?? "");
+            opts.onAudienceInvalidated?.(roomId);
             log(
               `matrix: dm detected via ${source} room=${roomId} reason=${promotion.reason} repaired=${String(promotion.repaired)}`,
             );

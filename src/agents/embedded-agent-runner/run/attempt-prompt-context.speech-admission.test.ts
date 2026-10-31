@@ -142,6 +142,7 @@ describe("turn-owned speech guidance at the native provider boundary", () => {
     }
     const control = requests.splice(0);
     expect(control).toHaveLength(4);
+    const systemBytes = JSON.stringify(control[0]?.system);
 
     const conversation = await createConversation();
     const speech = speechAdmission();
@@ -160,7 +161,8 @@ describe("turn-owned speech guidance at the native provider boundary", () => {
       ) {
         throw new Error("Expected both native provider payloads");
       }
-      expect(JSON.stringify(actual.system)).toBe(JSON.stringify(expected.system));
+      expect(JSON.stringify(expected.system)).toBe(systemBytes);
+      expect(JSON.stringify(actual.system)).toBe(systemBytes);
       // Current carrier projection may add or merge a user message. Completed
       // user/assistant pairs must retain their exact original provider bytes.
       const completedMessages = index * 2;

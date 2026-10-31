@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withRegisteredChannelIngress } from "../../plugin-sdk/test-helpers/registered-channel-ingress.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { ChannelPlugin } from "../plugins/types.plugin.js";
 import { defineStableChannelIngressIdentity } from "./runtime-identity.js";
 
@@ -44,6 +45,8 @@ const scope = {
   },
 };
 
+type RootState = "registered" | "prepared" | "unavailable" | "invalidated";
+
 async function fixture(
   run: (f: {
     open: (privateRoom?: boolean) => Promise<void>;
@@ -51,6 +54,7 @@ async function fixture(
       privateRoom?: boolean;
       eventKind?: "conversation" | "message";
       inboundEventKind?: "room_event" | "user_request";
+      onState?: (state: RootState) => void;
     }) => Promise<void>;
     abort: () => void;
     cleanup: () => Promise<void>;
@@ -84,6 +88,7 @@ async function fixture(
         root?: {
           eventKind?: "conversation" | "message";
           inboundEventKind?: "room_event" | "user_request";
+          onState?: (state: RootState) => void;
         },
       ) => {
         const selectedScope = root
@@ -123,6 +128,7 @@ async function fixture(
             ? {
                 purpose: "root-preparation" as const,
                 signal: abort.signal,
+                onRootPreparationState: root.onState,
                 retainCleanup: (close: () => Promise<void>) => {
                   cleanups.add(close);
                   return () => void cleanups.delete(close);
@@ -216,6 +222,193 @@ describe("registered channel connection preparation", () => {
       expect(close).toHaveBeenCalled();
       expect(cleanupCount()).toBe(0);
       expect(() => opening.audience.assertCurrent()).toThrow();
+    });
+  });
+
+  it("reports prepared only after a current complete native frame can be borrowed", async () => {
+    let ready = false;
+    let finished = () => {};
+    const prepared = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
+    const release = vi.fn(async () => {});
+    const close = vi.fn(async () => {});
+    const acquireInitialFrame = vi.fn(() => (ready ? { release } : undefined));
+    mocks.openRoot.mockResolvedValue({ close, acquireInitialFrame });
+    await fixture(async ({ prepareRoot, abort, cleanup }) => {
+      const states: RootState[] = [];
+      await prepareRoot({
+        onState(state) {
+          states.push(state);
+          if (state === "prepared") {
+            finished();
+          }
+        },
+      });
+      const native = mocks.openRoot.mock.calls[0]![0];
+      native.onReady();
+      expect(states).toEqual(["registered"]);
+      ready = true;
+      native.onReady();
+      await prepared;
+      native.onReady();
+      expect(states).toEqual(["registered", "prepared"]);
+      expect(release).toHaveBeenCalledOnce();
+      abort();
+      await cleanup();
+    });
+  });
+
+  it("retains an unavailable enrollment and requalifies only on an actual native row change", async () => {
+    let finish = () => {};
+    const invalidated = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    await fixture(async ({ prepareRoot, abort, cleanup, cleanupCount }) => {
+      const states: RootState[] = [];
+      await prepareRoot({
+        onState(state) {
+          states.push(state);
+          if (state === "invalidated") {
+            finish();
+          }
+        },
+      });
+      expect(states).toEqual(["unavailable"]);
+      expect(cleanupCount()).toBe(1);
+      const target = mocks.openRoot.mock.calls[0]![0].target;
+      sessionChanges.emit({
+        ...target,
+        scope: "session-entry",
+        facts: {
+          kind: "entry",
+          sessionId: "new-session",
+          previousSessionId: undefined,
+          category: null,
+          clearMembers: false,
+          lifecycleChanged: true,
+        },
+      });
+      await invalidated;
+      expect(cleanupCount()).toBe(0);
+      const close = vi.fn(async () => {});
+      mocks.openRoot.mockResolvedValue({ close });
+      await prepareRoot();
+      expect(mocks.openRoot).toHaveBeenCalledTimes(2);
+      expect(mocks.ensureSession).not.toHaveBeenCalled();
+      abort();
+      await cleanup();
+    });
+  });
+
+  it("ignores turn metadata and requalifies a hot config publication after successful retirement", async () => {
+    let finish = () => {};
+    const invalidated = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const close = vi.fn(async () => {});
+    mocks.openRoot.mockResolvedValue({ close });
+    await fixture(async ({ prepareRoot, abort, cleanup }) => {
+      const states: RootState[] = [];
+      await prepareRoot({
+        onState(state) {
+          states.push(state);
+          if (state === "invalidated") {
+            finish();
+          }
+        },
+      });
+      const target = mocks.openRoot.mock.calls[0]![0].target;
+      sessionChanges.emit({ ...target, scope: "runtime" });
+      sessionChanges.emit({ ...target, scope: "transcript", factsInvalidated: true });
+      // A failed read may fence facts without a committed row publication.
+      // It must not repeatedly wake its own requalification attempt.
+      sessionChanges.invalidate({ ...target, factsInvalidated: true });
+      sessionChanges.emit({ ...target, scope: "session-entry", factsInvalidated: "category" });
+      sessionChanges.emit({
+        ...target,
+        scope: "session-entry",
+        facts: {
+          kind: "entry",
+          previousSessionId: "same",
+          sessionId: "same",
+          category: "changed",
+          clearMembers: false,
+          lifecycleChanged: false,
+        },
+      });
+      expect(close).not.toHaveBeenCalled();
+      expect(states).toEqual(["registered"]);
+      sessionChanges.emit({ all: true, scope: "config" });
+      await invalidated;
+      expect(close).toHaveBeenCalledOnce();
+      expect(states).toEqual(["registered", "invalidated"]);
+      abort();
+      await cleanup();
+    });
+  });
+
+  it("keeps failed cleanup retryable without announcing a successful requalification", async () => {
+    const close = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("cleanup unavailable"))
+      .mockResolvedValue(undefined);
+    mocks.openRoot.mockResolvedValue({ close });
+    await fixture(async ({ prepareRoot, abort, cleanup, cleanupCount }) => {
+      const states: RootState[] = [];
+      await prepareRoot({
+        onState: (state) => {
+          states.push(state);
+        },
+      });
+      sessionChanges.emit({ all: true, scope: "config" });
+      await expect(close.mock.results[0]!.value).rejects.toThrow("cleanup unavailable");
+      expect(cleanupCount()).toBe(1);
+      await cleanup();
+      expect(states).toEqual(["registered"]);
+      expect(cleanupCount()).toBe(0);
+      abort();
+    });
+  });
+
+  it("joins pending enrollment before announcing invalidation and never publishes a stale registration", async () => {
+    let start = () => {};
+    let finish = (_value: { close: () => Promise<void> }) => {};
+    const started = new Promise<void>((resolve) => {
+      start = resolve;
+    });
+    const opening = new Promise<{ close: () => Promise<void> }>((resolve) => {
+      finish = resolve;
+    });
+    mocks.openRoot.mockImplementation(() => {
+      start();
+      return opening;
+    });
+    let finishInvalidation = () => {};
+    const invalidated = new Promise<void>((resolve) => {
+      finishInvalidation = resolve;
+    });
+    await fixture(async ({ prepareRoot, abort, cleanup }) => {
+      const states: RootState[] = [];
+      const prepared = prepareRoot({
+        onState(state) {
+          states.push(state);
+          if (state === "invalidated") {
+            finishInvalidation();
+          }
+        },
+      });
+      await started;
+      sessionChanges.emit({ all: true, scope: "config" });
+      expect(states).toEqual([]);
+      const close = vi.fn(async () => {});
+      finish({ close });
+      await prepared;
+      await invalidated;
+      expect(close).toHaveBeenCalled();
+      expect(states).toEqual(["invalidated"]);
+      abort();
+      await cleanup();
     });
   });
 

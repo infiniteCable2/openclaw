@@ -4,13 +4,14 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import {
   cloneRuntimeConfigSnapshot,
   createRuntimeConfigReader,
+  createRuntimeConfigSnapshotMatcher,
   getRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { resolveMatrixAccountConfig } from "../account-config.js";
 import { readJoinedMatrixMembers } from "../direct-room.js";
 import type { MatrixClient } from "../sdk.js";
 import { isMatrixQualifiedUserId } from "../target-ids.js";
-import { resolveMatrixMonitorAccessState } from "./access-state.js";
+import { resolveMatrixEndpointPolicy, resolveMatrixMonitorAccessState } from "./access-state.js";
 import {
   resolveMatrixMonitorLiveUserAllowlist,
   type MatrixResolvedAllowlistEntry,
@@ -18,6 +19,13 @@ import {
 import type { createDirectRoomTracker } from "./direct.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
 import { resolveMatrixInboundRoute } from "./route.js";
+
+type RootState = "registered" | "prepared" | "unavailable" | "invalidated";
+type RoomScope = {
+  signal: AbortSignal;
+  assertCurrent(): void;
+  onState(state: RootState): void;
+};
 
 /** One healthy account snapshot supplies real endpoint proofs, never synthetic user input. */
 export async function prepareMatrixStartupConversationRoots(params: {
@@ -37,6 +45,8 @@ export async function prepareMatrixStartupConversationRoots(params: {
   signal: AbortSignal;
   assertCurrent(): void;
   retainCleanup(close: () => Promise<void>): void | (() => void);
+  roomIds?: ReadonlySet<string>;
+  scopeForRoom?(roomId: string): RoomScope | undefined;
 }): Promise<void> {
   const prepare = params.core.channel.inbound.ingress.conversation?.prepareConnection;
   if (!prepare) {
@@ -50,13 +60,16 @@ export async function prepareMatrixStartupConversationRoots(params: {
     native === original ? createRuntimeConfigReader(native, { capture: true }) : undefined;
   const captured = readPublished?.();
   const cfg = cloneRuntimeConfigSnapshot(captured ?? original);
+  const published = readPublished
+    ? { read: readPublished, matches: createRuntimeConfigSnapshotMatcher(cfg) }
+    : undefined;
   const assertCurrent = () => {
     params.signal.throwIfAborted();
     params.assertCurrent();
     const current = params.getRuntimeConfig();
     if (
-      readPublished
-        ? getRuntimeConfigSnapshot() !== current || readPublished() !== captured
+      published
+        ? getRuntimeConfigSnapshot() !== current || !published.matches(published.read())
         : current !== original || !isDeepStrictEqual(current, cfg)
     ) {
       throw new Error("Matrix startup conversation configuration changed");
@@ -64,9 +77,6 @@ export async function prepareMatrixStartupConversationRoots(params: {
   };
   assertCurrent();
   const account = resolveMatrixAccountConfig({ cfg, accountId: params.accountId });
-  if (account.dm?.enabled === false) {
-    return;
-  }
   const selfUserId = await params.client.getUserId();
   assertCurrent();
   const rooms = await params.client.getJoinedRooms();
@@ -90,9 +100,20 @@ export async function prepareMatrixStartupConversationRoots(params: {
   assertCurrent();
   for (const roomId of new Set(rooms)) {
     assertCurrent();
+    if (params.roomIds && !params.roomIds.has(roomId)) {
+      continue;
+    }
+    const scope = params.scopeForRoom?.(roomId);
+    if (params.scopeForRoom && !scope) {
+      continue;
+    }
+    const check = () => {
+      assertCurrent();
+      scope?.assertCurrent();
+    };
     try {
       const joinedMembers = await readJoinedMatrixMembers(params.client, roomId);
-      assertCurrent();
+      check();
       if (joinedMembers?.length !== 2 || !joinedMembers.includes(selfUserId)) {
         continue;
       }
@@ -104,7 +125,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
         roomId,
         senderId,
       });
-      assertCurrent();
+      check();
       if (!privateAudience) {
         continue;
       }
@@ -115,9 +136,9 @@ export async function prepareMatrixStartupConversationRoots(params: {
         joinedMembers,
         allowPromotion: false,
       });
-      assertCurrent();
+      check();
       const roomInfo = await params.getRoomInfo(roomId);
-      assertCurrent();
+      check();
       const room = resolveMatrixRoomConfig({
         roomId,
         aliases: [roomInfo.canonicalAlias, ...(roomInfo.altAliases ?? [])].filter(
@@ -125,7 +146,15 @@ export async function prepareMatrixStartupConversationRoots(params: {
         ),
         rooms: account.groups ?? account.rooms,
       });
-      if (!isDirectMessage && room.allowlistConfigured && !room.allowed) {
+      if (
+        resolveMatrixEndpointPolicy({
+          isDirectMessage,
+          dmEnabled: account.dm?.enabled,
+          dmPolicy: account.dm?.policy,
+          groupPolicy: params.groupPolicy,
+          room,
+        })
+      ) {
         continue;
       }
       const { route, bindingOwnerAvailable } = resolveMatrixInboundRoute({
@@ -157,7 +186,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
         groupAllowFrom,
         roomUsers: room.config?.users ?? [],
       });
-      assertCurrent();
+      check();
       const binding = {
         agentId: route.agentId,
         sessionKey: route.sessionKey,
@@ -169,7 +198,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
         id: roomId,
       };
       const ingress = await access.resolveMessageIngress(binding, conversation, privateAudience);
-      assertCurrent();
+      check();
       if (ingress.ingress.admission !== "dispatch") {
         continue;
       }
@@ -183,14 +212,139 @@ export async function prepareMatrixStartupConversationRoots(params: {
           binding,
         },
         purpose: "root-preparation",
-        assertCurrent,
-        signal: params.signal,
+        assertCurrent: check,
+        signal: scope?.signal ?? params.signal,
         retainCleanup: (close) => params.retainCleanup(close),
+        onRootPreparationState: scope?.onState,
       });
-      assertCurrent();
+      check();
     } catch {
       assertCurrent();
+      if (scope?.signal.aborted) {
+        continue;
+      }
       params.runtime.log?.("matrix: related-history startup endpoint preparation deferred");
     }
   }
+}
+
+/** The existing account task owner coalesces endpoint requalification, not transcript work. */
+export function createMatrixStartupRootPreparation(
+  params: Omit<
+    Parameters<typeof prepareMatrixStartupConversationRoots>[0],
+    "roomIds" | "scopeForRoom"
+  > & {
+    runTask(task: () => Promise<void>): Promise<void>;
+  },
+) {
+  const scopes = new Map<string, { controller: AbortController; state: RootState }>();
+  let all = false;
+  const pending = new Set<string>();
+  let running: Promise<void> | undefined;
+  let closed = params.signal.aborted;
+  const report = (state: RootState | "pass-complete") => {
+    const counts = { registered: 0, prepared: 0, unavailable: 0 };
+    for (const scope of scopes.values()) {
+      if (scope.state !== "invalidated") {
+        counts[scope.state]++;
+      }
+    }
+    params.runtime.log?.("matrix: related-history startup state", { state, ...counts });
+  };
+  const schedule = () => {
+    if (closed || running || params.signal.aborted) {
+      return;
+    }
+    const task = params.runTask(async () => {
+      while ((all || pending.size > 0) && !closed && !params.signal.aborted) {
+        params.assertCurrent();
+        const roomIds = all ? undefined : new Set(pending);
+        all = false;
+        pending.clear();
+        await prepareMatrixStartupConversationRoots({
+          ...params,
+          roomIds,
+          scopeForRoom(roomId) {
+            if (scopes.has(roomId)) {
+              return undefined;
+            }
+            const scope: { controller: AbortController; state: RootState } = {
+              controller: new AbortController(),
+              state: "unavailable",
+            };
+            scopes.set(roomId, scope);
+            const signal = AbortSignal.any([params.signal, scope.controller.signal]);
+            return {
+              signal,
+              assertCurrent() {
+                signal.throwIfAborted();
+                params.assertCurrent();
+                if (scopes.get(roomId) !== scope) {
+                  throw new Error("Matrix startup endpoint generation changed");
+                }
+              },
+              onState(state) {
+                if (signal.aborted || scopes.get(roomId) !== scope) {
+                  return;
+                }
+                if (state === "invalidated") {
+                  report(state);
+                  request(roomId);
+                } else if (scope.state !== state) {
+                  scope.state = state;
+                  report(state);
+                }
+              },
+            };
+          },
+        });
+        params.assertCurrent();
+        report("pass-complete");
+      }
+    });
+    running = task;
+    void task
+      .finally(() => {
+        if (running === task) {
+          running = undefined;
+        }
+        if (all || pending.size > 0) {
+          schedule();
+        }
+      })
+      .catch(() => {});
+  };
+  const request = (roomId?: string) => {
+    if (closed || params.signal.aborted) {
+      return;
+    }
+    if (roomId === undefined) {
+      for (const scope of scopes.values()) {
+        scope.controller.abort();
+      }
+      scopes.clear();
+      all = true;
+    } else {
+      scopes.get(roomId)?.controller.abort();
+      scopes.delete(roomId);
+      pending.add(roomId);
+    }
+    schedule();
+  };
+  const unsubscribeConfig = closed ? () => {} : params.core.config.subscribe(() => request());
+  params.signal.addEventListener(
+    "abort",
+    () => {
+      closed = true;
+      unsubscribeConfig();
+      for (const scope of scopes.values()) {
+        scope.controller.abort();
+      }
+      scopes.clear();
+      pending.clear();
+      all = false;
+    },
+    { once: true },
+  );
+  return { request };
 }

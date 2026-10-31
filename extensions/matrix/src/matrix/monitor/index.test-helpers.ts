@@ -247,6 +247,7 @@ vi.mock("../../resolve-targets.js", () => ({
 vi.mock("../../runtime.js", () => ({
   getMatrixRuntime: () => ({
     config: {
+      subscribe: vi.fn(() => () => {}),
       current: () => ({
         channels: {
           matrix: hoisted.accountConfig,
@@ -383,6 +384,13 @@ vi.mock("./startup.js", () => ({
 // mock-isolation: The monitor owns readiness and account lifetime; endpoint admission is tested separately.
 vi.mock("./startup-history.js", () => ({
   prepareMatrixStartupConversationRoots: hoisted.prepareMatrixStartupConversationRoots,
+  createMatrixStartupRootPreparation: (
+    params: Parameters<typeof import("./startup-history.js").createMatrixStartupRootPreparation>[0],
+  ) => ({
+    request: () => {
+      void params.runTask(() => hoisted.prepareMatrixStartupConversationRoots(params));
+    },
+  }),
 }));
 
 export function getMatrixMonitorIndexTestHarness() {

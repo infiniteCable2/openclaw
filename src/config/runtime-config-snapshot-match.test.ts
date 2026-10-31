@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "vitest";
+import { createConfigResolutionFacts, setConfigResolutionFacts } from "./resolution-facts.js";
 import { captureRuntimeConfigWithSource } from "./runtime-config-capture-state.js";
 import { createRuntimeConfigSnapshotMatcher } from "./runtime-config-snapshot-match.js";
 import {
@@ -36,6 +37,23 @@ it("retains successful immutable native captures and compares each replacement",
   const changed = { gateway: { port: 19002 } };
   expect(matches(captureRuntimeConfigWithSource(changed, changed))).toBe(false);
   expect(matches(capture)).toBe(true);
+});
+
+it("rejects same-value native captures when their original resolution provenance changes", () => {
+  const cfg = { gateway: { port: 19001 } };
+  setConfigResolutionFacts(
+    cfg,
+    createConfigResolutionFacts([], new Map([["gateway.port", "EXAMPLE_PORT_A"]])),
+  );
+  const matches = createRuntimeConfigSnapshotMatcher(cfg);
+  expect(matches(captureRuntimeConfigWithSource(cfg, cfg))).toBe(true);
+  const changed = structuredClone(cfg);
+  setConfigResolutionFacts(
+    changed,
+    createConfigResolutionFacts([], new Map([["gateway.port", "EXAMPLE_PORT_B"]])),
+  );
+  expect(changed).toEqual(cfg);
+  expect(matches(captureRuntimeConfigWithSource(changed, changed))).toBe(false);
 });
 
 it.each([false, true])("does not retain mutable or shallow-frozen matches: %s", (freeze) => {

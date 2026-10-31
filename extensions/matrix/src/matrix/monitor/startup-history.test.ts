@@ -9,7 +9,10 @@ import { setMatrixRuntime } from "../../runtime.js";
 import type { CoreConfig } from "../../types.js";
 import type { MatrixClient } from "../sdk.js";
 import { createDirectRoomTracker } from "./direct.js";
-import { prepareMatrixStartupConversationRoots } from "./startup-history.js";
+import {
+  createMatrixStartupRootPreparation,
+  prepareMatrixStartupConversationRoots,
+} from "./startup-history.js";
 
 const roomId = "!private:example.test";
 const self = "@assistant:example.test";
@@ -72,6 +75,91 @@ function fixture() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("healthy Matrix startup root preparation", () => {
+  it("admits a configured private channel with DMs disabled, but enforces the room allowlist", async () => {
+    const f = fixture();
+    const cfg: CoreConfig = {
+      ...f.cfg,
+      channels: {
+        matrix: {
+          dm: { enabled: false },
+          groups: { [roomId]: { enabled: true } },
+        },
+      },
+    };
+    f.params.getRuntimeConfig = () => cfg;
+    f.params.groupPolicy = "allowlist";
+    f.params.directTracker = createDirectRoomTracker(f.client as unknown as MatrixClient, {
+      isExplicitlyConfiguredRoom: () => true,
+    });
+    try {
+      await prepareMatrixStartupConversationRoots(f.params);
+      expect(f.prepare).toHaveBeenCalledOnce();
+      expect(f.prepare.mock.calls[0]![0].scope.conversation.kind).toBe("channel");
+      cfg.channels!.matrix!.groups = { "!other:example.test": { enabled: true } };
+      await prepareMatrixStartupConversationRoots(f.params);
+      expect(f.prepare).toHaveBeenCalledOnce();
+    } finally {
+      f.abort.abort();
+      f.params.directTracker.dispose();
+      f.tracker.dispose();
+    }
+  });
+
+  it("requalifies skipped endpoints on actual config and room signals without input or polling", async () => {
+    const f = fixture();
+    const log = vi.fn();
+    f.params.runtime.log = log;
+    const tasks: Promise<void>[] = [];
+    const unsubscribe = vi.fn();
+    let configChanged = () => {};
+    vi.mocked(f.core.config.subscribe).mockImplementation((listener) => {
+      configChanged = listener;
+      return unsubscribe;
+    });
+    const preparation = createMatrixStartupRootPreparation({
+      ...f.params,
+      runTask(task) {
+        const pending = Promise.resolve().then(task);
+        tasks.push(pending);
+        return pending;
+      },
+    });
+    try {
+      // The first full native privacy read fails; no core registration exists yet.
+      f.client.doRequest.mockResolvedValueOnce([]);
+      preparation.request();
+      await tasks[0];
+      expect(f.prepare).not.toHaveBeenCalled();
+      configChanged();
+      configChanged();
+      await tasks[1];
+      expect(f.prepare).toHaveBeenCalledOnce();
+      const first = f.prepare.mock.calls[0]![0];
+      first.onRootPreparationState?.("registered");
+      first.onRootPreparationState?.("prepared");
+      first.onRootPreparationState?.("prepared");
+      // Ordinary successful completion causes no second pass.
+      expect(tasks).toHaveLength(2);
+      preparation.request(roomId);
+      preparation.request(roomId);
+      await tasks[2];
+      expect(first.signal?.aborted).toBe(true);
+      expect(f.prepare).toHaveBeenCalledTimes(2);
+      expect(f.admit).not.toHaveBeenCalled();
+      const text = JSON.stringify(log.mock.calls);
+      expect(text).toContain("prepared");
+      expect(text).not.toContain(roomId);
+      expect(text).not.toContain(person);
+    } finally {
+      f.abort.abort();
+      f.tracker.dispose();
+    }
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    const count = tasks.length;
+    configChanged();
+    expect(tasks).toHaveLength(count);
+  });
+
   it("qualifies native private endpoints once without a user message, dispatch or account-data repair", async () => {
     const f = fixture();
     try {
@@ -182,6 +270,36 @@ describe("healthy Matrix startup root preparation", () => {
       expect(() => prepared.assertCurrent()).not.toThrow();
       f.cfg.channels.matrix.dm.allowFrom = ["@other:example.test"];
       setRuntimeConfigSnapshot(f.cfg);
+      expect(() => prepared.assertCurrent()).toThrow("configuration changed");
+    } finally {
+      if (previous) {
+        setRuntimeConfigSnapshot(previous);
+      } else {
+        clearRuntimeConfigSnapshot();
+      }
+      f.abort.abort();
+      f.tracker.dispose();
+    }
+  });
+
+  it("retains an equivalent native republication while rejecting changed data or an unrelated getter", async () => {
+    const f = fixture();
+    const previous = getRuntimeConfigSnapshot();
+    try {
+      setRuntimeConfigSnapshot(f.cfg);
+      f.params.getRuntimeConfig = () => getRuntimeConfigSnapshot() ?? f.cfg;
+      await prepareMatrixStartupConversationRoots(f.params);
+      expect(f.prepare).toHaveBeenCalledOnce();
+      const prepared = f.prepare.mock.calls[0]![0];
+      const next = structuredClone(f.cfg);
+      setRuntimeConfigSnapshot(next);
+      expect(() => prepared.assertCurrent()).not.toThrow();
+      // Equal values do not turn an explicit scoped getter into the native owner.
+      f.params.getRuntimeConfig = () => f.cfg;
+      expect(() => prepared.assertCurrent()).toThrow("configuration changed");
+      f.params.getRuntimeConfig = () => getRuntimeConfigSnapshot() ?? f.cfg;
+      next.channels.matrix.dm.allowFrom = ["@other:example.test"];
+      setRuntimeConfigSnapshot(next);
       expect(() => prepared.assertCurrent()).toThrow("configuration changed");
     } finally {
       if (previous) {

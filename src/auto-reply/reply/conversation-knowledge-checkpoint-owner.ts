@@ -318,6 +318,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
               if (loggedFrameRevision !== tail.revision) {
                 if (log.isEnabled("debug")) {
                   log.debug("Related-history root initial frame ready", {
+                    ownerPid: process.pid,
                     rootHash: redactIdentifier(
                       JSON.stringify([broker.branch.agentId, broker.branch.root]),
                     ),

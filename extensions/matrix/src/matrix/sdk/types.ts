@@ -31,6 +31,7 @@ export type MatrixRelationsPage = {
 };
 
 export type MatrixClientEventMap = {
+  "direct.rooms.changed": [];
   "room.event": [roomId: string, event: MatrixRawEvent];
   "room.message": [roomId: string, event: MatrixRawEvent];
   "room.encrypted_event": [roomId: string, event: MatrixRawEvent];

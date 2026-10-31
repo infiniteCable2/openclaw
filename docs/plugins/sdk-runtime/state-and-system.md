@@ -33,6 +33,12 @@ closing the connection.
     config that was already passed into the active call path; use
     `current()` only when the handler needs the process snapshot directly.
 
+    `subscribe(listener)` supplies a content-free hint after an effective runtime
+    configuration publication. Reread `current()` and requalify retained work;
+    the notification grants no authority. Call the returned unsubscribe function
+    when the owning service closes. Ordinary session and transcript updates do
+    not trigger this subscription.
+
     ```typescript
     const cfg = api.runtime.config.current();
     await api.runtime.config.mutateConfigFile({

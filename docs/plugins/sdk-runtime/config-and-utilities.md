@@ -67,6 +67,12 @@ been published yet. Read once per turn and carry that snapshot through admission
 and replies. Process-wide controls such as diagnostics should read at the point
 of emission.
 
+`createRuntimeConfigSnapshotMatcher(expected)` from the same subpath compares
+values and resolution provenance against an owned snapshot. It reuses successful
+matches only for immutable native captures, allowing equivalent publications
+without accepting changed SecretRef provenance. It does not establish a host or
+caller binding; retain that binding separately.
+
 `createChannelInboundDebouncer` keeps its returned numeric `debounceMs` and default
 queue timing as startup snapshots. For live timing, pass its existing
 `resolveDebounceMs(entry)` callback and resolve with the bound config reader.

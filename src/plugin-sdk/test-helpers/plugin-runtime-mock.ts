@@ -473,6 +473,7 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
     gateway: createPluginGatewayRuntimeMock(),
     config: {
       current: vi.fn<PluginRuntime["config"]["current"]>(() => ({})),
+      subscribe: vi.fn<PluginRuntime["config"]["subscribe"]>(() => () => {}),
       mutateConfigFile: createGenericMock<PluginRuntime["config"]["mutateConfigFile"]>(
         async () => ({
           path: "/tmp/openclaw.json",

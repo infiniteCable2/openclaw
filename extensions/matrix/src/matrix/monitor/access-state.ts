@@ -6,6 +6,35 @@ import {
 import { getMatrixRuntime } from "../../runtime.js";
 import { resolveMatrixSenderParticipant } from "../sender-identity.js";
 import { normalizeMatrixAllowList, resolveMatrixAllowListMatch } from "./allowlist.js";
+import type { resolveMatrixRoomConfig } from "./rooms.js";
+
+/** Transport-free endpoint policy shared by input and startup registration. */
+export function resolveMatrixEndpointPolicy(params: {
+  isDirectMessage: boolean;
+  dmEnabled?: boolean;
+  dmPolicy?: "open" | "pairing" | "allowlist" | "disabled";
+  groupPolicy: "open" | "allowlist" | "disabled";
+  room?: ReturnType<typeof resolveMatrixRoomConfig>;
+}) {
+  if (params.isDirectMessage) {
+    return params.dmEnabled === false || params.dmPolicy === "disabled" ? "dm-disabled" : undefined;
+  }
+  if (params.groupPolicy === "disabled") {
+    return "group-disabled";
+  }
+  if (params.room?.config && !params.room.allowed) {
+    return "room-disabled";
+  }
+  if (params.groupPolicy === "allowlist") {
+    if (!params.room?.allowlistConfigured) {
+      return "room-allowlist-missing";
+    }
+    if (!params.room.config) {
+      return "room-not-allowlisted";
+    }
+  }
+  return undefined;
+}
 
 type MatrixMonitorAccessState = {
   effectiveGroupAllowFrom: string[];

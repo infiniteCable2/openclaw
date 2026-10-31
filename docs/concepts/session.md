@@ -173,6 +173,10 @@ not that a model understood every fact or executed an action.
 In branch mode, opening an authorized private conversation starts background
 source preparation without manufacturing a user input. Committed root updates wake its
 existing database-lifetime owner; notifications carry no dialogue or read permission.
+Healthy channel startup can register an already enrolled private conversation
+before its first input. Endpoint, enrollment, or authorization changes require
+fresh native admission; a skipped registration is retried on the corresponding
+state change rather than by polling or manufacturing a turn.
 One coalesced, read-only scheduler prepares bounded source segments fairly across
 open recipients. Each quantum releases shared background capacity. A transient
 preparation failure receives a cancellable retry with bounded backoff, without

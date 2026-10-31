@@ -24,6 +24,7 @@ const timing = vi.hoisted(() => ({
 vi.mock("../../../tts/automatic-expression.js", () => ({
   prepareAutomaticSpeechExpressionContext: timing.prepareSpeech,
 }));
+// mock-isolation: Keep paired-node inventory RPC and its process cache outside this timing fixture.
 vi.mock("../../computer-use-node-capabilities.js", () => ({
   loadPairedComputerUseAvailabilityForSurface: timing.loadInventory,
 }));

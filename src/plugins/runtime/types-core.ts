@@ -342,6 +342,8 @@ export type PluginRuntimeCore = {
   config: {
     /** Current process runtime config snapshot. Prefer config passed into the active call path. */
     current: () => DeepReadonly<import("../../config/types.openclaw.js").OpenClawConfig>;
+    /** Publication hint only; consumers reread current() and own unsubscribe. */
+    subscribe: (listener: () => void) => () => void;
     /**
      * Persist a focused config mutation. Callers must choose the post-write
      * behavior explicitly so the gateway can hot-reload, restart, or defer.

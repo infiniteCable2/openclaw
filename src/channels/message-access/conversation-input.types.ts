@@ -42,6 +42,10 @@ export type ChannelConversationInputRuntimeV1 = Readonly<{
       purpose?: "root-preparation";
       /** Account-owned cleanup joins retained root custody, including shutdown during preparation. */
       retainCleanup?: (close: () => Promise<void>) => void | (() => void);
+      /** Content-free native root lifecycle; an invalidation requests fresh endpoint admission. */
+      onRootPreparationState?: (
+        state: "registered" | "prepared" | "unavailable" | "invalidated",
+      ) => void;
     },
   ) => Promise<void>;
 }>;

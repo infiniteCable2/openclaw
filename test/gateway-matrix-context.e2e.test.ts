@@ -271,6 +271,20 @@ function strings(value: unknown): string[] {
   return [];
 }
 
+function preparedFrameOwners(gateway: OpenClawTestInstance) {
+  return new Set(
+    gateway
+      .logs()
+      .split("\n")
+      .flatMap((line) => {
+        const pid = line.includes("Related-history root initial frame ready")
+          ? line.match(/"ownerPid"\s*:\s*(\d+)/)?.[1]
+          : undefined;
+        return pid ? [pid] : [];
+      }),
+  );
+}
+
 it.for(["native", "branches"] as const)(
   "preserves real Matrix context exactly once from %s ingress across restart",
   { timeout: 240_000 },
@@ -337,14 +351,16 @@ it.for(["native", "branches"] as const)(
         const reports = [];
         for (const index of [1, 2, 3, 4]) {
           if (index === 3) {
-            const readyMarker = "Related-history root initial frame ready";
             if (initialMode === "branches") {
-              await vi.waitFor(() => expect(gateway!.logs()).toContain(readyMarker), {
-                timeout: 30_000,
-                interval: 50,
-              });
+              await vi.waitFor(
+                () => expect(preparedFrameOwners(gateway!).size).toBeGreaterThan(0),
+                {
+                  timeout: 30_000,
+                  interval: 50,
+                },
+              );
             }
-            const readyFrames = gateway.logs().split(readyMarker).length - 1;
+            const readyOwners = preparedFrameOwners(gateway);
             const modelRequests = model.requests.length;
             await gateway.stopGateway();
             selected.agents!.entries!.main!.conversationMode = "branches";
@@ -361,9 +377,9 @@ it.for(["native", "branches"] as const)(
               // user input; a sync connection alone does not prove readiness.
               await vi.waitFor(
                 () =>
-                  expect(gateway!.logs().split(readyMarker).length - 1).toBeGreaterThan(
-                    readyFrames,
-                  ),
+                  expect(
+                    [...preparedFrameOwners(gateway!)].some((pid) => !readyOwners.has(pid)),
+                  ).toBe(true),
                 { timeout: 30_000, interval: 50 },
               );
               expect(model.requests).toHaveLength(modelRequests);

@@ -55,7 +55,7 @@ import { createMatrixInboundEventDeduper } from "./inbound-dedupe.js";
 import { shouldPromoteRecentInviteRoom } from "./recent-invite.js";
 import { createMatrixRoomInfoResolver } from "./room-info.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
-import { prepareMatrixStartupConversationRoots } from "./startup-history.js";
+import { createMatrixStartupRootPreparation } from "./startup-history.js";
 import { runMatrixStartupMaintenance } from "./startup.js";
 import { createMatrixMonitorStatusController } from "./status.js";
 import { createMatrixMonitorSyncLifecycle } from "./sync-lifecycle.js";
@@ -286,6 +286,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   let healthySyncSinceMs: number | undefined;
   let rootPreparation: AbortController | undefined;
   let startRootPreparation = () => {};
+  let requestRootPreparation = (_roomId?: string) => {};
+  const onDirectRoomsChanged = () => directTracker?.invalidatePrivateAudiences();
   const onSyncState = (state: MatrixSyncState) => {
     const at = Date.now();
     if (isMatrixReadySyncState(state)) {
@@ -299,6 +301,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       healthySyncSinceMs = undefined;
       rootPreparation?.abort();
       rootPreparation = undefined;
+      requestRootPreparation = () => {};
       directTracker?.invalidatePrivateAudiences();
     }
   };
@@ -313,6 +316,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       disposeAutoJoin();
       disposeMonitorEvents();
       client?.off("sync.state", onSyncState);
+      client?.off("direct.rooms.changed", onDirectRoomsChanged);
       syncLifecycle?.dispose();
     },
     waitForTasks: monitorTaskRunner.waitForIdle,
@@ -346,6 +350,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       isStopping: () => cleanedUp || monitorLifecycleSignal?.aborted === true,
     });
     client.on("sync.state", onSyncState);
+    client.on("direct.rooms.changed", onDirectRoomsChanged);
     // Cold starts should ignore old room history, but once we have a persisted
     // /sync cursor we want restart backlogs to replay just like other channels.
     const dropPreStartupMessages = !client.hasPersistedSyncState();
@@ -377,6 +382,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       isCurrent: () =>
         !cleanedUp && !monitorSetupClosed && monitorLifecycleSignal?.aborted !== true,
       isAudienceCurrent: () => healthySyncSinceMs !== undefined,
+      onAudienceInvalidated: (roomId) => requestRootPreparation(roomId),
       isExplicitlyConfiguredRoom,
       canPromoteRecentInvite,
       canPromoteUnmappedStrictRoom:
@@ -408,43 +414,45 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       }
       const controller = new AbortController();
       rootPreparation = controller;
-      void monitorTaskRunner.runDetachedTask("related-history startup", async () => {
-        const taskSignal = getMatrixMonitorTaskSignal();
-        const signal = AbortSignal.any([
-          controller.signal,
-          ...(monitorLifecycleSignal ? [monitorLifecycleSignal] : []),
-          ...(taskSignal ? [taskSignal] : []),
-        ]);
-        await prepareMatrixStartupConversationRoots({
-          client: rootClient,
-          core,
-          runtime,
-          accountId: effectiveAccountId,
-          groupPolicy,
-          directTracker: rootTracker,
-          startupAllowFrom: allowFromResolvedEntries,
-          startupGroupAllowFrom: groupAllowFromResolvedEntries,
-          getRuntimeConfig: () => core.config.current(),
-          getRoomInfo: (roomId) => getRoomInfo(roomId, { includeAliases: true }),
-          signal,
-          assertCurrent() {
-            signal.throwIfAborted();
-            if (
-              rootPreparation !== controller ||
-              cleanedUp ||
-              monitorSetupClosed ||
-              healthySyncSinceMs === undefined
-            ) {
-              throw new Error("Matrix startup conversation account is no longer current");
-            }
-          },
-          retainCleanup: (close) => monitorTaskRunner.retainCleanup(close),
-        }).catch((error: unknown) => {
-          if (!signal.aborted) {
-            throw error;
+      const signal = AbortSignal.any([
+        controller.signal,
+        ...(monitorLifecycleSignal ? [monitorLifecycleSignal] : []),
+      ]);
+      const preparation = createMatrixStartupRootPreparation({
+        client: rootClient,
+        core,
+        runtime,
+        accountId: effectiveAccountId,
+        groupPolicy,
+        directTracker: rootTracker,
+        startupAllowFrom: allowFromResolvedEntries,
+        startupGroupAllowFrom: groupAllowFromResolvedEntries,
+        getRuntimeConfig: () => core.config.current(),
+        getRoomInfo: (roomId) => getRoomInfo(roomId, { includeAliases: true }),
+        signal,
+        assertCurrent() {
+          signal.throwIfAborted();
+          if (
+            rootPreparation !== controller ||
+            cleanedUp ||
+            monitorSetupClosed ||
+            healthySyncSinceMs === undefined
+          ) {
+            throw new Error("Matrix startup conversation account is no longer current");
           }
-        });
+        },
+        retainCleanup: (close) => monitorTaskRunner.retainCleanup(close),
+        runTask: (task) =>
+          monitorTaskRunner.runDetachedTask("related-history startup", async () => {
+            await task().catch((error: unknown) => {
+              if (!signal.aborted) {
+                throw error;
+              }
+            });
+          }),
       });
+      requestRootPreparation = preparation.request;
+      preparation.request();
     };
     disposeAutoJoin = registerMatrixAutoJoin({
       client,

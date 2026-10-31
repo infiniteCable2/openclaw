@@ -15,6 +15,23 @@ function checkDefaultRoom(tracker: ReturnType<typeof createDirectRoomTracker>) {
   return tracker.isDirectMessage(DEFAULT_DIRECT_CHECK);
 }
 
+it("rearms room preparation from invalidation, never from failed privacy reads", async () => {
+  const invalidated = vi.fn();
+  const client = createMockClient({ roomState: [] });
+  const tracker = createDirectRoomTracker(client, { onAudienceInvalidated: invalidated });
+  try {
+    await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+    expect(invalidated).not.toHaveBeenCalled();
+    tracker.invalidateRoom(DEFAULT_DIRECT_CHECK.roomId);
+    expect(invalidated).toHaveBeenLastCalledWith(DEFAULT_DIRECT_CHECK.roomId);
+    tracker.invalidatePrivateAudiences();
+    expect(invalidated).toHaveBeenLastCalledWith(undefined);
+    expect(invalidated).toHaveBeenCalledTimes(2);
+  } finally {
+    tracker.dispose();
+  }
+});
+
 function createMockClient(params: {
   isDm?: boolean;
   members?: string[];

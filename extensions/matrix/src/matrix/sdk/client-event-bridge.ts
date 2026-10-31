@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { isDeepStrictEqual } from "node:util";
 import {
   ClientEvent,
   type MatrixClient as MatrixJsClient,
@@ -19,6 +20,15 @@ export function registerMatrixClientBridge(params: {
   setCurrentSyncState: (state: MatrixSyncState, error: unknown, fromCache: boolean) => void;
 }): void {
   let initialSyncComplete = false;
+  params.client.on(ClientEvent.AccountData, (event, previous) => {
+    if (
+      initialSyncComplete &&
+      event.getType() === "m.direct" &&
+      !isDeepStrictEqual(event.getContent(), previous?.getContent())
+    ) {
+      params.emitter.emit("direct.rooms.changed");
+    }
+  });
   const joinTransitions = new WeakSet<MatrixEvent>();
   params.client.on(RoomEvent.MyMembership, (room, membership, previousMembership) => {
     // The SDK records transitions before raw events. Missing prev_content alone
