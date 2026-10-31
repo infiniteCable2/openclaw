@@ -424,7 +424,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
           directTracker: rootTracker,
           startupAllowFrom: allowFromResolvedEntries,
           startupGroupAllowFrom: groupAllowFromResolvedEntries,
-          getRuntimeConfig: () => core.config.current() as CoreConfig,
+          getRuntimeConfig: () => core.config.current(),
           getRoomInfo: (roomId) => getRoomInfo(roomId, { includeAliases: true }),
           signal,
           assertCurrent() {

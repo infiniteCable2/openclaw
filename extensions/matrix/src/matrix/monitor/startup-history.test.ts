@@ -1,4 +1,9 @@
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
+import {
+  clearRuntimeConfigSnapshot,
+  getRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setMatrixRuntime } from "../../runtime.js";
 import type { CoreConfig } from "../../types.js";
@@ -11,10 +16,10 @@ const self = "@assistant:example.test";
 const person = "@person:example.test";
 
 function fixture() {
-  const cfg: CoreConfig = {
+  const cfg = {
     channels: { matrix: { dm: { policy: "allowlist", allowFrom: [person] } } },
-    agents: { entries: { main: { conversationMode: "branches" } } },
-  };
+    agents: { entries: { main: { conversationMode: "branches" as const } } },
+  } satisfies CoreConfig;
   const core = createPluginRuntimeMock();
   type Prepare = NonNullable<
     NonNullable<typeof core.channel.inbound.ingress.conversation>["prepareConnection"]
@@ -144,6 +149,46 @@ describe("healthy Matrix startup root preparation", () => {
       );
       expect(f.prepare).not.toHaveBeenCalled();
     } finally {
+      f.abort.abort();
+      f.tracker.dispose();
+    }
+  });
+
+  it("refuses in-place changes from a mutable scoped getter after awaiting native privacy", async () => {
+    const f = fixture();
+    try {
+      f.client.doRequest.mockImplementation(async () => {
+        f.cfg.channels.matrix.dm.allowFrom = ["@other:example.test"];
+        return [];
+      });
+      await expect(prepareMatrixStartupConversationRoots(f.params)).rejects.toThrow(
+        "configuration changed",
+      );
+      expect(f.prepare).not.toHaveBeenCalled();
+    } finally {
+      f.abort.abort();
+      f.tracker.dispose();
+    }
+  });
+
+  it("uses the native publication capture and revokes it when the same origin is republished", async () => {
+    const f = fixture();
+    const previous = getRuntimeConfigSnapshot();
+    try {
+      setRuntimeConfigSnapshot(f.cfg);
+      await prepareMatrixStartupConversationRoots(f.params);
+      expect(f.prepare).toHaveBeenCalledOnce();
+      const prepared = f.prepare.mock.calls[0]![0];
+      expect(() => prepared.assertCurrent()).not.toThrow();
+      f.cfg.channels.matrix.dm.allowFrom = ["@other:example.test"];
+      setRuntimeConfigSnapshot(f.cfg);
+      expect(() => prepared.assertCurrent()).toThrow("configuration changed");
+    } finally {
+      if (previous) {
+        setRuntimeConfigSnapshot(previous);
+      } else {
+        clearRuntimeConfigSnapshot();
+      }
       f.abort.abort();
       f.tracker.dispose();
     }

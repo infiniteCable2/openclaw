@@ -1,6 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
-import type { CoreConfig } from "../../types.js";
+import {
+  cloneRuntimeConfigSnapshot,
+  createRuntimeConfigReader,
+  getRuntimeConfigSnapshot,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { resolveMatrixAccountConfig } from "../account-config.js";
 import { readJoinedMatrixMembers } from "../direct-room.js";
 import type { MatrixClient } from "../sdk.js";
@@ -24,7 +29,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
   directTracker: ReturnType<typeof createDirectRoomTracker>;
   startupAllowFrom: readonly MatrixResolvedAllowlistEntry[];
   startupGroupAllowFrom: readonly MatrixResolvedAllowlistEntry[];
-  getRuntimeConfig(): CoreConfig;
+  getRuntimeConfig: PluginRuntime["config"]["current"];
   getRoomInfo(roomId: string): Promise<{
     canonicalAlias?: string | null;
     altAliases?: string[];
@@ -37,11 +42,23 @@ export async function prepareMatrixStartupConversationRoots(params: {
   if (!prepare) {
     return;
   }
-  const cfg = params.getRuntimeConfig();
+  const original = params.getRuntimeConfig();
+  const native = getRuntimeConfigSnapshot();
+  // Only the actual native owner may supply publication-stable immutable captures.
+  // An explicit scoped getter must never inherit an unrelated ambient runtime.
+  const readPublished =
+    native === original ? createRuntimeConfigReader(native, { capture: true }) : undefined;
+  const captured = readPublished?.();
+  const cfg = cloneRuntimeConfigSnapshot(captured ?? original);
   const assertCurrent = () => {
     params.signal.throwIfAborted();
     params.assertCurrent();
-    if (params.getRuntimeConfig() !== cfg) {
+    const current = params.getRuntimeConfig();
+    if (
+      readPublished
+        ? getRuntimeConfigSnapshot() !== current || readPublished() !== captured
+        : current !== original || !isDeepStrictEqual(current, cfg)
+    ) {
       throw new Error("Matrix startup conversation configuration changed");
     }
   };
