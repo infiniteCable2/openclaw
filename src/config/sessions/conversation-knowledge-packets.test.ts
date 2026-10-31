@@ -120,14 +120,19 @@ describe("native retained conversation knowledge packets", () => {
         const reader = databaseClaim.reader;
         let secondLive = true;
         let revokeOnPrepare = false;
-        const firstCurrent = () => databaseClaim.assertCurrent();
+        const firstCurrent = vi.fn(() => databaseClaim.assertCurrent());
+        const firstPreparedCurrent = vi.fn(() => databaseClaim.assertCurrent());
         const secondCurrent = () => {
           databaseClaim.assertCurrent();
           if (!secondLive) {
             throw new Error("Synthetic second source grant revoked");
           }
         };
-        const firstPrepare = vi.fn(async () => ({ assertCurrent: firstCurrent, checks: [] }));
+        const firstPrepare = vi.fn(async () => ({
+          assertCurrent: firstCurrent,
+          assertPreparedCurrent: firstPreparedCurrent,
+          checks: [],
+        }));
         const secondPrepare = vi.fn(async () => {
           if (revokeOnPrepare) {
             secondLive = false;
@@ -178,6 +183,10 @@ describe("native retained conversation knowledge packets", () => {
           expect((await retain(packets)).appended).toBe(32);
           expect(firstPrepare).toHaveBeenCalledOnce();
           expect(secondPrepare).not.toHaveBeenCalled();
+          // Each serialization guard still checks the prepared owner, without
+          // re-running unprepared cohort reads once per report.
+          expect(firstPreparedCurrent.mock.calls.length).toBeGreaterThanOrEqual(64);
+          expect(firstCurrent.mock.calls.length).toBeLessThan(32);
           expect(prefixChecks.at(-1)).toHaveLength(1);
           firstPrepare.mockClear();
           prefixChecks.length = 0;

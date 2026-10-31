@@ -30,7 +30,10 @@ import type {
 import { assertSessionEntryCohortScope } from "./session-entry-cohort-scope.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
-import { composeSessionSourceAssertion } from "./session-source-authority.js";
+import {
+  composeSessionSourceAssertion,
+  prepareSessionSourceAuthority,
+} from "./session-source-authority.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
 
@@ -327,20 +330,27 @@ export async function retainConversationKnowledgePackets(params: {
       return [...selected.values()];
     },
   );
-  const source = composeSessionSourceAssertion([
-    originalSources,
-    Object.assign(() => originalSources(), {
-      prepareSessionSource: async () => ({
-        assertCurrent: originalSources,
-        checks: predicates.map((predicate) => ({
-          predicate,
-          refuse: (): never => {
-            throw new SessionTranscriptReadFenceError("Knowledge packet source anchor changed");
-          },
-        })),
-      }),
-    }),
-  ]);
+  const source: SessionSourceAssertion = Object.assign(() => originalSources(), {
+    prepareSessionSource: async () => {
+      const prepared = await prepareSessionSourceAuthority(originalSources);
+      // Extend the same prepared owner. Rewrapping its unprepared assertion would
+      // repeat the entire donor cohort at every report serialization guard.
+      return {
+        ...prepared,
+        checks: [
+          ...prepared.checks,
+          ...predicates.map((predicate) => ({
+            predicate,
+            refuse: (): never => {
+              // Preserve original custody/lifetime refusal precedence.
+              prepared.assertCurrent();
+              throw new SessionTranscriptReadFenceError("Knowledge packet source anchor changed");
+            },
+          })),
+        ],
+      };
+    },
+  });
   const result = await appendSessionTranscriptReportBatch(
     {
       ...writeTarget,
