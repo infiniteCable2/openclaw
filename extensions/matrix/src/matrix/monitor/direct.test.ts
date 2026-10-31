@@ -548,6 +548,21 @@ describe("createDirectRoomTracker", () => {
     });
   });
 
+  it("inspects startup routing without promoting or repairing account data", async () => {
+    const client = createMockClient({ isDm: false, dmCacheAvailable: true });
+    const tracker = createDirectRoomTracker(client, {
+      canPromoteUnmappedStrictRoom: () => true,
+      canPromoteRecentInvite: () => true,
+    });
+    tracker.rememberInvite(DEFAULT_DIRECT_CHECK.roomId, DEFAULT_DIRECT_CHECK.senderId);
+    await expect(
+      tracker.isDirectMessage({ ...DEFAULT_DIRECT_CHECK, allowPromotion: false }),
+    ).resolves.toBe(false);
+    expect(client.setAccountData).not.toHaveBeenCalled();
+    await expect(checkDefaultRoom(tracker)).resolves.toBe(true);
+    expect(client.setAccountData).toHaveBeenCalledOnce();
+  });
+
   it("does not promote strict unmapped rooms when the per-room fallback gate vetoes it", async () => {
     const client = createMockClient({ isDm: false, dmCacheAvailable: true });
     const tracker = createDirectRoomTracker(client, {

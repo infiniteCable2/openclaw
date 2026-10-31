@@ -12,6 +12,7 @@ export function createMatrixMonitorTaskRunner(params: {
   logVerboseMessage: (message: string) => void;
 }) {
   const inFlight = new Set<Promise<void>>();
+  const retainedCleanup = new Set<() => Promise<void>>();
   const shutdownController = new AbortController();
   let closed = false;
 
@@ -41,6 +42,20 @@ export function createMatrixMonitorTaskRunner(params: {
     while (inFlight.size > 0) {
       await Promise.allSettled(inFlight);
     }
+    if (closed) {
+      const failures: unknown[] = [];
+      for (const close of retainedCleanup) {
+        try {
+          await close();
+          retainedCleanup.delete(close);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length) {
+        throw new AggregateError(failures, "Matrix retained account cleanup remains pending");
+      }
+    }
   };
 
   return {
@@ -49,6 +64,12 @@ export function createMatrixMonitorTaskRunner(params: {
       shutdownController.abort();
     },
     runDetachedTask,
+    retainCleanup: (close: () => Promise<void>) => {
+      retainedCleanup.add(close);
+      return () => {
+        retainedCleanup.delete(close);
+      };
+    },
     waitForIdle,
   };
 }

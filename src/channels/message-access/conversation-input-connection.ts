@@ -21,6 +21,7 @@ const loadConnection = createLazyRuntimeModule(async () => {
   return {
     ensureSession: initialization.ensureClientVoiceAgentSessionEntry,
     openRecipient: knowledge.openConversationKnowledgeRecipient,
+    openRoot: knowledge.openConversationKnowledgeRoot,
     resolveStorePath: paths.resolveSessionStorePathForScope,
     resolveRootKey: roots.resolveAgentConversationRootSessionKey,
   };
@@ -35,6 +36,18 @@ export async function prepareChannelConversationConnection(
   params.assertCurrent();
   const scope = snapshotIngressAdmissionScope(params.scope);
   if (!scope || scope.binding.messageId !== undefined) {
+    throw new ConversationInputAdmissionError();
+  }
+  const rootOnly = params.purpose === "root-preparation";
+  if (
+    rootOnly &&
+    (!params.signal ||
+      !params.retainCleanup ||
+      scope.binding.inboundEventKind !== "room_event" ||
+      params.ingress.state.event.kind !== "conversation" ||
+      params.ingress.state.event.authMode !== "inbound" ||
+      params.ingress.state.event.mayPair)
+  ) {
     throw new ConversationInputAdmissionError();
   }
   const accepted = consumeHostChannelIngressAdmission({ owner, ingress: params.ingress, scope });
@@ -55,6 +68,7 @@ export async function prepareChannelConversationConnection(
     owner,
     binding: scope.binding,
     inputs: [input],
+    purpose: params.purpose,
   });
   if (!original) {
     return;
@@ -95,6 +109,43 @@ export async function prepareChannelConversationConnection(
   };
   const audience = Object.freeze({ ...original, assertCurrent: assertTargetCurrent });
   assertTargetCurrent();
+  if (rootOnly) {
+    // The native handoff above binds the original endpoint classification; a
+    // caller's purpose alone cannot turn arbitrary ingress into startup authority.
+    let registration: Awaited<ReturnType<typeof connection.openRoot>>;
+    let forgetCleanup: (() => void) | undefined;
+    const close = async () => {
+      signal?.removeEventListener("abort", onAbort);
+      await registration?.close();
+      forgetCleanup?.();
+      forgetCleanup = undefined;
+    };
+    const onAbort = () => {
+      // RootOwner retains and diagnoses failed cleanup; the account also joins it.
+      void close().catch(() => {});
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      registration = await connection.openRoot({
+        target,
+        participant: input.identity,
+        audience,
+        getRuntimeConfig,
+        signal,
+      });
+      assertTargetCurrent();
+      if (registration) {
+        forgetCleanup = params.retainCleanup?.(close) || undefined;
+        assertTargetCurrent();
+      } else {
+        signal?.removeEventListener("abort", onAbort);
+      }
+    } catch (error) {
+      await close();
+      throw error;
+    }
+    return;
+  }
   const sessionId = await connection.ensureSession({
     ...target,
     cfg,

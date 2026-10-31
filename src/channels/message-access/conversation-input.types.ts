@@ -37,6 +37,11 @@ export type ChannelConversationInputRuntimeV1 = Readonly<{
   admitInput: (params: AdmitChannelConversationInputV1) => ConversationInputAdmissionV1;
   /** Consume fresh endpoint ingress; no message, participant observation or model turn is created. */
   prepareConnection?: (
-    params: Omit<AdmitChannelConversationInputV1, "input" | "context">,
+    params: Omit<AdmitChannelConversationInputV1, "input" | "context"> & {
+      /** Existing private endpoint only; prepares shared history without creating a session or input. */
+      purpose?: "root-preparation";
+      /** Account-owned cleanup joins retained root custody, including shutdown during preparation. */
+      retainCleanup?: (close: () => Promise<void>) => void | (() => void);
+    },
   ) => Promise<void>;
 }>;

@@ -363,6 +363,16 @@ does not undo already accepted work; actual recipient or authority revocation
 still prevents additional disclosure. A Gateway restart discards live proofs,
 not history or saved references; the next verified ingress obtains a new proof.
 
+After its first healthy sync, Matrix verifies existing private endpoints and opens
+their shared root preparation in the background, before any user message or call.
+The generic conversation-input `prepareConnection` contract accepts
+`purpose: "root-preparation"` with original endpoint ingress and account-owned
+cancellation/cleanup. This reuses an existing enrolled branch; it creates neither
+a session nor a user turn. A disconnect releases its live proof, and reconnect
+qualifies it again. Calls arriving before preparation finishes still use native
+creation checks; a ready frame covers its captured root prefix, with newer
+contributions supplied through normal catch-up.
+
 A new provider-owned voice branch is natively materialized before its authorized
 startup snapshot. When its original personal recipient is proved, that snapshot
 can include readable sibling context before the first utterance. Startup does not

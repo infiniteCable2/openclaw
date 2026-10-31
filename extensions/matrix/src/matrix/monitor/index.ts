@@ -55,6 +55,7 @@ import { createMatrixInboundEventDeduper } from "./inbound-dedupe.js";
 import { shouldPromoteRecentInviteRoom } from "./recent-invite.js";
 import { createMatrixRoomInfoResolver } from "./room-info.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
+import { prepareMatrixStartupConversationRoots } from "./startup-history.js";
 import { runMatrixStartupMaintenance } from "./startup.js";
 import { createMatrixMonitorStatusController } from "./status.js";
 import { createMatrixMonitorSyncLifecycle } from "./sync-lifecycle.js";
@@ -283,20 +284,28 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   const warnedEncryptedRooms = new Set<string>();
   const warnedCryptoMissingRooms = new Set<string>();
   let healthySyncSinceMs: number | undefined;
+  let rootPreparation: AbortController | undefined;
+  let startRootPreparation = () => {};
   const onSyncState = (state: MatrixSyncState) => {
     const at = Date.now();
     if (isMatrixReadySyncState(state)) {
-      healthySyncSinceMs ??= at;
+      if (healthySyncSinceMs === undefined) {
+        healthySyncSinceMs = at;
+        startRootPreparation();
+      }
       return;
     }
     if (isMatrixDisconnectedSyncState(state)) {
       healthySyncSinceMs = undefined;
+      rootPreparation?.abort();
+      rootPreparation = undefined;
       directTracker?.invalidatePrivateAudiences();
     }
   };
   const monitorRetirement = {
     closeTaskAdmission: () => {
       monitorSetupClosed = true;
+      rootPreparation?.abort();
       directTracker?.dispose();
       monitorTaskRunner.close();
     },
@@ -391,6 +400,52 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
         }
       },
     });
+    const rootTracker = directTracker;
+    const rootClient = client;
+    startRootPreparation = () => {
+      if (rootPreparation || monitorSetupClosed || cleanedUp) {
+        return;
+      }
+      const controller = new AbortController();
+      rootPreparation = controller;
+      void monitorTaskRunner.runDetachedTask("related-history startup", async () => {
+        const taskSignal = getMatrixMonitorTaskSignal();
+        const signal = AbortSignal.any([
+          controller.signal,
+          ...(monitorLifecycleSignal ? [monitorLifecycleSignal] : []),
+          ...(taskSignal ? [taskSignal] : []),
+        ]);
+        await prepareMatrixStartupConversationRoots({
+          client: rootClient,
+          core,
+          runtime,
+          accountId: effectiveAccountId,
+          groupPolicy,
+          directTracker: rootTracker,
+          startupAllowFrom: allowFromResolvedEntries,
+          startupGroupAllowFrom: groupAllowFromResolvedEntries,
+          getRuntimeConfig: () => core.config.current() as CoreConfig,
+          getRoomInfo: (roomId) => getRoomInfo(roomId, { includeAliases: true }),
+          signal,
+          assertCurrent() {
+            signal.throwIfAborted();
+            if (
+              rootPreparation !== controller ||
+              cleanedUp ||
+              monitorSetupClosed ||
+              healthySyncSinceMs === undefined
+            ) {
+              throw new Error("Matrix startup conversation account is no longer current");
+            }
+          },
+          retainCleanup: (close) => monitorTaskRunner.retainCleanup(close),
+        }).catch((error: unknown) => {
+          if (!signal.aborted) {
+            throw error;
+          }
+        });
+      });
+    };
     disposeAutoJoin = registerMatrixAutoJoin({
       client,
       accountConfig,

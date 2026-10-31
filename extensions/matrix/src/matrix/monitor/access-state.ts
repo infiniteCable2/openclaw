@@ -68,7 +68,7 @@ export async function resolveMatrixMonitorAccessState(params: {
   senderId: string;
   isRoom: boolean;
   accountId?: string;
-  eventKind?: "message" | "reaction";
+  eventKind?: "message" | "reaction" | "conversation";
   conversationId?: string;
 }): Promise<MatrixMonitorAccessState> {
   const dmPolicy = params.dmPolicy ?? "pairing";

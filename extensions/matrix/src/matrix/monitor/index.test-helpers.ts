@@ -176,6 +176,13 @@ const hoisted = vi.hoisted(() => {
   const runMatrixStartupMaintenance = vi.fn<
     (params: { abortSignal?: AbortSignal }) => Promise<void>
   >(async () => undefined);
+  const prepareMatrixStartupConversationRoots = vi.fn<
+    (params: {
+      signal: AbortSignal;
+      assertCurrent(): void;
+      retainCleanup(close: () => Promise<void>): void;
+    }) => Promise<void>
+  >(async () => undefined);
   const setStatus = vi.fn();
   return {
     accountConfig,
@@ -206,6 +213,7 @@ const hoisted = vi.hoisted(() => {
     resolveSharedMatrixClient: lease.start,
     resolveSharedMatrixClientImpl,
     runMatrixStartupMaintenance,
+    prepareMatrixStartupConversationRoots,
     runRegisteredMonitorRetirement,
     setMatrixRuntime,
     setStatus,
@@ -371,6 +379,11 @@ vi.mock("./startup-verification.js", () => ({
 
 vi.mock("./startup.js", () => ({
   runMatrixStartupMaintenance: hoisted.runMatrixStartupMaintenance,
+}));
+
+// mock-isolation: The monitor owns readiness and account lifetime; endpoint admission is tested separately.
+vi.mock("./startup-history.js", () => ({
+  prepareMatrixStartupConversationRoots: hoisted.prepareMatrixStartupConversationRoots,
 }));
 
 export function getMatrixMonitorIndexTestHarness() {

@@ -136,6 +136,7 @@ describe("monitorMatrixProvider", () => {
     hoisted.backfillMatrixAuthDeviceIdAfterStartup.mockReset().mockResolvedValue(undefined);
     hoisted.registerChannelRuntimeContext.mockReset();
     hoisted.runMatrixStartupMaintenance.mockReset().mockResolvedValue(undefined);
+    hoisted.prepareMatrixStartupConversationRoots.mockReset().mockResolvedValue(undefined);
     hoisted.createMatrixRoomMessageHandler.mockReset().mockReturnValue(vi.fn());
     hoisted.disposeAutoJoin.mockClear();
     hoisted.disposeMonitorEvents.mockClear();
@@ -143,6 +144,40 @@ describe("monitorMatrixProvider", () => {
     hoisted.registerMatrixMonitorEvents.mockClear();
     hoisted.setStatus.mockReset();
     Object.values(hoisted.logger).forEach((mock) => mock.mockReset());
+  });
+
+  it("prepares roots on healthy startup without input, coalesces ready events and retires account custody", async () => {
+    const abort = new AbortController();
+    const close = vi.fn(async () => {});
+    hoisted.prepareMatrixStartupConversationRoots.mockImplementation(async (params) => {
+      params.assertCurrent();
+      params.retainCleanup(() => close());
+    });
+    const monitor = monitorMatrixProvider({ abortSignal: abort.signal });
+    try {
+      await waitForCallOrderEntry("start-client");
+      expect(hoisted.prepareMatrixStartupConversationRoots).not.toHaveBeenCalled();
+      hoisted.client.emit("sync.state", "PREPARED");
+      hoisted.client.emit("sync.state", "SYNCING");
+      await flushUntil(
+        () => hoisted.prepareMatrixStartupConversationRoots.mock.calls.length === 1,
+        "expected startup preparation",
+      );
+      const first = hoisted.prepareMatrixStartupConversationRoots.mock.calls[0]![0];
+      hoisted.client.emit("sync.state", "RECONNECTING");
+      expect(first.signal.aborted).toBe(true);
+      expect(() => first.assertCurrent()).toThrow();
+      hoisted.client.emit("sync.state", "PREPARED");
+      await flushUntil(
+        () => hoisted.prepareMatrixStartupConversationRoots.mock.calls.length === 2,
+        "expected reconnected preparation",
+      );
+      expect(hoisted.createMatrixRoomMessageHandler.mock.results[0]?.value).not.toHaveBeenCalled();
+    } finally {
+      abort.abort();
+      await monitor;
+    }
+    expect(close).toHaveBeenCalledTimes(2);
   });
 
   it.each([

@@ -14,6 +14,8 @@ type DirectMessageCheck = {
   senderId?: string;
   selfUserId?: string;
   joinedMembers?: string[];
+  /** Startup inspection must not repair or promote remote account data. */
+  allowPromotion?: false;
 };
 
 type DirectRoomTrackerOptions = {
@@ -449,6 +451,7 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
         };
 
         if (
+          params.allowPromotion !== false &&
           hasRecentInviteCandidate(roomId, senderId) &&
           (await checkRoomPolicy("canPromoteRecentInvite", roomId)) &&
           (await promoteDirectRoom("recent invite"))
@@ -456,6 +459,7 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
           return true;
         }
         if (
+          params.allowPromotion !== false &&
           (await checkRoomPolicy("canPromoteUnmappedStrictRoom", roomId)) &&
           (await promoteDirectRoom("per-room strict fallback"))
         ) {

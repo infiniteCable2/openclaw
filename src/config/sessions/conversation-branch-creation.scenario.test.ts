@@ -8,6 +8,7 @@ import {
 } from "../../auto-reply/reply/conversation-knowledge-checkpoint-owner.js";
 import * as checkpointSources from "../../auto-reply/reply/conversation-knowledge-checkpoint-source.js";
 import { prepareConversationKnowledgeInitialContext } from "../../auto-reply/reply/conversation-knowledge-initial-context.js";
+import { openConversationKnowledgeRoot } from "../../auto-reply/reply/conversation-knowledge-open.js";
 import {
   createConversationKnowledgeScenario,
   person,
@@ -278,7 +279,7 @@ it("copies populated root knowledge through ordinary ingress before its first mo
   );
 }, 30_000);
 
-it("reuses an off-turn native root frame across fresh ingress branches without donor discovery", async ({
+it("warms an existing startup root before input and reuses its frame across fresh ingress branches", async ({
   signal,
 }) => {
   await withOpenClawTestState(
@@ -441,8 +442,48 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
         );
         spies.push(groups);
         stages.push("register-root");
-        registration = registerConversationKnowledgeCheckpointOwner({
-          branch,
+        const onReady = () => {
+          stages.push(`root-notified:${registration?.projection().tail.length ?? -1}`);
+          try {
+            const projection = registration?.projection();
+            const minimumDonorSeq = donorVersionGate.minimumRawSeq;
+            if (
+              !registration ||
+              !projection ||
+              projection.tail.length !== expectedOriginals ||
+              (minimumDonorSeq !== undefined &&
+                projection.tail.some(
+                  ({ reference, packet }) =>
+                    reference.source.sessionKey === donorA.sessionKey &&
+                    (packet.version.rawSeq ?? -1) < minimumDonorSeq,
+                ))
+            ) {
+              return;
+            }
+            const candidate = acquirePreparedConversationKnowledgeInitialFrame({
+              branch,
+              participant: person,
+            });
+            if (!candidate) {
+              return;
+            }
+            if (candidate.frame === previousFrame) {
+              void candidate.release().catch(ready.reject);
+              return;
+            }
+            previousFrame = candidate.frame;
+            heldFrames.push(candidate);
+            // Publish the frame before optional summary/model work. Pausing only
+            // the disposable quantum must leave its native source custody live.
+            resumes.push(registration.pausePreparation());
+            ready.resolve();
+          } catch (error) {
+            ready.reject(error);
+          }
+        };
+        const originalBrokerEvents = await loadTranscriptEvents(broker);
+        registration = await openConversationKnowledgeRoot({
+          target: broker,
           participant: person,
           env: state.env,
           getRuntimeConfig: () => cfg,
@@ -455,47 +496,17 @@ it("reuses an off-turn native root frame across fresh ingress branches without d
             participant: person,
             assertCurrent: brokerOwner.assertCurrent,
           },
-          onReady() {
-            stages.push(`root-notified:${registration?.projection().tail.length ?? -1}`);
-            try {
-              const projection = registration?.projection();
-              const minimumDonorSeq = donorVersionGate.minimumRawSeq;
-              if (
-                !registration ||
-                !projection ||
-                projection.tail.length !== expectedOriginals ||
-                (minimumDonorSeq !== undefined &&
-                  projection.tail.some(
-                    ({ reference, packet }) =>
-                      reference.source.sessionKey === donorA.sessionKey &&
-                      (packet.version.rawSeq ?? -1) < minimumDonorSeq,
-                  ))
-              ) {
-                return;
-              }
-              const candidate = acquirePreparedConversationKnowledgeInitialFrame({
-                branch,
-                participant: person,
-              });
-              if (!candidate) {
-                return;
-              }
-              if (candidate.frame === previousFrame) {
-                void candidate.release().catch(ready.reject);
-                return;
-              }
-              previousFrame = candidate.frame;
-              heldFrames.push(candidate);
-              // Publish the frame before optional summary/model work. Pausing only
-              // the disposable quantum must leave its native source custody live.
-              resumes.push(registration.pausePreparation());
-              ready.resolve();
-            } catch (error) {
-              ready.reject(error);
-            }
-          },
+          onReady,
         });
+        expect(registration).toBeDefined();
+        if (!registration) {
+          throw new Error("Expected the existing private startup broker to enroll");
+        }
+        // Native source preparation may settle before the enrollment reader's
+        // asynchronous release returns. Observe that same ready state once.
+        onReady();
         await withinTest(ready.promise, signal);
+        expect(await loadTranscriptEvents(broker)).toEqual(originalBrokerEvents);
         stages.push("initial-frame-ready");
         expect(groups).toHaveBeenCalledTimes(2);
         expect(

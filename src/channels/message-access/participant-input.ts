@@ -123,10 +123,15 @@ export function prepareBoundChannelPrivateAudience(
   params: ParticipantBinding & {
     accountId: string;
     inputs: readonly (ChannelParticipantInput | undefined)[];
+    purpose?: "root-preparation";
   },
 ) {
   const batch = selectBoundChannelParticipantInputs(params);
-  if (!batch || params.binding.inboundEventKind !== "user_request") {
+  if (
+    !batch ||
+    params.binding.inboundEventKind !==
+      (params.purpose === "root-preparation" ? "room_event" : "user_request")
+  ) {
     return undefined;
   }
   return collectConversationPrivateAudiences(

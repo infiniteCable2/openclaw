@@ -6,6 +6,7 @@ const boundary = vi.hoisted(() => ({
   branch: vi.fn(),
   seed: vi.fn(),
   register: vi.fn(),
+  root: vi.fn(),
 }));
 // mock-isolation: Verify opening custody without starting native workers or process-wide readers.
 vi.mock("../../config/sessions/session-accessor.sqlite-entry-admission.js", () => ({
@@ -23,8 +24,15 @@ vi.mock("../../config/sessions/conversation-knowledge-seed.js", () => ({
 vi.mock("./conversation-knowledge-prefetch.js", () => ({
   prepareConversationKnowledgeRecipient: boundary.register,
 }));
+// mock-isolation: Test root-only enrollment without launching the existing detached RootOwner.
+vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
+  registerConversationKnowledgeCheckpointOwner: boundary.root,
+}));
 
-import { openConversationKnowledgeRecipient } from "./conversation-knowledge-open.js";
+import {
+  openConversationKnowledgeRecipient,
+  openConversationKnowledgeRoot,
+} from "./conversation-knowledge-open.js";
 
 const branch = {
   agentId: "example",
@@ -80,6 +88,96 @@ beforeEach(() => {
 });
 
 describe("opening a private conversation recipient", () => {
+  it("prepares only an existing private root without creating recipient state or backfilling history", async () => {
+    const { params, release, reader } = fixture();
+    const close = vi.fn(async () => {});
+    boundary.root.mockReturnValue({ close });
+    boundary.load.mockResolvedValue({
+      entry: {
+        sessionId: branch.sessionId,
+        visibility: "draft",
+        participantCount: 1,
+        participants: [{ identity: params.participant }],
+      },
+      databaseClaim: { kind: "worker", reader, assertCurrent() {}, release },
+    });
+    const registration = await openConversationKnowledgeRoot({
+      ...params,
+      target: {
+        agentId: branch.agentId,
+        sessionKey: branch.sessionKey,
+        storePath: branch.storePath,
+      },
+    });
+    expect(registration).toEqual({ close });
+    expect(boundary.root).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch,
+        participant: params.participant,
+        audience: params.audience,
+      }),
+    );
+    expect(boundary.seed).not.toHaveBeenCalled();
+    expect(boundary.register).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+    await registration?.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each(["missing", "public", "incognito", "truncated", "other-person", "archived"])(
+    "does not enroll a startup broker with unproven private current state (%s)",
+    async (state) => {
+      const { params, release, reader } = fixture();
+      const entry = {
+        sessionId: branch.sessionId,
+        visibility: state === "public" ? "public" : "draft",
+        incognito: state === "incognito",
+        archivedAt: state === "archived" ? 1 : undefined,
+        participantCount: state === "truncated" ? 2 : 1,
+        participants: [
+          {
+            identity:
+              state === "other-person"
+                ? { type: "profile", id: "other-person" }
+                : params.participant,
+          },
+        ],
+      };
+      boundary.load.mockResolvedValue({
+        entry: state === "missing" ? undefined : entry,
+        databaseClaim: { kind: "worker", reader, assertCurrent() {}, release },
+      });
+      await expect(openConversationKnowledgeRoot(params)).resolves.toBeUndefined();
+      expect(boundary.root).not.toHaveBeenCalled();
+      expect(boundary.seed).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("closes a root whose native reader fails to release after registration", async () => {
+    const { params, reader } = fixture();
+    const close = vi.fn(async () => {});
+    boundary.root.mockReturnValue({ close });
+    boundary.load.mockResolvedValue({
+      entry: {
+        sessionId: branch.sessionId,
+        visibility: "draft",
+        participantCount: 1,
+        participants: [{ identity: params.participant }],
+      },
+      databaseClaim: {
+        kind: "worker",
+        reader,
+        assertCurrent() {},
+        release: async () => {
+          throw new Error("reader cleanup deferred");
+        },
+      },
+    });
+    await expect(openConversationKnowledgeRoot(params)).rejects.toThrow("reader cleanup deferred");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("seeds and registers before any input, releasing only its native read hold", async () => {
     const { params, release, reader } = fixture();
     await openConversationKnowledgeRecipient(params);
