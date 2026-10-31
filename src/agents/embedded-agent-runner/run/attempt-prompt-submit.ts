@@ -1,4 +1,9 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import {
+  CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT,
+  CONVERSATION_KNOWLEDGE_CONTEXT,
+} from "../../../config/sessions/conversation-knowledge-context-kinds.js";
 import type { ImageContent } from "../../../llm/types.js";
 import type { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js";
 import type { Agent, AgentMessage } from "../../runtime/index.js";
@@ -22,7 +27,7 @@ import { updateActiveEmbeddedRunSnapshot } from "../runs.js";
 import type { ToolResultPromptProjectionState } from "../session-prompt-state.js";
 import { truncateOversizedToolResultsInMessages } from "../tool-result-truncation.js";
 import { snapshotRecentMessages } from "./attempt-context-summary.js";
-import type { UserTranscriptContext } from "./attempt-history.js";
+import { findActiveUserMessageIndex, type UserTranscriptContext } from "./attempt-history.js";
 import {
   installModelPromptProjection,
   installRuntimeContextMessageForPrompt,
@@ -144,14 +149,62 @@ export async function submitEmbeddedAttemptPrompt(input: {
     const conversationProjection = input.refreshConversationContext
       ? createPreparedConversationContextProjection(activeSession)
       : undefined;
+    const placedObservations = new Set<string>();
+    let providerPrompt: Extract<AgentMessage, { role: "user" }> | undefined;
+    const observationId = (message: AgentMessage) => {
+      if (
+        message.role !== "custom" ||
+        (message.customType !== CONVERSATION_KNOWLEDGE_CONTEXT &&
+          message.customType !== CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT)
+      ) {
+        return undefined;
+      }
+      const id = asOptionalRecord(message.details)?.packetId;
+      return typeof id === "string" ? id : undefined;
+    };
     const projectPreparedContext: NonNullable<Agent["transformContext"]> = async (
       messages,
       signal,
     ) => {
       const projected = conversationProjection?.project(messages) ?? messages;
-      return baseTransformContext
+      const normalized = baseTransformContext
         ? await baseTransformContext.call(activeSession.agent, projected, signal)
         : projected;
+      providerPrompt = undefined;
+      if (input.appendOnlyRuntimeContext || activeSession.isCompacting) {
+        return normalized;
+      }
+      // The first request owns this placement. Later tool steps retain its exact
+      // prefix; newly arriving observations keep the native append-only path.
+      const firstPlaced = normalized.findIndex((message) => {
+        const id = observationId(message);
+        return id !== undefined && placedObservations.has(id);
+      });
+      const promptIndex = findActiveUserMessageIndex(
+        primaryRequestObserved && firstPlaced >= 0 ? normalized.slice(0, firstPlaced) : normalized,
+      );
+      if (promptIndex < 0 || (primaryRequestObserved && firstPlaced < 0)) {
+        return normalized;
+      }
+      const prompt = normalized[promptIndex];
+      if (prompt?.role !== "user") {
+        return normalized;
+      }
+      providerPrompt = prompt;
+      const before: AgentMessage[] = [];
+      const after: AgentMessage[] = [];
+      for (const message of normalized.slice(promptIndex + 1)) {
+        const id = observationId(message);
+        if (id !== undefined && (!primaryRequestObserved || placedObservations.has(id))) {
+          placedObservations.add(id);
+          before.push(message);
+        } else {
+          after.push(message);
+        }
+      }
+      return before.length
+        ? [...normalized.slice(0, promptIndex), ...before, prompt, ...after]
+        : normalized;
     };
     if (conversationProjection) {
       activeSession.agent.transformContext = projectPreparedContext;
@@ -279,9 +332,35 @@ export async function submitEmbeddedAttemptPrompt(input: {
           const added = conversationProjection.install(packets, boundary);
           if (added.length > 0) {
             lateUpdates.push(...added);
+            const promptIndex = providerPrompt
+              ? requestContext.messages.indexOf(providerPrompt)
+              : -1;
+            const before: CustomMessage[] = [];
+            const after: CustomMessage[] = [];
+            for (const message of added) {
+              const id = observationId(message);
+              if (
+                !primaryRequestObserved &&
+                !input.appendOnlyRuntimeContext &&
+                promptIndex >= 0 &&
+                id !== undefined
+              ) {
+                placedObservations.add(id);
+                before.push(message);
+              } else {
+                after.push(message);
+              }
+            }
             requestContext = {
               ...requestContext,
-              messages: [...requestContext.messages, ...convertToLlm(added)],
+              messages: before.length
+                ? [
+                    ...requestContext.messages.slice(0, promptIndex),
+                    ...convertToLlm(before),
+                    ...requestContext.messages.slice(promptIndex),
+                    ...convertToLlm(after),
+                  ]
+                : [...requestContext.messages, ...convertToLlm(after)],
             };
           }
         } catch {

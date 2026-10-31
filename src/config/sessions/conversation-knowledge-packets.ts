@@ -6,6 +6,7 @@ import {
   type ConversationKnowledgeCheckpointContext,
 } from "./conversation-knowledge-checkpoint-context.js";
 import type { PreparedConversationKnowledgeCheckpointCoverage } from "./conversation-knowledge-checkpoint.js";
+import { CONVERSATION_KNOWLEDGE_CONTEXT } from "./conversation-knowledge-context-kinds.js";
 import { readConversationKnowledgeReports } from "./conversation-knowledge-history.js";
 import {
   conversationKnowledgeContributionId,
@@ -37,8 +38,8 @@ import {
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
 
-export const CONVERSATION_KNOWLEDGE_CONTEXT = "openclaw.conversation-knowledge-context.v1";
 export {
+  CONVERSATION_KNOWLEDGE_CONTEXT,
   CONVERSATION_KNOWLEDGE_NOTICE,
   conversationKnowledgeContributionId,
   conversationKnowledgePacketId,

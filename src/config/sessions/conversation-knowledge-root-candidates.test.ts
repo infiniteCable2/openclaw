@@ -36,7 +36,8 @@ vi.mock("./conversation-knowledge-history.js", () => ({
   readConversationKnowledgeRootReports: async (params: { revalidate(): Promise<void> }) => {
     const reports = await boundary.reports(params);
     await params.revalidate();
-    return reports;
+    // Native reads return a fresh carrier for each evidence attachment.
+    return [...reports];
   },
 }));
 
@@ -198,7 +199,13 @@ describe("prepared native knowledge root candidates", () => {
       sessionKey: "agent:example:other",
       sessionId: "other-donor",
     };
-    const otherThrough = { ...f.receipt.through, ...otherSource, entryId: "unrelated" };
+    const otherThrough = {
+      ...f.receipt.through,
+      agentId: otherSource.agentId,
+      sessionKey: otherSource.sessionKey,
+      sessionId: otherSource.sessionId,
+      entryId: "unrelated",
+    };
     const unrelated = {
       ...f.receipt,
       source: otherSource,

@@ -5,6 +5,7 @@ import {
   type ConversationKnowledgeCheckpoint,
   type PreparedConversationKnowledgeCheckpointCoverage,
 } from "./conversation-knowledge-checkpoint.js";
+import { CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT } from "./conversation-knowledge-context-kinds.js";
 import type {
   ConversationKnowledgeImportProgress,
   ConversationKnowledgePacketProgress,
@@ -12,8 +13,7 @@ import type {
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import type { CustomMessageReportAppend } from "./session-accessor.sqlite-transcript-reports.types.js";
 
-export const CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT =
-  "openclaw.conversation-knowledge-checkpoint-context.v1";
+export { CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT };
 
 export type ConversationKnowledgeCheckpointContext = {
   version: 1;

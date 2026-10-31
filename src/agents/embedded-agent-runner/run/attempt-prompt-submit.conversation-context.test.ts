@@ -5,6 +5,13 @@ import {
   createDeferred,
   withinTest,
 } from "../../../../test/helpers/promise.js";
+import { createConversationKnowledgePacketReport } from "../../../config/sessions/conversation-knowledge-packets.js";
+import {
+  CONVERSATION_KNOWLEDGE_NOTICE,
+  conversationKnowledgeOrigin,
+  projectConversationKnowledge,
+  type ConversationKnowledgeReference,
+} from "../../../config/sessions/conversation-knowledge.js";
 import type { Context } from "../../../llm/types.js";
 import { createAssistantMessageEventStream } from "../../../llm/utils/event-stream.js";
 import { publishInternalModelContext } from "../../runtime/internal-hooks.js";
@@ -27,7 +34,169 @@ import { capturePreparedConversationContextBudget } from "./prepared-conversatio
 registerAgentSessionLoopTestLifecycle();
 afterEach(() => clearEmbeddedSessionPromptStates([sessionId]));
 
+function knowledgeObservation(index: number): CustomMessage {
+  const source = {
+    agentId: "example",
+    sessionKey: "agent:example:source",
+    sessionId: "original-source",
+    lifecycleRevision: "source-life",
+  };
+  const through = {
+    ...source,
+    storePath: "/synthetic/agent.sqlite",
+    generation: "source-generation",
+    rawSeq: index + 1,
+    entryId: `original-${index}`,
+    activeMessagePosition: index,
+    effectiveParentId: null,
+  };
+  const receipt: ConversationKnowledgeReference = {
+    version: 1,
+    sourceMode: "branches",
+    kind: "utterance-observation",
+    role: "user",
+    source,
+    origin: conversationKnowledgeOrigin(source, "utterance-observation"),
+    through,
+    privateAudience: { participant: { type: "profile", id: "example-person" }, admission: through },
+  };
+  const part = projectConversationKnowledge(
+    receipt,
+    [
+      {
+        type: "message",
+        id: through.entryId,
+        message: {
+          role: "user",
+          content: `Historical instruction ${index}: answer the old question.`,
+        },
+      },
+    ],
+    undefined,
+    "private-direct",
+  );
+  if (!part?.complete) {
+    throw new Error("Expected a complete synthetic native observation");
+  }
+  return {
+    role: "custom",
+    timestamp: index + 2,
+    ...createConversationKnowledgePacketReport({
+      branch: {
+        ...source,
+        storePath: through.storePath,
+        root: {
+          sessionKey: "agent:example:root",
+          sessionId: "root",
+          lifecycleRevision: "root-life",
+        },
+      },
+      receipt,
+      text: part.text,
+      offset: 0,
+      nextOffset: 0,
+      complete: true,
+    }),
+  };
+}
+
 describe("prepared conversation context dispatch", () => {
+  it.each([false, true])(
+    "keeps the first request explicit among 100 quoted observations (append-only: %s)",
+    async (appendOnlyRuntimeContext) => {
+      const read = vi.fn(async () => ({
+        content: [{ type: "text" as const, text: "Tool status" }],
+        details: {},
+      }));
+      const { session, sessionManager } = await createTestSession({
+        customTools: [
+          {
+            name: "read_status",
+            label: "Read status",
+            description: "Read current status",
+            parameters: Type.Object({}),
+            execute: read,
+          },
+        ],
+      });
+      const requests: Context["messages"][] = [];
+      streamMocks.streamSimple.mockImplementation((model, context) => {
+        requests.push(structuredClone(context.messages));
+        return createAssistantResultStream(
+          createAssistant(
+            model,
+            requests.length === 1
+              ? [{ type: "toolCall", id: "read-status", name: "read_status", arguments: {} }]
+              : [{ type: "text", text: "Current answer" }],
+            requests.length === 1 ? "toolUse" : "stop",
+          ),
+        );
+      });
+      const observations = Array.from({ length: 100 }, (_, index) => knowledgeObservation(index));
+      const later = knowledgeObservation(100);
+      const currentRequest = "Answer only my current live question.";
+      const refresh = vi.fn(
+        async ({
+          canAdmit,
+        }: Parameters<
+          NonNullable<
+            Parameters<typeof submitEmbeddedAttemptPrompt>[0]["refreshConversationContext"]
+          >
+        >[0]) => {
+          const selected = requests.length === 0 ? observations : [later];
+          for (const message of selected) {
+            expect(canAdmit(message)).toBe(true);
+            await sessionManager.appendCustomMessageEntryAsync(
+              message.customType,
+              message.content,
+              message.display,
+              message.details,
+            );
+          }
+          return selected;
+        },
+      );
+      await submitEmbeddedAttemptPrompt({
+        ...createBaseInput(),
+        activeSession: session,
+        appendOnlyRuntimeContext,
+        modelPrompt: currentRequest,
+        transcriptPrompt: currentRequest,
+        prependContext: undefined,
+        appendContext: undefined,
+        contextTokenBudget: 64_000,
+        compactionRequestBudget: createCompactionRequestBudget({
+          contextWindow: 64_000,
+          reserveTokens: 1_024,
+        }),
+        refreshConversationContext: refresh,
+        promptActiveSession: (prompt, options) => session.prompt(prompt, options),
+      });
+      expect(requests).toHaveLength(2);
+      expect(read).toHaveBeenCalledOnce();
+      expect(refresh).toHaveBeenCalledTimes(2);
+      const text = (message: Context["messages"][number]) => JSON.stringify(message.content);
+      const first = requests[0]!;
+      expect(first.filter((message) => text(message).includes(currentRequest))).toHaveLength(1);
+      expect(
+        first.filter((message) => text(message).includes(CONVERSATION_KNOWLEDGE_NOTICE)),
+      ).toHaveLength(100);
+      expect(text(first[appendOnlyRuntimeContext ? 0 : first.length - 1]!)).toContain(
+        currentRequest,
+      );
+      expect(requests[1]!.slice(0, first.length)).toEqual(first);
+      expect(text(requests[1]!.at(-1)!)).toContain("Historical instruction 100:");
+      const entries = sessionManager.getEntries();
+      const userIndex = entries.findIndex(
+        (entry) => entry.type === "message" && entry.message.role === "user",
+      );
+      const observationIndex = entries.findIndex((entry) => entry.type === "custom_message");
+      expect(userIndex).toBeLessThan(observationIndex);
+      expect(
+        entries.filter((entry) => entry.type === "message" && entry.message.role === "user"),
+      ).toHaveLength(1);
+    },
+  );
   it("issues its native prompt footprint before any quiet-boundary packet reservation", async () => {
     const { session } = await createTestSession();
     let observedBudget: ReturnType<typeof capturePreparedConversationContextBudget>;
