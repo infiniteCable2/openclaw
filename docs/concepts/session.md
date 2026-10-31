@@ -194,8 +194,8 @@ yields to foreground input, and never starts inference or compaction. Missing
 budget, changed configuration, another writer or insufficient capacity leaves
 the observations prepared for a later safe boundary. Native owner availability
 and selected donor changes schedule retries without polling or a new user turn.
-A new opening rebuilds disposable preparation from the existing root and durable
-packet receipts.
+When no live preparation remains, an opening rebuilds it from the existing root
+and durable packet receipts.
 
 Root checkpoints bound the context offered to new branches. A separate background
 owner prepares an audience-scoped summary when the projected context reaches the
@@ -215,12 +215,16 @@ summary can be reused; unavailable storage facts retain the normal retry path.
 A genuinely new private branch installs its authorized checkpoint and subsequent
 observations in the native creation transaction, before the first input. The
 original private destination, absent row, unused transcript/window identity, root
-prefix and every selected source range remain guarded through commit. Prepared
-text can be reused, but its former reader's permission cannot. Concurrent root
+prefix and every selected source range remain guarded through commit. A complete
+background frame retains its original broker and donor custody while new branches
+borrow its immutable context. Creation proves the new private destination without
+repeating donor discovery. A revoked frame falls back to normal authorized
+preparation; borrowed custody is released only after its copies settle. Concurrent root
 appends remain later deltas; a changed source or recipient refuses the copy
 atomically. The first model request still uses its actual system/tool footprint
 and native capacity/compaction checks, without an invented budget or checkpoint.
-Preparation never waits for a new summary. Existing recipients retain their own imported progress and native
+Preparation publishes the complete available tail before acquiring a summary model
+or waiting for a new summary. Existing recipients retain their own imported progress and native
 compaction; publishing a root checkpoint does not rebase them, repeat earlier
 imports, or remove their local conversation. Their missing original contributions
 remain independently recoverable under the same permissions.
@@ -238,6 +242,8 @@ all recipient receipts before a model request. Exact native receipt observations
 distinguish active carriers, historical carriers and missing evidence, so a retry
 can recover an accepted observation without resurrecting compacted content.
 Background preparation also retains bounded native read custody shared per donor.
+Unrelated root additions preserve unchanged donor groups; changed or retired
+selections and scope changes invalidate the affected custody.
 Each admission binds fresh execution, destination and root evidence to that custody;
 it does not reuse the former caller's grant or repeat source discovery. Native
 revocation, physical identity, exact ranges and atomic write predicates still apply.

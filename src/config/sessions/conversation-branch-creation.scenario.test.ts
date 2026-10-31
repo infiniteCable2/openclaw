@@ -1,4 +1,11 @@
-import { expect, it } from "vitest";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { expect, it, vi } from "vitest";
+import { withinTest } from "../../../test/helpers/promise.js";
+import {
+  acquirePreparedConversationKnowledgeInitialFrame,
+  registerConversationKnowledgeCheckpointOwner,
+} from "../../auto-reply/reply/conversation-knowledge-checkpoint-owner.js";
+import * as checkpointSources from "../../auto-reply/reply/conversation-knowledge-checkpoint-source.js";
 import { prepareConversationKnowledgeInitialContext } from "../../auto-reply/reply/conversation-knowledge-initial-context.js";
 import {
   createConversationKnowledgeScenario,
@@ -6,13 +13,18 @@ import {
 } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { initSessionState } from "../../auto-reply/reply/session.js";
+import * as personalReads from "../../gateway/session-transcript-personal-read.js";
 import {
   bindConversationPrivateAudience,
   type ConversationPrivateAudience,
 } from "../../sessions/conversation-private-audience.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
-import { readConversationKnowledgeImportProgress } from "./conversation-knowledge-packets.js";
+import {
+  CONVERSATION_KNOWLEDGE_CONTEXT,
+  readConversationKnowledgeImportProgress,
+} from "./conversation-knowledge-packets.js";
 import { recordConversationKnowledgeTurn } from "./conversation-knowledge-store.js";
 import { loadSessionEntry, loadTranscriptEvents } from "./session-accessor.js";
 import {
@@ -22,6 +34,8 @@ import {
 } from "./session-accessor.reset.js";
 import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-entry-cache.types.js";
 import { prepareSessionGenerationFacts } from "./session-delivery-generation.js";
+import * as frameBorrow from "./session-initial-context-frame.js";
+import * as sourceContexts from "./session-transcript-context-read.js";
 
 // Real native generation custody, personal source grants and lifecycle/transcript workers.
 // Controlled original transcript commits replace generation, not storage or admission.
@@ -252,6 +266,235 @@ it("copies populated root knowledge through ordinary ingress before its first mo
         expect([...progress.packets.values()].every((packet) => packet.complete)).toBe(true);
         expect(await loadTranscriptEvents(donor)).toEqual(originals);
       } finally {
+        await fixture.close();
+      }
+    },
+  );
+}, 30_000);
+
+it("reuses an off-turn native root frame across fresh ingress branches without donor discovery", async ({
+  signal,
+}) => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "native-shared-initial-frame" },
+    async (state) => {
+      const fixture = await createConversationKnowledgeScenario(state);
+      let registration: ReturnType<typeof registerConversationKnowledgeCheckpointOwner> | undefined;
+      const heldFrames: NonNullable<
+        ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>
+      >[] = [];
+      const resumes: (() => void)[] = [];
+      const spies: { mockRestore(): void }[] = [];
+      try {
+        const cfg: OpenClawConfig = {
+          agents: {
+            defaults: { workspace: state.workspaceDir },
+            entries: { main: { conversationMode: "branches" } },
+          },
+          session: { store: fixture.root.storePath, dmScope: "per-channel-peer" },
+        };
+        await state.writeConfig(cfg);
+        const donor = await fixture.branch("frame-donor");
+        const donorOwner = await fixture.claim(donor);
+        const publish = async (runId: string) => {
+          const terminal = await fixture.append(donor, runId);
+          expect(
+            await recordConversationKnowledgeTurn({
+              ...donorOwner,
+              ...terminal,
+              privateAudience: { participant: person, admission: terminal.admission! },
+            }),
+          ).toBe(true);
+        };
+        for (let index = 0; index < 3; index++) {
+          await publish(`sealed-original-${index}`);
+        }
+        const broker = await fixture.branch("frame-broker");
+        const brokerOwner = await fixture.claim(broker);
+        const topology = loadSessionEntry(broker)?.conversationTopology;
+        if (topology?.role !== "branch") {
+          throw new Error("Expected the real private frame broker");
+        }
+        const branch = {
+          ...broker,
+          root: {
+            sessionKey: topology.rootSessionKey,
+            sessionId: topology.rootSessionId,
+            lifecycleRevision: topology.rootSessionLifecycleRevision,
+          },
+        };
+        let expectedOriginals = 3;
+        let ready = createDeferredCore();
+        let previousFrame:
+          | NonNullable<
+              ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>
+            >["frame"]
+          | undefined;
+        registration = registerConversationKnowledgeCheckpointOwner({
+          branch,
+          participant: person,
+          env: state.env,
+          getRuntimeConfig: () => cfg,
+          audience: {
+            agentId: broker.agentId,
+            sessionKey: broker.sessionKey,
+            channelId: "matrix",
+            accountId: "default",
+            nativeChannelId: "private-frame-broker",
+            participant: person,
+            assertCurrent: brokerOwner.assertCurrent,
+          },
+          onReady() {
+            try {
+              if (!registration || registration.projection().tail.length !== expectedOriginals) {
+                return;
+              }
+              const candidate = acquirePreparedConversationKnowledgeInitialFrame({
+                branch,
+                participant: person,
+              });
+              if (!candidate) {
+                return;
+              }
+              if (candidate.frame === previousFrame) {
+                void candidate.release().catch(ready.reject);
+                return;
+              }
+              previousFrame = candidate.frame;
+              heldFrames.push(candidate);
+              // Publish the frame before optional summary/model work. Pausing only
+              // the disposable quantum must leave its native source custody live.
+              resumes.push(registration.pausePreparation());
+              ready.resolve();
+            } catch (error) {
+              ready.reject(error);
+            }
+          },
+        });
+        await withinTest(ready.promise, signal);
+        const discovery = vi.spyOn(
+          checkpointSources,
+          "prepareConversationKnowledgeCheckpointSources",
+        );
+        const groups = vi.spyOn(personalReads, "preparePersonalConversationContributionGroup");
+        const bodies = vi.spyOn(sourceContexts, "readSessionTranscriptModelContextAsync");
+        const borrowing = vi.spyOn(frameBorrow, "borrowPreparedConversationKnowledgeInitialFrame");
+        spies.push(discovery, groups, bodies, borrowing);
+        const create = async (suffix: string, count: number) => {
+          const target = {
+            agentId: broker.agentId,
+            storePath: broker.storePath,
+            env: state.env,
+            sessionKey: `agent:main:matrix:direct:sealed-${suffix}`,
+          };
+          expect(loadSessionEntry(target)).toBeUndefined();
+          const ctx = finalizeInboundContext({
+            Body: "First request after frame copy.",
+            RawBody: "First request after frame copy.",
+            ChatType: "direct",
+            SessionKey: target.sessionKey,
+            Provider: "matrix",
+            Surface: "matrix",
+            From: `matrix:${person.id}`,
+            To: `room:sealed-${suffix}`,
+            SenderId: person.id,
+            SessionCreation: {
+              via: "channel",
+              actor: { type: "human", source: "channel", id: person.id },
+            },
+          });
+          bindConversationPrivateAudience(ctx, {
+            agentId: target.agentId,
+            sessionKey: target.sessionKey,
+            channelId: "matrix",
+            accountId: "default",
+            nativeChannelId: `sealed-${suffix}`,
+            participant: person,
+            assertCurrent: brokerOwner.assertCurrent,
+          });
+          const result = await withinTest(
+            initSessionState({
+              cfg,
+              ctx,
+              commandAuthorized: true,
+              assertSourceCurrent: brokerOwner.assertCurrent,
+              signal,
+            }),
+            signal,
+          );
+          expect(result.sessionEntry.visibility).toBe("draft");
+          expect(result.sessionEntry.forkSource).toBeUndefined();
+          expect(result.sessionEntry.parentSessionKey).toBeUndefined();
+          expect(result.sessionEntry.spawnedBy).toBeUndefined();
+          const initialized = { ...target, sessionId: result.sessionId };
+          const events = await loadTranscriptEvents(initialized);
+          const content = JSON.stringify(events);
+          for (let index = 0; index < Math.min(3, count); index++) {
+            expect(content).toContain(`sealed-original-${index} answer`);
+          }
+          expect(content).not.toContain("First request after frame copy.");
+          const progress = await readConversationKnowledgeImportProgress({
+            branch: {
+              ...initialized,
+              lifecycleRevision: result.sessionEntry.lifecycleRevision!,
+              root: branch.root,
+            },
+            assertCurrent: brokerOwner.assertCurrent,
+          });
+          expect(progress.packets.size).toBe(count);
+          expect([...progress.packets.values()].every((packet) => packet.complete)).toBe(true);
+          const packetIds = events.flatMap((event) => {
+            const record = asOptionalRecord(event);
+            const packetId = asOptionalRecord(record?.details)?.packetId;
+            return record?.customType === CONVERSATION_KNOWLEDGE_CONTEXT &&
+              typeof packetId === "string"
+              ? [packetId]
+              : [];
+          });
+          expect(packetIds).toHaveLength(count);
+          expect(new Set(packetIds).size).toBe(count);
+          return { initialized, packetIds: packetIds.toSorted() };
+        };
+        const first = await create("first", 3);
+        const second = await create("second", 3);
+        expect(second.packetIds).toEqual(first.packetIds);
+        expect(borrowing).toHaveBeenCalledTimes(2);
+        expect(discovery).not.toHaveBeenCalled();
+        expect(groups).not.toHaveBeenCalled();
+        expect(bodies).not.toHaveBeenCalled();
+
+        // A new original alone wakes the root; no target turn builds the successor.
+        expectedOriginals = 4;
+        ready = createDeferredCore();
+        await publish("sealed-later-delta");
+        resumes.shift()!();
+        await withinTest(ready.promise, signal);
+        discovery.mockClear();
+        groups.mockClear();
+        bodies.mockClear();
+        borrowing.mockClear();
+        const third = await create("updated", 4);
+        expect(third.packetIds.filter((id) => !first.packetIds.includes(id))).toHaveLength(1);
+        expect(first.packetIds.every((id) => third.packetIds.includes(id))).toBe(true);
+        expect(JSON.stringify(await loadTranscriptEvents(third.initialized))).toContain(
+          "sealed-later-delta answer",
+        );
+        expect(borrowing).toHaveBeenCalledOnce();
+        expect(discovery).not.toHaveBeenCalled();
+        expect(groups).not.toHaveBeenCalled();
+        expect(bodies).not.toHaveBeenCalled();
+        expect((await fixture.receipts()).length).toBe(4);
+      } finally {
+        for (const spy of spies.toReversed()) {
+          spy.mockRestore();
+        }
+        for (const held of heldFrames.toReversed()) {
+          await held.release();
+        }
+        await registration?.close();
+        for (const resume of resumes) {
+          resume();
+        }
         await fixture.close();
       }
     },

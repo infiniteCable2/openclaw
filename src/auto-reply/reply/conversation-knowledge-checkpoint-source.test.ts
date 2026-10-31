@@ -7,7 +7,10 @@ import {
 } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionTranscriptModelContext } from "../../config/sessions/session-history-read.types.js";
-import { prepareSessionSourceAuthority } from "../../config/sessions/session-source-authority.js";
+import {
+  prepareSessionSourceAuthority,
+  type SessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { PersonalConversationReadRefusedError } from "../../gateway/session-mutation-authorization-error.js";
@@ -105,13 +108,19 @@ function reference(generation = "current"): ConversationKnowledgeReference {
   };
 }
 const cleanups = new Set<() => void>();
-async function sources(assertCurrent = () => {}) {
+async function sources(
+  assertCurrent = () => {},
+  options?: {
+    signal?: AbortSignal;
+    authority?: { signal: AbortSignal; assertCurrent: () => void };
+  },
+) {
   const reader: SessionEntryCohortReader = {
     database: { agentId: branch.agentId, path: branch.storePath, env: {} },
     logicalAgentId: branch.agentId,
     storePaths: [branch.storePath],
     sessionKey: branch.sessionKey,
-    assertCurrent,
+    assertCurrent: options?.authority?.assertCurrent ?? assertCurrent,
     async withRead(_request, check, consume) {
       check();
       return consume(
@@ -140,11 +149,12 @@ async function sources(assertCurrent = () => {}) {
       accountId: "default",
       nativeChannelId: "private-endpoint",
       participant: person,
-      assertCurrent,
+      assertCurrent: options?.authority?.assertCurrent ?? assertCurrent,
     },
     reader,
-    signal: new AbortController().signal,
+    signal: options?.signal ?? new AbortController().signal,
     assertCurrent,
+    authority: options?.authority,
     getRuntimeConfig: () => config,
     retainCleanup: (release) => cleanups.add(release),
   });
@@ -178,6 +188,35 @@ afterEach(() => {
 });
 
 describe("checkpoint unavailable source custody", () => {
+  it("keeps published source authority after quantum cancellation while stopping further hydration", async () => {
+    const quantum = new AbortController();
+    const lifetime = new AbortController();
+    const held = await sources(() => quantum.signal.throwIfAborted(), {
+      signal: quantum.signal,
+      authority: { signal: lifetime.signal, assertCurrent: () => lifetime.signal.throwIfAborted() },
+    });
+    await held.read(reference());
+    const source = held.source();
+    quantum.abort(new Error("Hydration paused"));
+    expect(() => source()).not.toThrow();
+    await expect(held.validate(reference())).rejects.toThrow("Hydration paused");
+    lifetime.abort(new Error("Broker lifetime ended"));
+    expect(() => source()).toThrow("Broker lifetime ended");
+  });
+  it("checks a cached prefix separately even when its original range anchors still match", async () => {
+    const held = await sources();
+    const packet = (await held.read(reference()))!.packet;
+    boundary.anchors.mockImplementation(async (_target, selection) => ({
+      anchors: [],
+      contextValidated: !selection.contextValidation.version,
+      contextVersion: { generation: "current", rawSeq: 1, updatedAt: 1 },
+    }));
+    await expect(held.validate(reference(), packet)).resolves.toBeUndefined();
+    expect(boundary.anchors).toHaveBeenCalledOnce();
+    expect(boundary.anchors.mock.calls[0]![1].contextValidation).toEqual({
+      version: packet.version,
+    });
+  });
   it("leaves a stale own anchor unresolved and still reads a later valid original", async () => {
     const held = await sources();
     const stale = reference("old-generation");
@@ -325,6 +364,63 @@ describe("grouped checkpoint prefix validation", () => {
     });
     return { references, packets, current, release };
   }
+
+  it("prepares only 37 fresh donor grants for a 505-original frame after individual hydration", async () => {
+    const fixture = groupFixture(505, [200]);
+    const references = fixture.references.map((value, index) => {
+      const source = {
+        ...value.source,
+        sessionKey: `agent:example:donor-${index % 37}`,
+        sessionId: `donor-${index % 37}`,
+      };
+      const through = { ...value.through, ...source };
+      return {
+        ...value,
+        source,
+        origin: conversationKnowledgeOrigin(source, "utterance-observation"),
+        through,
+        privateAudience: { participant: person, admission: through },
+      };
+    });
+    const prepareGrants: ReturnType<typeof vi.fn>[] = [];
+    boundary.personal.mockImplementation(async ({ sources: selected }) => {
+      const donor = selected[0];
+      const prepare = vi.fn(async () => ({ assertCurrent() {}, checks: [] }));
+      prepareGrants.push(prepare);
+      return {
+        sources: [{ ...donor, canonicalKey: donor.sessionKey, readSource: nativeSource }],
+        assertCurrent: Object.assign(() => {}, { prepareSessionSource: prepare }),
+        release() {},
+        selectContribution: (value: ConversationKnowledgeReference) => ({
+          through: value.through,
+          from: value.privateAudience!.admission,
+          version: fixture.current,
+        }),
+      };
+    });
+    const held = await sources();
+    for (const original of references) {
+      expect(await held.verifyAll([original], () => {})).toBe(true);
+    }
+    expect(prepareGrants).toHaveLength(505);
+    const frameProofs = new Set<SessionSourceAssertion>();
+    expect(
+      await held.verifyAll(
+        references,
+        () => {},
+        undefined,
+        (proof) => frameProofs.add(proof),
+      ),
+    ).toBe(true);
+    expect(prepareGrants).toHaveLength(542);
+    const authority = await prepareSessionSourceAuthority(held.source([...frameProofs]));
+    expect(prepareGrants.slice(0, 505).every((prepare) => prepare.mock.calls.length === 0)).toBe(
+      true,
+    );
+    expect(prepareGrants.slice(505).every((prepare) => prepare.mock.calls.length === 1)).toBe(true);
+    // Existing version proofs are retained even though individual hydration already created them.
+    expect(authority.checks.filter(({ predicate }) => predicate.transcript)).toHaveLength(37);
+  });
 
   it.each([
     { versions: [200], anchorReads: 0, predicates: 1 },

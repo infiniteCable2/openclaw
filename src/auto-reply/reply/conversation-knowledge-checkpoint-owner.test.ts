@@ -35,7 +35,12 @@ const boundary = vi.hoisted(() => ({
   release: vi.fn(),
   modelRelease: vi.fn(),
   sourceRelease: vi.fn(),
+  frame: vi.fn(),
+  sourcePreparation: vi.fn(),
   plan: vi.fn(),
+  nativePlan: undefined as
+    | typeof import("./conversation-knowledge-checkpoint-summary.js").planConversationKnowledgeCheckpointSummary
+    | undefined,
   summarize: vi.fn(),
   load: vi.fn(),
   warn: vi.fn(),
@@ -96,6 +101,7 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
   prepareConversationKnowledgeCheckpointSources: async (params: {
     retainCleanup(release: () => void): void;
   }) => {
+    boundary.sourcePreparation(params);
     params.retainCleanup(boundary.sourceRelease);
     return {
       references: boundary.refs,
@@ -103,6 +109,7 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
       validate: boundary.validate,
       verify: vi.fn(),
       verifyAll: boundary.verifyAll,
+      prepareInitialContextFrame: boundary.frame,
       source: () =>
         Object.assign(() => {}, {
           prepareSessionSource: async () => ({ assertCurrent() {}, checks: [] }),
@@ -115,10 +122,12 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
 vi.mock("./conversation-knowledge-checkpoint-model.js", () => ({
   acquireConversationKnowledgeCheckpointModel: boundary.acquire,
 }));
-// mock-isolation: Observe the owner's pressure-to-planning handoff without loading the summarizer/provider graph; summary tests cover native planning.
-vi.mock("./conversation-knowledge-checkpoint-summary.js", () => ({
-  planConversationKnowledgeCheckpointSummary: boundary.plan,
-}));
+vi.mock("./conversation-knowledge-checkpoint-summary.js", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("./conversation-knowledge-checkpoint-summary.js")>();
+  boundary.nativePlan = original.planConversationKnowledgeCheckpointSummary;
+  return { ...original, planConversationKnowledgeCheckpointSummary: boundary.plan };
+});
 // mock-isolation: The fixture drives root quanta directly; registering process-wide background lanes would introduce unrelated scheduled work.
 vi.mock("../../process/background-work.js", () => ({
   createBackgroundWorkOwner: () => ({ enqueue: vi.fn() }),
@@ -210,6 +219,7 @@ async function quantum() {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  boundary.plan.mockImplementation(boundary.nativePlan!);
   boundary.refs = [reference(1)];
   boundary.latest = undefined;
   boundary.records = [];
@@ -272,6 +282,77 @@ afterEach(async () => {
 });
 
 describe("shared root projection preparation", () => {
+  it("publishes the complete tail before slow summarization and keeps its authority across a foreground yield", async () => {
+    const f = register();
+    boundary.refs = [reference(1), reference(2), reference(3)];
+    const read = boundary.read.getMockImplementation()!;
+    boundary.read.mockImplementation(async (ref: ConversationKnowledgeReference) => ({
+      ...(await read(ref)),
+      text: "quoted ".repeat(2_000),
+    }));
+    const acquire = boundary.acquire.getMockImplementation()!;
+    boundary.acquire.mockImplementation(async () => ({
+      ...(await acquire()),
+      planning: {
+        budget: { contextTokenBudget: 1_000, prompt: "" },
+        settings: { enabled: true, reserveTokens: 100, keepRecentTokens: 100 },
+      },
+    }));
+    boundary.plan.mockReturnValue({ kind: "ready" });
+    const frameReleased = vi.fn(async () => {});
+    boundary.frame.mockImplementation(() => {
+      const source = boundary.sourcePreparation.mock.calls[0]![0];
+      return { assertCurrent: () => source.authority.assertCurrent(), release: frameReleased };
+    });
+    const entered = createDeferredCore(),
+      finish = createDeferredCore();
+    boundary.summarize.mockImplementation(async () => {
+      entered.resolve();
+      await finish.promise;
+      return { kind: "deferred", reason: "synthetic summary unavailable" };
+    });
+    const preparing = quantum();
+    let copy: ReturnType<typeof f.registration.acquireInitialFrame>;
+    let resume = () => {};
+    try {
+      await awaitGateBeforeSettlement(
+        entered.promise,
+        preparing,
+        "Root did not reach summarization",
+      );
+      expect(
+        boundary.frame.mock.calls[0]![0].tail.map(
+          (item: { reference: ConversationKnowledgeReference }) => item.reference.through.rawSeq,
+        ),
+      ).toEqual([1, 2, 3]);
+      const borrowed = f.registration.acquireInitialFrame();
+      if (!borrowed) {
+        throw new Error("Expected the complete prepared root frame");
+      }
+      copy = borrowed;
+      resume = f.registration.pausePreparation();
+      const source = boundary.sourcePreparation.mock.calls[0]![0];
+      expect(source.signal.aborted).toBe(true);
+      expect(source.authority.signal.aborted).toBe(false);
+      expect(() => borrowed.frame.assertCurrent()).not.toThrow();
+      finish.resolve();
+      await preparing;
+      expect(boundary.sourceRelease).not.toHaveBeenCalled();
+      expect(boundary.release).not.toHaveBeenCalled();
+      await copy.release();
+      resume();
+    } finally {
+      finish.resolve();
+      await preparing;
+      await copy?.release();
+      resume();
+    }
+    await f.registration.close();
+    expect(frameReleased).toHaveBeenCalledOnce();
+    expect(boundary.sourceRelease).toHaveBeenCalledOnce();
+    expect(boundary.release).toHaveBeenCalledOnce();
+  });
+
   it("prepares later originals past an unavailable range without acknowledging or summarizing the gap", async () => {
     const f = register();
     boundary.refs = [reference(1), reference(2), reference(3)];
@@ -282,7 +363,7 @@ describe("shared root projection preparation", () => {
       2, 3,
     ]);
     expect(f.ready).toHaveBeenCalledOnce();
-    expect(boundary.plan).not.toHaveBeenCalled();
+    expect(boundary.plan).toHaveBeenCalledOnce();
     expect(boundary.summarize).not.toHaveBeenCalled();
 
     // A later real notification can resolve the gap; prepared later originals
@@ -446,7 +527,7 @@ describe("shared root projection preparation", () => {
     await quantum();
     expect(boundary.read).toHaveBeenCalledTimes(2);
     expect(boundary.acquire).toHaveBeenCalledOnce();
-    expect(boundary.plan).not.toHaveBeenCalled();
+    expect(boundary.plan).toHaveBeenCalledTimes(3);
     expect(boundary.summarize).not.toHaveBeenCalled();
     expect(boundary.modelRelease).toHaveBeenCalledOnce();
   });
@@ -474,11 +555,16 @@ describe("shared root projection preparation", () => {
     await quantum();
     expect(second.registration.projection().tail).toHaveLength(0);
   });
-  it("defers unsupported required worker placement without model or storage work and reports once", async () => {
-    register(branch, () => ({ ...config, cloudWorkers: { requiredProfile: "dedicated" } }));
+  it("prepares originals while deferring unsupported summary worker placement and reports once", async () => {
+    const f = register(branch, () => ({
+      ...config,
+      cloudWorkers: { requiredProfile: "dedicated" },
+    }));
     await quantum();
     await quantum();
-    expect(boundary.load).not.toHaveBeenCalled();
+    expect(f.registration.projection().tail).toHaveLength(1);
+    expect(boundary.read).toHaveBeenCalledOnce();
+    expect(boundary.frame).toHaveBeenCalledTimes(2);
     expect(boundary.acquire).not.toHaveBeenCalled();
     expect(boundary.warn).toHaveBeenCalledOnce();
   });

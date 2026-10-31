@@ -12,6 +12,7 @@ import { conversationKnowledgeContributionId } from "../../config/sessions/conve
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { PreparedReplySessionInitialContext } from "../../config/sessions/session-accessor.reset.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import { borrowPreparedConversationKnowledgeInitialFrame } from "../../config/sessions/session-initial-context-frame.js";
 import {
   createProjectedInitialSessionContextEvents,
   type PreparedProjectedInitialSessionContext,
@@ -28,7 +29,10 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isIncognitoSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
-import { readPreparedConversationKnowledgeRootProjection } from "./conversation-knowledge-checkpoint-owner.js";
+import {
+  acquirePreparedConversationKnowledgeInitialFrame,
+  readPreparedConversationKnowledgeRootProjection,
+} from "./conversation-knowledge-checkpoint-owner.js";
 import {
   prepareConversationKnowledgeCheckpointSources,
   type PreparedRootKnowledgeRange,
@@ -147,6 +151,32 @@ export async function prepareConversationKnowledgeInitialContext(params: {
     });
     cleanups.push(() => creation.release());
     check();
+    let frame: ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>;
+    try {
+      frame = acquirePreparedConversationKnowledgeInitialFrame({
+        branch,
+        participant: creation.participant,
+      });
+    } catch {
+      // A stale former broker cannot deny a newly authorized native creation.
+      check();
+    }
+    if (frame) {
+      cleanups.push(() => frame.release());
+      const prepared = await borrowPreparedConversationKnowledgeInitialFrame({
+        frame: frame.frame,
+        creation,
+        audience,
+        assertCurrent: check,
+      });
+      check();
+      return {
+        ...prepared,
+        bindCreation: (operation) => creation.bindCreation(operation),
+        assertEntry: (entry) => creation.assertEntry(entry),
+        release,
+      };
+    }
     const readRoot = () =>
       reader.withRead(
         {

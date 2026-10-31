@@ -406,7 +406,8 @@ export async function commitReplySessionInitialization(params: {
     if (initialContext) {
       sessionEntry = {
         ...sessionEntry,
-        ...(initialContext.kind !== "root-projection"
+        ...(initialContext.kind !== "root-projection" &&
+        initialContext.kind !== "prepared-root-projection"
           ? {
               forkSource: {
                 sessionKey: normalizeStoreSessionKey(initialContext.sourceSessionKey),

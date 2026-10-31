@@ -21,6 +21,7 @@ const boundary = vi.hoisted(() => ({
   creation: vi.fn(),
   sources: vi.fn(),
   warm: vi.fn(),
+  acquire: vi.fn(),
   latest: vi.fn(),
   coverage: vi.fn(),
   bind: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
 }));
 // mock-isolation: The root cache returns detached data; it never grants permission in this suite.
 vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
+  acquirePreparedConversationKnowledgeInitialFrame: boundary.acquire,
   readPreparedConversationKnowledgeRootProjection: boundary.warm,
 }));
 // mock-isolation: Fixed canonical checkpoint records exercise summary coverage without a report worker.
@@ -217,6 +219,7 @@ function params() {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  boundary.acquire.mockReset();
   boundary.admission.mockResolvedValue({
     databaseClaim: { kind: "worker", reader: rootReader, release: boundary.releaseAdmission },
   });
@@ -251,6 +254,34 @@ beforeEach(() => {
     }
     return true;
   });
+});
+
+it("falls back from a stale former broker while retaining the new destination's authority", async () => {
+  boundary.acquire.mockImplementation(() => {
+    throw new Error("Former broker ended");
+  });
+  const prepared = await prepareConversationKnowledgeInitialContext(params());
+  expect(prepared?.context.kind).toBe("root-projection");
+  expect(boundary.sources).toHaveBeenCalledOnce();
+  await prepared?.release();
+});
+
+it("does not treat revoked creating authority as optional stale frame lookup", async () => {
+  const input = params();
+  let current = true;
+  input.assertCurrent = () => {
+    if (!current) {
+      throw new Error("Creating authority revoked");
+    }
+  };
+  boundary.acquire.mockImplementation(() => {
+    current = false;
+    throw new Error("Former broker ended");
+  });
+  await expect(prepareConversationKnowledgeInitialContext(input)).rejects.toThrow(
+    "Creating authority revoked",
+  );
+  expect(boundary.sources).not.toHaveBeenCalled();
 });
 
 it("prepares the whole ordered brokerless tail before creation and retains exact source authority", async () => {

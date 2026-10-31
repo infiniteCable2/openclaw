@@ -3,7 +3,10 @@ import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { requiredWorkerHelperError } from "../../config/required-worker-profile.js";
 import { cloneConfigWithResolutionFacts } from "../../config/resolution-facts.js";
-import { configSnapshotsMatch } from "../../config/runtime-config-snapshot-match.js";
+import {
+  configSnapshotsMatch,
+  createRuntimeConfigSnapshotMatcher,
+} from "../../config/runtime-config-snapshot-match.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
   appendConversationKnowledgeCheckpoint,
@@ -26,6 +29,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createBackgroundWorkOwner } from "../../process/background-work.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import { createConversationKnowledgeCheckpointFrameSlot } from "./conversation-knowledge-checkpoint-frame.js";
 import type { ConversationKnowledgeCheckpointModel } from "./conversation-knowledge-checkpoint-model.js";
 import type {
   prepareConversationKnowledgeCheckpointSources,
@@ -60,6 +64,8 @@ const log = createSubsystemLogger("conversation-knowledge");
 
 function createRootOwner(initial: Registration, audienceKey: string, dispose: () => void) {
   const rootContinuation = new ConversationKnowledgeRootContinuation();
+  const authorityLifetime = new AbortController();
+  const frames = createConversationKnowledgeCheckpointFrameSlot();
   const brokers = new Set<Registration>();
   let latest: PreparedConversationKnowledgeRootCheckpoint | undefined;
   let inFlight: AbortController | undefined;
@@ -67,6 +73,11 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   const pendingCleanup = new Set<() => Promise<void>>();
   const settle = async () => {
     const failures: unknown[] = [];
+    try {
+      await frames.settle(authorityLifetime.signal.aborted);
+    } catch (error) {
+      failures.push(error);
+    }
     // Cleanup may mutate the set while awaiting; retry only this pass's captured owners.
     const cleanupSnapshot = Array.from(pendingCleanup);
     for (const cleanup of cleanupSnapshot) {
@@ -89,7 +100,6 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     {
       referenceKey: string;
       value: PreparedRootKnowledgeContribution;
-      tokens: number;
       bytes: number;
       order: number;
     }
@@ -172,6 +182,8 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     watchesSource: (sessionKey) => sourceSessionKeys.has(sessionKey),
     clear: () => {
       inFlight?.abort();
+      authorityLifetime.abort();
+      frames.clear();
       brokers.clear();
       latest = undefined;
       planning = undefined;
@@ -187,28 +199,25 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       await settle();
       const selected = selectBroker();
       const { broker, audience } = selected;
-      if (requiredWorkerHelperError(broker.getRuntimeConfig())) {
-        if (!reportedWorkerPolicy) {
-          log.warn(
-            "Related-history checkpoint summarization is unavailable under required worker placement.",
-            { reason: "sessionless-worker-placement-unsupported" },
-          );
-        }
-        reportedWorkerPolicy = true;
-        return false;
-      }
-      reportedWorkerPolicy = false;
       const controller = new AbortController();
       inFlight = controller;
       const signal = AbortSignal.any([parentSignal, controller.signal]);
       const config = cloneConfigWithResolutionFacts(broker.getRuntimeConfig());
-      const check = () => {
+      const matchesConfig = createRuntimeConfigSnapshotMatcher(config);
+      const assertAuthority = () => {
+        authorityLifetime.signal.throwIfAborted();
         owner.assertCurrent();
-        signal.throwIfAborted();
+        if (!brokers.has(broker)) {
+          throw new Error("Checkpoint broker registration ended");
+        }
         audience.assertCurrent();
-        if (!configSnapshotsMatch(broker.getRuntimeConfig(), config)) {
+        if (!matchesConfig(broker.getRuntimeConfig())) {
           throw new Error("Checkpoint configuration changed");
         }
+      };
+      const check = () => {
+        signal.throwIfAborted();
+        assertAuthority();
       };
       let held: Awaited<ReturnType<typeof loadSessionEntryForAdmission>> | undefined;
       let sources:
@@ -217,6 +226,13 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       let model: ConversationKnowledgeCheckpointModel | undefined;
       let releaseModel: (() => Promise<void>) | undefined;
       let releaseSources: (() => void) | undefined;
+      let retained = false;
+      const releaseCustody = async () => {
+        releaseSources?.();
+        releaseSources = undefined;
+        await held?.databaseClaim.release();
+        held = undefined;
+      };
       const cleanup = async () => {
         const failures: unknown[] = [];
         try {
@@ -226,16 +242,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         } catch (error) {
           failures.push(error);
         }
-        try {
-          releaseSources?.();
-          releaseSources = undefined;
-        } catch (error) {
-          failures.push(error);
-        }
-        if (!model && !releaseModel && !releaseSources) {
+        if (!retained && !model && !releaseModel) {
           try {
-            await held?.databaseClaim.release();
-            held = undefined;
+            await releaseCustody();
           } catch (error) {
             failures.push(error);
           }
@@ -246,11 +255,10 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         pendingCleanup.delete(cleanup);
       };
       pendingCleanup.add(cleanup);
-      const previousProjectionRevision = projectionRevision;
       try {
         held = await loadSessionEntryForAdmission(
           { ...broker.branch, env: broker.env },
-          { signal, assertCurrent: check },
+          { signal: authorityLifetime.signal, assertCurrent: assertAuthority },
         );
         check();
         if (
@@ -269,7 +277,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           return false;
         }
         const scopeSource = () => {
-          check();
+          assertAuthority();
           if (!held) {
             throw new Error("Checkpoint database custody ended");
           }
@@ -284,10 +292,29 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           rootContinuation,
           signal,
           assertCurrent: scopeSource,
+          authority: { signal: authorityLifetime.signal, assertCurrent: scopeSource },
           retainCleanup(release) {
             releaseSources = release;
           },
         });
+        const preparedSources = sources;
+        const retainFrame = async (selectedTail: readonly PreparedRootKnowledgeContribution[]) => {
+          const frame = await preparedSources.prepareInitialContextFrame({
+            ...(latest ? { checkpoint: latest.checkpoint, coverage: latest.coverage } : {}),
+            tail: selectedTail,
+          });
+          if (frame) {
+            try {
+              check();
+              frames.publish(frame, releaseCustody);
+              retained = true;
+            } finally {
+              if (!retained) {
+                await frame.release();
+              }
+            }
+          }
+        };
         // Receipt reads require the existing prepared native row predicates,
         // not only this owner's process/configuration lifetime check.
         const checkpointSource = sources.source();
@@ -313,15 +340,6 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         }
         const { planConversationKnowledgeCheckpointSummary } =
           await import("./conversation-knowledge-checkpoint-summary.js");
-        const { estimateMessageTokenPressure, estimateRenderedPromptTokens } =
-          await import("../../agents/sessions/context-token-pressure.js");
-        const { prepareCompactionBudgetPreflight } =
-          await import("../../agents/embedded-agent-runner/compaction-budget-preflight.js");
-        const { shouldCompact } =
-          await import("../../../packages/agent-core/src/harness/compaction/compaction.js");
-        const { SAFETY_MARGIN } = await import("../../agents/compaction-planning.js");
-        const { renderConversationKnowledgeCheckpointSummary } =
-          await import("../../config/sessions/conversation-knowledge-checkpoint-context.js");
         check();
         const byId = new Map(
           sources.references.map((reference) => [
@@ -377,6 +395,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           }
         }
         if (!remaining.length) {
+          await retainFrame([]);
           return false;
         }
         const acquireModel = async () => {
@@ -397,22 +416,14 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           planning = { config, value: model.planning };
           return model;
         };
-        if (!planning || !configSnapshotsMatch(planning.config, config)) {
-          await acquireModel();
-        }
-        const { budget, settings } = planning!.value;
-        const maxTailBytes = Math.min(4 * 1024 * 1024, budget.contextTokenBudget * 32);
+        const maxTailBytes = Math.min(
+          4 * 1024 * 1024,
+          planning && configSnapshotsMatch(planning.config, config)
+            ? planning.value.budget.contextTokenBudget * 32
+            : Number.POSITIVE_INFINITY,
+        );
         const contributions: PreparedCheckpointContribution[] = [];
         const selectedContributions = new Map<string, PreparedRootKnowledgeContribution>();
-        let tokens = estimateRenderedPromptTokens(budget);
-        if (previousContinuityAvailable && previous?.summary) {
-          tokens += estimateMessageTokenPressure({
-            role: "user",
-            timestamp: 0,
-            content: renderConversationKnowledgeCheckpointSummary(previous.summary),
-          });
-        }
-        let ready = false;
         let unavailableContributions = 0;
         for (const reference of remaining) {
           const id = conversationKnowledgeContributionId(reference);
@@ -434,11 +445,6 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
               value,
               bytes,
               order: referenceOrder.get(id)!,
-              tokens: estimateMessageTokenPressure({
-                role: "user",
-                timestamp: 0,
-                content: value.text,
-              }),
             };
             // This bounds reusable memory only; uncached whole originals still participate
             // in native token-pressure planning and never trigger byte-based compaction.
@@ -450,39 +456,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           }
           contributions.push(cached.value);
           selectedContributions.set(id, cached.value);
-          tokens += cached.tokens;
           check();
-          if (!previousContinuityAvailable || !settings.enabled) {
-            continue;
-          }
-          const pressure = prepareCompactionBudgetPreflight({
-            ...budget,
-            messages: [],
-            reserveTokens: settings.reserveTokens,
-            llmBoundaryTokenPressure: {
-              estimatedPromptTokens: Math.ceil(tokens * SAFETY_MARGIN),
-              source: "quoted_checkpoint_tail",
-            },
-          });
-          if (
-            shouldCompact(pressure.estimatedPromptTokens, budget.contextTokenBudget, {
-              ...settings,
-              reserveTokens: pressure.effectiveReserveTokens,
-            })
-          ) {
-            const plan = planConversationKnowledgeCheckpointSummary({
-              ...planning!.value,
-              contributions,
-              previousSummary: previous?.summary,
-            });
-            if (plan.kind === "ready") {
-              ready = true;
-              break;
-            }
-            if (plan.kind === "deferred" && plan.reason !== "no-whole-prefix") {
-              return false;
-            }
-          }
         }
         if (unavailableContributions > 0) {
           log.debug("Related-history checkpoint leaves source ranges pending", {
@@ -491,7 +465,35 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             unavailableContributions,
           });
         }
-        if (!ready) {
+        await retainFrame([...selectedContributions.values()]);
+        if (projectionRevision !== loggedProjectionRevision) {
+          notify();
+        }
+        if (requiredWorkerHelperError(broker.getRuntimeConfig())) {
+          if (!reportedWorkerPolicy) {
+            log.warn(
+              "Related-history checkpoint summarization is unavailable under required worker placement.",
+              { reason: "sessionless-worker-placement-unsupported" },
+            );
+          }
+          reportedWorkerPolicy = true;
+          return false;
+        }
+        reportedWorkerPolicy = false;
+        if (!planning || !configSnapshotsMatch(planning.config, config)) {
+          await acquireModel();
+        }
+        if (!previousContinuityAvailable || !planning!.value.settings.enabled) {
+          return false;
+        }
+        // Hydrate the complete available tail once, then run the native planner
+        // once. Provider acquisition or summarization must not hold back later originals.
+        const plan = planConversationKnowledgeCheckpointSummary({
+          ...planning!.value,
+          contributions,
+          previousSummary: previous?.summary,
+        });
+        if (plan.kind !== "ready") {
           return false;
         }
         for (const contribution of contributions) {
@@ -588,7 +590,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           if (inFlight === controller) {
             inFlight = undefined;
           }
-          if (projectionRevision !== previousProjectionRevision) {
+          if (projectionRevision !== loggedProjectionRevision) {
             notify();
           }
         }
@@ -626,6 +628,10 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             })),
         };
       },
+      acquireInitialFrame() {
+        owner.assertCurrent();
+        return frames.acquire();
+      },
       async close() {
         if (!active) {
           if (!brokers.size) {
@@ -660,8 +666,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   };
 }
 
-/** Shared root preparation is independent of any one call and never changes recipient history. */
-export function readPreparedConversationKnowledgeRootProjection(params: {
+function selectPreparedRootOwner(params: {
   branch: ConversationKnowledgeBranch;
   participant: SessionParticipantIdentity;
 }) {
@@ -675,8 +680,21 @@ export function readPreparedConversationKnowledgeRootProjection(params: {
     params.branch.root,
     identity,
   ]);
-  // Detached immutable content only. The caller reacquires every donor grant.
-  return owners.get(key)?.first.projection();
+  return owners.get(key)?.first;
+}
+
+/** Detached content is a cold fallback; the caller acquires its own disclosure authority. */
+export function readPreparedConversationKnowledgeRootProjection(
+  params: Parameters<typeof selectPreparedRootOwner>[0],
+) {
+  return selectPreparedRootOwner(params)?.projection();
+}
+
+/** Borrow already prepared custody; native creation still proves its own private destination. */
+export function acquirePreparedConversationKnowledgeInitialFrame(
+  params: Parameters<typeof selectPreparedRootOwner>[0],
+) {
+  return selectPreparedRootOwner(params)?.acquireInitialFrame();
 }
 
 /** Shared root preparation is independent of any one call and never changes recipient history. */

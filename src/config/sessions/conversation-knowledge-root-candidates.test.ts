@@ -184,7 +184,16 @@ beforeEach(() => boundary.reports.mockReset());
 describe("prepared native knowledge root candidates", () => {
   it("rebinds an unchanged donor subset across an unrelated root append without another native read", async () => {
     const f = fixture();
-    const original = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    let originalCurrent = true;
+    const original = await readConversationKnowledgeRoot({
+      ...f,
+      assertCurrent() {
+        f.reader.assertCurrent();
+        if (!originalCurrent) {
+          throw new Error("Original preparation released");
+        }
+      },
+    });
     const subset = prepareConversationKnowledgeRootSubset({
       evidence: original.evidence,
       branch: f.branch,
@@ -226,7 +235,11 @@ describe("prepared native knowledge root candidates", () => {
       ...f.events,
       { ...f.events[0], id: "unrelated-report", details: unrelated },
     ]);
-    const current = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    const current = await readConversationKnowledgeRoot({
+      ...f,
+      assertCurrent: () => f.reader.assertCurrent(),
+    });
+    originalCurrent = false;
     expect(() =>
       assertNativeKnowledgeRootContribution(current.evidence, f.branch, unrelated),
     ).not.toThrow();

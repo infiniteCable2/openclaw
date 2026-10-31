@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isMainThread } from "node:worker_threads";
 import { createConversationKnowledgeCheckpointContext } from "./conversation-knowledge-checkpoint-context.js";
 import type { ConversationKnowledgeCheckpoint } from "./conversation-knowledge-checkpoint.js";
 import { createConversationKnowledgePacketReport } from "./conversation-knowledge-packets.js";
@@ -6,6 +7,7 @@ import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store
 import type { ConversationKnowledgeReference } from "./conversation-knowledge.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import { assertPreparedInitialSessionContextFrame } from "./session-initial-context-frame.js";
 import type { SessionSourcePredicate } from "./session-source-authority.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
@@ -37,7 +39,7 @@ export type PreparedInitialSessionContextSourceClaim = {
 };
 
 export type PreparedProjectedInitialSessionContext = InitialSessionContextBase & {
-  kind: "root-projection";
+  kind: "root-projection" | "prepared-root-projection";
   projection: {
     branch: ConversationKnowledgeBranch;
     packets: readonly {
@@ -129,7 +131,10 @@ export function assertInitialSessionContextReadSource(
       "Initial conversation context requires matching prepared donor read authority.",
     );
   }
-  if (context.kind === "root-projection") {
+  if (context.kind === "root-projection" || context.kind === "prepared-root-projection") {
+    if (context.kind === "prepared-root-projection" && isMainThread) {
+      assertPreparedInitialSessionContextFrame(context, sources);
+    }
     const bySession = new Map<string, SessionSourcePredicate[]>();
     for (const source of sources ?? []) {
       const candidates = bySession.get(source.sessionKey) ?? [];

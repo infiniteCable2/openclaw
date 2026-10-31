@@ -1,9 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
-import {
-  conversationKnowledgeParticipantIdentity,
-  conversationKnowledgeHistoricalContributionIdentity,
-} from "../../config/sessions/conversation-audience.js";
+import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
   assertConversationBranchCreation,
   type PreparedConversationBranchCreation,
@@ -25,21 +22,16 @@ import {
 } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
-import type { PreparedInitialSessionContextSourceClaim } from "../../config/sessions/session-initial-context.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
-  type PreparedSessionSourceAuthority,
 } from "../../config/sessions/session-source-authority.js";
 import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import {
-  PersonalConversationReadRefusedError,
-  SessionMutationAuthorizationChangedError,
-} from "../../gateway/session-mutation-authorization-error.js";
+import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 import {
   preparePersonalConversationContributionGroup,
   preparePersonalConversationRead,
@@ -47,6 +39,12 @@ import {
 } from "../../gateway/session-transcript-personal-read.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import {
+  createCheckpointRangeRecorder,
+  readCheckpointOwnSource,
+  type PreparedRootKnowledgeContribution,
+  type PreparedRootKnowledgeRange,
+} from "./conversation-knowledge-checkpoint-range.js";
 import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
 import {
   createConversationKnowledgeSourceReader,
@@ -54,19 +52,10 @@ import {
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
 
-export type PreparedRootKnowledgeContribution = {
-  contributionId: string;
-  complete: true;
-  text: string;
-  reference: ConversationKnowledgeReference;
-  packet: PreparedConversationKnowledgePacket;
-};
-
-export type PreparedRootKnowledgeRange = {
-  through: ConversationKnowledgeReference["through"];
-  from?: ConversationKnowledgeReference["through"];
-  claim: PreparedInitialSessionContextSourceClaim;
-};
+export type {
+  PreparedRootKnowledgeContribution,
+  PreparedRootKnowledgeRange,
+} from "./conversation-knowledge-checkpoint-range.js";
 
 const log = createSubsystemLogger("conversation-knowledge");
 
@@ -78,12 +67,15 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   reader: SessionEntryCohortReader;
   signal: AbortSignal;
   assertCurrent: SessionSourceAssertion;
+  /** Durable custody survives cancellation of a disposable hydration quantum. */
+  authority?: { signal: AbortSignal; assertCurrent: SessionSourceAssertion };
   getRuntimeConfig(): OpenClawConfig;
   rootContinuation?: ConversationKnowledgeRootContinuation;
   targetCreation?: PreparedConversationBranchCreation;
   /** Retains cleanup even if preparation fails before returning its sources. */
   retainCleanup(release: () => void): void;
 }) {
+  const authority = params.authority ?? params;
   const audienceKey = conversationKnowledgeParticipantIdentity(params.participant);
   if (!audienceKey) {
     throw new Error("Checkpoint broker lacks a personal identity");
@@ -113,8 +105,8 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         destinationAudience: params.audience,
         participantIdentity: audienceKey,
         expectedAudienceIdentity: audienceKey,
-        signal: params.signal,
-        assertCurrent: params.assertCurrent,
+        signal: authority.signal,
+        assertCurrent: authority.assertCurrent,
         getRuntimeConfig: () => params.getRuntimeConfig(),
       });
   if (brokerTarget?.kind !== "ready") {
@@ -124,17 +116,26 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   const reads: ConversationKnowledgeHeldSource[] = [];
   const groups: PreparedPersonalConversationContributionGroup[] = [];
   const proofs: SessionSourceAssertion[] = [];
-  const versionProofs = new Map<string, SessionSourceAssertion>();
   let released = false;
   let targetReleased = false;
   const check = () => {
     if (released) {
       throw new Error("Checkpoint source custody has ended");
     }
-    params.signal.throwIfAborted();
-    params.assertCurrent();
+    authority.signal.throwIfAborted();
+    authority.assertCurrent();
     targetFacts.assertCurrent();
     params.audience.assertCurrent();
+  };
+  const { record: recordVersionProof, nativeRanges } = createCheckpointRangeRecorder({
+    branch,
+    check,
+    proofs,
+  });
+  const workCheck = () => {
+    params.signal.throwIfAborted();
+    params.assertCurrent();
+    check();
   };
   const drop = (read: ConversationKnowledgeHeldSource) => {
     const index = reads.indexOf(read);
@@ -175,6 +176,12 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   };
   params.retainCleanup(release);
   try {
+    const rootSnapshot = params.authority
+      ? await (
+          await import("./conversation-knowledge-checkpoint-frame-source.js")
+        ).readCheckpointInitialRootSnapshot(params.reader, branch, check)
+      : undefined;
+    workCheck();
     const events = await readConversationKnowledgeRoot({
       branch,
       reader: params.reader,
@@ -204,14 +211,14 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       targetFacts,
       assertCurrent: check,
       getRuntimeConfig: () => params.getRuntimeConfig(),
-      signal: params.signal,
+      signal: authority.signal,
       hasRetainedContribution: () => false,
       reads,
       drop,
     });
     const prepared = new Map<
       string,
-      PreparedRootKnowledgeContribution & { claim: PreparedInitialSessionContextSourceClaim }
+      PreparedRootKnowledgeContribution & { claim: PreparedRootKnowledgeRange["claim"] }
     >();
     const readAvailableSource = async <T>(
       reference: ConversationKnowledgeReference,
@@ -221,11 +228,14 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       const groupCount = groups.length;
       const proofCount = proofs.length;
       try {
-        return await operation();
+        workCheck();
+        const result = await operation();
+        workCheck();
+        return result;
       } catch (error) {
         // Loss of broker/audience custody is not an unavailable donor. Storage
         // and worker failures still reach the background owner's bounded retry.
-        check();
+        workCheck();
         if (
           !(error instanceof SessionTranscriptReadFenceError) &&
           !(error instanceof SessionMutationAuthorizationChangedError)
@@ -248,94 +258,8 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         return undefined;
       }
     };
-    const ownSource = async (reference: ConversationKnowledgeReference) =>
-      params.reader.withRead(
-        { sessionKeys: [branch.sessionKey], includeParticipantRecords: true },
-        check,
-        (facts) => {
-          const entry = facts.entries.find((row) => row.sessionKey === branch.sessionKey)?.entry;
-          if (
-            !entry ||
-            entry.sessionId !== branch.sessionId ||
-            entry.lifecycleRevision !== branch.lifecycleRevision ||
-            reference.source.sessionId !== branch.sessionId
-          ) {
-            throw new PersonalConversationReadRefusedError(
-              "Checkpoint own source incarnation changed",
-            );
-          }
-          if (
-            reference.source.lifecycleRevision !== entry.lifecycleRevision &&
-            conversationKnowledgeHistoricalContributionIdentity(
-              entry,
-              branch,
-              reference,
-              branch.root,
-            ) !== audienceKey
-          ) {
-            throw new PersonalConversationReadRefusedError(
-              "Checkpoint historical own source is not currently private to this person",
-            );
-          }
-          return facts.source;
-        },
-      );
-    const recordVersionProof = (
-      reference: ConversationKnowledgeReference,
-      nativeSource: CapturedSessionEntryReadSource,
-      version: PreparedConversationKnowledgePacket["version"],
-      lifecycleRevision = reference.source.lifecycleRevision,
-      range?: {
-        through: ConversationKnowledgeReference["through"];
-        from?: ConversationKnowledgeReference["through"];
-      },
-    ) => {
-      const predicate = {
-        source: nativeSource,
-        sessionKey: reference.source.sessionKey,
-        fields: ["sessionId", "lifecycleRevision"] as const,
-        expected: { sessionId: reference.source.sessionId, lifecycleRevision },
-        transcript: {
-          sessionId: reference.source.sessionId,
-          version,
-          consistency: "prefix" as const,
-        },
-      };
-      const proofKey = JSON.stringify([
-        nativeSource,
-        predicate.sessionKey,
-        predicate.expected,
-        version,
-      ]);
-      const retained = versionProofs.get(proofKey);
-      if (!retained || !proofs.includes(retained)) {
-        const proof = Object.assign(() => check(), {
-          prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
-            assertCurrent: check,
-            checks: [
-              {
-                predicate: { ...predicate, fields: [...predicate.fields] },
-                refuse: (): never => {
-                  throw new Error("Checkpoint original source changed before publication");
-                },
-              },
-            ],
-          }),
-        });
-        proofs.push(proof);
-        versionProofs.set(proofKey, proof);
-      }
-      return {
-        reference,
-        predicate: { ...predicate, fields: [...predicate.fields] },
-        sessionId: reference.source.sessionId,
-        version,
-        through: range?.through ?? reference.readRange?.through ?? reference.through,
-        from: range
-          ? range.from
-          : (reference.readRange?.admission ?? reference.privateAudience?.admission),
-      } satisfies PreparedInitialSessionContextSourceClaim;
-    };
+    const ownSource = (reference: ConversationKnowledgeReference) =>
+      readCheckpointOwnSource({ branch, reference, audienceKey, reader: params.reader, check });
     const read = async (reference: ConversationKnowledgeReference, retainText = true) => {
       check();
       assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
@@ -347,12 +271,14 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       let projection;
       let nativeSource: CapturedSessionEntryReadSource;
       let currentLifecycle: string;
+      let nativeAuthority: SessionSourceAssertion;
       let through = reference.readRange?.through ?? reference.through;
       let from = reference.readRange?.admission ?? reference.privateAudience?.admission;
       if (reference.source.sessionKey === branch.sessionKey) {
         // This is the already admitted branch's own history, not a cross-session grant.
         nativeSource = await ownSource(reference);
         currentLifecycle = branch.lifecycleRevision;
+        nativeAuthority = targetFacts.assertCurrent;
         projection = await readSessionTranscriptModelContextAsync(
           branch,
           (context) => {
@@ -380,6 +306,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           false,
         );
         proofs.push(current.source.sourceAssertion);
+        nativeAuthority = current.source.sourceAssertion;
         nativeSource = current.source.grant.sources[0]!.readSource;
         const lifecycle = current.source.grant.sources[0]!.lifecycleRevision;
         if (!lifecycle) {
@@ -394,10 +321,17 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         throw new Error("Checkpoint source lacks a native version");
       }
       const version = projection.version;
-      const claim = recordVersionProof(reference, nativeSource, version, currentLifecycle, {
-        through,
-        from,
-      });
+      const claim = recordVersionProof(
+        reference,
+        nativeSource,
+        version,
+        currentLifecycle,
+        nativeAuthority,
+        {
+          through,
+          from,
+        },
+      );
       const part = projectConversationKnowledge(
         reference,
         projection.events,
@@ -428,23 +362,27 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
     const validate = async (
       reference: ConversationKnowledgeReference,
       packet?: PreparedConversationKnowledgePacket,
+      retainProof?: (source: SessionSourceAssertion) => void,
     ) => {
       check();
       assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
       let nativeSource: CapturedSessionEntryReadSource;
       let currentLifecycle: string;
+      let nativeAuthority: SessionSourceAssertion;
       let through = reference.readRange?.through ?? reference.through;
       let from = reference.readRange?.admission ?? reference.privateAudience?.admission;
       let target = { ...reference.source, storePath: reference.through.storePath };
       if (reference.source.sessionKey === branch.sessionKey) {
         nativeSource = await ownSource(reference);
         currentLifecycle = branch.lifecycleRevision;
+        nativeAuthority = targetFacts.assertCurrent;
       } else {
         const current = await sourceReader.take(reference);
         if (!current.source) {
           throw new SessionTranscriptReadFenceError("Checkpoint source authority is unavailable");
         }
         proofs.push(current.source.sourceAssertion);
+        nativeAuthority = current.source.sourceAssertion;
         nativeSource = current.source.grant.sources[0]!.readSource;
         const lifecycle = current.source.grant.sources[0]!.lifecycleRevision;
         if (!lifecycle) {
@@ -462,13 +400,36 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       ) {
         throw new SessionTranscriptReadFenceError("Checkpoint prepared source range changed");
       }
+      if (packet) {
+        const prefix = await readSessionTranscriptAnchorsAsync(
+          target,
+          {
+            entryIds: [],
+            contextValidation: { version: packet.version },
+          },
+          params.signal,
+        );
+        workCheck();
+        if (prefix.contextValidated !== true) {
+          throw new SessionTranscriptReadFenceError("Checkpoint prepared source prefix changed");
+        }
+        recordVersionProof(
+          reference,
+          nativeSource,
+          packet.version,
+          currentLifecycle,
+          nativeAuthority,
+          { through, from },
+          retainProof,
+        );
+      }
       let valid = false;
       const anchorFacts = await readSessionTranscriptAnchorsAsync(
         target,
         {
           entryIds: [],
           includeContextVersion: true,
-          contextValidation: { version: packet?.version, through, from },
+          contextValidation: { through, from },
         },
         params.signal,
         (facts) => {
@@ -485,11 +446,13 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         nativeSource,
         anchorFacts.contextVersion,
         currentLifecycle,
+        nativeAuthority,
         { through, from },
+        retainProof,
       );
       return { through, from, claim };
     };
-    return {
+    const result = {
       audienceKey,
       references: rootReferences,
       read: (reference: ConversationKnowledgeReference, retainText = true) =>
@@ -508,6 +471,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           range: PreparedRootKnowledgeRange,
         ) => void,
         cachedPackets?: ReadonlyMap<string, PreparedConversationKnowledgePacket>,
+        retainProof?: (source: SessionSourceAssertion) => void,
       ) {
         let complete = true;
         const bySource = new Map<string, ConversationKnowledgeReference[]>();
@@ -523,6 +487,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
               validate(
                 reference,
                 cachedPackets?.get(conversationKnowledgeContributionId(reference)),
+                retainProof,
               ),
             );
             if (!range) {
@@ -543,7 +508,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
             const personal = {
               originalParticipant: params.participant,
               assertCurrent: composeSessionSourceAssertion([
-                params.assertCurrent,
+                authority.assertCurrent,
                 targetFacts.assertCurrent,
                 check,
               ]),
@@ -554,7 +519,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
             };
             const common = {
               purpose: "conversation-differences" as const,
-              signal: params.signal,
+              signal: authority.signal,
               getRuntimeConfig: () => params.getRuntimeConfig(),
               sources: [contributions[0]!.source],
             };
@@ -569,6 +534,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
             });
             reads.push({ grant });
             proofs.push(grant.assertCurrent);
+            retainProof?.(grant.assertCurrent);
             const source = grant.sources[0];
             if (!source?.lifecycleRevision) {
               throw new SessionTranscriptReadFenceError(
@@ -634,7 +600,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                   source.readSource,
                   packet.version,
                   source.lifecycleRevision,
+                  grant.assertCurrent,
                   range,
+                  retainProof,
                 );
               }
               const claim = recordVersionProof(
@@ -642,7 +610,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                 source.readSource,
                 range.version,
                 source.lifecycleRevision,
+                grant.assertCurrent,
                 range,
+                retainProof,
               );
               selected.push({ reference, range: { ...range, claim } });
             }
@@ -662,15 +632,42 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         return complete;
       },
       // Snapshot only after every required source has been acquired.
-      source: () =>
+      source: (selectedProofs: readonly SessionSourceAssertion[] = proofs) =>
         composeSessionSourceAssertion([
-          params.assertCurrent,
+          authority.assertCurrent,
           targetFacts.assertCurrent,
           check,
-          ...proofs,
+          ...selectedProofs,
         ]),
       release,
+      async prepareInitialContextFrame(
+        input: import("./conversation-knowledge-checkpoint-frame-source.js").CheckpointInitialFrameInput,
+      ) {
+        workCheck();
+        const { prepareCheckpointInitialFrame } =
+          await import("./conversation-knowledge-checkpoint-frame-source.js");
+        const frame = await prepareCheckpointInitialFrame({
+          ...input,
+          branch,
+          participant: params.participant,
+          audience: params.audience,
+          rootSnapshot,
+          evidence: events.evidence,
+          sources: result,
+          nativeRanges,
+          getRuntimeConfig: () => params.getRuntimeConfig(),
+          workCheck,
+        });
+        try {
+          workCheck();
+        } catch (error) {
+          await frame?.release();
+          throw error;
+        }
+        return frame;
+      },
     };
+    return result;
   } catch (error) {
     try {
       release();

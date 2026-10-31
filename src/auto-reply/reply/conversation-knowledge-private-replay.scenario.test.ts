@@ -229,6 +229,8 @@ it.skipIf(!replayPath)(
     const boundaryProfile = createConversationKnowledgeBoundaryProfiler();
     const creationProfile = createConversationKnowledgeBoundaryProfiler();
     const initialIdleProfile = createConversationKnowledgeBoundaryProfiler();
+    const rootPreparationProfile = createConversationKnowledgeBoundaryProfiler();
+    const successorRootProfile = createConversationKnowledgeBoundaryProfiler();
     expect(Number.isSafeInteger(contextWindow) && contextWindow > 20_000).toBe(true);
     const started = performance.now();
     const cpu = process.cpuUsage();
@@ -403,37 +405,46 @@ it.skipIf(!replayPath)(
             const ready = createDeferredCore();
             const idleRootReady = createDeferredCore();
             const idleUpdate: { entryId?: string } = {};
-            const checkpoint = registerConversationKnowledgeCheckpointOwner({
-              branch: keeperBranch,
-              participant: person,
-              audience: {
-                agentId: keeper.agentId,
-                sessionKey: keeper.sessionKey,
-                channelId: "test",
-                accountId: "default",
-                nativeChannelId: "private-replay-root-broker",
+            const rootPreparationAt = performance.now();
+            const checkpoint = await rootPreparationProfile.measure(keeper.sessionId, async () => {
+              const registered = registerConversationKnowledgeCheckpointOwner({
+                branch: keeperBranch,
                 participant: person,
-                assertCurrent: keeperOwner.assertCurrent,
-              },
-              env: state.env,
-              getRuntimeConfig: () => fixture.cfg,
-              onReady() {
-                if (checkpoint.projection().tail.length === rootReceipts) {
-                  ready.resolve();
-                }
-                if (
-                  idleUpdate.entryId &&
-                  checkpoint
-                    .projection()
-                    .tail.some(({ reference }) => reference.through.entryId === idleUpdate.entryId)
-                ) {
-                  idleRootReady.resolve();
-                }
-              },
+                audience: {
+                  agentId: keeper.agentId,
+                  sessionKey: keeper.sessionKey,
+                  channelId: "test",
+                  accountId: "default",
+                  nativeChannelId: "private-replay-root-broker",
+                  participant: person,
+                  assertCurrent: keeperOwner.assertCurrent,
+                },
+                env: state.env,
+                getRuntimeConfig: () => fixture.cfg,
+                onReady() {
+                  if (registered.projection().tail.length === rootReceipts) {
+                    ready.resolve();
+                  }
+                  if (
+                    idleUpdate.entryId &&
+                    registered
+                      .projection()
+                      .tail.some(
+                        ({ reference }) => reference.through.entryId === idleUpdate.entryId,
+                      )
+                  ) {
+                    idleRootReady.resolve();
+                  }
+                },
+              });
+              cleanup.push(() => registered.close());
+              await withinTest(ready.promise, signal);
+              return registered;
             });
-            cleanup.push(() => checkpoint.close());
-            await withinTest(ready.promise, signal);
-            mark("shared-root-prepared", { prepared: checkpoint.projection().tail.length });
+            mark("shared-root-prepared", {
+              preparationMs: Math.round(performance.now() - rootPreparationAt),
+              prepared: checkpoint.projection().tail.length,
+            });
             const reused = recipientSource ? donors.get(recipientSource) : undefined;
             if (recipientSource && !reused) {
               throw new Error("Private replay recipient source unavailable");
@@ -725,28 +736,34 @@ it.skipIf(!replayPath)(
               throw new Error("Private replay donor unavailable");
             }
             const idleAt = performance.now();
-            const added = await appendTranscriptMessage(donor.target, {
-              message: {
-                role: "user",
-                content: "Synthetic source-only idle update.",
-                timestamp: Date.now(),
-              },
+            await successorRootProfile.measure(keeper.sessionId, async () => {
+              const added = await appendTranscriptMessage(donor.target, {
+                message: {
+                  role: "user",
+                  content: "Synthetic source-only idle update.",
+                  timestamp: Date.now(),
+                },
+              });
+              if (!added.anchor) {
+                throw new Error("Private replay idle source anchor unavailable");
+              }
+              idleUpdate.entryId = added.anchor.entryId;
+              expect(
+                await recordConversationUtteranceObservation({
+                  ...donor.owner,
+                  anchor: added.anchor,
+                  role: "user",
+                  privateAudience: { participant: person, admission: added.anchor },
+                }),
+              ).toBe(true);
+              // The donor COMMIT can precede the shared root callback. A settled
+              // recipient owner alone does not prove that this publication arrived.
+              await withinTest(idleRootReady.promise, signal);
             });
-            if (!added.anchor) {
-              throw new Error("Private replay idle source anchor unavailable");
-            }
-            idleUpdate.entryId = added.anchor.entryId;
-            expect(
-              await recordConversationUtteranceObservation({
-                ...donor.owner,
-                anchor: added.anchor,
-                role: "user",
-                privateAudience: { participant: person, admission: added.anchor },
-              }),
-            ).toBe(true);
-            // The donor COMMIT can precede the shared root callback. A settled
-            // recipient owner alone does not prove that this publication arrived.
-            await withinTest(idleRootReady.promise, signal);
+            mark("successor-shared-root-prepared", {
+              elapsedSincePublicationMs: Math.round(performance.now() - idleAt),
+              prepared: checkpoint.projection().tail.length,
+            });
             await withinTest(recipient.owner.wait(), signal);
             const after = await packets();
             mark("source-only-idle-update", {
@@ -797,6 +814,8 @@ it.skipIf(!replayPath)(
           firstBoundaryTimings: boundaryProfile.snapshot(),
           creationTimings: creationProfile.snapshot(),
           initialIdleTimings: initialIdleProfile.snapshot(),
+          rootPreparationTimings: rootPreparationProfile.snapshot(),
+          successorRootPreparationTimings: successorRootProfile.snapshot(),
           timingMeaning:
             "Pass-through asynchronous phase windows include nested/background work; durations overlap, are not additive and are not CPU time.",
           substituted:

@@ -102,12 +102,12 @@ function assertInitialRootProjection(
       );
       validatedPrefixes.add(prefix);
     }
-    if (claim.through) {
+    if (claim.through && context.kind !== "prepared-root-projection") {
       validateSessionTranscriptContextInDatabase(database, scope, {
         through: claim.through,
         from: claim.from,
       });
-    } else if (claim.from) {
+    } else if (!claim.through && claim.from) {
       throw new Error("Initial root projection donor range has no completed endpoint.");
     }
   }
@@ -180,6 +180,7 @@ export function appendInitialSessionContextInTransaction(
     context.sourceEntry.sessionId === entry.sessionId ||
     context.targetSessionId !== entry.sessionId ||
     (context.kind !== "root-projection" &&
+      context.kind !== "prepared-root-projection" &&
       (entry.forkSource?.sessionKey !== sourceKey ||
         entry.forkSource?.sessionId !== context.sourceEntry.sessionId ||
         entry.forkSource?.entryId !== context.sourceThrough?.entryId)) ||
@@ -223,7 +224,7 @@ export function appendInitialSessionContextInTransaction(
       { through: context.sourceThrough },
     );
   }
-  if (context.kind === "root-projection") {
+  if (context.kind === "root-projection" || context.kind === "prepared-root-projection") {
     assertInitialRootProjection(database, params.sessionKey, entry, context);
   }
   // A missing visible row does not imply an unused transcript/window identity.

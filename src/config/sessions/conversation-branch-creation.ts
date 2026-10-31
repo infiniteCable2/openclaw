@@ -169,12 +169,15 @@ class PreparedConversationBranchCreation {
     Object.freeze(this);
   }
 
-  static assert(params: {
-    creation: PreparedConversationBranchCreation;
-    branch: ConversationKnowledgeBranch;
-    participant?: SessionParticipantIdentity;
-    audience?: ConversationPrivateAudience;
-  }): CapturedSessionEntryReadSource {
+  static assert(
+    this: void,
+    params: {
+      creation: PreparedConversationBranchCreation;
+      branch: ConversationKnowledgeBranch;
+      participant?: SessionParticipantIdentity;
+      audience?: ConversationPrivateAudience;
+    },
+  ): CapturedSessionEntryReadSource {
     const { creation } = params;
     if (!(creation instanceof PreparedConversationBranchCreation) || !(#entry in creation)) {
       throw new Error("Conversation creation requires native preparation");
@@ -198,6 +201,7 @@ class PreparedConversationBranchCreation {
   }
 
   static consume(
+    this: void,
     params: Parameters<typeof PreparedConversationBranchCreation.assert>[0],
   ): CapturedSessionEntryReadSource {
     const source = PreparedConversationBranchCreation.assert(params);
