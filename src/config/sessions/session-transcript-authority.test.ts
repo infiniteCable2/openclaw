@@ -337,7 +337,10 @@ it("keeps context hints in the native transaction receipt without leaking rolled
       ordinary.appendCustomEntry("retained-ordinary");
       expect(() =>
         runOpenClawAgentWriteTransaction(() => {
-          ordinary.appendResetBoundary("rolled-back reset", seed);
+          ordinary.appendResetBoundary("reset", seed);
+          expect(
+            readStagedSessionTranscriptAuthority(database)?.at(-1)?.facts.get(scope.sessionKey),
+          ).toMatchObject({ kind: "postimage", value: { contextChanged: true } });
           throw new Error("Rollback nested control");
         }, options),
       ).toThrow("Rollback nested control");
@@ -350,6 +353,9 @@ it("keeps context hints in the native transaction receipt without leaking rolled
       runOpenClawAgentWriteTransaction(() => {
         rolledBack.appendCompaction("Rolled-back summary", seed, 12);
         rolledBack.appendCustomEntry("rolled-back ordinary");
+        expect(
+          readStagedSessionTranscriptAuthority(database)?.at(-1)?.facts.get(scope.sessionKey),
+        ).toMatchObject({ kind: "postimage", value: { contextChanged: true } });
         throw new Error("Rollback outer controls");
       }, options),
     ).toThrow("Rollback outer controls");
