@@ -285,7 +285,13 @@ describe("ready checkpoint recipient", () => {
       through: { ...reference.through, entryId: "a-two", rawSeq: 2 },
     };
     const donorB = { ...source, sessionKey: "agent:example:donor-b", sessionId: "donor-b" };
-    const throughB = { ...anchor, ...donorB, entryId: "b-one" };
+    const throughB = {
+      ...anchor,
+      agentId: donorB.agentId,
+      sessionKey: donorB.sessionKey,
+      sessionId: donorB.sessionId,
+      entryId: "b-one",
+    };
     const firstB: ConversationKnowledgeReference = {
       ...reference,
       source: donorB,
