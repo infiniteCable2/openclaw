@@ -19,6 +19,8 @@ function createCapabilityRegistrationRuntime(
   return {
     config: {
       current: () => config,
+      // Capability registration holds a fixed invocation snapshot, with no live publications.
+      subscribe: () => () => {},
       mutateConfigFile: async () => {
         throw new Error("Capability discovery cannot mutate plugin configuration.");
       },

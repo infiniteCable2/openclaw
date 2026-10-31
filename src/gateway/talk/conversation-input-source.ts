@@ -268,6 +268,7 @@ export function createGatewayTalkConversationInputSource(input: {
       const { source: capturedSource, audience, chatType, assertCurrent, release } = held;
       try {
         const promptedAt = Date.now();
+        const humanInput = scope.purpose === "user" || scope.purpose === "steering";
         return createConversationInputAdmission({
           scope,
           source: { channelId: "webchat", sessionKey: params.target.canonicalKey },
@@ -298,6 +299,11 @@ export function createGatewayTalkConversationInputSource(input: {
               access: { commands: { authorized: false } },
               extra: params.authority.replyCaller,
             });
+            if (humanInput && !context.InputProvenance) {
+              // The authenticated speech handoff is a human input, even though
+              // its operator recovery authority uses the internal ingress lane.
+              context.InputProvenance = { kind: "external_user", sourceChannel: "webchat" };
+            }
             if (params.participant) {
               prepareSessionParticipantInput(context, params.participant, promptedAt);
             }

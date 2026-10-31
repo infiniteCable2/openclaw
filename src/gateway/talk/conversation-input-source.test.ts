@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
+import { selectMainSessionRecoveryCheckpoint } from "../../agents/main-session-recovery/main-session-recovery-checkpoint.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import { deriveSessionMetaPatch } from "../../config/sessions/metadata.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { applyInputProvenanceToUserMessage } from "../../sessions/input-provenance.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
+import { buildPersistedUserTurnMessage } from "../../sessions/user-turn-transcript.message.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   claimConversationInputExecution,
@@ -113,6 +116,71 @@ beforeEach(() => {
 });
 
 describe("native Gateway speech participant", () => {
+  it.each(["user", "steering", "greeting"] as const)(
+    "persists original human provenance for %s without turning a greeting into user input",
+    async (purpose) => {
+      const f = fixture();
+      const inputScope = { ...scope, purpose };
+      const input = consumeConversationInputAdmission(
+        await f.source.admitInput(inputScope),
+        inputScope,
+      );
+      try {
+        claimConversationInputExecution(input);
+        const context = await prepareConversationReplyContext(input, { text: "A spoken request." });
+        const provenance =
+          purpose === "greeting" ? undefined : { kind: "external_user", sourceChannel: "webchat" };
+        expect(context.InputProvenance).toEqual(provenance);
+        expect(context.CommandInterpretationSuppressed).toBe(true);
+        expect(readSessionInputProfileId(context)).toBeUndefined();
+        expect(input.assertOwnerCurrent).toBeUndefined();
+        const persisted = buildPersistedUserTurnMessage({
+          text: context.RawBody,
+          timestamp: 1234,
+          provenance: context.InputProvenance,
+        });
+        // Exercise the native persistence shape rather than a hand-authored checkpoint.
+        const restored: unknown = JSON.parse(JSON.stringify(persisted));
+        expect(selectMainSessionRecoveryCheckpoint((read) => read(restored))).toEqual({
+          replaySafe: false,
+          source: purpose === "greeting" ? undefined : "external_user",
+        });
+      } finally {
+        input.release?.();
+      }
+    },
+  );
+
+  it.each(["internal_system", "inter_session"] as const)(
+    "does not let earlier speech reclassify a later genuine %s input",
+    async (kind) => {
+      const f = fixture();
+      const input = consumeConversationInputAdmission(await f.source.admitInput(scope), scope);
+      try {
+        claimConversationInputExecution(input);
+        const context = await prepareConversationReplyContext(input, { text: "Earlier speech." });
+        const spoken = buildPersistedUserTurnMessage({
+          text: context.RawBody,
+          provenance: context.InputProvenance,
+          timestamp: 1234,
+        });
+        const delegated = buildPersistedUserTurnMessage({
+          text: "A later non-human input.",
+          provenance: { kind, sourceChannel: "internal", sourceTool: "sessions_send" },
+          timestamp: 1235,
+        });
+        const preserved = applyInputProvenanceToUserMessage(delegated, context.InputProvenance);
+        const restored: unknown[] = JSON.parse(JSON.stringify([spoken, preserved]));
+        expect(selectMainSessionRecoveryCheckpoint((read) => restored.forEach(read))).toEqual({
+          replaySafe: false,
+          source: kind,
+        });
+      } finally {
+        input.release?.();
+      }
+    },
+  );
+
   it("opens a private recipient before input and retains dedicated custody until connection close", async () => {
     const f = fixture({ type: "profile", id: "operator-alpha" }, "direct");
     await f.source.prepareConnection?.();

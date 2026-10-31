@@ -190,6 +190,8 @@ describe("buildAttemptSystemPrompt", () => {
       speech,
     );
     expect(prepared.systemPromptText).not.toContain(speech.guidance);
+    const textOnly = await preparePermissionPrompt(false, undefined, false);
+    expect(prepared.systemPromptText).toBe(textOnly.prepared.systemPromptText);
     expect(assertCurrent).toHaveBeenCalled();
     expect(attempt.extraSystemPrompt).toBe("Original caller context.");
     const foreground = buildEmbeddedForegroundPromptContext(
