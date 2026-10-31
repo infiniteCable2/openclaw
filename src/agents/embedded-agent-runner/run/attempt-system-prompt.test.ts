@@ -167,7 +167,7 @@ async function preparePermissionPrompt(
 }
 
 describe("buildAttemptSystemPrompt", () => {
-  it("uses admitted speech guidance without inheriting it into a detached foreground snapshot", async () => {
+  it("keeps turn-owned speech guidance out of the system prompt and detached foreground snapshot", async () => {
     const assertCurrent = vi.fn();
     const speech: MessageSpeechAdmission = {
       runId: "permission-prompt",
@@ -189,7 +189,7 @@ describe("buildAttemptSystemPrompt", () => {
       undefined,
       speech,
     );
-    expect(prepared.systemPromptText).toContain(speech.guidance);
+    expect(prepared.systemPromptText).not.toContain(speech.guidance);
     expect(assertCurrent).toHaveBeenCalled();
     expect(attempt.extraSystemPrompt).toBe("Original caller context.");
     const foreground = buildEmbeddedForegroundPromptContext(

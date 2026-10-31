@@ -52,6 +52,12 @@ answer, commentary block, or prepared greeting can carry the same clean text and
 expression. The agent receives the selected provider's supported vocabulary
 only when expression delivery is enabled for that output.
 
+For automatic voice-note replies, admitted expression guidance accompanies the
+current request as runtime context. Switching between text and audio input does
+not add or remove that guidance from the session's system prompt. Historical
+guidance does not authorize a later output; delivery still checks the current
+source and selected provider.
+
 For native output, the model can produce one explicit JSON presentation object
 per native text block, with `type` first and no Markdown fence or surrounding
 prose:

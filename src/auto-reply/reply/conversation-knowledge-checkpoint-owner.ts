@@ -104,24 +104,27 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     | undefined;
   const tail = createConversationKnowledgeCheckpointTail();
   let loggedProjectionRevision = -1;
+  let loggedFrameRevision = -1;
   let sourceSessionKeys = new Set<string>();
   const notify = () => {
     if (loggedProjectionRevision !== tail.revision) {
-      const frontiers = new Map<string, number>();
-      for (const value of tail.values()) {
-        const { sessionId, rawSeq } = value.packet.through;
-        const sourceHash = redactIdentifier(sessionId);
-        frontiers.set(sourceHash, Math.max(frontiers.get(sourceHash) ?? -1, rawSeq));
+      if (log.isEnabled("debug")) {
+        const frontiers = new Map<string, number>();
+        for (const value of tail.values()) {
+          const { sessionId, rawSeq } = value.packet.through;
+          const sourceHash = redactIdentifier(sessionId);
+          frontiers.set(sourceHash, Math.max(frontiers.get(sourceHash) ?? -1, rawSeq));
+        }
+        log.debug("Related-history root projection ready", {
+          rootHash: redactIdentifier(JSON.stringify([initial.branch.agentId, initial.branch.root])),
+          revision: tail.revision,
+          preparedTailCount: tail.size,
+          checkpointId: latest?.checkpoint.checkpointId ?? null,
+          preparedSourceFrontiers: [...frontiers]
+            .slice(0, 8)
+            .map(([sourceHash, throughSeq]) => ({ sourceHash, throughSeq })),
+        });
       }
-      log.debug("Related-history root projection ready", {
-        rootHash: redactIdentifier(JSON.stringify([initial.branch.agentId, initial.branch.root])),
-        revision: tail.revision,
-        preparedTailCount: tail.size,
-        checkpointId: latest?.checkpoint.checkpointId ?? null,
-        preparedSourceFrontiers: [...frontiers]
-          .slice(0, 8)
-          .map(([sourceHash, throughSeq]) => ({ sourceHash, throughSeq })),
-      });
       loggedProjectionRevision = tail.revision;
     }
     for (const broker of brokers) {
@@ -312,6 +315,19 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             if (frame) {
               frames.publish(frame, releaseCustody);
               retained = true;
+              if (loggedFrameRevision !== tail.revision) {
+                if (log.isEnabled("debug")) {
+                  log.debug("Related-history root initial frame ready", {
+                    rootHash: redactIdentifier(
+                      JSON.stringify([broker.branch.agentId, broker.branch.root]),
+                    ),
+                    revision: tail.revision,
+                    tailCount: selectedTail.length,
+                    hasCheckpoint: latest !== undefined,
+                  });
+                }
+                loggedFrameRevision = tail.revision;
+              }
             }
             return false;
           } finally {

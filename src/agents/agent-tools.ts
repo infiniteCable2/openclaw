@@ -652,6 +652,7 @@ export async function createOpenClawCodingToolsInternalAsync(
           : (options?.abortSignal ?? preparation.signal),
     },
     async (shared) => {
+      options?.recordToolPrepStage?.("tool-construction-provenance");
       const assembly = assembleOpenClawCodingTools(
         { ...options, config: shared.config },
         skillReadResources,

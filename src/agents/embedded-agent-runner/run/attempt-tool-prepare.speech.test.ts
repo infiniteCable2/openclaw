@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { createStageTimingTracker } from "../../../shared/stage-timing.js";
 import { prepareSystemAgentRunAdmission } from "../../admitted-run-context.js";
 import { makeProviderModelFixture } from "../../test-helpers/provider-model-fixture.js";
 import { createAttemptSetupFixture } from "./attempt-setup.test-support.js";
@@ -8,16 +9,145 @@ import { getHoisted, resetEmbeddedAttemptHarness } from "./attempt-spawn-workspa
 import { prepareEmbeddedAttemptToolBase } from "./attempt-tool-prepare.js";
 import type { EmbeddedRunAttemptInternalParams } from "./internal-params.js";
 
-// mock-isolation: Native source-authority preparation must not start unrelated channel TTS readiness.
+const timing = vi.hoisted(() => ({
+  prepareSpeech:
+    vi.fn<
+      typeof import("../../../tts/automatic-expression.js").prepareAutomaticSpeechExpressionContext
+    >(),
+  loadInventory:
+    vi.fn<
+      typeof import("../../computer-use-node-capabilities.js").loadPairedComputerUseAvailabilityForSurface
+    >(),
+}));
+
+// mock-isolation: Exercise readiness ownership and timing without starting speech/node services.
 vi.mock("../../../tts/automatic-expression.js", () => ({
-  prepareAutomaticSpeechExpressionContext: async () => undefined,
+  prepareAutomaticSpeechExpressionContext: timing.prepareSpeech,
+}));
+vi.mock("../../computer-use-node-capabilities.js", () => ({
+  loadPairedComputerUseAvailabilityForSurface: timing.loadInventory,
 }));
 
 const hoisted = getHoisted();
-beforeEach(() => resetEmbeddedAttemptHarness());
+beforeEach(() => {
+  resetEmbeddedAttemptHarness();
+  timing.prepareSpeech.mockReset().mockResolvedValue(undefined);
+  timing.loadInventory.mockReset().mockResolvedValue(undefined);
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("native speech presentation run ownership", () => {
+  it("separates readiness, inventory and construction from policy without preparing speech twice", async () => {
+    let clock = 0;
+    const tracker = createStageTimingTracker(() => clock);
+    const config: OpenClawConfig = {
+      tools: { codeMode: false, toolSearch: { enabled: false } },
+      talk: {
+        speech: {
+          agentProfiles: {
+            example: { expression: { channels: { matrix: { targets: ["voice-note"] } } } },
+          },
+        },
+      },
+    };
+    const admission = prepareSystemAgentRunAdmission(config, "speech-timing", "example", "test");
+    const release = vi.fn(async () => {});
+    let result: Awaited<ReturnType<typeof prepareEmbeddedAttemptToolBase>> | undefined;
+    try {
+      timing.prepareSpeech.mockImplementation(async (params) => {
+        params.assertCurrent();
+        clock += 19_000;
+        return {
+          guidance: "Prepared speech guidance.",
+          messageSpeechAdmission: {
+            runId: params.runId,
+            sessionId: params.sessionId,
+            agentId: "example",
+            route: { channel: "matrix", to: "example-room" },
+            assertCurrent: params.assertCurrent,
+            preparedTtsPreferences: {},
+            prefsPath: "",
+            expectedSpeechSelection: { provider: "example" },
+          },
+          release,
+        };
+      });
+      timing.loadInventory.mockImplementation(async () => {
+        clock += 700;
+        return undefined;
+      });
+      hoisted.createOpenClawCodingToolsMock.mockImplementation((options) => {
+        clock += 500;
+        options?.recordToolPrepStage?.("tool-construction-provenance");
+        clock += 200;
+        options?.recordToolPrepStage?.("tool-policy");
+        clock += 100;
+        return [];
+      });
+      // The native run admission remains real; service and tool collaborators only advance
+      // a deterministic clock. No model, readiness request or node RPC is performed.
+      const attempt = {
+        config,
+        runId: "speech-timing",
+        sessionId: "speech-timing",
+        sessionKey: "agent:example:speech-timing",
+        agentDir: "/tmp/speech-timing-agent",
+        messageChannel: "matrix",
+        modelId: "test-model",
+        provider: "example-provider",
+        model: makeProviderModelFixture({
+          id: "test-model",
+          provider: "example-provider",
+          api: "openai-completions",
+          baseUrl: "https://provider.example/v1",
+        }),
+        authProfileStore: { version: 1, profiles: {} },
+        admittedRunContext: await admission.admit("embedded"),
+        currentInboundAudio: true,
+        preparedTtsPreferences: {},
+      } as EmbeddedRunAttemptInternalParams;
+      result = await prepareEmbeddedAttemptToolBase({
+        attempt,
+        agentDir: attempt.agentDir!,
+        setup: createAttemptSetupFixture({
+          sandboxSessionKey: attempt.sessionKey!,
+          sessionAgentId: "example",
+        }),
+        markCoreToolStage: tracker.mark,
+        onYield: async () => {},
+        runAbortController: new AbortController(),
+        runTrace: { traceId: "1234567890abcdef1234567890abcdef" },
+        skillUsagePaths: [],
+        skillsSnapshot: undefined,
+        codeModeSkills: [],
+        toolSearchCatalogExecutor: async () => ({ content: [], details: {} }),
+      });
+      const durations = Object.fromEntries(
+        tracker.snapshot().stages.map((stage) => [stage.name, stage.durationMs]),
+      );
+      expect(durations).toMatchObject({
+        "automatic-speech-readiness": 19_000,
+        "computer-inventory": 700,
+        "tool-construction-provenance": 500,
+        "tool-policy": 200,
+        "attempt:create-openclaw-coding-tools": 100,
+      });
+      expect(release).not.toHaveBeenCalled();
+      await result.refreshPermissionMode(null, () => {});
+      expect(timing.prepareSpeech).toHaveBeenCalledOnce();
+      expect(timing.loadInventory).toHaveBeenCalledOnce();
+      expect(hoisted.createOpenClawCodingToolsMock).toHaveBeenCalledTimes(2);
+      await result.releaseTools("test-complete");
+      expect(release).toHaveBeenCalledOnce();
+      result.toolSurfaceRuntime.cleanup();
+      result = undefined;
+    } finally {
+      await result?.releaseTools("test-complete");
+      result?.toolSurfaceRuntime.cleanup();
+      admission.close();
+    }
+  });
+
   it.each([
     { kind: "detached review", detached: true, expectedFailure: false },
     { kind: "denied executor", executionAllow: ["read"], expectedFailure: true },

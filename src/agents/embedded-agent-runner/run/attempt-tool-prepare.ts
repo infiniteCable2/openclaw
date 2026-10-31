@@ -86,6 +86,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor;
 }) {
   const { attempt } = params;
+  params.markCoreToolStage("attempt:tool-base-start");
   let automaticExpression: PreparedAutomaticSpeechExpressionContext | undefined;
   let expressionOwnershipTransferred = false;
   try {
@@ -143,6 +144,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         attempt.nativeSpeechPresentation = automaticExpression.messageSpeechAdmission;
       }
     }
+    params.markCoreToolStage("automatic-speech-readiness");
     const completionCheck = attempt.completionCheck;
     const requireExplicitMessageTarget =
       attempt.requireExplicitMessageTarget ?? isSubagentSessionKey(attempt.sessionKey);
@@ -291,6 +293,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         warn: () => undefined,
       }).length === 1;
     const computerAllowed = shouldConstructTools && allowsConversationTool("computer");
+    params.markCoreToolStage("attempt:computer-inventory-start");
     const pairedNodeComputerUse = (
       await loadPairedComputerUseAvailabilityForSurface({
         computerAllowed,
@@ -300,6 +303,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         signal: params.runAbortController.signal,
       })
     )?.prepared;
+    params.markCoreToolStage("computer-inventory");
     const localModelLeanEnabled = isLocalModelLeanEnabled({
       config: attempt.config,
       agentId: params.setup.sessionAgentId,
@@ -422,6 +426,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             : undefined,
           onYield: params.onYield,
         };
+        params.markCoreToolStage("attempt:tool-construction-start");
         const allTools = await createOpenClawCodingToolsInternalAsync(
           codingToolOptions,
           params.skillReadResources,

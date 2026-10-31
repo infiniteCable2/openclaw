@@ -156,7 +156,7 @@ vi.mock("../../process/background-work.js", () => ({
 }));
 // mock-isolation: Count bounded owner warnings without initializing the process logger, terminal state or file log outputs.
 vi.mock("../../logging/subsystem.js", () => ({
-  createSubsystemLogger: () => ({ warn: boundary.warn, debug() {} }),
+  createSubsystemLogger: () => ({ warn: boundary.warn, debug() {}, isEnabled: () => false }),
 }));
 
 const person = { type: "profile", id: "synthetic-person" } as const;

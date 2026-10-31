@@ -425,6 +425,7 @@ type PromptContextAttempt = Pick<
   | "currentInboundContext"
   | "currentInboundEventKind"
   | "internalEvents"
+  | "messageSpeechAdmission"
   | "runtimeContextFragments"
   | "sessionId"
   | "sessionKey"
@@ -566,7 +567,15 @@ export async function prepareEmbeddedAttemptPromptContext(input: {
           agentId: input.sessionAgentId,
           includeEmptySnapshots: input.appendOnlyRuntimeContext === true,
         });
-  const contextFragments = [...fragments, ...runtimeFacts];
+  attempt.messageSpeechAdmission?.assertCurrent();
+  // Speech readiness belongs to this request. Putting its guidance in the
+  // system prompt rewrites the prefix of every earlier turn on text/audio switches.
+  const speechGuidance = input.isRawModelRun ? undefined : attempt.messageSpeechAdmission?.guidance;
+  const contextFragments: RuntimeContextFragment[] = [
+    ...fragments,
+    ...runtimeFacts,
+    ...(speechGuidance ? [{ kind: "runtime-instruction" as const, text: speechGuidance }] : []),
+  ];
   const runtimeContextForHook = joinPresentTextSegments(
     contextFragments.map((fragment) => fragment.text),
   );

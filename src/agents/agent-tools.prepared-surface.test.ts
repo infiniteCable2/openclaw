@@ -4,12 +4,41 @@ import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
 import { createWorkerPlacementTools } from "../worker/worker-placement-tools.js";
-import { createOpenClawCodingToolsInternal } from "./agent-tools.js";
+import {
+  createOpenClawCodingToolsInternal,
+  createOpenClawCodingToolsInternalAsync,
+} from "./agent-tools.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import * as coreCodingTools from "./core-coding-tools.js";
 import { prepareCoreToolPolicy, projectAgentToolDefinition } from "./prepared-tool-surface.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+it("marks native construction preparation before assembling actual tool policy", async () => {
+  const stages: string[] = [];
+  const assertCurrent = vi.fn();
+  await createOpenClawCodingToolsInternalAsync(
+    {
+      workspaceDir: tempDirs.make("prepared-surface-timing-"),
+      config: { tools: { codeMode: false, toolSearch: { enabled: false } } },
+      recordToolPrepStage: (name) => stages.push(name),
+      toolConstructionPlan: {
+        includeBaseCodingTools: false,
+        includeShellTools: false,
+        includeChannelTools: false,
+        includeOpenClawTools: false,
+        includePluginTools: false,
+      },
+    },
+    undefined,
+    undefined,
+    undefined,
+    { assertCurrent },
+  );
+  expect(stages.slice(0, 2)).toEqual(["tool-construction-provenance", "tool-policy"]);
+  expect(stages.filter((name) => name === "tool-construction-provenance")).toHaveLength(1);
+  expect(assertCurrent).toHaveBeenCalled();
+});
 
 it.each([false, true])(
   "preserves local definition bytes and policy for placement (deny process=%s)",

@@ -337,6 +337,15 @@ it.for(["native", "branches"] as const)(
         const reports = [];
         for (const index of [1, 2, 3, 4]) {
           if (index === 3) {
+            const readyMarker = "Related-history root initial frame ready";
+            if (initialMode === "branches") {
+              await vi.waitFor(() => expect(gateway!.logs()).toContain(readyMarker), {
+                timeout: 30_000,
+                interval: 50,
+              });
+            }
+            const readyFrames = gateway.logs().split(readyMarker).length - 1;
+            const modelRequests = model.requests.length;
             await gateway.stopGateway();
             selected.agents!.entries!.main!.conversationMode = "branches";
             await gateway.state.writeConfig(selected);
@@ -347,6 +356,18 @@ it.for(["native", "branches"] as const)(
               timeout: 30_000,
               interval: 50,
             });
+            if (initialMode === "branches") {
+              // The real account must restore prepared custody before any new
+              // user input; a sync connection alone does not prove readiness.
+              await vi.waitFor(
+                () =>
+                  expect(gateway!.logs().split(readyMarker).length - 1).toBeGreaterThan(
+                    readyFrames,
+                  ),
+                { timeout: 30_000, interval: 50 },
+              );
+              expect(model.requests).toHaveLength(modelRequests);
+            }
           }
           const marker = "CURRENT_MATRIX_FULL_PAYLOAD_" + index;
           const before = model.requests.length;
