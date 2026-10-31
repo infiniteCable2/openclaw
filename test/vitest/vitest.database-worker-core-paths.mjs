@@ -7,6 +7,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/conversation-communication.scenario.test.ts",
   "src/auto-reply/reply/session.initial-context.test.ts",
   "src/channels/message-access/conversation-input.profile.test.ts",
+  "src/channels/message-access/conversation-input-connection.rtc.scenario.test.ts",
   "src/config/sessions/conversation-branch-creation.scenario.test.ts",
   "src/config/sessions/conversation-knowledge-store.test.ts",
   "src/config/sessions/conversation-knowledge-history.test.ts",

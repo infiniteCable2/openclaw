@@ -29,3 +29,5 @@ export type {
   MatrixVerificationSummary,
 } from "./src/matrix/sdk/verification-manager.js";
 export { setMatrixRuntime } from "./src/runtime.js";
+export { createMatrixRtcConversationInputSource } from "./src/matrix/rtc-ingress.js";
+export * as matrixRtcRouting from "./src/matrix/monitor/route.js";
