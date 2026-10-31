@@ -2,6 +2,10 @@ import { isDeepStrictEqual } from "node:util";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
+import {
+  assertConversationBranchCreationRoot,
+  type PreparedConversationBranchCreation,
+} from "./conversation-branch-creation.js";
 import { readConversationKnowledgeRootReports } from "./conversation-knowledge-history.js";
 import {
   readConversationKnowledgeRootSnapshot,
@@ -396,6 +400,8 @@ type KnowledgeRootReadParams = {
   assertCurrent: SessionSourceAssertion;
   signal?: AbortSignal;
   rootContinuation?: ConversationKnowledgeRootContinuation;
+  /** Actual native absent-to-created recipient, never a caller's allow-missing flag. */
+  creation?: PreparedConversationBranchCreation;
 };
 
 /** Both full reads and prepared candidates use the same native enrollment checks. */
@@ -410,6 +416,16 @@ async function readValidatedKnowledgeRootSource(params: KnowledgeRootReadParams)
       const current = read.entries.find((row) => row.sessionKey === branch.sessionKey)?.entry;
       const root = read.entries.find((row) => row.sessionKey === branch.root.sessionKey)?.entry;
       assertSessionConversationRootEntry(root, branch.root.sessionKey);
+      if (params.creation) {
+        assertConversationBranchCreationRoot({
+          creation: params.creation,
+          branch,
+          source: read.source,
+          currentEntry: current,
+          rootEntry: root,
+        });
+        return structuredClone(read.source);
+      }
       if (
         current?.sessionId !== branch.sessionId ||
         current.lifecycleRevision !== branch.lifecycleRevision ||

@@ -32,6 +32,7 @@ import { withSessionTranscriptWriteAssertion } from "../../config/sessions/trans
 import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { ensureClientVoiceAgentSessionEntry } from "../../talk/client-voice-session-initialization.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareConversationKnowledgeBranchFacts } from "./conversation-knowledge-authority.js";
 import { createConversationKnowledgeBoundaryProfiler } from "./conversation-knowledge-boundary-profile.test-support.js";
@@ -215,7 +216,15 @@ it.skipIf(!replayPath)(
       process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_CONTEXT_WINDOW ?? 1_000_000,
     );
     const recipientSource = process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_RECIPIENT_SOURCE;
-    const recipientMode = recipientSource ? "reused-source" : "fresh";
+    const nativeCreation = process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_NATIVE_CREATION === "1";
+    const recipientMode = recipientSource
+      ? "reused-source"
+      : nativeCreation
+        ? "native-creation"
+        : "fresh";
+    if (nativeCreation && recipientSource) {
+      throw new Error("Native creation cannot replace an existing replay source");
+    }
     const metadataChanges = process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_METADATA_CHANGES !== "off";
     const boundaryProfile = createConversationKnowledgeBoundaryProfiler();
     const initialIdleProfile = createConversationKnowledgeBoundaryProfiler();
@@ -428,7 +437,53 @@ it.skipIf(!replayPath)(
             if (recipientSource && !reused) {
               throw new Error("Private replay recipient source unavailable");
             }
-            const target = reused?.target ?? (await fixture.branch("private-replay-recipient"));
+            const target =
+              reused?.target ??
+              (nativeCreation
+                ? await (async () => {
+                    const absent = {
+                      ...fixture.root,
+                      sessionKey: "agent:main:private-replay-created",
+                    };
+                    const createAt = performance.now();
+                    const sessionId = await ensureClientVoiceAgentSessionEntry({
+                      ...absent,
+                      cfg: fixture.cfg,
+                      getRuntimeConfig: () => fixture.cfg,
+                      chatType: "direct",
+                      privateAudience: {
+                        agentId: absent.agentId,
+                        sessionKey: absent.sessionKey,
+                        channelId: "test",
+                        accountId: "default",
+                        nativeChannelId: "private-replay-created",
+                        participant: person,
+                        assertCurrent: () => signal.throwIfAborted(),
+                      },
+                      assertCommitAllowed: () => signal.throwIfAborted(),
+                    });
+                    const entry = loadSessionEntry(absent);
+                    if (!entry?.lifecycleRevision || entry.sessionId !== sessionId) {
+                      throw new Error("Native replay creation was not published");
+                    }
+                    const selected = {
+                      ...absent,
+                      sessionId,
+                      lifecycleRevision: entry.lifecycleRevision,
+                    };
+                    const installed = (await loadTranscriptEvents(selected)).filter(
+                      (raw) => asOptionalRecord(raw)?.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
+                    ).length;
+                    mark("native-creation-before-first-input", {
+                      creationMs: Math.round(performance.now() - createAt),
+                      installedPackets: installed,
+                      requestedPackets: rootReceipts,
+                    });
+                    expect(installed).toBe(rootReceipts);
+                    expect(entry.forkSource).toBeUndefined();
+                    return selected;
+                  })()
+                : await fixture.branch("private-replay-recipient"));
             const owner = reused?.owner ?? (await fixture.claim(target));
             const native = await prepareSessionMutationFacts({
               cfg: fixture.cfg,
@@ -638,6 +693,10 @@ it.skipIf(!replayPath)(
               returnedPackets: boundary.length,
               retainedPackets: (await packets()).length,
             });
+            if (nativeCreation) {
+              expect(boundary).toHaveLength(0);
+              expect(await packets()).toHaveLength(rootReceipts);
+            }
             knowledge.release();
             admission.close();
             lifecycleAdmissionByOperation.delete(replyOperation);

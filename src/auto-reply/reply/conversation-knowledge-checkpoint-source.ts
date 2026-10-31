@@ -3,6 +3,10 @@ import {
   conversationKnowledgeParticipantIdentity,
   conversationKnowledgeHistoricalContributionIdentity,
 } from "../../config/sessions/conversation-audience.js";
+import {
+  assertConversationBranchCreation,
+  type PreparedConversationBranchCreation,
+} from "../../config/sessions/conversation-branch-creation.js";
 import { conversationKnowledgeCheckpointRangeDigest } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeRootContinuation } from "../../config/sessions/conversation-knowledge-root-cache.js";
@@ -20,6 +24,7 @@ import {
 } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
+import type { PreparedInitialSessionContextSourceClaim } from "../../config/sessions/session-initial-context.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
@@ -68,6 +73,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   assertCurrent: SessionSourceAssertion;
   getRuntimeConfig(): OpenClawConfig;
   rootContinuation?: ConversationKnowledgeRootContinuation;
+  targetCreation?: PreparedConversationBranchCreation;
   /** Retains cleanup even if preparation fails before returning its sources. */
   retainCleanup(release: () => void): void;
 }) {
@@ -75,16 +81,35 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   if (!audienceKey) {
     throw new Error("Checkpoint broker lacks a personal identity");
   }
-  const brokerTarget = await prepareConversationKnowledgeTarget({
-    reader: params.reader,
-    sessionId: params.branch.sessionId,
-    destinationAudience: params.audience,
-    participantIdentity: audienceKey,
-    expectedAudienceIdentity: audienceKey,
-    signal: params.signal,
-    assertCurrent: params.assertCurrent,
-    getRuntimeConfig: () => params.getRuntimeConfig(),
-  });
+  if (params.targetCreation) {
+    assertConversationBranchCreation({
+      creation: params.targetCreation,
+      branch: params.branch,
+      participant: params.participant,
+      audience: params.audience,
+    });
+  }
+  const brokerTarget = params.targetCreation
+    ? {
+        kind: "ready" as const,
+        branch: params.targetCreation.branch,
+        targetFacts: {
+          assertCurrent: params.targetCreation.source,
+          audience: "private-direct" as const,
+          audienceIdentity: audienceKey,
+          release() {},
+        },
+      }
+    : await prepareConversationKnowledgeTarget({
+        reader: params.reader,
+        sessionId: params.branch.sessionId,
+        destinationAudience: params.audience,
+        participantIdentity: audienceKey,
+        expectedAudienceIdentity: audienceKey,
+        signal: params.signal,
+        assertCurrent: params.assertCurrent,
+        getRuntimeConfig: () => params.getRuntimeConfig(),
+      });
   if (brokerTarget?.kind !== "ready") {
     throw new Error("Checkpoint broker is unavailable");
   }
@@ -148,6 +173,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       assertCurrent: check,
       signal: params.signal,
       rootContinuation: params.rootContinuation,
+      creation: params.targetCreation,
     });
     check();
     const rootReferences = selectConversationKnowledgeReceipts(
@@ -166,6 +192,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       originalParticipant: params.participant,
       destinationAudience: params.audience,
       rootEvidence: events.evidence,
+      targetCreation: params.targetCreation,
       targetFacts,
       assertCurrent: check,
       getRuntimeConfig: () => params.getRuntimeConfig(),
@@ -174,7 +201,10 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       reads,
       drop,
     });
-    const prepared = new Map<string, PreparedRootKnowledgeContribution>();
+    const prepared = new Map<
+      string,
+      PreparedRootKnowledgeContribution & { claim: PreparedInitialSessionContextSourceClaim }
+    >();
     const readAvailableSource = async <T>(
       reference: ConversationKnowledgeReference,
       operation: () => Promise<T>,
@@ -247,27 +277,29 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       nativeSource: CapturedSessionEntryReadSource,
       version: PreparedConversationKnowledgePacket["version"],
       lifecycleRevision = reference.source.lifecycleRevision,
+      range?: {
+        through: ConversationKnowledgeReference["through"];
+        from?: ConversationKnowledgeReference["through"];
+      },
     ) => {
+      const predicate = {
+        source: nativeSource,
+        sessionKey: reference.source.sessionKey,
+        fields: ["sessionId", "lifecycleRevision"] as const,
+        expected: { sessionId: reference.source.sessionId, lifecycleRevision },
+        transcript: {
+          sessionId: reference.source.sessionId,
+          version,
+          consistency: "prefix" as const,
+        },
+      };
       proofs.push(
         Object.assign(() => check(), {
           prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
             assertCurrent: check,
             checks: [
               {
-                predicate: {
-                  source: nativeSource,
-                  sessionKey: reference.source.sessionKey,
-                  fields: ["sessionId", "lifecycleRevision"],
-                  expected: {
-                    sessionId: reference.source.sessionId,
-                    lifecycleRevision,
-                  },
-                  transcript: {
-                    sessionId: reference.source.sessionId,
-                    version,
-                    consistency: "prefix",
-                  },
-                },
+                predicate: { ...predicate, fields: [...predicate.fields] },
                 refuse: (): never => {
                   throw new Error("Checkpoint original source changed before publication");
                 },
@@ -276,6 +308,16 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           }),
         }),
       );
+      return {
+        reference,
+        predicate: { ...predicate, fields: [...predicate.fields] },
+        sessionId: reference.source.sessionId,
+        version,
+        through: range?.through ?? reference.readRange?.through ?? reference.through,
+        from: range
+          ? range.from
+          : (reference.readRange?.admission ?? reference.privateAudience?.admission),
+      } satisfies PreparedInitialSessionContextSourceClaim;
     };
     const read = async (reference: ConversationKnowledgeReference, retainText = true) => {
       check();
@@ -335,7 +377,10 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         throw new Error("Checkpoint source lacks a native version");
       }
       const version = projection.version;
-      recordVersionProof(reference, nativeSource, version, currentLifecycle);
+      const claim = recordVersionProof(reference, nativeSource, version, currentLifecycle, {
+        through,
+        from,
+      });
       const part = projectConversationKnowledge(
         reference,
         projection.events,
@@ -356,6 +401,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         text: renderConversationKnowledgePacketText(reference, part.text),
         reference,
         packet: { part, version, through, from },
+        claim,
       };
       if (retainText) {
         prepared.set(contributionId, value);
@@ -417,10 +463,17 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       if (!valid || !anchorFacts.contextVersion) {
         throw new SessionTranscriptReadFenceError("Checkpoint prepared source prefix changed");
       }
-      recordVersionProof(reference, nativeSource, anchorFacts.contextVersion, currentLifecycle);
-      return { through, from };
+      const claim = recordVersionProof(
+        reference,
+        nativeSource,
+        anchorFacts.contextVersion,
+        currentLifecycle,
+        { through, from },
+      );
+      return { through, from, claim };
     };
     return {
+      audienceKey,
       references: rootReferences,
       read: (reference: ConversationKnowledgeReference, retainText = true) =>
         readAvailableSource(reference, () => read(reference, retainText)),
@@ -474,6 +527,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
               ]),
               target: branch,
               targetAudience: params.audience,
+              targetCreation: params.targetCreation,
               rootEvidence: events.evidence,
             };
             const common = {

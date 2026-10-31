@@ -1,5 +1,6 @@
 import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import type { PreparedConversationBranchCreation } from "../../config/sessions/conversation-branch-creation.js";
 import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
@@ -437,6 +438,7 @@ export type ConversationKnowledgeSourceReaderParams = {
   originalParticipant: SessionParticipantIdentity;
   destinationAudience?: ConversationPrivateAudience;
   rootEvidence?: NativeKnowledgeRootEvidence;
+  targetCreation?: PreparedConversationBranchCreation;
   targetFacts: Awaited<ReturnType<typeof prepareConversationKnowledgeBranchFacts>>;
   assertCurrent: SessionSourceAssertion;
   getRuntimeConfig: () => OpenClawConfig;

@@ -18,7 +18,7 @@ import { createSessionRowProjection } from "../session-row-projection.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks } from "../test-helpers.js";
 import { handleChatSend } from "./chat-send-handler.js";
 import { useBrowserFollowupFixture } from "./chat-send-pending-inputs.test-support.js";
-import * as chatSession from "./chat-send-session.js";
+import * as chatSession from "./chat-send-runtime-restriction.js";
 import { mcpAppOnboardingHandlers } from "./mcp-app-onboarding.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 

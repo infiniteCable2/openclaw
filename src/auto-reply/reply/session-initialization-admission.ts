@@ -82,6 +82,7 @@ export function prepareReplySessionCreation(
         audience: readConversationPrivateAudience(params.ctx),
       });
   return {
+    audience,
     patch: {
       ...(!entry && params.ctx.SessionCreation
         ? buildSessionCreationStamp(params.ctx.SessionCreation)

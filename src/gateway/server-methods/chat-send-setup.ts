@@ -8,8 +8,8 @@ import {
   runChatSendPreAdmission,
 } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
+import { prepareChatSendNativeRuntimeRestriction } from "./chat-send-runtime-restriction.js";
 import {
-  prepareChatSendNativeRuntimeRestriction,
   prepareChatSendSession,
   qualifyChatSendSession,
   type PreparedChatSendSession,

@@ -1,6 +1,11 @@
 // Config-snapshot comparison: byte-stable serialization plus resolution provenance.
 import { isDeepStrictEqual } from "node:util";
-import { getConfigResolutionFacts, serializeConfigResolutionFacts } from "./resolution-facts.js";
+import {
+  cloneConfigWithResolutionFacts,
+  getConfigResolutionFacts,
+  serializeConfigResolutionFacts,
+} from "./resolution-facts.js";
+import { getRuntimeConfigCapture } from "./runtime-config-capture-state.js";
 import type { OpenClawConfig } from "./types.js";
 
 /** Serialize a value with object keys sorted, so equal data always yields the same bytes. */
@@ -36,4 +41,21 @@ export function configSnapshotsMatch(left: OpenClawConfig, right: OpenClawConfig
   } catch {
     return false;
   }
+}
+
+/** One preparation lifetime may reuse only a proven deeply immutable runtime capture. */
+export function createRuntimeConfigSnapshotMatcher(expected: OpenClawConfig) {
+  const snapshot = cloneConfigWithResolutionFacts(expected);
+  let matchedCapture: OpenClawConfig | undefined;
+  return (current: OpenClawConfig): boolean => {
+    if (current === matchedCapture) {
+      return true;
+    }
+    if (!configSnapshotsMatch(snapshot, current)) {
+      return false;
+    }
+    // Plain or shallow-frozen callers can mutate in place; never retain those matches.
+    matchedCapture = getRuntimeConfigCapture(current) ? current : undefined;
+    return true;
+  };
 }

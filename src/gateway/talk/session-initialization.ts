@@ -33,6 +33,7 @@ export async function ensureGatewayTalkSessionEntry(
       sessionKey: target.canonicalKey,
       storePath: target.storePath,
       cfg,
+      getRuntimeConfig: context.getRuntimeConfig,
       chatType: "direct",
       privateAudience: captureGatewayPrivateConversationAudience({
         agentId: target.agentId,

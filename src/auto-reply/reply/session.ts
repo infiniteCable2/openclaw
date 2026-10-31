@@ -12,6 +12,7 @@ import { cleanupBrowserSessionsForLifecycleEnd } from "../../browser-lifecycle-c
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveSessionParentSessionKey } from "../../channels/plugins/session-conversation.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
+import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { conversationRouteContextFromMsgContext } from "../../config/sessions/conversation-route-context.js";
 import { hasProviderOwnedSession } from "../../config/sessions/entry-freshness.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
@@ -37,6 +38,7 @@ import {
 import { resolveAgentConversationRootSessionKey } from "../../config/sessions/session-conversation-root-key.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
 import { selectSessionModelOverride } from "../../config/sessions/session-entry-selection.js";
+import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import {
@@ -822,6 +824,31 @@ async function initSessionStateAttemptLocked(
     expectedRevision: initializationSnapshot.revision,
     ...(initialContext
       ? { initialContext, contextSourceAuthority: params.initialSessionContext?.assertCurrent }
+      : {}),
+    ...(!isSystemEvent &&
+    creation.audience &&
+    resolveAgentConversationMode(cfg, agentId) === "branches"
+      ? {
+          prepareInitialContext: async (entryToCommit: SessionEntry) => {
+            const { prepareConversationKnowledgeInitialContext } =
+              await import("./conversation-knowledge-initial-context.js");
+            return prepareConversationKnowledgeInitialContext({
+              ...sessionTarget,
+              sessionEntry: entryToCommit,
+              cfg,
+              getRuntimeConfig: () => getRuntimeConfigSnapshot({ capture: true }) ?? cfg,
+              audience: creation.audience,
+              assertCurrent: composeSessionSourceAssertion(
+                [params.assertSourceCurrent],
+                (check) => {
+                  check();
+                  creation.assertCurrent();
+                },
+              ),
+              signal: params.signal,
+            });
+          },
+        }
       : {}),
     relatedSessionKeys,
     maintenanceConfig,

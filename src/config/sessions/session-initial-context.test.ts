@@ -7,6 +7,13 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
+import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
+import { createConversationKnowledgeCheckpoint } from "./conversation-knowledge-checkpoint.js";
+import { readConversationKnowledgeImportProgress } from "./conversation-knowledge-packets.js";
+import {
+  conversationKnowledgeOrigin,
+  type ConversationKnowledgeReference,
+} from "./conversation-knowledge.js";
 import {
   appendTranscriptEvent,
   appendTranscriptMessage,
@@ -24,7 +31,12 @@ import {
   resolveParentForkSourceTranscript,
 } from "./session-accessor.sqlite-parent-fork.js";
 import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
-import type { PreparedInitialSessionContext } from "./session-initial-context.js";
+import {
+  createProjectedInitialSessionContextEvents,
+  type PreparedInitialSessionContext,
+  type PreparedProjectedInitialSessionContext,
+} from "./session-initial-context.js";
+import { composeSessionSourceAssertion } from "./session-source-authority.js";
 import type {
   PreparedSessionSourceAuthority,
   SessionSourceAssertion,
@@ -71,10 +83,12 @@ async function withContext(
     source: { agentId: string; sessionKey: string; storePath: string; sessionId: string };
     target: { agentId: string; sessionKey: string; storePath: string; sessionId: string };
     context: PreparedInitialSessionContext;
+    authority: SessionSourceAssertion;
     commit: (
       overrides?: Partial<Parameters<typeof commitReplySessionInitialization>[0]>,
     ) => ReturnType<typeof commitReplySessionInitialization>;
   }) => Promise<void>,
+  options?: { root?: boolean },
 ) {
   const id = ++nextId;
   const storePath = state.statePath("agents", "main", "sessions", "sessions.json");
@@ -95,6 +109,15 @@ async function withContext(
     lifecycleRevision: "original",
     createdActor: { type: "human", source: "profile", id: "source-owner" },
     permissionMode: "full",
+    ...(options?.root
+      ? {
+          createdVia: "internal" as const,
+          createdActor: { type: "system" as const, id: "conversation-root" },
+          visibility: "draft" as const,
+          delivery: { kind: "none" as const },
+          conversationTopology: { version: 1 as const, role: "root" as const },
+        }
+      : {}),
   });
   await appendTranscriptMessage(source, {
     eventId: `answer-${id}`,
@@ -182,6 +205,7 @@ async function withContext(
         source,
         target,
         context,
+        authority: contextSourceAuthority,
         commit: (overrides) =>
           commitReplySessionInitialization({
             ...target,
@@ -215,7 +239,428 @@ async function withContext(
   );
 }
 
+async function withProjectedContext(
+  run: (
+    fixture: Omit<Parameters<Parameters<typeof withContext>[0]>[0], "context"> & {
+      context: PreparedProjectedInitialSessionContext;
+      donor: Parameters<Parameters<typeof withContext>[0]>[0]["source"];
+    },
+  ) => Promise<void>,
+) {
+  await withContext(
+    async (fixture) => {
+      const { source, target } = fixture;
+      const donor = {
+        ...source,
+        sessionKey: `${source.sessionKey}-donor`,
+        sessionId: `${source.sessionId}-donor`,
+      };
+      await upsertSessionEntryCore(donor, {
+        sessionId: donor.sessionId,
+        lifecycleRevision: "donor-original",
+        updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: "source-owner" },
+        visibility: "draft",
+      });
+      const originals = [];
+      for (const text of ["A summarized earlier fact.", "A later original fact."]) {
+        const original = await appendTranscriptMessage(donor, {
+          message: { role: "user", content: text },
+        });
+        if (!original.anchor) {
+          throw new Error("Synthetic original requires its actual native anchor");
+        }
+        originals.push(original.anchor);
+      }
+      await withSessionEntryReadOnlyInWorker(
+        donor,
+        () => {},
+        async (read, owner) => {
+          if (!read.ok || !read.value || !owner.source?.databaseIdentity) {
+            throw new Error("Synthetic projected donor was not admitted");
+          }
+          const predicate = {
+            source: owner.source,
+            sessionKey: donor.sessionKey,
+            fields: [
+              "sessionId",
+              "lifecycleRevision",
+              "createdActor",
+              "visibility",
+              "incognito",
+            ] as const,
+            expected: read.value,
+            members: [],
+          };
+          const donorAuthority: SessionSourceAssertion = Object.assign(
+            () => owner.assertCurrent(),
+            {
+              prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({
+                assertCurrent: owner.assertCurrent,
+                checks: [
+                  {
+                    predicate: { ...predicate, fields: [...predicate.fields] },
+                    refuse: (): never => {
+                      throw new Error("Synthetic projected donor changed");
+                    },
+                  },
+                ],
+              }),
+            },
+          );
+          const authority = composeSessionSourceAssertion([fixture.authority, donorAuthority]);
+          const participant = { type: "profile", id: "source-owner" } as const;
+          const branch = {
+            ...target,
+            lifecycleRevision: "target-original",
+            root: {
+              sessionKey: source.sessionKey,
+              sessionId: source.sessionId,
+              lifecycleRevision: "original",
+            },
+          };
+          const references: ConversationKnowledgeReference[] = originals.map((through) => ({
+            version: 1,
+            kind: "utterance-observation",
+            sourceMode: "branches",
+            role: "user",
+            source: { ...donor, lifecycleRevision: "donor-original" },
+            origin: conversationKnowledgeOrigin(
+              { ...donor, lifecycleRevision: "donor-original" },
+              "utterance-observation",
+            ),
+            through,
+            privateAudience: { participant, admission: through },
+          }));
+          const checkpoint = createConversationKnowledgeCheckpoint({
+            branch,
+            audienceKey: conversationKnowledgeParticipantIdentity(participant)!,
+            summary: "A native checkpoint summary of the earlier fact.",
+            covered: [references[0]!],
+          });
+          await appendTranscriptEvent(source, {
+            type: "custom_message",
+            id: `${source.sessionId}-checkpoint`,
+            customType: "openclaw.conversation-knowledge-checkpoint.v1",
+            details: checkpoint,
+            display: false,
+          });
+          const rootFacts = await readSessionTranscriptAnchorsAsync(source, {
+            entryIds: [],
+            includeContextVersion: true,
+          });
+          const donorFacts = await readSessionTranscriptAnchorsAsync(donor, {
+            entryIds: [],
+            includeContextVersion: true,
+          });
+          if (!rootFacts.contextVersion || !donorFacts.contextVersion) {
+            throw new Error("Synthetic projection requires exact native source versions");
+          }
+          const projection: PreparedProjectedInitialSessionContext["projection"] = {
+            branch,
+            checkpoint,
+            claims: originals.map((through, index) => ({
+              reference: references[index]!,
+              predicate: { ...predicate, fields: [...predicate.fields] },
+              sessionId: donor.sessionId,
+              version: donorFacts.contextVersion!,
+              through,
+              from: through,
+            })),
+            packets: [
+              {
+                receipt: references[1]!,
+                text: "A later original fact.",
+                offset: 0,
+                nextOffset: 22,
+                complete: true,
+                sourceClaim: 1,
+              },
+            ],
+          };
+          const context: PreparedProjectedInitialSessionContext = {
+            ...fixture.context,
+            kind: "root-projection",
+            projection,
+            sourceVersion: rootFacts.contextVersion,
+            sourceThrough: undefined,
+            events: createProjectedInitialSessionContextEvents({
+              projection,
+              targetSessionId: target.sessionId,
+            }),
+          };
+          await run({
+            ...fixture,
+            donor,
+            context,
+            authority,
+            commit: (overrides) =>
+              fixture.commit({
+                initialContext: context,
+                contextSourceAuthority: authority,
+                branchRootSessionKey: source.sessionKey,
+                sessionEntry: {
+                  sessionId: target.sessionId,
+                  lifecycleRevision: branch.lifecycleRevision,
+                  updatedAt: 2,
+                  visibility: "draft",
+                },
+                ...overrides,
+              }),
+          });
+        },
+      );
+    },
+    { root: true },
+  );
+}
+
 describe("native reply initial context", () => {
+  it("atomically creates a branch with canonical checkpoint and packet progress", async () => {
+    await withProjectedContext(async ({ target, donor, context, commit }) => {
+      const originals = await loadTranscriptEvents(donor);
+      const publication = observeCreation(target.sessionKey);
+      try {
+        expect((await commit()).ok).toBe(true);
+      } finally {
+        publication.stop();
+      }
+      const events = await loadTranscriptEvents(target);
+      expect(events).toEqual(context.events);
+      expect(events).toHaveLength(3);
+      expect(loadSessionEntry(target)?.forkSource).toBeUndefined();
+      const progress = await readConversationKnowledgeImportProgress({
+        branch: context.projection.branch,
+        assertCurrent() {},
+      });
+      expect(progress.packets.size).toBe(1);
+      expect([...progress.packets.values()]).toEqual([{ complete: true, nextOffset: 22 }]);
+      expect(progress.checkpoints.map((value) => value.checkpointId)).toEqual([
+        context.projection.checkpoint!.checkpointId,
+      ]);
+      const final = await readSessionTranscriptAnchorsAsync(target, {
+        entryIds: [],
+        includeContextVersion: true,
+      });
+      expect(publication.rowIds).toContain(target.sessionId);
+      expect(publication.transcripts.length).toBeGreaterThan(0);
+      expect(
+        publication.transcripts.every((value) => value.rawSeq === final.contextVersion?.rawSeq),
+      ).toBe(true);
+      expect(await loadTranscriptEvents(donor)).toEqual(originals);
+    });
+  });
+
+  it.each([
+    "donor-reset",
+    "root-reset",
+    "permission",
+    "late-permission",
+    "missing-predicate",
+  ] as const)(
+    "refuses an initial root projection after %s without partial creation",
+    async (change) => {
+      await withProjectedContext(async ({ source, donor, target, context, authority, commit }) => {
+        const overrides: Partial<Parameters<typeof commitReplySessionInitialization>[0]> = {};
+        if (change === "donor-reset" || change === "root-reset") {
+          const selected = change === "donor-reset" ? donor : source;
+          await replaceTranscriptEvents(selected, [
+            { type: "session", id: selected.sessionId, version: 3 },
+          ]);
+        } else if (change === "permission") {
+          await upsertSessionEntryCore(donor, {
+            ...loadSessionEntry(donor)!,
+            visibility: "shared",
+          });
+        } else if (change === "late-permission") {
+          overrides.beforeEntryMutation = async () => {
+            await upsertSessionEntryCore(donor, {
+              ...loadSessionEntry(donor)!,
+              visibility: "shared",
+            });
+          };
+        } else {
+          overrides.contextSourceAuthority = authority;
+          overrides.initialContext = {
+            ...context,
+            projection: {
+              ...context.projection,
+              claims: context.projection.claims.map((claim) => ({
+                ...claim,
+                predicate: { ...claim.predicate, members: ["ungranted-synthetic-member"] },
+              })),
+            },
+          };
+        }
+        await expect(commit(overrides)).rejects.toThrow();
+        expect(loadSessionEntry(target)).toBeUndefined();
+        expect(await loadTranscriptEvents(target)).toEqual([]);
+      });
+    },
+  );
+
+  it("copies only the prepared root prefix while a later root append remains a delta", async () => {
+    await withProjectedContext(async ({ source, target, context, commit }) => {
+      expect(
+        (
+          await commit({
+            beforeEntryMutation: async () => {
+              await appendTranscriptMessage(source, {
+                message: { role: "user", content: "A later root suffix." },
+              });
+            },
+          })
+        ).ok,
+      ).toBe(true);
+      expect(await loadTranscriptEvents(target)).toEqual(context.events);
+      expect(JSON.stringify(await loadTranscriptEvents(target))).not.toContain(
+        "A later root suffix.",
+      );
+    });
+  });
+
+  it("does not reuse a hidden transcript identity for an initial root projection", async () => {
+    await withProjectedContext(async ({ target, commit }) => {
+      await appendTranscriptEvent(target, { type: "session", id: target.sessionId, version: 3 });
+      const before = await loadTranscriptEvents(target);
+      await expect(commit()).rejects.toThrow("unused target transcript");
+      expect(loadSessionEntry(target)).toBeUndefined();
+      expect(await loadTranscriptEvents(target)).toEqual(before);
+    });
+  });
+
+  it("keeps original receipt identity separate from a granted current source range", async () => {
+    await withProjectedContext(async ({ donor, target, context, commit }) => {
+      const packet = context.projection.packets[0]!;
+      // This storage witness owns the actual current row predicate. Native personal
+      // read tests separately prove who may issue a historical-custody translation.
+      await replaceTranscriptEvents(donor, [{ type: "session", id: donor.sessionId, version: 3 }]);
+      const current = await appendTranscriptMessage(donor, {
+        message: { role: "user", content: packet.text },
+      });
+      const facts = await readSessionTranscriptAnchorsAsync(donor, {
+        entryIds: [],
+        includeContextVersion: true,
+      });
+      if (!current.anchor || !facts.contextVersion) {
+        throw new Error("Synthetic current range was not admitted");
+      }
+      const projection: PreparedProjectedInitialSessionContext["projection"] = {
+        branch: context.projection.branch,
+        packets: [{ ...packet, sourceClaim: 0 }],
+        claims: [
+          {
+            ...context.projection.claims[packet.sourceClaim]!,
+            version: facts.contextVersion,
+            from: current.anchor,
+            through: current.anchor,
+          },
+        ],
+      };
+      expect(
+        (
+          await commit({
+            initialContext: {
+              ...context,
+              projection,
+              events: createProjectedInitialSessionContextEvents({
+                projection,
+                targetSessionId: target.sessionId,
+              }),
+            },
+          })
+        ).ok,
+      ).toBe(true);
+      const progress = await readConversationKnowledgeImportProgress({
+        branch: projection.branch,
+        assertCurrent() {},
+      });
+      expect(progress.packets.size).toBe(1);
+      expect(current.anchor.generation).not.toBe(packet.receipt.through.generation);
+    });
+  });
+
+  it.each(["created", "refused", "stale"] as const)(
+    "retains and releases asynchronous native initial-context preparation when %s",
+    async (outcome) => {
+      await withProjectedContext(async ({ source, target, context, authority, commit }) => {
+        let calls = 0,
+          bound = 0,
+          released = 0,
+          asserted = 0;
+        const result = commit({
+          initialContext: undefined,
+          contextSourceAuthority: undefined,
+          prepareSessionEntry: ({ sessionEntry }) => ({
+            ...sessionEntry,
+            label: "final-native-row",
+          }),
+          prepareInitialContext: async (entry) => {
+            calls++;
+            expect(entry.label).toBe("final-native-row");
+            expect(entry.conversationTopology).toMatchObject({
+              role: "branch",
+              rootSessionKey: source.sessionKey,
+            });
+            return {
+              context,
+              source: authority,
+              assertEntry: (current) => {
+                asserted++;
+                expect(current.label).toBe("final-native-row");
+                expect(current.conversationTopology).toEqual(entry.conversationTopology);
+              },
+              bindCreation: () => {
+                bound++;
+                return authority;
+              },
+              release: () => {
+                released++;
+              },
+            };
+          },
+          beforeEntryMutation: async () => {
+            if (outcome === "refused") {
+              throw new Error("Synthetic prepared creation refusal");
+            }
+            if (outcome === "stale") {
+              await upsertSessionEntryCore(target, { sessionId: "competing-target", updatedAt: 3 });
+            }
+          },
+        });
+        if (outcome === "refused") {
+          await expect(result).rejects.toThrow("Synthetic prepared creation refusal");
+          expect(loadSessionEntry(target)).toBeUndefined();
+        } else {
+          expect((await result).ok).toBe(outcome === "created");
+        }
+        expect(calls).toBe(1);
+        expect(released).toBe(1);
+        expect(asserted).toBe(outcome === "refused" ? 0 : 1);
+        if (outcome === "created") {
+          expect(bound).toBe(1);
+          expect(await loadTranscriptEvents(target)).toEqual(context.events);
+          const snapshot = await loadReplySessionInitializationSnapshot(target);
+          expect(
+            (
+              await commit({
+                initialContext: undefined,
+                contextSourceAuthority: undefined,
+                expectedRevision: snapshot.revision,
+                sessionEntry: loadSessionEntry(target)!,
+                prepareInitialContext: async () => {
+                  calls++;
+                  return undefined;
+                },
+              })
+            ).ok,
+          ).toBe(true);
+          expect(calls).toBe(1);
+        }
+      });
+    },
+  );
+
   it.each(["unchanged", "archived", "published", "replaced"] as const)(
     "binds membership to the separately admitted root at the actual writer (%s)",
     async (change) => {

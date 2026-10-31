@@ -44,7 +44,11 @@ import {
 } from "./session-mutation-conflict-error.js";
 import { resolveReplySessionInitializationUpserts } from "./session-reset-entry.js";
 import type { ReplySessionInitializationUpsertDescriptor } from "./session-reset.types.js";
-import type { SessionSourceAssertion } from "./session-source-authority.js";
+import {
+  composeSessionSourceAssertion,
+  releaseSessionSourceAuthorities,
+  type SessionSourceAssertion,
+} from "./session-source-authority.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
@@ -54,6 +58,15 @@ import type { InternalSessionEntry as SessionEntry } from "./types.js";
 type SessionEntryRetirement = {
   entry: SessionEntry;
   key: string;
+};
+
+/** Live preparation is owned by its caller until the native creation settles. */
+export type PreparedReplySessionInitialContext = {
+  context: PreparedInitialSessionContext;
+  source: SessionSourceAssertion;
+  assertEntry: (entry: SessionEntry) => void;
+  bindCreation: (operation: SessionEntryCreationOperation) => () => void;
+  release: () => void | Promise<void>;
 };
 
 export class SessionInitializationAgentScopeMismatchError extends Error {
@@ -278,6 +291,10 @@ export async function commitReplySessionInitialization(params: {
   expectedRevision: string;
   /** Native-prepared copied context, never an authority or parent/spawn relationship. */
   initialContext?: PreparedInitialSessionContext;
+  /** Runs only for true creation, after the final row and root admission are known. */
+  prepareInitialContext?: (
+    entry: SessionEntry,
+  ) => Promise<PreparedReplySessionInitialContext | undefined>;
   maintenanceConfig?: ResolvedSessionMaintenanceConfig;
   prepareSessionEntry?: (
     context: ReplySessionInitializationCommitContext,
@@ -294,7 +311,7 @@ export async function commitReplySessionInitialization(params: {
   storePath: string;
 }): Promise<ReplySessionInitializationCommitResult> {
   const branchRootSessionKey = params.branchRootSessionKey;
-  const initialContext = params.initialContext ? structuredClone(params.initialContext) : undefined;
+  let initialContext = params.initialContext ? structuredClone(params.initialContext) : undefined;
   if (initialContext) {
     if (!params.contextSourceAuthority?.prepareSessionSource) {
       throw new Error("Initial conversation context requires retained source authority.");
@@ -366,143 +383,188 @@ export async function commitReplySessionInitialization(params: {
   if (topology) {
     sessionEntry = { ...sessionEntry, conversationTopology: topology };
   }
-  if (initialContext) {
-    sessionEntry = {
-      ...sessionEntry,
-      forkSource: {
-        sessionKey: normalizeStoreSessionKey(initialContext.sourceSessionKey),
-        sessionId: initialContext.sourceEntry.sessionId,
-        ...(initialContext.sourceThrough ? { entryId: initialContext.sourceThrough.entryId } : {}),
-      },
-      // A copied transcript is not the empty context computed by normal creation.
-      totalTokens: undefined,
-      totalTokensFresh: false,
-      totalTokensVersion: undefined,
-    };
-    // A backend checkpoint can contain more history than the accepted snapshot.
-    clearAllCliSessions(sessionEntry);
-  }
-  let staleCommit: SessionEntry | null | undefined;
-  let committedSessionEntry = sessionEntry;
-  let beforeEntryMutationDone = false;
-  const descriptor: ReplySessionInitializationUpsertDescriptor = {
-    kind: "reply-initialization",
-    expectedRevision: params.expectedRevision,
-    entry: sessionEntry,
-    snapshotEntry: params.snapshotEntry ?? params.previousEntry,
-    retiredEntry: params.retiredEntry,
-  };
-  let preparedUpserts: ReturnType<typeof resolveReplySessionInitializationUpserts> | undefined;
-  const upserts: SessionEntryLifecycleUpsert[] = [
-    {
-      sessionKey: resolved.normalizedKey,
-      ...(topology ? { conversationBranchAdmission: topology } : {}),
-      ...(initialContext ? { initialContext } : {}),
-      ...(params.routeContext !== undefined ? { routeContext: params.routeContext } : {}),
-      ...(params.resetBoundary ? { resetBoundary: params.resetBoundary } : {}),
-      buildEntry: async ({ currentEntry: commitEntry }) => {
-        preparedUpserts = resolveReplySessionInitializationUpserts(descriptor, commitEntry);
-        if (preparedUpserts.kind === "stale") {
-          staleCommit = preparedUpserts.currentEntry ? { ...preparedUpserts.currentEntry } : null;
-          return null;
-        }
-        committedSessionEntry = preparedUpserts.entry;
-        if (!beforeEntryMutationDone) {
-          await params.beforeEntryMutation?.({
-            ...(commitEntry ? { currentEntry: { ...commitEntry } } : {}),
-            sessionEntry: committedSessionEntry,
-          });
-          beforeEntryMutationDone = true;
-        }
-        return committedSessionEntry;
-      },
-    },
-  ];
-  if (params.retiredEntry) {
-    const retiredEntry = params.retiredEntry;
-    upserts.push({
-      sessionKey: retiredEntry.key,
-      buildEntry: () =>
-        preparedUpserts?.kind === "ready" ? (preparedUpserts.retiredEntry?.entry ?? null) : null,
-    });
-  }
+  const preparedContext =
+    !initialContext &&
+    !currentEntry &&
+    !params.previousEntry &&
+    !params.retiredEntry &&
+    !params.resetBoundary
+      ? await params.prepareInitialContext?.(structuredClone(sessionEntry))
+      : undefined;
+  const preparationErrors: unknown[] = [];
   try {
-    assertSourceCurrent();
-    const mutation = {
-      activeSessionKey: params.activeSessionKey,
-      agentId: params.agentId,
-      maintenanceOverride: params.maintenanceConfig,
-      storePath,
-      upserts,
-      ...(params.contextSourceAuthority ? { source: params.contextSourceAuthority } : {}),
-      commitGuard: () => {
-        assertSourceCurrent(true);
-        params.commitGuard?.();
-      },
-    };
-    const bindCreation = params.bindCreation;
-    if (bindCreation) {
-      if (currentEntry || !source?.key.startsWith("file:")) {
-        throw new Error("The original absent session no longer has its prepared creation source");
+    if (preparedContext) {
+      if (!preparedContext.source.prepareSessionSource) {
+        throw new Error("Initial conversation context requires retained source authority.");
       }
-      await withSessionEntryCreationPublication(
+      preparedContext.source();
+      initialContext = structuredClone(preparedContext.context);
+    }
+    const contextSourceAuthority = preparedContext
+      ? composeSessionSourceAssertion([params.contextSourceAuthority, preparedContext.source])
+      : params.contextSourceAuthority;
+    if (initialContext) {
+      sessionEntry = {
+        ...sessionEntry,
+        ...(initialContext.kind !== "root-projection"
+          ? {
+              forkSource: {
+                sessionKey: normalizeStoreSessionKey(initialContext.sourceSessionKey),
+                sessionId: initialContext.sourceEntry.sessionId,
+                ...(initialContext.sourceThrough
+                  ? { entryId: initialContext.sourceThrough.entryId }
+                  : {}),
+              },
+            }
+          : {}),
+        // A copied transcript is not the empty context computed by normal creation.
+        totalTokens: undefined,
+        totalTokensFresh: false,
+        totalTokensVersion: undefined,
+      };
+      // A backend checkpoint can contain more history than the accepted snapshot.
+      clearAllCliSessions(sessionEntry);
+    }
+    let staleCommit: SessionEntry | null | undefined;
+    let committedSessionEntry = sessionEntry;
+    let beforeEntryMutationDone = false;
+    const descriptor: ReplySessionInitializationUpsertDescriptor = {
+      kind: "reply-initialization",
+      expectedRevision: params.expectedRevision,
+      entry: sessionEntry,
+      snapshotEntry: params.snapshotEntry ?? params.previousEntry,
+      retiredEntry: params.retiredEntry,
+    };
+    let preparedUpserts: ReturnType<typeof resolveReplySessionInitializationUpserts> | undefined;
+    const upserts: SessionEntryLifecycleUpsert[] = [
+      {
+        sessionKey: resolved.normalizedKey,
+        ...(topology ? { conversationBranchAdmission: topology } : {}),
+        ...(initialContext ? { initialContext } : {}),
+        ...(params.routeContext !== undefined ? { routeContext: params.routeContext } : {}),
+        ...(params.resetBoundary ? { resetBoundary: params.resetBoundary } : {}),
+        buildEntry: async ({ currentEntry: commitEntry }) => {
+          preparedUpserts = resolveReplySessionInitializationUpserts(descriptor, commitEntry);
+          if (preparedUpserts.kind === "stale") {
+            staleCommit = preparedUpserts.currentEntry ? { ...preparedUpserts.currentEntry } : null;
+            return null;
+          }
+          committedSessionEntry = preparedUpserts.entry;
+          if (!beforeEntryMutationDone) {
+            await params.beforeEntryMutation?.({
+              ...(commitEntry ? { currentEntry: { ...commitEntry } } : {}),
+              sessionEntry: committedSessionEntry,
+            });
+            beforeEntryMutationDone = true;
+          }
+          preparedContext?.assertEntry(committedSessionEntry);
+          return committedSessionEntry;
+        },
+      },
+    ];
+    if (params.retiredEntry) {
+      const retiredEntry = params.retiredEntry;
+      upserts.push({
+        sessionKey: retiredEntry.key,
+        buildEntry: () =>
+          preparedUpserts?.kind === "ready" ? (preparedUpserts.retiredEntry?.entry ?? null) : null,
+      });
+    }
+    try {
+      assertSourceCurrent();
+      const mutation = {
+        activeSessionKey: params.activeSessionKey,
+        agentId: params.agentId,
+        maintenanceOverride: params.maintenanceConfig,
+        storePath,
+        upserts,
+        ...(contextSourceAuthority ? { source: contextSourceAuthority } : {}),
+        commitGuard: () => {
+          assertSourceCurrent(true);
+          params.commitGuard?.();
+        },
+      };
+      const bindCreation =
+        params.bindCreation || preparedContext
+          ? (operation: SessionEntryCreationOperation) => {
+              const original = params.bindCreation?.(operation);
+              const prepared = preparedContext?.bindCreation(operation);
+              return () => {
+                original?.();
+                prepared?.();
+              };
+            }
+          : undefined;
+      if (bindCreation) {
+        if (currentEntry || !source?.key.startsWith("file:")) {
+          throw new Error("The original absent session no longer has its prepared creation source");
+        }
+        await withSessionEntryCreationPublication(
+          {
+            agentId: params.agentId,
+            sessionKey: resolved.normalizedKey,
+            file: {
+              path: database.path,
+              agentId: captured.agentId,
+              databaseIdentity: source.key.slice("file:".length),
+              assertCurrent: assertSourceCurrent,
+            },
+          },
+          async (operation) => {
+            const assertCreationCurrent = bindCreation(operation);
+            await applySessionEntryLifecycleMutation(
+              {
+                ...mutation,
+                commitGuard: () => {
+                  mutation.commitGuard();
+                  assertCreationCurrent();
+                },
+              },
+              { ...captured, path: database.path },
+            );
+          },
+        );
+      } else {
+        await applySessionEntryLifecycleMutation(mutation, { ...captured, path: database.path });
+      }
+    } catch (error) {
+      if (
+        !(error instanceof SessionMaintenancePreservationConflictError) &&
+        (!(error instanceof SessionEntryLifecycleUpsertConflictError) ||
+          error.sessionKey !== resolved.normalizedKey)
+      ) {
+        throw error;
+      }
+      const current = await loadReplySessionInitializationEntriesAsync(
         {
           agentId: params.agentId,
           sessionKey: resolved.normalizedKey,
-          file: {
-            path: database.path,
-            agentId: captured.agentId,
-            databaseIdentity: source.key.slice("file:".length),
-            assertCurrent: assertSourceCurrent,
-          },
+          storePath,
         },
-        async (operation) => {
-          const assertCreationCurrent = bindCreation(operation);
-          await applySessionEntryLifecycleMutation(
-            {
-              ...mutation,
-              commitGuard: () => {
-                mutation.commitGuard();
-                assertCreationCurrent();
-              },
-            },
-            { ...captured, path: database.path },
-          );
-        },
+        database,
+        source?.key.startsWith("file:") ? source : undefined,
       );
-    } else {
-      await applySessionEntryLifecycleMutation(mutation, { ...captured, path: database.path });
+      assertSourceCurrent(true);
+      return createStaleReplySessionInitializationResult(current[resolved.normalizedKey]);
     }
+    if (staleCommit !== undefined) {
+      return createStaleReplySessionInitializationResult(staleCommit ?? undefined);
+    }
+    store[resolved.normalizedKey] = committedSessionEntry;
+    if (params.retiredEntry) {
+      store[params.retiredEntry.key] = params.retiredEntry.entry;
+    }
+    return {
+      ok: true,
+      sessionEntry: { ...committedSessionEntry },
+      sessionStoreView: cloneSessionEntries(store),
+    };
   } catch (error) {
-    if (
-      !(error instanceof SessionMaintenancePreservationConflictError) &&
-      (!(error instanceof SessionEntryLifecycleUpsertConflictError) ||
-        error.sessionKey !== resolved.normalizedKey)
-    ) {
-      throw error;
+    preparationErrors.push(error);
+    throw error;
+  } finally {
+    if (preparedContext) {
+      await releaseSessionSourceAuthorities([preparedContext], preparationErrors);
     }
-    const current = await loadReplySessionInitializationEntriesAsync(
-      {
-        agentId: params.agentId,
-        sessionKey: resolved.normalizedKey,
-        storePath,
-      },
-      database,
-      source?.key.startsWith("file:") ? source : undefined,
-    );
-    assertSourceCurrent(true);
-    return createStaleReplySessionInitializationResult(current[resolved.normalizedKey]);
   }
-  if (staleCommit !== undefined) {
-    return createStaleReplySessionInitializationResult(staleCommit ?? undefined);
-  }
-  store[resolved.normalizedKey] = committedSessionEntry;
-  if (params.retiredEntry) {
-    store[params.retiredEntry.key] = params.retiredEntry.entry;
-  }
-  return {
-    ok: true,
-    sessionEntry: { ...committedSessionEntry },
-    sessionStoreView: cloneSessionEntries(store),
-  };
 }

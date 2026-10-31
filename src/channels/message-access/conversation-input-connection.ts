@@ -98,6 +98,7 @@ export async function prepareChannelConversationConnection(
   const sessionId = await connection.ensureSession({
     ...target,
     cfg,
+    getRuntimeConfig,
     chatType: scope.conversation.kind,
     privateAudience: audience,
     assertCommitAllowed: assertTargetCurrent,

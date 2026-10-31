@@ -661,6 +661,25 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
 }
 
 /** Shared root preparation is independent of any one call and never changes recipient history. */
+export function readPreparedConversationKnowledgeRootProjection(params: {
+  branch: ConversationKnowledgeBranch;
+  participant: SessionParticipantIdentity;
+}) {
+  const identity = conversationKnowledgeParticipantIdentity(params.participant);
+  if (!identity) {
+    return undefined;
+  }
+  const key = JSON.stringify([
+    params.branch.agentId,
+    path.resolve(params.branch.storePath),
+    params.branch.root,
+    identity,
+  ]);
+  // Detached immutable content only. The caller reacquires every donor grant.
+  return owners.get(key)?.first.projection();
+}
+
+/** Shared root preparation is independent of any one call and never changes recipient history. */
 export function registerConversationKnowledgeCheckpointOwner(params: Registration) {
   params.audience.assertCurrent();
   const identity = conversationKnowledgeParticipantIdentity(params.participant);

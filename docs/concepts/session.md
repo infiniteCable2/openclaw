@@ -212,11 +212,15 @@ becomes verifiable later, a subsequent checkpoint can cover it as a new delta.
 Previously covered sources still require current authorization before their
 summary can be reused; unavailable storage facts retain the normal retry path.
 
-A genuinely new recipient may adopt an already prepared checkpoint plus subsequent
-observations. Native creation/input proofs, current source permissions, exact range
-validation, prospective token accounting and an atomic recipient-version check
-protect that import. Preparation never forces a model request to wait for a new
-summary. Existing recipients retain their own imported progress and native
+A genuinely new private branch installs its authorized checkpoint and subsequent
+observations in the native creation transaction, before the first input. The
+original private destination, absent row, unused transcript/window identity, root
+prefix and every selected source range remain guarded through commit. Prepared
+text can be reused, but its former reader's permission cannot. Concurrent root
+appends remain later deltas; a changed source or recipient refuses the copy
+atomically. The first model request still uses its actual system/tool footprint
+and native capacity/compaction checks, without an invented budget or checkpoint.
+Preparation never waits for a new summary. Existing recipients retain their own imported progress and native
 compaction; publishing a root checkpoint does not rebase them, repeat earlier
 imports, or remove their local conversation. Their missing original contributions
 remain independently recoverable under the same permissions.

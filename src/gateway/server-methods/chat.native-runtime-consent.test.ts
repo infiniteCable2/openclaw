@@ -8,6 +8,7 @@ import {
   useNativeProcessFixture,
 } from "../../agents/harness/acp-native-process.test-support.js";
 import * as replyInitialization from "../../config/sessions/session-accessor.reset.js";
+import { ensureAgentConversationRoot } from "../../config/sessions/session-conversation-root.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { listSessionEntries, upsertSessionEntry } from "../../plugin-sdk/session-store-runtime.js";
 import { readVisibleSessionTranscriptMessageEntries } from "../../plugin-sdk/session-transcript-runtime.js";
@@ -226,6 +227,88 @@ it.each([
     });
   },
 );
+
+it("keeps private branch identity when first-send native consent precreates the real row", async () => {
+  await withOpenClawTestState({ label: "chat-native-private-branch-consent" }, async (state) => {
+    const config = nativeConfig(state.workspaceDir);
+    config.agents = {
+      ...config.agents,
+      entries: { main: { conversationMode: "branches" } },
+    };
+    await state.writeConfig(config);
+    const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+    const root = await ensureAgentConversationRoot({
+      cfg: config,
+      agentId: "main",
+      env: state.env,
+      admittedStorePath: database.path,
+      getConfig: () => config,
+    });
+    const profile = ensureProfileForEmail("private-native-creator@example.test");
+    const client = nativeClient(undefined, profile.id);
+    const native = await registerNative(state, config, "owner-agent.mjs");
+    const respond = vi.fn<RespondFn>();
+    const context = createDirectChatContext({ getRuntimeConfig: () => config });
+    const sessionKey = "agent:main:dashboard:private-native-consent";
+    try {
+      await expectDefined(
+        coreGatewayHandlers["chat.send"],
+        "registered chat.send",
+      )({
+        req: { type: "req", id: "private-native-consent-request", method: "chat.send" },
+        params: {
+          sessionKey,
+          agentId: "main",
+          message: "Keep this original input unsent until native execution is approved.",
+          idempotencyKey: "private-native-consent-run",
+        },
+        respond,
+        context,
+        client,
+        isWebchatConnect: () => true,
+      });
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          details: expect.objectContaining({
+            code: "AGENT_RUNTIME_RESTRICTED",
+            reason: "tool-policy",
+          }),
+        }),
+      );
+      const persisted = expectDefined(
+        listSessionEntries({ agentId: "main", readOnly: true }).find(
+          (row) => row.sessionKey === sessionKey,
+        )?.entry,
+        "private consent-bound branch",
+      );
+      expect(persisted).toMatchObject({
+        visibility: "draft",
+        createdActor: { type: "human", source: "profile", id: profile.id },
+        conversationTopology: {
+          version: 1,
+          role: "branch",
+          rootSessionKey: root.sessionKey,
+          rootSessionId: root.entry.sessionId,
+          rootSessionLifecycleRevision: root.entry.lifecycleRevision,
+        },
+      });
+      expect(persisted.forkSource).toBeUndefined();
+      expect(persisted.nativeRuntimeConsent).toBeUndefined();
+      expect(
+        await readVisibleSessionTranscriptMessageEntries({
+          agentId: "main",
+          sessionKey,
+          sessionId: persisted.sessionId,
+        }),
+      ).toEqual([]);
+      expect(context.chatAbortControllers.size).toBe(0);
+    } finally {
+      await native.service.stop?.(native.context);
+    }
+  });
+});
 
 it.each(["authority", "mandatory policy", "competing entry"] as const)(
   "rechecks $change before committing first-send consent identity",

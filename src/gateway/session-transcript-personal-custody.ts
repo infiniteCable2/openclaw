@@ -8,6 +8,11 @@ import {
   conversationKnowledgeHistoricalContributionIdentity,
   hasOnlyConversationAgentActorChanges,
 } from "../config/sessions/conversation-audience.js";
+import {
+  assertConversationBranchCreation,
+  conversationBranchAuthorityFields as fields,
+  consumeConversationBranchCreation,
+} from "../config/sessions/conversation-branch-creation.js";
 import { conversationKnowledgeContributionId } from "../config/sessions/conversation-knowledge-identity.js";
 import {
   issuePersonalConversationContributionRange,
@@ -36,38 +41,6 @@ import {
   type PersonalContributionMetadata,
 } from "./session-transcript-personal-contribution-group.js";
 import type { PersonalConversationReadParams } from "./session-transcript-personal-read.js";
-
-// These are the native audience, membership and root-admission facts consumed below.
-const fields = [
-  "sessionId",
-  "lifecycleRevision",
-  "conversationTopology",
-  "chatType",
-  "publicShare",
-  "participantCount",
-  "participants",
-  "incognito",
-  "createdVia",
-  "createdActor",
-  "visibility",
-  "delivery",
-  "parentSessionKey",
-  "parentSessionId",
-  "parentSessionLifecycleRevision",
-  "spawnedBy",
-  "spawnedBySessionId",
-  "spawnDepth",
-  "forkSource",
-  "forkedFromParent",
-  "owner",
-  "archivedAt",
-  "initializationPending",
-  "mainRestartRecovery",
-  "modelSelectionLocked",
-  "pendingProjectGitUrl",
-  "pendingWorktree",
-  "providerReview",
-] as const satisfies readonly (keyof InternalSessionEntry)[];
 
 type PersonalReadSource = Readonly<{
   agentId: string;
@@ -98,6 +71,7 @@ type PersonalAdmissionBinding = {
   selected: readonly { agentId: string; sessionKey: string }[];
   selectedMode: ReturnType<typeof resolveAgentConversationMode>;
   contributionGroupDigest?: string;
+  creatingDestination: boolean;
 };
 
 function releasePersonalReadCustody(custody: PersonalReadCustody, retireView: boolean) {
@@ -180,9 +154,19 @@ export async function preparePersonalConversationReadInternal(
   const target = structuredClone(params.personal.target);
   const participant = structuredClone(params.personal.originalParticipant);
   const selected = params.sources.map(({ agentId, sessionKey }) => ({ agentId, sessionKey }));
-  const original = params.personal.assertCurrent;
+  const creation = params.personal.targetCreation;
   const destination = params.personal.targetAudience;
   const rootEvidence = params.personal.rootEvidence;
+  params.personal.assertCurrent();
+  const creationSource = creation
+    ? consumeConversationBranchCreation({
+        creation,
+        branch: target,
+        participant,
+        audience: destination,
+      })
+    : undefined;
+  const original = composeSessionSourceAssertion([params.personal.assertCurrent, creation?.source]);
   original();
   const contributionMetadata =
     preparedMetadata ??
@@ -278,6 +262,7 @@ export async function preparePersonalConversationReadInternal(
     participant,
     selected,
     selectedMode,
+    creatingDestination: Boolean(creation),
     ...(contributionMetadata ? { contributionGroupDigest: contributionMetadata.digest } : {}),
   };
   const reusingAdmission = params.preparedAdmission !== undefined;
@@ -306,6 +291,14 @@ export async function preparePersonalConversationReadInternal(
     }
     original();
     destination?.assertCurrent();
+    if (creation) {
+      assertConversationBranchCreation({
+        creation,
+        branch: target,
+        participant,
+        audience: destination,
+      });
+    }
     if (contributions.length) {
       if (!rootEvidence) {
         throw new PersonalConversationReadRefusedError(
@@ -518,13 +511,13 @@ export async function preparePersonalConversationReadInternal(
   };
   try {
     if (!reusingAdmission) {
-      const originalTarget = await hold(
-        { agentId: target.agentId, sessionKey: target.sessionKey },
-        false,
-      );
+      const originalTarget = creationSource
+        ? undefined
+        : await hold({ agentId: target.agentId, sessionKey: target.sessionKey }, false);
       if (
-        originalTarget.sessionId !== target.sessionId ||
-        originalTarget.lifecycleRevision !== target.lifecycleRevision
+        originalTarget &&
+        (originalTarget.sessionId !== target.sessionId ||
+          originalTarget.lifecycleRevision !== target.lifecycleRevision)
       ) {
         throw new PersonalConversationReadRefusedError(
           "Personal destination is not the original input incarnation",
@@ -534,7 +527,9 @@ export async function preparePersonalConversationReadInternal(
         { agentId: target.agentId, sessionKey: target.root.sessionKey },
         true,
       );
-      if (!isDeepStrictEqual(originalRoot.readSource, originalTarget.readSource)) {
+      if (
+        !isDeepStrictEqual(originalRoot.readSource, creationSource ?? originalTarget?.readSource)
+      ) {
         throw new PersonalConversationReadRefusedError(
           "Personal conversation root differs from the original physical store",
         );

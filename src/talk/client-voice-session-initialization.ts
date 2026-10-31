@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatType } from "../channels/chat-type.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
+import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import {
   commitReplySessionInitialization,
@@ -30,6 +31,7 @@ type VoiceSessionInitializationParams = {
   sessionKey: string;
   storePath?: string;
   cfg?: OpenClawConfig;
+  getRuntimeConfig?: () => OpenClawConfig;
   /** Original surface classification, applied only when creating a new native row. */
   chatType?: ChatType;
   /** Original host recipient proof; only new conversations can become private. */
@@ -122,6 +124,24 @@ async function ensureConversationSession(
       ...(rootSessionKey ? { branchRootSessionKey: rootSessionKey } : {}),
       expectedRevision: snapshot.revision,
       sessionEntry,
+      ...(rootSessionKey && privateAudience
+        ? {
+            prepareInitialContext: async (entry: typeof sessionEntry) => {
+              const { prepareConversationKnowledgeInitialContext } =
+                await import("../auto-reply/reply/conversation-knowledge-initial-context.js");
+              return prepareConversationKnowledgeInitialContext({
+                ...target,
+                sessionEntry: entry,
+                cfg,
+                getRuntimeConfig:
+                  params.getRuntimeConfig ??
+                  (() => getRuntimeConfigSnapshot({ capture: true }) ?? cfg),
+                audience: privateAudience,
+                assertCurrent,
+              });
+            },
+          }
+        : {}),
       commitGuard: () => {
         assertCurrent();
         privateAudience?.assertCurrent();

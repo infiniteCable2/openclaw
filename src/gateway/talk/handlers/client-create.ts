@@ -241,6 +241,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
                   privateAudience,
                   ...sessionTarget,
                   cfg: runtimeConfig,
+                  getRuntimeConfig: context.getRuntimeConfig,
                   creation:
                     resolveSandboxedSessionCreation(client, runtimeConfig) ??
                     resolveOperatorSessionCreation(client),

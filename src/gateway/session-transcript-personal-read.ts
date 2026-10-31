@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { PreparedConversationBranchCreation } from "../config/sessions/conversation-branch-creation.js";
 import type {
   ConversationKnowledgeBranch,
   NativeKnowledgeRootEvidence,
@@ -29,6 +30,8 @@ export type PersonalConversationReadParams = {
     assertCurrent: SessionSourceAssertion;
     target: ConversationKnowledgeBranch;
     targetAudience?: ConversationPrivateAudience;
+    /** Native creation-bound disclosure proof for the genuinely absent destination. */
+    targetCreation?: PreparedConversationBranchCreation;
     /** Selected native root report, not an arbitrary history range supplied by a tool. */
     contribution?: ConversationKnowledgeReference;
     /** Exact immutable off-turn selection; cannot be combined with a single contribution. */
