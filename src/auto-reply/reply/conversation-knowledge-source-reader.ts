@@ -370,9 +370,12 @@ export function prepareConversationKnowledgeSourceSelection(params: {
   for (const reference of params.receipts) {
     const source = { ...reference.source, storePath: reference.through.storePath };
     const key = JSON.stringify(source);
-    const selected = sources.get(key) ?? { source, references: [] };
+    let selected = sources.get(key);
+    if (!selected) {
+      selected = { source, references: [] };
+      sources.set(key, selected);
+    }
     selected.references.push(reference);
-    sources.set(key, selected);
   }
   return {
     scopeKey: JSON.stringify([scope.scopeKey, params.audienceIdentity]),

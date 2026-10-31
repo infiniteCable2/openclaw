@@ -644,6 +644,10 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         input: import("./conversation-knowledge-checkpoint-frame-source.js").CheckpointInitialFrameInput,
       ) {
         workCheck();
+        const evidence = events.evidence;
+        if (!evidence) {
+          return undefined;
+        }
         const { prepareCheckpointInitialFrame } =
           await import("./conversation-knowledge-checkpoint-frame-source.js");
         const frame = await prepareCheckpointInitialFrame({
@@ -652,7 +656,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           participant: params.participant,
           audience: params.audience,
           rootSnapshot,
-          evidence: events.evidence,
+          evidence,
           sources: result,
           nativeRanges,
           getRuntimeConfig: () => params.getRuntimeConfig(),
