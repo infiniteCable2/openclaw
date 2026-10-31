@@ -12,15 +12,22 @@ import { resolveAgentRunSessionTarget } from "../../agents/run-session-target.js
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../../config/sessions/conversation-knowledge-packets.js";
 import {
   readConversationKnowledgeBranch,
+  recordConversationKnowledgeTurn,
   recordConversationUtteranceObservation,
 } from "../../config/sessions/conversation-knowledge-store.js";
+import {
+  CONVERSATION_KNOWLEDGE_REPORT,
+  CONVERSATION_UTTERANCE_REPORT,
+} from "../../config/sessions/conversation-knowledge.js";
 import {
   appendTranscriptMessage,
   loadSessionEntry,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { isReadableSessionMessage } from "../../config/sessions/session-entry-codec.js";
 import { recordSessionParticipantInWorker } from "../../config/sessions/session-sharing-store.async.js";
+import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
@@ -64,8 +71,20 @@ type Replay = {
     text: string;
     at: number;
     ordinal: number;
+    runAlias?: string;
   }>;
   sources: Array<{ alias: string; chatType: "direct" | "group" | "channel" }>;
+  receipts?: Array<{
+    rootOrdinal: number;
+    source: string;
+    kind: "completed" | "utterance";
+    sourceMode: "native" | "branches";
+    admissionOrdinal: number;
+    throughOrdinal: number;
+    messageOrdinals: number[];
+    runAlias?: string;
+    omittedNonText: number;
+  }>;
 };
 
 async function readReplay(file: string): Promise<Replay> {
@@ -98,7 +117,16 @@ async function readReplay(file: string): Promise<Replay> {
     ) {
       throw new Error("Private replay reference contract invalid");
     }
-    return { source: row.source, role: row.role, text: row.text, at: row.at, ordinal: row.ordinal };
+    if (row.runAlias !== undefined && typeof row.runAlias !== "string")
+      throw new Error("Private replay run alias invalid");
+    return {
+      source: row.source,
+      role: row.role,
+      text: row.text,
+      at: row.at,
+      ordinal: row.ordinal,
+      ...(typeof row.runAlias === "string" ? { runAlias: row.runAlias } : {}),
+    };
   });
   if (
     aliases.size !== sources.length ||
@@ -108,7 +136,66 @@ async function readReplay(file: string): Promise<Replay> {
   ) {
     throw new Error("Private replay sequence contract invalid");
   }
-  return { version: 1, sources, references };
+  const messages = new Map(references.map((row) => [row.ordinal, row]));
+  const receipts =
+    value.receipts === undefined
+      ? undefined
+      : Array.isArray(value.receipts)
+        ? value.receipts.map((raw) => {
+            const row = asOptionalRecord(raw);
+            if (
+              !row ||
+              typeof row.source !== "string" ||
+              !aliases.has(row.source) ||
+              (row.kind !== "completed" && row.kind !== "utterance") ||
+              (row.sourceMode !== "native" && row.sourceMode !== "branches") ||
+              !Number.isSafeInteger(row.rootOrdinal) ||
+              typeof row.rootOrdinal !== "number" ||
+              typeof row.admissionOrdinal !== "number" ||
+              typeof row.throughOrdinal !== "number" ||
+              !Array.isArray(row.messageOrdinals) ||
+              typeof row.omittedNonText !== "number" ||
+              !Number.isSafeInteger(row.omittedNonText) ||
+              row.omittedNonText < 0 ||
+              (row.runAlias !== undefined && typeof row.runAlias !== "string")
+            )
+              throw new Error("Private replay receipt contract invalid");
+            const messageOrdinals = row.messageOrdinals.map((ordinal) => {
+              if (typeof ordinal !== "number" || messages.get(ordinal)?.source !== row.source)
+                throw new Error("Private replay receipt message unavailable");
+              return ordinal;
+            });
+            const admission = messages.get(row.admissionOrdinal);
+            const through = messages.get(row.throughOrdinal);
+            if (
+              admission?.source !== row.source ||
+              through?.source !== row.source ||
+              !messageOrdinals.includes(row.throughOrdinal) ||
+              (row.kind === "completed" &&
+                (admission.role !== "user" || through.role !== "assistant"))
+            )
+              throw new Error("Private replay receipt boundary invalid");
+            return {
+              rootOrdinal: row.rootOrdinal,
+              source: row.source,
+              kind: row.kind,
+              sourceMode: row.sourceMode,
+              admissionOrdinal: row.admissionOrdinal,
+              throughOrdinal: row.throughOrdinal,
+              messageOrdinals,
+              omittedNonText: row.omittedNonText,
+              ...(typeof row.runAlias === "string" ? { runAlias: row.runAlias } : {}),
+            };
+          })
+        : (() => {
+            throw new Error("Private replay receipts invalid");
+          })();
+  if (
+    receipts &&
+    (!receipts.length || new Set(receipts.map((row) => row.rootOrdinal)).size !== receipts.length)
+  )
+    throw new Error("Private replay receipt sequence invalid");
+  return { version: 1, sources, references, ...(receipts ? { receipts } : {}) };
 }
 
 const replayPath = process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY;
@@ -119,6 +206,8 @@ it.skipIf(!replayPath)(
     const contextWindow = Number(
       process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_CONTEXT_WINDOW ?? 1_000_000,
     );
+    const recipientSource = process.env.OPENCLAW_PRIVATE_BRANCH_REPLAY_RECIPIENT_SOURCE;
+    const recipientMode = recipientSource ? "reused-source" : "fresh";
     expect(Number.isSafeInteger(contextWindow) && contextWindow > 20_000).toBe(true);
     const started = performance.now();
     const cpu = process.cpuUsage();
@@ -174,6 +263,22 @@ it.skipIf(!replayPath)(
               const target = await fixture.branch(`replay-donor-${index}`, person, source.chatType);
               donors.set(source.alias, { target, owner: await fixture.claim(target) });
             }
+            const runs = new Map<number, string>();
+            for (const receipt of replay.receipts ?? []) {
+              if (receipt.kind !== "completed") continue;
+              const alias = receipt.runAlias ?? `replay-completed-${receipt.rootOrdinal}`;
+              for (const ordinal of receipt.messageOrdinals) {
+                const message = replay.references.find((row) => row.ordinal === ordinal);
+                if (message?.role !== "assistant") continue;
+                const run = message.runAlias ?? alias;
+                if (runs.has(ordinal) && runs.get(ordinal) !== run)
+                  throw new Error("Private replay run grouping conflicts");
+                runs.set(ordinal, run);
+              }
+              if (runs.get(receipt.throughOrdinal) !== alias)
+                throw new Error("Private replay terminal run mismatch");
+            }
+            const anchors = new Map<number, TranscriptEntryAnchor>();
             for (const reference of replay.references) {
               signal.throwIfAborted();
               const donor = donors.get(reference.source)!;
@@ -186,10 +291,23 @@ it.skipIf(!replayPath)(
                         content: [{ type: "text", text: reference.text }],
                         timestamp: reference.at,
                         stopReason: "stop",
-                        __openclaw: { runId: `replay-${reference.ordinal}` },
+                        ...((reference.runAlias ??
+                        runs.get(reference.ordinal) ??
+                        (!replay.receipts ? `replay-${reference.ordinal}` : undefined))
+                          ? {
+                              __openclaw: {
+                                runId:
+                                  reference.runAlias ??
+                                  runs.get(reference.ordinal) ??
+                                  `replay-${reference.ordinal}`,
+                              },
+                            }
+                          : {}),
                       },
               });
               if (!saved.anchor) throw new Error("Private replay native source anchor unavailable");
+              anchors.set(reference.ordinal, saved.anchor);
+              if (replay.receipts) continue;
               expect(
                 await recordConversationUtteranceObservation({
                   ...donor.owner,
@@ -199,9 +317,49 @@ it.skipIf(!replayPath)(
                 }),
               ).toBe(true);
             }
+            for (const receipt of [...(replay.receipts ?? [])].sort(
+              (a, b) => a.rootOrdinal - b.rootOrdinal,
+            )) {
+              signal.throwIfAborted();
+              const donor = donors.get(receipt.source)!;
+              const admission = anchors.get(receipt.admissionOrdinal);
+              const through = anchors.get(receipt.throughOrdinal);
+              if (!admission || !through)
+                throw new Error("Private replay receipt anchors unavailable");
+              const shared = {
+                ...donor.owner,
+                sourceMode: receipt.sourceMode,
+                privateAudience: { participant: person, admission },
+              };
+              const accepted =
+                receipt.kind === "completed"
+                  ? await recordConversationKnowledgeTurn({
+                      ...shared,
+                      runId: receipt.runAlias ?? `replay-completed-${receipt.rootOrdinal}`,
+                      assistantTranscriptEntryId: through.entryId,
+                    })
+                  : await recordConversationUtteranceObservation({
+                      ...shared,
+                      anchor: through,
+                      role: replay.references.find((row) => row.ordinal === receipt.throughOrdinal)!
+                        .role,
+                    });
+              expect(accepted).toBe(true);
+            }
+            const rootReceipts = (await loadTranscriptEvents(fixture.root)).filter((raw) => {
+              const type = asOptionalRecord(raw)?.customType;
+              return (
+                type === CONVERSATION_KNOWLEDGE_REPORT || type === CONVERSATION_UTTERANCE_REPORT
+              );
+            }).length;
             mark("real-originals-published", {
               sources: donors.size,
               originals: replay.references.length,
+              rootReceipts,
+              requestedReceipts: replay.receipts?.length ?? replay.references.length,
+              groupedReceipts: Boolean(replay.receipts),
+              omittedStructuralEvents:
+                replay.receipts?.reduce((total, row) => total + row.omittedNonText, 0) ?? 0,
             });
             const keeper = await fixture.branch("private-replay-root-broker");
             const keeperOwner = await fixture.claim(keeper);
@@ -226,8 +384,7 @@ it.skipIf(!replayPath)(
               env: state.env,
               getRuntimeConfig: () => fixture.cfg,
               onReady() {
-                if (checkpoint.projection().tail.length === replay.references.length)
-                  ready.resolve();
+                if (checkpoint.projection().tail.length === rootReceipts) ready.resolve();
                 if (
                   idleEntryId &&
                   checkpoint
@@ -241,8 +398,11 @@ it.skipIf(!replayPath)(
             cleanup.push(() => checkpoint.close());
             await withinTest(ready.promise, signal);
             mark("shared-root-prepared", { prepared: checkpoint.projection().tail.length });
-            const target = await fixture.branch("private-replay-recipient");
-            const owner = await fixture.claim(target);
+            const reused = recipientSource ? donors.get(recipientSource) : undefined;
+            if (recipientSource && !reused)
+              throw new Error("Private replay recipient source unavailable");
+            const target = reused?.target ?? (await fixture.branch("private-replay-recipient"));
+            const owner = reused?.owner ?? (await fixture.claim(target));
             const native = await prepareSessionMutationFacts({
               cfg: fixture.cfg,
               agentId: target.agentId,
@@ -309,7 +469,6 @@ it.skipIf(!replayPath)(
             await upsertSessionEntryCore(target, {
               ...loadSessionEntry(target)!,
               activeWriterRunId: "private-replay-writer",
-              status: "running",
             });
             mark("native-runtime-row-change", {
               nativeSharing: classify(() => native.readCurrent(fixture.cfg)),
@@ -393,6 +552,30 @@ it.skipIf(!replayPath)(
                 contextTokenBudget: contextWindow,
               }),
             );
+            let unreadableNativeMessages = 0;
+            const nativeMessages = (await loadTranscriptEvents(target)).flatMap((raw) => {
+              const row = asOptionalRecord(raw);
+              const message = asOptionalRecord(row?.message);
+              if (
+                row?.type !== "message" ||
+                !message ||
+                (message.role !== "user" && message.role !== "assistant")
+              )
+                return [];
+              if (!isReadableSessionMessage(message)) {
+                unreadableNativeMessages++;
+                return [];
+              }
+              return [message];
+            });
+            mark("native-recipient-footprint", {
+              recipientMode,
+              nativeMessages: nativeMessages.length,
+              unreadableNativeMessages,
+              systemAndToolsFootprintCaptured: false,
+            });
+            if (unreadableNativeMessages)
+              throw new Error("Private replay native context footprint unavailable");
             const boundaryAt = performance.now();
             const boundary = await withSessionTranscriptWriteAssertion(
               writer,
@@ -401,7 +584,7 @@ it.skipIf(!replayPath)(
                 knowledge.refreshPrepared({
                   signal,
                   canAdmit: createConversationContextCapacity({
-                    messages: [],
+                    messages: nativeMessages,
                     contextWindow,
                     reserveTokens: 16_384,
                     modelIdentity: { provider: "synthetic", model: "replay-model" },
@@ -416,10 +599,14 @@ it.skipIf(!replayPath)(
             knowledge.release();
             admission.close();
             lifecycleAdmissionByOperation.delete(replyOperation);
-            await upsertSessionEntryCore(target, { ...loadSessionEntry(target)!, status: "done" });
+            // This diagnostic has an admitted native boundary, not an actual
+            // embedded execution owner. Closing admission settles its fixture work;
+            // the persisted writer ID remains the native CAS fence.
             await withinTest(recipient.owner.wait(), signal);
             const before = new Set(await packets());
-            const donor = donors.values().next().value;
+            const donor = [...donors.values()].find(
+              (candidate) => candidate.target.sessionId !== target.sessionId,
+            );
             if (!donor) throw new Error("Private replay donor unavailable");
             const idleAt = performance.now();
             const added = await appendTranscriptMessage(donor.target, {
@@ -472,6 +659,10 @@ it.skipIf(!replayPath)(
           scenario: "private-root-replay",
           originals: replay.references.length,
           sources: replay.sources.length,
+          groupedReceipts: Boolean(replay.receipts),
+          requestedRootReceipts: replay.receipts?.length ?? replay.references.length,
+          recipientMode,
+          embeddedExecutionOwnerUsed: false,
           contextWindow,
           stages,
           elapsedMs: Math.round(performance.now() - started),
