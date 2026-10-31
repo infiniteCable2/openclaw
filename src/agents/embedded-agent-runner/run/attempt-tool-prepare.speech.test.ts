@@ -65,7 +65,7 @@ describe("native speech presentation run ownership", () => {
             sessionId: params.sessionId,
             agentId: "example",
             route: { channel: "matrix", to: "example-room" },
-            assertCurrent: params.assertCurrent,
+            assertCurrent: () => params.assertCurrent(),
             preparedTtsPreferences: {},
             prefsPath: "",
             expectedSpeechSelection: { provider: "example" },

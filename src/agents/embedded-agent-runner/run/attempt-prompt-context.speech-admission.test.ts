@@ -145,7 +145,8 @@ describe("turn-owned speech guidance at the native provider boundary", () => {
     const systemBytes = JSON.stringify(control[0]?.system);
 
     const conversation = await createConversation();
-    const speech = speechAdmission();
+    const assertCurrent = vi.fn();
+    const speech = speechAdmission(assertCurrent);
     for (const [index, prompt] of prompts.entries()) {
       const prepared = await conversation.turn(
         prompt,
@@ -187,7 +188,7 @@ describe("turn-owned speech guidance at the native provider boundary", () => {
       }
     }
     expect(requests).toHaveLength(4);
-    expect(speech.assertCurrent).toHaveBeenCalled();
+    expect(assertCurrent).toHaveBeenCalled();
   });
 
   it("refuses admission retired across prompt preparation before any provider request", async () => {
