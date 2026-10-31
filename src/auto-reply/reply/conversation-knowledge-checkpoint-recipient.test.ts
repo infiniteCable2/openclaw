@@ -160,6 +160,16 @@ function fixture(references = [reference]) {
   } as unknown as ReplyConversationKnowledgeParams;
   return { candidate, cache, params, canAdmitPacket, onPacket };
 }
+function preparedParams(
+  f: ReturnType<typeof fixture>,
+  sourceCache: ReturnType<typeof createConversationKnowledgeSourceCache>,
+) {
+  return {
+    ...f.params,
+    sourceCache,
+    expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+  };
+}
 function rawPacket(selected: ConversationKnowledgeReference): PreparedConversationKnowledgePacket {
   return {
     through: selected.readRange?.through ?? selected.through,
@@ -246,14 +256,7 @@ describe("ready checkpoint recipient", () => {
       await resume.promise;
       return undefined;
     });
-    const pending = prepareRecipientConversationCheckpoint(
-      {
-        ...f.params,
-        sourceCache: cache,
-        expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-      },
-      f.candidate,
-    );
+    const pending = prepareRecipientConversationCheckpoint(preparedParams(f, cache), f.candidate);
     try {
       await entered.promise;
       expect(cache.preparedCheckpoint).toBe(candidate);
@@ -363,61 +366,87 @@ describe("ready checkpoint recipient", () => {
     result!.release();
     expect(native.releaseSource).toHaveBeenCalledOnce();
   });
-  it.each([true, false])(
-    "transfers native group cleanup only when staging succeeds: %s",
-    async (accepted) => {
-      const f = fixture();
-      const cleanups = new Set<() => void>();
-      const cache = {
-        ...f.cache,
-        maxPreparedRootBytes: 4_000_000,
-        retainCleanup: (release: () => void) => cleanups.add(release),
-        forgetCleanup: (release: () => void) => cleanups.delete(release),
-        retryCleanup: () => {
-          for (const release of cleanups) {
-            release();
-            cleanups.delete(release);
-          }
-        },
-        stageCheckpoint: vi.fn(() => accepted),
+  it.each(
+    ["projection", "checkpoint"].flatMap((kind) =>
+      ["transfer", "capacity", "abort"].map((outcome) => [kind, outcome]),
+    ),
+  )("keeps active %s custody out of shared cleanup until %s", async (kind, outcome) => {
+    const f = fixture();
+    const cache = createConversationKnowledgeSourceCache(outcome === "capacity" ? 128 : undefined);
+    const entered = createDeferredCore(),
+      resume = createDeferredCore();
+    const controller = new AbortController();
+    native.groupRead.mockImplementationOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return {
+        assertCurrent: native.checkSource,
+        release: native.releaseSource,
+        selectContribution: native.select,
       };
-      await prepareRecipientConversationCheckpoint(
-        {
-          ...f.params,
-          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-          sourceCache: cache as unknown as ReplyConversationKnowledgeParams["sourceCache"],
-        },
-        f.candidate,
-        f.candidate.bootstrap as unknown as Parameters<
-          typeof prepareRecipientConversationCheckpoint
-        >[2],
-      );
-      expect(native.group).toHaveBeenCalledOnce();
-      expect(native.group).toHaveBeenCalledWith(
-        expect.objectContaining({
-          personal: expect.objectContaining({ rootEvidence: preparedRootEvidence }),
-        }),
-      );
-      expect(native.groupRead).toHaveBeenCalledOnce();
-      expect(native.groupRead).toHaveBeenCalledWith(
-        expect.objectContaining({
-          personal: expect.objectContaining({ rootEvidence: preparedRootEvidence }),
-        }),
-      );
-      expect(cache.stageCheckpoint).toHaveBeenCalledWith(
-        expect.objectContaining({
-          groups: [
-            expect.objectContaining({
-              source: { agentId: source.agentId, sessionKey: source.sessionKey },
-            }),
-          ],
-        }),
-      );
-      expect(cleanups.size).toBe(0);
-      expect(native.releaseGroup).toHaveBeenCalledTimes(accepted ? 0 : 1);
+    });
+    const params = {
+      ...f.params,
+      sourceCache: cache,
+      expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+      signal: controller.signal,
+    };
+    const pending =
+      kind === "projection"
+        ? prepareRecipientConversationProjection(params, [
+            { reference, packet: rawPacket(reference) },
+          ])
+        : prepareRecipientConversationCheckpoint(
+            params,
+            f.candidate,
+            f.candidate.bootstrap as unknown as Parameters<
+              typeof prepareRecipientConversationCheckpoint
+            >[2],
+          );
+    const joined = pending.then(
+      () => false,
+      (error) => {
+        expect(error).toMatchObject({ name: "AbortError" });
+        return true;
+      },
+    );
+    try {
+      await entered.promise;
+      cache.retryCleanup(); // Another background quantum must not own this live group.
+      expect(native.releaseGroup).not.toHaveBeenCalled();
+      if (outcome === "abort") controller.abort();
+      resume.resolve();
+      expect(await joined).toBe(outcome === "abort");
+      cache.retryCleanup();
+      expect(native.releaseGroup).toHaveBeenCalledTimes(outcome === "transfer" ? 0 : 1);
+      expect(
+        kind === "projection"
+          ? cache.preparedPackets(1).length
+          : Number(Boolean(cache.preparedCheckpoint)),
+      ).toBe(outcome === "transfer" ? 1 : 0);
+      for (const prepare of [native.group, native.groupRead]) {
+        expect(prepare).toHaveBeenCalledWith(
+          expect.objectContaining({
+            personal: expect.objectContaining({ rootEvidence: preparedRootEvidence }),
+          }),
+        );
+      }
+      if (kind === "checkpoint" && outcome === "transfer") {
+        expect(cache.preparedCheckpoint?.groups.map((group) => group.source)).toEqual([
+          { agentId: source.agentId, sessionKey: source.sessionKey },
+        ]);
+      }
       expect(native.releaseSource).toHaveBeenCalledOnce();
-    },
-  );
+    } finally {
+      resume.resolve();
+      try {
+        await joined;
+      } finally {
+        cache.clear();
+      }
+    }
+    expect(native.releaseGroup).toHaveBeenCalledOnce();
+  });
   it("refuses a range removed or changed after summary preparation", async () => {
     const f = fixture();
     native.groupRead.mockRejectedValue(
@@ -445,14 +474,9 @@ describe("ready checkpoint recipient", () => {
         packet.part = { ...packet.part, complete: false, frontier: undefined, nextOffset: 10 };
       }
       expect(
-        await prepareRecipientConversationProjection(
-          {
-            ...f.params,
-            sourceCache: cache,
-            expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-          },
-          [{ reference, packet }],
-        ),
+        await prepareRecipientConversationProjection(preparedParams(f, cache), [
+          { reference, packet },
+        ]),
       ).toBe(complete);
       expect(cache.peek(conversationKnowledgeContributionId(reference), 0)).toEqual(packet);
       expect(native.group).toHaveBeenCalledOnce();
@@ -484,11 +508,7 @@ describe("ready checkpoint recipient", () => {
       );
       const cache = createConversationKnowledgeSourceCache();
       onTestFinished(() => cache.clear());
-      const params = {
-        ...f.params,
-        sourceCache: cache,
-        expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-      };
+      const params = preparedParams(f, cache);
       const tail = [reference, second].map((value) => ({
         reference: value,
         packet: rawPacket(value),
@@ -554,14 +574,9 @@ describe("ready checkpoint recipient", () => {
         selectContribution: native.select,
       };
     });
-    const pending = prepareRecipientConversationProjection(
-      {
-        ...f.params,
-        sourceCache: cache,
-        expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-      },
-      [{ reference, packet: rawPacket(reference) }],
-    );
+    const pending = prepareRecipientConversationProjection(preparedParams(f, cache), [
+      { reference, packet: rawPacket(reference) },
+    ]);
     await entered.promise;
     cache.consume(conversationKnowledgeContributionId(reference), 0);
     resume.resolve();
@@ -574,11 +589,7 @@ describe("ready checkpoint recipient", () => {
     const f = fixture(),
       cache = createConversationKnowledgeSourceCache();
     onTestFinished(() => cache.clear());
-    const params = {
-      ...f.params,
-      sourceCache: cache,
-      expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-    };
+    const params = preparedParams(f, cache);
     const tail = [{ reference, packet: rawPacket(reference) }];
     expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
     native.rebind.mockRejectedValueOnce(new Error("Synthetic physical source replacement"));
@@ -594,14 +605,9 @@ describe("ready checkpoint recipient", () => {
     onTestFinished(() => cache.clear());
     native.issue.mockReturnValue({ byteLength: 129 });
     expect(
-      await prepareRecipientConversationProjection(
-        {
-          ...f.params,
-          sourceCache: cache,
-          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-        },
-        [{ reference, packet: rawPacket(reference) }],
-      ),
+      await prepareRecipientConversationProjection(preparedParams(f, cache), [
+        { reference, packet: rawPacket(reference) },
+      ]),
     ).toBe(false);
     expect(native.group).not.toHaveBeenCalled();
     expect(cache.preparedRoot).toBeUndefined();
@@ -612,14 +618,9 @@ describe("ready checkpoint recipient", () => {
     onTestFinished(() => cache.clear());
     native.groupRead.mockRejectedValueOnce(new SessionTranscriptReadFenceError("revoked donor"));
     expect(
-      await prepareRecipientConversationProjection(
-        {
-          ...f.params,
-          sourceCache: cache,
-          expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-        },
-        [{ reference, packet: rawPacket(reference) }],
-      ),
+      await prepareRecipientConversationProjection(preparedParams(f, cache), [
+        { reference, packet: rawPacket(reference) },
+      ]),
     ).toBe(false);
     expect(cache.preparedPackets(1)).toHaveLength(0);
     expect(native.releaseGroup).toHaveBeenCalledOnce();

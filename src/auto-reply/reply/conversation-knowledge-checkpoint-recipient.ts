@@ -286,7 +286,6 @@ export async function prepareRecipientConversationProjection(
         });
         const retainedGroup = group;
         retire = () => retainedGroup.release();
-        cache.retainCleanup(retire);
         const grant = await prepareTranscriptReadAuthority({
           ...request,
           personal: { ...request.personal, contributionGroup: group },
@@ -326,7 +325,6 @@ export async function prepareRecipientConversationProjection(
         }
         // The cache owns release even when bounded admission refuses the group.
         transfer = true;
-        cache.forgetCleanup(retire);
         if (!cache.retainContributionGroup(preparedIds, sourceTarget, group, manifest)) {
           complete = false;
         }
@@ -343,6 +341,9 @@ export async function prepareRecipientConversationProjection(
         complete = false;
       } finally {
         if (!transfer && retire) {
+          // Only terminal cleanup belongs to the shared retry owner. An active
+          // provisional group must survive another quantum's cleanup sweep.
+          cache.retainCleanup(retire);
           retire();
           cache.forgetCleanup(retire);
         }
@@ -454,7 +455,6 @@ export async function prepareRecipientConversationCheckpoint(
         });
         const retire = () => admission.release();
         retirements.push(retire);
-        cache.retainCleanup(retire);
         const grant = await prepareTranscriptReadAuthority({
           ...request,
           personal: { ...request.personal, contributionGroup: admission },
@@ -504,11 +504,12 @@ export async function prepareRecipientConversationCheckpoint(
           }),
         )
       ) {
-        for (const retire of retirements) {
-          cache.forgetCleanup(retire);
-        }
+        retirements.length = 0;
       }
     } finally {
+      for (const retire of retirements) {
+        cache.retainCleanup(retire);
+      }
       cache.retryCleanup();
     }
   } finally {
