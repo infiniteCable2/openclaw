@@ -28,7 +28,7 @@ export function prepareInboundSessionCreationPrivacy(
       });
       return creationAudience ? { visibility: "draft" } : {};
     },
-    assertCurrent() {
+    assertCurrent(this: void) {
       creationAudience?.assertCurrent();
     },
   };

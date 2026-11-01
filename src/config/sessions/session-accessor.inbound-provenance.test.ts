@@ -71,9 +71,10 @@ it.each(metadataProducers)(
         const ctx =
           kind === "unbound"
             ? { Provider: "webchat", ChatType: "direct" }
-            : privateContext(scope.sessionKey, {
-                ...(kind === "wrong-agent" ? { agentId: "other" } : { sessionKey: "other" }),
-              }).ctx;
+            : privateContext(
+                scope.sessionKey,
+                kind === "wrong-agent" ? { agentId: "other" } : { sessionKey: "other" },
+              ).ctx;
         expect((await produce({ ...scope, ctx }))?.visibility).toBeUndefined();
       }
       const scope = { storePath, sessionKey: "agent:main:webchat:existing-history" };
