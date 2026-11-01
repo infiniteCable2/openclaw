@@ -11,7 +11,10 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveUserChannelIdentity } from "../state/user-channel-identities.js";
 import { profileCatalogPath } from "../state/user-profile-identity.read.js";
-import { readResidentUserProfileRevision } from "../state/user-profile-list.js";
+import {
+  prepareUserProfileCatalog,
+  readResidentUserProfileRevision,
+} from "../state/user-profile-list.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import {
   ensureGatewayOwnerProfile,
@@ -103,6 +106,9 @@ it.each(["person", "shared owner"] as const)(
         expect(denied).toEqual([false, undefined, expect.objectContaining({ code: "FORBIDDEN" })]);
       }
       expect(resolveUserChannelIdentity(identity)).toBeUndefined();
+      // The real Gateway's session projection retains this catalog; the
+      // in-process handler fixture must own the same lease across publication.
+      const catalog = await prepareUserProfileCatalog();
       const queries = vi.spyOn(DatabaseSync.prototype, "prepare");
       try {
         for (const params of [
@@ -170,6 +176,7 @@ it.each(["person", "shared owner"] as const)(
         expect(queries).not.toHaveBeenCalled();
       } finally {
         queries.mockRestore();
+        catalog.release();
       }
       expect(resolveUserChannelIdentity(identity)).toBeUndefined();
       expect(getUserProfileRole(person.id)).toBe("admin");
