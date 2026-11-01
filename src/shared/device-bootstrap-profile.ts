@@ -1,4 +1,5 @@
 import { normalizeDeviceAuthRole, normalizeDeviceAuthScopes } from "./device-auth.js";
+import { operatorScopeSatisfied } from "./operator-scope-compat.js";
 
 export type DeviceBootstrapPurpose =
   | "control-ui"
@@ -170,7 +171,13 @@ export function resolveBootstrapProfileScopesForRole(
           : purpose === "voice-node"
             ? VOICE_NODE_OPERATOR_SCOPE_SET
             : BOOTSTRAP_HANDOFF_OPERATOR_SCOPE_SET;
-    return normalizedScopes.filter((scope) => allowedScopes.has(scope));
+    // Preserve explicit Talk inside an already write-capable ceiling. Other
+    // scopes stay literal: an admin ceiling must not admit unknown permissions.
+    return normalizedScopes.filter(
+      (scope) =>
+        allowedScopes.has(scope) ||
+        (scope === "operator.talk" && operatorScopeSatisfied(scope, [...allowedScopes])),
+    );
   }
   return [];
 }

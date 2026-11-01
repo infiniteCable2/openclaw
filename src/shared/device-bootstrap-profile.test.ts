@@ -47,6 +47,64 @@ describe("device bootstrap profile", () => {
     });
   });
 
+  test.each([undefined, "control-ui"] as const)(
+    "preserves explicitly requested Talk within the existing write-capable %s handoff ceiling",
+    (purpose) => {
+      expect(
+        normalizeDeviceBootstrapHandoffProfile({
+          roles: ["operator"],
+          scopes: [
+            "operator.read",
+            "operator.talk",
+            "operator.write",
+            "operator.admin",
+            "operator.pairing",
+            "operator.unknown",
+            "node.exec",
+          ],
+          purpose,
+        }),
+      ).toEqual({
+        roles: ["operator"],
+        scopes: ["operator.read", "operator.talk", "operator.write"],
+        ...(purpose ? { purpose } : {}),
+      });
+    },
+  );
+
+  test("keeps the closed voice profile free of write, admin and unknown scopes", () => {
+    expect(
+      normalizeDeviceBootstrapHandoffProfile({
+        roles: ["operator"],
+        scopes: [
+          "operator.read",
+          "operator.talk",
+          "operator.write",
+          "operator.admin",
+          "operator.unknown",
+        ],
+        purpose: "voice-node",
+      }),
+    ).toEqual({
+      roles: ["operator"],
+      scopes: ["operator.read", "operator.talk"],
+      purpose: "voice-node",
+    });
+  });
+
+  test.each(["control-ui-owner", "mobile-full"] as const)(
+    "does not let the %s admin ceiling admit unknown permissions",
+    (purpose) => {
+      expect(
+        normalizeDeviceBootstrapHandoffProfile({
+          roles: ["operator"],
+          scopes: ["operator.unknown"],
+          purpose,
+        }),
+      ).toEqual({ roles: ["operator"], scopes: [], purpose });
+    },
+  );
+
   test("allows admin only for closed full-access purposes", () => {
     expect(
       normalizeDeviceBootstrapHandoffProfile({
