@@ -103,7 +103,11 @@ async function homeserver(signal: AbortSignal) {
     type: "m.room.member",
     state_key: user,
     sender: user,
-    content: { membership: "join", displayname: user === BOT ? "Assistant" : "Alex" },
+    content: {
+      membership: "join",
+      displayname: user === BOT ? "Assistant" : "Alex",
+      ...(user === BOT ? { is_direct: true } : {}),
+    },
     event_id: "$member-" + user,
     origin_server_ts: Date.now(),
   }));
