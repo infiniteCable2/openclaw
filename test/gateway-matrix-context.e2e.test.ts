@@ -168,6 +168,12 @@ async function homeserver(signal: AbortSignal) {
         body = state;
       } else if (path.includes("/state/m.room.name")) {
         body = { name: "Synthetic context room" };
+      } else if (
+        request.method === "GET" &&
+        (path.endsWith(`/rooms/${ROOM}/state/m.room.canonical_alias/`) ||
+          path.endsWith(`/rooms/${ROOM}/state/m.room.canonical_alias`))
+      ) {
+        body = { alt_aliases: [] };
       } else if (path.includes("/state/m.room.power_levels")) {
         body = { users: { [BOT]: 100, [HUMAN]: 100 } };
       } else if (path.includes("/state/m.room.encryption")) {
@@ -296,16 +302,17 @@ it.for(["native", "branches"] as const)(
     let gateway: OpenClawTestInstance | undefined;
     let model: Model | undefined;
     let matrix: Awaited<ReturnType<typeof homeserver>> | undefined;
-    context.onTestFailed(() => {
+    const reportFailure = (error: unknown): never => {
       console.error(
         JSON.stringify({
           fixture: "matrix-context-diagnostics",
-          matrixRequests: matrix?.requests,
-          matrixErrors: matrix?.errors,
+          matrixRequests: matrix?.requests.slice(-100),
+          matrixErrors: matrix?.errors.slice(-30),
           gateway: gateway?.logs(),
         }),
       );
-    });
+      throw error;
+    };
     await runQaGatewayTestFixture(
       context,
       async ({ signal, verifyCleanup }) => {
@@ -487,6 +494,6 @@ it.for(["native", "branches"] as const)(
       () => gateway?.cleanup(),
       () => matrix?.stop(),
       () => model?.stop(),
-    );
+    ).catch(reportFailure);
   },
 );
