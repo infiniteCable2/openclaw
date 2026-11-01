@@ -191,6 +191,7 @@ export function createNativeSpeechInput(params: {
               // model turn's preparation cannot authorize a later TTS job.
               undefined,
               event.expectedSpeechSelection,
+              event.purpose,
             );
           } else if (event.type === "done") {
             // Finalize after this run's already admitted additions have resolved.

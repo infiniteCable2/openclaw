@@ -71,6 +71,7 @@ function createFixture(
   });
   return {
     output,
+    harness,
     warn,
     transcripts,
     activeTtsAborts,
@@ -109,6 +110,69 @@ function completeResult(audio = Buffer.alloc(4_800), release = vi.fn(async () =>
 }
 
 describe("speech output compute/playout overlap", () => {
+  it("publishes admitted commentary as identified text without finalizing the answer", async () => {
+    const fixture = createFixture(
+      async () => completeResult(),
+      async () => undefined,
+    );
+    const utterance = fixture.output.createSpeechUtterance();
+    fixture.output.enqueueSpeechChunk(
+      "Checking.",
+      utterance,
+      undefined,
+      undefined,
+      undefined,
+      "commentary",
+    );
+    expect(fixture.harness.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "output.text.delta",
+        final: false,
+        payload: expect.objectContaining({
+          text: "Checking.",
+          purpose: "commentary",
+          blockFinal: true,
+        }),
+      }),
+    );
+    const first = vi.mocked(fixture.harness.emit).mock.calls[0]![0];
+    fixture.output.enqueueSpeechChunk(
+      "Checking.",
+      utterance,
+      undefined,
+      undefined,
+      undefined,
+      "commentary",
+    );
+    const second = vi.mocked(fixture.harness.emit).mock.calls[1]![0];
+    expect(first.itemId).not.toBe(second.itemId);
+    fixture.output.finalizeSpeechUtterance(utterance, "Finished.");
+    expect(fixture.harness.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "output.text.done",
+        payload: { sessionId: "prefetch-test", text: "Finished." },
+      }),
+    );
+    await fixture.output.drain();
+  });
+
+  it("does not publish commentary for an obsolete output generation", async () => {
+    const fixture = createFixture(
+      async () => completeResult(),
+      async () => undefined,
+    );
+    const utterance = fixture.output.createSpeechUtterance();
+    await fixture.cancel();
+    fixture.output.enqueueSpeechChunk(
+      "Stale.",
+      utterance,
+      undefined,
+      undefined,
+      undefined,
+      "commentary",
+    );
+    expect(fixture.harness.emit).not.toHaveBeenCalled();
+  });
   it("retains drain custody when audio finishes before native pending metadata is produced", async () => {
     const fixture = createFixture(
       async () => completeResult(),

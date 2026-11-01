@@ -40,6 +40,8 @@ export type RealtimeVoiceAgentConsultRuntime = PluginRuntimeCore["agent"];
  */
 export type RealtimeVoiceSpeechUtterance = {
   text: string;
+  /** Admitted commentary remains distinct from final-answer text. */
+  purpose?: "commentary";
   speech?: AssistantDeliveryTtsFacts;
   /** Transient provider generation; never part of transcript or delivery metadata. */
   localServiceAdmission?: NonNullable<ProviderLocalServiceLease["admission"]>;
@@ -59,7 +61,7 @@ export type RealtimeVoiceSpeechExpressionContext = {
   expectedSpeechSelection?: PreparedSpeechExpressionContext["expectedSpeechSelection"];
 };
 
-/** Safe, final-answer-only text events emitted while a realtime consult is running. */
+/** Safe speech chunks, including explicitly admitted commentary, and final answer completion. */
 export type RealtimeVoiceAgentConsultSpeechEvent =
   | ({ type: "chunk" } & RealtimeVoiceSpeechUtterance)
   | { type: "done"; text: string }

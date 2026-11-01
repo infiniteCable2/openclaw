@@ -8,6 +8,18 @@ title: "Talk realtime sessions and delegation"
 sidebarTitle: "Realtime sessions"
 ---
 
+## Commentary text in native speech sessions
+
+Native STT/TTS sessions publish admitted spoken commentary as separate
+`output.text.delta` events before the final answer. The payload carries
+`purpose: "commentary"`, `textBlockId`, and `blockFinal: true`; the event's
+`itemId` identifies the same block. Clients append each completed block once,
+retain paragraph separation, and keep it when `output.text.done` supplies the
+final answer. A completed commentary block does not end the turn or confirm
+audio playback. This uses the existing commentary policy and does not enable
+spoken commentary for profiles that have it disabled. Word timings are not
+required for these text events.
+
 ## Choose a Talk voice from chat
 
 During an active browser, iOS, or Android realtime Talk call, ask the assistant

@@ -344,7 +344,7 @@ describe("realtime voice agent consult speech delivery", () => {
     expect(call.prompt).toContain("return a separate concise result");
     expect(result).toEqual({ text: "The answer is ready.", delivered: true });
     expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
-      { type: "chunk", text: "I am checking now." },
+      { type: "chunk", text: "I am checking now.", purpose: "commentary" },
       { type: "chunk", text: "The answer is ready." },
       { type: "done", text: "The answer is ready." },
     ]);
@@ -558,7 +558,7 @@ describe("realtime voice agent consult speech delivery", () => {
       onSpeakableText,
     });
     expect(onSpeakableText.mock.calls.map(([event]) => event)).toEqual([
-      { type: "chunk", text: commentary },
+      { type: "chunk", text: commentary, purpose: "commentary" },
       { type: "chunk", text: acknowledgment },
       { type: "done", text: acknowledgment },
     ]);

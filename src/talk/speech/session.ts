@@ -321,13 +321,7 @@ export async function startSpeechSession(
                     ? {
                         onSpeakableText: (event) => {
                           if (event.type === "chunk") {
-                            speechOutput.enqueueSpeechChunk(
-                              event.text,
-                              utterance,
-                              event.speech,
-                              event.localServiceAdmission,
-                              event.expectedSpeechSelection,
-                            );
+                            speechOutput.enqueueSpeechPart(event, utterance);
                           } else if (event.type === "done") {
                             speechOutput.finalizeSpeechUtterance(utterance, event.text);
                           } else {
@@ -343,8 +337,7 @@ export async function startSpeechSession(
                 failure = { error };
                 return { text: "" };
               });
-            // Native completion waits for onset resolution. The delivery hold also
-            // covers input starting after native retirement, without reviving that run.
+            // Wait for onset resolution, including input after native retirement, without reviving that run.
             // Native steering confirmation may finish just after the run. Do not
             // release talkback or speak a result before every admitted input settles.
             while (true) {

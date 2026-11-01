@@ -172,6 +172,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
                 await emitSpeechEvent({
                   type: "chunk",
                   text: spokenText,
+                  ...(context.phase === "commentary" ? { purpose: "commentary" as const } : {}),
                   speech,
                   localServiceAdmission: params.speechExpressionContext?.localServiceAdmission,
                   expectedSpeechSelection: params.speechExpressionContext?.expectedSpeechSelection,
@@ -186,6 +187,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
               }
               expressiveUtterances.push({
                 text: spokenText,
+                ...(context.phase === "commentary" ? { purpose: "commentary" as const } : {}),
                 speech,
                 phase: context.phase,
                 localServiceAdmission: params.speechExpressionContext?.localServiceAdmission,
@@ -226,6 +228,7 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
     const event = (text: string): RealtimeVoiceAgentConsultSpeechEvent => ({
       type: "chunk",
       text,
+      ...(payload.isCommentary ? { purpose: "commentary" as const } : {}),
       ...(speech ? { speech } : {}),
       localServiceAdmission: params.speechExpressionContext?.localServiceAdmission,
       expectedSpeechSelection: params.speechExpressionContext?.expectedSpeechSelection,

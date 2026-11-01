@@ -382,6 +382,7 @@ it("public STT/TTS relay applies the admitted agent's commentary profile before 
   const finishModel = createDeferredCore();
   const earlyAudio = createDeferredCore();
   const turnEnded = createDeferredCore();
+  const textEvents: Record<string, unknown>[] = [];
   let modelFinished = false;
   mocks.runEmbeddedAgent.mockImplementation(async (params) =>
     publishNativeSpeechModelRun(params, async () => {
@@ -401,6 +402,13 @@ it("public STT/TTS relay applies the admitted agent's commentary profile before 
     if (!isRecord(payload)) {
       return;
     }
+    if (
+      isRecord(payload.talkEvent) &&
+      (payload.talkEvent.type === "output.text.delta" ||
+        payload.talkEvent.type === "output.text.done")
+    ) {
+      textEvents.push(payload.talkEvent);
+    }
     if (payload.type === "audio") {
       earlyAudio.resolve();
     }
@@ -416,6 +424,22 @@ it("public STT/TTS relay applies the admitted agent's commentary profile before 
     hardware.emitTranscript("Please check the device.");
     await withinTest(earlyAudio.promise, signal);
     expect(modelFinished).toBe(false);
+    const commentary = expect.objectContaining({
+      type: "output.text.delta",
+      itemId: expect.any(String),
+      final: false,
+      payload: expect.objectContaining({
+        sessionId,
+        text: "Checking the device now.",
+        purpose: "commentary",
+        textBlockId: expect.any(String),
+        blockFinal: true,
+      }),
+    });
+    expect(textEvents).toEqual([commentary]);
+    expect(textEvents[0]).toMatchObject({
+      payload: { textBlockId: textEvents[0]!.itemId },
+    });
     expect(mocks.streamSpeech).toHaveBeenCalledOnce();
     expect(mocks.streamSpeech).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -425,6 +449,14 @@ it("public STT/TTS relay applies the admitted agent's commentary profile before 
     );
     finishModel.resolve();
     await withinTest(turnEnded.promise, signal);
+    expect(textEvents).toEqual([
+      commentary,
+      expect.objectContaining({
+        type: "output.text.done",
+        final: true,
+        payload: { sessionId, text: "The device check finished." },
+      }),
+    ]);
     expect(mocks.streamSpeech.mock.calls.map(([request]) => request.text)).toEqual([
       "Checking the device now.",
       "The device check finished.",

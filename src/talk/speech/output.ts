@@ -76,6 +76,7 @@ export function createSpeechOutput(params: {
     activeReaders: activeTtsReaders,
   });
   let pendingChunks = 0;
+  let commentarySequence = 0;
   let handoffPending = false;
   const failedReleases = new Map<() => Promise<void>, { error: unknown; reported: boolean }>();
   const settlements = new Set<Promise<void>>();
@@ -146,6 +147,7 @@ export function createSpeechOutput(params: {
     speech?: AssistantDeliveryTtsFacts,
     localServiceAdmission?: NonNullable<ProviderLocalServiceLease["admission"]>,
     expectedSpeechSelection?: RealtimeVoiceSpeechUtterance["expectedSpeechSelection"],
+    purpose?: RealtimeVoiceSpeechUtterance["purpose"],
   ) => {
     const harness = params.getHarness();
     const normalized = speech?.expression ? text : normalizeSpeechPromptText(text);
@@ -158,6 +160,22 @@ export function createSpeechOutput(params: {
     }
     if (!normalized || !isCurrentSpeechUtterance(utterance)) {
       return;
+    }
+    if (purpose === "commentary") {
+      const itemId = `${params.sessionId}:commentary:${utterance.generation}:${++commentarySequence}`;
+      harness.emit({
+        type: "output.text.delta",
+        turnId: harness.ensureTurn(),
+        itemId,
+        final: false,
+        payload: {
+          sessionId: params.sessionId,
+          text: text ?? normalized,
+          purpose: "commentary",
+          textBlockId: itemId,
+          blockFinal: true,
+        },
+      });
     }
     utterance.chunks.push(normalized);
     pendingChunks += 1;
@@ -413,18 +431,22 @@ export function createSpeechOutput(params: {
     });
   };
 
+  const enqueueSpeechPart = (part: RealtimeVoiceSpeechUtterance, utterance: SpeechUtterance) =>
+    enqueueSpeechChunk(
+      part.text,
+      utterance,
+      part.speech,
+      part.localServiceAdmission,
+      part.expectedSpeechSelection,
+      part.purpose,
+    );
+
   const enqueueSpeechResult = (
     result: RealtimeVoiceAgentConsultResult,
     utterance: SpeechUtterance,
   ) => {
     for (const part of result.utterances ?? []) {
-      enqueueSpeechChunk(
-        part.text,
-        utterance,
-        part.speech,
-        part.localServiceAdmission,
-        part.expectedSpeechSelection,
-      );
+      enqueueSpeechPart(part, utterance);
     }
     finalizeSpeechUtterance(utterance, result.text);
   };
@@ -471,6 +493,7 @@ export function createSpeechOutput(params: {
     createSpeechUtterance,
     isCurrentSpeechUtterance,
     enqueueSpeechChunk,
+    enqueueSpeechPart,
     enqueueSpeechResult,
     enqueueSpeakText,
     finalizeSpeechUtterance,

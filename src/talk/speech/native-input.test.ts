@@ -276,6 +276,19 @@ describe("native speech input media ownership", () => {
     const input = f.owner.submit({ text: "Original", hasOnset: false });
     await f.waitForCall(1);
     f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+    await f.calls[0]!.onSpeakableText?.({
+      type: "chunk",
+      text: "Checking.",
+      purpose: "commentary",
+    });
+    expect(f.output.enqueueSpeechChunk).toHaveBeenCalledWith(
+      "Checking.",
+      f.utterances[0],
+      undefined,
+      undefined,
+      undefined,
+      "commentary",
+    );
     const actual = await f.calls[0]!.onSpeakableText?.({ type: "done", text: "Complete answer." });
     expect(actual).toBe(receipt);
     expect(f.output.finalizeSpeechUtterance).toHaveBeenCalledWith(
