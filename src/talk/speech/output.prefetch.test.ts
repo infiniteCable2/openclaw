@@ -13,6 +13,7 @@ function createFixture(
   let generation = 0;
   let stopped = false;
   const transcripts: { role: string; text: string; audioDelivery?: string }[] = [];
+  const emit = vi.fn<ReturnType<OutputParams["getHarness"]>["emit"]>();
   const harness = {
     talk: { activeTurnId: "synthetic-turn" },
     outputActivity: { markPlaybackStarted: vi.fn() },
@@ -25,7 +26,7 @@ function createFixture(
     ensureTurn: () => "synthetic-turn",
     finishOutputAudio: vi.fn(),
     endTurn: vi.fn(),
-    emit: vi.fn(),
+    emit,
   } as unknown as ReturnType<OutputParams["getHarness"]>;
   const activeTtsAborts: OutputParams["activeTtsAborts"] = new Set();
   const activeTtsReaders: OutputParams["activeTtsReaders"] = new Set();
@@ -71,7 +72,7 @@ function createFixture(
   });
   return {
     output,
-    harness,
+    emit,
     warn,
     transcripts,
     activeTtsAborts,
@@ -124,7 +125,7 @@ describe("speech output compute/playout overlap", () => {
       undefined,
       "commentary",
     );
-    expect(fixture.harness.emit).toHaveBeenCalledWith(
+    expect(fixture.emit).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "output.text.delta",
         final: false,
@@ -135,7 +136,7 @@ describe("speech output compute/playout overlap", () => {
         }),
       }),
     );
-    const first = vi.mocked(fixture.harness.emit).mock.calls[0]![0];
+    const first = fixture.emit.mock.calls[0]![0];
     fixture.output.enqueueSpeechChunk(
       "Checking.",
       utterance,
@@ -144,10 +145,10 @@ describe("speech output compute/playout overlap", () => {
       undefined,
       "commentary",
     );
-    const second = vi.mocked(fixture.harness.emit).mock.calls[1]![0];
+    const second = fixture.emit.mock.calls[1]![0];
     expect(first.itemId).not.toBe(second.itemId);
     fixture.output.finalizeSpeechUtterance(utterance, "Finished.");
-    expect(fixture.harness.emit).toHaveBeenCalledWith(
+    expect(fixture.emit).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "output.text.done",
         payload: { sessionId: "prefetch-test", text: "Finished." },
@@ -171,7 +172,7 @@ describe("speech output compute/playout overlap", () => {
       undefined,
       "commentary",
     );
-    expect(fixture.harness.emit).not.toHaveBeenCalled();
+    expect(fixture.emit).not.toHaveBeenCalled();
   });
   it("retains drain custody when audio finishes before native pending metadata is produced", async () => {
     const fixture = createFixture(
