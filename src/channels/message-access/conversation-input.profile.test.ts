@@ -77,7 +77,10 @@ it("retains the real linked requester and operator, then refuses the retired ide
               sender: { id: identity.senderId },
               conversation: scope.conversation,
               route: { agentId: input.agentId, routeSessionKey: scope.binding.sessionKey },
-              reply: { to: "example-conversation" },
+              reply: {
+                to: "example-conversation",
+                nativeChannelId: admittedSource.binding.nativeChannelId,
+              },
             },
           }),
           admittedScope,
