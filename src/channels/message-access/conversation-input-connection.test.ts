@@ -9,6 +9,11 @@ const mocks = vi.hoisted(() => ({
   ensureSession: vi.fn(),
   openRecipient: vi.fn(),
   openRoot: vi.fn(),
+  prepareRequester: vi.fn(),
+}));
+vi.mock("../../state/user-channel-identity-operations.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/user-channel-identity-operations.js")>()),
+  prepareUserChannelIdentityAuthority: mocks.prepareRequester,
 }));
 // mock-isolation: Exercise the real registered ingress proof; stop at native session materialization.
 vi.mock("../../talk/client-voice-session-initialization.js", () => ({
@@ -176,7 +181,53 @@ describe("registered channel connection preparation", () => {
     mocks.ensureSession.mockReset().mockResolvedValue("session-alpha");
     mocks.openRecipient.mockReset().mockResolvedValue(undefined);
     mocks.openRoot.mockReset().mockResolvedValue(undefined);
+    mocks.prepareRequester.mockReset().mockResolvedValue(undefined);
   });
+
+  it.each(["recipient", "root"] as const)(
+    "opens a private %s with the current canonical person and original channel proof",
+    async (purpose) => {
+      let current = true;
+      mocks.prepareRequester.mockResolvedValue({
+        linked: {
+          profileId: "profile-alpha",
+          displayName: null,
+          role: null,
+          emails: [],
+          loginIdentities: [],
+        },
+        isCurrent: () => current,
+      });
+      await fixture(async ({ open, prepareRoot, cleanup }) => {
+        try {
+          if (purpose === "root") {
+            await prepareRoot();
+          } else {
+            await open();
+          }
+          const call =
+            purpose === "root" ? mocks.openRoot.mock.calls[0] : mocks.openRecipient.mock.calls[0];
+          const opening = call![0];
+          const person = { type: "profile", id: "profile-alpha" };
+          expect(opening.participant).toEqual(person);
+          expect(opening.audience.participant).toEqual(person);
+          expect(opening.audience).toMatchObject({
+            channelId: "example",
+            nativeChannelId: "room-alpha",
+          });
+          expect(mocks.prepareRequester).toHaveBeenCalledWith({
+            channelId: "example",
+            accountId: "default",
+            senderId: "person-alpha",
+          });
+          current = false;
+          expect(() => opening.audience.assertCurrent()).toThrow("profile binding");
+        } finally {
+          await cleanup();
+        }
+      });
+    },
+  );
 
   it("initializes and opens the exact private recipient before any input exists", async () => {
     await fixture(async ({ open, revoke }) => {

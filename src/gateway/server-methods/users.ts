@@ -3,6 +3,7 @@ import {
   ErrorCodes,
   GatewayErrorDetailCodes,
   errorShape,
+  validateUsersCreateParams,
   validateUsersLinkEmailParams,
   validateUsersMergeParams,
   validateUsersListParams,
@@ -26,6 +27,7 @@ import {
 } from "../../state/user-profile-list.js";
 import { readUserProfileSnapshot } from "../../state/user-profile-reads.js";
 import {
+  createCanonicalUserProfile,
   linkCanonicalUserProfileEmail,
   mergeCanonicalUserProfiles,
   setCanonicalUserProfileAvatar,
@@ -107,6 +109,19 @@ export const usersHandlers: GatewayRequestHandlers = {
   ...usersChannelIdentityHandlers,
   ...usersGitHubHandlers,
   ...usersPersonalFileHandlers,
+  "users.create": defineValidatedGatewayHandler(
+    "users.create",
+    validateUsersCreateParams,
+    async (options) => {
+      const assertCurrent = await prepareUserProfileAdministration(options);
+      const profile = await createCanonicalUserProfile(options.params.displayName, {
+        assertCurrent,
+      });
+      assertCurrent();
+      options.respond(true, { profile });
+    },
+    profileError,
+  ),
   "users.list": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateUsersListParams, "users.list", respond)) {
       return;

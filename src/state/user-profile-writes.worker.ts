@@ -255,6 +255,29 @@ export function createUserProfileWriteOperation<Input, Output>(
   };
 }
 
+/** Create a person without inventing an authentication or channel identity. */
+export function createUserProfile(
+  displayName: string | undefined,
+  options: UserProfileMutationOptions = {},
+): UserProfileListItem {
+  ensureUserProfilesSchema(options);
+  return runUserProfileWriteTransaction(
+    ({ db }) => {
+      const profile = insertUserProfile(
+        db,
+        normalizeInitialDisplayName(displayName),
+        Date.now(),
+        options.mutation,
+      );
+      options.mutation?.publish(profile.id);
+      publishUserProfilesChange(db, profile.id);
+      return selectUserProfileListItemById(db, profile.id);
+    },
+    options,
+    { operationLabel: "user-profiles.create" },
+  );
+}
+
 /** Assigns or clears the role on an existing profile's current merge head. */
 export function setUserProfileRole(
   profileId: string,

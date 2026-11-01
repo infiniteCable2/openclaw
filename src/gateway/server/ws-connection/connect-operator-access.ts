@@ -10,6 +10,7 @@ import {
   hasGatewayOperatorAccessPolicies,
   resolveGatewayOperatorAccessAuthority,
 } from "../../operator-access-policy.js";
+import { readGatewayPairedDeviceProfileBinding } from "../../paired-device-profile.js";
 import { invalidateGatewayPolicyClient } from "../ws-policy-close.js";
 import type { GatewayWsClient } from "../ws-types.js";
 import type {
@@ -29,6 +30,25 @@ export function prepareGatewayConnectOperatorAccess(client: GatewayWsClient): vo
   const operatorAccessAuthority = profile
     ? resolveGatewayOperatorAccessAuthority(profile.profileId, config)
     : undefined;
+  const binding = readGatewayPairedDeviceProfileBinding(client);
+  if (binding) {
+    binding.authority.assertCurrent();
+    operatorAccessAuthority?.assertCurrent();
+    const authority = {
+      assertCurrent: () => {
+        binding.authority.assertCurrent();
+        operatorAccessAuthority?.assertCurrent();
+      },
+      signal: operatorAccessAuthority
+        ? AbortSignal.any([binding.authority.signal, operatorAccessAuthority.signal])
+        : binding.authority.signal,
+      gatewayAccessGrant: operatorAccessAuthority
+        ? operatorAccessAuthority.gatewayAccessGrant
+        : null,
+    };
+    client.internal = { ...client.internal, operatorAccessAuthority: authority };
+    return;
+  }
   if (operatorAccessAuthority !== undefined) {
     client.internal = { ...client.internal, operatorAccessAuthority };
   }

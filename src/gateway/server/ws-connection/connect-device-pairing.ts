@@ -111,7 +111,15 @@ export async function authorizeGatewayConnectDevice(
   };
   const roleConfiguredHumanOperator = role === "operator" && Boolean(configSnapshot.gateway?.roles);
   const sharedSecretOwner = authMethod === "token" || authMethod === "password";
-  if (roleConfiguredHumanOperator && !sharedSecretOwner && !authResult.user?.trim()) {
+  // Signed device-token callers can resolve an administrator-linked person after
+  // pairing admission; that later owner still rejects absent/expired links.
+  const canResolvePairedPerson = authMethod === "device-token" && device && devicePublicKey;
+  if (
+    roleConfiguredHumanOperator &&
+    !sharedSecretOwner &&
+    !authResult.user?.trim() &&
+    !canResolvePairedPerson
+  ) {
     failPairingHandshake({
       message:
         "operator role policies require a verified user identity for this authentication method; reconnect through the trusted proxy or Tailscale, or use the shared gateway token/password",

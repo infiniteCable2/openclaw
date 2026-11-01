@@ -5,6 +5,7 @@ import {
 } from "../../auto-reply/command-owner-authority.js";
 import { bindRequesterProfile } from "../../auto-reply/requester-profile.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
+import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import { captureChannelOperatorRunAuthority } from "../../gateway/operator-run-authority.js";
 import { DEFAULT_ACCOUNT_ID } from "../../routing/account-id.js";
 import {
@@ -25,6 +26,26 @@ type ParticipantBinding = {
   binding: ChannelIngressContextBinding;
   owner: ChannelIngressHostOwner;
 };
+
+/** A current administrator-linked person unifies private channels without changing transport provenance. */
+export function selectChannelConversationParticipant(
+  input: ChannelParticipantInput,
+): SessionParticipantIdentity {
+  const requester = input.requesterProfile;
+  if (
+    input.identity.type !== "remote" ||
+    !input.privateAudience ||
+    !input.verifiedPrincipal ||
+    input.verifiedPrincipal.channelId !== input.identity.pluginId ||
+    !requester
+  ) {
+    return input.identity;
+  }
+  if (!requester.isCurrent()) {
+    throw new Error("Channel conversation profile binding is no longer current");
+  }
+  return Object.freeze({ type: "profile", id: requester.id });
+}
 
 /** Both context-backed and text-free inputs consume only their exact native participant facts. */
 export function selectBoundChannelParticipantInputs(
@@ -91,7 +112,11 @@ export function bindPreparedChannelParticipantInputs(
   }
   for (const input of batch) {
     if (input) {
-      prepareSessionParticipantInput(params.context, input.identity, input.promptedAt);
+      prepareSessionParticipantInput(
+        params.context,
+        selectChannelConversationParticipant(input),
+        input.promptedAt,
+      );
     }
   }
   const privateAudience = prepareBoundChannelPrivateAudience({
@@ -145,18 +170,23 @@ export function prepareBoundChannelPrivateAudience(
       if (!gateway) {
         return undefined;
       }
+      const participant = selectChannelConversationParticipant(input);
+      const requester = participant.type === "profile" ? input.requesterProfile : undefined;
       return Object.freeze({
         agentId: input.binding.agentId,
         sessionKey: input.binding.sessionKey,
         channelId: params.channelId,
         accountId: params.accountId,
         nativeChannelId,
-        participant: Object.freeze({ ...input.identity }),
+        participant: Object.freeze({ ...participant }),
         assertCurrent: () => {
           if (!params.owner.isLive() || params.owner.resolveGatewayContext?.() !== gateway) {
             throw new Error("Private audience ingress owner is no longer current");
           }
           proof.assertCurrent();
+          if (requester && (!requester.isCurrent() || requester.id !== participant.id)) {
+            throw new Error("Channel conversation profile binding is no longer current");
+          }
         },
       });
     }),

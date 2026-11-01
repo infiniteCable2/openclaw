@@ -124,24 +124,18 @@ describe("opening a private conversation recipient", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it.each(["missing", "public", "incognito", "truncated", "other-person", "archived"])(
+  it.each(["missing", "public", "public-share", "incognito", "archived"])(
     "does not enroll a startup broker with unproven private current state (%s)",
     async (state) => {
       const { params, release, reader } = fixture();
       const entry = {
         sessionId: branch.sessionId,
         visibility: state === "public" ? "public" : "draft",
+        publicShare: state === "public-share" ? {} : undefined,
         incognito: state === "incognito",
         archivedAt: state === "archived" ? 1 : undefined,
-        participantCount: state === "truncated" ? 2 : 1,
-        participants: [
-          {
-            identity:
-              state === "other-person"
-                ? { type: "profile", id: "other-person" }
-                : params.participant,
-          },
-        ],
+        participantCount: 1,
+        participants: [{ identity: params.participant }],
       };
       boundary.load.mockResolvedValue({
         entry: state === "missing" ? undefined : entry,
@@ -153,6 +147,65 @@ describe("opening a private conversation recipient", () => {
       expect(release).toHaveBeenCalledOnce();
     },
   );
+
+  it.each(["old-remote", "shared-owner", "different-person", "partial-roster"])(
+    "prepares only the current attested person's root despite historical %s metadata",
+    async (history) => {
+      const { params, reader, release } = fixture();
+      const close = vi.fn(async () => {});
+      boundary.root.mockReturnValue({ close });
+      boundary.load.mockResolvedValue({
+        entry: {
+          sessionId: branch.sessionId,
+          visibility: "draft",
+          participantCount: history === "partial-roster" ? 2 : 1,
+          participants: [
+            {
+              identity:
+                history === "old-remote"
+                  ? {
+                      type: "remote",
+                      pluginId: "example",
+                      domain: "example.test",
+                      idKind: "user",
+                      id: "old-person",
+                    }
+                  : {
+                      type: "profile",
+                      id: history === "shared-owner" ? "gateway-owner" : "other-person",
+                    },
+            },
+          ],
+        },
+        databaseClaim: { kind: "worker", reader, assertCurrent() {}, release },
+      });
+      const registration = await openConversationKnowledgeRoot(params);
+      expect(registration).toEqual({ close });
+      expect(boundary.root).toHaveBeenCalledWith(
+        expect.objectContaining({ participant: params.participant, audience: params.audience }),
+      );
+      expect(boundary.seed).not.toHaveBeenCalled();
+      expect(boundary.register).not.toHaveBeenCalled();
+      await registration?.close();
+    },
+  );
+
+  it("refuses a person link revoked while acquiring the startup reader", async () => {
+    const { params, reader, release } = fixture();
+    boundary.load.mockImplementation(async () => {
+      vi.mocked(params.audience.assertCurrent).mockImplementation(() => {
+        throw new Error("original person link revoked");
+      });
+      return {
+        entry: { sessionId: branch.sessionId, visibility: "draft" },
+        databaseClaim: { kind: "worker", reader, assertCurrent() {}, release },
+      };
+    });
+    await expect(openConversationKnowledgeRoot(params)).rejects.toThrow("person link revoked");
+    expect(boundary.root).not.toHaveBeenCalled();
+    expect(boundary.seed).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
 
   it("closes a root whose native reader fails to release after registration", async () => {
     const { params, reader } = fixture();

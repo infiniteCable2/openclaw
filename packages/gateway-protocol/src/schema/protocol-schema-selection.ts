@@ -114,6 +114,8 @@ const EXCLUDED_SCHEMA_EXPORTS = [
   "UserProfileGitHubIdentitySchema",
   "UserProfileIdSchema",
   "UserProfileSchema",
+  "UsersCreateParamsSchema",
+  "UsersCreateResultSchema",
   "UserChannelIdentitySchema",
   "UserChannelIdentityLinkSchema",
   "UsersLinkChannelIdentityParamsSchema",

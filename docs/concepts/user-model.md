@@ -209,6 +209,30 @@ need to reconnect.
 
 ## Channel identity links
 
+An administrator can create a person without an email or sign-in provider using
+the `users.create` Gateway method with an optional `displayName` (up to 256
+characters). It requires `operator.admin` and returns `{ profile }` with a new
+profile ID. Creation assigns no role, authentication alias, or channel identity.
+Link the person's verified channel identities separately with the methods below.
+Every successful creation makes a distinct profile; names are not identity keys.
+If a request's outcome is uncertain, inspect `users.list` before creating again.
+
+For a personally assigned paired device, link `channelId: "gateway"`,
+`accountId: "paired-device"`, and `senderId: "<verified-device-id>"` to that
+profile. The Gateway uses this link only after authenticating the signed Operator
+device token. Node connections remain device identities. The link grants no
+scopes: pairing approval and the person's configured role still limit access.
+Normal Talk agent tools require the existing `operator.write` scope in addition
+to `operator.read` and `operator.talk`; this does not require `operator.admin`.
+Unlinking revokes the original personal authority, including retained work and
+restart recovery. Linking again requires a new connection.
+
+Verified private channel inputs linked to the same profile use that canonical
+person for conversation context. Transport provenance and historical records
+remain unchanged. A new link does not relabel older conversation contributions
+or make an existing shared session private; adjust confirmed personal session
+visibility through native session administration separately.
+
 An administrator can attest that a stable channel sender belongs to an existing Gateway profile. The link includes the channel, the configured channel account, and the sender's native ID. Display names, usernames, and `session.identityLinks` do not establish this association.
 
 All three Gateway methods require `operator.admin`:

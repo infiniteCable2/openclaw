@@ -20,6 +20,7 @@ const PROFILE_DEPENDENT_CORE_METHODS = new Set([
   "users.linkAuthProfile",
   "users.linkEmail",
   "users.merge",
+  "users.create",
   "users.linkChannelIdentity",
   "users.unlinkChannelIdentity",
   "users.listChannelIdentities",

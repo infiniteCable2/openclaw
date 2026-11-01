@@ -17,8 +17,7 @@ import {
   type UsersSelfResult,
 } from "../../packages/gateway-protocol/src/schema/users.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { writeConfigFile } from "../config/config.js";
-import type { GatewayAuthConfig, GatewayOperatorRolesConfig } from "../config/types.gateway.js";
+import type { GatewayAuthConfig } from "../config/types.gateway.js";
 import { loadOriginDeviceToken } from "../infra/device-auth-store.js";
 import { seedOriginDeviceToken } from "../infra/device-auth-store.test-support.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
@@ -34,8 +33,13 @@ import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import type { OperatorScope } from "./operator-scopes.js";
 import type { GatewayServer } from "./server-public.js";
 import {
+  BROWSER_ORIGIN,
+  configureGatewayAuth,
+  connectIdentity,
+  responseAuth,
+} from "./server.auth.identity-scopes.test-support.js";
+import {
   connectReq,
-  CONTROL_UI_CLIENT,
   installGatewayTestHooks,
   NODE_CLIENT,
   openTailscaleWs,
@@ -52,7 +56,6 @@ installGatewayTestHooks({ scope: "suite" });
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-const BROWSER_ORIGIN = "https://control.example.com";
 const TRUSTED_PROXY_HEADERS = {
   origin: BROWSER_ORIGIN,
   "x-forwarded-for": "203.0.113.50",
@@ -83,41 +86,6 @@ function proxyAuth(identityScopes?: GatewayAuthConfig["identityScopes"]): Gatewa
       allowLoopback: true,
     },
   };
-}
-
-async function configureGatewayAuth(
-  auth: GatewayAuthConfig,
-  options?: { tailscaleMode?: "serve"; roles?: GatewayOperatorRolesConfig },
-): Promise<void> {
-  testState.gatewayAuth = auth;
-  testState.gatewayControlUi = { allowedOrigins: [BROWSER_ORIGIN] };
-  await writeConfigFile({
-    gateway: {
-      auth,
-      trustedProxies: ["127.0.0.1"],
-      ...(options?.tailscaleMode ? { tailscale: { mode: options.tailscaleMode } } : {}),
-      ...(options?.roles ? { roles: options.roles } : {}),
-      controlUi: { allowedOrigins: [BROWSER_ORIGIN] },
-    },
-  });
-}
-
-function responseAuth(
-  response: Awaited<ReturnType<typeof connectReq>>,
-): HelloOk["auth"] | undefined {
-  return (response.payload as HelloOk | undefined)?.auth;
-}
-
-function connectIdentity(
-  ws: Awaited<ReturnType<typeof openWs>>,
-  options: NonNullable<Parameters<typeof connectReq>[1]>,
-) {
-  return connectReq(ws, {
-    prePairDevice: true,
-    client: CONTROL_UI_CLIENT,
-    browserOrigin: BROWSER_ORIGIN,
-    ...options,
-  });
 }
 
 async function withVerifiedIdentity(

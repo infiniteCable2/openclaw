@@ -22,6 +22,8 @@ export {
   UsersAuthConnectStatusParamsSchema,
   UsersAuthConnectStatusResultSchema,
   UserProfileSchema,
+  UsersCreateParamsSchema,
+  UsersCreateResultSchema,
   UsersLinkAuthProfileParamsSchema,
   UsersLinkAuthProfileResultSchema,
   UsersLinkEmailParamsSchema,

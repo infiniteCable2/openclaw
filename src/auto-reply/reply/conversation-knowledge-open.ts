@@ -95,15 +95,14 @@ async function openConversationKnowledge(
       throw new Error("Conversation recipient changed before opening");
     }
     if (rootOnly) {
-      const people = held.entry.participants?.filter((row) => row.identity.type !== "agent");
+      // Current host custody selects the person. A historical roster can contain
+      // pre-link identities; preparing that person's existing root partition does
+      // not seed, relabel, or authorize any of those older contributions.
       if (
         held.entry.visibility !== "draft" ||
         held.entry.incognito ||
         held.entry.publicShare !== undefined ||
-        held.entry.archivedAt !== undefined ||
-        held.entry.participantCount !== held.entry.participants?.length ||
-        people?.length !== 1 ||
-        conversationKnowledgeParticipantIdentity(people[0]?.identity) !== identity
+        held.entry.archivedAt !== undefined
       ) {
         return;
       }

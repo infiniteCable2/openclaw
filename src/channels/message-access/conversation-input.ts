@@ -16,6 +16,7 @@ import type { AdmitChannelConversationInputV1 } from "./conversation-input.types
 import type { ChannelIngressHostOwner } from "./ingress-host-owner.js";
 import {
   selectBoundChannelParticipantInputs,
+  selectChannelConversationParticipant,
   prepareBoundChannelPrivateAudience,
 } from "./participant-input.js";
 
@@ -97,7 +98,10 @@ export function admitChannelConversationInput(
       sessionKey: input.binding.sessionKey,
       nativeChannelId: input.binding.nativeChannelId,
     },
-    participant: { identity: input.identity, promptedAt: input.promptedAt },
+    participant: {
+      identity: selectChannelConversationParticipant(input),
+      promptedAt: input.promptedAt,
+    },
     privateAudience: prepareBoundChannelPrivateAudience({
       channelId: scope.channelId,
       accountId: scope.accountId ?? DEFAULT_ACCOUNT_ID,

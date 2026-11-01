@@ -210,7 +210,7 @@ export async function prepareChannelConversationConnection(
       });
       opening = connection.openRoot({
         target,
-        participant: input.identity,
+        participant: audience.participant,
         audience,
         getRuntimeConfig,
         signal,
@@ -243,7 +243,7 @@ export async function prepareChannelConversationConnection(
   assertTargetCurrent();
   await connection.openRecipient({
     target: { ...target, sessionId },
-    participant: input.identity,
+    participant: audience.participant,
     audience,
     getRuntimeConfig,
     signal,

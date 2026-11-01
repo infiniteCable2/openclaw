@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import {
@@ -11,6 +12,7 @@ import type { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { isBrowserOperatorUiClient } from "../utils/message-channel.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 import { sourceRolePolicy } from "./operator-role-source-policy.js";
+import { readGatewayPairedDeviceProfileBinding } from "./paired-device-profile.js";
 import type { GatewayClient } from "./server-methods/shared-types.js";
 
 const MAX_RECOVERY_SOURCE_BYTES = 65_536;
@@ -53,6 +55,7 @@ const snapshotSchema = z.strictObject({
   device: z
     .strictObject({ deviceId: boundedString, key: z.string().regex(/^[a-f0-9]{64}$/) })
     .optional(),
+  devicePerson: z.strictObject({ version: z.literal(1), id: z.uuid() }).optional(),
   controlUiAdmin: z.boolean(),
   localOperator: z.boolean(),
   sourceIngress: z.enum(["control-ui", "internal"]),
@@ -106,6 +109,18 @@ export function captureGatewayOperatorRecoverySnapshot(params: {
     return undefined;
   }
   authority.assertCurrent();
+  const person = readGatewayPairedDeviceProfileBinding(client);
+  if (
+    person &&
+    (!person.isCurrent() ||
+      person.profileId !== authority.profileId ||
+      !person.authorization ||
+      !isDeepStrictEqual(person.authorization.grant, authority.gatewayAccessGrant) ||
+      client.authPolicy.authMethod !== "device-token" ||
+      client.internal.operatorDeviceTokenIdentity?.deviceId !== person.identity.senderId)
+  ) {
+    return undefined;
+  }
   const device = client.internal.operatorDeviceTokenIdentity ?? undefined;
   if (client.connect.device && client.internal.operatorDeviceTokenIdentity === undefined) {
     return undefined;
@@ -141,6 +156,7 @@ export function captureGatewayOperatorRecoverySnapshot(params: {
     authPolicy: { ...client.authPolicy, generation: "" },
     sharedGeneration,
     device,
+    ...(person?.authorization ? { devicePerson: person.authorization.reference } : {}),
     controlUiAdmin: client.internal.controlUiAdmin === true,
     localOperator: client.internal.isLocalClient === true,
     sourceIngress: isBrowserOperatorUiClient(client.connect.client) ? "control-ui" : "internal",

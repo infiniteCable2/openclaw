@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import {
+  validateUsersCreateResult,
   validateUsersLinkChannelIdentityResult,
   validateUsersLinkEmailResult,
   validateUsersListChannelIdentitiesResult,
@@ -9,6 +10,8 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveUserChannelIdentity } from "../state/user-channel-identities.js";
+import { profileCatalogPath } from "../state/user-profile-identity.read.js";
+import { readResidentUserProfileRevision } from "../state/user-profile-list.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import {
   ensureGatewayOwnerProfile,
@@ -89,6 +92,7 @@ it.each(["person", "shared owner"] as const)(
       const request = (method: string, params: unknown, scopes = ["operator.admin"]) =>
         dispatch(method, params, scopes, admin.id, admin.id, cfg);
       for (const [method, params] of [
+        ["users.create", { displayName: "Local person" }],
         ["users.linkChannelIdentity", link],
         ["users.listChannelIdentities", { profileId: person.id }],
         ["users.unlinkChannelIdentity", link],
@@ -101,6 +105,51 @@ it.each(["person", "shared owner"] as const)(
       expect(resolveUserChannelIdentity(identity)).toBeUndefined();
       const queries = vi.spyOn(DatabaseSync.prototype, "prepare");
       try {
+        for (const params of [
+          { email: "unrequested@example.test" },
+          { displayName: "x".repeat(257) },
+          { displayName: null },
+          { role: "admin" },
+        ]) {
+          const refused = await request("users.create", params);
+          expect(refused?.[0]).toBe(false);
+          expect(refused?.[2]).toMatchObject({ code: "INVALID_REQUEST" });
+        }
+        const created = await request("users.create", { displayName: " Local person " });
+        expect(created?.[0]).toBe(true);
+        const creation: unknown = created?.[1];
+        if (!validateUsersCreateResult(creation)) {
+          throw new Error("users.create did not return its public result contract");
+        }
+        expect(creation.profile).toMatchObject({
+          displayName: "Local person",
+          emails: [],
+          githubIdentity: null,
+          mergedInto: null,
+          avatarMime: null,
+          hasAvatar: false,
+        });
+        expect(creation.profile).not.toHaveProperty("role");
+        expect(
+          readResidentUserProfileRevision(creation.profile.id, profileCatalogPath({})),
+        ).toMatchObject({ display_name: "Local person", merged_into: null });
+        const localLink = { profileId: creation.profile.id, identity };
+        expect(await request("users.linkChannelIdentity", localLink)).toEqual([true, localLink]);
+        expect(
+          await request("users.listChannelIdentities", { profileId: creation.profile.id }),
+        ).toEqual([true, { links: [localLink] }]);
+        expect(await request("users.unlinkChannelIdentity", localLink)).toEqual([
+          true,
+          { removed: true },
+        ]);
+        const unnamed = await request("users.create", {});
+        expect(unnamed?.[0]).toBe(true);
+        const anonymousCreation: unknown = unnamed?.[1];
+        if (!validateUsersCreateResult(anonymousCreation)) {
+          throw new Error("users.create did not return its public result contract");
+        }
+        expect(anonymousCreation.profile.id).not.toBe(creation.profile.id);
+        expect(anonymousCreation.profile).toMatchObject({ displayName: null, emails: [] });
         // Cover initial selected-account/role admission, worker grants and response guards
         // through the registered in-process route, which has no WS worker brand.
         const linked = await request("users.linkChannelIdentity", link);

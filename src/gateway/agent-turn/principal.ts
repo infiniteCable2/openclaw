@@ -4,6 +4,7 @@ import {
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import { transferGatewayLocalUserIngress } from "../local-user-ingress.js";
 import { transferGatewayOperatorSourceIdentity } from "../operator-run-authority.js";
+import { transferGatewayPairedDeviceProfileBinding } from "../paired-device-profile.js";
 import type { GatewayClient, GatewayRequestContext } from "../server-methods/shared-types.js";
 import type { AgentTurnPrincipal } from "./types.js";
 
@@ -25,6 +26,7 @@ export function captureAgentTurnPrincipal(client: GatewayClient | null): AgentTu
   };
   transferGatewayLocalUserIngress(client, principal);
   transferGatewayOperatorSourceIdentity(client, principal);
+  transferGatewayPairedDeviceProfileBinding(client, principal);
   return principal;
 }
 

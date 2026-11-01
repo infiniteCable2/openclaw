@@ -73,6 +73,8 @@ export const validateAuditRunInspectParams = compile<AuditRunInspectParams>(
 );
 export const validateAuditListParams = compile(S.AuditListParamsSchema);
 export const validateUsersListParams = compile(S.UsersListParamsSchema);
+export const validateUsersCreateParams = compile(S.UsersCreateParamsSchema);
+export const validateUsersCreateResult = compile(S.UsersCreateResultSchema);
 export const validateUsersMentionableParams = compile(S.UsersMentionableParamsSchema);
 export const validateUsersMentionableResult = compile(S.UsersMentionableResultSchema);
 export const validateMentionsListParams = compile(S.MentionsListParamsSchema);

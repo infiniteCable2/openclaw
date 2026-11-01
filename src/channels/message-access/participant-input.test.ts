@@ -1,6 +1,9 @@
 import { expect, it, vi } from "vitest";
+import type { MsgContext } from "../../auto-reply/templating.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
+import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
+import { readSessionConversationParticipant } from "../../sessions/session-participant-input.js";
 import {
   buildChannelInboundEventContext,
   type BuildChannelInboundEventContextParams,
@@ -12,6 +15,11 @@ import {
   readChannelContextAdmissionEvidence,
   readChannelContextGatewayContextResolver,
 } from "./admission-evidence.js";
+import type { ChannelParticipantInput } from "./ingress-host-owner.js";
+import {
+  bindPreparedChannelParticipantInputs,
+  selectChannelConversationParticipant,
+} from "./participant-input.js";
 import { createHostChannelIngressRuntime } from "./runtime.js";
 
 const recordParticipant = vi.hoisted(() => vi.fn());
@@ -166,3 +174,118 @@ it.each([
     }
   },
 );
+
+function privateLinkedParticipant() {
+  let current = true;
+  let outputOpen = true;
+  const gateway = { getRuntimeConfig: () => ({}) } as GatewayRequestContext;
+  const owner = {
+    channelId: "example",
+    isLive: () => true,
+    resolveGatewayContext: () => gateway,
+  };
+  const input: ChannelParticipantInput = {
+    identity: {
+      type: "remote",
+      pluginId: "example",
+      domain: "example.test",
+      idKind: "user-id",
+      id: "remote-alpha",
+    },
+    binding: {
+      agentId: "main",
+      sessionKey: "agent:main:example:peer:alpha",
+      nativeChannelId: "private-alpha",
+      messageId: "message-alpha",
+      inboundEventKind: "user_request",
+    },
+    verifiedPrincipal: { channelId: "example", accountId: "default", senderId: "remote-alpha" },
+    requesterProfile: { id: "person-alpha", displayName: null, isCurrent: () => current },
+    privateAudience: {
+      assertCurrent: () => {
+        if (!outputOpen) {
+          throw new Error("Private output closed");
+        }
+      },
+    },
+    promptedAt: 1,
+    owner,
+    gatewayContext: gateway,
+  };
+  return {
+    input,
+    revoke: () => (current = false),
+    closeOutput: () => (outputOpen = false),
+  };
+}
+
+it.each(["shared", "unlinked", "unverified", "observation"] as const)(
+  "preserves original transport participants without a private linked person: %s",
+  (scenario) => {
+    const { input } = privateLinkedParticipant();
+    if (scenario === "shared") {
+      input.privateAudience = undefined;
+    } else if (scenario === "unlinked") {
+      input.requesterProfile = undefined;
+    } else if (scenario === "unverified") {
+      input.verifiedPrincipal = undefined;
+    } else {
+      input.identity = {
+        type: "observation",
+        pluginId: "example",
+        accountId: "default",
+        senderKind: "unknown",
+        id: "remote-alpha",
+      };
+    }
+    expect(selectChannelConversationParticipant(input)).toBe(input.identity);
+  },
+);
+
+it("uses the same current person for conversation metadata and audience without rewriting provenance", () => {
+  const { input, revoke, closeOutput } = privateLinkedParticipant();
+  const remote = structuredClone(input.identity);
+  const context: MsgContext = {
+    SenderId: "remote-alpha",
+    AccountId: "default",
+    OriginatingChannel: "example",
+    InputProvenance: { kind: "external_user", sourceChannel: "example" },
+  };
+  bindPreparedChannelParticipantInputs({
+    channelId: "example",
+    binding: input.binding,
+    owner: input.owner,
+    context,
+    inputs: [input],
+  });
+  const person = { type: "profile", id: "person-alpha" };
+  expect(readSessionConversationParticipant(context)).toEqual(person);
+  const audience = readConversationPrivateAudience(context);
+  expect(audience?.participant).toEqual(person);
+  expect(input.identity).toEqual(remote);
+  expect(context.SenderId).toBe("remote-alpha");
+  expect(context.InputProvenance).toEqual({ kind: "external_user", sourceChannel: "example" });
+  closeOutput();
+  expect(() => audience?.assertCurrent()).toThrow("Private output closed");
+  expect(selectChannelConversationParticipant(input)).toEqual(person);
+  revoke();
+  expect(() => selectChannelConversationParticipant(input)).toThrow("profile binding");
+});
+
+it("does not combine two separately linked people into one private audience", () => {
+  const { input: first } = privateLinkedParticipant();
+  const second = {
+    ...first,
+    requesterProfile: { id: "person-beta", displayName: null, isCurrent: () => true },
+  };
+  const context: MsgContext = {};
+  bindPreparedChannelParticipantInputs({
+    channelId: "example",
+    binding: first.binding,
+    owner: first.owner,
+    context,
+    inputs: [first, second],
+  });
+  expect(readSessionConversationParticipant(context)).toBeUndefined();
+  expect(readConversationPrivateAudience(context)).toBeUndefined();
+});

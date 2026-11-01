@@ -11,6 +11,11 @@ import { isPairedDeviceTokenIdentityCurrent } from "../infra/device-pairing-iden
 import { capturePublishedOperatorDeviceSource } from "../infra/device-pairing-publication.js";
 import { loadPairedDevicePairingStoreRecordReadOnly } from "../infra/device-pairing-store-readonly.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
+import {
+  resolveUserChannelAuthorizationPolicy,
+  userChannelIdentitySubject,
+} from "../state/user-channel-identities.js";
+import { prepareUserChannelIdentityAuthority } from "../state/user-channel-identity-operations.js";
 import { onUserProfilesChanged } from "../state/user-profile-events.js";
 import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { isGatewayAuthGrantCurrent } from "./auth-policy.js";
@@ -150,6 +155,34 @@ export async function restoreGatewayOperatorRecovery(params: {
     };
     assertClaim(entry);
     const snapshot = source.snapshot;
+    const person = snapshot.devicePerson
+      ? await prepareUserChannelIdentityAuthority({
+          authorizationId: snapshot.devicePerson.id,
+          policy: resolveUserChannelAuthorizationPolicy(getConfig().gateway),
+        })
+      : undefined;
+    assertOwner();
+    const assertPerson = () => {
+      if (!snapshot.devicePerson) {
+        return;
+      }
+      if (
+        !snapshot.device ||
+        snapshot.authPolicy.authMethod !== "device-token" ||
+        !person?.isCurrent() ||
+        person.linked.profileId !== snapshot.profileId ||
+        person.linked.authorization?.subject !==
+          userChannelIdentitySubject({
+            channelId: "gateway",
+            accountId: "paired-device",
+            senderId: snapshot.device.deviceId,
+          }) ||
+        !isDeepStrictEqual(person.linked.authorization.grant, snapshot.grant)
+      ) {
+        throw new Error("Restart recovery device person binding changed; start a new user turn.");
+      }
+    };
+    assertPerson();
     let pairingSource: ReturnType<typeof capturePublishedOperatorDeviceSource> | undefined;
     const generationOwner = context.sharedGatewaySessionGenerationState;
     if (snapshot.sharedGeneration !== undefined) {
@@ -172,6 +205,7 @@ export async function restoreGatewayOperatorRecovery(params: {
     }
     const assertSourcePolicy = () => {
       assertOwner();
+      assertPerson();
       pairingSource?.assertCurrent();
       const cfg = getConfig();
       const role = resolveOperatorRolePolicyForAssignment(

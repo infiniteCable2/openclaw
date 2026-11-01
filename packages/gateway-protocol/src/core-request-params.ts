@@ -86,6 +86,7 @@ export type GatewayCoreRequestParams = {
   "users.linkAuthProfile": UsersSchema.UsersLinkAuthProfileParams;
   "users.linkChannelIdentity": UsersSchema.UsersLinkChannelIdentityParams;
   "users.merge": UsersSchema.UsersMergeParams;
+  "users.create": UsersSchema.UsersCreateParams;
   "users.unlinkChannelIdentity": UsersSchema.UsersUnlinkChannelIdentityParams;
   "users.listChannelIdentities": UsersSchema.UsersListChannelIdentitiesParams;
   "users.unlinkAuthProfile": UsersSchema.UsersUnlinkAuthProfileParams;

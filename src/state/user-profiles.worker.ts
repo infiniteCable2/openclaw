@@ -24,6 +24,7 @@ import {
 } from "./user-profile-github-identity.js";
 import { readUserProfileSnapshotSync } from "./user-profile-identity.read.js";
 import {
+  createUserProfile,
   createUserProfileWriteOperation,
   linkEmail,
   mergeProfiles,
@@ -81,6 +82,10 @@ function accountWrite<Input extends { profileId: string }, Output>(
 }
 
 const userProfileWriteOperations = {
+  "userProfiles.create": createUserProfileWriteOperation(
+    "userProfiles.create",
+    (input: { displayName?: string }, owned) => createUserProfile(input.displayName, owned),
+  ),
   "userProfiles.setRole": createUserProfileWriteOperation(
     "userProfiles.setRole",
     (input: { profileId: string; role: string | null }, owned) =>

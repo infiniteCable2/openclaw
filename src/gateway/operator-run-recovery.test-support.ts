@@ -9,10 +9,19 @@ import { loadPairedDevicePairingStoreRecordReadOnly } from "../infra/device-pair
 import { persistDevicePairingStoreState } from "../infra/device-pairing-store.js";
 import type { PairedDevice } from "../infra/device-pairing.types.js";
 import type { GatewayAccessGrantRef } from "../plugins/gateway-access-policy.types.js";
+import {
+  changeCanonicalUserChannelIdentity,
+  publishCanonicalUserChannelPolicy,
+} from "../state/user-channel-identity-operations.js";
 import { captureAgentTurnPrincipal } from "./agent-turn/principal.js";
 import { captureGatewayAuthPolicy } from "./auth-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import { restoreGatewayOperatorRecovery } from "./operator-run-recovery.js";
+import {
+  attachGatewayPairedDeviceProfileBinding,
+  prepareGatewayPairedDeviceProfileAuthorization,
+  prepareGatewayPairedDeviceProfileBinding,
+} from "./paired-device-profile.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { createOperatorClient } from "./server-plugin-in-process-dispatch.test-support.js";
 
@@ -28,6 +37,7 @@ export async function createOperatorRecoveryFixture(params: {
   tokenlessDevice?: boolean;
   gatewayAccessGrant?: GatewayAccessGrantRef;
   sharedGeneration?: string;
+  pairedPerson?: boolean;
 }) {
   let config = params.config;
   const context = params.context;
@@ -45,7 +55,11 @@ export async function createOperatorRecoveryFixture(params: {
   };
   client.authPolicy = captureGatewayAuthPolicy(config, {
     role: "operator",
-    authMethod: params.tokenlessDevice ? "trusted-proxy" : "token",
+    authMethod: params.tokenlessDevice
+      ? "trusted-proxy"
+      : params.pairedPerson
+        ? "device-token"
+        : "token",
   });
   if (params.sharedGeneration !== undefined) {
     client.usesSharedGatewayAuth = true;
@@ -79,13 +93,37 @@ export async function createOperatorRecoveryFixture(params: {
           "exact handshake token identity",
         );
   }
+  if (params.pairedPerson) {
+    const credential = expectDefined(
+      client.internal.operatorDeviceTokenIdentity,
+      "paired person credential",
+    );
+    const identity = {
+      channelId: "gateway",
+      accountId: "paired-device",
+      senderId: credential.deviceId,
+    };
+    await publishCanonicalUserChannelPolicy(config.gateway);
+    await changeCanonicalUserChannelIdentity("link", params.profileId, identity);
+    const binding = expectDefined(
+      await prepareGatewayPairedDeviceProfileBinding(
+        credential,
+        client.connect.scopes ?? [],
+        () => {},
+      ),
+      "native paired person binding",
+    );
+    attachGatewayPairedDeviceProfileBinding(client, binding);
+    client.internal.operatorAccessAuthority = { ...binding.authority, gatewayAccessGrant: null };
+    await prepareGatewayPairedDeviceProfileAuthorization(client, config, () => {});
+  }
   const captured = expectDefined(
     await captureGatewayOperatorRunAuthority({
       client: expectDefined(captureAgentTurnPrincipal(client), "fresh typed operator principal"),
       context,
       sourceAuthority: params.gatewayAccessGrant
         ? { gatewayAccessGrant: params.gatewayAccessGrant, assertCurrent: () => {} }
-        : null,
+        : (client.internal.operatorAccessAuthority ?? null),
     }),
     "authenticated operator source",
   );

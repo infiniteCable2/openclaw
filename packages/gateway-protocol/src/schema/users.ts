@@ -116,6 +116,11 @@ export type UsersPersonalFileSetResult = Static<typeof UsersPersonalFileSetResul
 export const UsersSelfParamsSchema = closedObject({});
 export const UsersSelfResultSchema = closedObject({ profile: UserProfileSchema });
 
+export const UsersCreateParamsSchema = closedObject({
+  displayName: Type.Optional(UserProfileDisplayNameSchema),
+});
+export const UsersCreateResultSchema = closedObject({ profile: UserProfileSchema });
+
 export const UsersLinkEmailParamsSchema = closedObject({
   email: Type.String({ minLength: 1, maxLength: 320 }),
   targetProfileId: UserProfileIdSchema,
@@ -336,6 +341,8 @@ export type UsersListParams = Static<typeof UsersListParamsSchema>;
 export type UsersListResult = Static<typeof UsersListResultSchema>;
 export type UsersSelfParams = Static<typeof UsersSelfParamsSchema>;
 export type UsersSelfResult = Static<typeof UsersSelfResultSchema>;
+export type UsersCreateParams = Static<typeof UsersCreateParamsSchema>;
+export type UsersCreateResult = Static<typeof UsersCreateResultSchema>;
 export type UsersLinkEmailParams = Static<typeof UsersLinkEmailParamsSchema>;
 export type UsersLinkEmailResult = Static<typeof UsersLinkEmailResultSchema>;
 export type UsersMergeParams = Static<typeof UsersMergeParamsSchema>;
