@@ -303,13 +303,13 @@ it.for(["native", "branches"] as const)(
     let model: Model | undefined;
     let matrix: Awaited<ReturnType<typeof homeserver>> | undefined;
     const reportFailure = (error: unknown): never => {
-      console.error(
+      process.stderr.write(
         JSON.stringify({
           fixture: "matrix-context-diagnostics",
           matrixRequests: matrix?.requests.slice(-100),
           matrixErrors: matrix?.errors.slice(-30),
           gateway: gateway?.logs(),
-        }),
+        }) + "\n",
       );
       throw error;
     };
