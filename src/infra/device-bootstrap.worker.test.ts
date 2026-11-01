@@ -6,6 +6,7 @@ import {
   consumeDeviceBootstrapTokenWithSetupCompletion,
   issueDevicePairSetupBootstrapToken,
   issueDeviceBootstrapToken,
+  getBoundDeviceBootstrapProfile,
   readDevicePairSetupCompletion,
   verifyDeviceBootstrapToken,
 } from "./device-bootstrap.js";
@@ -34,6 +35,43 @@ async function verifyBootstrapToken(baseDir: string, token: string) {
     scopes: [],
   });
 }
+
+it("issues and binds an operator-only voice credential within the native write ceiling", async () => {
+  const baseDir = tempDirs.make("openclaw-personal-voice-bootstrap-");
+  const profile = {
+    roles: ["operator"],
+    scopes: ["operator.read", "operator.talk", "operator.write"],
+  };
+  const issued = await issueDeviceBootstrapToken({ baseDir, profile });
+  await expect(
+    verifyDeviceBootstrapToken({
+      baseDir,
+      token: issued.token,
+      deviceId: "personal-device",
+      publicKey: "personal-public-key",
+      role: "operator",
+      scopes: profile.scopes,
+    }),
+  ).resolves.toEqual({ ok: true });
+  await expect(
+    getBoundDeviceBootstrapProfile({
+      baseDir,
+      token: issued.token,
+      deviceId: "personal-device",
+      publicKey: "personal-public-key",
+    }),
+  ).resolves.toEqual(profile);
+  await expect(
+    verifyDeviceBootstrapToken({
+      baseDir,
+      token: issued.token,
+      deviceId: "personal-device",
+      publicKey: "personal-public-key",
+      role: "operator",
+      scopes: ["operator.admin"],
+    }),
+  ).resolves.toMatchObject({ ok: false });
+});
 
 it.each(["replaced identity", "retired authority", "expired credential"] as const)(
   "refuses setup completion when consumption sees %s",
