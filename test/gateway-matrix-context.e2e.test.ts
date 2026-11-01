@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { json as readJson } from "node:stream/consumers";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import {
   formatAgentEnvelopeTimestamp,
@@ -11,6 +12,7 @@ import { acquireTestPortBlock } from "../src/test-utils/port-claims.js";
 import {
   BRANCH_GATEWAY_ORIGIN,
   BRANCH_GATEWAY_SCOPES,
+  connectConversationOperator,
   isolateConversationGatewayEnvironment,
   startConversationModel,
 } from "./helpers/conversation-branches-gateway.js";
@@ -295,6 +297,64 @@ function preparedFrameOwners(gateway: OpenClawTestInstance) {
   );
 }
 
+async function diagnoseMatrixStartupRow(gateway: OpenClawTestInstance, signal: AbortSignal) {
+  const operator = await connectConversationOperator(
+    gateway,
+    "matrix-inspection@example.test",
+    signal,
+  );
+  try {
+    const reply = asOptionalRecord(
+      await operator.call("sessions.describe", {
+        key: `agent:main:matrix:channel:${ROOM}`,
+        agentId: "main",
+      }),
+    );
+    const row = asOptionalRecord(reply?.session);
+    const identity = (value: unknown) => {
+      const original = asOptionalRecord(asOptionalRecord(value)?.identity);
+      return Object.fromEntries(
+        ["type", "id", "domain", "idKind", "pluginId", "accountId", "senderKind"].flatMap((key) => {
+          const field = original?.[key];
+          return typeof field === "string" || field === null ? [[key, field]] : [];
+        }),
+      );
+    };
+    const participants = row?.expandedParticipants ?? row?.participants;
+    const topology = asOptionalRecord(row?.conversationTopology);
+    process.stderr.write(
+      JSON.stringify({
+        fixture: "matrix-startup-native-row",
+        visible: row !== undefined,
+        visibility: row?.visibility,
+        sharingRole: row?.sharingRole,
+        chatType: row?.chatType,
+        participantCount: row?.participantCount,
+        participants: Array.isArray(participants) ? participants.slice(0, 16).map(identity) : null,
+        owner: identity(asOptionalRecord(row?.owner)?.actor),
+        creator: identity(row?.createdActor),
+        rosterProjection: "public-summary-excludes-owner",
+        incognito: row?.incognito,
+        archivedAt: row?.archivedAt,
+        publicShareExposed: row ? Object.hasOwn(row, "publicShare") : false,
+        publicSharePresent: row?.publicShare !== undefined,
+        topologyExposed: row ? Object.hasOwn(row, "conversationTopology") : false,
+        topology: topology
+          ? {
+              version: topology.version,
+              role: topology.role,
+              rootSessionKey: topology.rootSessionKey,
+              rootSessionId: topology.rootSessionId,
+              rootSessionLifecycleRevision: topology.rootSessionLifecycleRevision,
+            }
+          : null,
+      }) + "\n",
+    );
+  } finally {
+    await operator.close();
+  }
+}
+
 it.for(["native", "branches"] as const)(
   "preserves real Matrix context exactly once from %s ingress across restart",
   { timeout: 240_000 },
@@ -386,13 +446,27 @@ it.for(["native", "branches"] as const)(
             if (initialMode === "branches") {
               // The real account must restore prepared custody before any new
               // user input; a sync connection alone does not prove readiness.
-              await vi.waitFor(
-                () =>
-                  expect(
-                    [...preparedFrameOwners(gateway!)].some((pid) => !readyOwners.has(pid)),
-                  ).toBe(true),
-                { timeout: 30_000, interval: 50 },
-              );
+              await vi
+                .waitFor(
+                  () =>
+                    expect(
+                      [...preparedFrameOwners(gateway!)].some((pid) => !readyOwners.has(pid)),
+                    ).toBe(true),
+                  { timeout: 30_000, interval: 50 },
+                )
+                .catch(async (error: unknown) => {
+                  try {
+                    await diagnoseMatrixStartupRow(gateway!, signal);
+                  } catch {
+                    process.stderr.write(
+                      JSON.stringify({
+                        fixture: "matrix-startup-native-row",
+                        status: "read-unavailable",
+                      }) + "\n",
+                    );
+                  }
+                  throw error;
+                });
               expect(model.requests).toHaveLength(modelRequests);
             }
           }
