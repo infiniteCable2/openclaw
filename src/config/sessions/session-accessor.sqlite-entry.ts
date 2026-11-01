@@ -61,6 +61,7 @@ import {
   readWithCanonicalSessionReaderContinuation,
   type CanonicalSessionReaderContinuation,
 } from "./session-canonical-key.js";
+import { prepareInboundSessionCreationPrivacy } from "./session-entry-inbound-privacy.js";
 import { readSessionEntryPatchPredicate } from "./session-entry-patch-guard.js";
 import {
   mergeSessionEntryPatch,
@@ -627,9 +628,12 @@ export async function recordInboundSessionMeta(
 ): Promise<SessionEntry | null> {
   normalizeInternalTurnContext(params.ctx);
   const createIfMissing = params.createIfMissing ?? true;
+  const scope = { sessionKey: params.sessionKey, storePath: params.storePath };
+  const creation = prepareInboundSessionCreationPrivacy(scope, params.ctx);
   return await patchSessionEntryCore(
-    { sessionKey: params.sessionKey, storePath: params.storePath },
+    scope,
     (_entry, context) => {
+      const privacyPatch = creation.patch(context.existingEntry);
       const metadataPatch = deriveSessionMetaPatch({
         ctx: params.ctx,
         sessionKey: params.sessionKey,
@@ -642,13 +646,14 @@ export async function recordInboundSessionMeta(
       return {
         ...buildInboundSessionCreationStamp(params.ctx),
         ...metadataPatch,
+        ...privacyPatch,
       };
     },
     {
       // Inbound metadata must not refresh activity timestamps; idle reset
       // evaluation relies on updatedAt from actual session turns.
       preserveActivity: true,
-      workerGuard: {},
+      workerGuard: { assertCurrent: creation.assertCurrent },
       // First ingress creates the generation before conversation activation can retain it.
       ...(createIfMissing
         ? { fallbackEntry: mergeSessionEntry(undefined, { lifecycleRevision: randomUUID() }) }
@@ -683,6 +688,7 @@ export async function updateSessionLastRouteInScope(
   }
   const createIfMissing = params.createIfMissing ?? true;
   const { source, ...routeGuard } = params.workerGuard ?? {};
+  const creation = prepareInboundSessionCreationPrivacy(scope, params.ctx);
   const commitGuard = sessionEntryCommitGuardOptions(
     source
       ? composeSessionSourceAssertion([source, params.assertCommitAllowed])
@@ -691,6 +697,7 @@ export async function updateSessionLastRouteInScope(
   return await patchSessionEntryInScope(
     scope,
     (_entry, context) => {
+      const privacyPatch = creation.patch(context.existingEntry);
       const routePatch = deriveLastRoutePatch({
         channel: params.channel,
         to: params.to,
@@ -709,13 +716,21 @@ export async function updateSessionLastRouteInScope(
       return {
         ...buildInboundSessionCreationStamp(params.ctx),
         ...routePatch,
+        ...privacyPatch,
       };
     },
     {
       // Route updates must not refresh activity timestamps (#49515).
       preserveActivity: true,
       ...commitGuard,
-      workerGuard: { ...routeGuard, ...commitGuard.workerGuard },
+      workerGuard: {
+        ...routeGuard,
+        ...commitGuard.workerGuard,
+        assertCurrent() {
+          routeGuard.assertCurrent?.();
+          creation.assertCurrent();
+        },
+      },
       ...(createIfMissing
         ? { fallbackEntry: mergeSessionEntry(undefined, { lifecycleRevision: randomUUID() }) }
         : {}),
