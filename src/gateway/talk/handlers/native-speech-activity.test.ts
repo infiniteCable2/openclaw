@@ -138,7 +138,11 @@ it("native speech keeps telemetry delivery failures separate from call and input
 it("a native silent answer settles activity and leaves the same connection usable", async ({
   signal,
 }) => {
-  const hardware = installSyntheticSpeechHardware();
+  const readinessReleased = [createDeferredCore(), createDeferredCore()] as const;
+  let readinessReleases = 0;
+  const hardware = installSyntheticSpeechHardware({
+    onTurnTtsReleased: () => readinessReleased[readinessReleases++]?.resolve(),
+  });
   const createSession = vi.mocked(hardware.provider.createSession).getMockImplementation();
   if (!createSession) {
     throw new Error("Expected synthetic provider construction owner");
@@ -262,6 +266,7 @@ it("a native silent answer settles activity and leaves the same connection usabl
       captureId: "capture-silent",
     });
     await withinTest(quiet.promise, signal);
+    await withinTest(readinessReleased[0].promise, signal);
     await withinTest(Promise.all(ownerSettlements), signal);
     expect(models).toBe(1);
     expect(mocks.streamSpeech).not.toHaveBeenCalled();
@@ -285,7 +290,7 @@ it("a native silent answer settles activity and leaves the same connection usabl
       endOfInput: true,
       captureId: "capture-spoken",
     });
-    await withinTest(Promise.all([spoken.promise, hardware.turnTtsReleased]), signal);
+    await withinTest(Promise.all([spoken.promise, readinessReleased[1].promise]), signal);
     await withinTest(Promise.all(ownerSettlements), signal);
     expect(models).toBe(2);
     expect(captures).toBe(2);
