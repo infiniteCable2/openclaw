@@ -20,6 +20,7 @@ import { conversationKnowledgeContributionId } from "./conversation-knowledge-id
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import {
   conversationKnowledgeOrigin,
+  readConversationUtteranceObservation,
   type ConversationKnowledgeReference,
 } from "./conversation-knowledge.js";
 
@@ -85,9 +86,11 @@ it("keeps linked channel checkpoint candidates distinct from native disclosure a
     admission: saved.through,
   };
   const before = structuredClone(saved);
+  const canonical = readConversationUtteranceObservation(saved);
+  expect(canonical).toBeDefined();
   expect(() => create([saved])).toThrow("mixed-audience");
   const isAudienceCandidate = (value: ConversationKnowledgeReference) =>
-    isDeepStrictEqual(value, saved);
+    isDeepStrictEqual(value, canonical);
   const checkpoint = createConversationKnowledgeCheckpoint({
     branch,
     audienceKey,

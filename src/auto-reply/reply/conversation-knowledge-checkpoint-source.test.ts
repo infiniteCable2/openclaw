@@ -3,6 +3,7 @@ import { conversationKnowledgeContributionId } from "../../config/sessions/conve
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import {
   conversationKnowledgeOrigin,
+  readConversationUtteranceObservation,
   type ConversationKnowledgeReference,
 } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
@@ -135,8 +136,9 @@ it("selects private channel aliases as candidates without manufacturing personal
     details,
   }));
   const held = await sources();
-  expect(held.references).toEqual([saved]);
-  expect(held.isAudienceCandidate(structuredClone(saved))).toBe(true);
+  const canonical = readConversationUtteranceObservation(saved);
+  expect(held.references).toEqual([canonical]);
+  expect(held.isAudienceCandidate(structuredClone(held.references[0]!))).toBe(true);
   expect(held.isAudienceCandidate(foreign)).toBe(false);
   expect(held.isAudienceCandidate(unknown)).toBe(false);
   expect(boundary.personal).not.toHaveBeenCalled();
