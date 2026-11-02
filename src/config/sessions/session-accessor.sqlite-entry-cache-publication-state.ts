@@ -34,7 +34,7 @@ import {
   publishRetainedSessionGeneration,
   recordAcquiringSessionEntry,
   recordAcquiringSessionParticipants,
-  reconcileSessionSharingAcquisition,
+  initializeSessionSharingAcquisition,
   type CommittedSessionSharingFacts,
   type PreparedSessionEntryPredicate,
   type PreparedSessionSharingRead,
@@ -429,12 +429,7 @@ export function retainPreparedSessionSharingFacts(params: SessionSharingRetentio
       return completions.length > 0 ? Promise.all(completions).then(() => {}) : undefined;
     },
     initialize: (snapshot: CommittedSessionSharingFacts) => {
-      const acquisition = read.acquisition;
-      if (!active || !acquisition) {
-        throw new Error("Session sharing acquisition is no longer current");
-      }
-      read.facts = reconcileSessionSharingAcquisition(acquisition, snapshot);
-      read.acquisition = undefined;
+      initializeSessionSharingAcquisition(read, snapshot, active);
       for (const publication of pendingSessionEntryPublications.get(key) ?? []) {
         publication.refreshFacts?.(read);
       }

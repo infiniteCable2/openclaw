@@ -186,6 +186,19 @@ export function publishRetainedSessionGeneration(
 }
 
 /** Reconcile one worker snapshot with commit postimages, without adopting another lifecycle. */
+export function initializeSessionSharingAcquisition(
+  read: PreparedSessionSharingRead,
+  snapshot: CommittedSessionSharingFacts,
+  active: boolean,
+): void {
+  const acquisition = read.acquisition;
+  if (!active || !acquisition) {
+    throw new Error("Session sharing acquisition is no longer current");
+  }
+  read.facts = reconcileSessionSharingAcquisition(acquisition, snapshot);
+  read.acquisition = undefined;
+}
+
 export function reconcileSessionSharingAcquisition(
   acquisition: SessionSharingAcquisition,
   snapshot: CommittedSessionSharingFacts,
@@ -243,7 +256,9 @@ export function recordAcquiringSessionParticipants(
   acquisition: SessionSharingAcquisition | undefined,
   change: Extract<SessionRowFacts, { kind: "participants" }>,
 ): void {
-  if (!acquisition) return;
+  if (!acquisition) {
+    return;
+  }
   const before = change.previous;
   const previous = acquisition.participants;
   if (

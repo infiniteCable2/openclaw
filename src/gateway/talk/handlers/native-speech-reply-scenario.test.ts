@@ -1,7 +1,9 @@
+import "../../../config/sessions/session-accessor.sqlite-replacement-publication.test-support.js";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/promise.js";
 import { makeAgentAssistantMessage } from "../../../agents/test-helpers/agent-message-fixtures.js";
+import type { InternalGetReplyFromConfig } from "../../../auto-reply/reply/get-reply.types.js";
 import * as nativeQueue from "../../../auto-reply/reply/queue.js";
 import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.js";
 import {
@@ -12,6 +14,7 @@ import {
   pendingSessionEntryPublications,
   preparedSharingReads,
 } from "../../../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
+import { applySessionEntryExactReplacements } from "../../../config/sessions/session-accessor.sqlite-replacement-projection.js";
 import { assertSessionConversationRootEntry } from "../../../config/sessions/session-conversation-admission.js";
 import { ensureAgentConversationRoot } from "../../../config/sessions/session-conversation-root.js";
 import { resolveAgentSpeechConversationRoute } from "../../../routing/conversation-mode.js";
@@ -29,10 +32,35 @@ import {
   testState,
 } from "./native-consult-target.test-support.js";
 
+const { getReplacementPublicationDelivery } =
+  await import("../../../config/sessions/session-accessor.sqlite-replacement-publication.test-support.js");
+
+const replyObservation = vi.hoisted(() => ({
+  invoke: undefined as
+    | ((
+        original: InternalGetReplyFromConfig,
+        ...args: Parameters<InternalGetReplyFromConfig>
+      ) => ReturnType<InternalGetReplyFromConfig>)
+    | undefined,
+}));
+// Keep the real reply resolver, including its source guard, behind a stable
+// observation boundary even after the Talk runtime caches its lazy import.
+vi.mock("../../../auto-reply/reply/get-reply.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../auto-reply/reply/get-reply.js")>();
+  return {
+    ...actual,
+    getReplyFromConfig: (...args: Parameters<InternalGetReplyFromConfig>) =>
+      replyObservation.invoke
+        ? replyObservation.invoke(actual.getReplyFromConfig, ...args)
+        : actual.getReplyFromConfig(...args),
+  };
+});
+
 // The existing fixture substitutes only STT/TTS hardware and the model runtime.
 // Admission, source capabilities, Speech/V2/getReply, native follow-up queue and
 // transcript writes remain real. Model counts are NOT proof of actual tool effects.
 afterEach(() => {
+  replyObservation.invoke = undefined;
   vi.restoreAllMocks();
 });
 
@@ -43,9 +71,12 @@ it.for([
   { conversationMode: "branches", closeAudio: true, sequential: false },
   { conversationMode: "native", closeAudio: false, sequential: true },
   { conversationMode: "branches", closeAudio: false, sequential: true },
+  { conversationMode: "branches", closeAudio: false, sequential: true, overlap: true },
 ] as const)(
-  "native Speech serializes two original inputs exactly once in $conversationMode after audio-close=$closeAudio sequential=$sequential",
-  async ({ conversationMode, closeAudio, sequential }, { signal }) => {
+  "native Speech serializes two original inputs exactly once in $conversationMode after audio-close=$closeAudio sequential=$sequential overlap=$overlap",
+  async (scenario, { signal }) => {
+    const { conversationMode, closeAudio, sequential } = scenario;
+    const overlap = "overlap" in scenario && scenario.overlap;
     let root: Awaited<ReturnType<typeof ensureAgentConversationRoot>> | undefined;
     if (conversationMode === "branches") {
       const cfg = testState.config;
@@ -111,6 +142,63 @@ it.for([
     let closed = false;
     let calls = 0;
     let audioAtClose = 0;
+    const releaseOverlap = createDeferredCore();
+    const overlapCommitted = createDeferredCore();
+    let overlapMutation: Promise<unknown> | undefined;
+    let overlapReads = 0;
+    let replyCalls = 0;
+    const delivery = getReplacementPublicationDelivery();
+    if (overlap) {
+      replyObservation.invoke = async (original, ctx, options, cfg) => {
+        if (++replyCalls !== 2) {
+          return original(ctx, options, cfg);
+        }
+        const assertCurrent = options?.assertSourceCurrent;
+        if (!assertCurrent) {
+          throw new Error("Native reply source guard is missing");
+        }
+        delivery.afterResult = async () => {
+          overlapCommitted.resolve();
+          await releaseOverlap.promise;
+        };
+        overlapMutation = applySessionEntryExactReplacements({
+          ...target,
+          sessionKeys: [target.canonicalKey],
+          assertCommitAllowed: assertCurrent,
+          update: ([row]) => ({
+            result: undefined,
+            replacements: [
+              { sessionKey: target.canonicalKey, entry: { ...row!.entry, category: "reviewed" } },
+            ],
+          }),
+        });
+        await waitAt(
+          "overlap-native-commit",
+          awaitGateBeforeSettlement(
+            overlapCommitted.promise,
+            overlapMutation,
+            "Native overlap write settled before delayed delivery",
+          ),
+        );
+        // Observe the original prepared authority, preserving its native writer
+        // hooks. Release delivery after its first real assertion, even on red.
+        const observeCurrent = Object.assign(() => {
+          try {
+            assertCurrent();
+          } finally {
+            overlapReads++;
+            releaseOverlap.resolve();
+          }
+        }, assertCurrent);
+        try {
+          return await original(ctx, { ...options, assertSourceCurrent: observeCurrent }, cfg);
+        } finally {
+          releaseOverlap.resolve();
+          await overlapMutation;
+          delivery.afterResult = undefined;
+        }
+      };
+    }
     const enqueue = nativeQueue.enqueueFollowupRun;
     const prepareFacts = sessionSharingPreparation.prepareSessionMutationFacts;
     // Observation only: retain the actual storage/admission owner and rethrow
@@ -395,16 +483,23 @@ it.for([
         }
       }
       expect(sessionErrors).toBe(0);
+      if (overlap) {
+        expect(overlapReads).toBeGreaterThan(0);
+        expect(entry.category).toBe("reviewed");
+      }
     } finally {
       progress("cleanup-release-first");
       releaseFirst.resolve();
+      releaseOverlap.resolve();
       try {
         // Vitest may already have aborted its signal; cleanup must still join
         // the released real owners before the shared fixture closes SQLite.
-        await Promise.all(ownerSettlements);
+        await Promise.all([...ownerSettlements, overlapMutation]);
         progress("cleanup-owners-settled");
       } finally {
         observeFacts.mockRestore();
+        delivery.afterResult = undefined;
+        replyObservation.invoke = undefined;
         observeEnqueue.mockRestore();
         if (!closed) {
           await dispatch("talk.session.close", { sessionId });
