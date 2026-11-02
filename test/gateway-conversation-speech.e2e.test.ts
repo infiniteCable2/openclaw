@@ -27,6 +27,7 @@ function configuration(baseUrl: string): OpenClawConfig {
       trustedProxies: ["127.0.0.1", "::1"],
       auth: {
         mode: "trusted-proxy",
+        token: undefined,
         trustedProxy: {
           userHeader: "x-forwarded-user",
           requiredHeaders: ["x-forwarded-proto"],
