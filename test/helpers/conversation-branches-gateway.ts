@@ -126,12 +126,12 @@ export async function connectConversationOperator(
   gateway: OpenClawTestInstance,
   email: string,
   signal: AbortSignal,
-  options: {
+  connectionOptions: {
     scopes?: OperatorScope[];
     onEvent?: (event: string, payload: unknown) => void;
   } = {},
 ) {
-  const scopes = options.scopes ?? BRANCH_GATEWAY_SCOPES;
+  const scopes = connectionOptions.scopes ?? BRANCH_GATEWAY_SCOPES;
   const identity = loadOrCreateDeviceIdentity({
     path: gateway.state.statePath("conversation-test-devices", `${email}.sqlite`),
   });
@@ -168,7 +168,7 @@ export async function connectConversationOperator(
         pending.get(frame.id)?.resolve(frame);
         pending.delete(frame.id);
       } else if (frame.type === "event") {
-        options.onEvent?.(frame.event, frame.payload);
+        connectionOptions.onEvent?.(frame.event, frame.payload);
       }
     } catch (error) {
       fail(error instanceof Error ? error : new Error(String(error)));

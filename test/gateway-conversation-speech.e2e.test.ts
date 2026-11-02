@@ -11,8 +11,7 @@ import {
   startConversationModel,
 } from "./helpers/conversation-branches-gateway.js";
 import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
-import { withinTest } from "./helpers/promise.js";
-import { createDeferred } from "./helpers/promise.js";
+import { createDeferred, withinTest } from "./helpers/promise.js";
 import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
 
 const SPEECH = "qa-conversation-speech";
@@ -71,7 +70,9 @@ function configuration(baseUrl: string): OpenClawConfig {
         [provider.providerId]: {
           ...provider.config,
           request: { allowPrivateNetwork: true },
-          models: provider.config.models.map((entry) => ({ ...entry, input: [...entry.input] })),
+          models: provider.config.models.map((entry) =>
+            Object.assign({}, entry, { input: [...entry.input] }),
+          ),
         },
       },
     },
@@ -125,7 +126,9 @@ it("keeps a reusable Talk branch audible across follow-ups and imports its sibli
       operator = await connectConversationOperator(gateway, "alex@example.test", signal, {
         scopes: [...SCOPES],
         onEvent(event, payload) {
-          if (event !== "talk.event" || !isRecord(payload)) return;
+          if (event !== "talk.event" || !isRecord(payload)) {
+            return;
+          }
           events.push(payload);
           if (isRecord(payload.talkEvent) && payload.talkEvent.type === "session.error") {
             pendingTurn?.reject(
