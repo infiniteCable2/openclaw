@@ -681,12 +681,10 @@ describe("source-account-bound personal participant links", () => {
       context: {},
       origin: { from: remote.id },
     };
-    for (const [index, reference] of f.references.entries()) {
+    for (const reference of f.references) {
       reference.source.lifecycleRevision = f.source.entry.lifecycleRevision!;
       reference.origin = conversationKnowledgeOrigin(reference.source, "utterance-observation");
-      reference.through.lifecycleRevision = reference.source.lifecycleRevision;
       reference.privateAudience!.participant = remote;
-      f.anchors[index]!.lifecycleRevision = reference.source.lifecycleRevision;
     }
     let current = true;
     mocks.identity.mockImplementation(async (identity) =>
