@@ -649,6 +649,7 @@ it.each([
       recordSessionParticipant(scope, {
         identity: { type: "profile", id: "creator" },
         promptedAt: 2,
+        expectedSession: { sessionId: "acquiring-session", lifecycleRevision: "original" },
       });
     }
     const originalRead = entryReads.readSessionEntriesFromStoreInWorker;
@@ -665,6 +666,7 @@ it.each([
               recordSessionParticipant(scope, {
                 identity: { type: "profile", id: "creator" },
                 promptedAt: change === "participant-earlier" ? 1 : 3,
+                expectedSession: { sessionId: "acquiring-session", lifecycleRevision: "original" },
               }),
             ).toBe(change === "participant-first" ? "inserted" : "updated");
           } else if (change === "unknown") {

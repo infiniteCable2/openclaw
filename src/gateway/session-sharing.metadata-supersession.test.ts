@@ -108,3 +108,91 @@ it.each(["unchanged", "visibility", "public-share"] as const)(
     });
   },
 );
+
+it.each([false, true])(
+  "keeps acknowledged worker run facts current before result delivery with native supersession=%s",
+  async (supersede) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const storePath = state.statePath("run-publication.sqlite");
+      const cfg = { agents: { entries: { main: {} } }, session: { store: storePath } };
+      const scope = { agentId: "main", storePath, sessionKey: "agent:main:run-publication" };
+      const incarnation = { sessionId: "run-publication", lifecycleRevision: "same-conversation" };
+      replaceSessionEntrySync(scope, {
+        ...incarnation,
+        updatedAt: 1,
+        visibility: "draft",
+        chatType: "direct",
+        activeWriterRunId: "previous-writer",
+        lifecycleRunId: "previous-run",
+        createdActor: { type: "human", source: "profile", id: "owner" },
+      });
+      recordSessionParticipant(scope, {
+        identity: { type: "profile", id: "owner" },
+        promptedAt: 2,
+        expectedSession: incarnation,
+      });
+      const facts = await prepareSessionMutationFacts({ cfg, ...scope });
+      const observe = () => {
+        try {
+          return facts.readCurrent(cfg);
+        } catch (error) {
+          console.warn("[native-run-publication] retained facts failed", error);
+          return error;
+        }
+      };
+      let beforeDelivery: unknown;
+      try {
+        // Actual SQL, commit admission and native settlement finish before this
+        // observation seam delays the ordinary result's domain publication.
+        delivery.afterResult = () => {
+          if (supersede) {
+            // The same original human's earlier timestamp changes no audience.
+            expect(
+              recordSessionParticipant(scope, {
+                identity: { type: "profile", id: "owner" },
+                promptedAt: 1,
+                expectedSession: incarnation,
+              }),
+            ).toBe("updated");
+          }
+          beforeDelivery = observe();
+        };
+        await applySessionEntryExactReplacements({
+          ...scope,
+          sessionKeys: [scope.sessionKey],
+          update: ([row]) => ({
+            result: undefined,
+            replacements: [
+              {
+                sessionKey: scope.sessionKey,
+                entry: {
+                  ...row!.entry,
+                  activeWriterRunId: "next-writer",
+                  lifecycleRunId: "next-run",
+                },
+              },
+            ],
+          }),
+        });
+        const afterDelivery = observe();
+        const expected = {
+          target: {
+            entry: {
+              ...incarnation,
+              activeWriterRunId: "next-writer",
+              lifecycleRunId: "next-run",
+              visibility: "draft",
+              participantCount: 1,
+              participants: [{ identity: { type: "profile", id: "owner" } }],
+            },
+          },
+        };
+        expect(beforeDelivery).toMatchObject(expected);
+        expect(afterDelivery).toMatchObject(expected);
+      } finally {
+        delivery.afterResult = undefined;
+        facts.release();
+      }
+    });
+  },
+);
