@@ -24,6 +24,7 @@ import {
 } from "./session-accessor.sqlite-entry-cache-publication.js";
 import {
   projectSessionSharingEntry,
+  sessionSharingEntriesEqual,
   type PendingSessionEntryPublication,
   type SessionEntryReplacementPublication,
   type SessionTranscriptInitializationPublication,
@@ -439,9 +440,10 @@ export function retainSessionEntryWorkerPublication(params: {
         const sharingProjection =
           prepared && readCurrentSessionEntryProjection(owner, replacement, sessionKey);
         const sharingEntry = entry ? projectSessionSharingEntry(entry) : undefined;
-        // A confirmed metadata-only COMMIT cannot erase the newer native
-        // postimage already carried by retained readers. Its stale display
-        // projection remains withheld, and unknown native facts stay unknown.
+        // Retain a newer native postimage only when this COMMIT independently
+        // confirms the reader's membership. Entry-only equality cannot certify
+        // membership changed by a foreign writer; stale display stays withheld.
+        const committedMembership = replacement?.projection?.get(sessionKey)?.membership;
         const retainNewerMetadata = () =>
           known(sessionKey) &&
           current(sessionKey) &&
@@ -458,7 +460,24 @@ export function retainSessionEntryWorkerPublication(params: {
           creationSource.agentId === params.agentId &&
           creation.sessionKey === sessionKey;
         for (const read of preparedSharingReads.get(`${identityKey}\0${sessionKey}`) ?? []) {
-          if (retainNewerMetadata()) {
+          const retained = read.facts;
+          if (
+            retainNewerMetadata() &&
+            committedMembership &&
+            retained?.entry?.sessionId === committedMembership[4] &&
+            retained.entry.lifecycleRevision === entry?.lifecycleRevision &&
+            entry &&
+            sessionSharingEntriesEqual(
+              {
+                ...retained.entry,
+                participants: entry.participants,
+                participantCount: entry.participantCount,
+              },
+              entry,
+            ) &&
+            retained.membership.size === committedMembership[2].length &&
+            committedMembership[2].every((identity) => retained.membership.has(identity))
+          ) {
             continue;
           }
           if (placeholder) {
@@ -498,9 +517,6 @@ export function retainSessionEntryWorkerPublication(params: {
         }
         // Synchronous listeners can publish newer facts before the next listener consumes this one.
         const currentFacts = (): SessionRowFacts | undefined => {
-          if (retainNewerMetadata()) {
-            return { kind: "unchanged" };
-          }
           if (!known(sessionKey) || !currentMetadata(sessionKey)) {
             return undefined;
           }
