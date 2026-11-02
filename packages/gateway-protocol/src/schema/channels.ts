@@ -70,6 +70,7 @@ const TalkAgentControlModeSchema = Type.Union([
 const TalkEventTypeSchema = Type.Union([
   Type.Literal("session.started"),
   Type.Literal("session.ready"),
+  Type.Literal("session.activity"),
   Type.Literal("session.closed"),
   Type.Literal("session.error"),
   Type.Literal("session.replaced"),
@@ -82,6 +83,7 @@ const TalkEventTypeSchema = Type.Union([
   Type.Literal("capture.once"),
   Type.Literal("input.audio.delta"),
   Type.Literal("input.audio.committed"),
+  Type.Literal("input.outcome"),
   Type.Literal("transcript.delta"),
   Type.Literal("transcript.done"),
   Type.Literal("output.text.delta"),
@@ -120,6 +122,7 @@ const TURN_SCOPED_TALK_EVENT_TYPES = [
 
 /** Capture lifecycle events must include capture id to avoid cross-turn ambiguity. */
 const CAPTURE_SCOPED_TALK_EVENT_TYPES = [
+  "input.outcome",
   "capture.started",
   "capture.stopped",
   "capture.cancelled",
@@ -168,6 +171,10 @@ export const TalkEventSchema = Type.Object(
           required: ["type"],
         },
         ...requireJsonSchemaProperties(["captureId"]),
+      },
+      {
+        if: { properties: { type: { const: "input.outcome" } }, required: ["type"] },
+        then: { properties: { captureId: { type: "string", minLength: 1, pattern: "\\S" } } },
       },
     ],
   },
@@ -279,6 +286,7 @@ export const TalkSessionCreateParamsSchema = closedObject({
         Type.Literal("voice-selection"),
         Type.Literal("isolated-input"),
         Type.Literal("output-gate"),
+        Type.Literal("activity-v1"),
       ]),
       { uniqueItems: true },
     ),
@@ -301,6 +309,7 @@ export const TalkSessionCreateParamsSchema = closedObject({
 const talkSessionAppendAudioProperties = {
   sessionId: NonEmptyString,
   timestamp: Type.Optional(Type.Number()),
+  captureId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "\\S" })),
 };
 export const TalkSessionAppendAudioParamsSchema = Type.Union([
   closedObject({

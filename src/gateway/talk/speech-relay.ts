@@ -45,7 +45,7 @@ export type TalkSpeechRelaySession = {
   id: string;
   connId: string;
   sessionTarget: PreparedTalkSessionTarget;
-  appendAudio(audioBase64: string, endOfInput?: boolean): Promise<void>;
+  appendAudio(audioBase64: string, endOfInput?: boolean, captureId?: string): Promise<void>;
   acknowledgeMark(markName: string): void;
   cancelOutput: SpeechSessionHandle["cancelOutput"];
   steer: SpeechSessionHandle["steer"];
@@ -65,7 +65,7 @@ export async function createTalkSpeechRelaySession(params: {
   participant?: SessionParticipantIdentity;
   provider: RealtimeTranscriptionProviderPlugin;
   providerConfig: RealtimeTranscriptionProviderConfig;
-  capabilities?: readonly ("voice-selection" | "isolated-input" | "output-gate")[];
+  capabilities?: readonly ("voice-selection" | "isolated-input" | "output-gate" | "activity-v1")[];
   assertCurrent: () => void;
 }) {
   params.assertCurrent();
@@ -91,7 +91,7 @@ export async function createTalkSpeechRelaySession(params: {
   // Shutdown may precede the first output that awaits readiness.
   void ready.promise.catch(() => {});
   let readyAcknowledged = false;
-  let input: ((audio: Buffer) => void) | undefined;
+  let input: Parameters<SpeechAudioTransport["startInput"]>[0] | undefined;
   let fatal: (() => void) | undefined;
   let engine: SpeechSessionHandle | undefined;
   let preparation: Awaited<ReturnType<typeof prepareSpeechSession>> | undefined;
@@ -103,6 +103,12 @@ export async function createTalkSpeechRelaySession(params: {
   } = {};
   let activeTurnId: string | undefined;
   let closeReason: "completed" | "error" = "completed";
+  const activityEvents = params.capabilities?.includes("activity-v1") === true;
+  const inputOutcomes: TalkEvent[] = [];
+  let latestActivity: TalkEvent | undefined;
+  let activityFlushQueued = false;
+  let overflowReported = false;
+  let telemetryFailureReported = false;
 
   const assertActive = () => {
     lifetime.signal.throwIfAborted();
@@ -172,6 +178,10 @@ export async function createTalkSpeechRelaySession(params: {
     }
   };
   const publishEvent = (talkEvent: TalkEvent) => {
+    if (talkEvent.type === "input.outcome" || talkEvent.type === "session.activity") {
+      enqueueActivity(talkEvent);
+      return;
+    }
     try {
       publishEventRequired(talkEvent);
     } catch {
@@ -184,6 +194,61 @@ export async function createTalkSpeechRelaySession(params: {
       void record
         .close()
         .catch(() => params.context.logGateway.warn("Talk speech cleanup remains pending"));
+    }
+  };
+  const warnTelemetry = (message: string) => {
+    try {
+      params.context.logGateway.warn(message);
+    } catch {
+      // Observation failures must not affect input, native work or audio delivery.
+    }
+  };
+  const flushActivity = () => {
+    activityFlushQueued = false;
+    if (lifetime.signal.aborted) {
+      inputOutcomes.length = 0;
+      latestActivity = undefined;
+      return;
+    }
+    if (!readyAcknowledged) {
+      return;
+    }
+    const events = inputOutcomes.splice(0);
+    if (latestActivity) {
+      events.push(latestActivity);
+      latestActivity = undefined;
+    }
+    events.sort((left, right) => left.seq - right.seq);
+    for (const talkEvent of events) {
+      try {
+        broadcast({ type: "event", talkEvent });
+      } catch {
+        if (!telemetryFailureReported) {
+          telemetryFailureReported = true;
+          warnTelemetry("Talk activity delivery failed; observation dropped");
+        }
+      }
+    }
+  };
+  const enqueueActivity = (event: TalkEvent) => {
+    if (!activityEvents || lifetime.signal.aborted) {
+      return;
+    }
+    if (event.type === "session.activity") {
+      latestActivity = event;
+    } else {
+      if (inputOutcomes.length === 128) {
+        inputOutcomes.shift();
+        if (!overflowReported) {
+          overflowReported = true;
+          warnTelemetry("Talk activity outcome queue overflow; oldest observation dropped");
+        }
+      }
+      inputOutcomes.push(event);
+    }
+    if (readyAcknowledged && !activityFlushQueued) {
+      activityFlushQueued = true;
+      queueMicrotask(flushActivity);
     }
   };
   const transport: SpeechAudioTransport = {
@@ -246,7 +311,7 @@ export async function createTalkSpeechRelaySession(params: {
     id,
     connId: params.connId,
     sessionTarget: params.sessionTarget,
-    async appendAudio(audioBase64, endOfInput) {
+    async appendAudio(audioBase64, endOfInput, captureId) {
       assertActive();
       if (!readyAcknowledged || !input) {
         throw new Error(
@@ -268,13 +333,13 @@ export async function createTalkSpeechRelaySession(params: {
         throw new Error("Talk speech input requires complete PCM16 samples");
       }
       if (audio.byteLength > 0) {
-        input(audio);
+        input(audio, captureId === undefined ? undefined : { captureId });
       }
       if (endOfInput) {
         if (!inputOwner) {
           throw new Error("Talk speech session is not ready");
         }
-        await inputOwner.finishInput();
+        await inputOwner.finishInput(captureId === undefined ? undefined : { captureId });
         assertActive();
       }
     },
@@ -285,6 +350,9 @@ export async function createTalkSpeechRelaySession(params: {
       }
       readyAcknowledged = true;
       ready.resolve();
+      if (activityEvents) {
+        engine?.publishActivity();
+      }
     },
     cancelOutput(options) {
       assertActive();
@@ -326,6 +394,8 @@ export async function createTalkSpeechRelaySession(params: {
         return closing;
       }
       lifetime.abort(new Error("Talk speech session closed"));
+      inputOutcomes.length = 0;
+      latestActivity = undefined;
       connectionPreparation.current?.cancel();
       ready.reject(lifetime.signal.reason);
       if (expiryTimer) {
@@ -567,6 +637,7 @@ export async function createTalkSpeechRelaySession(params: {
       inputEncoding: "pcm16",
       inputSampleRateHz: 16000,
       supportsInputEnd: engine?.supportsInputEnd === true,
+      ...(activityEvents ? { activityEvents: true } : {}),
       outputEncoding: "pcm16",
       outputSampleRateHz: 24000,
     },

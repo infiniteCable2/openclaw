@@ -1,5 +1,6 @@
 // Agent talkback runtime tests cover agent response playback into talk sessions.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../shared/deferred.js";
 import { createRealtimeVoiceAgentTalkbackQueue } from "./agent-talkback-runtime.js";
 
 afterEach(() => {
@@ -53,6 +54,49 @@ function expectConsultCall(
 }
 
 describe("realtime voice agent talkback queue", () => {
+  it("observes queued and active work through the synchronous delivery handoff", async () => {
+    vi.useFakeTimers();
+    const first = createDeferredCore<{ text: string }>();
+    const onActivity = vi.fn<NonNullable<QueueParams["onActivity"]>>();
+    const deliver = vi.fn(() => {
+      expect(onActivity.mock.calls.at(-1)?.[0].active).toBe(true);
+    });
+    const queue = createQueue({
+      consult: vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue({ text: "Second." }),
+      onActivity,
+      deliver,
+    });
+    queue.enqueue("First", "source-a");
+    expect(onActivity).toHaveBeenLastCalledWith({ queued: 1, active: false });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onActivity).toHaveBeenLastCalledWith({ queued: 0, active: true });
+    queue.enqueue("Second", "source-b");
+    expect(onActivity).toHaveBeenLastCalledWith({ queued: 1, active: true });
+    first.resolve({ text: "First." });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(onActivity).toHaveBeenLastCalledWith({ queued: 0, active: false });
+    expect(queue.isIdle()).toBe(true);
+    queue.close();
+  });
+
+  it("contains failing observers without changing work or delivery", async () => {
+    vi.useFakeTimers();
+    const deliver = vi.fn();
+    const queue = createQueue({
+      consult: async () => ({ text: "Complete." }),
+      onActivity() {
+        throw new Error("synthetic observer failure");
+      },
+      deliver,
+    });
+    expect(queue.enqueue("Question")).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(deliver).toHaveBeenCalledExactlyOnceWith("Complete.");
+    expect(queue.isIdle()).toBe(true);
+    queue.close();
+  });
+
   it("debounces transcript fragments into one consult", async () => {
     vi.useFakeTimers();
     const logger = makeLogger();

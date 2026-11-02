@@ -71,7 +71,9 @@ export type RealtimeTranscriptionSession = {
    * Finalize retained real audio at an explicit capture boundary, not disconnect.
    * close() must cancel/unblock outstanding finish work so teardown can join it.
    */
-  finishInput?(): void | Promise<void>;
+  finishInput?(options?: {
+    captureId: string;
+  }): void | { activity: "none" | "observed" } | Promise<void | { activity: "none" | "observed" }>;
   close(): void;
   isConnected(): boolean;
 };

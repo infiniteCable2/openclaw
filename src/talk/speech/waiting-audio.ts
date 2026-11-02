@@ -198,11 +198,13 @@ export function createSpeechWaitingAudioPlayback(params: {
   transport: Pick<SpeechAudioTransport, "clearOutput" | "writeOutput">;
   isStopped: () => boolean;
   onError: (error: unknown) => void;
+  onActivity?: (state: "streaming" | "submitted", generation: number) => void;
 }): SpeechWaitingAudioPlayback {
   let generation = 0;
   let stopTail = Promise.resolve();
   let playback:
     | {
+        generation: number;
         controller: AbortController;
         started: boolean;
         task: Promise<void>;
@@ -221,6 +223,7 @@ export function createSpeechWaitingAudioPlayback(params: {
       await current.task.catch(() => undefined);
       if (current.started) {
         await params.transport.clearOutput();
+        params.onActivity?.("submitted", current.generation);
       }
     });
     stopTail = stopTask.catch(() => undefined);
@@ -236,6 +239,7 @@ export function createSpeechWaitingAudioPlayback(params: {
     const currentGeneration = ++generation;
     const controller = new AbortController();
     const current = {
+      generation: currentGeneration,
       controller,
       started: false,
       task: Promise.resolve(),
@@ -259,6 +263,7 @@ export function createSpeechWaitingAudioPlayback(params: {
         signal: controller.signal,
         onStarted: () => {
           current.started = true;
+          params.onActivity?.("streaming", currentGeneration);
         },
       });
     })().catch((error: unknown) => {

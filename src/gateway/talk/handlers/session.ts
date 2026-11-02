@@ -105,12 +105,12 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
       try {
         sessionMutationAuthorization?.assertCurrent();
         if (
-          mode !== "stt-tts" &&
+          (mode !== "stt-tts" || transport !== "gateway-relay") &&
           params.capabilities?.some((capability) => capability !== "voice-selection")
         ) {
           return respondInvalidRequest(
             respond,
-            "isolated-input/output-gate capabilities require an STT/TTS speech relay",
+            "Speech media capabilities require an STT/TTS speech relay",
           );
         }
         if (params.voiceChangeId && (mode !== "realtime" || transport !== "gateway-relay")) {
@@ -564,6 +564,9 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
       if (params.endOfInput && session.kind !== "speech-relay") {
         throw new Error("endOfInput requires an STT/TTS speech relay session");
       }
+      if (params.captureId !== undefined && session.kind !== "speech-relay") {
+        throw new Error("captureId requires an STT/TTS speech relay session");
+      }
       if (session.kind === "realtime-relay") {
         const connId = requireUnifiedTalkSessionConn(session, client?.connId);
         await sendTalkRealtimeRelayAudio({
@@ -581,7 +584,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         });
       } else if (session.kind === "speech-relay") {
         requireUnifiedTalkSessionConn(session, client?.connId);
-        await session.appendAudio(params.audioBase64, params.endOfInput);
+        await session.appendAudio(params.audioBase64, params.endOfInput, params.captureId);
       } else {
         respondInvalidRequest(
           respond,

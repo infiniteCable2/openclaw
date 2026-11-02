@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { RealtimeTranscriptionSession } from "../../realtime-transcription/provider-types.js";
 import { createSpeechSttAudioConverter, type SpeechInputAudioFormat } from "./audio-format.js";
 import type { resolveSpeechTranscriptionProvider } from "./support.js";
@@ -14,6 +15,13 @@ export function createSpeechTranscriptionInput(params: {
   isReady(): boolean;
   assertCurrent(): void;
   acceptAudio(audio: Buffer): boolean;
+  onCaptureStarted?(captureId: string): void;
+  onAudio?(captureId: string): void;
+  onCaptureEnded?(
+    captureId: string,
+    evidence?: { activity: "none" | "observed" },
+    failed?: boolean,
+  ): void;
 }) {
   const { provider, providerConfig } = params.transcription;
   const providerAudioFormat =
@@ -22,38 +30,69 @@ export function createSpeechTranscriptionInput(params: {
     createSpeechSttAudioConverter(params.inputAudioFormat, providerAudioFormat);
   let converter = createConverter();
   let finishing: Promise<void> | undefined;
+  let captureId: string | undefined;
+  const completed = new Map<string, Promise<void>>();
+  const capture = (requested?: string) => {
+    if (captureId && requested && captureId !== requested) {
+      throw new Error("Talk input does not match the active capture");
+    }
+    if (!captureId) {
+      captureId = requested ?? randomUUID();
+      params.onCaptureStarted?.(captureId);
+    }
+    return captureId;
+  };
   return {
     providerAudioFormat,
     get supportsInputEnd() {
       return typeof params.getSession()?.finishInput === "function";
     },
-    sendAudio(audio: Buffer) {
+    sendAudio(audio: Buffer, metadata?: { captureId: string }) {
       if (finishing) {
         throw new Error("Talk input boundary is still being processed");
       }
+      if (metadata?.captureId && completed.has(metadata.captureId)) {
+        throw new Error("Talk input capture has already ended");
+      }
+      const id = capture(metadata?.captureId);
       if (params.acceptAudio(audio)) {
+        params.onAudio?.(id);
         params.getSession()?.sendAudio(converter.process(audio));
       }
     },
-    async finishInput() {
+    async finishInput(options?: { captureId?: string }) {
       params.assertCurrent();
+      const duplicate = options?.captureId ? completed.get(options.captureId) : undefined;
+      if (duplicate) {
+        return duplicate;
+      }
       if (finishing) {
+        if (options?.captureId && options.captureId !== captureId) {
+          throw new Error("Talk input does not match the closing capture");
+        }
         return finishing;
       }
       const session = params.getSession();
       if (!params.isReady() || !session?.finishInput) {
         throw new Error("Transcription provider does not support an explicit input boundary");
       }
+      const id = capture(options?.captureId);
       const finishProviderInput = session.finishInput.bind(session);
       const finish = Promise.resolve().then(async () => {
-        params.assertCurrent();
-        const remaining = converter.flush();
-        converter = createConverter();
-        if (remaining.byteLength > 0) {
-          session.sendAudio(remaining);
+        try {
+          params.assertCurrent();
+          const remaining = converter.flush();
+          converter = createConverter();
+          if (remaining.byteLength > 0) {
+            session.sendAudio(remaining);
+          }
+          const evidence = await finishProviderInput({ captureId: id });
+          params.assertCurrent();
+          params.onCaptureEnded?.(id, evidence || undefined);
+        } catch (error) {
+          params.onCaptureEnded?.(id, undefined, true);
+          throw error;
         }
-        await finishProviderInput();
-        params.assertCurrent();
       });
       finishing = finish;
       try {
@@ -61,6 +100,11 @@ export function createSpeechTranscriptionInput(params: {
       } finally {
         if (finishing === finish) {
           finishing = undefined;
+          captureId = undefined;
+          completed.set(id, finish);
+          if (completed.size > 64) {
+            completed.delete(completed.keys().next().value!);
+          }
         }
       }
     },
@@ -82,7 +126,7 @@ export function createSpeechSessionInput(transport: SpeechAudioTransport) {
   let starting: Promise<void> | undefined;
   return {
     async start(
-      onAudio: (audio: Buffer) => void,
+      onAudio: Parameters<SpeechAudioTransport["startInput"]>[0],
       assertCurrent: () => void,
       startOtherInput?: () => void | Promise<void>,
     ) {

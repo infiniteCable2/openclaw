@@ -30,6 +30,8 @@ export type RealtimeVoiceAgentTalkbackQueueParams = {
   logPrefix: string;
   responseStyle: string;
   fallbackText: string;
+  /** Observations of this queue only; never a native model-run or admission claim. */
+  onActivity?: (state: { queued: number; active: boolean }) => void;
   /** Release ingress-owned media that was queued but never admitted to a consult. */
   onDiscardMetadata?: (metadata: unknown) => void;
   /** A trusted ingress can preserve native text batching while combining its media snapshots. */
@@ -63,6 +65,13 @@ export function createRealtimeVoiceAgentTalkbackQueue(
   let activeAbortController: AbortController | undefined;
 
   const shouldStop = () => closed || params.isStopped();
+  const observe = () => {
+    try {
+      params.onActivity?.({ queued: pendingQuestions.length, active });
+    } catch {
+      // Presentation cannot interfere with queued work or delivery.
+    }
+  };
 
   const clearDebounceTimer = () => {
     clearTimeout(debounceTimer);
@@ -102,6 +111,7 @@ export function createRealtimeVoiceAgentTalkbackQueue(
       pendingQuestions.push(next);
     }
     pendingQuestionChars += addedChars;
+    observe();
     return true;
   };
 
@@ -124,6 +134,7 @@ export function createRealtimeVoiceAgentTalkbackQueue(
     pendingQuestions = [];
     pendingQuestionChars = 0;
     overflowWarned = false;
+    observe();
   };
 
   const run = async (pending: PendingQuestion): Promise<void> => {
@@ -135,6 +146,7 @@ export function createRealtimeVoiceAgentTalkbackQueue(
       return;
     }
     active = true;
+    observe();
     let nextQuestion: PendingQuestion | undefined = pending;
     let consultStartedAt: number | undefined;
     try {
@@ -163,6 +175,7 @@ export function createRealtimeVoiceAgentTalkbackQueue(
           params.deliver(text);
         }
         nextQuestion = shiftPendingQuestion();
+        observe();
       }
     } catch (error) {
       activeAbortController = undefined;
@@ -184,6 +197,7 @@ export function createRealtimeVoiceAgentTalkbackQueue(
           void run(queuedQuestion);
         }
       }
+      observe();
     }
   };
 

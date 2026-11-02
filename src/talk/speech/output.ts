@@ -47,6 +47,11 @@ export function createSpeechOutput(params: {
   agentLogScope: string;
   logger: RuntimeLogger;
   onActivity?: (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => void;
+  onOutput?: (
+    generation: number,
+    state: "preparing" | "streaming" | "submitted",
+    purpose: "speech",
+  ) => void;
   getHarness: () => RealtimeVoiceSessionHarness;
   isStopped: () => boolean;
   getOutputGeneration: () => number;
@@ -76,6 +81,7 @@ export function createSpeechOutput(params: {
     activeReaders: activeTtsReaders,
   });
   let pendingChunks = 0;
+  const pendingByGeneration = new Map<number, number>();
   let commentarySequence = 0;
   let handoffPending = false;
   const failedReleases = new Map<() => Promise<void>, { error: unknown; reported: boolean }>();
@@ -179,6 +185,11 @@ export function createSpeechOutput(params: {
     }
     utterance.chunks.push(normalized);
     pendingChunks += 1;
+    const pending = pendingByGeneration.get(utterance.generation) ?? 0;
+    pendingByGeneration.set(utterance.generation, pending + 1);
+    if (pending === 0) {
+      params.onOutput?.(utterance.generation, "preparing", "speech");
+    }
     const transcriptEntry = harness.recordTranscript("assistant", normalized);
     transcriptEntry.audioDelivery = "unplayed";
     utterance.transcriptEntries.push(transcriptEntry);
@@ -270,6 +281,9 @@ export function createSpeechOutput(params: {
                 }
                 if (
                   !(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback, () => {
+                    if (firstSegmentChunk) {
+                      params.onOutput?.(utterance.generation, "streaming", "speech");
+                    }
                     // Accepted output may be audible before a paced write drains.
                     if (transcriptEntry.audioDelivery === "unplayed") {
                       transcriptEntry.audioDelivery = "started";
@@ -351,6 +365,13 @@ export function createSpeechOutput(params: {
       })
       .finally(() => {
         pendingChunks -= 1;
+        const remaining = (pendingByGeneration.get(utterance.generation) ?? 1) - 1;
+        if (remaining === 0) {
+          pendingByGeneration.delete(utterance.generation);
+          params.onOutput?.(utterance.generation, "submitted", "speech");
+        } else {
+          pendingByGeneration.set(utterance.generation, remaining);
+        }
         playbackDone.resolve();
       });
   };

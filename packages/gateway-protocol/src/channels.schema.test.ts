@@ -5,6 +5,8 @@ import {
   ChannelsStatusResultSchema,
   TalkSessionCancelOutputResultSchema,
   TalkSessionAppendAudioParamsSchema,
+  TalkSessionCreateParamsSchema,
+  TalkEventSchema,
   WebLoginStartParamsSchema,
   WebLoginWaitParamsSchema,
 } from "./schema/channels.js";
@@ -60,6 +62,40 @@ describe("TalkSessionAppendAudioParamsSchema", () => {
     expect(validate.Check({ sessionId: "speech-1", audioBase64: "", endOfInput: false })).toBe(
       false,
     );
+  });
+
+  it("bounds optional capture correlation on both audio forms", () => {
+    for (const audio of [{ audioBase64: "AAAA" }, { audioBase64: "", endOfInput: true }]) {
+      for (const captureId of ["capture-1", "x".repeat(128)]) {
+        expect(validate.Check({ sessionId: "speech-1", ...audio, captureId })).toBe(true);
+      }
+      for (const captureId of ["", " ", "x".repeat(129), 1]) {
+        expect(validate.Check({ sessionId: "speech-1", ...audio, captureId })).toBe(false);
+      }
+    }
+  });
+});
+
+describe("Talk activity extension", () => {
+  it("accepts optional negotiation and requires capture correlation only for input outcomes", () => {
+    expect(Compile(TalkSessionCreateParamsSchema).Check({ capabilities: ["activity-v1"] })).toBe(
+      true,
+    );
+    const validate = Compile(TalkEventSchema);
+    const event = {
+      id: "speech-1:1",
+      sessionId: "speech-1",
+      seq: 1,
+      timestamp: "2026-01-01T00:00:00Z",
+      mode: "stt-tts",
+      transport: "gateway-relay",
+      brain: "agent-consult",
+      payload: { version: 1 },
+    };
+    expect(validate.Check({ ...event, type: "session.activity" })).toBe(true);
+    expect(validate.Check({ ...event, type: "input.outcome", captureId: "capture-1" })).toBe(true);
+    expect(validate.Check({ ...event, type: "input.outcome" })).toBe(false);
+    expect(validate.Check({ ...event, type: "input.outcome", captureId: "" })).toBe(false);
   });
 });
 

@@ -57,5 +57,26 @@ describe("talk event envelope", () => {
     expect(() => events.next({ type: "capture.started", payload: {} })).toThrow(
       "Talk event capture.started requires captureId",
     );
+    expect(() => events.next({ type: "input.outcome", payload: {} })).toThrow(
+      "Talk event input.outcome requires captureId",
+    );
+  });
+
+  it("sequences a capture outcome and activity snapshot without manufacturing a turn", () => {
+    const events = createTalkEventSequencer({
+      sessionId: "session-voice",
+      mode: "stt-tts",
+      transport: "gateway-relay",
+      brain: "agent-consult",
+    });
+    const outcome = events.next({
+      type: "input.outcome",
+      captureId: "capture-1",
+      final: true,
+      payload: { version: 1, scope: "capture", outcome: "no-input" },
+    });
+    const activity = events.next({ type: "session.activity", payload: { version: 1 } });
+    expect(outcome).toMatchObject({ captureId: "capture-1", seq: 1, turnId: undefined });
+    expect(activity).toMatchObject({ seq: 2, turnId: undefined });
   });
 });

@@ -26,7 +26,9 @@ export interface SpeechAudioTransport {
   readonly supportsFullDuplexInput?: boolean;
   inputAudioIsolated?: boolean;
   onFatal(handler: () => void): void;
-  startInput(onAudio: (audio: Buffer) => void): void | Promise<void>;
+  startInput(
+    onAudio: (audio: Buffer, metadata?: { captureId: string }) => void,
+  ): void | Promise<void>;
   /** Optional sampled video; stop()/dispose() own both captures. Never backpressure PCM. */
   startVideoInput?(onFrame: (frame: SpeechVideoFrame) => void): void | Promise<void>;
   /** Actual remote playback readiness, not merely local publication or received microphone data. */

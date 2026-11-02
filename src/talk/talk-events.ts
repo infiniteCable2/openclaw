@@ -7,6 +7,7 @@ import type { TalkEvent as ProtocolTalkEvent } from "../../packages/gateway-prot
 export const TALK_EVENT_TYPES = [
   "session.started",
   "session.ready",
+  "session.activity",
   "session.closed",
   "session.error",
   "session.replaced",
@@ -19,6 +20,7 @@ export const TALK_EVENT_TYPES = [
   "capture.once",
   "input.audio.delta",
   "input.audio.committed",
+  "input.outcome",
   "transcript.delta",
   "transcript.done",
   "output.text.delta",
@@ -86,6 +88,7 @@ const TURN_SCOPED_TALK_EVENT_TYPES = new Set<TalkEventType>([
 
 // Capture-scoped events describe microphone capture lifecycle, which can overlap turns.
 const CAPTURE_SCOPED_TALK_EVENT_TYPES = new Set<TalkEventType>([
+  "input.outcome",
   "capture.started",
   "capture.stopped",
   "capture.cancelled",

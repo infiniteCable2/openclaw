@@ -8,8 +8,8 @@ import {
   createRealtimeVoiceSessionHarness,
   type RealtimeVoiceSessionHarness,
 } from "../realtime-session-harness.js";
-import type { RealtimeVoiceTranscriptEntry } from "../session-log-runtime.js";
 import { publishTalkConnectionPresentation } from "../session-registry.js";
+import { createSpeechActivity } from "./activity.js";
 import { createSpeechCancellation } from "./cancellation.js";
 import { playSpeechGreeting } from "./greeting.js";
 import { createSpeechInputOnset } from "./input-onset.js";
@@ -18,9 +18,12 @@ import { bindNativeSpeechControl } from "./native-control.js";
 import { createNativeSpeechInput } from "./native-input.js";
 import { createSpeechBargeInGate } from "./output-gate.js";
 import { createSpeechOutput, type SpeechUtterance } from "./output.js";
-import type { SpeechPlaybackSnapshot } from "./playback-observation.js";
 import { createSpeechSessionControls } from "./session-controls.js";
 import { createSpeechInputMetadata } from "./session-input-identity.js";
+import {
+  createSpeechSessionInputObservers,
+  type SpeechInputOnsetSnapshot,
+} from "./session-input-onset.js";
 import { createSpeechSessionInput, createSpeechTranscriptionInput } from "./session-input.js";
 import { createSpeechSessionLifecycle } from "./session-lifecycle.js";
 import type { SpeechStreamCancellation } from "./stream-cleanup.js";
@@ -59,20 +62,18 @@ export async function startSpeechSession(
   const activeTtsReaders = new Set<SpeechStreamCancellation>();
   let greetingPlayback: Promise<void> | undefined;
   let outputGeneration = 0;
+  const activity = createSpeechActivity({
+    emit: (event) => harness.emit(event),
+    getGeneration: () => outputGeneration,
+  });
+  let waitingOutput: { generation: number; outputGeneration: number } | undefined;
   let outputTurnId: string | undefined;
   let greetingPending = params.initialGreeting !== undefined;
   let currentWaitingTurn: number | undefined;
   // Native runs own admission; the session only serializes acknowledgments and audio generations.
   let activeConsult: SpeechActiveConsult | undefined;
   let responseQuestion: string | undefined;
-  const inputOnset = createSpeechInputOnset<{
-    consult: typeof activeConsult;
-    nativeRun: ReturnType<ReturnType<typeof createNativeSpeechInput>["captureRun"]>;
-    nativePlayback: SpeechPlaybackSnapshot | undefined;
-    speechStart: NonNullable<RealtimeVoiceTranscriptEntry["speechStart"]>;
-    interruptedEntries: RealtimeVoiceTranscriptEntry[];
-    startedAtMs: number;
-  }>();
+  const inputOnset = createSpeechInputOnset<SpeechInputOnsetSnapshot>();
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
   const resolved = resolveSpeechTranscriptionProvider({
     config: params.config,
@@ -100,12 +101,23 @@ export async function startSpeechSession(
     isReady: () => realtimeReady,
     assertCurrent: assertStarting,
     acceptAudio: (audio) => harness.recordInputAudio(audio),
+    onCaptureStarted: activity.captureStarted,
+    onAudio: activity.audio,
+    onCaptureEnded: activity.captureEnded,
   });
   const waiting = createSpeechWaitingController({
     playback: createSpeechWaitingAudioPlayback({
       audio: waitingAudio,
       transport: params.transport,
       isStopped: () => stopped,
+      onActivity(state, generation) {
+        if (state === "streaming") {
+          waitingOutput = { generation, outputGeneration };
+        }
+        if (waitingOutput?.generation === generation) {
+          activity.output(waitingOutput.outputGeneration, state, "waiting");
+        }
+      },
       onError: (error) => {
         params.logger.warn(
           `${params.surface.logScope} ${agentLogScope} waiting audio failed: ${formatErrorMessage(error)}`,
@@ -149,6 +161,7 @@ export async function startSpeechSession(
     logScope: `${params.surface.logScope} ${agentLogScope}`,
     fence() {
       stopped = true;
+      activity.close();
       releaseConnectionPresentation?.();
       releaseConnectionPresentation = undefined;
       video.close();
@@ -204,6 +217,7 @@ export async function startSpeechSession(
     agentLogScope,
     logger: params.logger,
     onActivity: params.onActivity,
+    onOutput: activity.output,
     getHarness: () => harness,
     isStopped: () => stopped,
     getOutputGeneration: () => outputGeneration,
@@ -224,6 +238,7 @@ export async function startSpeechSession(
       return;
     }
     outputGeneration += 1;
+    activity.output(outputGeneration, "idle");
     speechCancellation.markInterruptedTranscript();
     utterance.finalized = true;
     if (utterance.waitingTurn !== undefined) {
@@ -272,6 +287,7 @@ export async function startSpeechSession(
     talkback: params.nativeInput
       ? undefined
       : {
+          onActivity: activity.legacyWork,
           debounceMs:
             resolved.provider.transcriptGranularity === "utterance"
               ? 0
@@ -420,6 +436,7 @@ export async function startSpeechSession(
         abortSpeechUtterance,
         isStopped: () => stopped,
         getGeneration: () => outputGeneration,
+        onWork: activity.work,
         startWaiting() {
           params.onActivity?.("processing");
           const turn = waiting.onTurnStarted();
@@ -451,7 +468,8 @@ export async function startSpeechSession(
     get supportsInputEnd() {
       return transcriptionInput.supportsInputEnd;
     },
-    finishInput: () => transcriptionInput.finishInput(),
+    finishInput: (options) => transcriptionInput.finishInput(options),
+    publishActivity: activity.publish,
     speak: speechOutput.enqueueSpeakText,
     ...createSpeechSessionControls({
       harness,
@@ -467,6 +485,7 @@ export async function startSpeechSession(
         greetingPending,
       invalidateOutput: () => {
         outputGeneration++;
+        activity.output(outputGeneration, "idle");
         greetingPending = false;
       },
     }),
@@ -508,66 +527,24 @@ export async function startSpeechSession(
         greetingPending = false;
         currentWaitingTurn = undefined;
       },
-      onSpeechActivity: (event) => {
-        if (stopped) {
-          return;
-        }
-        if (event.state === "candidate") {
-          params.onActivity?.("sensing");
-          try {
-            const startedAtMs = Date.now();
-            video.begin(event.utteranceId, startedAtMs);
-            inputOnset.begin(event.utteranceId, {
-              consult: activeConsult,
-              nativeRun: nativeInput?.captureRun(),
-              nativePlayback: nativeInput?.capturePlayback(
-                startedAtMs,
-                harness.isOutputPlaybackActive(),
-              ),
-              interruptedEntries: speechCancellation.captureInterruptedTranscript(),
-              speechStart: {
-                at: new Date(startedAtMs).toISOString(),
-                precedingRequest:
-                  activeConsult?.question ??
-                  (activeTtsAborts.size + activeTtsReaders.size > 0 ||
-                  harness.isOutputPlaybackWindowActive()
-                    ? responseQuestion
-                    : undefined),
-              },
-              startedAtMs,
-            });
-          } catch {
-            stopAfterFailure("speech onset lifecycle");
-            return;
-          }
-        } else if (event.state === "rejected") {
-          video.settle(event.utteranceId);
-          params.onActivity?.("listening");
-          inputOnset.settle(event.utteranceId);
-        }
-        bargeInGate.onSpeechActivity(event);
-      },
-      onProcessing: (event) => {
-        if (event.state === "started") {
-          params.onActivity?.("processing");
-        } else if (event.state === "speech-confirmed") {
-          params.onActivity?.("hearing");
-        } else if (event.state === "transcribed") {
-          params.onActivity?.("processing");
-        } else if (["empty", "failed", "cancelled"].includes(event.state)) {
-          params.onActivity?.("listening");
-        }
-        waiting.onProcessing(event);
-        // A VAD confirmation can precede an empty decoder result. Keep the
-        // output reversibly paused until a nonempty caller transcript arrives.
-        bargeInGate.onProcessing(event);
-        if (["transcribed", "empty", "failed", "cancelled"].includes(event.state)) {
-          inputOnset.settle(event.utteranceId);
-        }
-        if (["empty", "failed", "cancelled"].includes(event.state)) {
-          video.settle(event.utteranceId);
-        }
-      },
+      ...createSpeechSessionInputObservers({
+        isStopped: () => stopped,
+        onActivity: params.onActivity,
+        observeActivity: activity.speechActivity,
+        observeProcessing: activity.processing,
+        onFailure: () => stopAfterFailure("speech onset lifecycle"),
+        video,
+        inputOnset,
+        bargeInGate,
+        waiting,
+        harness,
+        speechCancellation,
+        getConsult: () => activeConsult,
+        getNativeInput: () => nativeInput,
+        getResponseQuestion: () => responseQuestion,
+        activeTtsAborts,
+        activeTtsReaders,
+      }),
       onTranscript: (text, context) => {
         const reservation = inputOnset.claim(context?.utteranceId);
         const onset = reservation?.value;
@@ -583,6 +560,7 @@ export async function startSpeechSession(
           // Before the first output byte, only an accepted final transcript can
           // discard prepared speech. Delayed assistant echoes are not caller turns.
           outputGeneration += 1;
+          activity.output(outputGeneration, "idle");
           if (onset) {
             speechCancellation.markInterruptedTranscript(onset.interruptedEntries);
           }
@@ -620,6 +598,7 @@ export async function startSpeechSession(
           ),
         );
         if (assistantEcho) {
+          activity.transcript(context?.utteranceId);
           video.settle(context?.utteranceId);
           reservation?.release();
           params.logger.info(
@@ -641,6 +620,7 @@ export async function startSpeechSession(
             hasOnset: onset !== undefined,
             onAccepted: reservation?.release,
           });
+          activity.transcript(context?.utteranceId);
           return;
         }
         admitLegacySpeechInput({
@@ -660,6 +640,7 @@ export async function startSpeechSession(
             );
           },
         });
+        activity.transcript(context?.utteranceId);
       },
       onError: (error) => {
         params.logger.warn(
@@ -674,14 +655,15 @@ export async function startSpeechSession(
       type: "session.started",
       payload: { sessionId: params.sessionId, provider: resolved.provider.id },
     });
+    activity.publish();
     // Drain transport input while connect() is pending so the capture pipe never backpressures;
     // chunks before session.ready are dropped instead of arriving later as a stale burst.
     await input.start(
-      (audio) => {
+      (audio, metadata) => {
         if (stopped || !realtimeReady || audio.byteLength === 0) {
           return;
         }
-        transcriptionInput.sendAudio(audio);
+        transcriptionInput.sendAudio(audio, metadata);
       },
       assertStarting,
       () => video.start(params.transport, assertStarting),
@@ -703,6 +685,7 @@ export async function startSpeechSession(
     throw error;
   }
   realtimeReady = true;
+  activity.connection("ready");
   harness.emit({
     type: "session.ready",
     payload: { sessionId: params.sessionId },
@@ -711,6 +694,7 @@ export async function startSpeechSession(
   if (params.initialGreeting) {
     const greeting = params.initialGreeting;
     const generation = outputGeneration;
+    activity.output(generation, "preparing", "greeting");
     greetingPlayback = playSpeechGreeting({
       greeting,
       transport: params.transport,
@@ -722,8 +706,13 @@ export async function startSpeechSession(
       onStarted: () => {
         greetingPending = false;
       },
-      writeOutputAudio: speechOutput.writeOutputAudio,
-    }).catch((error: unknown) => lifecycle.fail("greeting playback", error));
+      writeOutputAudio: (audio, firstChunk, isCurrent) =>
+        speechOutput.writeOutputAudio(audio, firstChunk, isCurrent, () => {
+          activity.output(generation, "streaming", "greeting");
+        }),
+    })
+      .finally(() => activity.output(generation, "submitted", "greeting"))
+      .catch((error: unknown) => lifecycle.fail("greeting playback", error));
   }
 
   return handle;

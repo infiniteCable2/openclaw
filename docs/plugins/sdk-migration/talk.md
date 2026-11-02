@@ -191,6 +191,39 @@ capabilities keeps non-full-duplex input suppression; declaring isolated input
 without a playback gate is rejected rather than silently weakening barge-in.
 Media capability declarations do not grant agent or tool authority.
 
+Speech relay clients may additionally negotiate `activity-v1`; the create result
+then declares `audio.activityEvents: true`. Supply the same optional `captureId`
+(1–128 nonblank characters) on that capture's audio chunks and final boundary.
+Canonical `input.outcome` events carry that capture correlation and a version-1
+recognition outcome; `session.activity` reports independent input, native work
+and output observations. Legacy providers without boundary evidence report
+`unknown`, rather than inventing an empty input. Neither an audio ACK nor a
+transcribed outcome proves a model run started. After the ready-mark ACK, Core
+publishes a fresh activity snapshot; consumers settle a terminal outcome against
+a snapshot whose sequence is at least that terminal's sequence. Ignore older
+captures when presenting newer work. Telemetry is bounded, best-effort and does
+not initiate or cancel work. Output submission and `output.audio.done` do not
+prove that a client's hardware playback buffer has drained.
+
+Version-1 activity has `connection` (`preparing`, `ready`, `closed`), `input`
+(`phase`, optional `captureId`/`utteranceId`, and `pending`), `work`
+(`pending`, `queued`, `running` counts), and `output` (`generation`, `state`,
+optional `purpose`). Input phases distinguish `listening`, `receiving`,
+`candidate`, `speech`, `transcribing`, and `unknown`: sustained acoustic energy
+is still a candidate; only the provider's positive speech confirmation reports
+`speech`. Native work counters observe actual admission/run callbacks. Legacy
+Talkback consults remain `pending` through their existing delivery handoff;
+they do not manufacture native running IDs.
+
+An input outcome has `scope: "capture" | "utterance"` and `outcome: "no-input" |
+"rejected" | "transcribed" | "failed" | "cancelled" | "unknown"`. Only the
+capture outcome settles its boundary, after all its observed utterances settle;
+a subsequent snapshot is always published. It must not clear a newer capture,
+other work, or queued audio. Output `preparing`, `streaming`, and `submitted`
+describe server producers (`speech`, `waiting`, or `greeting`), with `idle`
+when none has produced output. Waiting music cannot hide pending speech.
+Clients retain their existing local playback drain and watchdog policies.
+
 Audio arrives as bounded `audio` events with `audioBase64`; text arrives as
 final `transcript` events. The nested `talkEvent` retains the common turn/event
 envelope, including output start/end and cancellation. An enqueued frame is not

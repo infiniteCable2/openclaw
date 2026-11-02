@@ -31,6 +31,7 @@ function createFixture(
   const activeTtsAborts: OutputParams["activeTtsAborts"] = new Set();
   const activeTtsReaders: OutputParams["activeTtsReaders"] = new Set();
   const warn = vi.fn();
+  const onOutput = vi.fn<NonNullable<OutputParams["onOutput"]>>();
   const waitingStop = vi.fn(async (): Promise<void> => undefined);
   const waitingIdle = vi.fn((_turn: number) => undefined);
   const output = createSpeechOutput({
@@ -43,6 +44,7 @@ function createFixture(
     sessionId: "prefetch-test",
     agentLogScope: "test",
     logger: { info: vi.fn(), warn, error: vi.fn() },
+    onOutput,
     getHarness: () => harness,
     isStopped: () => stopped,
     getOutputGeneration: () => generation,
@@ -74,6 +76,7 @@ function createFixture(
     output,
     emit,
     warn,
+    onOutput,
     transcripts,
     activeTtsAborts,
     activeTtsReaders,
@@ -111,6 +114,32 @@ function completeResult(audio = Buffer.alloc(4_800), release = vi.fn(async () =>
 }
 
 describe("speech output compute/playout overlap", () => {
+  it("observes preparation, actual handoff and submission without claiming local playback drain", async () => {
+    const handoff = createDeferred();
+    const written = createDeferred();
+    const fixture = createFixture(
+      async () => completeResult(),
+      async () => {
+        written.resolve();
+        await handoff.promise;
+      },
+    );
+    const utterance = fixture.output.createSpeechUtterance();
+    fixture.output.enqueueSpeechChunk("First.", utterance);
+    expect(fixture.onOutput.mock.calls).toEqual([[0, "preparing", "speech"]]);
+    await written.promise;
+    expect(fixture.onOutput).toHaveBeenLastCalledWith(0, "streaming", "speech");
+    fixture.output.enqueueSpeechChunk("Second.", utterance);
+    // Read-ahead cannot label an already streaming generation as preparing.
+    expect(fixture.onOutput.mock.calls.filter(([, state]) => state === "preparing")).toHaveLength(
+      1,
+    );
+    expect(fixture.onOutput.mock.calls.some(([, state]) => state === "submitted")).toBe(false);
+    handoff.resolve();
+    await fixture.output.drain();
+    expect(fixture.onOutput).toHaveBeenLastCalledWith(0, "submitted", "speech");
+  });
+
   it("publishes admitted commentary as identified text without finalizing the answer", async () => {
     const fixture = createFixture(
       async () => completeResult(),

@@ -50,6 +50,11 @@ export function createNativeSpeechInput(params: {
   waitForInput(run: NativeSpeechRun, signal?: AbortSignal): void | Promise<void>;
   recordUnplayed(utterance: SpeechUtterance, text: string): void;
   onFailure(error: unknown): void;
+  onWork?(event: {
+    inputId: string;
+    phase: "pending" | "queued" | "running" | "settled";
+    runId?: string;
+  }): void;
 }) {
   const messages = resolveUserMessages(params.language);
   let active: NativeSpeechRun | undefined;
@@ -90,6 +95,14 @@ export function createNativeSpeechInput(params: {
     const captured = input.hasOnset ? input.onsetRun : active;
     const metadata = input.metadata ? params.inputs.read(input.metadata) : undefined;
     const inputId = input.inputId ?? metadata?.input.inputId ?? randomUUID();
+    const observe = (phase: "pending" | "queued" | "running" | "settled", runId?: string) => {
+      try {
+        params.onWork?.({ inputId, phase, ...(runId ? { runId } : {}) });
+      } catch {
+        // Presentation cannot change native admission or work custody.
+      }
+    };
+    observe("pending");
     const playback = input.hasOnset ? input.onsetPlayback : capturePlayback();
     let run: NativeSpeechRun | undefined;
     let adopted = false;
@@ -142,11 +155,13 @@ export function createNativeSpeechInput(params: {
         ...(params.video.source ? { toolBindings: { video_inspect: params.video.source } } : {}),
         transcript: [], // Native history is authoritative; do not append a copied audio log.
         onQueueAccepted: () => {
+          observe("queued");
           input.onAccepted?.();
           input.onQueueAccepted?.();
         },
         bufferReply: params.session.config.responseStreaming !== "sentence",
         onNativeRunBound(binding) {
+          observe("running", binding.runId);
           const utterance = params.output.createSpeechUtterance(waitingTurn);
           utterance.generation = generation;
           run = { binding, generation, inputId, utterance, admissions: new Set() };
@@ -272,6 +287,7 @@ export function createNativeSpeechInput(params: {
       }
       return result;
     } finally {
+      observe("settled", run?.binding.runId);
       input.onAccepted?.();
       releaseAdmission();
       metadata?.snapshot?.release();

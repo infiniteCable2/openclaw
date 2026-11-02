@@ -98,6 +98,7 @@ function fixture(video = createSpeechVideoInput(undefined)) {
     }
   });
   const recordUnplayed = vi.fn();
+  const onWork = vi.fn<NonNullable<Parameters<typeof createNativeSpeechInput>[0]["onWork"]>>();
   let turn = 0;
   const owner = createNativeSpeechInput({
     dispatch,
@@ -122,6 +123,7 @@ function fixture(video = createSpeechVideoInput(undefined)) {
     waitForInput: () => undefined,
     recordUnplayed,
     onFailure: vi.fn(),
+    onWork,
   });
   const bound = (runId: string): ReplySpeechRunBinding => ({
     runId,
@@ -138,6 +140,7 @@ function fixture(video = createSpeechVideoInput(undefined)) {
     finishWaiting,
     abortSpeechUtterance,
     recordUnplayed,
+    onWork,
     bound,
     utterances,
     waitForFinished(waitingTurn: number) {
@@ -199,6 +202,36 @@ function fixture(video = createSpeechVideoInput(undefined)) {
 }
 
 describe("native speech input media ownership", () => {
+  it("reports actual admission and run facts without holding native work for audio", async () => {
+    const f = fixture();
+    const input = f.owner.submit({ text: "Original", inputId: "input-a", hasOnset: false });
+    expect(f.onWork.mock.calls).toEqual([[{ inputId: "input-a", phase: "pending" }]]);
+    await f.waitForCall(1);
+    f.calls[0]!.onQueueAccepted();
+    f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+    f.pending[0]!.resolve({ kind: "reply", reply: { text: "Complete." } });
+    await input;
+    expect(f.onWork.mock.calls.map(([event]) => event)).toEqual([
+      { inputId: "input-a", phase: "pending" },
+      { inputId: "input-a", phase: "queued" },
+      { inputId: "input-a", phase: "running", runId: "run-a" },
+      { inputId: "input-a", phase: "settled", runId: "run-a" },
+    ]);
+  });
+
+  it("contains observation failures and settles failed native submissions", async () => {
+    const f = fixture();
+    f.onWork.mockImplementation(() => {
+      throw new Error("broken observer");
+    });
+    const input = f.owner.submit({ text: "Original", inputId: "input-a", hasOnset: false });
+    await f.waitForCall(1);
+    f.calls[0]!.onQueueAccepted();
+    f.pending[0]!.resolve({ kind: "reply", reply: { text: "" } });
+    await expect(input).resolves.toEqual({ kind: "reply", reply: { text: "" } });
+    expect(f.onWork).toHaveBeenLastCalledWith({ inputId: "input-a", phase: "settled" });
+  });
+
   it("refreshes late video on the next natural input and retains exact frame access", async () => {
     const video = createSpeechVideoInput({
       enabled: true,
