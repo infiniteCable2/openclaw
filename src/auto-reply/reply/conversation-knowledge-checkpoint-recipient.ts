@@ -463,6 +463,11 @@ export async function prepareRecipientConversationCheckpoint(
       "branches",
       branch.lifecycleRevision,
     ).filter((reference) => latest.coverage.has(conversationKnowledgeContributionId(reference)));
+    // This is only preselection. Every selected alias below must obtain its
+    // exact account-scoped native personal grant before a summary can be staged.
+    const isAudienceCandidate = (reference: ConversationKnowledgeReference) =>
+      params.originalParticipant?.type === "profile" &&
+      reference.privateAudience?.participant.type === "remote";
     if (
       !selectConversationKnowledgeCheckpointBootstrap({
         ...latest,
@@ -470,6 +475,7 @@ export async function prepareRecipientConversationCheckpoint(
         audienceKey: params.expectedAudienceIdentity,
         progress: new Map(),
         availableReferences: references,
+        isAudienceCandidate,
       })
     ) {
       return;
@@ -551,6 +557,7 @@ export async function prepareRecipientConversationCheckpoint(
         rootEvidence: selectedEvents.evidence,
         availableReferences: references,
         source: check,
+        isAudienceCandidate,
       });
       if (!selection) {
         return;

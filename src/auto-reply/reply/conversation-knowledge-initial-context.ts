@@ -239,6 +239,7 @@ export async function prepareConversationKnowledgeInitialContext(params: {
         audienceKey: sources.audienceKey,
         progress: new Map(),
         availableReferences: sources.references,
+        isAudienceCandidate: sources.isAudienceCandidate,
       });
     }
     const cached = new Map(

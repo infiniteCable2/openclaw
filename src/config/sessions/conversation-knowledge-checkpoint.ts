@@ -244,6 +244,8 @@ export function createConversationKnowledgeCheckpoint(params: {
   covered: readonly ConversationKnowledgeReference[];
   previous?: ConversationKnowledgeCheckpoint;
   previousCoverage?: PreparedConversationKnowledgeCheckpointCoverage;
+  /** Internal prepared selection only; native source grants still own every covered range. */
+  isAudienceCandidate?: (reference: ConversationKnowledgeReference) => boolean;
 }): ConversationKnowledgeCheckpoint {
   const root = {
     agentId: params.branch.agentId,
@@ -272,9 +274,11 @@ export function createConversationKnowledgeCheckpoint(params: {
     if (
       !reference ||
       reference.retirement ||
+      !reference.privateAudience ||
       reference.source.agentId !== root.agentId ||
-      conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) !==
-        params.audienceKey
+      (conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) !==
+        params.audienceKey &&
+        !params.isAudienceCandidate?.(reference))
     ) {
       throw new Error("Conversation checkpoint has invalid or mixed-audience coverage");
     }
@@ -354,6 +358,8 @@ export function selectConversationKnowledgeCheckpointBootstrap(params: {
   progress: ReadonlyMap<string, ConversationKnowledgePacketProgress>;
   hasCheckpointReceipt?: boolean;
   availableReferences: readonly ConversationKnowledgeReference[];
+  /** Preselection cannot authorize disclosure; every covered original still needs native custody. */
+  isAudienceCandidate?: (reference: ConversationKnowledgeReference) => boolean;
 }): ConversationKnowledgeCheckpoint | undefined {
   if (params.progress.size !== 0 || params.hasCheckpointReceipt) {
     return undefined;
@@ -381,13 +387,15 @@ export function selectConversationKnowledgeCheckpointBootstrap(params: {
     if (
       !reference ||
       reference.retirement ||
+      !reference.privateAudience ||
       reference.source.agentId !== params.branch.agentId ||
       (reference.source.sessionId === params.branch.sessionId &&
         reference.source.sessionKey === params.branch.sessionKey &&
         reference.source.lifecycleRevision === params.branch.lifecycleRevision) ||
       !params.coverage.matchesReference(reference) ||
-      conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) !==
-        params.audienceKey
+      (conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) !==
+        params.audienceKey &&
+        !params.isAudienceCandidate?.(reference))
     ) {
       return undefined;
     }

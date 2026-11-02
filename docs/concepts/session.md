@@ -105,6 +105,14 @@ native work. Source mode is captured from the admitted turn, not guessed at
 settlement. Existing packet progress deduplicates repeated switches. A root's
 mere existence grants neither enrollment authority nor cross-conversation access.
 
+Private context follows the native person profile, not a display name or device
+label. Administrator-linked channel identities can share it across configured
+inputs. Existing private contributions keep their original channel identity;
+the personal read owner checks the source account, native sender provenance and
+current profile link before disclosing an exact saved range. Unlinking or
+reassigning the identity invalidates prepared reads. Unconfirmed history is not
+promoted, and source attribution and transcript bytes remain unchanged.
+
 Private visibility is independent of conversation mode. When the original ingress
 proves the private recipient of a new conversation, creation stores native `draft`
 visibility in both modes. It remains private through `/new` and later mode changes;

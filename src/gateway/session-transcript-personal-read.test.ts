@@ -20,6 +20,11 @@ const mocks = vi.hoisted(() => ({
   root: vi.fn(),
   groupPrepare: vi.fn(),
   groupAssert: vi.fn(),
+  identity: vi.fn(),
+}));
+// mock-isolation: Native link facts retain their actual revocation callback without a state worker.
+vi.mock("../state/user-channel-identity-operations.js", () => ({
+  prepareUserChannelIdentityAuthority: mocks.identity,
 }));
 // mock-isolation: Exercise the actual native read API without starting a database worker or Gateway.
 vi.mock("./session-sharing-preparation.js", () => ({ prepareSessionMutationFacts: mocks.prepare }));
@@ -158,6 +163,7 @@ beforeEach(() => {
   mocks.anchors.mockReset();
   mocks.groupPrepare.mockReset();
   mocks.groupAssert.mockReset();
+  mocks.identity.mockReset();
 });
 
 describe("same-person conversation differences on native transcript read owner", () => {
@@ -658,6 +664,132 @@ function historicalFixture(count = 2, own = false) {
       }),
   };
 }
+
+describe("source-account-bound personal participant links", () => {
+  function linkedFixture() {
+    const f = historicalFixture(3);
+    const remote = {
+      type: "remote" as const,
+      pluginId: "example-channel",
+      domain: "example.test",
+      idKind: "user-id",
+      id: "remote-person",
+    };
+    f.source.entry.delivery = {
+      kind: "external",
+      route: { channel: remote.pluginId, accountId: "source-account" },
+      context: {},
+      origin: { from: remote.id },
+    };
+    for (const [index, reference] of f.references.entries()) {
+      reference.source.lifecycleRevision = f.source.entry.lifecycleRevision!;
+      reference.origin = conversationKnowledgeOrigin(reference.source, "utterance-observation");
+      reference.through.lifecycleRevision = reference.source.lifecycleRevision;
+      reference.privateAudience!.participant = remote;
+      f.anchors[index]!.lifecycleRevision = reference.source.lifecycleRevision;
+    }
+    let current = true;
+    mocks.identity.mockImplementation(async (identity) =>
+      identity.accountId === "source-account"
+        ? { linked: { profileId: f.participant.id }, isCurrent: () => current }
+        : undefined,
+    );
+    return {
+      ...f,
+      remote,
+      revokeLink: () => {
+        current = false;
+      },
+    };
+  }
+
+  it.each(["origin", "channel-creator"] as const)(
+    "qualifies %s provenance, reuses custody, and revokes disclosure and prepared COMMIT",
+    async (provenance) => {
+      const f = linkedFixture();
+      if (provenance === "channel-creator" && f.source.entry.delivery?.kind === "external") {
+        delete f.source.entry.delivery.origin.from;
+        f.source.entry.createdActor = { type: "human", source: "channel", id: f.remote.id };
+      }
+      const group = await f.create();
+      try {
+        const grant = await prepareTranscriptReadAuthority({
+          ...f.params,
+          personal: { ...f.params.personal, contributionGroup: group },
+        });
+        try {
+          expect(mocks.identity).toHaveBeenCalledExactlyOnceWith({
+            channelId: f.remote.pluginId,
+            accountId: "source-account",
+            senderId: f.remote.id,
+          });
+          expect(f.references.every((reference) => grant.selectContribution(reference))).toBe(true);
+          expect(f.references.map((reference) => reference.privateAudience?.participant)).toEqual([
+            f.remote,
+            f.remote,
+            f.remote,
+          ]);
+          const prepared = await prepareSessionSourceAuthority(grant.assertCurrent);
+          f.revokeLink();
+          expect(() => prepared.assertPreparedCurrent?.()).toThrow("identity link changed");
+          expect(() => grant.assertCurrent()).toThrow();
+          await expect(
+            prepareTranscriptReadAuthority({
+              ...f.params,
+              personal: { ...f.params.personal, contributionGroup: group },
+            }),
+          ).rejects.toThrow("identity link changed");
+          await prepared.release?.();
+          expect(mocks.identity).toHaveBeenCalledTimes(1);
+        } finally {
+          grant.release();
+        }
+      } finally {
+        group.release();
+      }
+    },
+  );
+
+  it.each([
+    "other-account",
+    "transformed-id",
+    "unattributed",
+    "mixed-person",
+    "historical-observation",
+  ] as const)("refuses %s without promoting receipts", async (change) => {
+    const f = linkedFixture();
+    if (change === "other-account" && f.source.entry.delivery?.kind === "external") {
+      f.source.entry.delivery.route.accountId = "other-account";
+    }
+    if (change === "transformed-id" && f.source.entry.delivery?.kind === "external") {
+      f.source.entry.delivery.origin.from = "different-native-sender";
+    }
+    if (change === "unattributed") {
+      delete f.references[1]!.privateAudience;
+    }
+    if (change === "mixed-person") {
+      f.references[1]!.privateAudience!.participant = { type: "profile", id: "another-person" };
+    }
+    if (change === "historical-observation") {
+      f.source.entry.lifecycleRevision = "new-lifecycle";
+      f.source.entry.participants = [
+        {
+          identity: {
+            type: "observation",
+            pluginId: "example-channel",
+            accountId: "source-account",
+            senderKind: "unknown",
+            id: f.remote.id,
+          },
+        },
+      ];
+    }
+    await expect(f.create()).rejects.toThrow();
+    if (change === "transformed-id") {
+      expect(mocks.identity).not.toHaveBeenCalled();
+    }
+  });
+});
 
 describe("exact historical contribution groups", () => {
   it("rebinds one native custody per group, keeps original provenance, and fences the current lifecycle at COMMIT", async () => {

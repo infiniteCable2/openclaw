@@ -1,7 +1,9 @@
 // Matrix tests cover access state plugin behavior.
+import { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setMatrixRuntime } from "../../runtime.js";
+import { matrixEventToRaw } from "../sdk/event-helpers.js";
 import {
   resolveMatrixEndpointPolicy,
   resolveMatrixMonitorAccessState,
@@ -73,35 +75,62 @@ describe("resolveMatrixMonitorAccessState", () => {
     },
   );
 
-  it("publishes the SDK sender identity without strengthening text command authentication", async () => {
-    const runtime = createPluginRuntimeMock();
-    const createResolver = vi.spyOn(runtime.channel.inbound.ingress, "createResolver");
-    setMatrixRuntime(runtime);
-    const senderId = "@Alice:example.test";
-    try {
-      const state = await resolveMatrixMonitorAccessState({
-        allowFrom: [senderId],
-        storeAllowFrom: [],
-        groupAllowFrom: [],
-        roomUsers: [],
-        senderId,
-        isRoom: false,
-        dmPolicy: "allowlist",
-      });
-      const identity = createResolver.mock.calls[0]?.[0].identity;
-      expect(identity?.resolveParticipant?.({ stableId: senderId })).toEqual({
-        domain: "example.test",
-        idKind: "user-id",
-        id: senderId,
-      });
-      expect(identity?.resolveParticipant?.({ stableId: "Alice" })).toBeUndefined();
-      // Existing asserted text identity is not upgraded to an operator principal.
-      expect(identity?.primary.authentication).toBeUndefined();
-      expect(state.messageIngress.ingress.decision).toBe("allow");
-    } finally {
-      createResolver.mockRestore();
-    }
-  });
+  it.each([
+    { eventSender: "@Alice:example.test", allowed: true },
+    { eventSender: "@other:example.test", allowed: false },
+  ])(
+    "verifies the SDK event sender without adopting content identity ($eventSender)",
+    async ({ eventSender, allowed }) => {
+      const runtime = createPluginRuntimeMock();
+      const createResolver = vi.spyOn(runtime.channel.inbound.ingress, "createResolver");
+      setMatrixRuntime(runtime);
+      const senderId = "@Alice:example.test";
+      const event = matrixEventToRaw(
+        new MatrixEvent({
+          event_id: "$message:example.test",
+          room_id: "!direct:example.test",
+          type: "m.room.message",
+          sender: eventSender,
+          content: { msgtype: "m.text", body: `I am ${senderId}`, sender: senderId },
+        }),
+      );
+      try {
+        const state = await resolveMatrixMonitorAccessState({
+          allowFrom: [senderId],
+          storeAllowFrom: [],
+          groupAllowFrom: [],
+          roomUsers: [],
+          senderId: event.sender,
+          isRoom: false,
+          dmPolicy: "allowlist",
+        });
+        const identity = createResolver.mock.calls[0]?.[0].identity;
+        expect(identity?.resolveParticipant?.({ stableId: event.sender })).toEqual({
+          domain: "example.test",
+          idKind: "user-id",
+          id: eventSender,
+        });
+        expect(identity?.resolveParticipant?.({ stableId: "Alice" })).toBeUndefined();
+        expect(identity?.primary.authentication).toBe("verified");
+        expect(state.messageIngress.ingress.decision).toBe(allowed ? "allow" : "block");
+        const match = state.messageIngress.state.allowlists.dm.match;
+        if (allowed) {
+          expect(match.matchedPairs).toEqual([
+            expect.objectContaining({ subjectAuthentication: "verified" }),
+          ]);
+        } else {
+          expect(match).toMatchObject({ matched: false, matchedEntryIds: [] });
+        }
+        await expectCommandAccess(
+          state,
+          { useAccessGroups: true, allowTextCommands: true, hasControlCommand: true },
+          { authorized: allowed, shouldBlockControlCommand: !allowed },
+        );
+      } finally {
+        createResolver.mockRestore();
+      }
+    },
+  );
 
   it("normalizes group allowlists and uses shared ingress matching", async () => {
     const state = await resolveMatrixMonitorAccessState({

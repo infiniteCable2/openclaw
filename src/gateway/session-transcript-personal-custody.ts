@@ -18,12 +18,9 @@ import {
   issuePersonalConversationContributionRange,
   type PersonalConversationContributionRange,
 } from "../config/sessions/conversation-knowledge-source-custody.js";
-import type { ConversationKnowledgeBranch } from "../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../config/sessions/conversation-knowledge.js";
 import { assertSessionConversationRootEntry } from "../config/sessions/session-conversation-admission.js";
 import { sessionCreatorProfileId } from "../config/sessions/session-entry-provenance.js";
-import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
-import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
   type PreparedSessionSourceAuthority,
@@ -31,68 +28,21 @@ import {
 import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
-import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
 import { resolveSessionVisibility } from "./session-sharing-policy.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 import {
+  releasePersonalReadCustody,
+  type PersonalReadCustody,
+  type PersonalAdmissionBinding,
+} from "./session-transcript-personal-admission.js";
+import {
   preparePersonalContributionMetadata,
   type PersonalContributionMetadata,
 } from "./session-transcript-personal-contribution-group.js";
+import { createPersonalParticipantCustody } from "./session-transcript-personal-participant.js";
 import type { PersonalConversationReadParams } from "./session-transcript-personal-read.js";
-
-type PersonalReadSource = Readonly<{
-  agentId: string;
-  canonicalKey: string;
-  storePath: string;
-  sessionId: string;
-  lifecycleRevision: string | undefined;
-  readSource: CapturedSessionEntryReadSource;
-}>;
-type PersonalReadCustody = {
-  reads: Array<{
-    held: Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
-    expected: PersonalReadSource;
-    selectorPath: string;
-    storeKey: string;
-    members: string[];
-    entry: InternalSessionEntry;
-    root: boolean;
-    attested: boolean;
-  }>;
-  sources: PersonalReadSource[];
-  releases: Array<() => void>;
-  references: number;
-};
-type PersonalAdmissionBinding = {
-  target: ConversationKnowledgeBranch;
-  participant: SessionParticipantIdentity;
-  selected: readonly { agentId: string; sessionKey: string }[];
-  selectedMode: ReturnType<typeof resolveAgentConversationMode>;
-  contributionGroupDigest?: string;
-  creatingDestination: boolean;
-};
-
-function releasePersonalReadCustody(custody: PersonalReadCustody, retireView: boolean) {
-  if (retireView) {
-    custody.references--;
-  }
-  if (custody.references > 0) {
-    return;
-  }
-  const errors: unknown[] = [];
-  // Failed terminal cleanup retains native ownership for a later release retry.
-  for (let index = custody.releases.length - 1; index >= 0; index--) {
-    try {
-      custody.releases[index]!();
-      custody.releases.splice(index, 1);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  throwSqliteLifecycleErrors(errors, "Personal transcript read release failed");
-}
 
 const personalAdmissionIssuer = Symbol("native-personal-admission");
 /** Retains native row publications, never a former caller's execution or disclosure proof. */
@@ -112,9 +62,11 @@ class PreparedPersonalConversationAdmission {
     }
     this.#custody = custody;
     this.#binding = structuredClone(binding);
-    this.byteLength = Buffer.byteLength(
-      JSON.stringify({ binding, reads: custody.reads.map(({ held: _held, ...read }) => read) }),
-    );
+    this.byteLength =
+      custody.participants.byteLength +
+      Buffer.byteLength(
+        JSON.stringify({ binding, reads: custody.reads.map(({ held: _held, ...read }) => read) }),
+      );
     custody.references++;
     Object.freeze(this);
   }
@@ -197,7 +149,8 @@ export async function preparePersonalConversationReadInternal(
     }
     contributionById.set(id, reference);
   }
-  const custodyContributions = contributionMetadata ? contributions.slice(0, 1) : contributions;
+  // All distinct immutable audiences must qualify, not just a representative range.
+  const custodyContributions = contributionMetadata?.audiences ?? contributions;
   original();
   const selectedMode = resolveAgentConversationMode(params.getRuntimeConfig(), target.agentId);
   if (
@@ -268,7 +221,13 @@ export async function preparePersonalConversationReadInternal(
   const reusingAdmission = params.preparedAdmission !== undefined;
   const custody: PersonalReadCustody = reusingAdmission
     ? PreparedPersonalConversationAdmission.acquire(params.preparedAdmission, binding)
-    : { reads: [], sources: [], releases: [], references: 1 };
+    : {
+        reads: [],
+        sources: [],
+        releases: [],
+        references: 1,
+        participants: createPersonalParticipantCustody(participant),
+      };
   const { reads, sources, releases } = custody;
   let active = true;
   let refusal: unknown;
@@ -290,6 +249,7 @@ export async function preparePersonalConversationReadInternal(
       throw refusal;
     }
     original();
+    custody.participants.assertCurrent();
     destination?.assertCurrent();
     if (creation) {
       assertConversationBranchCreation({
@@ -393,12 +353,15 @@ export async function preparePersonalConversationReadInternal(
             reference,
             target.root,
           );
-        if (identity !== audienceIdentity) {
+        if (
+          !identity ||
+          !custody.participants.matches(entry, reference.privateAudience?.participant)
+        ) {
           throw new PersonalConversationReadRefusedError(
             "Personal contribution has no current same-person source custody",
           );
         }
-        contributionIdentity = identity;
+        contributionIdentity = audienceIdentity;
       }
     }
     if (
@@ -485,7 +448,26 @@ export async function preparePersonalConversationReadInternal(
         "Personal conversation source physical ownership changed",
       );
     }
-    const attested = checkEntry(current.entry, root, current.canonicalKey);
+    const entry = structuredClone(current.entry);
+    if (!root) {
+      await custody.participants.prepare(
+        entry,
+        contributions.length &&
+          selected.some((source) => source.sessionKey === current.canonicalKey)
+          ? custodyContributions.flatMap((reference) =>
+              reference.privateAudience ? [reference.privateAudience.participant] : [],
+            )
+          : [],
+        current.canonicalKey === target.sessionKey,
+      );
+      const refreshed = held.readCurrent(policy()).target.entry;
+      if (fields.some((field) => !isDeepStrictEqual(entry[field], refreshed[field]))) {
+        throw new PersonalConversationReadRefusedError(
+          "Personal source changed during identity preparation",
+        );
+      }
+    }
+    const attested = checkEntry(entry, root, current.canonicalKey);
     checkMembers(members, root);
     const expected = Object.freeze({
       agentId: current.agentId,
@@ -502,7 +484,7 @@ export async function preparePersonalConversationReadInternal(
       selectorPath: current.storePath,
       storeKey: current.storeKey,
       members,
-      entry: structuredClone(current.entry),
+      entry,
       root,
       attested,
     });
@@ -540,10 +522,7 @@ export async function preparePersonalConversationReadInternal(
       if (
         selected.length !== 1 ||
         selected[0]?.agentId !== reference.source.agentId ||
-        selected[0]?.sessionKey !== reference.source.sessionKey ||
-        (reference.privateAudience &&
-          conversationKnowledgeParticipantIdentity(reference.privateAudience.participant) !==
-            audienceIdentity)
+        selected[0]?.sessionKey !== reference.source.sessionKey
       ) {
         throw new PersonalConversationReadRefusedError(
           "Personal contribution is not the original person's selected range",

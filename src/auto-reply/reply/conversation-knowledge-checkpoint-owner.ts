@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { requiredWorkerHelperError } from "../../config/required-worker-profile.js";
@@ -550,6 +551,11 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           previous,
           previousCoverage,
           covered: candidate.coveredContributionIds.map((id) => byId.get(id)!),
+          isAudienceCandidate: (reference) =>
+            isDeepStrictEqual(
+              selectedContributions.get(conversationKnowledgeContributionId(reference))?.reference,
+              reference,
+            ),
         });
         await appendConversationKnowledgeCheckpoint({
           branch: broker.branch,

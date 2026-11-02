@@ -9,6 +9,8 @@ import type { PersonalConversationReadParams } from "./session-transcript-person
 
 export type PersonalContributionMetadata = Readonly<{
   contributions: readonly ConversationKnowledgeReference[];
+  /** One immutable representative per raw audience; authority is checked separately in custody. */
+  audiences: readonly ConversationKnowledgeReference[];
   digest: string;
   rootProof: NativeKnowledgeRootContributionGroup;
   byteLength: number;
@@ -27,8 +29,8 @@ export async function preparePersonalContributionMetadata(
   const cached = sharedContributionSets.get(digest)?.deref();
   const contributions = cached?.contributions ?? freezeReference(structuredClone(supplied));
   const byId = new Map<string, ConversationKnowledgeReference>();
+  const audiences = new Map<string | undefined, ConversationKnowledgeReference>();
   const first = contributions[0];
-  const audience = conversationKnowledgeParticipantIdentity(personal.originalParticipant);
   if (!first) {
     throw new PersonalConversationReadRefusedError("Contribution group requires an exact source");
   }
@@ -38,14 +40,17 @@ export async function preparePersonalContributionMetadata(
       byId.has(id) ||
       reference.retirement ||
       !reference.privateAudience ||
-      !isDeepStrictEqual(reference.source, first.source) ||
-      conversationKnowledgeParticipantIdentity(reference.privateAudience.participant) !== audience
+      !isDeepStrictEqual(reference.source, first.source)
     ) {
       throw new PersonalConversationReadRefusedError(
         "Contribution group has invalid or mixed ranges",
       );
     }
     byId.set(id, reference);
+    audiences.set(
+      conversationKnowledgeParticipantIdentity(reference.privateAudience.participant),
+      reference,
+    );
   }
   const { prepareNativeKnowledgeRootContributionGroup } =
     await import("../config/sessions/conversation-knowledge-store.js");
@@ -58,6 +63,7 @@ export async function preparePersonalContributionMetadata(
     cached ??
     Object.freeze({
       contributions,
+      audiences: Object.freeze([...audiences.values()]),
       digest,
       byteLength: Buffer.byteLength(serialized),
       findContribution: (id: string) => byId.get(id),
@@ -76,6 +82,7 @@ export async function preparePersonalContributionMetadata(
   // Retain the shared owner, not a spread copy that would expire its weak registry entry.
   return Object.freeze({
     contributions: shared.contributions,
+    audiences: shared.audiences,
     digest: shared.digest,
     byteLength: shared.byteLength,
     rootProof,

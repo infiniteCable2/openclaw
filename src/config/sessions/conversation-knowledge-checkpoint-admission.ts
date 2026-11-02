@@ -98,6 +98,7 @@ export function prepareConversationKnowledgeCheckpointSelection(
   params: CheckpointSelectionBinding & {
     availableReferences: readonly ConversationKnowledgeReference[];
     source: SessionSourceAssertion;
+    isAudienceCandidate?: (reference: ConversationKnowledgeReference) => boolean;
   },
 ): PreparedConversationKnowledgeCheckpointSelection | undefined {
   params.source();

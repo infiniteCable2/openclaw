@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { describe, expect, it, vi } from "vitest";
 import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
@@ -70,6 +71,67 @@ const create = (covered = [reference(1)]) =>
     covered,
     summary: "The synthetic user selected a blue light.",
   });
+
+it("keeps linked channel checkpoint candidates distinct from native disclosure authority", () => {
+  const saved = reference(1);
+  saved.privateAudience = {
+    participant: {
+      type: "remote",
+      pluginId: "example",
+      domain: "example.test",
+      idKind: "user-id",
+      id: "remote-person",
+    },
+    admission: saved.through,
+  };
+  const before = structuredClone(saved);
+  expect(() => create([saved])).toThrow("mixed-audience");
+  const isAudienceCandidate = (value: ConversationKnowledgeReference) =>
+    isDeepStrictEqual(value, saved);
+  const checkpoint = createConversationKnowledgeCheckpoint({
+    branch,
+    audienceKey,
+    covered: [saved],
+    summary: "An exact privately admitted channel contribution.",
+    isAudienceCandidate,
+  });
+  const coverage = prepareConversationKnowledgeCheckpointCoverage({
+    checkpoint,
+    records: [checkpoint],
+    assertCurrent() {},
+  });
+  const selection = {
+    branch,
+    checkpoint,
+    coverage,
+    audienceKey,
+    progress: new Map(),
+    availableReferences: [saved],
+  };
+  expect(selectConversationKnowledgeCheckpointBootstrap(selection)).toBeUndefined();
+  expect(
+    selectConversationKnowledgeCheckpointBootstrap({ ...selection, isAudienceCandidate }),
+  ).toEqual(checkpoint);
+  expect(
+    selectConversationKnowledgeCheckpointBootstrap({
+      ...selection,
+      audienceKey: "another-person",
+      isAudienceCandidate,
+    }),
+  ).toBeUndefined();
+  const unconfirmed = { ...saved, privateAudience: undefined };
+  expect(() =>
+    createConversationKnowledgeCheckpoint({
+      branch,
+      audienceKey,
+      covered: [unconfirmed],
+      summary: "Must not admit unconfirmed history.",
+      isAudienceCandidate: () => true,
+    }),
+  ).toThrow("mixed-audience");
+  expect(saved).toEqual(before);
+  expect(checkpoint.coveredContributionIds).toEqual([conversationKnowledgeContributionId(before)]);
+});
 const prepare = (checkpoint: ConversationKnowledgeCheckpoint, records = [checkpoint]) =>
   prepareConversationKnowledgeCheckpointCoverage({ checkpoint, records, assertCurrent: () => {} });
 

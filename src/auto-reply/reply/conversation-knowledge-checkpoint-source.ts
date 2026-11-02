@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
@@ -210,8 +211,16 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       (reference) =>
         !reference.retirement &&
         reference.source.agentId === branch.agentId &&
-        conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) ===
-          audienceKey,
+        (conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) ===
+          audienceKey ||
+          (params.participant.type === "profile" &&
+            reference.privateAudience?.participant.type === "remote")),
+    );
+    const candidateById = new Map(
+      rootReferences.map((reference) => [
+        conversationKnowledgeContributionId(reference),
+        reference,
+      ]),
     );
     const groupManifest = prepareCheckpointGroupCache({
       cache: params.sourceCache,
@@ -474,6 +483,13 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
     const result = {
       audienceKey,
       references: rootReferences,
+      // Raw channel aliases are candidates only. Exact account-scoped native
+      // personal reads below decide whether they belong to this profile.
+      isAudienceCandidate: (reference: ConversationKnowledgeReference) =>
+        isDeepStrictEqual(
+          candidateById.get(conversationKnowledgeContributionId(reference)),
+          reference,
+        ),
       read: (reference: ConversationKnowledgeReference, retainText = true) =>
         readAvailableSource(reference, () => read(reference, retainText)),
       validate: (

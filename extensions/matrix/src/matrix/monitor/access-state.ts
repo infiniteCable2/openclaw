@@ -54,8 +54,11 @@ function normalizeMatrixEntry(raw?: string | null): string | null {
   return normalizeMatrixAllowList([raw ?? ""])[0] ?? null;
 }
 
+// The SDK supplies the authenticated room event's sender, outside message content.
+// This verifies the Matrix account identity, not device cross-signing or room privacy.
 const matrixIngressIdentity = defineStableChannelIngressIdentity({
   key: "sender-id",
+  authentication: "verified",
   normalize: normalizeMatrixEntry,
   resolveParticipant: resolveMatrixSenderParticipant,
   matchEntry({ subject, entry }) {

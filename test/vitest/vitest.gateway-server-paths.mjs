@@ -259,6 +259,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-startup-migration.test.ts",
   "src/gateway/session-subagent-resume.test.ts",
   "src/gateway/session-swarm-summary.test.ts",
+  "src/gateway/session-transcript-personal-links.worker.test.ts",
   "src/gateway/session-transcript-preview.hydration.test.ts",
   "src/gateway/session-transcript-title-reader.test.ts",
   "src/gateway/session-utils-store-lookup.freshness.test.ts",

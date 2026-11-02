@@ -20,6 +20,7 @@ import { prepareConversationKnowledgeCheckpointSources } from "./conversation-kn
 import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
 
 const boundary = vi.hoisted(() => ({
+  root: [] as unknown[],
   target: vi.fn(),
   context: vi.fn(),
   anchors: vi.fn(),
@@ -30,7 +31,7 @@ const boundary = vi.hoisted(() => ({
 }));
 // mock-isolation: Supply native root provenance without opening storage or indexing histories.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
-  readConversationKnowledgeRoot: async () => [],
+  readConversationKnowledgeRoot: async () => boundary.root,
   assertNativeKnowledgeRootContribution() {},
 }));
 // mock-isolation: This suite owns checkpoint refusal handling, not foreign-source grant discovery.
@@ -109,6 +110,39 @@ function reference(generation = "current"): ConversationKnowledgeReference {
   };
 }
 const cleanups = new Set<() => void>();
+
+it("selects private channel aliases as candidates without manufacturing personal read grants", async () => {
+  const saved = reference();
+  saved.privateAudience = {
+    participant: {
+      type: "remote",
+      pluginId: "example",
+      domain: "example.test",
+      idKind: "user-id",
+      id: "remote-person",
+    },
+    admission: saved.through,
+  };
+  const unknown = { ...reference("unknown"), privateAudience: undefined };
+  const foreign = reference("foreign");
+  foreign.privateAudience = {
+    participant: { type: "profile", id: "another-person" },
+    admission: foreign.through,
+  };
+  boundary.root = [saved, unknown, foreign].map((details) => ({
+    type: "custom_message",
+    customType: "openclaw.conversation-utterance.v1",
+    details,
+  }));
+  const held = await sources();
+  expect(held.references).toEqual([saved]);
+  expect(held.isAudienceCandidate(structuredClone(saved))).toBe(true);
+  expect(held.isAudienceCandidate(foreign)).toBe(false);
+  expect(held.isAudienceCandidate(unknown)).toBe(false);
+  expect(boundary.personal).not.toHaveBeenCalled();
+  expect(boundary.group).not.toHaveBeenCalled();
+});
+
 async function sources(
   assertCurrent = () => {},
   options?: {
@@ -166,6 +200,7 @@ async function sources(
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  boundary.root = [];
   boundary.target.mockResolvedValue({
     kind: "ready",
     branch,
