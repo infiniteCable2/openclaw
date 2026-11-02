@@ -173,8 +173,13 @@ export const TalkEventSchema = Type.Object(
         ...requireJsonSchemaProperties(["captureId"]),
       },
       {
-        if: { properties: { type: { const: "input.outcome" } }, required: ["type"] },
-        then: { properties: { captureId: { type: "string", minLength: 1, pattern: "\\S" } } },
+        anyOf: [
+          { not: { properties: { type: { const: "input.outcome" } }, required: ["type"] } },
+          {
+            properties: { captureId: { type: "string", minLength: 1, pattern: "\\S" } },
+            required: ["captureId"],
+          },
+        ],
       },
     ],
   },

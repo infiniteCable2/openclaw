@@ -6,7 +6,12 @@ function fixture() {
   const events: TalkEventInput[] = [];
   let generation = 1;
   const getGeneration = vi.fn(() => generation);
-  const activity = createSpeechActivity({ emit: (event) => events.push(event), getGeneration });
+  const activity = createSpeechActivity({
+    emit: (event) => {
+      events.push(event);
+    },
+    getGeneration,
+  });
   const snapshot = () => events.findLast((event) => event.type === "session.activity");
   const outcomes = (scope: "capture" | "utterance") =>
     events.filter(

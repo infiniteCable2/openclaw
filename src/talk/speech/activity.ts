@@ -28,7 +28,7 @@ type Purpose = NonNullable<Output["purpose"]>;
 
 /** Projects existing owner callbacks only; never admits, schedules or cancels their work. */
 export function createSpeechActivity(params: {
-  emit: (event: TalkEventInput) => void;
+  emit: (event: TalkEventInput) => void | Promise<void>;
   getGeneration: () => number;
 }) {
   let connection: "preparing" | "ready" | "closed" = "preparing";

@@ -63,7 +63,9 @@ export async function startSpeechSession(
   let greetingPlayback: Promise<void> | undefined;
   let outputGeneration = 0;
   const activity = createSpeechActivity({
-    emit: (event) => harness.emit(event),
+    emit: (event) => {
+      harness.emit(event);
+    },
     getGeneration: () => outputGeneration,
   });
   let waitingOutput: { generation: number; outputGeneration: number } | undefined;

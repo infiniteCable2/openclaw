@@ -96,6 +96,7 @@ describe("Talk activity extension", () => {
     expect(validate.Check({ ...event, type: "input.outcome", captureId: "capture-1" })).toBe(true);
     expect(validate.Check({ ...event, type: "input.outcome" })).toBe(false);
     expect(validate.Check({ ...event, type: "input.outcome", captureId: "" })).toBe(false);
+    expect(validate.Check({ ...event, type: "input.outcome", captureId: " " })).toBe(false);
   });
 });
 
