@@ -111,18 +111,16 @@ export function registerRestartContinuationRetryCases({
         { MessageSid: "restart-sentinel:agent:main:main:agentTurn:123:retry:2" },
         2,
       );
-      const deliveredBusyReply = (
-        mocks.deliverOutboundPayloads.mock.calls as unknown as Array<
-          [{ payloads?: Array<{ text?: string }> }]
-        >
-      ).some(([call]) => call.payloads?.some((payload) => payload.text === busyReply) === true);
-      expect(deliveredBusyReply).toBe(false);
-      const deliveredFinalReply = (
-        mocks.deliverOutboundPayloads.mock.calls as unknown as Array<
-          [{ payloads?: Array<{ text?: string }> }]
-        >
-      ).some(([call]) => call.payloads?.some((payload) => payload.text === "done") === true);
-      expect(deliveredFinalReply).toBe(false);
+      expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          payloads: expect.arrayContaining([expect.objectContaining({ text: busyReply })]),
+        }),
+      );
+      expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          payloads: expect.arrayContaining([expect.objectContaining({ text: "done" })]),
+        }),
+      );
       expectRecordFields(lastMockCallArg(mocks.deliverOutboundPayloads), {
         payloads: [{ text: "restart message" }],
       });
