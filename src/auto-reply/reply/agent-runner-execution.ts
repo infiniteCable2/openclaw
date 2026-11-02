@@ -1,19 +1,15 @@
 import crypto from "node:crypto";
-import { hasNonEmptyString } from "@openclaw/normalization-core/string-coerce";
-import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
 import {
   assertAdmittedRunOperatorAuthority,
   type AdmittedRunContext,
   type PreparedAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
-import { classifyFailoverReason } from "../../agents/embedded-agent-helpers.js";
 import {
   createDeferredEmbeddedRunLifecycleManager,
   type DeferredEmbeddedRunLifecycleManager,
 } from "../../agents/embedded-agent-runner/run/deferred-lifecycle-owner.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
-import { renderRateLimitOrOverloadedCopy } from "../../agents/failover/user-copy.js";
 import { resolveAgentLanguage } from "../../agents/identity.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { leaseMcpAppModelContextForSessionTurn } from "../../agents/mcp-ui-resource.js";
@@ -39,8 +35,6 @@ import {
   getPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { progressCardRefreshRunProjection } from "../../sessions/input-provenance.js";
-import { resolveUserMessageLocale } from "../../shared/language.js";
-import { resolveUserMessages } from "../../shared/user-messages.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { captureCommandOwnerAssertion } from "../command-owner-authority.js";
 import type { PreparedReplyTranscriptStart } from "../get-reply-options.types.js";
@@ -68,7 +62,7 @@ import type {
 } from "./agent-runner-execution.types.js";
 import {
   buildTerminalAgentRunFailureReplyPayload,
-  markAgentRunFailureReplyPayload,
+  normalizeAgentRunFailurePayloads,
 } from "./agent-runner-failure-reply.js";
 import { runAgentFallbackCandidates } from "./agent-runner-fallback-candidate.js";
 import type {
@@ -128,7 +122,6 @@ async function executeAgentTurnInternalLoop(
   }
   const runtimeConfig = resolveQueuedReplyRuntimeConfig(runnableRun.config);
   const language = resolveAgentLanguage(runtimeConfig, runnableRun.agentId ?? "");
-  const messages = resolveUserMessages(language);
   const effectiveRun =
     runtimeConfig === runnableRun.config
       ? runnableRun
@@ -466,34 +459,7 @@ async function executeAgentTurnInternalLoop(
     terminalRunFailed,
   } = cycle;
 
-  // Preserve successful content and formatted tool errors. Mid-turn provider failures
-  // still pass through normal payload filtering and accounting (#36142).
-  const hasNonErrorContent = runResult.payloads?.some(
-    (p) => !p.isError && !p.isReasoning && hasOutboundReplyContent(p, { trimText: true }),
-  );
-  if (!hasNonErrorContent) {
-    const metaErrorMsg = runResult.meta?.error?.message ?? "";
-    const rawErrorPayloadText =
-      runResult.payloads?.find(
-        (p) => p.isError && hasNonEmptyString(p.text) && !p.text.startsWith("⚠️"),
-      )?.text ?? "";
-    const errorCandidate = metaErrorMsg || rawErrorPayloadText;
-    const candidateReason = errorCandidate ? classifyFailoverReason(errorCandidate) : null;
-    const formattedErrorCandidate =
-      candidateReason === "rate_limit" || candidateReason === "overloaded"
-        ? resolveUserMessageLocale(language) !== "en"
-          ? `⚠️ ${messages.requestFailure[candidateReason]}`
-          : renderRateLimitOrOverloadedCopy({ reason: candidateReason, raw: errorCandidate })
-        : undefined;
-    if (formattedErrorCandidate) {
-      runResult.payloads = [
-        markAgentRunFailureReplyPayload({
-          text: formattedErrorCandidate,
-          isError: true,
-        }),
-      ];
-    }
-  }
+  normalizeAgentRunFailurePayloads(runResult, language);
   const patchedModelNeedsRevert = terminalRunFailed
     ? false
     : (modelPatch.captureFallbackFailure(fallbackAttempts) ?? false);

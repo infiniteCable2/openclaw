@@ -3,7 +3,6 @@ import { resolveAgentLanguage } from "../../agents/identity.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { RealtimeTranscriptionSession } from "../../realtime-transcription/provider-types.js";
-import { resolveUserMessageLocale } from "../../shared/language.js";
 import { resolveUserMessages } from "../../shared/user-messages.js";
 import {
   createRealtimeVoiceSessionHarness,
@@ -26,6 +25,7 @@ import { createSpeechSessionInput, createSpeechTranscriptionInput } from "./sess
 import { createSpeechSessionLifecycle } from "./session-lifecycle.js";
 import type { SpeechStreamCancellation } from "./stream-cleanup.js";
 import {
+  buildSpeechTranscriptionFailureEvent,
   formatSpeechAgentAudioModelLog,
   formatSpeechTranscriptSummaryLog,
   speechOutputBytesPerMs,
@@ -665,17 +665,7 @@ export async function startSpeechSession(
         params.logger.warn(
           `${params.surface.logScope} ${agentLogScope} transcription bridge failed: ${formatErrorMessage(error)}`,
         );
-        harness.emit({
-          type: "session.error",
-          final: true,
-          payload: {
-            sessionId: params.sessionId,
-            error:
-              resolveUserMessageLocale(language) === "en"
-                ? formatErrorMessage(error)
-                : messages.voiceTranscriptionFailed,
-          },
-        });
+        harness.emit(buildSpeechTranscriptionFailureEvent(params.sessionId, error, language));
         stopAfterFailure("transcription bridge");
       },
     });

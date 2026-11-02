@@ -1,5 +1,6 @@
 import { normalizeOptionalString as readLogString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import type {
   RealtimeTranscriptionProviderPlugin,
   RealtimeVoiceProviderPlugin,
@@ -9,12 +10,15 @@ import {
   listRealtimeTranscriptionProviders,
 } from "../../realtime-transcription/provider-registry.js";
 import type { RealtimeTranscriptionProviderConfig } from "../../realtime-transcription/provider-types.js";
+import { resolveUserMessageLocale } from "../../shared/language.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import {
   resolveConfiguredRealtimeVoiceProvider,
   type ResolvedRealtimeVoiceProvider,
 } from "../provider-resolver.js";
 import type { RealtimeVoiceProviderConfig } from "../provider-types.js";
+import type { TalkEventInput } from "../talk-session-controller.js";
 import type { SpeechAudioFormat } from "./audio-format.js";
 
 type SpeechProviderSelectionConfig = {
@@ -30,6 +34,24 @@ type ResolvedRealtimeTranscriptionProvider = {
   provider: RealtimeTranscriptionProviderPlugin;
   providerConfig: RealtimeTranscriptionProviderConfig;
 };
+
+export function buildSpeechTranscriptionFailureEvent(
+  sessionId: string,
+  error: unknown,
+  language?: string,
+): TalkEventInput<{ sessionId: string; error: string }> {
+  return {
+    type: "session.error",
+    final: true,
+    payload: {
+      sessionId,
+      error:
+        resolveUserMessageLocale(language) === "en"
+          ? formatErrorMessage(error)
+          : resolveUserMessages(language).voiceTranscriptionFailed,
+    },
+  };
+}
 
 export function speechOutputBytesPerMs(audioFormat: SpeechAudioFormat): number {
   return audioFormat === "g711-ulaw-8khz" ? 8 : 48;

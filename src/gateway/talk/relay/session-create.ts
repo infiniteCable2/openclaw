@@ -27,7 +27,10 @@ import {
   scheduleForcedAgentConsult,
   submitRealtimeAgentConsultWorkingResponse,
 } from "./forced-consults.js";
-import { resolveTalkRealtimeRelayPresentation } from "./issues.js";
+import {
+  buildTalkRealtimeRelaySessionResult,
+  resolveTalkRealtimeRelayPresentation,
+} from "./issues.js";
 import {
   adoptTalkRealtimeRelaySession,
   cancelTalkRealtimeRelayProviderToolCall,
@@ -699,18 +702,11 @@ export function createTalkRealtimeRelaySession(
     void closeRelaySession(active, "error");
   });
 
-  return {
-    provider: params.provider.id,
-    transport: "gateway-relay",
+  return buildTalkRealtimeRelaySessionResult({
     relaySessionId,
-    audio: {
-      inputEncoding: "pcm16",
-      inputSampleRateHz: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ.sampleRateHz,
-      outputEncoding: "pcm16",
-      outputSampleRateHz: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ.sampleRateHz,
-    },
-    ...(publicModel ? { model: publicModel } : {}),
-    ...(voice ? { voice } : {}),
-    expiresAt: Math.floor(expiresAtMs / 1000),
-  };
+    provider: params.provider.id,
+    model: publicModel,
+    voice,
+    expiresAtMs,
+  });
 }

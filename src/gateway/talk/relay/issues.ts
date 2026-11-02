@@ -1,7 +1,34 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveFailoverReasonFromError } from "../../../agents/failover-error.js";
 import { projectInternalRealtimeVoicePublicConfig } from "../../../talk/provider-internal.js";
-import type { CreateTalkRealtimeRelaySessionParams } from "./state.js";
+import { REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ } from "../../../talk/provider-types.js";
+import type {
+  CreateTalkRealtimeRelaySessionParams,
+  TalkRealtimeRelaySessionResult,
+} from "./state.js";
+
+export function buildTalkRealtimeRelaySessionResult(params: {
+  relaySessionId: string;
+  provider: string;
+  model?: string;
+  voice?: string;
+  expiresAtMs: number;
+}): TalkRealtimeRelaySessionResult {
+  return {
+    provider: params.provider,
+    transport: "gateway-relay",
+    relaySessionId: params.relaySessionId,
+    audio: {
+      inputEncoding: "pcm16",
+      inputSampleRateHz: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ.sampleRateHz,
+      outputEncoding: "pcm16",
+      outputSampleRateHz: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ.sampleRateHz,
+    },
+    ...(params.model ? { model: params.model } : {}),
+    ...(params.voice ? { voice: params.voice } : {}),
+    expiresAt: Math.floor(params.expiresAtMs / 1000),
+  };
+}
 
 export function resolveTalkRealtimeRelayPresentation(
   params: Pick<

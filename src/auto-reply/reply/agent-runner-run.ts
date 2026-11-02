@@ -50,11 +50,7 @@ import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { resolveQueuedReplyExecutionConfig } from "./agent-runner-utils.js";
 import { createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { resolveEffectiveBlockStreamingConfig } from "./block-streaming.js";
-import {
-  type CompactionNoticePhase,
-  createCompactionNoticePayload,
-  shouldNotifyUserAboutCompaction,
-} from "./compaction-notice.js";
+import { createDirectCompactionNoticeSender } from "./compaction-notice.js";
 import { bindConversationInputPublication } from "./conversation-publication-input.js";
 import { createFollowupRunner } from "./followup-runner.js";
 import { buildReplyRunShuttingDownPayload } from "./get-reply-run-queue.js";
@@ -493,26 +489,12 @@ export async function runReplyAgent(
   const replyMediaContext = createReplyMediaContext(
     buildReplyMediaContextParams(followupRun, sessionKey, cfg),
   );
-  const compactionNoticeMessageId = sessionCtx.MessageSidFull ?? sessionCtx.MessageSid;
-  const sendDirectCompactionNotice = async (phase: CompactionNoticePhase, text?: string) => {
-    if (
-      !opts?.onBlockReply ||
-      (phase !== "context_bounded" && !shouldNotifyUserAboutCompaction(cfg))
-    ) {
-      return;
-    }
-    const noticePayload = createCompactionNoticePayload({
-      phase,
-      text,
-      currentMessageId: compactionNoticeMessageId,
-      applyReplyToMode,
-    });
-    try {
-      await opts.onBlockReply(noticePayload);
-    } catch (err) {
-      logVerbose(`context maintenance notice delivery failed: ${String(err)}`);
-    }
-  };
+  const sendDirectCompactionNotice = createDirectCompactionNoticeSender({
+    cfg,
+    opts,
+    currentMessageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
+    applyReplyToMode,
+  });
   const blockReplyPipeline =
     blockStreamingEnabled && (opts?.onPreparedBlockReply || opts?.onBlockReply)
       ? createBlockReplyPipeline({

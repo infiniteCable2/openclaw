@@ -1,7 +1,8 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { ReplyPayload } from "../types.js";
+import { logVerbose } from "../../globals.js";
+import type { GetReplyOptions, ReplyPayload } from "../types.js";
 
 export type CompactionNoticePhase =
   | "start"
@@ -51,6 +52,28 @@ export function createCompactionNoticePayload(
   params: CompactionNoticeOptions & { phase: CompactionNoticePhase; text?: string },
 ): ReplyPayload {
   return createNoticePayload(params.text ?? COMPACTION_NOTICE_TEXT[params.phase], params);
+}
+
+export function createDirectCompactionNoticeSender(
+  params: CompactionNoticeOptions & {
+    cfg: OpenClawConfig;
+    opts?: Pick<GetReplyOptions, "onBlockReply">;
+  },
+) {
+  return async (phase: CompactionNoticePhase, text?: string) => {
+    if (
+      !params.opts?.onBlockReply ||
+      (phase !== "context_bounded" && !shouldNotifyUserAboutCompaction(params.cfg))
+    ) {
+      return;
+    }
+    const noticePayload = createCompactionNoticePayload({ ...params, phase, text });
+    try {
+      await params.opts.onBlockReply(noticePayload);
+    } catch (err) {
+      logVerbose(`context maintenance notice delivery failed: ${String(err)}`);
+    }
+  };
 }
 
 export function createCompactionHookNoticePayload(

@@ -1,7 +1,11 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import {
+  hasNonEmptyString,
+  normalizeLowercaseStringOrEmpty,
+} from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
 import {
   buildOAuthRefreshFailureLoginCommand,
   classifyOAuthRefreshFailure,
@@ -24,6 +28,7 @@ import {
   renderAssistantRequestFailureCopy,
   renderRuntimeCoordinationFailureCopy,
 } from "../../agents/failover/assistant-request-failure-copy.js";
+import { classifyFailoverReason } from "../../agents/failover/classify.js";
 import { resolveExecutionApprovalFailureMessage } from "../../agents/failover/message-patterns.js";
 import { resolveReplyFailoverFacts } from "../../agents/failover/request-error-facts.js";
 import {
@@ -64,8 +69,42 @@ import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
+import type { EmbeddedAgentRunResult } from "./agent-runner-execution.types.js";
 
 type ReplyFailoverFacts = ReturnType<typeof resolveReplyFailoverFacts>;
+
+/** Preserve successful content and formatted tool errors while normalizing terminal provider copy. */
+export function normalizeAgentRunFailurePayloads(
+  runResult: Pick<EmbeddedAgentRunResult, "payloads" | "meta">,
+  language?: string,
+): void {
+  const hasNonErrorContent = runResult.payloads?.some(
+    (p) => !p.isError && !p.isReasoning && hasOutboundReplyContent(p, { trimText: true }),
+  );
+  if (!hasNonErrorContent) {
+    const metaErrorMsg = runResult.meta?.error?.message ?? "";
+    const rawErrorPayloadText =
+      runResult.payloads?.find(
+        (p) => p.isError && hasNonEmptyString(p.text) && !p.text.startsWith("⚠️"),
+      )?.text ?? "";
+    const errorCandidate = metaErrorMsg || rawErrorPayloadText;
+    const candidateReason = errorCandidate ? classifyFailoverReason(errorCandidate) : null;
+    const formattedErrorCandidate =
+      candidateReason === "rate_limit" || candidateReason === "overloaded"
+        ? resolveUserMessageLocale(language) !== "en"
+          ? `⚠️ ${resolveUserMessages(language).requestFailure[candidateReason]}`
+          : renderRateLimitOrOverloadedCopy({ reason: candidateReason, raw: errorCandidate })
+        : undefined;
+    if (formattedErrorCandidate) {
+      runResult.payloads = [
+        markAgentRunFailureReplyPayload({
+          text: formattedErrorCandidate,
+          isError: true,
+        }),
+      ];
+    }
+  }
+}
 
 function readFallbackAttempts(error: unknown): readonly ReplyFallbackAttempt[] {
   return isFailoverError(error) && Array.isArray(error.attempts) ? error.attempts : [];
