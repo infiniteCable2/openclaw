@@ -30,6 +30,7 @@ import {
 } from "./session-accessor.sqlite-entry.js";
 import type { SqliteSessionReclamationPlan } from "./session-accessor.sqlite-lifecycle-types.js";
 import { assignSessionOwner } from "./session-accessor.sqlite-owner.js";
+import { recordSessionParticipant } from "./session-accessor.sqlite-participants.native.js";
 import { applySessionEntryLifecycleMutation } from "./session-accessor.sqlite-projection.js";
 import { runSqliteSessionReclamation } from "./session-accessor.sqlite-reclamation-run.js";
 import { resolveSessionReclamationDatabaseOptions } from "./session-accessor.sqlite-reclamation.js";
@@ -83,6 +84,83 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   resetConfigRuntimeState();
 });
+
+it.each(["cold", "warm"] as const)(
+  "publishes native participant audience postimages with a %s entry cache",
+  (cache) => {
+    const stateDir = tempDirs.make("session-participant-publication-");
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const database = openOpenClawAgentDatabase({ agentId: "main" });
+    const scope = {
+      agentId: "main",
+      storePath: database.path,
+      sessionKey: "agent:main:participant-publication",
+    };
+    const entry = {
+      sessionId: "participant-publication",
+      lifecycleRevision: "original-generation",
+      chatType: "direct" as const,
+      updatedAt: 1,
+    };
+    replaceSessionEntrySync(scope, entry);
+    if (cache === "warm") {
+      readSessionEntryCache(database, { cache: true });
+    } else {
+      expect(readCommittedSessionEntryCache(database.db)).toBeUndefined();
+    }
+    const identity = readOpenClawAgentDatabaseIdentity(database).identity;
+    if (typeof identity !== "string") {
+      throw new Error("Expected durable native participant fixture");
+    }
+    const sharing = retainPreparedSessionSharingFacts({
+      databaseIdentity: `file:${identity}`,
+      sessionKey: scope.sessionKey,
+      entry: projectSessionSharingEntry(entry),
+      membership: new Set(),
+    });
+    const observed: Array<{ published: number | undefined; retained: number | undefined }> = [];
+    const stop = sessionChanges.subscribeFacts((change) => {
+      if (
+        "sessionKey" in change &&
+        change.sessionKey === scope.sessionKey &&
+        change.facts?.kind === "participants"
+      ) {
+        observed.push({
+          published: change.facts.projection?.participantCount,
+          retained: sharing.readCurrent()?.entry?.participantCount,
+        });
+      }
+    });
+    try {
+      for (const [index, id] of ["example-peer-one", "example-peer-two"].entries()) {
+        expect(
+          recordSessionParticipant(scope, {
+            identity: { type: "agent", id },
+            promptedAt: index + 1,
+          }),
+        ).toBe("inserted");
+        expect(sharing.readCurrent()).toMatchObject({
+          entry: { ...entry, participantCount: index + 1 },
+          membership: new Set(),
+        });
+        if (cache === "cold") {
+          expect(readCommittedSessionEntryCache(database.db)).toBeUndefined();
+        }
+      }
+      expect(sharing.readCurrent()?.entry?.participants).toEqual([
+        { identity: { type: "agent", id: "example-peer-one" } },
+        { identity: { type: "agent", id: "example-peer-two" } },
+      ]);
+      expect(observed).toEqual([
+        { published: 1, retained: 1 },
+        { published: 2, retained: 2 },
+      ]);
+    } finally {
+      stop();
+      sharing.release();
+    }
+  },
+);
 
 it("publishes history changes only after deletion while fresh reads observe foreign protection", async () => {
   const stateDir = tempDirs.make("session-history-publication-");
