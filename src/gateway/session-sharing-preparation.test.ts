@@ -12,6 +12,7 @@ import {
   writeSessionEntry,
   deleteSessionEntryRows,
 } from "../config/sessions/session-accessor.sqlite-entry-store.js";
+import { recordSessionParticipant } from "../config/sessions/session-accessor.sqlite-participants.native.js";
 import * as entryReads from "../config/sessions/session-entry-read-runtime.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import * as sharingKernel from "../config/sessions/session-sharing-store.kernel.js";
@@ -615,6 +616,9 @@ it.each(["durable", "incognito"] as const)(
 
 it.each([
   "worker-metadata",
+  "participant-first",
+  "participant-earlier",
+  "participant-progress",
   "visibility",
   "membership",
   "lifecycle",
@@ -640,6 +644,13 @@ it.each([
     };
     replaceSessionEntrySync(scope, entry);
     await addSessionMember(scope, { identityId: "requester", addedBy: "creator" });
+    const participantChange = change.startsWith("participant-");
+    if (participantChange && change !== "participant-first") {
+      recordSessionParticipant(scope, {
+        identity: { type: "profile", id: "creator" },
+        promptedAt: 2,
+      });
+    }
     const originalRead = entryReads.readSessionEntriesFromStoreInWorker;
     let publications = 0;
     vi.spyOn(entryReads, "readSessionEntriesFromStoreInWorker").mockImplementation(
@@ -647,7 +658,16 @@ it.each([
         const snapshot = await originalRead(...args);
         if (!publications && snapshot.entries.some((row) => row.sessionKey === sessionKey)) {
           publications++;
-          if (change === "unknown") {
+          if (participantChange) {
+            // Keep the actual worker snapshot and native participant producer.
+            // Even the earlier timestamp belongs to the same original human.
+            expect(
+              recordSessionParticipant(scope, {
+                identity: { type: "profile", id: "creator" },
+                promptedAt: change === "participant-earlier" ? 1 : 3,
+              }),
+            ).toBe(change === "participant-first" ? "inserted" : "updated");
+          } else if (change === "unknown") {
             runOpenClawAgentWriteTransaction(
               (database) => {
                 publishSessionEntryCacheInvalidation(database, { sessionKey });
@@ -715,8 +735,14 @@ it.each([
         expectWithoutHostSql(() => {
           const facts = read.readCurrent(cfg);
           expect(facts.target.entry.updatedAt).toBe(
-            change === "membership" || change === "rollback" ? 1 : 2,
+            change === "membership" || change === "rollback" || participantChange ? 1 : 2,
           );
+          if (participantChange) {
+            expect(facts.target.entry.participantCount).toBe(1);
+            expect(facts.target.entry.participants).toEqual([
+              { identity: { type: "profile", id: "creator" } },
+            ]);
+          }
           expect(facts.membership.has("requester")).toBe(change !== "membership");
           const policy = { ...cfg.gateway!.roles!.definitions.view!, sandbox: "required" as const };
           expect(
@@ -730,7 +756,7 @@ it.each([
               facts,
               { policy, aliases: new Set(["requester"]) },
             ) === null,
-          ).toBe(change === "worker-metadata" || change === "rollback");
+          ).toBe(change === "worker-metadata" || change === "rollback" || participantChange);
         });
       } finally {
         read.release();
