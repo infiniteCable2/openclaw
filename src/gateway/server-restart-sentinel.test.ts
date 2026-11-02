@@ -49,7 +49,6 @@ import {
   expectRestartSentinelTranscriptBroadcast,
   expectRecordFields,
   mockCallArg,
-  lastMockCallArg,
   expectMockCallFields,
   type RestartSentinelSessionFixture as LoadedSessionEntry,
 } from "./server-restart-sentinel.test-support.js";
