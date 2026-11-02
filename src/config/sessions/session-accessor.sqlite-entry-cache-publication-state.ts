@@ -33,6 +33,7 @@ import {
   publishRetainedSessionEntryPredicate,
   publishRetainedSessionGeneration,
   recordAcquiringSessionEntry,
+  recordAcquiringSessionParticipants,
   reconcileSessionSharingAcquisition,
   type CommittedSessionSharingFacts,
   type PreparedSessionEntryPredicate,
@@ -119,11 +120,15 @@ export function recordCommittedSessionMetadataPublication(
   for (const read of retainedSharingReads(database, sessionKey) ?? []) {
     if (change?.kind === "participants") {
       // Participant display stays separate, but its count is now a retained audience fact.
-      // An acquiring snapshot cannot establish which side of this commit it observed.
-      if (read.acquisition) {
-        read.acquisition.invalidated = true;
-      }
-      if (!change.projection) {
+      recordAcquiringSessionParticipants(read.acquisition, change);
+      if (
+        !change.projection ||
+        (change.previous &&
+          read.facts?.entry &&
+          (read.facts.entry.sessionId !== change.previous.sessionId ||
+            (read.facts.entry.lifecycleRevision ?? null) !==
+              (change.previous.lifecycleRevision ?? null)))
+      ) {
         // A publication without its postimage cannot preserve a private audience claim.
         read.facts = undefined;
       } else if (read.facts?.entry) {

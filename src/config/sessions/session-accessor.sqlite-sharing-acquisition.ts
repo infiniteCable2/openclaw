@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { SessionRowFacts } from "../../sessions/session-row-changes.js";
 import type {
   SessionEntryPlaceholder,
@@ -24,6 +25,8 @@ export type SessionSharingAcquisition = {
   entry?: SessionSharingEntry;
   sessionId?: string;
   membership: Map<string, boolean>;
+  participants?: Extract<SessionRowFacts, { kind: "participants" }>;
+  participantSnapshots?: Array<Pick<SessionEntry, "participants" | "participantCount">>;
 };
 
 export type PreparedSessionSharingRead = {
@@ -105,6 +108,13 @@ export function projectSessionEntryPredicateChange(
         ? { ...entry, owner: change.owner }
         : undefined;
     case "participants":
+      if (
+        change.previous &&
+        (entry.sessionId !== change.previous.sessionId ||
+          (entry.lifecycleRevision ?? null) !== (change.previous.lifecycleRevision ?? null))
+      ) {
+        return undefined;
+      }
       return change.projection
         ? { ...entry, participants: undefined, participantCount: undefined, ...change.projection }
         : undefined;
@@ -170,7 +180,73 @@ export function reconcileSessionSharingAcquisition(
       membership.delete(identityId);
     }
   }
-  return { ...snapshot, entry: acquisition.entry ?? snapshot.entry, membership };
+  let entry = acquisition.entry ?? snapshot.entry;
+  const participants = acquisition.participants;
+  if (participants) {
+    const before = participants.previous;
+    const projection = entry && {
+      participants: entry.participants,
+      participantCount: entry.participantCount,
+    };
+    if (
+      !entry ||
+      !before ||
+      entry.sessionId !== before.sessionId ||
+      (entry.lifecycleRevision ?? null) !== (before.lifecycleRevision ?? null) ||
+      (!acquisition.participantSnapshots?.some((observed) =>
+        isDeepStrictEqual(projection, observed),
+      ) &&
+        !isDeepStrictEqual(projection, {
+          participants: participants.projection?.participants,
+          participantCount: participants.projection?.participantCount,
+        }))
+    ) {
+      throw new Error("Session sharing acquisition is no longer current");
+    }
+    entry = {
+      ...entry,
+      participants: participants.projection?.participants,
+      participantCount: participants.projection?.participantCount,
+    };
+  }
+  return { ...snapshot, entry, membership };
+}
+
+/** Reconcile only the guarded producer's observed field transition and incarnation. */
+export function recordAcquiringSessionParticipants(
+  acquisition: SessionSharingAcquisition | undefined,
+  change: Extract<SessionRowFacts, { kind: "participants" }>,
+): void {
+  if (!acquisition) return;
+  const before = change.previous;
+  const previous = acquisition.participants;
+  if (
+    !before ||
+    !change.projection ||
+    (acquisition.sessionId !== undefined && acquisition.sessionId !== before.sessionId) ||
+    (acquisition.entry !== undefined &&
+      (acquisition.entry.lifecycleRevision ?? null) !== (before.lifecycleRevision ?? null)) ||
+    (previous &&
+      (!isDeepStrictEqual(previous.projection, {
+        participants: before.participants,
+        participantCount: before.participantCount,
+      }) ||
+        previous.previous?.sessionId !== before.sessionId ||
+        (previous.previous?.lifecycleRevision ?? null) !== (before.lifecycleRevision ?? null)))
+  ) {
+    acquisition.invalidated = true;
+    return;
+  }
+  acquisition.sessionId = before.sessionId;
+  // These observed states belong only to this in-flight acquisition and are
+  // discarded at initialization; an intermediate worker snapshot is valid too.
+  (acquisition.participantSnapshots ??= []).push(
+    structuredClone({
+      participants: before.participants,
+      participantCount: before.participantCount,
+    }),
+  );
+  acquisition.participants = structuredClone(change);
 }
 
 /** The committing producer supplies both identities; a matching final snapshot cannot undo reset. */
@@ -195,6 +271,8 @@ export function recordAcquiringSessionEntry(
     return;
   }
   acquisition.entry = entry;
+  acquisition.participants = undefined;
+  acquisition.participantSnapshots = undefined;
   acquisition.sessionId = entry.sessionId;
 }
 

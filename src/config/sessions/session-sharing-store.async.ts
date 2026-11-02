@@ -512,7 +512,11 @@ export function recordSessionParticipantInWorker(
           const change: SessionRowChange = {
             ...location,
             scope: "session-entry",
-            facts: { kind: "participants", projection: result.participants },
+            facts: {
+              kind: "participants",
+              projection: result.participants,
+              ...(result.previous ? { previous: result.previous } : {}),
+            },
           };
           if (database) {
             // Install the admitted COMMIT postimage before observers inspect held

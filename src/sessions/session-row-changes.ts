@@ -40,6 +40,11 @@ export type SessionRowFacts =
       kind: "participants";
       /** Participant history belongs to the logical key, across transcript replacements. */
       projection?: Pick<SessionEntry, "participants" | "participantCount">;
+      /** Observed by the existing guarded producer read, never supplied by a caller. */
+      previous?: Pick<
+        SessionEntry,
+        "sessionId" | "lifecycleRevision" | "participants" | "participantCount"
+      >;
     }
   | { kind: "category"; sessionId: string; category: string | null }
   | { kind: "removed" };

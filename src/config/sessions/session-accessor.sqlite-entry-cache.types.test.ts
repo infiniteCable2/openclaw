@@ -317,3 +317,69 @@ it("invalidates an unknown participant postimage without replacing generation cu
     retained.release();
   }
 });
+
+it.each(["matching", "intermediate", "different lifecycle", "different roster"] as const)(
+  "reconciles a guarded participant acquisition with %s snapshot",
+  (snapshot) => {
+    const key = "agent:example:guarded-participants";
+    const before = {
+      sessionId,
+      lifecycleRevision: "original",
+      participants: [{ identity: { type: "profile" as const, id: "original-person" } }],
+      participantCount: 1,
+    };
+    const retained = retainPreparedSessionSharingFacts({
+      databaseIdentity: "file:synthetic-guarded-participants",
+      sessionKey: key,
+      acquiring: true,
+    });
+    try {
+      const firstProjection = {
+        participants: [
+          ...before.participants,
+          { identity: { type: "agent" as const, id: "peer-agent" } },
+        ],
+        participantCount: 2,
+      };
+      recordCommittedSessionMetadataPublication("synthetic-guarded-participants", key, {
+        kind: "participants",
+        previous: before,
+        projection: firstProjection,
+      });
+      recordCommittedSessionMetadataPublication("synthetic-guarded-participants", key, {
+        kind: "participants",
+        previous: { ...before, ...firstProjection },
+        projection: {
+          participants: [
+            ...firstProjection.participants,
+            { identity: { type: "agent", id: "later-peer" } },
+          ],
+          participantCount: 3,
+        },
+      });
+      const initialize = () =>
+        retained.initialize({
+          entry: projectSessionSharingEntry({
+            ...before,
+            updatedAt: 1,
+            ...(snapshot === "intermediate" ? firstProjection : {}),
+            ...(snapshot === "different lifecycle" ? { lifecycleRevision: "successor" } : {}),
+            ...(snapshot === "different roster"
+              ? {
+                  participants: [{ identity: { type: "profile", id: "foreign-person" } }],
+                }
+              : {}),
+          }),
+          membership: new Set(),
+        });
+      if (snapshot === "matching" || snapshot === "intermediate") {
+        initialize();
+        expect(retained.readCurrent()?.entry?.participantCount).toBe(3);
+      } else {
+        expect(initialize).toThrow("acquisition is no longer current");
+      }
+    } finally {
+      retained.release();
+    }
+  },
+);

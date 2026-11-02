@@ -199,7 +199,44 @@ export function readSessionCollaborationCandidate(
       requireReceipt(isDeepStrictEqual(projection, projected));
       if (result.projectionChanged) {
         requireReceipt(result.value === "inserted" || result.value === "updated");
-        setFact(key, { kind: "participants", projection: projected });
+        let previous: Extract<SessionCollaborationFact, { kind: "participants" }>["previous"];
+        if (result.previous !== undefined) {
+          const captured = result.previous;
+          requireReceipt(
+            isRecord(captured) &&
+              typeof captured.sessionId === "string" &&
+              typeof captured.lifecycleRevision === "string" &&
+              captured.sessionId === command.input.params.expectedSession?.sessionId &&
+              captured.lifecycleRevision ===
+                command.input.params.expectedSession?.lifecycleRevision,
+          );
+          let beforeProjection: NonNullable<typeof projected> = {};
+          if (captured.participants !== undefined) {
+            requireReceipt(
+              Array.isArray(captured.participants) &&
+                captured.participants.every(participant) &&
+                captured.participantCount === captured.participants.length,
+            );
+            beforeProjection = {
+              participants: captured.participants,
+              participantCount: captured.participants.length,
+            };
+          } else {
+            requireReceipt(captured.participantCount === undefined);
+          }
+          previous = {
+            sessionId: captured.sessionId,
+            lifecycleRevision: captured.lifecycleRevision,
+            participants: beforeProjection.participants,
+            participantCount: beforeProjection.participantCount,
+          };
+          requireReceipt(isDeepStrictEqual(captured, previous));
+        }
+        setFact(key, {
+          kind: "participants",
+          projection: projected,
+          ...(previous ? { previous } : {}),
+        });
       }
       break;
     }

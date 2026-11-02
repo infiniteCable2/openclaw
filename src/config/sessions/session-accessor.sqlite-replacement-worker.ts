@@ -27,6 +27,7 @@ import type {
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { runOpenClawAgentWorkerWrite } from "../../state/openclaw-agent-write-admission.js";
 import {
+  publishSessionEntryWorkerInvalidations,
   retainSessionEntryWorkerPublication,
   type SessionEntryReplacementPublication,
   type SessionTranscriptInitializationPublication,
@@ -411,17 +412,17 @@ export async function runSessionEntryWorkerMutation<T>(
   let admitted:
     | { admission: SqliteWorkerOperationAdmission; retained: RetainedWorkerTransactionAdmission }
     | undefined;
-  const settle = async () => {
-    if (!admitted) {
-      if (completed?.kind === "committed") {
-        return true;
-      }
-      if (completed) {
-        lifecycle.onResult?.(completed.value);
-      }
-      return false;
+  let installed:
+    | { unknown: boolean; receipt: SessionEntryReplacementPublication | undefined }
+    | undefined;
+  let nativePublication: Promise<void> | undefined;
+  const install = (adoptResult = false) => {
+    if (installed) {
+      return installed;
     }
-    await admitted.retained.settled;
+    if (!admitted) {
+      throw new Error("Session publication has no admitted native owner");
+    }
     const facts = admitted.admission.committed?.facts;
     let receipt: SessionEntryReplacementPublication | undefined;
     if (isRecord(facts) && facts.kind === "session-entry-replacements") {
@@ -434,14 +435,17 @@ export async function runSessionEntryWorkerMutation<T>(
       admitted.admission.settlement?.kind !== "completed" ||
       !receipt ||
       completed?.kind === "not-committed";
+    installed = { unknown, receipt };
     try {
       try {
         if (receipt) {
-          lifecycle.onResult?.(completed?.value);
+          if (adoptResult) {
+            lifecycle.onResult?.(completed?.value);
+          }
           lifecycle.onLifecycleCommitted?.(receipt.pendingArchiveRecovery);
         }
       } finally {
-        // Result adoption precedes observers, but its failure cannot retain publication custody.
+        // Native completion publishes facts independently of ordinary result delivery.
         const published = publication.settle(receipt, unknown);
         if (published) {
           publishCommittedSessionIdentity(
@@ -459,7 +463,30 @@ export async function runSessionEntryWorkerMutation<T>(
       }
       throw error;
     }
-    return unknown;
+    return installed;
+  };
+  const settle = async () => {
+    if (!admitted) {
+      if (completed?.kind === "committed") {
+        return true;
+      }
+      if (completed) {
+        lifecycle.onResult?.(completed.value);
+      }
+      return false;
+    }
+    await admitted.retained.settled;
+    await nativePublication;
+    const publication = install(true);
+    // A contradictory ordinary outcome cannot preserve an earlier installation.
+    if (!publication.unknown && completed?.kind === "not-committed") {
+      publishSessionEntryWorkerInvalidations(
+        { agentId: lifecycle.identityAgentId, storePath: options.path, databaseIdentity },
+        publication.receipt?.changedKeys ?? [],
+      );
+      publication.unknown = true;
+    }
+    return publication.unknown;
   };
   return await withSessionEntryWorker(
     options,
@@ -527,6 +554,15 @@ export async function runSessionEntryWorkerMutation<T>(
         facts.publication.generationUnchangedKeys,
         parseSessionTranscriptAuthorityReceipts(facts.publication.transcriptPublication),
       );
+      nativePublication ??= retained.settled.then(() => {
+        // Maintenance adopts its real result before observers; ordinary entry
+        // writes have no result-dependent adoption and publish at native completion.
+        if (!lifecycle.onResult) {
+          install();
+        }
+      });
+      // The enclosing execution still joins and reports installation failures.
+      void nativePublication.catch(() => {});
     },
     executionOptions.retainedExecution,
     executionOptions.signal,

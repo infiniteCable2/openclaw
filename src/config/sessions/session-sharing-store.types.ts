@@ -85,6 +85,7 @@ export type MembershipPublication = { facts?: Extract<SessionRowFacts, { kind: "
 type ParticipantPublication = {
   projectionChanged: boolean;
   participants: Pick<SessionEntry, "participants" | "participantCount">;
+  previous?: Extract<SessionRowFacts, { kind: "participants" }>["previous"];
 };
 
 export type SessionInvolvementMutation = {

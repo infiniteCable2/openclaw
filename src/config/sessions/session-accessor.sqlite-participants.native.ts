@@ -66,6 +66,7 @@ function recordSessionParticipantWithAliasRead(
       : undefined;
   const result = runOpenClawAgentWriteTransaction(
     (database) => {
+      let previous: Parameters<typeof publishSessionEntryCacheParticipantUpdate>[2]["previous"];
       if (params.expectedSession) {
         const entry = readSessionEntryRow(database, resolved.sessionKey)?.entry;
         if (
@@ -74,6 +75,12 @@ function recordSessionParticipantWithAliasRead(
         ) {
           throw new Error("Original participant input session changed before commit");
         }
+        previous = {
+          sessionId: entry.sessionId,
+          lifecycleRevision: entry.lifecycleRevision,
+          participants: entry.participants && structuredClone(entry.participants),
+          participantCount: entry.participantCount,
+        };
       }
       ensureSessionParticipantsSchema(database.db);
       const kysely = getSessionKysely(database.db);
@@ -143,6 +150,7 @@ function recordSessionParticipantWithAliasRead(
       );
       publishSessionEntryCacheParticipantUpdate(database, resolved.sessionKey, {
         writeGeneration,
+        previous,
         projectionChanged:
           !existing ||
           existing.actor_id !== actorId ||

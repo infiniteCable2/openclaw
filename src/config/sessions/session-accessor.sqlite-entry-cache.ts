@@ -373,7 +373,7 @@ export function publishSessionEntryCacheInvalidation(
   }
   if (facts?.kind === "participants" && cached) {
     facts = {
-      kind: "participants",
+      ...facts,
       projection: {
         participants: cached.sideMetadata.participants,
         participantCount: cached.sideMetadata.participantCount,
@@ -462,9 +462,10 @@ export function publishSessionEntryCacheParticipantUpdate(
   params: {
     writeGeneration: SqliteSessionEntryCacheWriteGeneration | undefined;
     projectionChanged: boolean;
+    previous?: Extract<SessionRowFacts, { kind: "participants" }>["previous"];
   },
 ): void {
-  const { writeGeneration, projectionChanged } = params;
+  const { writeGeneration, projectionChanged, previous } = params;
   if (!projectionChanged) {
     // Count-only contributions do not change list facts, including when the cache is cold.
     if (writeGeneration) {
@@ -477,11 +478,11 @@ export function publishSessionEntryCacheParticipantUpdate(
     }
     return;
   }
-  let facts: SessionRowFacts = { kind: "participants" };
+  let facts: SessionRowFacts = { kind: "participants", ...(previous ? { previous } : {}) };
   if (!writeGeneration) {
     try {
       facts = {
-        kind: "participants",
+        ...facts,
         projection: readSqliteSessionParticipantProjection(database.db, sessionKey),
       };
     } catch {

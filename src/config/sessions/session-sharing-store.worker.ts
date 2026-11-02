@@ -202,6 +202,7 @@ export function bindSqliteWorkerBackend(
                 recordFact(change.sessionKey, facts);
               } else if (participantResult && facts.kind === "participants") {
                 participantResult.projectionChanged = true;
+                participantResult.previous = facts.previous;
                 recordFact(change.sessionKey, {
                   ...facts,
                   projection: participantResult.participants,
