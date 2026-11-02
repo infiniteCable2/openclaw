@@ -1,0 +1,232 @@
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { expect, it } from "vitest";
+import type { OpenClawConfig } from "../src/config/types.openclaw.js";
+import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
+import {
+  BRANCH_GATEWAY_ORIGIN,
+  connectConversationOperator,
+  isolateConversationGatewayEnvironment,
+  startConversationModel,
+} from "./helpers/conversation-branches-gateway.js";
+import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
+import { withinTest } from "./helpers/promise.js";
+import { createDeferred } from "./helpers/promise.js";
+import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
+
+const SPEECH = "qa-conversation-speech";
+const SCOPES = ["operator.read", "operator.write", "operator.talk"] as const;
+const FACT = "CHAT_TO_SPEECH_COBALT_73";
+
+function configuration(baseUrl: string): OpenClawConfig {
+  const provider = buildMockOpenAiResponsesProvider(baseUrl, "conversation-speech-proof");
+  return {
+    gateway: {
+      mode: "local",
+      bind: "loopback",
+      trustedProxies: ["127.0.0.1", "::1"],
+      auth: {
+        mode: "trusted-proxy",
+        trustedProxy: {
+          userHeader: "x-forwarded-user",
+          requiredHeaders: ["x-forwarded-proto"],
+          allowLoopback: true,
+          deviceAutoApprove: { enabled: true, scopes: [...SCOPES] },
+        },
+      },
+      controlUi: { enabled: false, allowedOrigins: [BRANCH_GATEWAY_ORIGIN] },
+      roles: {
+        default: "limited",
+        definitions: {
+          limited: { sessions: { others: "view" }, agents: "*", scopes: [...SCOPES] },
+        },
+      },
+    },
+    logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
+    agents: {
+      entries: { main: { conversationMode: "branches", skills: [] } },
+      defaults: {
+        maxConcurrent: 3,
+        model: { primary: provider.modelRef, fallbacks: [] },
+        modelPolicy: { allow: [provider.modelRef] },
+        models: {
+          [provider.modelRef]: {
+            agentRuntime: { id: "openclaw" },
+            params: { transport: "sse", openaiWsWarmup: false },
+          },
+        },
+        utilityModel: "",
+        workspace: "~/workspace",
+        skills: [],
+        skipBootstrap: true,
+        sandbox: { mode: "off" },
+      },
+    },
+    session: { scope: "per-sender" },
+    tools: { deny: ["*"] },
+    models: {
+      mode: "replace",
+      providers: {
+        [provider.providerId]: {
+          ...provider.config,
+          request: { allowPrivateNetwork: true },
+          models: provider.config.models.map((entry) => ({ ...entry, input: [...entry.input] })),
+        },
+      },
+    },
+    talk: {
+      agentId: "main",
+      provider: SPEECH,
+      providers: { [SPEECH]: { modelId: "offline-pcm", voiceId: "fixture" } },
+    },
+    skills: { workshop: { autonomous: { mode: "off" } } },
+    plugins: {
+      slots: { memory: "none" },
+      load: { paths: [path.resolve("test/fixtures/conversation-speech")] },
+      entries: { [SPEECH]: { enabled: true } },
+    },
+    messages: { queue: { mode: "steer", debounceMsByChannel: { webchat: 0 } } },
+  };
+}
+
+it("keeps a reusable Talk branch audible across follow-ups and imports its sibling's context", async (context) => {
+  let phase = "startup";
+  const phases: Array<Record<string, unknown>> = [];
+  await runQaGatewayTestFixture(context, async ({ signal, verifyCleanup }) => {
+    const model = await startConversationModel(
+      signal,
+      (_request, index) => `SPOKEN_REPLY_${index}.`,
+    );
+    const gateway = await createOpenClawTestInstance({
+      name: "conversation-speech-followups",
+      signal,
+      verifyCleanup,
+      config: configuration(model.baseUrl),
+      env: {
+        OPENCLAW_SKIP_PROVIDERS: undefined,
+        OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+        OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
+        OPENCLAW_LOG_LEVEL: "debug",
+      },
+    });
+    context.onTestFailed(() => {
+      console.error(JSON.stringify({ phase, phases, modelRequests: model.requests.length }));
+      console.error(gateway.logs());
+    });
+    isolateConversationGatewayEnvironment(gateway);
+    gateway.state.applyEnv();
+    let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
+    const sessions = new Set<string>();
+    const events: Array<Record<string, unknown>> = [];
+    let pendingTurn: ReturnType<typeof createDeferred<void>> | undefined;
+    try {
+      await gateway.startGateway();
+      operator = await connectConversationOperator(gateway, "alex@example.test", signal, {
+        scopes: [...SCOPES],
+        onEvent(event, payload) {
+          if (event !== "talk.event" || !isRecord(payload)) return;
+          events.push(payload);
+          if (isRecord(payload.talkEvent) && payload.talkEvent.type === "session.error") {
+            pendingTurn?.reject(
+              new Error(`Actual Talk failure: ${JSON.stringify(payload.talkEvent)}`),
+            );
+          }
+          if (isRecord(payload.talkEvent) && payload.talkEvent.type === "turn.ended") {
+            pendingTurn?.resolve();
+          }
+        },
+      });
+      const chatKey = `agent:main:chat-${randomUUID()}`;
+      const sendChat = async (message: string) => {
+        const result = await operator!.call<{ runId: string }>("chat.send", {
+          sessionKey: chatKey,
+          message,
+          deliver: false,
+          idempotencyKey: randomUUID(),
+        });
+        expect(
+          await operator!.call(
+            "agent.wait",
+            { runId: result.runId, timeoutMs: 30_000 },
+            { timeoutMs: 31_000 },
+          ),
+        ).toMatchObject({ status: "ok" });
+      };
+      phase = "seed-chat";
+      await sendChat(`Remember the codeword ${FACT}.`);
+      const create = async () => {
+        const created = await operator!.call<{ sessionId: string; readyMark: string }>(
+          "talk.session.create",
+          {
+            sessionKey: chatKey,
+            mode: "stt-tts",
+            transport: "gateway-relay",
+            brain: "agent-consult",
+            provider: SPEECH,
+            capabilities: ["isolated-input", "output-gate"],
+          },
+        );
+        sessions.add(created.sessionId);
+        await operator!.call("talk.session.acknowledgeMark", {
+          sessionId: created.sessionId,
+          markName: created.readyMark,
+        });
+        return created.sessionId;
+      };
+      const speak = async (sessionId: string, index: number) => {
+        phase = `speech-${index}`;
+        const before = model.requests.length;
+        const audioBefore = events.filter((e) => e.type === "audio").length;
+        pendingTurn = createDeferred();
+        void pendingTurn.promise.catch(() => {});
+        const started = performance.now();
+        await operator!.call("talk.session.appendAudio", {
+          sessionId,
+          audioBase64: Buffer.from(`SPEECH_INPUT_${index}: Please answer briefly.`).toString(
+            "base64",
+          ),
+          endOfInput: true,
+        });
+        await withinTest(pendingTurn.promise, signal);
+        pendingTurn = undefined;
+        expect(model.requests).toHaveLength(before + 1);
+        expect(events.filter((e) => e.type === "audio").length).toBeGreaterThan(audioBefore);
+        phases.push({
+          phase,
+          durationMs: performance.now() - started,
+          foreignFactInModelRequest: JSON.stringify(model.requests[before]).includes(FACT),
+        });
+        return JSON.stringify(model.requests[before]);
+      };
+      phase = "create-talk";
+      const first = await create();
+      const firstInput = await speak(first, 1);
+      // Immediate follow-ups exercise genuine admission and asynchronous
+      // preparation races, without holding or replacing their native owners.
+      await speak(first, 2);
+      await sendChat("SECOND_SIBLING_FACT_AMBER_94");
+      const laterInput = await speak(first, 3);
+      await speak(first, 4);
+      await operator.call("talk.session.close", { sessionId: first });
+      sessions.delete(first);
+      phase = "reopen-talk";
+      const second = await create();
+      const reopenedInput = await speak(second, 5);
+      await speak(second, 6);
+      expect(firstInput).toContain(FACT);
+      expect(laterInput).toContain("SECOND_SIBLING_FACT_AMBER_94");
+      expect(reopenedInput).toContain(FACT);
+      expect(model.errors).toEqual([]);
+      expect(gateway.logs()).not.toContain("SessionMutationFactsUnavailableError");
+      console.info(JSON.stringify({ fixture: "native-talk-branch-followups", phases }));
+    } finally {
+      for (const sessionId of sessions) {
+        await operator?.call("talk.session.close", { sessionId }).catch(() => {});
+      }
+      await operator?.close();
+      await gateway.cleanup();
+      await model.stop();
+    }
+  });
+});

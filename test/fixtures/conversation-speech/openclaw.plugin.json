@@ -1,0 +1,8 @@
+{
+  "id": "qa-conversation-speech",
+  "contracts": {
+    "realtimeTranscriptionProviders": ["qa-conversation-speech"],
+    "speechProviders": ["qa-conversation-speech"]
+  },
+  "configSchema": { "type": "object", "additionalProperties": false }
+}

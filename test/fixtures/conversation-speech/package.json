@@ -1,0 +1,6 @@
+{
+  "name": "@openclaw/qa-conversation-speech",
+  "version": "0.0.0",
+  "type": "module",
+  "openclaw": { "extensions": ["./index.js"] }
+}
