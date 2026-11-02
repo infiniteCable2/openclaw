@@ -343,7 +343,11 @@ async function createRelayCall(params: Record<string, unknown> = {}) {
 }
 
 function installSyntheticSpeechHardware(
-  options: { connect?: Promise<void>; finishInput?: () => void | Promise<void> } = {},
+  options: {
+    connect?: Promise<void>;
+    finishInput?: () => void | Promise<void>;
+    onTurnTtsReleased?: () => void;
+  } = {},
 ) {
   let request: RealtimeTranscriptionSessionCreateRequest | undefined;
   let connected = false;
@@ -398,6 +402,7 @@ function installSyntheticSpeechHardware(
     .mockImplementation(async () => {
       const release = vi.fn(async () => {
         turnTtsReleased.resolve();
+        options.onTurnTtsReleased?.();
         return undefined;
       });
       turnTtsReleases.push(release);

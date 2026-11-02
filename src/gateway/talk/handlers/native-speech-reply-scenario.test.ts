@@ -37,13 +37,15 @@ afterEach(() => {
 });
 
 it.for([
-  { conversationMode: "native", closeAudio: false },
-  { conversationMode: "native", closeAudio: true },
-  { conversationMode: "branches", closeAudio: false },
-  { conversationMode: "branches", closeAudio: true },
+  { conversationMode: "native", closeAudio: false, sequential: false },
+  { conversationMode: "native", closeAudio: true, sequential: false },
+  { conversationMode: "branches", closeAudio: false, sequential: false },
+  { conversationMode: "branches", closeAudio: true, sequential: false },
+  { conversationMode: "native", closeAudio: false, sequential: true },
+  { conversationMode: "branches", closeAudio: false, sequential: true },
 ] as const)(
-  "native Speech serializes two original inputs exactly once in $conversationMode after audio-close=$closeAudio",
-  async ({ conversationMode, closeAudio }, { signal }) => {
+  "native Speech serializes two original inputs exactly once in $conversationMode after audio-close=$closeAudio sequential=$sequential",
+  async ({ conversationMode, closeAudio, sequential }, { signal }) => {
     let root: Awaited<ReturnType<typeof ensureAgentConversationRoot>> | undefined;
     if (conversationMode === "branches") {
       const cfg = testState.config;
@@ -69,12 +71,17 @@ it.for([
     } else {
       testState.config.session = { mainKey: "scenario", scope: "global" };
     }
-    const hardware = installSyntheticSpeechHardware();
+    const ttsReleases = [createDeferredCore(), createDeferredCore()];
+    let ttsReleaseCount = 0;
+    const hardware = installSyntheticSpeechHardware({
+      onTurnTtsReleased: () => ttsReleases[ttsReleaseCount++]?.resolve(),
+    });
     const firstStarted = createDeferredCore();
     const secondStarted = createDeferredCore();
     const queued = createDeferredCore();
     const releaseFirst = createDeferredCore();
-    const turnEnded = createDeferredCore();
+    const turnEnds = [createDeferredCore(), createDeferredCore()];
+    let turnEndCount = 0;
     const nativeFailure = createDeferredCore<never>();
     void nativeFailure.promise.catch(() => {});
     const progress = (stage: string) =>
@@ -179,7 +186,7 @@ it.for([
         );
       }
       if (isRecord(payload.talkEvent) && payload.talkEvent.type === "turn.ended") {
-        turnEnded.resolve();
+        turnEnds[turnEndCount++]?.resolve();
       }
     });
     mocks.runEmbeddedAgent.mockImplementation(async (params) =>
@@ -259,20 +266,35 @@ it.for([
       // The second utterance begins while the first input is still preparing,
       // before a model run exists. Its delayed final transcript must follow up,
       // not steer whichever backend happens to be active when decoding finishes.
-      stt.onSpeechActivity({ utteranceId: "scenario-input-two", state: "candidate" });
+      if (!sequential) {
+        stt.onSpeechActivity({ utteranceId: "scenario-input-two", state: "candidate" });
+      }
       await waitAt(
         "first-model-start",
         awaitGateBeforeSettlement(
           firstStarted.promise,
-          turnEnded.promise,
+          turnEnds[0]!.promise,
           "Native speech ended before starting the first model run",
         ),
       );
-      stt.onTranscript(questions[1]!, { utteranceId: "scenario-input-two" });
-      // The native enqueue return, not the earlier transcript event, proves acceptance.
-      await waitAt("actual-enqueue", queued.promise);
-      expect(calls).toBe(1);
-      expect(nativeQueue.getFollowupQueueDepth(target.canonicalKey)).toBe(1);
+      if (sequential) {
+        // A completed speech turn must leave this logical session ready for a
+        // later utterance, independently of the in-flight follow-up queue.
+        releaseFirst.resolve();
+        await waitAt("first-owner-settlement", ownerSettlements[0]!);
+        await waitAt("first-turn-ended", turnEnds[0]!.promise);
+        await waitAt("first-tts-release", ttsReleases[0]!.promise);
+        expect(calls).toBe(1);
+        expect(nativeQueue.getFollowupQueueDepth(target.canonicalKey)).toBe(0);
+        stt.onSpeechActivity({ utteranceId: "scenario-input-two", state: "candidate" });
+        stt.onTranscript(questions[1]!, { utteranceId: "scenario-input-two" });
+      } else {
+        stt.onTranscript(questions[1]!, { utteranceId: "scenario-input-two" });
+        // The native enqueue return, not the earlier transcript event, proves acceptance.
+        await waitAt("actual-enqueue", queued.promise);
+        expect(calls).toBe(1);
+        expect(nativeQueue.getFollowupQueueDepth(target.canonicalKey)).toBe(1);
+      }
       if (closeAudio) {
         progress("before-close");
         expect(await dispatch("talk.session.close", { sessionId })).toHaveBeenCalledWith(
@@ -289,8 +311,9 @@ it.for([
       await waitAt("second-model-start", secondStarted.promise);
       await waitAt("native-owner-settlement", Promise.all(ownerSettlements));
       if (!closeAudio) {
-        await waitAt("turn-ended", turnEnded.promise);
-        await waitAt("tts-release", hardware.turnTtsReleased);
+        const lastTurn = sequential ? 1 : 0;
+        await waitAt("turn-ended", turnEnds[lastTurn]!.promise);
+        await waitAt("tts-release", ttsReleases[lastTurn]!.promise);
       }
       expect(calls).toBe(2);
       expect(modelPrompts[0]).toContain(questions[0]);
@@ -359,6 +382,17 @@ it.for([
             .filter((text) => text === answers[1]),
         ).toEqual([answers[1]]);
         expect(hardware.releaseStream).toHaveBeenCalledTimes(mocks.streamSpeech.mock.calls.length);
+        if (sequential) {
+          expect(turnEndCount).toBe(2);
+          expect(ttsReleaseCount).toBe(2);
+          for (const answer of answers) {
+            expect(
+              mocks.streamSpeech.mock.calls
+                .map(([request]) => request.text)
+                .filter((text) => text === answer),
+            ).toEqual([answer]);
+          }
+        }
       }
       expect(sessionErrors).toBe(0);
     } finally {
