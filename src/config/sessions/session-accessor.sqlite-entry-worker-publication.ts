@@ -36,9 +36,10 @@ import {
 import { publishSessionEntryMaintenanceAgeChanges } from "./session-accessor.sqlite-maintenance-age.js";
 import {
   publishRetainedSessionEntryPredicate,
-  publishRetainedSessionGeneration,
   revokePreparedSessionEntryPredicate,
   recordAcquiringSessionEntry,
+  publishRetainedSessionSharingFacts,
+  type PreparedSessionSharingRead,
 } from "./session-accessor.sqlite-sharing-acquisition.js";
 import type { SessionEntryMetadataReceipt } from "./session-entry-metadata-receipt.js";
 import {
@@ -125,6 +126,7 @@ export function retainSessionEntryWorkerPublication(params: {
   const transcript = retainSessionTranscriptWorkerPublication(params);
   const completion = createDeferredCore();
   const owner: PendingSessionEntryPublication = {
+    factsInstalled: new WeakSet(),
     superseded: new Map(),
     metadataSuperseded: new Set(),
     projectionSuperseded: new Set(),
@@ -141,6 +143,63 @@ export function retainSessionEntryWorkerPublication(params: {
   let transcriptVersion: number | undefined;
   const deltas = retainSessionEntryDeltaSupersession(params);
   const publication = {
+    /** Native completion advances only already-held, proven-continuous authority. */
+    installCommittedFacts(
+      replacement: SessionEntryReplacementPublication,
+      fresh?: PreparedSessionSharingRead,
+    ): void {
+      if (
+        !pending ||
+        !isSessionEntryReplacementReceiptUsable(replacement, keys, params.databaseIdentity)
+      ) {
+        return;
+      }
+      owner.refreshFacts = (read) => publication.installCommittedFacts(replacement, read);
+      for (const sessionKey of keys) {
+        const fact = replacement.receipt?.facts.get(sessionKey);
+        const before = fact?.kind === "postimage" ? fact.value.previous : undefined;
+        const entry = replacement.current.get(sessionKey);
+        const projection = readCurrentSessionEntryProjection(owner, replacement, sessionKey);
+        if (
+          !before ||
+          !entry ||
+          !projection ||
+          !isSessionEntryReplacementFactKnown(replacement, sessionKey) ||
+          owner.superseded.has(sessionKey) ||
+          owner.membershipInvalidated.has(sessionKey) ||
+          before.sessionId !== entry.sessionId ||
+          before.lifecycleRevision !== entry.lifecycleRevision
+        ) {
+          continue;
+        }
+        for (const read of preparedSharingReads.get(`${identityKey}\0${sessionKey}`) ?? []) {
+          if (fresh && read !== fresh) {
+            continue;
+          }
+          const held = read.facts;
+          if (
+            !held?.entry ||
+            (!sessionSharingEntriesEqual(held.entry, before) &&
+              !(
+                (read === fresh || owner.factsInstalled?.has(read)) &&
+                sessionSharingEntriesEqual(held.entry, entry)
+              )) ||
+            held.membership.size !== projection.membership[2].length ||
+            !projection.membership[2].every((identity) => held.membership.has(identity))
+          ) {
+            continue;
+          }
+          publishRetainedSessionSharingFacts(
+            read,
+            projectSessionSharingEntry(entry),
+            projection,
+            replacement.previous.get(sessionKey),
+            true,
+          );
+          owner.factsInstalled?.add(read);
+        }
+      }
+    },
     begin(
       sessionKeys: readonly string[],
       membershipInvalidatedKeys: readonly string[],
@@ -447,7 +506,6 @@ export function retainSessionEntryWorkerPublication(params: {
         const retainNewerMetadata = () =>
           known(sessionKey) &&
           current(sessionKey) &&
-          sharingUnchanged.has(sessionKey) &&
           !membershipInvalidated.has(sessionKey) &&
           owner.metadataSuperseded.has(sessionKey);
         const placeholder =
@@ -463,6 +521,7 @@ export function retainSessionEntryWorkerPublication(params: {
           const retained = read.facts;
           if (
             retainNewerMetadata() &&
+            (sharingUnchanged.has(sessionKey) || owner.factsInstalled?.has(read)) &&
             committedMembership &&
             retained?.entry?.sessionId === committedMembership[4] &&
             retained.entry.lifecycleRevision === entry?.lifecycleRevision &&
@@ -478,6 +537,14 @@ export function retainSessionEntryWorkerPublication(params: {
             retained.membership.size === committedMembership[2].length &&
             committedMembership[2].every((identity) => retained.membership.has(identity))
           ) {
+            if (owner.factsInstalled?.has(read) && read.predicate?.entry && retained?.entry) {
+              const { updatedAt: _updatedAt, ...sharing } = retained.entry;
+              publishRetainedSessionEntryPredicate(
+                read,
+                { ...read.predicate.entry, ...sharing },
+                true,
+              );
+            }
             continue;
           }
           if (placeholder) {
@@ -489,31 +556,14 @@ export function retainSessionEntryWorkerPublication(params: {
               known(sessionKey) && !replacement?.unavailableParticipantKeys?.includes(sessionKey),
             );
           }
-          recordAcquiringSessionEntry(
-            read.acquisition,
-            sharingProjection ? sharingEntry : undefined,
-            replacement?.previous.get(sessionKey),
-          );
-          publishRetainedSessionGeneration(
+          publishRetainedSessionSharingFacts(
             read,
             sharingEntry,
+            sharingProjection,
+            replacement?.previous.get(sessionKey),
             known(sessionKey) || (!unknown && placeholder !== undefined),
+            !unknown ? placeholder : undefined,
           );
-          const previous = read.facts;
-          read.facts =
-            !unknown && placeholder
-              ? { entry: undefined, placeholder, membership: new Set() }
-              : !unknown &&
-                  sharingProjection &&
-                  sharingEntry &&
-                  previous?.entry &&
-                  previous.entry.sessionId === sharingEntry.sessionId &&
-                  previous.entry.lifecycleRevision === sharingEntry.lifecycleRevision
-                ? {
-                    entry: sharingEntry,
-                    membership: new Set(sharingProjection.membership[2]),
-                  }
-                : undefined;
         }
         // Synchronous listeners can publish newer facts before the next listener consumes this one.
         const currentFacts = (): SessionRowFacts | undefined => {
@@ -642,6 +692,7 @@ export function retainSessionEntryWorkerPublication(params: {
             }
           : undefined;
       } finally {
+        owner.refreshFacts = undefined;
         for (const sessionKey of keys) {
           const key = `${identityKey}\0${sessionKey}`;
           const owners = pendingSessionEntryPublications.get(key);

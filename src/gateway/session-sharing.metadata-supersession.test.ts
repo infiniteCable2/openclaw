@@ -109,9 +109,13 @@ it.each(["unchanged", "visibility", "public-share"] as const)(
   },
 );
 
-it.each([false, true])(
-  "keeps acknowledged worker run facts current before result delivery with native supersession=%s",
-  async (supersede) => {
+it.each([
+  { supersede: false, foreignPreimage: false },
+  { supersede: true, foreignPreimage: false },
+  { supersede: false, foreignPreimage: true },
+])(
+  "keeps acknowledged worker run facts current before result delivery with native supersession=$supersede foreign-preimage=$foreignPreimage",
+  async ({ supersede, foreignPreimage }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const storePath = state.statePath("run-publication.sqlite");
       const cfg = { agents: { entries: { main: {} } }, session: { store: storePath } };
@@ -122,8 +126,8 @@ it.each([false, true])(
         updatedAt: 1,
         visibility: "draft",
         chatType: "direct",
-        activeWriterRunId: "previous-writer",
-        lifecycleRunId: "previous-run",
+        activeWriterRunId: foreignPreimage ? "next-writer" : "previous-writer",
+        lifecycleRunId: foreignPreimage ? "next-run" : "previous-run",
         createdActor: { type: "human", source: "profile", id: "owner" },
       });
       recordSessionParticipant(scope, {
@@ -132,6 +136,14 @@ it.each([false, true])(
         expectedSession: incarnation,
       });
       const facts = await prepareSessionMutationFacts({ cfg, ...scope });
+      if (foreignPreimage) {
+        using foreign = new DatabaseSync(storePath);
+        foreign
+          .prepare(
+            "UPDATE session_nodes SET entry_json = json_patch(entry_json, ?) WHERE session_key = ?",
+          )
+          .run(JSON.stringify({ visibility: "shared" }), scope.sessionKey);
+      }
       const observe = () => {
         try {
           return facts.readCurrent(cfg);
@@ -141,10 +153,13 @@ it.each([false, true])(
         }
       };
       let beforeDelivery: unknown;
+      let fresh: Awaited<ReturnType<typeof prepareSessionMutationFacts>> | undefined;
+      let freshBeforeDelivery: unknown;
+      let oldAfterFresh: unknown;
       try {
         // Actual SQL, commit admission and native settlement finish before this
         // observation seam delays the ordinary result's domain publication.
-        delivery.afterResult = () => {
+        delivery.afterResult = async () => {
           if (supersede) {
             // The same original human's earlier timestamp changes no audience.
             expect(
@@ -156,6 +171,11 @@ it.each([false, true])(
             ).toBe("updated");
           }
           beforeDelivery = observe();
+          if (!supersede) {
+            fresh = await prepareSessionMutationFacts({ cfg, ...scope });
+            freshBeforeDelivery = fresh.readCurrent(cfg);
+            oldAfterFresh = observe();
+          }
         };
         await applySessionEntryExactReplacements({
           ...scope,
@@ -167,6 +187,7 @@ it.each([false, true])(
                 sessionKey: scope.sessionKey,
                 entry: {
                   ...row!.entry,
+                  visibility: "draft",
                   activeWriterRunId: "next-writer",
                   lifecycleRunId: "next-run",
                 },
@@ -187,11 +208,20 @@ it.each([false, true])(
             },
           },
         };
-        expect(beforeDelivery).toMatchObject(expected);
+        if (foreignPreimage) {
+          expect(beforeDelivery).toBeInstanceOf(SessionMutationFactsUnavailableError);
+          expect(oldAfterFresh).toBeInstanceOf(SessionMutationFactsUnavailableError);
+        } else {
+          expect(beforeDelivery).toMatchObject(expected);
+        }
         expect(afterDelivery).toMatchObject(expected);
+        if (!supersede) {
+          expect(freshBeforeDelivery).toMatchObject(expected);
+        }
       } finally {
         delivery.afterResult = undefined;
         facts.release();
+        fresh?.release();
       }
     });
   },

@@ -10,6 +10,7 @@ import { hasPendingSessionTranscriptArchives } from "./session-accessor.sqlite-a
 import { assertSessionCreationLabelAvailable } from "./session-accessor.sqlite-creation-read.js";
 import {
   sessionSharingEntriesEqual,
+  projectSessionSharingEntry,
   type SessionEntryProjectionFacts,
   type SessionEntryReplacementPostimage,
   type SessionEntryReplacementPublication,
@@ -125,8 +126,16 @@ export function prepareSessionEntryReplacementPublication(
       readFact(key) {
         const entry = current.get(key);
         const facts = projection.get(key);
+        const previous = result.previous.get(key);
         if (entry && facts) {
-          return { kind: "postimage", value: { entry, projection: facts } };
+          return {
+            kind: "postimage",
+            value: {
+              entry,
+              projection: facts,
+              ...(previous ? { previous: projectSessionSharingEntry(previous) } : {}),
+            },
+          };
         }
         if (entry && unavailableParticipantKeys.has(key)) {
           return { kind: "postimage", value: { entry, participantProjectionUnavailable: true } };

@@ -1,7 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { hasSqliteCommitReceiptCoverage } from "../../infra/sqlite-commit-receipt.js";
-import type { SessionEntryReplacementPublication } from "./session-accessor.sqlite-entry-cache.types.js";
+import {
+  projectSessionSharingEntry,
+  type SessionEntryReplacementPublication,
+} from "./session-accessor.sqlite-entry-cache.types.js";
 
 /** Validate the retained operation's entire scope before installing any of its facts. */
 export function isSessionEntryReplacementReceiptUsable(
@@ -61,6 +64,18 @@ export function isSessionEntryReplacementReceiptUsable(
         !isRecord(value) ||
         !isRecord(value.entry) ||
         !isDeepStrictEqual(value.entry, publication.current.get(key))
+      ) {
+        return false;
+      }
+      if (
+        value.previous !== undefined &&
+        (!isRecord(value.previous) ||
+          typeof value.previous.sessionId !== "string" ||
+          typeof value.previous.updatedAt !== "number" ||
+          !Number.isFinite(value.previous.updatedAt) ||
+          value.previous.sessionId !== publication.previous.get(key)?.sessionId ||
+          value.previous.lifecycleRevision !== publication.previous.get(key)?.lifecycleRevision ||
+          !isDeepStrictEqual(value.previous, projectSessionSharingEntry(value.previous)))
       ) {
         return false;
       }

@@ -31,7 +31,6 @@ import {
   type SessionEntryReplacementPublication,
   type SessionTranscriptInitializationPublication,
 } from "./session-accessor.sqlite-entry-cache.js";
-import { publishSessionEntryWorkerInvalidations } from "./session-accessor.sqlite-entry-worker-publication.js";
 import { publishCommittedSessionIdentity } from "./session-accessor.sqlite-identity.js";
 import type { SessionEntryReplacementCommitted } from "./session-accessor.sqlite-replacement-types.js";
 import type { SessionEntryCommitContext } from "./session-accessor.types.js";
@@ -412,16 +411,23 @@ export async function runSessionEntryWorkerMutation<T>(
   let admitted:
     | { admission: SqliteWorkerOperationAdmission; retained: RetainedWorkerTransactionAdmission }
     | undefined;
-  let installed:
-    | { unknown: boolean; receipt: SessionEntryReplacementPublication | undefined }
-    | undefined;
   let nativePublication: Promise<void> | undefined;
-  const install = (adoptResult = false) => {
-    if (installed) {
-      return installed;
-    }
+  const settle = async () => {
     if (!admitted) {
-      throw new Error("Session publication has no admitted native owner");
+      if (completed?.kind === "committed") {
+        return true;
+      }
+      if (completed) {
+        lifecycle.onResult?.(completed.value);
+      }
+      return false;
+    }
+    await admitted.retained.settled;
+    try {
+      await nativePublication;
+    } catch (error) {
+      publication.settle(undefined, true);
+      throw error;
     }
     const facts = admitted.admission.committed?.facts;
     let receipt: SessionEntryReplacementPublication | undefined;
@@ -435,17 +441,14 @@ export async function runSessionEntryWorkerMutation<T>(
       admitted.admission.settlement?.kind !== "completed" ||
       !receipt ||
       completed?.kind === "not-committed";
-    installed = { unknown, receipt };
     try {
       try {
         if (receipt) {
-          if (adoptResult) {
-            lifecycle.onResult?.(completed?.value);
-          }
+          lifecycle.onResult?.(completed?.value);
           lifecycle.onLifecycleCommitted?.(receipt.pendingArchiveRecovery);
         }
       } finally {
-        // Native completion publishes facts independently of ordinary result delivery.
+        // Result adoption precedes observers, but its failure cannot retain publication custody.
         const published = publication.settle(receipt, unknown);
         if (published) {
           publishCommittedSessionIdentity(
@@ -463,30 +466,7 @@ export async function runSessionEntryWorkerMutation<T>(
       }
       throw error;
     }
-    return installed;
-  };
-  const settle = async () => {
-    if (!admitted) {
-      if (completed?.kind === "committed") {
-        return true;
-      }
-      if (completed) {
-        lifecycle.onResult?.(completed.value);
-      }
-      return false;
-    }
-    await admitted.retained.settled;
-    await nativePublication;
-    const publication = install(true);
-    // A contradictory ordinary outcome cannot preserve an earlier installation.
-    if (!publication.unknown && completed?.kind === "not-committed") {
-      publishSessionEntryWorkerInvalidations(
-        { agentId: lifecycle.identityAgentId, storePath: options.path, databaseIdentity },
-        publication.receipt?.changedKeys ?? [],
-      );
-      publication.unknown = true;
-    }
-    return publication.unknown;
+    return unknown;
   };
   return await withSessionEntryWorker(
     options,
@@ -555,13 +535,17 @@ export async function runSessionEntryWorkerMutation<T>(
         parseSessionTranscriptAuthorityReceipts(facts.publication.transcriptPublication),
       );
       nativePublication ??= retained.settled.then(() => {
-        // Maintenance adopts its real result before observers; ordinary entry
-        // writes have no result-dependent adoption and publish at native completion.
-        if (!lifecycle.onResult) {
-          install();
+        const committed = admission.committed?.facts;
+        if (
+          admission.settlement?.kind === "completed" &&
+          isRecord(committed) &&
+          committed.kind === "session-entry-replacements"
+        ) {
+          // SAFETY: The paired native operation owns this validated committed envelope.
+          publication.installCommittedFacts(committed as SessionEntryReplacementPublication);
         }
       });
-      // The enclosing execution still joins and reports installation failures.
+      // The executing owner joins and reports installation failures before release.
       void nativePublication.catch(() => {});
     },
     executionOptions.retainedExecution,

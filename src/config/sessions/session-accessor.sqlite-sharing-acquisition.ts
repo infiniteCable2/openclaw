@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { SessionRowFacts } from "../../sessions/session-row-changes.js";
 import type {
+  SessionEntryProjectionFacts,
   SessionEntryPlaceholder,
   SessionSharingEntry,
 } from "./session-accessor.sqlite-entry-cache.types.js";
@@ -54,6 +55,31 @@ export type SessionSharingRetentionRequest = {
   | { acquiring: true }
   | (CommittedSessionSharingFacts & { generation?: PreparedSessionSharingRead["generation"] })
 );
+
+/** The entry publisher uses this same install for native facts and final delivery. */
+export function publishRetainedSessionSharingFacts(
+  read: PreparedSessionSharingRead,
+  entry: SessionSharingEntry | undefined,
+  projection: SessionEntryProjectionFacts | undefined,
+  previous: Pick<SessionSharingEntry, "sessionId" | "lifecycleRevision"> | undefined,
+  known: boolean,
+  placeholder?: SessionEntryPlaceholder,
+): void {
+  recordAcquiringSessionEntry(read.acquisition, projection ? entry : undefined, previous);
+  publishRetainedSessionGeneration(read, entry, known || placeholder !== undefined);
+  const held = read.facts;
+  read.facts =
+    known && placeholder
+      ? { entry: undefined, placeholder, membership: new Set() }
+      : known &&
+          projection &&
+          entry &&
+          held?.entry &&
+          held.entry.sessionId === entry.sessionId &&
+          held.entry.lifecycleRevision === entry.lifecycleRevision
+        ? { entry, membership: new Set(projection.membership[2]) }
+        : undefined;
+}
 
 /** Unknown postimages require a fresh read; observed mismatches cannot be restored. */
 export function publishRetainedSessionEntryPredicate(

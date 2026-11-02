@@ -400,6 +400,7 @@ export function retainPreparedSessionSharingFacts(params: SessionSharingRetentio
     [...(pendingSessionEntryPublications.get(key) ?? [])].some(
       (publication) =>
         !publication.settled &&
+        !(membership && publication.factsInstalled?.has(read)) &&
         ((!publication.superseded.has(params.sessionKey) &&
           (!membership || !publication.sharingUnchanged.has(params.sessionKey))) ||
           (membership && publication.membershipInvalidated.has(params.sessionKey))),
@@ -434,6 +435,9 @@ export function retainPreparedSessionSharingFacts(params: SessionSharingRetentio
       }
       read.facts = reconcileSessionSharingAcquisition(acquisition, snapshot);
       read.acquisition = undefined;
+      for (const publication of pendingSessionEntryPublications.get(key) ?? []) {
+        publication.refreshFacts?.(read);
+      }
     },
     readGeneration: () => (active && !generationPending() ? read.generation?.current : undefined),
     readGenerationSettings: () => (active && !pending(true) ? read.generation?.current : undefined),

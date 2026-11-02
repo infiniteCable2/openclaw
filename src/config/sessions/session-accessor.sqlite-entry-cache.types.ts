@@ -144,7 +144,10 @@ export type SessionEntryProjectionFacts = {
   activitySummaryWatermark: SessionTranscriptWatermark | undefined;
 };
 
-export type SessionEntryReplacementPostimage = { entry: SessionEntry } & (
+export type SessionEntryReplacementPostimage = {
+  entry: SessionEntry;
+  previous?: SessionSharingEntry;
+} & (
   | { projection: SessionEntryProjectionFacts; participantProjectionUnavailable?: never }
   | { projection?: never; participantProjectionUnavailable: true }
 );
@@ -233,6 +236,13 @@ export type SessionEntryPublicationRecord = {
 );
 
 export type PendingSessionEntryPublication = {
+  /** Only these held reads matched the native operation's observed preimage. */
+  factsInstalled?: WeakSet<
+    import("./session-accessor.sqlite-sharing-acquisition.js").PreparedSessionSharingRead
+  >;
+  refreshFacts?: (
+    read: import("./session-accessor.sqlite-sharing-acquisition.js").PreparedSessionSharingRead,
+  ) => void;
   superseded: Map<string, Pick<SessionEntry, "sessionId" | "lifecycleRevision"> | undefined>;
   metadataSuperseded: Set<string>;
   projectionSuperseded: Set<string>;
