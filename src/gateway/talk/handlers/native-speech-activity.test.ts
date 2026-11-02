@@ -161,6 +161,7 @@ it("a native silent answer settles activity and leaves the same connection usabl
   const ownerSettlements: Promise<void>[] = [];
   let models = 0;
   let terminalSeq: number | undefined;
+  let secondSpokenTurnId: string | undefined;
   vi.mocked(context.broadcastToConnIds).mockImplementation((_name, payload) => {
     if (!isRecord(payload) || !isRecord(payload.talkEvent)) {
       return;
@@ -170,7 +171,20 @@ it("a native silent answer settles activity and leaves the same connection usabl
       quiet.reject(new Error("Native activity input failed"));
       spoken.reject(new Error("Native activity reply failed"));
     }
-    if (event.type === "turn.ended") {
+    if (
+      event.type === "transcript.done" &&
+      isRecord(event.payload) &&
+      event.payload.role === "user" &&
+      event.payload.text === "Inspect synthetic capture 2." &&
+      typeof event.turnId === "string"
+    ) {
+      secondSpokenTurnId = event.turnId;
+    }
+    if (
+      event.type === "turn.ended" &&
+      secondSpokenTurnId !== undefined &&
+      event.turnId === secondSpokenTurnId
+    ) {
       spoken.resolve();
     }
     if (
@@ -279,6 +293,10 @@ it("a native silent answer settles activity and leaves the same connection usabl
       expect.objectContaining({ text: "The second synthetic capture completed." }),
     );
     expect(hardware.releaseStream).toHaveBeenCalledOnce();
+    expect(hardware.turnTtsReleases).toHaveLength(2);
+    for (const release of hardware.turnTtsReleases) {
+      expect(release).toHaveBeenCalledOnce();
+    }
     expect(context.broadcastToConnIds).not.toHaveBeenCalledWith(
       "talk.event",
       expect.objectContaining({ talkEvent: expect.objectContaining({ type: "session.error" }) }),

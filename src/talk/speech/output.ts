@@ -409,6 +409,7 @@ export function createSpeechOutput(params: {
           utterance.finalized = true;
           harness.finishOutputAudio("completed");
           harness.endTurn();
+          params.onActivity?.("listening");
         })
         .catch(() => {
           params.logger.warn("[talk] silent output finalization failed; native recovery retained");

@@ -35,6 +35,7 @@ function createFixture(
   const activeTtsReaders: OutputParams["activeTtsReaders"] = new Set();
   const warn = vi.fn();
   const onOutput = vi.fn<NonNullable<OutputParams["onOutput"]>>();
+  const onActivity = vi.fn<NonNullable<OutputParams["onActivity"]>>();
   const waitingStop = vi.fn(async (): Promise<void> => undefined);
   const waitingIdle = vi.fn((_turn: number) => undefined);
   let stopping = Promise.resolve();
@@ -60,6 +61,7 @@ function createFixture(
     agentLogScope: "test",
     logger: { info: vi.fn(), warn, error: vi.fn() },
     onOutput,
+    onActivity,
     getHarness: () => harness,
     isStopped: () => stopped,
     getOutputGeneration: () => generation,
@@ -95,6 +97,7 @@ function createFixture(
     emit,
     warn,
     onOutput,
+    onActivity,
     transcripts,
     activeTtsAborts,
     activeTtsReaders,
@@ -146,6 +149,7 @@ describe("speech output compute/playout overlap", () => {
     expect(synthesize).not.toHaveBeenCalled();
     expect(fixture.endTurn).not.toHaveBeenCalled();
     expect(fixture.finishOutputAudio).not.toHaveBeenCalled();
+    expect(fixture.onActivity).not.toHaveBeenCalled();
   });
 
   it("does not normalize a public speak request twice", async () => {
@@ -194,6 +198,7 @@ describe("speech output compute/playout overlap", () => {
       expect(fixture.finishOutputAudio).toHaveBeenCalledExactlyOnceWith("completed");
       expect(fixture.endTurn).toHaveBeenCalledOnce();
       expect(utterance.finalized).toBe(true);
+      expect(fixture.onActivity).toHaveBeenLastCalledWith("listening");
       expect(fixture.emit).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: "output.text.done" }),
       );
