@@ -1,4 +1,5 @@
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, test } from "vitest";
 import {
   GATEWAY_OWNER_PROFILE_ID,
@@ -8,6 +9,7 @@ import {
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { getPairedDevice } from "../infra/device-pairing.js";
+import type { OperatorScope } from "./operator-scopes.js";
 import {
   BROWSER_ORIGIN,
   configureGatewayAuth,
@@ -25,7 +27,7 @@ import {
 
 installGatewayTestHooks({ scope: "suite" });
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-const PERSON_SCOPES = ["operator.read", "operator.write", "operator.talk"];
+const PERSON_SCOPES: OperatorScope[] = ["operator.read", "operator.write", "operator.talk"];
 const DEVICE_SCOPES = [...PERSON_SCOPES, "operator.admin"];
 
 test("binds two signed operator devices to one person and retires an unlinked connection", async () => {
@@ -57,7 +59,9 @@ test("binds two signed operator devices to one person and retires an unlinked co
       },
     };
   });
-  expect(devices[0].identity.senderId).not.toBe(devices[1].identity.senderId);
+  expect(expectDefined(devices[0], "first device").identity.senderId).not.toBe(
+    expectDefined(devices[1], "second device").identity.senderId,
+  );
 
   await withGatewayServer(async ({ port }) => {
     const sockets: Awaited<ReturnType<typeof openWs>>[] = [];
@@ -95,7 +99,8 @@ test("binds two signed operator devices to one person and retires an unlinked co
         );
         paired.push({ ...device, bootstrap, deviceToken });
       }
-      const [first, second] = paired;
+      const first = expectDefined(paired[0], "first paired device");
+      const second = expectDefined(paired[1], "second paired device");
       expect(first.deviceToken).not.toBe(second.deviceToken);
       const admin = first.bootstrap;
       const created = await rpcReq<UsersCreateResult>(admin, "users.create", {
@@ -163,20 +168,22 @@ test("binds two signed operator devices to one person and retires an unlinked co
       expect((await rpcReq<UsersSelfResult>(admin, "users.self")).payload?.profile.id).toBe(
         GATEWAY_OWNER_PROFILE_ID,
       );
-      const closed = waitForWsClose(people[0].socket, 1_000);
+      const firstPerson = expectDefined(people[0], "first person connection");
+      const secondPerson = expectDefined(people[1], "second person connection");
+      const closed = waitForWsClose(firstPerson.socket, 1_000);
       expect(
         await rpcReq(admin, "users.unlinkChannelIdentity", { profileId, identity: first.identity }),
       ).toMatchObject({ ok: true, payload: { removed: true } });
       expect(await closed).toBe(true);
       expect((await reconnect(first)).result.ok).toBe(false);
       expect(
-        (await rpcReq<UsersSelfResult>(people[1].socket, "users.self")).payload?.profile.id,
+        (await rpcReq<UsersSelfResult>(secondPerson.socket, "users.self")).payload?.profile.id,
       ).toBe(profileId);
       expect(
         (await rpcReq(admin, "users.linkChannelIdentity", { profileId, identity: first.identity }))
           .ok,
       ).toBe(true);
-      expect(people[0].socket.readyState).toBe(people[0].socket.CLOSED);
+      expect(firstPerson.socket.readyState).toBe(firstPerson.socket.CLOSED);
       const replacement = await reconnect(first);
       expect(replacement.result.ok, JSON.stringify(replacement.result.error)).toBe(true);
       expect(
