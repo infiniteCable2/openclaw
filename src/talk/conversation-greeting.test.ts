@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { MsgContext } from "../auto-reply/templating.js";
+import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import {
   MAX_VISIBLE_MESSAGE_MAX_BYTES,
   MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
@@ -245,11 +246,22 @@ describe("native detached greeting preparation", () => {
     expect(fixture.release).toHaveBeenCalledOnce();
   });
 
-  it.each([{ payloads: [] }, { payloads: [{ text: "NO_REPLY" }] }])(
+  it.each([
+    { payloads: [], finalText: undefined },
+    { payloads: [{ text: SILENT_REPLY_TOKEN }], finalText: undefined },
+    { payloads: [], finalText: SILENT_REPLY_TOKEN },
+  ])(
     "does not invent greeting readiness from empty or silent completion",
-    async ({ payloads }) => {
+    async ({ payloads, finalText }) => {
       const fixture = await setup(false);
-      mocks.run.mockResolvedValue({ payloads, meta: { durationMs: 1 } });
+      mocks.run.mockResolvedValue({
+        payloads,
+        meta: {
+          durationMs: 1,
+          finalAssistantRawText: finalText,
+          finalAssistantVisibleText: finalText,
+        },
+      });
       await expect(prepareConversationGreeting(fixture.params)).rejects.toThrow("no greeting");
       expect(fixture.onSpeakableText).not.toHaveBeenCalled();
       expect(fixture.release).toHaveBeenCalledOnce();

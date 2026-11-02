@@ -56,7 +56,7 @@ export function mergeEmbeddedAgentRunResultForModelFallbackExhaustion(params: {
   };
 }
 
-function hasDeliberateSilentTerminalReply(result: EmbeddedAgentRunResult): boolean {
+export function hasDeliberateSilentTerminalReply(result: EmbeddedAgentRunResult): boolean {
   return [result.meta.finalAssistantRawText, result.meta.finalAssistantVisibleText].some(
     (text) => typeof text === "string" && isSilentReplyPayloadText(text),
   );

@@ -6,6 +6,7 @@ import {
   withReplySpeechPresentation,
   type ReplySpeechPresentationRun,
 } from "../auto-reply/reply/reply-speech-presentation.js";
+import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { RealtimeVoiceAgentConsultSpeechEvent } from "./agent-consult-runtime.js";
 import { createReplySpeechPresentation } from "./reply-speech-presentation.js";
 
@@ -55,6 +56,74 @@ function completed(
 }
 
 describe("native turn-owned speech presentation", () => {
+  it.for([undefined, "not a silent reply", SILENT_REPLY_TOKEN])(
+    "preserves canonical deliberate silence while unmarked empty output still falls back: %s",
+    async (finalText) => {
+      const fixture = setup();
+      const outcome = completed("");
+      outcome.result.payloads = [];
+      outcome.result.meta = {
+        durationMs: 1,
+        finalAssistantRawText: finalText,
+        finalAssistantVisibleText: finalText,
+      };
+      await withReplySpeechPresentation(fixture.source, fixture.binding, async () => outcome);
+      const text =
+        finalText === SILENT_REPLY_TOKEN ? "" : "I need a moment to verify that before answering.";
+      expect(fixture.events).toEqual([{ type: "done", text }]);
+      expect(fixture.onResult).toHaveBeenCalledExactlyOnceWith({ text, delivered: true });
+      expect(fixture.onError).not.toHaveBeenCalled();
+    },
+  );
+
+  it.for(["streamed", "current-source"] as const)(
+    "retains already accepted %s speech before a deliberate silent terminal",
+    async (kind) => {
+      const fixture = setup();
+      const text = "The accepted answer.";
+      const outcome = completed("");
+      outcome.result.payloads = [];
+      outcome.result.meta = {
+        durationMs: 1,
+        finalAssistantRawText: SILENT_REPLY_TOKEN,
+        finalAssistantVisibleText: SILENT_REPLY_TOKEN,
+      };
+      await withReplySpeechPresentation(fixture.source, fixture.binding, async (run) => {
+        if (kind === "streamed") {
+          await run?.onBlockReply({ text });
+        } else {
+          const target = run?.currentSourceReplyTarget;
+          if (!target) {
+            throw new Error("Expected actual current-source speech target");
+          }
+          target.beginInput?.({});
+          await target.deliver(
+            setReplyPayloadMetadata(
+              { text },
+              {
+                tts: { tagged: true, text, expression: { parts: [{ text }] } },
+              },
+            ),
+            { final: true, phase: "final_answer", idempotencyKey: "accepted-answer" },
+          );
+        }
+        return outcome;
+      });
+      expect(
+        fixture.events.map((event) => ({
+          type: event.type,
+          text: "text" in event ? event.text : undefined,
+        })),
+      ).toEqual([
+        { type: "chunk", text },
+        { type: "done", text },
+      ]);
+      expect(fixture.onResult).toHaveBeenCalledWith(
+        expect.objectContaining({ text, delivered: true }),
+      );
+      expect(fixture.onError).not.toHaveBeenCalled();
+    },
+  );
   it("opens with actual execution identity, retains expression metadata and retires retained callbacks", async () => {
     const fixture = setup();
     const open = vi.fn(fixture.source.openRun);
@@ -235,6 +304,8 @@ describe("native turn-owned speech presentation", () => {
       durationMs: 1,
       yielded: true,
       yieldAcknowledgment: "  Work started.\nMore later. ",
+      finalAssistantRawText: SILENT_REPLY_TOKEN,
+      finalAssistantVisibleText: SILENT_REPLY_TOKEN,
     };
     await withReplySpeechPresentation(fixture.source, fixture.binding, async () => outcome);
     expect(fixture.onResult).toHaveBeenCalledWith(

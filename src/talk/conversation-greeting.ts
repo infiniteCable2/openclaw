@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { hasDeliberateSilentTerminalReply } from "../agents/embedded-agent-runner/result-fallback-classifier.js";
 import { runEmbeddedAgent } from "../agents/embedded-agent-runner/run.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { resolveAgentTimeoutMs } from "../agents/timeout.js";
@@ -231,7 +232,11 @@ export async function prepareConversationGreeting(params: {
     if (result.meta?.aborted || result.meta?.error) {
       throw new Error("Native greeting generation did not complete");
     }
-    const greeting = await delivery.finish({ yielded: false, payloads: result.payloads ?? [] });
+    const greeting = await delivery.finish({
+      yielded: false,
+      deliberateSilent: hasDeliberateSilentTerminalReply(result),
+      payloads: result.payloads ?? [],
+    });
     assertSpeechCurrent();
     if (!greeting.text.trim() || isSilentReplyText(greeting.text)) {
       throw new Error("Native greeting generation produced no greeting");

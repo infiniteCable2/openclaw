@@ -383,7 +383,36 @@ export function createSpeechOutput(params: {
   ): ReplySpeechOutputReceipt | undefined => {
     const harness = params.getHarness();
     const normalized = normalizeSpeechPromptText(text);
-    if (!normalized || !isCurrentSpeechUtterance(utterance)) {
+    if (!isCurrentSpeechUtterance(utterance)) {
+      return undefined;
+    }
+    if (!normalized) {
+      // Deliberate silence still ends this producer, after any earlier commentary.
+      // It creates neither replacement TTS nor a claim that a final reply was spoken.
+      ttsQueue = ttsQueue
+        .then(async () => {
+          await params.waitForInput();
+          if (!isCurrentSpeechUtterance(utterance)) {
+            return;
+          }
+          if (utterance.waitingTurn !== undefined) {
+            params.finishWaitingTurn(utterance.waitingTurn);
+          }
+          await waiting.joinStop();
+          if (!isCurrentSpeechUtterance(utterance)) {
+            return;
+          }
+          await params.waitForInput();
+          if (!isCurrentSpeechUtterance(utterance)) {
+            return;
+          }
+          utterance.finalized = true;
+          harness.finishOutputAudio("completed");
+          harness.endTurn();
+        })
+        .catch(() => {
+          params.logger.warn("[talk] silent output finalization failed; native recovery retained");
+        });
       return undefined;
     }
     if (utterance.chunks.length === 0) {
@@ -473,6 +502,10 @@ export function createSpeechOutput(params: {
   };
 
   const enqueueSpeakText = (text: string | undefined) => {
+    const normalized = normalizeSpeechPromptText(text);
+    if (!normalized) {
+      return;
+    }
     const utterance = createSpeechUtterance(params.getWaitingTurn());
     enqueueSpeechChunk(text, utterance);
     finalizeSpeechUtterance(utterance, text);

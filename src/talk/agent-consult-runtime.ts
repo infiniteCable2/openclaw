@@ -5,6 +5,7 @@ import {
 } from "../agents/agent-run-terminal-outcome.js";
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import { withCommentaryGuidance } from "../agents/commentary-guidance.js";
+import { hasDeliberateSilentTerminalReply } from "../agents/embedded-agent-runner/result-fallback-classifier.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
 import type { ProviderLocalServiceLease } from "../agents/provider-local-service-target.js";
@@ -569,6 +570,7 @@ export async function consultRealtimeVoiceAgent(params: {
         return await speechDelivery.finish({
           yielded,
           acknowledgment,
+          deliberateSilent: hasDeliberateSilentTerminalReply(result),
           payloads: result.payloads ?? [],
         });
       } catch (error) {

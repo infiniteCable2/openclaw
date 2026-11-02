@@ -16,6 +16,7 @@ export function createSpeechWaitingController(params: {
   let turnSerial = 0;
   let activeTurn: number | undefined;
   let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopping = Promise.resolve();
 
   const cancelResume = () => {
     if (resumeTimer) {
@@ -35,7 +36,8 @@ export function createSpeechWaitingController(params: {
     if (params.isStopped()) {
       pending.clear();
     }
-    return params.playback.stop();
+    stopping = params.playback.stop();
+    return stopping;
   };
   const stopInBackground = (owner?: number) => {
     void stop(owner).catch(params.onError);
@@ -97,6 +99,8 @@ export function createSpeechWaitingController(params: {
     },
     schedule,
     stop,
+    /** Join an already owned stop without stopping or scheduling any playback. */
+    joinStop: () => stopping,
     stopInBackground,
     onTurnStarted() {
       activeTurn = ++turnSerial;

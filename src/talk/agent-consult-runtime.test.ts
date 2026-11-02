@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
+import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
   emitTrustedDiagnosticEvent,
@@ -486,6 +487,31 @@ describe("realtime voice agent consult runtime", () => {
     expect(warn).toHaveBeenCalledWith(
       "[talk] agent consult produced no answer: agent returned no speakable text",
     );
+  });
+
+  it("completes deliberate silent legacy consultation without inventing fallback speech", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    runEmbeddedAgent.mockResolvedValueOnce({
+      payloads: [],
+      meta: {
+        finalAssistantRawText: SILENT_REPLY_TOKEN,
+        finalAssistantVisibleText: SILENT_REPLY_TOKEN,
+      },
+    });
+    const warn = vi.fn();
+    const onSpeakableText = vi.fn();
+    const result = await runConsult({
+      agentRuntime: runtime as never,
+      logger: { warn },
+      sessionKey: "voice:silent",
+      runIdPrefix: "voice:silent",
+      args: { question: "Finish without speaking." },
+      onSpeakableText,
+    });
+    expect(result).toEqual({ text: "", delivered: true });
+    expect(onSpeakableText).toHaveBeenCalledExactlyOnceWith({ type: "done", text: "" });
+    expect(warn).not.toHaveBeenCalled();
+    expect(runEmbeddedAgent).toHaveBeenCalledOnce();
   });
 
   it("returns a yielded acknowledgement immediately without waiting for a visible final", async () => {

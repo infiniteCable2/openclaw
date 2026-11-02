@@ -323,10 +323,12 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
     yielded,
     acknowledgment,
     payloads,
+    deliberateSilent,
   }: {
     yielded: boolean;
     acknowledgment?: string;
     payloads: ReplyPayload[];
+    deliberateSilent?: boolean;
   }): Promise<RealtimeVoiceAgentConsultResult> => {
     if (params.speechExpressionContext) {
       assertExpressionCurrent();
@@ -458,14 +460,18 @@ export function createRealtimeVoiceConsultSpeechDelivery(params: {
           )
         : null);
     if (!text) {
-      params.logger.warn(
-        "[talk] agent consult produced no answer: agent returned no speakable text",
-      );
       const fallbackText =
-        params.fallbackText ?? "I need a moment to verify that before answering.";
-      if (streamedChunks.length > 0 || commentarySpeechQueued) {
-        // As with yield acknowledgments, done does not append new audio.
-        void emitSpeechEvent({ type: "chunk", text: fallbackText });
+        deliberateSilent === true
+          ? ""
+          : (params.fallbackText ?? "I need a moment to verify that before answering.");
+      if (deliberateSilent !== true) {
+        params.logger.warn(
+          "[talk] agent consult produced no answer: agent returned no speakable text",
+        );
+        if (streamedChunks.length > 0 || commentarySpeechQueued) {
+          // As with yield acknowledgments, done does not append new audio.
+          void emitSpeechEvent({ type: "chunk", text: fallbackText });
+        }
       }
       void emitSpeechEvent({ type: "done", text: fallbackText });
       await speechDelivery;

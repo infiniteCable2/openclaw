@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { SpeechExpression } from "../llm/types.js";
 import type { RealtimeVoiceAgentConsultSpeechEvent } from "./agent-consult-runtime.js";
@@ -40,6 +41,48 @@ function setup() {
 }
 
 describe("native voice source-occurrence recovery", () => {
+  it("joins deliberate silent completion and preserves sink errors", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    const failure = new Error("Synthetic silent completion sink failure");
+    const assertNotInterrupted = vi.fn();
+    const logger = { warn: vi.fn() };
+    const delivery = createRealtimeVoiceConsultSpeechDelivery({
+      runId: "silent-run",
+      sessionId: "silent-session",
+      abortSignal: new AbortController().signal,
+      assertExpressionCurrent: () => {},
+      assertNotInterrupted,
+      logger,
+      onSpeakableText: async (event) => {
+        expect(event).toEqual({ type: "done", text: "" });
+        entered.resolve();
+        await release.promise;
+        throw failure;
+      },
+    });
+    let settled = false;
+    const completion = delivery.finish({ yielded: false, deliberateSilent: true, payloads: [] });
+    const expected = expect(completion).rejects.toBe(failure);
+    void completion.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      await entered.promise;
+      expect(settled).toBe(false);
+      expect(assertNotInterrupted).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await expected;
+    }
+    expect(assertNotInterrupted).toHaveBeenCalledOnce();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
   it("appends only an unstreamed suffix of the adopted answer with its active expression", async () => {
     const { delivery, events } = setup();
     delivery.onBlockReply(utterance("Earlier.", 0, 0, undefined, [0, 8]));

@@ -1,3 +1,4 @@
+import { hasDeliberateSilentTerminalReply } from "../agents/embedded-agent-runner/result-fallback-classifier.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import {
   getReplyPayloadMetadata,
@@ -159,6 +160,7 @@ export function createReplySpeechPresentation(
           const presentation = await delivery.finish({
             yielded: result.meta?.yielded === true,
             acknowledgment: resolveRealtimeVoiceYieldAcknowledgment(result.meta),
+            deliberateSilent: hasDeliberateSilentTerminalReply(result),
             payloads: result.payloads ?? [],
           });
           assertOutputCurrent();

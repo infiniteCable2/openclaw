@@ -12,8 +12,11 @@ function createFixture(
 ) {
   let generation = 0;
   let stopped = false;
+  let waitingTurn: number | undefined;
   const transcripts: { role: string; text: string; audioDelivery?: string }[] = [];
   const emit = vi.fn<ReturnType<OutputParams["getHarness"]>["emit"]>();
+  const finishOutputAudio = vi.fn();
+  const endTurn = vi.fn();
   const harness = {
     talk: { activeTurnId: "synthetic-turn" },
     outputActivity: { markPlaybackStarted: vi.fn() },
@@ -24,8 +27,8 @@ function createFixture(
       return entry;
     },
     ensureTurn: () => "synthetic-turn",
-    finishOutputAudio: vi.fn(),
-    endTurn: vi.fn(),
+    finishOutputAudio,
+    endTurn,
     emit,
   } as unknown as ReturnType<OutputParams["getHarness"]>;
   const activeTtsAborts: OutputParams["activeTtsAborts"] = new Set();
@@ -34,6 +37,18 @@ function createFixture(
   const onOutput = vi.fn<NonNullable<OutputParams["onOutput"]>>();
   const waitingStop = vi.fn(async (): Promise<void> => undefined);
   const waitingIdle = vi.fn((_turn: number) => undefined);
+  let stopping = Promise.resolve();
+  const stopWaiting = () => {
+    stopping = waitingStop();
+    return stopping;
+  };
+  const finishWaitingTurn = vi.fn((turn: number) => {
+    if (waitingTurn === turn) {
+      waitingTurn = undefined;
+      void stopWaiting();
+    }
+  });
+  const waitForInput = vi.fn(async () => {});
   const output = createSpeechOutput({
     config: { audioFormat: "pcm16-24khz", providers: {} },
     fullConfig: {},
@@ -48,12 +63,13 @@ function createFixture(
     getHarness: () => harness,
     isStopped: () => stopped,
     getOutputGeneration: () => generation,
-    getWaitingTurn: () => undefined,
-    finishWaitingTurn: vi.fn(),
-    waitForInput: async () => undefined,
+    getWaitingTurn: () => waitingTurn,
+    finishWaitingTurn,
+    waitForInput,
     waiting: {
       generation: 0,
-      stop: waitingStop,
+      stop: stopWaiting,
+      joinStop: () => stopping,
       stopInBackground: vi.fn(),
       onOutputIdle: waitingIdle,
     } as unknown as OutputParams["waiting"],
@@ -74,6 +90,8 @@ function createFixture(
   });
   return {
     output,
+    finishOutputAudio,
+    endTurn,
     emit,
     warn,
     onOutput,
@@ -82,6 +100,11 @@ function createFixture(
     activeTtsReaders,
     waitingStop,
     waitingIdle,
+    finishWaitingTurn,
+    waitForInput,
+    setWaitingTurn(turn: number) {
+      waitingTurn = turn;
+    },
     cancel() {
       generation += 1;
       for (const controller of activeTtsAborts) {
@@ -114,6 +137,151 @@ function completeResult(audio = Buffer.alloc(4_800), release = vi.fn(async () =>
 }
 
 describe("speech output compute/playout overlap", () => {
+  it("keeps an empty public speak request a no-op", async () => {
+    const synthesize = vi.fn(async () => completeResult());
+    const fixture = createFixture(synthesize, async () => {});
+    fixture.output.enqueueSpeakText(undefined);
+    fixture.output.enqueueSpeakText("  ");
+    await fixture.output.drain();
+    expect(synthesize).not.toHaveBeenCalled();
+    expect(fixture.endTurn).not.toHaveBeenCalled();
+    expect(fixture.finishOutputAudio).not.toHaveBeenCalled();
+  });
+
+  it("does not normalize a public speak request twice", async () => {
+    const synthesize = vi.fn(async () => completeResult());
+    const fixture = createFixture(synthesize, async () => {});
+    fixture.output.enqueueSpeakText(`say exactly: "say exactly: 'hello'"`);
+    await fixture.output.drain();
+    expect(synthesize).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ text: "say exactly: 'hello'" }),
+    );
+  });
+
+  it.each([false, true])(
+    "settles deliberate silence after existing commentary=%s without new TTS",
+    async (commentary) => {
+      const handoff = createDeferred();
+      const written = createDeferred();
+      const synthesize = vi.fn(async () => completeResult());
+      const fixture = createFixture(synthesize, async () => {
+        written.resolve();
+        await handoff.promise;
+      });
+      fixture.setWaitingTurn(9);
+      const utterance = fixture.output.createSpeechUtterance(9);
+      if (commentary) {
+        fixture.output.enqueueSpeechChunk(
+          "Checking.",
+          utterance,
+          undefined,
+          undefined,
+          undefined,
+          "commentary",
+        );
+      }
+      expect(fixture.output.finalizeSpeechUtterance(utterance, "")).toBeUndefined();
+      if (commentary) {
+        await written.promise;
+        expect(utterance.finalized).toBe(false);
+        expect(fixture.endTurn).not.toHaveBeenCalled();
+      }
+      handoff.resolve();
+      await fixture.output.drain();
+      expect(synthesize).toHaveBeenCalledTimes(commentary ? 1 : 0);
+      expect(fixture.finishWaitingTurn).toHaveBeenCalledExactlyOnceWith(9);
+      expect(fixture.waitingStop).toHaveBeenCalled();
+      expect(fixture.finishOutputAudio).toHaveBeenCalledExactlyOnceWith("completed");
+      expect(fixture.endTurn).toHaveBeenCalledOnce();
+      expect(utterance.finalized).toBe(true);
+      expect(fixture.emit).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "output.text.done" }),
+      );
+    },
+  );
+
+  it("does not end newer output when an older silent finalizer resumes", async () => {
+    const stoppedWaiting = createDeferred();
+    const entered = createDeferred();
+    const fixture = createFixture(
+      async () => completeResult(),
+      async () => {},
+    );
+    fixture.waitingStop.mockImplementationOnce(async () => {
+      entered.resolve();
+      await stoppedWaiting.promise;
+    });
+    fixture.setWaitingTurn(9);
+    const utterance = fixture.output.createSpeechUtterance(9);
+    fixture.output.finalizeSpeechUtterance(utterance, "");
+    await entered.promise;
+    await fixture.cancel();
+    fixture.setWaitingTurn(10);
+    stoppedWaiting.resolve();
+    await fixture.output.drain();
+    expect(fixture.endTurn).not.toHaveBeenCalled();
+    expect(fixture.finishOutputAudio).not.toHaveBeenCalled();
+  });
+
+  it("joins waiting already stopped by input retirement before ending a silent turn", async () => {
+    const input = createDeferred();
+    const inputEntered = createDeferred();
+    const stoppedWaiting = createDeferred();
+    const fixture = createFixture(
+      async () => completeResult(),
+      async () => {},
+    );
+    fixture.waitForInput.mockImplementationOnce(async () => {
+      inputEntered.resolve();
+      await input.promise;
+    });
+    fixture.waitingStop.mockImplementationOnce(() => stoppedWaiting.promise);
+    fixture.setWaitingTurn(9);
+    const utterance = fixture.output.createSpeechUtterance(9);
+    fixture.output.finalizeSpeechUtterance(utterance, "");
+    await inputEntered.promise;
+    fixture.finishWaitingTurn(9); // Native cleanup retires the turn while input is held.
+    input.resolve();
+    await setImmediate();
+    expect(fixture.endTurn).not.toHaveBeenCalled();
+    expect(fixture.finishOutputAudio).not.toHaveBeenCalled();
+    expect(fixture.waitingStop).toHaveBeenCalledOnce();
+    stoppedWaiting.resolve();
+    await fixture.output.drain();
+    expect(fixture.endTurn).toHaveBeenCalledOnce();
+    expect(fixture.finishOutputAudio).toHaveBeenCalledExactlyOnceWith("completed");
+    expect(fixture.waitingStop).toHaveBeenCalledOnce();
+  });
+
+  it("retains the input gate when a candidate arrives during silent waiting cleanup", async () => {
+    const stoppedWaiting = createDeferred();
+    const stopEntered = createDeferred();
+    const pendingInput = createDeferred();
+    const inputEntered = createDeferred();
+    const fixture = createFixture(
+      async () => completeResult(),
+      async () => {},
+    );
+    fixture.waitingStop.mockImplementationOnce(async () => {
+      stopEntered.resolve();
+      await stoppedWaiting.promise;
+    });
+    fixture.waitForInput.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => {
+      inputEntered.resolve();
+      await pendingInput.promise;
+    });
+    fixture.setWaitingTurn(9);
+    const utterance = fixture.output.createSpeechUtterance(9);
+    fixture.output.finalizeSpeechUtterance(utterance, "");
+    await stopEntered.promise;
+    stoppedWaiting.resolve();
+    await inputEntered.promise;
+    expect(fixture.endTurn).not.toHaveBeenCalled();
+    pendingInput.resolve();
+    await fixture.output.drain();
+    expect(fixture.endTurn).toHaveBeenCalledOnce();
+  });
+
   it("observes preparation, actual handoff and submission without claiming local playback drain", async () => {
     const handoff = createDeferred();
     const written = createDeferred();
