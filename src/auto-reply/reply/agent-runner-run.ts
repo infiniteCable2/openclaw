@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { resolveReplyCompletion } from "../../agents/reply-completion.js";
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
 import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
@@ -56,7 +57,7 @@ import {
 } from "./compaction-notice.js";
 import { bindConversationInputPublication } from "./conversation-publication-input.js";
 import { createFollowupRunner } from "./followup-runner.js";
-import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "./get-reply-run-queue.js";
+import { buildReplyRunShuttingDownPayload } from "./get-reply-run-queue.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
@@ -580,9 +581,9 @@ export async function runReplyAgent(
       if (admission.reason !== "active-run" || replyTurnKind !== "visible") {
         return undefined;
       }
-      return markReplyPayloadForSourceSuppressionDelivery({
-        text: REPLY_RUN_STILL_SHUTTING_DOWN_TEXT,
-      });
+      return markReplyPayloadForSourceSuppressionDelivery(
+        buildReplyRunShuttingDownPayload(resolveAgentLanguage(cfg, followupRun.run.agentId ?? "")),
+      );
     }
     replyOperation = admission.operation;
     releaseAdmissionTicket();
@@ -701,6 +702,7 @@ export async function runReplyAgent(
       replyOperation,
     );
     return await handleReplyAgentRunError(error, {
+      language: resolveAgentLanguage(cfg, followupRun.run.agentId ?? ""),
       resolveVisibleReplyDelivery,
       isHeartbeat,
       replyExpectation,

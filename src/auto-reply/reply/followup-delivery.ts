@@ -6,6 +6,7 @@ import {
   resolveExplicitFinalSourceReplyDeliveryEvidence,
   resolveSourceReplyDelivery,
 } from "../../agents/embedded-agent-runner/delivery-evidence.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import {
   isSyntheticSourceReplyTurn,
   resolveReplyCompletion,
@@ -13,6 +14,7 @@ import {
 import { buildAgentRuntimeDeliveryPlan } from "../../agents/runtime-plan/build.js";
 import { logVerbose } from "../../globals.js";
 import { defaultRuntime } from "../../runtime.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import {
@@ -45,10 +47,7 @@ import {
   resolveFollowupReplyExpectation,
   resolveSourceReplyVisibilityPolicy,
 } from "./source-reply-delivery-mode.js";
-import {
-  isReplyOperationStalledBeforeOutput,
-  STALLED_TURN_NOTICE_TEXT,
-} from "./stalled-turn-recovery.js";
+import { isReplyOperationStalledBeforeOutput } from "./stalled-turn-recovery.js";
 import {
   buildStrandedReplyDeliveryFailurePayload,
   resolveStrandedReplyRecovery,
@@ -146,7 +145,9 @@ export async function resolveFollowupDeliveryDecision(params: {
     ) {
       const payloads = preparePayloads([
         markReplyPayloadForSourceSuppressionDelivery({
-          text: STALLED_TURN_NOTICE_TEXT,
+          text: resolveUserMessages(
+            resolveAgentLanguage(turn.config, turn.queued.run.agentId ?? ""),
+          ).replyStalled,
           isError: true,
         }),
       ]);
@@ -161,6 +162,7 @@ export async function resolveFollowupDeliveryDecision(params: {
     payloads.map((payload) =>
       renderPostCompactionModelFailurePayload(
         markPostCompactionModelFailurePayload(postCompactionModelFailure, payload),
+        resolveAgentLanguage(turn.config, turn.queued.run.agentId ?? ""),
       ),
     );
   if (execution.outcome.kind === "rejected") {
@@ -282,6 +284,7 @@ export async function resolveFollowupDeliveryDecision(params: {
         getReplyPayloadMetadata(payload)?.deliverDespiteSourceReplySuppression === true),
   );
   const waitingStatusParams = {
+    language: resolveAgentLanguage(turn.config, turn.queued.run.agentId ?? ""),
     completion,
     continuationPending: result.meta?.continuationPending === true,
     yielded: result.meta?.yielded === true,
@@ -305,7 +308,11 @@ export async function resolveFollowupDeliveryDecision(params: {
         ? markReplyPayloadForSourceSuppressionDelivery(accounting.terminalFailurePayload)
         : accounting.terminalFailurePayload
       : undefined
-    : (waitingStatusPayload ?? buildEmptyInteractiveReplyPayload({ completion }));
+    : (waitingStatusPayload ??
+      buildEmptyInteractiveReplyPayload({
+        completion,
+        language: resolveAgentLanguage(turn.config, turn.queued.run.agentId ?? ""),
+      }));
   if (!hasTerminalPayload && fallbackPayload) {
     payloads.push(...preparePayloads([fallbackPayload]));
   }

@@ -1,8 +1,7 @@
+import { resolveAgentLanguage } from "../agents/identity.js";
 import type { RealtimeVoiceProviderPlugin } from "../plugins/types.js";
-import {
-  buildRealtimeVoiceAgentControlSpeechMessage,
-  REALTIME_VOICE_AGENT_CONTROL_FAILURE_MESSAGE,
-} from "./agent-run-control-shared.js";
+import { resolveUserMessages } from "../shared/user-messages.js";
+import { buildRealtimeVoiceAgentControlSpeechMessage } from "./agent-run-control-shared.js";
 import type { InternalRealtimeVoiceProviderCapabilities } from "./provider-internal.js";
 import type {
   RealtimeVoiceBridge,
@@ -70,6 +69,7 @@ type RealtimeVoiceSessionPhase =
 export function createRealtimeVoiceBridgeSession(
   params: RealtimeVoiceBridgeSessionParams,
 ): RealtimeVoiceBridgeSession {
+  const messages = resolveUserMessages(resolveAgentLanguage(params.cfg, params.agentId ?? ""));
   const bridgeRef: { current?: RealtimeVoiceBridge } = {};
   const handleDelegationInput = params.handleDelegationInput;
   const runAgentConsult = params.runAgentConsult;
@@ -316,11 +316,7 @@ export function createRealtimeVoiceBridgeSession(
               return handleDelegationInput(text, reply);
             } catch (error) {
               try {
-                reply(
-                  buildRealtimeVoiceAgentControlSpeechMessage(
-                    REALTIME_VOICE_AGENT_CONTROL_FAILURE_MESSAGE,
-                  ),
-                );
+                reply(buildRealtimeVoiceAgentControlSpeechMessage(messages.voiceControlFailed));
               } catch (replyError) {
                 reportCallbackError(replyError);
               }

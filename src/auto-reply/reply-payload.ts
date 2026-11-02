@@ -354,6 +354,8 @@ export type ReplyPayloadMetadata = {
   beforeAgentRunBlocked?: boolean;
   /** Payload preparation generated this provider error; it is not an authored answer. */
   terminalProviderError?: true;
+  /** Native admission is still waiting on the previous run; wording is not a retry signal. */
+  previousRunStillShuttingDown?: true;
   /** Model fallback uses observed failure facts, never the displayed wording. */
   providerFailure?: { reason: FailoverReason | null; rawError?: string };
   /** The warning owner observed this tool failure; presentation text is not evidence. */

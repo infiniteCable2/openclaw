@@ -15,6 +15,7 @@ import { isAbortError } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
+import { resolveUserMessages } from "../shared/user-messages.js";
 import { captureRealtimeVoiceRunOwner } from "./agent-run-control-owner.js";
 import {
   buildRealtimeVoiceAgentCancelProviderResult,
@@ -85,6 +86,7 @@ type RealtimeVoiceAgentControlDeps = {
 export async function controlRealtimeVoiceAgentRun(
   params: {
     sessionKey: string;
+    language?: string;
     /** Exact admitted owner; null forbids lookup, omission retains legacy session-key control. */
     runTarget?: {
       runId: string;
@@ -108,6 +110,7 @@ export async function controlRealtimeVoiceAgentRun(
   },
   providedDeps?: RealtimeVoiceAgentControlDeps,
 ): Promise<RealtimeVoiceAgentControlResult> {
+  const messages = resolveUserMessages(params.language);
   const sessionKey = params.sessionKey.trim();
   const text = params.text.trim();
   const mode = resolveRealtimeVoiceAgentControlIntent({ text, mode: params.mode }).mode;
@@ -173,6 +176,7 @@ export async function controlRealtimeVoiceAgentRun(
       ...(current.sessionId ? { sessionId: current.sessionId } : {}),
       active,
       message: formatRealtimeVoiceAgentStatus({
+        language: params.language,
         active,
         recentEvents: params.recentEvents,
         activity,
@@ -187,7 +191,7 @@ export async function controlRealtimeVoiceAgentRun(
     active: false,
     ...(mode === "cancel" ? { aborted: false } : { queued: false }),
     reason: "no_active_run",
-    message: `There is no active OpenClaw run to ${mode === "cancel" ? "cancel" : "steer"}.`,
+    message: messages.voiceNoActiveRun(mode === "cancel" ? "cancel" : "steer"),
     ...controlResultPresentation,
   });
   if (!current.sessionId || (target === undefined && !isLegacyCurrent())) {
@@ -221,9 +225,7 @@ export async function controlRealtimeVoiceAgentRun(
       target === undefined
         ? commands.abortEmbeddedAgentRun(sessionId)
         : exactOwner?.abort() === true;
-    const message = aborted
-      ? "Cancelled the active OpenClaw run."
-      : "OpenClaw could not cancel the active run.";
+    const message = aborted ? messages.voiceCancelled : messages.voiceCancelFailed;
     return {
       ok: aborted,
       ...controlResultContext,
@@ -325,17 +327,17 @@ export async function controlRealtimeVoiceAgentRun(
       active: true,
       queued: false,
       reason: outcome.reason,
-      message: formatRealtimeVoiceAgentQueueRejection(mode, outcome.reason),
+      message: formatRealtimeVoiceAgentQueueRejection(mode, outcome.reason, params.language),
       ...controlResultPresentation,
     };
   }
 
   const unconfirmed = outcome.transcriptCommit === "unconfirmed";
   const message = unconfirmed
-    ? "OpenClaw could not confirm that input. It was not sent again; check the conversation before retrying."
+    ? messages.voiceInputUnconfirmed
     : mode === "followup"
-      ? "Queued that follow-up for the active OpenClaw run."
-      : "Got it. I steered the active run.";
+      ? messages.voiceFollowupQueued
+      : messages.voiceSteered;
   return {
     ok: !unconfirmed,
     ...controlResultContext,

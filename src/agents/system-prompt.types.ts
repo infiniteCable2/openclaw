@@ -5,6 +5,7 @@ export type SilentReplyPromptMode = "generic" | "none";
 export type SystemPromptRuntimeInfo = {
   agentId?: string;
   agentName?: string;
+  agentLanguage?: string;
   sessionKey?: string;
   sessionId?: string;
   sessionUrl?: string;

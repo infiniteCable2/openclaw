@@ -1,7 +1,10 @@
 // Shared transport-neutral STT, native agent admission, and speech delivery owner.
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { RealtimeTranscriptionSession } from "../../realtime-transcription/provider-types.js";
+import { resolveUserMessageLocale } from "../../shared/language.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import {
   createRealtimeVoiceSessionHarness,
   type RealtimeVoiceSessionHarness,
@@ -44,6 +47,8 @@ export async function startSpeechSession(
   params: SpeechSessionStartParams,
 ): Promise<SpeechSessionHandle> {
   params.signal?.throwIfAborted();
+  const language = resolveAgentLanguage(params.fullConfig, params.config.agentId ?? "");
+  const messages = resolveUserMessages(language);
   let stopped = false;
   const video = createSpeechVideoInput(params.config.video);
   const inputs = createSpeechInputMetadata(video, params.sessionId);
@@ -406,6 +411,7 @@ export async function startSpeechSession(
 
   const nativeInput = params.nativeInput
     ? createNativeSpeechInput({
+        language,
         dispatch: params.nativeInput,
         session: params,
         inputs,
@@ -433,7 +439,7 @@ export async function startSpeechSession(
             harness.emit({
               type: "session.error",
               final: true,
-              payload: { sessionId: params.sessionId, error: "Native conversation input failed" },
+              payload: { sessionId: params.sessionId, error: messages.voiceInputFailed },
             });
           }
         },
@@ -662,7 +668,13 @@ export async function startSpeechSession(
         harness.emit({
           type: "session.error",
           final: true,
-          payload: { sessionId: params.sessionId, error: formatErrorMessage(error) },
+          payload: {
+            sessionId: params.sessionId,
+            error:
+              resolveUserMessageLocale(language) === "en"
+                ? formatErrorMessage(error)
+                : messages.voiceTranscriptionFailed,
+          },
         });
         stopAfterFailure("transcription bridge");
       },

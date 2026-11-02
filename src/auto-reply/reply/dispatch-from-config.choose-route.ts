@@ -3,6 +3,7 @@ import {
   hasOutboundReplyContent,
   resolveSendableOutboundReplyParts,
 } from "openclaw/plugin-sdk/reply-payload";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { withClaimingHookAdmission } from "../../plugins/hook-claim-admission.js";
@@ -302,7 +303,10 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
         suppressionReason: preparation.reason,
       };
     }
-    const payload = renderPostCompactionModelFailurePayload(preparation.payload);
+    const payload = renderPostCompactionModelFailurePayload(
+      preparation.payload,
+      resolveAgentLanguage(state.cfg, state.sessionAgentId),
+    );
     const payloadMetadata = getReplyPayloadMetadata(payload);
     const expectedWriterRunId = normalizeOptionalString(params.replyOptions?.runId);
     const expectedLifecycleRevision = sessionStoreEntry.entry?.lifecycleRevision;

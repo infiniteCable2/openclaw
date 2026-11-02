@@ -1,4 +1,5 @@
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { extractDeliveryInfo } from "../../config/sessions/delivery-info.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
@@ -8,6 +9,7 @@ import { buildOutboundSessionContext } from "../../infra/outbound/session-contex
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
@@ -35,17 +37,9 @@ export function assertSkillReviewRunSucceeded(
   }
 }
 
-const ACTION_VERB: Record<WorkshopChange["action"], string> = {
-  create: "created",
-  patch: "updated",
-  write_file: "updated",
-  remove_file: "updated",
-  archive: "archived",
-  restore: "restored",
-};
-
 /** The notice keeps a creation or latest edit; undo keeps the version before the first edit. */
-function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]) {
+function formatWorkshopChangeNotice(changes: readonly WorkshopChange[], language: string) {
+  const messages = resolveUserMessages(language);
   const bySkill = new Map<string, WorkshopChange>();
   const firstBySkill = new Map<string, WorkshopChange>();
   for (const change of changes.toSorted((a, b) => a.createdAtMs - b.createdAtMs)) {
@@ -58,9 +52,9 @@ function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]) {
   }
   const parts = [...bySkill.values()].map((change) => {
     const summary = change.summary.trim();
-    return `${ACTION_VERB[change.action]} \`${change.skillName}\`${summary ? ` (${summary})` : ""}`;
+    return `${messages.skillWorkshopAction[change.action]} \`${change.skillName}\`${summary ? ` (${summary})` : ""}`;
   });
-  const text = `💾 Learned: ${parts.join("; ")}. Say "undo" to revert this skill change.`;
+  const text = messages.skillWorkshopNotice(parts.join("; "));
   // No prior version means the review created the skill, so undo archives it.
   const reverts = [...firstBySkill.values()].map(({ skillName, versionId }) =>
     versionId
@@ -109,7 +103,10 @@ export async function postWorkshopChangeNotice(params: {
     log.debug(`skill workshop notice skipped: session ${sessionKey} was reset`);
     return;
   }
-  const { text, undoContext } = formatWorkshopChangeNotice(params.changes);
+  const { text, undoContext } = formatWorkshopChangeNotice(
+    params.changes,
+    resolveAgentLanguage(params.config, agentId),
+  );
   enqueueSystemEvent(undoContext, {
     sessionKey: resolveSystemEventQueueKey(sessionKey, agentId),
   });

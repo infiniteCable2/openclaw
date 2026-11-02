@@ -25,6 +25,62 @@ import {
   expectSingleToolErrorPayload,
 } from "./payloads.test-helpers.js";
 
+describe("native Matrix error presentation language", () => {
+  const config = { agents: { entries: { main: { identity: { language: "de-DE" } } } } };
+  it.each([
+    ["LLM request timed out.", "Anfrage hat zu lange gedauert"],
+    ["503 Service Unavailable", "KI-Dienst"],
+    ["maximum context length is 8192 tokens", "Unterhaltung ist für das Modell zu lang"],
+  ])(
+    "localizes the completed native %s error while preserving failure facts",
+    (errorMessage, expected) => {
+      const assistant = makeAgentAssistantMessage({
+        stopReason: "error",
+        errorMessage,
+        content: [],
+      });
+      const [payload] = buildPayloads({
+        config,
+        agentId: "main",
+        sessionKey: "agent:main:matrix:room:!example:example.org",
+        lastAssistant: assistant,
+      });
+      expect(payload).toMatchObject({ isError: true, text: expect.stringContaining(expected) });
+      expect(getReplyPayloadMetadata(payload ?? {})).toMatchObject({
+        terminalProviderError: true,
+        providerFailure: { rawError: errorMessage },
+      });
+      expect(assistant.errorMessage).toBe(errorMessage);
+    },
+  );
+
+  it.each([undefined, config])(
+    "retains English timeout sentinel decisions before presentation (configured=%s)",
+    (selectedConfig) => {
+      const assistant = makeAgentAssistantMessage({
+        stopReason: "error",
+        errorMessage: "LLM request timed out.",
+        content: [],
+      });
+      expect(
+        buildPayloads({
+          config: selectedConfig,
+          agentId: "main",
+          lastAssistant: assistant,
+          deferAssistantTimeoutError: true,
+        }),
+      ).toHaveLength(0);
+      if (!selectedConfig) {
+        expectSinglePayloadText(
+          buildPayloads({ lastAssistant: assistant }),
+          "LLM request timed out.",
+          true,
+        );
+      }
+    },
+  );
+});
+
 describe("buildEmbeddedRunPayloads tool-error silence", () => {
   it.each([
     { text: "NO_REPLY", mutatingAction: false },

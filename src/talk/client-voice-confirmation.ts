@@ -1,6 +1,9 @@
 /** In-memory spoken confirmation binding for high-impact Talk actions. */
 import { randomUUID } from "node:crypto";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import { resolveUserMessageLocale, type UserMessageLocale } from "../shared/language.js";
+import { resolveUserMessages } from "../shared/user-messages.js";
+import { classifyVoiceConfirmationUtterance } from "./client-voice-confirmation-language.js";
 import {
   requiresHighImpactVoiceConfirmation,
   stableToolFingerprint,
@@ -15,6 +18,7 @@ export type ClientVoiceConfirmationUtteranceContext = {
 
 type PendingVoiceConfirmation = {
   confirmationId: string;
+  language: UserMessageLocale;
   runId?: string;
   fingerprint: string;
   createdAt: number;
@@ -43,7 +47,10 @@ type ConfirmationScopeState = {
   pending?: PendingVoiceConfirmation;
   recentUtterance?: RecentVoiceUserUtterance;
   approvedByRun: Map<string, Map<string, number>>;
-  observationsByRun: Map<string, Map<string, string>>;
+  observationsByRun: Map<
+    string,
+    Map<string, { confirmationId: string; language: UserMessageLocale }>
+  >;
   pendingExpiryTimer?: ReturnType<typeof setTimeout>;
 };
 
@@ -296,7 +303,8 @@ export function noteClientVoiceConfirmationUtterance(params: {
   if (
     observed.pending === state.pending &&
     observed.persistedText !== undefined &&
-    REFUSAL_PATTERN.test(normalizeUtterance(observed.persistedText)) &&
+    classifyVoiceConfirmationUtterance(observed.persistedText, state.pending.language) ===
+      "refusal" &&
     state.pending.createdAt < observed.timestamp
   ) {
     clearPendingConfirmation(state);
@@ -320,6 +328,7 @@ export function noteClientVoiceConfirmationUtterance(params: {
 
 type ClientVoiceToolConfirmationPolicyParams = {
   agentId?: string;
+  language?: string;
   voiceSessionId?: string;
   runId?: string;
   toolName: string;
@@ -368,6 +377,7 @@ function resolveClientVoiceToolConfirmationPolicy(
     existing ??
     ({
       confirmationId: randomUUID(),
+      language: resolveUserMessageLocale(params.language),
       ...(params.runId ? { runId: params.runId } : {}),
       fingerprint,
       createdAt: now,
@@ -393,17 +403,22 @@ function resolveClientVoiceToolConfirmationPolicy(
   state.pending = confirmation;
   const observation = params.runId ? state.observationsByRun.get(params.runId) : undefined;
   if (observation) {
-    observation.set(fingerprint, confirmation.confirmationId);
+    observation.set(fingerprint, {
+      confirmationId: confirmation.confirmationId,
+      language: confirmation.language,
+    });
   }
   schedulePendingConfirmationExpiry(scopeKey, state, now);
+  const messages = resolveUserMessages(confirmation.language);
   return {
     allowed: false,
     reason:
       `VOICE_CONFIRMATION_REQUIRED:${confirmation.confirmationId} ` +
-      `The high-impact voice action "${params.toolName}" was not executed. ` +
+      `${messages.voiceActionNotExecuted(params.toolName)} ` +
+      `${messages.voiceConfirmationRequest} ` +
       (observation
-        ? 'Ask the user to say "yes" to confirm this action or "no" to cancel it. A later native delegation carries the confirmation; do not add confirmationId to action tool arguments.'
-        : "Ask the user for explicit spoken confirmation, then call openclaw_agent_consult again with this confirmationId."),
+        ? "A later native delegation carries the confirmation; do not add confirmationId to action tool arguments."
+        : "After explicit spoken confirmation, call openclaw_agent_consult again with this confirmationId."),
   };
 }
 
@@ -473,7 +488,7 @@ export function observeClientVoiceConfirmationRun(params: {
 }) {
   const scopeKey = confirmationScopeKey(params.agentId, params.voiceSessionId);
   const state = getOrCreateConfirmationScope(scopeKey);
-  const observation = new Map<string, string>();
+  const observation = new Map<string, { confirmationId: string; language: UserMessageLocale }>();
   state.observationsByRun.set(params.runId, observation);
   return {
     readReply(options?: { includeConfirmationId?: boolean }): string | undefined {
@@ -483,16 +498,17 @@ export function observeClientVoiceConfirmationRun(params: {
       const pending = confirmationScopes.get(scopeKey)?.pending;
       if (
         pending &&
-        observation.get(pending.fingerprint) === pending.confirmationId &&
+        observation.get(pending.fingerprint)?.confirmationId === pending.confirmationId &&
         pending.expiresAt >= Date.now()
       ) {
-        const speech =
-          'One pending action has not run. Say "yes" to confirm that action or "no" to cancel it.';
+        const speech = resolveUserMessages(pending.language).voiceConfirmationPending;
         return options?.includeConfirmationId
           ? `VOICE_CONFIRMATION_REQUIRED:${pending.confirmationId} ${speech} After spoken confirmation, call openclaw_agent_consult with this confirmationId.`
           : speech;
       }
-      return "An action in that request was not run because its spoken confirmation is no longer current. Make a new request if you still want it.";
+      // Keep the observed challenge's language after its scope or pending state is gone.
+      const language = [...observation.values()].at(-1)?.language;
+      return resolveUserMessages(language).voiceConfirmationNoLongerCurrent;
     },
     release(): void {
       const current = confirmationScopes.get(scopeKey);
@@ -502,32 +518,6 @@ export function observeClientVoiceConfirmationRun(params: {
       }
     },
   };
-}
-
-const REFUSAL_PATTERN = /\b(no|don't|do not|cancel|stop|never mind)\b/;
-
-function normalizeUtterance(text: string): string {
-  return (
-    text
-      .trim()
-      .toLowerCase()
-      // STT commonly emits typographic apostrophes; fold them so "don't" (U+2019)
-      // matches the refusal pattern and cannot slip past as a non-refusal.
-      .replace(/[‘’ʼ]/g, "'")
-      .replace(/[,;:.!?]+/g, "")
-      .replace(/\s+/g, " ")
-  );
-}
-
-function isExplicitAffirmation(text: string): boolean {
-  const normalized = normalizeUtterance(text);
-  if (REFUSAL_PATTERN.test(normalized)) {
-    return false;
-  }
-  // English-only phrases are an accepted first version; localized matching is follow-up work.
-  return /^(yes|yes do it|do it|confirm|confirmed|go ahead|proceed|send it|make the change|restart it)$/.test(
-    normalized,
-  );
 }
 
 function hasLaterUserUtterance(state: ConfirmationScopeState): boolean {
@@ -540,9 +530,11 @@ function hasLaterUserUtterance(state: ConfirmationScopeState): boolean {
 
 function hasLaterExplicitAffirmation(state: ConfirmationScopeState): boolean {
   return Boolean(
+    state.pending &&
     state.recentUtterance &&
     hasLaterUserUtterance(state) &&
-    isExplicitAffirmation(state.recentUtterance.text),
+    classifyVoiceConfirmationUtterance(state.recentUtterance.text, state.pending.language) ===
+      "affirmation",
   );
 }
 

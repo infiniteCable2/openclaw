@@ -20,6 +20,7 @@ import { logVerbose } from "../../globals.js";
 import { isRestartRecoveryClaimChangedError } from "../../infra/agent-lifecycle-error.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import {
   type DeliveryContext,
@@ -335,6 +336,7 @@ export async function refreshSessionEntryFromStore(params: {
 export async function handleReplyAgentRunError(
   error: unknown,
   context: {
+    language?: string;
     resolveVisibleReplyDelivery: () => Promise<boolean>;
     isHeartbeat: boolean;
     replyExpectation: ReplyExpectation;
@@ -378,7 +380,7 @@ export async function handleReplyAgentRunError(
     }
     return returnWithQueuedFollowupDrain(
       markReplyPayloadForSourceSuppressionDelivery({
-        text: buildRestartLifecycleReplyText(),
+        text: buildRestartLifecycleReplyText(context.language),
       }),
     );
   }
@@ -389,7 +391,7 @@ export async function handleReplyAgentRunError(
     );
     return returnWithQueuedFollowupDrain(
       markReplyPayloadForSourceSuppressionDelivery({
-        text: buildRestartLifecycleReplyText(),
+        text: buildRestartLifecycleReplyText(context.language),
       }),
     );
   }
@@ -397,11 +399,12 @@ export async function handleReplyAgentRunError(
     replyOperation.fail("run_failed", error);
     return returnWithQueuedFollowupDrain(
       markReplyPayloadForSourceSuppressionDelivery({
-        text: "⚠️ This conversation changed before your message could start. Check the latest messages, then try again if needed.",
+        text: resolveUserMessages(context.language).replyConversationChanged,
       }),
     );
   }
   const knownFailurePayload = buildKnownAgentRunFailureReplyPayload({
+    language: context.language,
     err: error,
     sessionCtx,
     resolvedVerboseLevel,
@@ -414,7 +417,11 @@ export async function handleReplyAgentRunError(
   if (!isHeartbeat && visibleReplyDelivered && !replyOperation.abortSignal.aborted) {
     replyOperation.fail("run_failed", error);
     return returnWithQueuedFollowupDrain(
-      buildTerminalAgentRunFailureReplyPayload({ replyExpectation, visibleReplyDelivered }),
+      buildTerminalAgentRunFailureReplyPayload({
+        language: context.language,
+        replyExpectation,
+        visibleReplyDelivered,
+      }),
     );
   }
   replyOperation.fail("run_failed", error);

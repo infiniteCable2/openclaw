@@ -2,12 +2,13 @@ import {
   hasOutboundReplyContent,
   isFastModeAutoProgressPayload,
 } from "openclaw/plugin-sdk/reply-payload";
-import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { isAskUserPromptPending } from "../../agents/tools/ask-user-tool.js";
 import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
 import { normalizeAgentPlanSteps } from "../../channels/streaming.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { cleanDeferredFinalText } from "../../tts/captioned-final.js";
 import { registerReplyDispatcherSettledTask } from "../dispatch-dispatcher.js";
 import {
@@ -471,10 +472,15 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
         state.replyOperationRunState.replyCompletion.outcome !== "blocked" &&
         !state.suppressDelivery &&
         !state.getObservedReplyDelivery()
-        ? { text: GENERIC_EXTERNAL_RUN_FAILURE_TEXT, isError: true }
+        ? {
+            text: resolveUserMessages(resolveAgentLanguage(state.cfg, state.sessionAgentId))
+              .replyUnavailable,
+            isError: true,
+          }
         : undefined;
     }
     return buildTerminalAgentRunFailureReplyPayload({
+      language: resolveAgentLanguage(state.cfg, state.sessionAgentId),
       replyExpectation: state.replyOperationRunState.replyCompletion?.expectation ?? "required",
       visibleReplyDelivered: true,
     });

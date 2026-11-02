@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
+import { resolveAgentLanguage } from "../../../agents/identity.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../../../talk/agent-consult-tool.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../../../talk/agent-run-control-shared.js";
 import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
@@ -197,6 +198,7 @@ export function createTalkRealtimeRelaySession(
     (signal) => confirmationReadiness.wait(signal),
   );
   const runControl = createTalkRealtimeRunControlOwner({
+    language: resolveAgentLanguage(params.cfg, params.sessionTarget.agentId),
     controlSource: params.controlSource,
     supportsToolCalls: params.capabilities?.supportsToolCalls,
     hasActiveRun: () => {

@@ -21,6 +21,39 @@ override applies to automatic spoken replies, `/tts audio`, `/tts status`, and
 the `tts` agent tool. See [Text-to-speech](/tools/tts#per-agent-voice-overrides)
 for provider examples and precedence.
 
+Use `agents.entries.*.identity.language` for the persona's native user-message
+language, such as `de-DE`. Tags must be valid BCP 47 and are canonicalized on
+config admission; the default is `en`. The English/German native catalog covers
+Talk action-confirmation prompts and expired/cancelled challenge reports;
+status, tool-progress, queue, steering and cancellation results; fixed native
+input/transcription and browser-connection failures; and common chat fallback
+notices for interrupted/stalled requests, restart, full queues, missing output,
+failed delivery, worker timeout, and classified AI-service/storage failures.
+These common error payloads use the same native owner for Matrix and other
+channels; channel routing and approval settings are unchanged. Background Skill
+Workshop notices also localize their fixed learning heading, action verbs, and
+undo hint. Skill names and model-authored change summaries are preserved. New
+experience-review runs receive an explicit configured `persona_language` hint
+for their short user-visible reasons, without a separate translation model call.
+German challenges accept explicit German confirmations
+such as `ja` or `ja, bitte`, and refusals such as `nein` or `nicht` cancel them.
+The language is fixed when a challenge is created; changing configuration does
+not reinterpret an outstanding answer. Other valid languages use the English
+catalog and English confirmation vocabulary. A live speech/control connection
+uses the language prepared from its admitted agent configuration; a newly
+admitted request uses its own configuration snapshot. Protocol codes, tool
+identifiers, diagnostic details, model-authored responses, CLI/UI text, and
+provider-specific authentication, preflight, format-validation and recovery
+guidance remain outside this catalog. Other core messages are not comprehensively
+translated. Pre-admission validation without a resolved persona, authorization
+refusals, and existing transcript/error records keep their existing copy.
+Localization changes presentation only; action, queue, cancellation,
+approval and replay policy are unchanged. An explicitly configured language is also exposed
+as `persona_language` in newly assembled native runtime prompt context, so the
+model can see the persona preference. This does not rewrite previous prompts or
+guarantee the language of model-authored replies. TTS voice/persona and
+transcription language remain configured separately.
+
 ```json5
 {
   agents: {
@@ -42,6 +75,7 @@ for provider examples and precedence.
         },
         skills: ["docs-search"], // replaces agents.defaults.skills when set
         identity: {
+          language: "en-US",
           name: "Samantha",
           theme: "helpful sloth",
           emoji: "🦥",

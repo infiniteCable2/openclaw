@@ -3,6 +3,7 @@ import {
   SYSTEM_PROMPT_RELOCATABLE_BOUNDARY_END,
 } from "@openclaw/ai/internal/shared";
 import { parseCronRunScopeSuffix } from "../sessions/session-key-utils.js";
+import { normalizeLanguageTag } from "../shared/language.js";
 import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
 import type { SystemPromptRuntimeInfo } from "./system-prompt.types.js";
 
@@ -18,6 +19,7 @@ export function buildRuntimeLine(
   const fields = {
     name: runtimeInfo?.agentName,
     agent: runtimeInfo?.agentId,
+    persona_language: runtimeInfo?.agentLanguage && normalizeLanguageTag(runtimeInfo.agentLanguage),
     session: baseSessionKey && sanitizeForPromptLiteral(baseSessionKey),
     sessionUrl: runtimeInfo?.sessionUrl && sanitizeForPromptLiteral(runtimeInfo.sessionUrl),
     host: runtimeInfo?.host,

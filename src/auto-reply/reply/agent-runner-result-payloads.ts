@@ -6,6 +6,7 @@ import {
   resolveExplicitFinalSourceReplyDeliveryEvidence,
   resolveSourceReplyDelivery,
 } from "../../agents/embedded-agent-runner/delivery-evidence.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import {
   isSyntheticSourceReplyTurn,
   resolveReplyCompletion,
@@ -219,6 +220,7 @@ export async function prepareReplyAgentPayloads(state: {
   const waitingStatusPayload = terminalFailurePayload
     ? undefined
     : buildWaitingStatusPayload({
+        language: resolveAgentLanguage(cfg, followupRun.run.agentId ?? ""),
         completion,
         yielded: runResult.meta?.yielded === true,
         continuationPending: implicitContinuation,
@@ -232,7 +234,10 @@ export async function prepareReplyAgentPayloads(state: {
       });
   const emptyInteractiveReplyPayload = terminalFailurePayload
     ? undefined
-    : buildEmptyInteractiveReplyPayload({ completion });
+    : buildEmptyInteractiveReplyPayload({
+        completion,
+        language: resolveAgentLanguage(cfg, followupRun.run.agentId ?? ""),
+      });
   const buildStrandedRetryMissingDeliveryDiagnostic = (): ReplyPayload | undefined => {
     if (!sessionKey || !storePath || followupRun.strandedReplyRetry !== true) {
       return undefined;

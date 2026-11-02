@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveAgentConfig, resolveDefaultAgentId } from "../agents/agent-scope-config.js";
+import { resolveAgentLanguage } from "../agents/identity.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
 import { normalizeAgentId } from "../routing/session-key.js";
@@ -137,6 +138,7 @@ async function consultMeetingAgent(
   const requesterSessionKey =
     normalizeOptionalString(params.requesterSessionKey) ?? `agent:${agentId}:main`;
   const sessionKey = `agent:${agentId}:subagent:${params.surface.id}:${params.meetingSessionId}`;
+  const language = resolveAgentLanguage(params.config, agentId);
   const thinkLevel =
     params.agentThinkingLevel ??
     resolveAgentConfig(params.config, agentId)?.thinkingDefault ??
@@ -240,6 +242,7 @@ async function consultMeetingAgent(
               options?.signal?.throwIfAborted();
               options?.assertCurrent?.();
               return controlRealtimeVoiceAgentRun({
+                language,
                 sessionKey,
                 runTarget: {
                   runId,

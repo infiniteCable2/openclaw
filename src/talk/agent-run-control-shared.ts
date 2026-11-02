@@ -9,6 +9,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import { resolveUserMessages } from "../shared/user-messages.js";
 import { isStringOption, readTrimmedStringAlias } from "../utils/string-readers.js";
 import type { RealtimeVoiceTool } from "./provider-types.js";
 import type { TalkEvent } from "./talk-events.js";
@@ -248,7 +249,7 @@ export function parseRealtimeVoiceAgentControlToolArgs(args: unknown): {
 
 /** Fixed user-visible failure; private execution/readiness errors stay in host diagnostics. */
 export const REALTIME_VOICE_AGENT_CONTROL_FAILURE_MESSAGE =
-  "OpenClaw could not process that voice control. Please try again.";
+  resolveUserMessages().voiceControlFailed;
 
 /** Build the system-style instruction that forces exact spoken status output. */
 export function buildRealtimeVoiceAgentControlSpeechMessage(text: string): string {
@@ -262,7 +263,7 @@ export function buildRealtimeVoiceAgentControlSpeechMessage(text: string): strin
 
 /** Provider result payload used when the control tool cancels active work. */
 export function buildRealtimeVoiceAgentCancelProviderResult(
-  message = "Cancelled the active OpenClaw run.",
+  message = resolveUserMessages().voiceCancelled,
 ): RealtimeVoiceAgentControlProviderResult {
   return {
     status: "cancelled",
@@ -284,33 +285,33 @@ export function buildRealtimeVoiceAgentFollowupSteeringText(text: string): strin
 export function formatRealtimeVoiceAgentQueueRejection(
   mode: RealtimeVoiceAgentControlMode,
   reason: string,
+  language?: string,
 ): string {
+  const messages = resolveUserMessages(language);
   if (reason === "guarded_injection_unsupported") {
-    return "This agent runtime cannot safely accept scoped voice steering. Check status, cancel the run, or start a new explicit request. Update the runtime when guarded injection is supported.";
+    return messages.voiceScopedSteeringUnavailable;
   }
   if (reason === "compacting") {
-    return "OpenClaw is compacting the active run and cannot accept voice steering yet.";
+    return messages.voiceCompacting;
   }
   if (reason === "not_streaming") {
-    return "OpenClaw has an active run, but it is not currently accepting steering.";
+    return messages.voiceNotAcceptingSteering;
   }
-  return mode === "followup"
-    ? "OpenClaw could not queue that follow-up."
-    : "OpenClaw could not steer the active run.";
+  return mode === "followup" ? messages.voiceFollowupRejected : messages.voiceSteeringRejected;
 }
 
 /** Format a concise spoken status for the active or most recent voice run. */
 export function formatRealtimeVoiceAgentStatus(params: {
   active: boolean;
+  language?: string;
   recentEvents?: readonly TalkEvent[];
   activity?: RealtimeVoiceAgentRunActivity;
 }): string {
+  const messages = resolveUserMessages(params.language);
   const recent = params.recentEvents ?? [];
   if (!params.active) {
     const turnEnded = recent.findLast((event) => event.type === "turn.ended");
-    return turnEnded
-      ? "OpenClaw finished the last voice request."
-      : "I'm not working on an active request right now.";
+    return turnEnded ? messages.voiceLastRequestFinished : messages.voiceIdle;
   }
 
   const toolEvent = recent.findLast(
@@ -324,25 +325,21 @@ export function formatRealtimeVoiceAgentStatus(params: {
     const name = normalizeOptionalString(payload.name);
     const phase = normalizeOptionalString(payload.phase);
     if (toolEvent.type === "tool.call") {
-      return name ? `OpenClaw is starting ${name}.` : "OpenClaw is starting a tool.";
+      return messages.voiceToolStarting(name);
     }
     if (toolEvent.type === "tool.result") {
-      return name
-        ? `OpenClaw finished ${name} and is continuing.`
-        : "OpenClaw finished a tool and is continuing.";
+      return messages.voiceToolFinished(name);
     }
     if (toolEvent.type === "tool.progress") {
-      return name
-        ? `OpenClaw is working in ${name}${phase ? ` (${phase})` : ""}.`
-        : "OpenClaw is still working.";
+      return messages.voiceToolWorking(name, phase);
     }
   }
 
   if (params.activity?.activeToolName) {
-    return `OpenClaw is running ${params.activity.activeToolName}.`;
+    return messages.voiceToolRunning(params.activity.activeToolName);
   }
   if (params.activity?.activeWorkKind === "model_call") {
-    return "OpenClaw is waiting on the model.";
+    return messages.voiceWaitingOnModel;
   }
-  return "OpenClaw is working on the current voice request.";
+  return messages.voiceWorking;
 }

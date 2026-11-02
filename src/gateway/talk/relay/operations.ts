@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveAgentLanguage } from "../../../agents/identity.js";
 import { formatErrorMessage as formatError } from "../../../infra/errors.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../../../talk/agent-run-control-shared.js";
@@ -525,6 +526,7 @@ export function prepareTalkRealtimeRelayAgentControl(
 ): () => Promise<RealtimeVoiceAgentControlResult> {
   const session = getRelaySession(params.relaySessionId, params.connId);
   const { sessionKey, canonicalKey } = session.sessionTarget;
+  const language = resolveAgentLanguage(session.voiceConfig, session.sessionTarget.agentId);
   const requestedSessionKey = params.sessionKey?.trim();
   if (requestedSessionKey && requestedSessionKey !== sessionKey) {
     throw new Error("Realtime relay steering session key does not match the relay session");
@@ -545,6 +547,7 @@ export function prepareTalkRealtimeRelayAgentControl(
   return async () => {
     assertCurrent();
     const result = await controlRealtimeVoiceAgentRun({
+      language,
       sessionKey: canonicalKey,
       runTarget,
       getToolAuthorityOverlay: () => {

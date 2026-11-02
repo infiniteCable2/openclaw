@@ -1,11 +1,11 @@
 import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { SkillLibraryError } from "../../skills/skill-library-error.js";
 import type { FollowupRun } from "./queue/types.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
 /** Last-resort feedback once no continuation can answer a stalled turn. */
-export const STALLED_TURN_NOTICE_TEXT =
-  "⚠️ This turn was interrupted because it stopped making progress. Please try again.";
+export const STALLED_TURN_NOTICE_TEXT = resolveUserMessages().replyStalled;
 export const STALLED_TURN_GUIDANCE =
   "Your previous turn stopped making progress and was stopped before you replied, so the " +
   "user's request from that turn is still unanswered. Answer it now, together with any newer " +

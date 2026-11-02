@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveGroupToolPolicy } from "../../agents/agent-tools.policy.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { resolveReplyCompletion } from "../../agents/reply-completion.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
@@ -8,6 +9,7 @@ import { prepareSessionPendingInputDedupeRecovery } from "../../config/sessions/
 import { logVerbose } from "../../globals.js";
 import { toPluginConversationBinding } from "../../plugins/conversation-binding.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { resolveCommandTurnContext } from "../command-turn-context.js";
 import { isExplicitCommandTurnContext } from "../command-turn-detection.js";
@@ -45,10 +47,7 @@ import {
   setChannelSourceTurnId,
   shouldMintChannelSourceTurnId,
 } from "./source-turn-id.js";
-import {
-  isReplyOperationStalledBeforeOutput,
-  STALLED_TURN_NOTICE_TEXT,
-} from "./stalled-turn-recovery.js";
+import { isReplyOperationStalledBeforeOutput } from "./stalled-turn-recovery.js";
 
 export async function prepareDispatchOperationContext(state: PrepareDispatchDeliveryReadyState) {
   const {
@@ -421,7 +420,10 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     const queuedFinal =
       isReplyOperationStalledBeforeOutput(operation) &&
       state.replyOperationRunState.continueStalledTurn?.() !== true
-        ? dispatcher.sendFinalReply({ text: STALLED_TURN_NOTICE_TEXT, isError: true })
+        ? dispatcher.sendFinalReply({
+            text: resolveUserMessages(resolveAgentLanguage(cfg, state.sessionAgentId)).replyStalled,
+            isError: true,
+          })
         : false;
     if (
       state.turnAdoptionState &&

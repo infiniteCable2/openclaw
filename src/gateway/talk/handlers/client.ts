@@ -7,7 +7,10 @@ import {
   validateTalkClientToolCallParams,
   validateTalkClientTranscriptParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
+import { resolveAgentLanguage } from "../../../agents/identity.js";
 import { createPluginRuntime } from "../../../plugins/runtime/index.js";
+import { resolveUserMessageLocale } from "../../../shared/language.js";
+import { resolveUserMessages } from "../../../shared/user-messages.js";
 import { withOpenClawAgentDatabaseRuntime } from "../../../state/openclaw-agent-db.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
@@ -282,10 +285,13 @@ export const talkClientHandlers: GatewayRequestHandlers = {
     "talk.client.steer",
     validateTalkClientSteerParams,
     async ({ params, respond, client, context, sessionMutationAuthorization }) => {
+      let language: string | undefined;
       try {
+        const config = context.getRuntimeConfig();
         const target =
           sessionMutationAuthorization?.talkSessionTarget ??
-          prepareTalkSessionTarget(context.getRuntimeConfig(), params.sessionKey);
+          prepareTalkSessionTarget(config, params.sessionKey);
+        language = resolveAgentLanguage(config, target.agentId);
         const runTarget = resolveOwnedActiveTalkRunTarget({
           context,
           clientConnId: client?.connId,
@@ -299,12 +305,15 @@ export const talkClientHandlers: GatewayRequestHandlers = {
             undefined,
             errorShape(
               ErrorCodes.INVALID_REQUEST,
-              "talk.client.steer requires an active browser-owned Talk run",
+              resolveUserMessageLocale(language) === "en"
+                ? "talk.client.steer requires an active browser-owned Talk run"
+                : resolveUserMessages(language).voiceNoActiveRun("steer"),
             ),
           );
           return;
         }
         const result = await controlRealtimeVoiceAgentRun({
+          language,
           sessionKey: target.canonicalKey,
           runTarget,
           getToolAuthorityOverlay: () =>
@@ -320,7 +329,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         });
         respond(true, result, undefined);
       } catch (err) {
-        respond(false, undefined, talkRequestError(err));
+        respond(false, undefined, talkRequestError(err, "client", language));
       }
     },
   ),

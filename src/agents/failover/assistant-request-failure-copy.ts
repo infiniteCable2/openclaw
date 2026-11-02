@@ -8,6 +8,7 @@ import {
   parseApiErrorInfo,
 } from "../../shared/assistant-error-format.js";
 import { escapeMarkdownText } from "../../shared/text/escape-markdown.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { classifyFailoverSignalCore } from "./classify-core.js";
 import { isContextOverflowErrorFromTables } from "./context-overflow-tables.js";
 import {
@@ -20,14 +21,14 @@ import type { FailoverReason } from "./signal.js";
 
 export const ERROR_PREFIX_RE =
   /^(?:error|(?:[a-z][\w-]*\s+)?api\s*error|openai\s*error|anthropic\s*error|gateway\s*error|codex\s*error|request failed|failed|exception)(?:\s+\d{3})?[:\s-]+/i;
-export const PROVIDER_SCHEMA_REJECTION_USER_TEXT =
-  "The AI service couldn't accept this request. Try a new conversation with /new, or choose another model in the Control UI.";
+export const PROVIDER_SCHEMA_REJECTION_USER_TEXT = resolveUserMessages().requestFailure.format;
 const PROVIDER_OUTPUT_TOKEN_LIMIT_RE =
   /^['"]?max_(?:tokens|output_tokens|completion_tokens|new_tokens)['"]?\s*(?:[:=]\s*)?\(?(\d[\d,]*)\)?\s+exceeds?\b.{0,120}?\b(?:maximum|max|limit)\b(?:\s+(?:output\s+)?tokens?)?(?:\s+(?:is|of)|\s*[:=])?\s*\(?(\d[\d,]*)\)?(?:\D|$)/i;
 const PROVIDER_CACHE_CONTROL_LIMIT_RE =
   /^A maximum of (\d{1,6}) blocks with cache_control may be provided\. Found (\d{1,6})\.$/i;
 
 type AssistantRequestFailureCopyFacts = {
+  language?: string;
   provider?: string;
   model?: string;
   reason?: FailoverReason | null;
@@ -36,72 +37,24 @@ type AssistantRequestFailureCopyFacts = {
   code?: string;
 };
 
-export const ERROR_DETAILS_HINT =
-  "For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.";
-
-const STORAGE_FAILURE_COPY: Record<GatewayStorageFailure, string> = {
-  SQLITE_BUSY:
-    "OpenClaw is busy saving your conversation. Wait a moment, then check the conversation before trying again.",
-  SQLITE_LOCKED:
-    "OpenClaw is busy saving your conversation. Wait a moment, then check the conversation before trying again.",
-  SQLITE_FULL:
-    "OpenClaw couldn't save your conversation because the disk is full. Free up space on the computer running OpenClaw before continuing.",
-  SQLITE_READONLY:
-    "OpenClaw doesn't have permission to save your conversation. Check folder permissions on the computer running OpenClaw.",
-  SQLITE_IOERR:
-    "OpenClaw couldn't save your conversation. Check the storage on the computer running OpenClaw before continuing.",
-  transcript_writer_fenced:
-    "This conversation changed while OpenClaw was working. Check its latest messages before continuing.",
-};
-
-const RUNTIME_COORDINATION_FAILURE_CODE_COPY: Readonly<Record<string, string>> = {
-  codex_node_disconnected: "Codex execution node disconnected. Start a fresh attempt.",
-  node_runner_update_required:
-    "The device worker requires an update before it can host sessions. Run `openclaw update`, reconnect it, then run `openclaw node restart` on a headless node before trying again.",
-  "runner-offline":
-    "The device runner is offline. Reconnect it, retry later, or bring the session back to this gateway.",
-};
-
-const ASSISTANT_REQUEST_FAILURE_COPY = {
-  auth: "Couldn't sign in to the AI service. Sign in again under Models in the Control UI or run `openclaw configure`.",
-  auth_permanent:
-    "The AI service isn't accepting your login. Sign in again under Models in the Control UI or run `openclaw configure`.",
-  format: PROVIDER_SCHEMA_REJECTION_USER_TEXT,
-  rate_limit: "The AI service needs a short break. Please try again in a few minutes.",
-  overloaded: "The AI service is busy. Please try again in a moment, or choose another model.",
-  billing:
-    "The AI service reported a billing problem. Check your account's credit balance and usage limits before trying again.",
-  server_error: "The AI service is having trouble. Please try again in a moment.",
-  timeout:
-    "The request took too long. Check the conversation for any completed work before trying again.",
-  tls_certificate: `Couldn't connect securely to the AI service. ${ERROR_DETAILS_HINT}`,
-  context_overflow:
-    "This conversation is too long for the model. Try /compact, or start a new conversation with /new.",
-  model_not_found:
-    "This model was not found. Choose another model in the Control UI or run `openclaw configure`.",
-  session_expired:
-    "Your AI session expired. Start a new conversation with /new. If it happens again, sign in under Models in the Control UI.",
-  empty_response: "The AI service returned an empty reply. Please try again.",
-  no_error_details: "",
-  unclassified: "",
-  unknown: "",
-} satisfies Record<FailoverReason, string>;
+export const ERROR_DETAILS_HINT = resolveUserMessages().replyDetailsHint;
 
 /** Render classified facts without exposing raw provider response text. */
 export function renderAssistantRequestFailureCopy(
   facts: AssistantRequestFailureCopyFacts,
 ): string | undefined {
+  const messages = resolveUserMessages(facts.language);
   if (facts.storageFailure) {
-    return `⚠️ ${STORAGE_FAILURE_COPY[facts.storageFailure]} ${ERROR_DETAILS_HINT}`;
+    return `⚠️ ${messages.storageFailure[facts.storageFailure]} ${messages.replyDetailsHint}`;
   }
   if (facts.code === "incomplete_tool_call") {
-    return "⚠️ The task couldn't finish. Some actions may have completed; check their results before continuing.";
+    return messages.replyTaskIncomplete;
   }
   const reason =
     facts.reason === "timeout" && typeof facts.status === "number" && facts.status >= 500
       ? "server_error"
       : facts.reason;
-  const copy = reason ? ASSISTANT_REQUEST_FAILURE_COPY[reason] : undefined;
+  const copy = reason ? messages.requestFailure[reason] : undefined;
   if (copy) {
     return `⚠️ ${copy}`;
   }
@@ -113,12 +66,15 @@ export function renderAssistantRequestFailureCopy(
   if (!hasStatus && !facts.provider?.trim() && !facts.model?.trim()) {
     return undefined;
   }
-  return `⚠️ OpenClaw couldn't finish this reply. ${ERROR_DETAILS_HINT}`;
+  return `⚠️ ${messages.replyFinishFailed} ${messages.replyDetailsHint}`;
 }
 
 /** Render already-classified coordination facts without loading provider runtime. */
-export function renderRuntimeCoordinationFailureCopy(code: string | undefined): string | undefined {
-  const copy = code ? RUNTIME_COORDINATION_FAILURE_CODE_COPY[code] : undefined;
+export function renderRuntimeCoordinationFailureCopy(
+  code: string | undefined,
+  language?: string,
+): string | undefined {
+  const copy = code ? resolveUserMessages(language).runtimeCoordinationFailure[code] : undefined;
   return copy ? `⚠️ ${copy}` : undefined;
 }
 

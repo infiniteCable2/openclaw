@@ -14,6 +14,7 @@ import {
 } from "../../agents/embedded-agent-runner/run/deferred-lifecycle-owner.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { renderRateLimitOrOverloadedCopy } from "../../agents/failover/user-copy.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { leaseMcpAppModelContextForSessionTurn } from "../../agents/mcp-ui-resource.js";
 import { resolveReplyExpectation } from "../../agents/reply-completion.js";
@@ -38,6 +39,8 @@ import {
   getPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { progressCardRefreshRunProjection } from "../../sessions/input-provenance.js";
+import { resolveUserMessageLocale } from "../../shared/language.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { captureCommandOwnerAssertion } from "../command-owner-authority.js";
 import type { PreparedReplyTranscriptStart } from "../get-reply-options.types.js";
@@ -124,6 +127,8 @@ async function executeAgentTurnInternalLoop(
     params.followupRun.run = runnableRun;
   }
   const runtimeConfig = resolveQueuedReplyRuntimeConfig(runnableRun.config);
+  const language = resolveAgentLanguage(runtimeConfig, runnableRun.agentId ?? "");
+  const messages = resolveUserMessages(language);
   const effectiveRun =
     runtimeConfig === runnableRun.config
       ? runnableRun
@@ -476,7 +481,9 @@ async function executeAgentTurnInternalLoop(
     const candidateReason = errorCandidate ? classifyFailoverReason(errorCandidate) : null;
     const formattedErrorCandidate =
       candidateReason === "rate_limit" || candidateReason === "overloaded"
-        ? renderRateLimitOrOverloadedCopy({ reason: candidateReason, raw: errorCandidate })
+        ? resolveUserMessageLocale(language) !== "en"
+          ? `⚠️ ${messages.requestFailure[candidateReason]}`
+          : renderRateLimitOrOverloadedCopy({ reason: candidateReason, raw: errorCandidate })
         : undefined;
     if (formattedErrorCandidate) {
       runResult.payloads = [
@@ -495,6 +502,7 @@ async function executeAgentTurnInternalLoop(
   if (terminalRunFailed) {
     const replyExpectation = resolveReplyExpectation(params.followupRun.run);
     terminalFailurePayload = buildTerminalAgentRunFailureReplyPayload({
+      language,
       isHeartbeat: params.isHeartbeat,
       useHeartbeatFailureCopy: params.opts?.useHeartbeatFailureCopy,
       replyExpectation,

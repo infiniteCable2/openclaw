@@ -17,10 +17,13 @@ import {
   isKnownTransportErrorCode,
   parseApiErrorInfo,
 } from "../../shared/assistant-error-format.js";
+import { resolveUserMessageLocale } from "../../shared/language.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import {
   PROVIDER_SCHEMA_REJECTION_USER_TEXT,
   renderAssistantFormatFailureCopy,
   renderAssistantRequestFailureCopy,
+  renderRuntimeCoordinationFailureCopy,
   renderFormatErrorCopy,
 } from "../failover/assistant-request-failure-copy.js";
 import { failoverReasonFromClassification } from "../failover/classification-rules.js";
@@ -81,6 +84,8 @@ const TOOL_CALL_INPUT_MISSING_RE =
 const TOOL_CALL_INPUT_PATH_RE =
   /messages\.\d+\.content\.\d+\.tool_(?:use|call)\.(?:input|arguments)/i;
 type AssistantErrorTextOptions = {
+  /** Presentation opt-in; native producers finish English sentinel/control decisions first. */
+  language?: string;
   cfg?: OpenClawConfig;
   sessionKey?: string;
   agentId?: string;
@@ -315,6 +320,21 @@ export function formatUserFacingAssistantErrorText(
   }
   const facts = classifyAssistantErrorFacts(msg, opts);
   const friendlyError = formatAssistantErrorText(msg, opts, facts);
+  if (resolveUserMessageLocale(opts?.language) !== "en" && !formatProviderRefusalText(msg)) {
+    // Classify the original structured failure, never translate a rendered sentence.
+    // Format-specific diagnostics retain their dedicated recovery guidance.
+    const commonReason =
+      facts.reason &&
+      !["format", "no_error_details", "unclassified", "unknown"].includes(facts.reason);
+    const localized =
+      renderRuntimeCoordinationFailureCopy(facts.code, opts?.language) ??
+      (facts.storageFailure || commonReason
+        ? renderAssistantRequestFailureCopy({ ...facts, language: opts?.language })
+        : undefined);
+    if (localized) {
+      return localized;
+    }
+  }
   const rawPassthrough = isRawAssistantErrorPassthrough({ friendlyError, rawError });
   const schemaFriendlyError =
     friendlyError === PROVIDER_SCHEMA_REJECTION_USER_TEXT ||
@@ -329,5 +349,10 @@ export function formatUserFacingAssistantErrorText(
   if (safeFriendlyError) {
     return safeFriendlyError.trim();
   }
-  return renderAssistantRequestFailureCopy(facts) ?? GENERIC_ASSISTANT_ERROR_TEXT;
+  return (
+    renderAssistantRequestFailureCopy({ ...facts, language: opts?.language }) ??
+    (resolveUserMessageLocale(opts?.language) !== "en"
+      ? resolveUserMessages(opts?.language).replyUnavailable
+      : GENERIC_ASSISTANT_ERROR_TEXT)
+  );
 }

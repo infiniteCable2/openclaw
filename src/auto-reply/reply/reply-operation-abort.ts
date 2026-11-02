@@ -8,10 +8,11 @@ import {
   resolveAgentRunErrorLifecycleFields,
 } from "../../agents/run-termination.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
-export function buildRestartLifecycleReplyText(): string {
-  return "⚠️ Gateway is restarting. Please wait a few seconds and try again.";
+export function buildRestartLifecycleReplyText(language?: string): string {
+  return resolveUserMessages(language).replyRestarting;
 }
 
 function resolveSignalAbortReason(

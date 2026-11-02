@@ -1,9 +1,11 @@
 import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { resolveReplyCompletion } from "../../agents/reply-completion.js";
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { cleanDeferredFinalText } from "../../tts/captioned-final.js";
 import { resolveConfiguredTtsMode } from "../../tts/tts-config.js";
 import { registerReplyDispatcherSettledTask } from "../dispatch-dispatcher.js";
@@ -19,7 +21,6 @@ import {
   buildNoVisibleReplyFallbackText,
   createFinalDispatchPayloadDedupeKey,
   formatSuppressedReplyPayloadForLog,
-  QUEUE_CAP_REJECTION_TEXT,
   shouldDeliverDespiteSourceReplySuppression,
 } from "./dispatch-from-config.payloads.js";
 import {
@@ -420,8 +421,11 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
       // classification rather than turning this notice into an isError payload.
       const fallbackPayload: ReplyPayload = {
         text: queueCapRejected
-          ? QUEUE_CAP_REJECTION_TEXT
-          : buildNoVisibleReplyFallbackText(state.getAgentRunId()),
+          ? resolveUserMessages(resolveAgentLanguage(cfg, sessionAgentId)).replyQueueFull
+          : buildNoVisibleReplyFallbackText(
+              state.getAgentRunId(),
+              resolveAgentLanguage(cfg, sessionAgentId),
+            ),
       };
       const result = await routeReplyToOriginating(fallbackPayload, {
         abortSignal: getDispatchAbortSignal(),

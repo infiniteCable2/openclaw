@@ -3,6 +3,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { clearAutoFallbackPrimaryProbeSelection } from "../../agents/agent-scope.js";
 import { resolveSessionAuthSelection } from "../../agents/auth-profiles/session-override.js";
 import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import { hasResolvedThinkingCatalogEntry } from "../../agents/thinking-runtime.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
@@ -39,7 +40,7 @@ import {
   routeThreadIdsMatch,
 } from "./get-reply-run-helpers.js";
 import {
-  REPLY_RUN_STILL_SHUTTING_DOWN_TEXT,
+  buildReplyRunShuttingDownPayload,
   waitForPreparedReplyQueue,
 } from "./get-reply-run-queue.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
@@ -386,7 +387,9 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         )
       : "not-heartbeat";
   if (heartbeatPreemption === "timed-out") {
-    return finishReplyPreparation(typing, () => ({ text: REPLY_RUN_STILL_SHUTTING_DOWN_TEXT }));
+    return finishReplyPreparation(typing, () =>
+      buildReplyRunShuttingDownPayload(resolveAgentLanguage(cfg, agentId)),
+    );
   }
   const visibleTurnPreemptsHeartbeat = heartbeatPreemption === "drained";
   if (
@@ -583,6 +586,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   });
   if (isActive && activeRunQueueAction === "run-now") {
     const queueReply = await waitForPreparedReplyQueue({
+      language: resolveAgentLanguage(cfg, agentId),
       activeSessionId: activeSessionId ?? resolveActiveQueueSessionId(),
       queueMode: activeRunQueueMode,
       interruptActiveRun: async () => {

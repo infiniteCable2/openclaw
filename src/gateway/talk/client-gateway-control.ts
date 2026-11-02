@@ -78,6 +78,7 @@ export function resolveTalkAgentConsultAuthority(
 }
 
 export function createTalkClientGatewayControlOwner(params: {
+  language?: string;
   voiceSessionId: string;
   providerId?: string;
   supportsToolCalls?: boolean;
@@ -217,6 +218,7 @@ export function createTalkClientGatewayControlOwner(params: {
     return async () => {
       assertActive();
       const result = await (params.controlAgentRun ?? controlRealtimeVoiceAgentRun)({
+        language: params.language,
         sessionKey: params.sessionTarget.canonicalKey,
         runTarget,
         getToolAuthorityOverlay: getToolAuthorityOverlay
@@ -262,6 +264,7 @@ export function createTalkClientGatewayControlOwner(params: {
   };
 
   const runControl = createTalkRealtimeRunControlOwner({
+    language: params.language,
     controlSource: params.controlSource,
     supportsToolCalls: params.supportsToolCalls,
     hasActiveRun: () => consultControllers.size > 0 || resolveRunTarget() !== null,

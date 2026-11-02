@@ -439,6 +439,15 @@ export function retainSessionEntryWorkerPublication(params: {
         const sharingProjection =
           prepared && readCurrentSessionEntryProjection(owner, replacement, sessionKey);
         const sharingEntry = entry ? projectSessionSharingEntry(entry) : undefined;
+        // A confirmed metadata-only COMMIT cannot erase the newer native
+        // postimage already carried by retained readers. Its stale display
+        // projection remains withheld, and unknown native facts stay unknown.
+        const retainNewerMetadata = () =>
+          known(sessionKey) &&
+          current(sessionKey) &&
+          sharingUnchanged.has(sessionKey) &&
+          !membershipInvalidated.has(sessionKey) &&
+          owner.metadataSuperseded.has(sessionKey);
         const placeholder =
           initialization?.sessionKey === sessionKey ? initialization.placeholder : undefined;
         const creationSource = creation?.source;
@@ -449,6 +458,9 @@ export function retainSessionEntryWorkerPublication(params: {
           creationSource.agentId === params.agentId &&
           creation.sessionKey === sessionKey;
         for (const read of preparedSharingReads.get(`${identityKey}\0${sessionKey}`) ?? []) {
+          if (retainNewerMetadata()) {
+            continue;
+          }
           if (placeholder) {
             revokePreparedSessionEntryPredicate(read);
           } else if (current(sessionKey) && !owner.metadataSuperseded.has(sessionKey)) {
@@ -486,6 +498,9 @@ export function retainSessionEntryWorkerPublication(params: {
         }
         // Synchronous listeners can publish newer facts before the next listener consumes this one.
         const currentFacts = (): SessionRowFacts | undefined => {
+          if (retainNewerMetadata()) {
+            return { kind: "unchanged" };
+          }
           if (!known(sessionKey) || !currentMetadata(sessionKey)) {
             return undefined;
           }

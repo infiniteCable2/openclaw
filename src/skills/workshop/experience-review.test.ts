@@ -59,6 +59,16 @@ describe("runSkillExperienceReview", () => {
         { workspaceDir: state.workspaceDir, modelId: "gpt-test" },
       );
       candidate.ctx.modelContextWindowTokens = 32_768;
+      candidate.config = {
+        ...candidate.config,
+        agents: {
+          ...candidate.config.agents,
+          entries: {
+            ...candidate.config.agents?.entries,
+            main: { ...candidate.config.agents?.entries?.main, identity: { language: "de-DE" } },
+          },
+        },
+      };
       candidate.ctx.foregroundPromptContext.promptCacheKey = "stable-foreground-prefix";
       const source = await SessionManager.openAsync(candidate.source, state.workspaceDir);
       const keptEntryId = candidate.source.entryId;
@@ -93,6 +103,7 @@ describe("runSkillExperienceReview", () => {
       mocks.runSkillWorkshopReview.mockImplementation(
         async (params: Parameters<typeof runSkillWorkshopReview>[0]) => {
           expect(params.contextTokenBudget).toBe(32_768);
+          expect(params.prompt).toContain("persona_language=de-DE");
           expect(params.promptCacheKey).toBe("stable-foreground-prefix");
           expect(params.sessionManager?.buildSessionContext().messages).toEqual(foregroundMessages);
           expect(params.sessionManager?.getSessionTarget()).toBeUndefined();

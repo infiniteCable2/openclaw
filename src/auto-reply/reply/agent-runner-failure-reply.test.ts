@@ -51,6 +51,25 @@ describe("buildEmptyInteractiveReplyPayload", () => {
 });
 
 describe("buildExternalRunFailureReply", () => {
+  it("localizes common failure fallback and empty output without leaking diagnostics", () => {
+    const message = "synthetic private failure detail";
+    const reply = buildExternalRunFailureReply(
+      { message, error: new Error(message) },
+      { language: "de-DE" },
+    );
+    expect(reply.text).toContain("konnte diese Anfrage nicht abschließen");
+    expect(reply.text).not.toContain(message);
+    expect(reply.isGenericRunnerFailure).toBe(true);
+    expect(buildExternalRunFailureReply({ message, error: new Error(message) }).text).toBe(
+      GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
+    );
+    expect(
+      buildEmptyInteractiveReplyPayload({
+        completion: resolveReplyCompletion("required", "empty"),
+        language: "de-DE",
+      })?.text,
+    ).toContain("keine sichtbare Antwort");
+  });
   it.each(["direct", "wrapped"])(
     "keeps %s skill delivery-limit guidance visible without diagnostics",
     (kind) => {

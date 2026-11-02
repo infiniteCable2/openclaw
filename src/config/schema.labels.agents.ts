@@ -1,4 +1,5 @@
 export const AGENT_FIELD_LABELS: Record<string, string> = {
+  "agents.entries.*.identity.language": "Persona Language",
   "agents.entries.*.identity.avatar": "Identity Avatar",
   "agents.entries.*.skills": "Agent Skill Filter",
   "agents.entries.*.conversationMode": "Agent Conversation Mode",

@@ -1,4 +1,5 @@
 import type { prepareEmbeddedAgentRunCompletionClaim } from "../../agents/embedded-agent-runner/runs.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { resolveCommandAuthorization } from "../../auto-reply/command-auth.js";
 import type { ReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import { resolveInboundReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-tool-authority.js";
@@ -84,6 +85,7 @@ export async function controlTalkClientAgentConsult(params: {
   const { agentId, canonicalKey, storePath } = params.sessionTarget;
   let confirmationRetryContext: string | undefined;
   return await controlRealtimeVoiceAgentRun({
+    language: resolveAgentLanguage(params.config, agentId),
     sessionKey: canonicalKey,
     runTarget: {
       runId: identity.runId,

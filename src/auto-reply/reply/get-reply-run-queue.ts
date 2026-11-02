@@ -1,12 +1,24 @@
+import { resolveUserMessages } from "../../shared/user-messages.js";
+import { setReplyPayloadMetadata } from "../reply-payload.js";
 /** Active-run queue admission for prepared reply turns. */
 import type { ReplyPayload } from "../types.js";
 import type { QueueSettings } from "./queue.js";
 
-export const REPLY_RUN_STILL_SHUTTING_DOWN_TEXT =
-  "⚠️ Previous run is still shutting down. Please try again in a moment.";
+export const REPLY_RUN_STILL_SHUTTING_DOWN_TEXT = resolveUserMessages().replyShuttingDown;
+
+/** One native busy outcome carries its retry fact independently of translated copy. */
+export function buildReplyRunShuttingDownPayload(language?: string): ReplyPayload {
+  return setReplyPayloadMetadata(
+    { text: resolveUserMessages(language).replyShuttingDown },
+    {
+      previousRunStillShuttingDown: true,
+    },
+  );
+}
 
 /** Waits for admitted active work and returns guidance if it still has not settled. */
 export async function waitForPreparedReplyQueue(params: {
+  language?: string;
   activeSessionId: string;
   queueMode: QueueSettings["mode"];
   interruptActiveRun: () => Promise<boolean>;
@@ -19,6 +31,6 @@ export async function waitForPreparedReplyQueue(params: {
     : params.waitForActiveRunEnd(params.activeSessionId));
   await params.refreshPreparedState();
   return params.resolveBusyState().isActive
-    ? { text: REPLY_RUN_STILL_SHUTTING_DOWN_TEXT }
+    ? buildReplyRunShuttingDownPayload(params.language)
     : undefined;
 }

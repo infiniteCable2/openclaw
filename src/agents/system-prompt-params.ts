@@ -18,7 +18,7 @@ import {
 import { findGitRoot } from "../infra/git-root.js";
 import { parseCronRunScopeSuffix } from "../sessions/session-key-utils.js";
 import { formatDateStamp, resolveUserTimezone } from "./date-time.js";
-import { resolveAgentIdentity } from "./identity.js";
+import { resolveAgentIdentity, resolveAgentLanguage } from "./identity.js";
 import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
 import type { SystemPromptRuntimeInfo } from "./system-prompt.types.js";
 
@@ -39,7 +39,10 @@ type SystemPromptRuntimeParams = {
 export function buildSystemPromptParams(params: {
   config?: OpenClawConfig;
   agentId?: string;
-  runtime: Omit<RuntimeInfoInput, "agentId" | "agentName" | "sessionUrl" | "gitCoauthorPrompt">;
+  runtime: Omit<
+    RuntimeInfoInput,
+    "agentId" | "agentName" | "agentLanguage" | "sessionUrl" | "gitCoauthorPrompt"
+  >;
   workspaceDir?: string;
   cwd?: string;
   preparedRepoRoot?: string | null;
@@ -68,6 +71,14 @@ export function buildSystemPromptParams(params: {
       agentName:
         params.config && params.agentId
           ? resolveRuntimeAgentName(params.config, params.agentId)
+          : undefined,
+      // Omission preserves existing prompt bytes; configured language follows
+      // the same next-prompt assembly lifecycle as the persona's name.
+      agentLanguage:
+        params.config &&
+        params.agentId &&
+        resolveAgentIdentity(params.config, params.agentId)?.language
+          ? resolveAgentLanguage(params.config, params.agentId)
           : undefined,
       ...params.runtime,
       gitCoauthorPrompt: params.preparedGitCoauthorPrompt ?? undefined,

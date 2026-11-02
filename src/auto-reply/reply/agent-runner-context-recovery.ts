@@ -5,9 +5,11 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { resolveAgentConfig } from "../../agents/agent-scope-config.js";
 import { resolveContextTokensForModel } from "../../agents/context.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import type { ModelRef } from "../../agents/model-ref-shared.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import type { FollowupRun } from "./queue.js";
 
 function modelRefsEqual(left: ModelRef, right: ModelRef | undefined): boolean {
@@ -122,8 +124,8 @@ export function buildContextOverflowRecoveryText(params: {
   runtimeModel?: string;
   activeSessionEntry?: SessionEntry;
 }): string {
-  const prefix =
-    "⚠️ Auto-compaction could not recover this turn. I kept this conversation mapped to the current session. Please try again, use /compact, or use /new to start a fresh session.";
+  const messages = resolveUserMessages(resolveAgentLanguage(params.cfg, params.agentId ?? ""));
+  const prefix = messages.replyContextRecoveryFailed;
   const explicitRuntimeMatchesSession =
     !params.runtimeProvider ||
     !params.runtimeModel ||
@@ -132,9 +134,5 @@ export function buildContextOverflowRecoveryText(params: {
   const heartbeatBleedHint = explicitRuntimeMatchesSession
     ? resolveHeartbeatBleedHint(params)
     : undefined;
-  return (
-    prefix +
-    (heartbeatBleedHint ??
-      "\n\nTry starting a fresh session or using a model with a larger context window.")
-  );
+  return prefix + (heartbeatBleedHint ?? `\n\n${messages.replyLargerContextHint}`);
 }

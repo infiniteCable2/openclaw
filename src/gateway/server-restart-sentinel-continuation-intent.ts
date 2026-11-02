@@ -1,3 +1,4 @@
+import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "../auto-reply/reply/get-reply-run-queue.js";
 import type { RestartSentinelContinuation } from "../infra/restart-sentinel.js";
 import type {
@@ -16,7 +17,9 @@ type QueuedAgentTurnSessionDelivery = Extract<QueuedSessionDelivery, { kind: "ag
 
 export function isRestartContinuationBusyPayload(payload: OutboundReplyPayload): boolean {
   return (
-    typeof payload.text === "string" && payload.text.trim() === REPLY_RUN_STILL_SHUTTING_DOWN_TEXT
+    getReplyPayloadMetadata(payload)?.previousRunStillShuttingDown === true ||
+    // Released clients may still return the original unmarked English payload.
+    (typeof payload.text === "string" && payload.text.trim() === REPLY_RUN_STILL_SHUTTING_DOWN_TEXT)
   );
 }
 

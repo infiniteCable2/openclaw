@@ -100,6 +100,7 @@ it.for([
     const answers = ["The first inspection completed.", "The second inspection completed."];
     const modelPrompts: string[] = [];
     let audioEvents = 0;
+    let sessionErrors = 0;
     let closed = false;
     let calls = 0;
     let audioAtClose = 0;
@@ -169,6 +170,7 @@ it.for([
         audioEvents++;
       }
       if (isRecord(payload.talkEvent) && payload.talkEvent.type === "session.error") {
+        sessionErrors++;
         progress("native-session-error");
         nativeFailure.reject(
           new Error("Native speech reported session.error", {
@@ -288,6 +290,7 @@ it.for([
       await waitAt("native-owner-settlement", Promise.all(ownerSettlements));
       if (!closeAudio) {
         await waitAt("turn-ended", turnEnded.promise);
+        await waitAt("tts-release", hardware.turnTtsReleased);
       }
       expect(calls).toBe(2);
       expect(modelPrompts[0]).toContain(questions[0]);
@@ -350,7 +353,14 @@ it.for([
         expect(audioEvents).toBe(audioAtClose);
       } else {
         expect(audioEvents).toBeGreaterThan(0);
+        expect(
+          mocks.streamSpeech.mock.calls
+            .map(([request]) => request.text)
+            .filter((text) => text === answers[1]),
+        ).toEqual([answers[1]]);
+        expect(hardware.releaseStream).toHaveBeenCalledTimes(mocks.streamSpeech.mock.calls.length);
       }
+      expect(sessionErrors).toBe(0);
     } finally {
       progress("cleanup-release-first");
       releaseFirst.resolve();

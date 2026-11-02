@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ReplySpeechRunBinding } from "../../auto-reply/reply/reply-speech-presentation.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import type { RealtimeVoiceAgentControlResult } from "../agent-run-control-shared.js";
 import {
   claimConversationInputExecution,
@@ -28,6 +29,7 @@ type NativeSpeechRun = {
 
 /** Media custody only. Native getReply owns ordering, steering, persistence and task lifetime. */
 export function createNativeSpeechInput(params: {
+  language?: string;
   dispatch: NonNullable<SpeechSessionStartParams["nativeInput"]>;
   session: Pick<SpeechSessionStartParams, "sessionId" | "requesterSessionKey" | "config">;
   inputs: ReturnType<typeof createSpeechInputMetadata>;
@@ -49,6 +51,7 @@ export function createNativeSpeechInput(params: {
   recordUnplayed(utterance: SpeechUtterance, text: string): void;
   onFailure(error: unknown): void;
 }) {
+  const messages = resolveUserMessages(params.language);
   let active: NativeSpeechRun | undefined;
   let lastOutput: NativeSpeechRun | undefined;
   const captureRun = () => active;
@@ -321,6 +324,7 @@ export function createNativeSpeechInput(params: {
             input.assertInputCurrent?.();
             accepted.assertCurrent();
             return await controlRealtimeVoiceAgentRun({
+              language: params.language,
               sessionKey,
               runTarget: captured
                 ? {
@@ -358,10 +362,7 @@ export function createNativeSpeechInput(params: {
           sessionId: captured.binding.sessionId,
           active: true,
           queued: true,
-          message:
-            input.mode === "followup"
-              ? "Queued that follow-up for the active OpenClaw run."
-              : "Got it. I steered the active run.",
+          message: input.mode === "followup" ? messages.voiceFollowupQueued : messages.voiceSteered,
           speak: true,
           show: true,
           suppress: false,

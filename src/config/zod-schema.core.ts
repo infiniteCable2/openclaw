@@ -4,6 +4,7 @@ import { z } from "zod";
 import { isSafeExecutableValue } from "../infra/exec-safety.js";
 import { normalizeExactAllowedHost } from "../secrets/exact-hostname.js";
 import { ENV_SECRET_REF_ID_RE, SECRET_PROVIDER_ALIAS_PATTERN } from "../secrets/ref-contract.js";
+import { normalizeLanguageTag } from "../shared/language.js";
 import { MODEL_APIS } from "./model-config-vocabulary.js";
 import { isBuiltInModelProviderOverlayId } from "./model-provider-overlay-ids.js";
 import { AgentRuntimePolicySchema } from "./zod-schema.agent-entry-base.js";
@@ -432,6 +433,17 @@ export const IdentitySchema = z
     theme: z.string().optional(),
     emoji: z.string().optional(),
     avatar: z.string().optional(),
+    language: z
+      .string()
+      .transform((value, ctx) => {
+        const language = normalizeLanguageTag(value);
+        if (!language) {
+          ctx.addIssue({ code: "custom", message: "Expected a valid BCP 47 language tag" });
+          return z.NEVER;
+        }
+        return language;
+      })
+      .optional(),
   })
   .optional();
 

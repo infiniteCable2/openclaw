@@ -13,6 +13,7 @@ import {
   parseApiErrorInfo,
   parseApiErrorPayload,
 } from "../../shared/assistant-error-format.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { formatExecDeniedUserMessage } from "../exec-approval-result.js";
 import type { CliTimeoutContext, FallbackAttemptRecord } from "../failover-error.js";
 import { ERROR_DETAILS_HINT, ERROR_PREFIX_RE } from "./assistant-request-failure-copy.js";
@@ -283,11 +284,10 @@ export function renderSanitizedUserFacingText(
   return sanitized;
 }
 
-export const GENERIC_EXTERNAL_RUN_FAILURE_TEXT =
-  "⚠️ OpenClaw couldn't finish this request. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.";
+export const GENERIC_EXTERNAL_RUN_FAILURE_TEXT = resolveUserMessages().replyUnavailable;
 // A failed background turn can have partial effects; it does not establish chat health.
-const HEARTBEAT_FAILURE_LEAD = "⚠️ The background check did not complete.";
-const HEARTBEAT_FAILURE_LOG_HINT = "Troubleshooting: run `openclaw logs --follow` in a terminal.";
+const HEARTBEAT_FAILURE_LEAD = resolveUserMessages().replyBackgroundFailed;
+const HEARTBEAT_FAILURE_LOG_HINT = resolveUserMessages().replyBackgroundLogs;
 export const HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT = `${HEARTBEAT_FAILURE_LEAD}\n\n${HEARTBEAT_FAILURE_LOG_HINT}`;
 
 /** `reason` is the failure-reply owner's already sanitized and capped detail. */

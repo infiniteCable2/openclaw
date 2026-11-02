@@ -3,6 +3,7 @@ import {
   classifyAgentRunTerminalOutcome,
 } from "../../agents/agent-run-terminal-outcome.js";
 import { hasCompletedSourceReplyDeliveryEvidence } from "../../agents/embedded-agent-runner/delivery-evidence.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import type { ProgressContinuationCapability } from "../../channels/progress-continuation.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -11,6 +12,7 @@ import {
   withPluginRuntimeGatewayContextResolver,
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../runtime.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
@@ -30,10 +32,7 @@ import {
 } from "./queue.js";
 import { isFollowupRunAborted, type QueuedFollowupReplyBatch } from "./queue/types.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
-import {
-  isReplyOperationStalledBeforeOutput,
-  STALLED_TURN_NOTICE_TEXT,
-} from "./stalled-turn-recovery.js";
+import { isReplyOperationStalledBeforeOutput } from "./stalled-turn-recovery.js";
 
 type FollowupDrainDisposition =
   | { kind: "consumed" }
@@ -173,7 +172,12 @@ export function createFollowupRunner(
         isReplyOperationStalledBeforeOutput(turn.operation)
           ? // A watchdog stall is a failure, not a user cancel: source owners
             // surface its last-resort notice through their terminal error.
-            { kind: "failed", error: STALLED_TURN_NOTICE_TEXT }
+            {
+              kind: "failed",
+              error: resolveUserMessages(
+                resolveAgentLanguage(turn.config, turn.queued.run.agentId ?? ""),
+              ).replyStalled,
+            }
           : resolveFollowupCompletion(execution.execution.outcome);
       try {
         await execution.progress.drain();

@@ -5,7 +5,19 @@ import {
   resolveResponsePrefix,
   resolveEffectiveMessagesConfig,
   resolveHumanDelayConfig,
+  resolveAgentLanguage,
 } from "./identity.js";
+
+describe("resolveAgentLanguage", () => {
+  it("normalizes the selected persona language without borrowing another agent's setting", () => {
+    const cfg: OpenClawConfig = {
+      agents: { entries: { main: { identity: { language: "de-de" } } } },
+    };
+    expect(resolveAgentLanguage(cfg, "MAIN")).toBe("de-DE");
+    expect(resolveAgentLanguage(cfg, "other")).toBe("en");
+    expect(resolveAgentLanguage(undefined, "main")).toBe("en");
+  });
+});
 
 describe("resolveAckReaction", () => {
   it("falls back to channel-level overrides", () => {

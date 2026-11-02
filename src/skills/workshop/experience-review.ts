@@ -7,6 +7,7 @@ import {
   createCronCreatorAuthorityCapability,
   runWithCronCreatorAuthorityCapability,
 } from "../../agents/cron-creator-authority-context.js";
+import { resolveAgentIdentity, resolveAgentLanguage } from "../../agents/identity.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { getRuntimeConfig } from "../../config/config.js";
@@ -109,6 +110,9 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
   const { agentId } = foregroundPromptContext;
   const { sessionKey } = candidate.source;
   const config = candidate.config;
+  const personaLanguage = resolveAgentIdentity(config, agentId)?.language
+    ? resolveAgentLanguage(config, agentId)
+    : undefined;
   const runId = `skill-workshop-review:${randomUUID()}`;
   const reviewSession = resolveInternalSessionEffectsIdentity({ agentId, runId });
   const origin = foregroundPromptContext.cronCreatorCallerOrigin;
@@ -226,7 +230,7 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
       permissionMode: sourceEntry.permissionMode ?? foregroundPromptContext.permissionMode,
       config,
       abortSignal,
-      prompt: buildSkillExperienceReviewPrompt(candidate),
+      prompt: buildSkillExperienceReviewPrompt({ ...candidate, personaLanguage }),
       provider: candidate.ctx.modelProviderId,
       model: candidate.ctx.modelId,
       // Preserve the foreground's effective cap, not just the wider catalog window.

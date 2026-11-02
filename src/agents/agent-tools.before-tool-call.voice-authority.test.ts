@@ -3,6 +3,7 @@
  * before_tool_call wrapper decides whether the tool body runs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import {
   authorizeClientVoiceConfirmation,
@@ -34,11 +35,11 @@ function bindVoiceRuns(runIds: string[]): void {
   vi.spyOn(clientVoiceSession, "isClientVoiceSessionConfirmable").mockReturnValue(true);
 }
 
-function createMessageTool(runId: string) {
+function createMessageTool(runId: string, config?: OpenClawConfig) {
   const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
   const tool = wrapToolWithBeforeToolCallHook(
     { name: "message", execute } as unknown as AnyAgentTool,
-    { runId, agentId: "main", sessionKey: "agent:main:voice" },
+    { runId, agentId: "main", sessionKey: "agent:main:voice", config },
   );
   const run = (callId: string, params: unknown = SEND) =>
     tool.execute(callId, params, undefined, {} as Parameters<typeof tool.execute>[3]);
@@ -88,6 +89,37 @@ describe("spoken confirmation authority reaches the final tool effect", () => {
     resetClientVoiceConfirmationStateForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("resolves the bound agent's language through the actual policy and consumes German approval once", async () => {
+    bindVoiceRuns(["first", "retry"]);
+    const config: OpenClawConfig = {
+      agents: { entries: { main: { identity: { language: "de-DE" } } } },
+    };
+    const first = createMessageTool("first", config);
+    const blocked = await first.run("call-first");
+    expect(blocked.details).toMatchObject({ reason: expect.stringContaining('mit "ja"') });
+    expect(first.execute).not.toHaveBeenCalled();
+    noteUtterance({
+      agentId: "main",
+      voiceSessionId: VOICE_SESSION_ID,
+      text: "ja",
+      timestamp: Date.now() + 1,
+    });
+    const reason = (blocked.details as { reason: string }).reason;
+    const confirmationId = reason.match(/VOICE_CONFIRMATION_REQUIRED:(\S+)/)?.[1];
+    expect(confirmationId).toBeDefined();
+    const grant = authorizeClientVoiceConfirmation({
+      agentId: "main",
+      voiceSessionId: VOICE_SESSION_ID,
+      confirmationId: confirmationId!,
+    });
+    expect(bindAuthorizedClientVoiceConfirmation({ grant, runId: "retry" })).toBe(true);
+    const retry = createMessageTool("retry", config);
+    await retry.run("call-retry");
+    expect(retry.execute).toHaveBeenCalledOnce();
+    await retry.run("call-again");
+    expect(retry.execute).toHaveBeenCalledOnce();
   });
 
   it("executes marked Code Mode scripts while still confirming plain shell exec", async () => {

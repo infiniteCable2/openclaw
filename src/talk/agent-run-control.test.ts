@@ -59,6 +59,49 @@ function createDeps(options: {
   };
 }
 
+describe("localized native control presentations", () => {
+  it.each(["status", "cancel", "followup", "steer"] as const)(
+    "uses German for %s without changing its structured outcome",
+    async (mode) => {
+      const deps = createDeps({
+        activeSessionId: "native-run",
+        activity: { activeWorkKind: "model_call" },
+      });
+      const result = await controlRealtimeVoiceAgentRun(
+        { sessionKey: "agent:main:main", text: "Beispiel", mode, language: "de-DE" },
+        deps,
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        mode,
+        active: true,
+        speak: true,
+        show: true,
+        suppress: false,
+      });
+      const expected = {
+        status: "OpenClaw wartet auf das Modell.",
+        cancel: "Der aktive OpenClaw-Auftrag wurde abgebrochen.",
+        followup: "Die Folgeanfrage wurde für den aktiven OpenClaw-Auftrag vorgemerkt.",
+        steer: "Verstanden. Ich habe den aktiven Auftrag entsprechend angepasst.",
+      };
+      expect(result.message).toBe(expected[mode]);
+      if (mode === "cancel") {
+        expect(result.providerResult).toEqual({ status: "cancelled", message: result.message });
+      }
+    },
+  );
+
+  it("keeps the native rejection code and no-replay guidance for unconfirmed German input", async () => {
+    const result = await controlRealtimeVoiceAgentRun(
+      { sessionKey: "agent:main:main", text: "Beispiel", mode: "followup", language: "de-DE" },
+      createDeps({ activeSessionId: "native-run", unconfirmed: true }),
+    );
+    expect(result).toMatchObject({ ok: false, queued: true, reason: "delivery_unconfirmed" });
+    expect(result.message).toContain("nicht erneut gesendet");
+  });
+});
+
 describe("classifyRealtimeVoiceAgentControlText", () => {
   it("classifies common voice control phrases conservatively", () => {
     expect(classifyRealtimeVoiceAgentControlText("status?")).toBe("status");

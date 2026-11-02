@@ -10,6 +10,7 @@ import {
   validateTalkClientCreateParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentWorkspaceDir } from "../../../agents/agent-scope.js";
+import { resolveAgentLanguage } from "../../../agents/identity.js";
 import { resolveAgentConversationMode } from "../../../config/agent-conversation-mode.js";
 import {
   composeSessionSourceAssertion,
@@ -90,6 +91,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
   let conversationContext:
     | Awaited<ReturnType<typeof prepareTalkProviderConversationContext>>
     | undefined;
+  let language: string | undefined;
   try {
     sessionMutationAuthorization?.assertCurrent();
     if (params.voiceChangeId && params.voiceSessionId) {
@@ -165,6 +167,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
     );
     replacement?.assertCurrent(target);
     const { agentId, sessionKey } = target;
+    language = resolveAgentLanguage(runtimeConfig, agentId);
     const assertTargetCurrent = composeSessionSourceAssertion(
       [sessionMutationAuthorization?.assertCurrent],
       (assertSources) => {
@@ -328,6 +331,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         | undefined;
       const gatewayControlOwner = ownsProvider
         ? createTalkClientGatewayControlOwner({
+            language,
             voiceSessionId: activeVoiceSessionId!,
             providerId: resolution.provider.id,
             controlSource,
@@ -638,7 +642,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
       `Realtime provider "${resolution.provider.id}" does not support client-owned realtime sessions`,
     );
   } catch (err) {
-    respond(false, undefined, talkRequestError(err));
+    respond(false, undefined, talkRequestError(err, "client", language));
   } finally {
     try {
       await conversationContext?.release();

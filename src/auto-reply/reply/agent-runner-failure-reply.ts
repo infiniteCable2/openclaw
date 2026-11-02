@@ -27,8 +27,6 @@ import {
 import { resolveExecutionApprovalFailureMessage } from "../../agents/failover/message-patterns.js";
 import { resolveReplyFailoverFacts } from "../../agents/failover/request-error-facts.js";
 import {
-  GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
-  HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
   renderAuthProfileFailoverCopy,
   renderBillingReplyCopy,
   renderCliTimeoutReplyCopy,
@@ -51,6 +49,8 @@ import {
   readErrorCauses,
   readErrorName,
 } from "../../infra/errors.js";
+import { resolveUserMessageLocale } from "../../shared/language.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { SkillResourceDeliveryLimitError } from "../../skills/runtime/resource-delivery-error.js";
 import { buildProviderLoginRecovery } from "../provider-login-recovery.js";
 import {
@@ -72,6 +72,7 @@ function readFallbackAttempts(error: unknown): readonly ReplyFallbackAttempt[] {
 }
 
 export function resolveReplyFailureSummary(params: {
+  language?: string;
   error: unknown;
   message: string;
   reason: ReplyFailoverFacts["reason"];
@@ -95,6 +96,9 @@ export function resolveReplyFailureSummary(params: {
   }
   if (kind !== "billing" && kind !== "rate_limit" && kind !== "overloaded") {
     return undefined;
+  }
+  if (resolveUserMessageLocale(params.language) !== "en") {
+    return { kind, text: `⚠️ ${resolveUserMessages(params.language).requestFailure[kind]}` };
   }
   const failoverError = isFailoverError(params.error) ? params.error : undefined;
   const text =
@@ -197,11 +201,11 @@ function resolveExternalRunFailureDetail(message: string): string | undefined {
     : sanitized || undefined;
 }
 
-function formatForwardedExternalRunFailureText(message: string): string {
+function formatForwardedExternalRunFailureText(message: string, language?: string): string {
   const detail = resolveExternalRunFailureDetail(message);
   return detail
-    ? `⚠️ Agent failed before reply: ${detail}${/[.!?]$/u.test(detail) ? "" : "."} Please try again, or use /new to start a fresh session.`
-    : GENERIC_EXTERNAL_RUN_FAILURE_TEXT;
+    ? resolveUserMessages(language).replyDiagnosticFailure(detail)
+    : resolveUserMessages(language).replyUnavailable;
 }
 
 function hasLocalWorkerTimeoutCause(error: unknown): boolean {
@@ -224,6 +228,7 @@ function hasLocalWorkerTimeoutCause(error: unknown): boolean {
 export function buildExternalRunFailureReply(
   input: ExternalRunFailureInput,
   options?: {
+    language?: string;
     includeAuthProfileId?: boolean;
     includeDetails?: boolean;
     isHeartbeat?: boolean;
@@ -233,6 +238,7 @@ export function buildExternalRunFailureReply(
     failoverFacts?: ReplyFailoverFacts;
   },
 ): ExternalRunFailureReply {
+  const messages = resolveUserMessages(options?.language);
   const message = typeof input === "string" ? input : input.message;
   const error = typeof input === "string" ? undefined : input.error;
   const normalizedMessage = collapseRepeatedFailureDetail(message);
@@ -241,12 +247,16 @@ export function buildExternalRunFailureReply(
     const sanitizedMessage = sanitizeUserFacingText(normalizedMessage, { errorContext: true });
     return {
       text: useHeartbeatFailureCopy
-        ? renderHeartbeatRunFailureCopy(
-            includeHeartbeatDetails ? resolveExternalRunFailureDetail(sanitizedMessage) : undefined,
-          )
+        ? resolveUserMessageLocale(options?.language) !== "en"
+          ? `${messages.replyBackgroundFailed}\n\n${includeHeartbeatDetails ? (resolveExternalRunFailureDetail(sanitizedMessage) ?? "") : ""}\n${messages.replyBackgroundLogs}`
+          : renderHeartbeatRunFailureCopy(
+              includeHeartbeatDetails
+                ? resolveExternalRunFailureDetail(sanitizedMessage)
+                : undefined,
+            )
         : options?.includeDetails
-          ? formatForwardedExternalRunFailureText(sanitizedMessage)
-          : GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
+          ? formatForwardedExternalRunFailureText(sanitizedMessage, options?.language)
+          : messages.replyUnavailable,
       isGenericRunnerFailure: !options?.isHeartbeat,
     };
   };
@@ -286,7 +296,7 @@ export function buildExternalRunFailureReply(
   }
   const runtimeCoordinationFailure =
     failoverFacts.code && isNonProviderRuntimeCoordinationError(error)
-      ? renderRuntimeCoordinationFailureCopy(failoverFacts.code)
+      ? renderRuntimeCoordinationFailureCopy(failoverFacts.code, options?.language)
       : undefined;
   if (runtimeCoordinationFailure) {
     return { text: runtimeCoordinationFailure, isGenericRunnerFailure: false };
@@ -356,7 +366,14 @@ export function buildExternalRunFailureReply(
     // Curated facet copy carries recovery guidance (quota/billing ambiguity,
     // /new for conversation-state, config fix for model_not_found); the
     // classified summary below is the fallback for facts without a facet.
-    return { text: providerRequestError.userMessage, isGenericRunnerFailure: false };
+    return {
+      text:
+        resolveUserMessageLocale(options?.language) === "en"
+          ? providerRequestError.userMessage
+          : (renderAssistantRequestFailureCopy({ ...failoverFacts, language: options?.language }) ??
+            providerRequestError.userMessage),
+      isGenericRunnerFailure: false,
+    };
   }
   const authError = isProviderAuthError(error) ? error : undefined;
   const missingApiKeyFailure = renderMissingApiKeyReplyCopy(
@@ -377,12 +394,13 @@ export function buildExternalRunFailureReply(
   }
   if (failoverFacts.reason === "timeout" && hasLocalWorkerTimeoutCause(error)) {
     return {
-      text: "A local worker task timed out. Please try again.",
+      text: messages.replyWorkerTimeout,
       isGenericRunnerFailure: false,
     };
   }
   const classifiedFailure =
-    failoverFacts.formatFailureText ?? renderAssistantRequestFailureCopy(failoverFacts);
+    failoverFacts.formatFailureText ??
+    renderAssistantRequestFailureCopy({ ...failoverFacts, language: options?.language });
   if (classifiedFailure) {
     return { text: classifiedFailure, isGenericRunnerFailure: false };
   }
@@ -392,8 +410,9 @@ export function buildExternalRunFailureReply(
     text: options?.includeDetails
       ? formatForwardedExternalRunFailureText(
           renderUserFacingText(normalizedMessage, { errorContext: true }),
+          options?.language,
         )
-      : GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
+      : messages.replyUnavailable,
     isGenericRunnerFailure: true,
   };
 }
@@ -418,12 +437,15 @@ export function markPostCompactionModelFailurePayload(
     : payload;
 }
 
-export function renderPostCompactionModelFailurePayload(payload: ReplyPayload): ReplyPayload {
+export function renderPostCompactionModelFailurePayload(
+  payload: ReplyPayload,
+  language?: string,
+): ReplyPayload {
   return getReplyPayloadMetadata(payload)?.postCompactionModelFailure === true &&
     typeof payload.text === "string"
     ? copyReplyPayloadMetadata(payload, {
         ...payload,
-        text: `⚠️ Context compaction succeeded, but the later model request still failed. ${payload.text.replace(/^⚠️\s*/u, "")}`,
+        text: `${resolveUserMessages(language).replyPostCompactionFailed} ${payload.text.replace(/^⚠️\s*/u, "")}`,
       })
     : payload;
 }
@@ -443,6 +465,7 @@ export function resolveAgentRunFailureText(params: {
 }
 
 export function buildTerminalAgentRunFailureReplyPayload(params: {
+  language?: string;
   isHeartbeat?: boolean;
   useHeartbeatFailureCopy?: boolean;
   replyExpectation: ReplyExpectation;
@@ -453,8 +476,8 @@ export function buildTerminalAgentRunFailureReplyPayload(params: {
     text: resolveAgentRunFailureText({
       ...params,
       text: useHeartbeatFailureCopy
-        ? HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT
-        : GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
+        ? `${resolveUserMessages(params.language).replyBackgroundFailed}\n\n${resolveUserMessages(params.language).replyBackgroundLogs}`
+        : resolveUserMessages(params.language).replyUnavailable,
       // Visibility follows the execution surface, not which sentence we render.
       isGenericRunnerFailure: !params.isHeartbeat,
     }),
@@ -462,17 +485,19 @@ export function buildTerminalAgentRunFailureReplyPayload(params: {
 }
 
 export function buildEmptyInteractiveReplyPayload(params: {
+  language?: string;
   completion: ReplyCompletion;
 }): ReplyPayload | undefined {
   if (params.completion.outcome !== "missing") {
     return undefined;
   }
   return markAgentRunFailureReplyPayload({
-    text: "I finished the turn, but it did not produce a visible reply. Please try again, or start a new session if this keeps happening.",
+    text: resolveUserMessages(params.language).replyEmpty,
   });
 }
 
 export function buildKnownAgentRunFailureReplyPayload(params: {
+  language?: string;
   err: unknown;
   sessionCtx: TemplateContext;
   resolvedVerboseLevel: VerboseLevel | undefined;
@@ -480,10 +505,13 @@ export function buildKnownAgentRunFailureReplyPayload(params: {
   // Preflight diagnostics are not provider failures. Only explicit public copy
   // can bypass the caller's diagnostic disclosure policy.
   if (isAgentHarnessPreflightError(params.err)) {
-    const reply = buildExternalRunFailureReply({
-      message: params.err.message,
-      error: params.err,
-    });
+    const reply = buildExternalRunFailureReply(
+      {
+        message: params.err.message,
+        error: params.err,
+      },
+      { language: params.language },
+    );
     return reply.isGenericRunnerFailure
       ? undefined
       : markAgentRunFailureReplyPayload({ text: reply.text });
@@ -491,6 +519,7 @@ export function buildKnownAgentRunFailureReplyPayload(params: {
   const message = formatErrorMessage(params.err);
   const failoverFacts = resolveReplyFailoverFacts(params.err, message);
   const failureSummary = resolveReplyFailureSummary({
+    language: params.language,
     error: params.err,
     message,
     reason: failoverFacts.reason,
@@ -507,6 +536,7 @@ export function buildKnownAgentRunFailureReplyPayload(params: {
     : buildExternalRunFailureReply(
         { message, error: params.err },
         {
+          language: params.language,
           includeAuthProfileId: !isNonDirectConversationContext(params.sessionCtx),
           includeDetails: isVerboseFailureDetailEnabled(params.resolvedVerboseLevel),
           failoverFacts,

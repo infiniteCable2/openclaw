@@ -50,6 +50,7 @@ import {
   isCodeModeExecToolKind,
   reconcileCodeModeExecBeforeHookParams,
 } from "./code-mode-control-tools.js";
+import { resolveAgentLanguage } from "./identity.js";
 import { admitSingleToolCallLoop } from "./tool-loop-admission.js";
 import { normalizeToolPolicyName } from "./tool-policy.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
@@ -93,6 +94,7 @@ export function consumeFinalClientVoiceToolConfirmation(args: {
   const voiceRun = resolveClientVoiceRunBinding(args.ctx?.runId);
   return consumeClientVoiceToolConfirmationPolicy({
     agentId: voiceRun?.agentId,
+    language: voiceRun ? resolveAgentLanguage(args.ctx?.config, voiceRun.agentId) : undefined,
     voiceSessionId: voiceRun?.voiceSessionId,
     runId: args.ctx?.runId,
     toolCallId: args.toolCallId,
@@ -180,6 +182,7 @@ export async function runBeforeToolCallHook(args: {
       ? { allowed: true as const }
       : checkClientVoiceToolConfirmationPolicy({
           agentId: voiceRun?.agentId,
+          language: voiceRun ? resolveAgentLanguage(args.ctx?.config, voiceRun.agentId) : undefined,
           voiceSessionId: voiceRun?.voiceSessionId,
           runId: args.ctx?.runId,
           toolCallId: args.toolCallId,

@@ -1,3 +1,4 @@
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { resolveSqliteSessionKey } from "../../config/sessions/session-accessor.sqlite-scope-helpers.js";
@@ -496,6 +497,7 @@ export async function executeFollowupTurn(params: {
         outcome: {
           kind: "rejected",
           payload: buildTerminalAgentRunFailureReplyPayload({
+            language: resolveAgentLanguage(turn.config, turn.queued.run.agentId ?? ""),
             isHeartbeat,
             replyExpectation: terminalReplyExpectation,
             visibleReplyDelivered,

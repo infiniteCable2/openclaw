@@ -2,12 +2,14 @@ import type { AcceptedSessionSpawn } from "../../agents/accepted-session-spawn.j
 import { adoptMediaGenerationProgressDraft } from "../../agents/media-generation-activity.js";
 import type { ReplyCompletion } from "../../agents/reply-completion.js";
 import type { ProgressContinuationCapability } from "../../channels/progress-continuation.js";
+import { resolveUserMessages } from "../../shared/user-messages.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { resolveReplyOperationAbortReason } from "./reply-operation-abort.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
 export function buildWaitingStatusPayload(params: {
+  language?: string;
   completion: ReplyCompletion;
   continuationPending?: boolean;
   yieldAcknowledgment?: string;
@@ -25,8 +27,7 @@ export function buildWaitingStatusPayload(params: {
   return setReplyPayloadMetadata(
     {
       text:
-        params.yieldAcknowledgment?.trim() ||
-        "I’m continuing this work and will send the result when it is ready.",
+        params.yieldAcknowledgment?.trim() || resolveUserMessages(params.language).replyContinuing,
     },
     {
       deliverDespiteSourceReplySuppression: true,

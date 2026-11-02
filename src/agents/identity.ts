@@ -2,6 +2,7 @@ import type { HumanDelayConfig, IdentityConfig } from "../config/types.base.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveChannelAccountEntry } from "../routing/account-lookup.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { normalizeLanguageTag } from "../shared/language.js";
 import { resolveAgentEntry } from "./agent-scope-config.js";
 
 const DEFAULT_ACK_REACTION = "👀";
@@ -13,6 +14,12 @@ export function resolveAgentIdentity(
 ): IdentityConfig | undefined {
   // Keep merged-config request normalization for raw Plugin SDK agent ids.
   return resolveAgentEntry(cfg, normalizeAgentId(agentId))?.identity;
+}
+
+/** Config owns the persona language; presentation catalogs own supported-language fallback. */
+export function resolveAgentLanguage(cfg: OpenClawConfig | undefined, agentId: string): string {
+  const language = cfg ? resolveAgentIdentity(cfg, agentId)?.language : undefined;
+  return (language ? normalizeLanguageTag(language) : undefined) ?? "en";
 }
 
 /** Resolve the acknowledgement reaction using account, channel, global, then identity fallback. */

@@ -184,6 +184,41 @@ describe("postWorkshopChangeNotice", () => {
     );
   });
 
+  it("sends German fixed learning copy to Matrix while preserving authored summaries and undo calls", async () => {
+    const sessionKey = "agent:main:matrix:room:!example:example.org";
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: { channel: "matrix", to: "room:!example:example.org" },
+      threadId: undefined,
+    });
+    await postWorkshopChangeNotice({
+      config: { agents: { entries: { main: { identity: { language: "de-DE" } } } } },
+      generation: generation(sessionKey),
+      runId: "skill-workshop-review:german",
+      changes: [change({ summary: "original authored reason", versionId: "previous-version" })],
+    });
+    expect(mocks.sendDurableMessageBatchCore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "matrix",
+        to: "room:!example:example.org",
+        payloads: [
+          {
+            text: '💾 Gelernt: aktualisiert `actual-budget-operations` (original authored reason). Sage "rückgängig", um diese Skill-Änderung zurückzunehmen.',
+          },
+        ],
+        mirror: expect.objectContaining({ sessionKey }),
+      }),
+      undefined,
+      undefined,
+      generation(sessionKey),
+    );
+    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "skill_workshop action=restore name=actual-budget-operations version=previous-version",
+      ),
+      expect.anything(),
+    );
+  });
+
   it("delivers into the thread named by the session key", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: { channel: "slack", to: "slack:C0123ABC", accountId: "workspace-1" },

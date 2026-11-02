@@ -70,6 +70,32 @@ describe("native getReply voice confirmation presentation", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => resetClientVoiceConfirmationStateForTest());
 
+  it("speaks the pending challenge's German catalog copy through native output", async () => {
+    const f = fixture();
+    f.dispatch.mockImplementation(async (input) => {
+      input.onRunStarted?.("native-german-run");
+      checkClientVoiceToolConfirmationPolicy({
+        ...target,
+        ...action,
+        runId: "native-german-run",
+        language: "de-DE",
+      });
+      await input.onSpeakableText?.({ type: "done", text: "Model narration" });
+      return { kind: "reply", reply: { text: "Model narration" } };
+    });
+    const result = await f.run(f.input);
+    expect(result.kind).toBe("reply");
+    if (result.kind !== "reply") {
+      throw new Error("Expected the native reply");
+    }
+    expect(result.reply.text).toContain('Sage "ja"');
+    expect(result.reply.text).toContain('"nein"');
+    expect(f.events).toEqual([
+      { type: "chunk", text: result.reply.text },
+      { type: "done", text: result.reply.text },
+    ]);
+  });
+
   it.each([false, true])(
     "keeps early commentary but replaces blocked-action narration once (partial=%s)",
     async (partial) => {

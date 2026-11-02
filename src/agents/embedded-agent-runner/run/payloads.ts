@@ -25,6 +25,7 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { hasReplyPayloadContent } from "../../../interactive/payload.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import { resolveRawAssistantAnswerText } from "../../../shared/assistant-answer-text.js";
+import { resolveUserMessageLocale } from "../../../shared/language.js";
 import { trimTextPreservingCode } from "../../../shared/text/text-projection.js";
 import { classifyOAuthRefreshFailure } from "../../auth-profiles/oauth-refresh-failure.js";
 import {
@@ -47,6 +48,7 @@ import {
 } from "../../embedded-agent-utils.js";
 import { isTimeoutErrorMessage } from "../../failover/classify.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
+import { resolveAgentLanguage } from "../../identity.js";
 import type { ToolErrorSummary } from "../../tool-error-summary.js";
 import {
   hasCompletedMessagingToolDeliveryEvidence,
@@ -98,6 +100,7 @@ export function buildEmbeddedRunPayloads(params: {
   didSendDeterministicApprovalPrompt?: boolean;
   heartbeatToolResponse?: HeartbeatToolResponse;
 }): ReplyPayload[] {
+  const language = resolveAgentLanguage(params.config, params.agentId ?? "");
   const heartbeatTerminalToolFailure =
     params.isHeartbeatTrigger === true &&
     params.lastToolError &&
@@ -211,8 +214,17 @@ export function buildEmbeddedRunPayloads(params: {
       isTimeoutErrorMessage(rawErrorMessage) &&
       errorText === SYNTHESIZED_TIMEOUT_ERROR_TEXT;
     if (errorText && !deferAssistantTimeoutError) {
+      // Existing timeout deferral and suppression above consume their original
+      // diagnostic copy. Locale affects only the admitted user presentation.
+      const userErrorText =
+        assistantForPayload &&
+        !providerLoginRecovery &&
+        (lastAssistantErrored || rawErrorMessage) &&
+        resolveUserMessageLocale(language) !== "en"
+          ? formatUserFacingAssistantErrorText(assistantForPayload, { ...errorContext, language })
+          : errorText;
       const errorPayload = {
-        text: errorText,
+        text: userErrorText,
         isError: true,
         ...(providerLoginRecovery ? { presentation: providerLoginRecovery.presentation } : {}),
       };
