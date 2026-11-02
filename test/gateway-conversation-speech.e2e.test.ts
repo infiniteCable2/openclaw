@@ -142,6 +142,9 @@ it("keeps a reusable Talk branch audible across follow-ups and imports its sibli
         },
       });
       const chatKey = `agent:main:chat-${randomUUID()}`;
+      // An explicit non-main Talk target is a continuation. Keep the device's
+      // durable target distinct from chat, otherwise this only tests one history.
+      const voiceKey = `agent:main:voice:fixture-${randomUUID()}`;
       const sendChat = async (message: string) => {
         const result = await operator!.call<{ runId: string }>("chat.send", {
           sessionKey: chatKey,
@@ -163,7 +166,7 @@ it("keeps a reusable Talk branch audible across follow-ups and imports its sibli
         const created = await operator!.call<{ sessionId: string; readyMark: string }>(
           "talk.session.create",
           {
-            sessionKey: chatKey,
+            sessionKey: voiceKey,
             mode: "stt-tts",
             transport: "gateway-relay",
             brain: "agent-consult",
