@@ -146,6 +146,7 @@ it.for([
     const overlapCommitted = createDeferredCore();
     let overlapMutation: Promise<unknown> | undefined;
     let overlapReads = 0;
+    let overlapPublications = 0;
     let replyCalls = 0;
     const delivery = getReplacementPublicationDelivery();
     if (overlap) {
@@ -157,7 +158,17 @@ it.for([
         if (!assertCurrent) {
           throw new Error("Native reply source guard is missing");
         }
-        delivery.afterResult = async () => {
+        delivery.afterResult = async (result) => {
+          const current =
+            isRecord(result) && isRecord(result.publication)
+              ? result.publication.current
+              : undefined;
+          const entry = current instanceof Map ? current.get(target.canonicalKey) : undefined;
+          if (!isRecord(entry) || entry.category !== "reviewed") {
+            return;
+          }
+          delivery.afterResult = undefined;
+          overlapPublications++;
           overlapCommitted.resolve();
           await releaseOverlap.promise;
         };
@@ -484,6 +495,7 @@ it.for([
       }
       expect(sessionErrors).toBe(0);
       if (overlap) {
+        expect(overlapPublications).toBe(1);
         expect(overlapReads).toBeGreaterThan(0);
         expect(entry.category).toBe("reviewed");
       }
