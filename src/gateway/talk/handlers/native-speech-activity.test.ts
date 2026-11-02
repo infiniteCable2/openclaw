@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import { withinTest } from "../../../../test/helpers/promise.js";
 import { makeAgentAssistantMessage } from "../../../agents/test-helpers/agent-message-fixtures.js";
 import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.js";
+import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import {
@@ -214,18 +215,24 @@ it("a native silent answer settles activity and leaves the same connection usabl
         throw new Error("Expected actual native reply owner settlement");
       }
       ownerSettlements.push(owner.ownerSettlement);
-      const text = index === 0 ? "" : "The second synthetic capture completed.";
+      const text = index === 0 ? SILENT_REPLY_TOKEN : "The second synthetic capture completed.";
       await persist(
         makeAgentAssistantMessage({
           model: "synthetic-native-consult",
-          content: text ? [{ type: "text", text }] : [],
+          content: [{ type: "text", text }],
         }),
       );
-      if (text) {
+      if (index !== 0) {
         await params.onBlockReply?.({ text });
       }
       await params.waitForPendingInput?.(params.abortSignal);
-      return { payloads: text ? [{ text }] : [], meta: { durationMs: 0 } };
+      return {
+        payloads: index === 0 ? [] : [{ text }],
+        meta: {
+          durationMs: 0,
+          ...(index === 0 ? { finalAssistantRawText: text, finalAssistantVisibleText: text } : {}),
+        },
+      };
     }),
   );
   const call = await createSpeechRelayCall({ capabilities });
