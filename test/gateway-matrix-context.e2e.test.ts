@@ -394,7 +394,7 @@ it.for(["native", "branches"] as const)(
         matrix = await homeserver(signal);
         const selected = config(model, initialMode);
         if (initialMode === "branches") {
-          selected.tools = { allow: ["sessions_list"] };
+          selected.tools = { allow: ["sessions_list"], codeMode: false, toolSearch: false };
           selected.gateway!.roles!.definitions.provisioner = {
             sessions: { others: "view" },
             agents: "*",
