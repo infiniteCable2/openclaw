@@ -33,7 +33,7 @@ export function createTalkOperatorRunSource(params: {
         source?.release();
       } catch (cleanupError) {
         throw new AggregateError([error, cleanupError], "Talk operator capture cleanup failed", {
-          cause: error,
+          cause: cleanupError,
         });
       }
       throw error;
