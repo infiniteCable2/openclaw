@@ -4,6 +4,7 @@ import {
   GATEWAY_CLIENT_MODES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import { PROTOCOL_VERSION } from "../../../packages/gateway-protocol/src/version.js";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import type { GatewayClient, GatewayRequestContext } from "../server-methods/shared-types.js";
 import { createTalkOperatorRunSource } from "./operator-run-source.js";
@@ -75,16 +76,54 @@ it("uses the original source after create finishes, not the later ambient RPC or
     expect(call).toEqual({
       client: original.client,
       context: original.context,
-      invocationAuthority: invocation,
     });
     expect(call?.client).toBe(original.client);
     expect(call?.context).toBe(original.context);
-    expect(call?.invocationAuthority).toBe(invocation);
+    expect(call?.invocationAuthority).toBeUndefined();
+    expect(invocation.assertCurrent).toHaveBeenCalledTimes(3);
   }
   expect(first.signal.aborted).toBe(false);
   expect(second.signal.aborted).toBe(false);
   expect(mocks.ambient).not.toHaveBeenCalled();
 });
+
+it.each(["target", "abort"] as const)(
+  "releases a captured principal when the input changes during capture: %s",
+  async (change) => {
+    const failure = new Error("Talk input retired during native capture");
+    let current = true;
+    const controller = new AbortController();
+    const release = vi.fn();
+    const authority = createAdmittedRunOperatorAuthority({
+      profileId: "speaker",
+      scopes: ["operator.read"],
+      gatewayAccessGrant: null,
+      rolePolicy: { sessionAccessCap: "none", sandboxRequired: false, agents: ["main"] },
+      assertCurrent() {},
+    });
+    mocks.capture.mockImplementation(async () => {
+      if (change === "target") {
+        current = false;
+      } else {
+        controller.abort(failure);
+      }
+      return { authority, release };
+    });
+    const source = createTalkOperatorRunSource(sourceFixture("changing-talk-input"));
+    await expect(
+      source({
+        signal: controller.signal,
+        assertCurrent() {
+          if (!current) {
+            throw failure;
+          }
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(release).toHaveBeenCalledOnce();
+    expect(mocks.ambient).not.toHaveBeenCalled();
+  },
+);
 
 it("does not turn a native non-operator result into authority", async () => {
   mocks.capture.mockResolvedValue(undefined);

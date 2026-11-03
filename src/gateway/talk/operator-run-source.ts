@@ -14,11 +14,27 @@ export function createTalkOperatorRunSource(params: {
 }): TalkOperatorRunSource {
   const { client, context } = params;
   return async (invocation) => {
-    invocation.assertCurrent();
+    const assertPreparing = () => {
+      invocation.signal?.throwIfAborted();
+      invocation.assertCurrent();
+    };
+    assertPreparing();
     const { captureGatewayOperatorRunAuthority } = await loadOperatorAuthority();
-    invocation.assertCurrent();
+    assertPreparing();
     // A create-RPC's mutation guard and request signal expire independently of
-    // the call. The native owner retains the authenticated source for this run.
-    return captureGatewayOperatorRunAuthority({ client, context, invocationAuthority: invocation });
+    // the call. Input/target guards remain with their owning Talk operation;
+    // retained background audiences need only the native person/policy custody.
+    const source = await captureGatewayOperatorRunAuthority({ client, context });
+    try {
+      assertPreparing();
+      return source;
+    } catch (error) {
+      try {
+        source?.release();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Talk operator capture cleanup failed");
+      }
+      throw error;
+    }
   };
 }
