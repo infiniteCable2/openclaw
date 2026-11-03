@@ -482,12 +482,21 @@ it.for(["native", "branches"] as const)(
               status: "ok",
             });
             expect(model.requests).toHaveLength(requestCount + 1);
-            const describe = async (key: string) =>
-              sibling!.call<{ session: { sessionId: string } }>("sessions.describe", { key });
-            const [source, recipient] = await Promise.all([
-              describe(sourceKey),
-              describe(MATRIX_KEY),
-            ]);
+            // Channel-owned draft rows need the isolated admin observer; this
+            // does not grant the sibling broader read or send authority.
+            const observer = await connectConversationOperator(gateway, PERSON_EMAIL, signal, {
+              scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
+            });
+            const recipient = await observer
+              .call<{ session: { sessionId: string } | null }>("sessions.describe", {
+                key: MATRIX_KEY,
+              })
+              .finally(() => observer.close());
+            expect(recipient.session).not.toBeNull();
+            const source = await sibling.call<{ session: { sessionId: string } }>(
+              "sessions.describe",
+              { key: sourceKey },
+            );
             const history = await sibling.call<{
               messages: Array<{
                 role: string;
@@ -504,7 +513,7 @@ it.for(["native", "branches"] as const)(
               throw new Error("Native sibling source sequence is unavailable");
             }
             await waitForConversationTransfer(gateway, signal, {
-              recipientId: recipient.session.sessionId,
+              recipientId: recipient.session!.sessionId,
               sourceId: source.session.sessionId,
               sequence,
             });
