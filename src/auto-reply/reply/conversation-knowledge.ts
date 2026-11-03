@@ -192,7 +192,6 @@ async function prepareReplyConversationKnowledgeInMode(
     let sources = 0;
     let batchBlocked = false;
     let preparingRead: ConversationKnowledgeHeldSource | undefined;
-    const committedReads = new Set<(typeof reads)[number]>();
     const queuedPackets: Array<{
       admission: ConversationKnowledgePacketAdmission;
       message: CustomMessage;
@@ -244,8 +243,7 @@ async function prepareReplyConversationKnowledgeInMode(
           }
           return { accepted: 0, appended: 0, deferred: true, packetIds: [] };
         });
-      for (const { admission, message, read } of batch.slice(0, result.accepted)) {
-        committedReads.add(read);
+      for (const { admission, message } of batch.slice(0, result.accepted)) {
         params.onPacket?.(message);
         params.sourceCache?.consume(
           conversationKnowledgeContributionId(admission.receipt),
@@ -655,10 +653,11 @@ async function prepareReplyConversationKnowledgeInMode(
       pending: ingestion?.pending ?? (combined.pending ? "snapshot-capacity" : undefined),
     });
     for (const read of reads.toReversed()) {
+      // Live donor custody authorizes the copy, not the recipient's later
+      // model/tool/speech work. Only an unpersisted preview keeps borrowed reads.
       if (
-        params.retainInHistory
-          ? !committedReads.has(read)
-          : !parts.slice(0, combined.includedCount).some((part) => part.origin === read.origin)
+        params.retainInHistory ||
+        !parts.slice(0, combined.includedCount).some((part) => part.origin === read.origin)
       ) {
         drop(read);
       }

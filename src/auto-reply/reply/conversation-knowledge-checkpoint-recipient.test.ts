@@ -38,6 +38,7 @@ const native = vi.hoisted(() => ({
   releaseTarget: vi.fn(),
   releaseSource: vi.fn(),
   checkSource: vi.fn(),
+  checkTarget: vi.fn(),
   scan: vi.fn(),
   bootstrap: vi.fn(),
   creation: vi.fn(),
@@ -205,7 +206,7 @@ beforeEach(() => {
     kind: "ready",
     branch,
     targetFacts: {
-      assertCurrent() {},
+      assertCurrent: native.checkTarget,
       release: native.releaseTarget,
       audience: "private-direct",
       audienceIdentity: conversationKnowledgeParticipantIdentity(person),
@@ -900,8 +901,16 @@ describe("ready checkpoint recipient", () => {
     );
     expect(f.cache.consumeCheckpoint).toHaveBeenCalledWith(f.candidate);
     expect(f.onPacket).toHaveBeenCalledOnce();
-    expect(native.releaseSource).not.toHaveBeenCalled();
-    result!.assertCurrent();
+    native.checkSource.mockImplementation(() => {
+      throw new SessionTranscriptReadFenceError("Donor authority changed after the copy");
+    });
+    expect(() => result!.assertCurrent()).not.toThrow();
+    expect(native.releaseSource).toHaveBeenCalledOnce();
+    expect(native.releaseTarget).not.toHaveBeenCalled();
+    native.checkTarget.mockImplementation(() => {
+      throw new Error("Recipient authority revoked");
+    });
+    expect(() => result!.assertCurrent()).toThrow("Recipient authority revoked");
     result!.release();
     expect(native.releaseSource).toHaveBeenCalledOnce();
     expect(native.releaseTarget).toHaveBeenCalledOnce();
@@ -940,16 +949,24 @@ describe("ready checkpoint recipient", () => {
   });
   it("retains failed cleanup handles, still releases the target, and retries only unfinished cleanup", async () => {
     const f = fixture();
-    const result = await admitRecipientConversationCheckpoint(f.params);
-    native.releaseSource.mockImplementationOnce(() => {
+    native.releaseSource.mockImplementation(() => {
       throw new Error("temporary cleanup failure");
     });
-    expect(() => result!.release()).toThrow("cleanup remains pending");
+    await expect(admitRecipientConversationCheckpoint(f.params)).rejects.toThrow(
+      "cleanup remains pending",
+    );
+    expect(f.cache.consumeCheckpoint).toHaveBeenCalledWith(f.candidate);
+    expect(f.onPacket).toHaveBeenCalledOnce();
     expect(native.releaseTarget).toHaveBeenCalledOnce();
-    expect(f.cache.retainCleanup).toHaveBeenCalledWith(result!.release);
-    result!.release();
+    const cleanup = f.cache.retainCleanup.mock.calls[0]?.[0];
+    if (typeof cleanup !== "function") {
+      throw new Error("Expected retained native cleanup retry");
+    }
     expect(native.releaseSource).toHaveBeenCalledTimes(2);
+    native.releaseSource.mockImplementation(() => {});
+    cleanup();
+    expect(native.releaseSource).toHaveBeenCalledTimes(3);
     expect(native.releaseTarget).toHaveBeenCalledOnce();
-    expect(f.cache.forgetCleanup).toHaveBeenCalledWith(result!.release);
+    expect(f.cache.forgetCleanup).toHaveBeenCalledWith(cleanup);
   });
 });
