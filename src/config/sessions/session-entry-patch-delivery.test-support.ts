@@ -9,7 +9,7 @@ vi.mock("./session-history-eviction.js", () => ({ kickSessionHistoryDiskBudgetMa
 
 const delivery = vi.hoisted(() => ({
   afterPrepare: undefined as (() => void) | undefined,
-  afterCommit: undefined as (() => void) | undefined,
+  afterCommit: undefined as ((result: unknown) => void | Promise<void>) | undefined,
   beforeCommit: undefined as (() => void) | undefined,
   commands: [] as string[],
 }));
@@ -41,7 +41,10 @@ vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => {
                     delivery.afterPrepare?.();
                   }
                   if (command.type === "session.entry.patch.commit") {
-                    delivery.afterCommit?.();
+                    const heldDelivery = delivery.afterCommit?.(result);
+                    if (heldDelivery) {
+                      await heldDelivery;
+                    }
                   }
                   return result;
                 },
