@@ -102,6 +102,8 @@ export type SpeechSessionConfig = {
   responseStreaming?: "off" | "sentence";
   /** Additional suppression after estimated nonisolated output playback; default 3 seconds. */
   echoSuppressionTailSeconds?: number;
+  /** Endpoint owner; client mode requires explicit capture boundaries. Defaults to server. */
+  inputEndMode?: "server" | "client";
   waitingAudio?: SpeechWaitingAudioConfig;
   video?: import("../../config/zod-schema.media-frames.js").SpeechVideoConfig;
 };

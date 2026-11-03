@@ -7,6 +7,7 @@ import type { SpeechAudioTransport } from "./transport.js";
 /** Accepted capture boundaries retain the converter and provider until settlement. */
 export function createSpeechTranscriptionInput(params: {
   inputAudioFormat: SpeechInputAudioFormat;
+  inputEndMode?: "server" | "client";
   transcription: Pick<
     ReturnType<typeof resolveSpeechTranscriptionProvider>,
     "provider" | "providerConfig"
@@ -32,6 +33,11 @@ export function createSpeechTranscriptionInput(params: {
   let finishing: Promise<void> | undefined;
   let captureId: string | undefined;
   const completed = new Map<string, Promise<void>>();
+  const requireCaptureId = (id?: string) => {
+    if (params.inputEndMode === "client" && !id?.trim()) {
+      throw new Error("Client-ended Talk input requires a captureId on audio and endOfInput");
+    }
+  };
   const capture = (requested?: string) => {
     if (captureId && requested && captureId !== requested) {
       throw new Error("Talk input does not match the active capture");
@@ -48,6 +54,7 @@ export function createSpeechTranscriptionInput(params: {
       return typeof params.getSession()?.finishInput === "function";
     },
     sendAudio(audio: Buffer, metadata?: { captureId: string }) {
+      requireCaptureId(metadata?.captureId);
       if (finishing) {
         throw new Error("Talk input boundary is still being processed");
       }
@@ -62,6 +69,7 @@ export function createSpeechTranscriptionInput(params: {
     },
     async finishInput(options?: { captureId?: string }) {
       params.assertCurrent();
+      requireCaptureId(options?.captureId);
       const duplicate = options?.captureId ? completed.get(options.captureId) : undefined;
       if (duplicate) {
         return duplicate;

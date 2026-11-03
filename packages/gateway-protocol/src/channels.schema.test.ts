@@ -78,9 +78,9 @@ describe("TalkSessionAppendAudioParamsSchema", () => {
 
 describe("Talk activity extension", () => {
   it("accepts optional negotiation and requires capture correlation only for input outcomes", () => {
-    expect(Compile(TalkSessionCreateParamsSchema).Check({ capabilities: ["activity-v1"] })).toBe(
-      true,
-    );
+    expect(
+      Compile(TalkSessionCreateParamsSchema).Check({ capabilities: ["activity-v1", "input-end"] }),
+    ).toBe(true);
     const validate = Compile(TalkEventSchema);
     const event = {
       id: "speech-1:1",

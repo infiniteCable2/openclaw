@@ -67,7 +67,13 @@ export async function createTalkSpeechRelaySession(params: {
   verifiedSource?: Readonly<UserChannelIdentity>;
   provider: RealtimeTranscriptionProviderPlugin;
   providerConfig: RealtimeTranscriptionProviderConfig;
-  capabilities?: readonly ("voice-selection" | "isolated-input" | "output-gate" | "activity-v1")[];
+  capabilities?: readonly (
+    | "voice-selection"
+    | "isolated-input"
+    | "output-gate"
+    | "activity-v1"
+    | "input-end"
+  )[];
   assertCurrent: () => void;
 }) {
   params.assertCurrent();
@@ -89,6 +95,9 @@ export async function createTalkSpeechRelaySession(params: {
     params.sessionTarget.agentId,
     params.verifiedSource,
   );
+  if (profile.inputEndMode === "client" && !params.capabilities?.includes("input-end")) {
+    throw new Error("Client-ended Talk speech requires the input-end capability");
+  }
   const id = randomUUID();
   const expiresAtMs = Date.now() + SESSION_TTL_MS;
   const readyMark = `media-ready:${randomUUID()}`;
@@ -524,6 +533,7 @@ export async function createTalkSpeechRelaySession(params: {
     providers: { [params.provider.id]: params.providerConfig },
     responseStreaming: profile.responseStreaming,
     echoSuppressionTailSeconds: profile.echoSuppressionTailSeconds,
+    inputEndMode: profile.inputEndMode,
     ...(profile.waitingAudio ? { waitingAudio: profile.waitingAudio } : {}),
   };
   const nativeInput = createNativeSpeechConfirmation({
@@ -644,6 +654,7 @@ export async function createTalkSpeechRelaySession(params: {
       inputEncoding: "pcm16",
       inputSampleRateHz: 16000,
       supportsInputEnd: engine?.supportsInputEnd === true,
+      inputEndMode: profile.inputEndMode,
       ...(activityEvents ? { activityEvents: true } : {}),
       outputEncoding: "pcm16",
       outputSampleRateHz: 24000,

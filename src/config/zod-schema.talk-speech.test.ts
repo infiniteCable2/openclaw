@@ -51,7 +51,7 @@ describe("Talk speech profile admission", () => {
     },
   );
 
-  it("rejects duplicate exact sources, unknown identity fields and missing tails", () => {
+  it("rejects duplicate exact sources, unknown identity fields and empty overrides", () => {
     for (const sourceOverrides of [
       [
         { source, echoSuppressionTailSeconds: 0 },
@@ -76,6 +76,26 @@ describe("Talk speech profile admission", () => {
         },
       }).success,
     ).toBe(true);
+  });
+
+  it("admits an endpoint-only source override and rejects unknown endpoint owners", () => {
+    expect(
+      TalkSpeechSchema.safeParse({
+        agentProfiles: {
+          reader: {
+            inputEndMode: "server",
+            sourceOverrides: [{ source, inputEndMode: "client" }],
+          },
+        },
+      }).success,
+    ).toBe(true);
+    for (const inputEndMode of ["auto", "", true, null]) {
+      for (const profile of [{ inputEndMode }, { sourceOverrides: [{ source, inputEndMode }] }]) {
+        expect(TalkSpeechSchema.safeParse({ agentProfiles: { reader: profile } }).success).toBe(
+          false,
+        );
+      }
+    }
   });
 
   it("admits independent channel/provider-bound agent execution controls", () => {

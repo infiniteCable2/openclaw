@@ -7,6 +7,7 @@ export type ResolvedTalkSpeechAgentProfile = {
   responseStreaming: "off" | "sentence";
   speakCommentary: boolean;
   echoSuppressionTailSeconds: number;
+  inputEndMode: "server" | "client";
   video?: import("../../config/zod-schema.media-frames.js").SpeechVideoConfig;
   waitingAudio?: SpeechWaitingAudioConfig;
   greeting?: {
@@ -18,7 +19,7 @@ export type ResolvedTalkSpeechAgentProfile = {
   };
 };
 
-/** Presentation policy only: admission has already selected and authorized this exact agent. */
+/** Speech policy only: admission has already selected and authorized this exact agent. */
 export function resolveTalkSpeechAgentProfile(
   config: Pick<OpenClawConfig, "talk">,
   admittedAgentId: string,
@@ -41,6 +42,7 @@ export function resolveTalkSpeechAgentProfile(
     speakCommentary: profile?.speakCommentary ?? false,
     echoSuppressionTailSeconds:
       sourceOverride?.echoSuppressionTailSeconds ?? profile?.echoSuppressionTailSeconds ?? 3,
+    inputEndMode: sourceOverride?.inputEndMode ?? profile?.inputEndMode ?? "server",
     ...(profile?.video?.enabled === true ? { video: profile.video } : {}),
     ...(profile?.waitingAudio ? { waitingAudio: profile.waitingAudio } : {}),
     ...(greeting?.enabled === true

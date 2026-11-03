@@ -3,7 +3,10 @@ import type { RealtimeTranscriptionSession } from "../../realtime-transcription/
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createSpeechTranscriptionInput } from "./session-input.js";
 
-function fixture(finishInput: NonNullable<RealtimeTranscriptionSession["finishInput"]>) {
+function fixture(
+  finishInput: NonNullable<RealtimeTranscriptionSession["finishInput"]>,
+  inputEndMode?: "server" | "client",
+) {
   const session = {
     connect: async () => {},
     close: vi.fn(),
@@ -15,6 +18,7 @@ function fixture(finishInput: NonNullable<RealtimeTranscriptionSession["finishIn
   const ended = vi.fn();
   const input = createSpeechTranscriptionInput({
     inputAudioFormat: "pcm16-16khz",
+    inputEndMode,
     transcription: {
       provider: {
         id: "synthetic",
@@ -36,6 +40,18 @@ function fixture(finishInput: NonNullable<RealtimeTranscriptionSession["finishIn
 }
 
 describe("speech capture boundary identity", () => {
+  it("requires capture identity before accepting any client-ended audio or boundary", async () => {
+    const finish = vi.fn();
+    const { input, session, started } = fixture(finish, "client");
+    expect(() => input.sendAudio(Buffer.alloc(2))).toThrow("requires a captureId");
+    await expect(input.finishInput()).rejects.toThrow("requires a captureId");
+    expect(session.sendAudio).not.toHaveBeenCalled();
+    expect(started).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+    input.sendAudio(Buffer.alloc(2), { captureId: "capture-a" });
+    await input.finishInput({ captureId: "capture-a" });
+    expect(finish).toHaveBeenCalledExactlyOnceWith({ captureId: "capture-a" });
+  });
   it("retains the boundary result without finalizing a newer capture", async () => {
     const finish = vi.fn(async () => ({ activity: "none" as const }));
     const { input, started, ended } = fixture(finish);

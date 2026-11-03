@@ -502,6 +502,8 @@ export type RealtimeTranscriptionProviderPlugin = {
   aliases?: string[];
   /** Whether each onTranscript callback completes an utterance or only one segment. */
   transcriptGranularity?: "segment" | "utterance";
+  /** Keeps one utterance across pauses and finalizes it exclusively at finishInput. */
+  supportsClientInputEnd?: boolean;
   defaultModel?: string;
   models?: readonly string[];
   autoSelectOrder?: number;

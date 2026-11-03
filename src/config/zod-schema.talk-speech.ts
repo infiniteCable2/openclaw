@@ -76,10 +76,19 @@ const TalkSpeechEchoSuppressionTailSchema = z
 
 const TalkSpeechSourceOverridesSchema = z
   .array(
-    z.strictObject({
-      source: TalkSpeechSourceIdentitySchema,
-      echoSuppressionTailSeconds: TalkSpeechEchoSuppressionTailSchema,
-    }),
+    z
+      .strictObject({
+        source: TalkSpeechSourceIdentitySchema,
+        echoSuppressionTailSeconds: TalkSpeechEchoSuppressionTailSchema.optional(),
+        inputEndMode: z.enum(["server", "client"]).optional(),
+      })
+      .refine(
+        (override) =>
+          override.echoSuppressionTailSeconds !== undefined || override.inputEndMode !== undefined,
+        {
+          message: "Speech source overrides must specify at least one setting",
+        },
+      ),
   )
   .superRefine((overrides, ctx) => {
     const seen = new Set<string>();
@@ -101,6 +110,7 @@ const TalkSpeechAgentProfileSchema = z
     responseStreaming: z.enum(["off", "sentence"]).optional(),
     speakCommentary: z.boolean().optional(),
     echoSuppressionTailSeconds: TalkSpeechEchoSuppressionTailSchema.optional(),
+    inputEndMode: z.enum(["server", "client"]).optional(),
     sourceOverrides: TalkSpeechSourceOverridesSchema.optional(),
     video: SpeechVideoSchema.optional(),
     agentOverrides: TalkSpeechAgentOverridesSchema.optional(),

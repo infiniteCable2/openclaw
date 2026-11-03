@@ -26,6 +26,7 @@ describe("admitted-agent Talk speech policy", () => {
       responseStreaming: "sentence",
       speakCommentary: false,
       echoSuppressionTailSeconds: 3,
+      inputEndMode: "server",
     });
   });
 
@@ -57,6 +58,7 @@ describe("admitted-agent Talk speech policy", () => {
       responseStreaming: "sentence",
       speakCommentary: true,
       echoSuppressionTailSeconds: 3,
+      inputEndMode: "server",
       waitingAudio: { filePath: "/tmp/wait.wav", startDelayMs: 0, volume: 0.2 },
       greeting: {
         enabled: true,
@@ -70,6 +72,7 @@ describe("admitted-agent Talk speech policy", () => {
       responseStreaming: "off",
       speakCommentary: false,
       echoSuppressionTailSeconds: 3,
+      inputEndMode: "server",
     });
   });
 
@@ -80,6 +83,7 @@ describe("admitted-agent Talk speech policy", () => {
         responseStreaming: "sentence",
         speakCommentary: false,
         echoSuppressionTailSeconds: 3,
+        inputEndMode: "server",
       });
     },
   );
@@ -98,6 +102,7 @@ describe("admitted-agent Talk speech policy", () => {
       responseStreaming: "sentence",
       speakCommentary: false,
       echoSuppressionTailSeconds: 3,
+      inputEndMode: "server",
     });
   });
 
@@ -120,7 +125,7 @@ describe("admitted-agent Talk speech policy", () => {
           agentProfiles: {
             reader: {
               echoSuppressionTailSeconds: 1.25,
-              sourceOverrides: [{ source, echoSuppressionTailSeconds: 0 }],
+              sourceOverrides: [{ source, echoSuppressionTailSeconds: 0, inputEndMode: "client" }],
             },
           },
         },
@@ -129,6 +134,7 @@ describe("admitted-agent Talk speech policy", () => {
     expect(
       resolveTalkSpeechAgentProfile(configured, "reader", source).echoSuppressionTailSeconds,
     ).toBe(0);
+    expect(resolveTalkSpeechAgentProfile(configured, "reader", source).inputEndMode).toBe("client");
     for (const other of [
       undefined,
       { ...source, channelId: "webchat" },
@@ -136,6 +142,9 @@ describe("admitted-agent Talk speech policy", () => {
       { ...source, senderId: "device-b" },
       { ...source, senderId: "Device-a" },
     ]) {
+      expect(resolveTalkSpeechAgentProfile(configured, "reader", other).inputEndMode).toBe(
+        "server",
+      );
       expect(
         resolveTalkSpeechAgentProfile(configured, "reader", other).echoSuppressionTailSeconds,
       ).toBe(1.25);

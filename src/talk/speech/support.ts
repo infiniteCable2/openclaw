@@ -25,6 +25,7 @@ type SpeechProviderSelectionConfig = {
   agentId?: string;
   provider?: string;
   transcriptionProvider?: string;
+  inputEndMode?: "server" | "client";
   voiceProvider?: string;
   model?: string;
   providers: Record<string, Record<string, unknown>>;
@@ -108,6 +109,11 @@ export function resolveSpeechTranscriptionProvider(params: {
     : rawConfig;
   if (!provider.isConfigured({ cfg: params.fullConfig, providerConfig })) {
     throw new Error(`Realtime transcription provider "${provider.id}" is not configured`);
+  }
+  if (params.config.inputEndMode === "client" && provider.supportsClientInputEnd !== true) {
+    throw new Error(
+      `Realtime transcription provider "${provider.id}" does not support client input end`,
+    );
   }
   return { provider, providerConfig };
 }

@@ -174,8 +174,18 @@ microphone bytes nor a locally created output track count as playback readiness.
 Capture and audio delivery are gated until acknowledgment; preparation leases
 remain held until the session closes.
 
+`audio.inputEndMode` reports the effective `"server"` (default) or `"client"`
+policy from the admitted agent's speech profile or exact verified-source override.
+Client mode requires the client's `input-end` capability and a transcription
+provider advertising `supportsClientInputEnd: true` with `finishInput` support.
+Unsupported combinations reject session creation instead of falling back.
+In client mode, supply the same `captureId` on every PCM chunk and its end marker.
+Acoustic pauses never finalize that capture; bounded STT batches may produce
+cumulative partials, but only its explicit end permits a final transcript and
+native input dispatch. Continuous Matrix speech keeps its default server mode.
+
 When `audio.supportsInputEnd` is true in the create result, a capture client may
-end an utterance with `talk.session.appendAudio({ sessionId, audioBase64: "",
+end an utterance with `talk.session.appendAudio({ sessionId, captureId, audioBase64: "",
 endOfInput: true })`. The same request may carry the last real audio chunk;
 audio is appended before its boundary. Await that request before sending the
 next utterance. Empty audio without `endOfInput: true` is invalid. Providers
@@ -183,6 +193,15 @@ without explicit input-boundary support reject the marker before accepting
 its audio. This signal finalizes retained real input through the native speech
 owner; it does not close the call, assert speech recognition, or bypass native
 admission. Missing transport data and disconnect remain cancellation conditions.
+
+Transcription providers receive the selected `inputEndMode` in `createSession`.
+In client mode, `finishInput` seals the capture. For an accepted utterance,
+publish `onProcessing({ utteranceId, state: "started" })` before resolving it;
+partial STT batches and empty or rejected captures do not manufacture processing
+ownership. Decoding may finish after that ACK and after another capture starts.
+Keep the original `utteranceId` for its final `onTranscript` and following
+terminal `onProcessing` callback. The ACK does not itself prove decoding finished
+or a model run started.
 
 Clients with echo-isolated capture and reversible playback gating may negotiate
 both `isolated-input` and `output-gate` in `capabilities`. The client must apply
@@ -192,8 +211,9 @@ without a playback gate is rejected rather than silently weakening barge-in.
 Media capability declarations do not grant agent or tool authority.
 
 Speech relay clients may additionally negotiate `activity-v1`; the create result
-then declares `audio.activityEvents: true`. Supply the same optional `captureId`
-(1–128 nonblank characters) on that capture's audio chunks and final boundary.
+then declares `audio.activityEvents: true`. Supply the same `captureId`
+(1–128 nonblank characters) on that capture's audio chunks and final boundary;
+it is required in client input-end mode and optional in server mode.
 Canonical `input.outcome` events carry that capture correlation and a version-1
 recognition outcome; `session.activity` reports independent input, native work
 and output observations. Legacy providers without boundary evidence report

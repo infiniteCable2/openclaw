@@ -458,7 +458,7 @@ async function createSpeechRelayCall(params: Record<string, unknown> = {}) {
   const result = respond.mock.calls[0]![1] as {
     sessionId: string;
     readyMark: string;
-    audio: { supportsInputEnd: boolean };
+    audio: { supportsInputEnd: boolean; inputEndMode: "server" | "client" };
   };
   const record = getUnifiedTalkSession(result.sessionId);
   if (record.kind !== "speech-relay") {

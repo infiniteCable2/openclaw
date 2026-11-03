@@ -237,8 +237,8 @@ Defaults for Talk mode (macOS/iOS/Android and the browser Control UI).
 sessions after native admission has selected an agent. It does not select or
 authorize an agent, grant tools, or change routing. Profiles match the exact
 admitted agent ID; there is no alias, ambient-owner, or other-agent profile fallback.
-These server-owned settings are not returned by `talk.config` and are not client
-transport properties.
+These server-owned policies are not returned by `talk.config`. Session creation
+reports the effective media contract without allowing clients to override policy.
 
 ```json5
 {
@@ -249,6 +249,7 @@ transport properties.
           responseStreaming: "sentence",
           speakCommentary: true,
           echoSuppressionTailSeconds: 3,
+          inputEndMode: "server",
           sourceOverrides: [
             {
               source: {
@@ -257,6 +258,7 @@ transport properties.
                 senderId: "example-signed-device-id",
               },
               echoSuppressionTailSeconds: 0,
+              inputEndMode: "client",
             },
           ],
           agentOverrides: {
@@ -300,7 +302,16 @@ transport properties.
   non-negative fractional seconds up to `2147483.647` (the native timer range).
   Zero removes only this additional tail; estimated PCM playback remains protected.
   This does not enable barge-in or change isolated/full-duplex media policy.
-- `sourceOverrides`: override that tail for an exact native-verified
+- `inputEndMode`: Gateway STT/TTS relay input completion. `"server"` (default)
+  retains acoustic endpoint detection; `"client"` lets the capture client end
+  each input explicitly. Client mode requires the `input-end` device capability
+  and a transcription provider advertising `supportsClientInputEnd`; unsupported
+  combinations reject session startup without falling back. Every PCM chunk and
+  end marker must carry the same `captureId`. Pauses and bounded partial STT work
+  cannot finalize an input or start a model request before its explicit end.
+  The create result reports `audio.inputEndMode` and `audio.supportsInputEnd`.
+  Continuous Matrix speech retains its default server behavior.
+- `sourceOverrides`: override the tail and/or input-end mode for an exact native-verified
   `channelId` / `accountId` / `senderId` identity. Each triplet must be unique.
   Gateway paired-device admission supplies `gateway` / `paired-device` / the
   signed device ID. These fields cannot be claimed through `talk.session.create`.

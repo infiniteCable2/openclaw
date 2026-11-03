@@ -61,6 +61,8 @@ export type RealtimeTranscriptionSessionCreateRequest = RealtimeTranscriptionSes
   providerConfig: RealtimeTranscriptionProviderConfig;
   /** Host-selected wire format; absent means the legacy 8 kHz mu-law stream. */
   inputAudioFormat?: "g711-ulaw-8khz" | "pcm16-16khz";
+  /** Client mode admits a final transcript only at finishInput, never at silence. */
+  inputEndMode?: "server" | "client";
 };
 
 /** Runtime control surface for a realtime transcription session. */

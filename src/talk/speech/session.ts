@@ -97,6 +97,7 @@ export async function startSpeechSession(
     }
   };
   const transcriptionInput = createSpeechTranscriptionInput({
+    inputEndMode: params.config.inputEndMode,
     inputAudioFormat: params.config.inputAudioFormat ?? params.config.audioFormat,
     transcription: resolved,
     getSession: () => sttSession,
@@ -524,6 +525,7 @@ export async function startSpeechSession(
       cfg: params.fullConfig,
       providerConfig: resolved.providerConfig,
       inputAudioFormat: transcriptionInput.providerAudioFormat,
+      inputEndMode: params.config.inputEndMode ?? "server",
       onSpeechStart: () => {
         if (stopped) {
           return;
@@ -656,6 +658,9 @@ export async function startSpeechSession(
       },
     });
 
+    if (params.config.inputEndMode === "client" && !transcriptionInput.supportsInputEnd) {
+      throw new Error("Client-ended transcription session must implement finishInput");
+    }
     harness.emit({
       type: "session.started",
       payload: { sessionId: params.sessionId, provider: resolved.provider.id },

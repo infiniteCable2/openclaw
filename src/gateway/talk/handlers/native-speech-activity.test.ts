@@ -20,6 +20,85 @@ import {
 
 const capabilities = ["isolated-input", "output-gate", "activity-v1"];
 
+it.for(["client-missing", "provider-missing", "method-missing", "supported"] as const)(
+  "negotiates exclusive input completion: %s",
+  async (kind) => {
+    testState.config.talk = {
+      ...testState.config.talk,
+      speech: { agentProfiles: { voice: { inputEndMode: "client" } } },
+    };
+    const finish = vi.fn();
+    const hardware = installSyntheticSpeechHardware({
+      ...(kind === "method-missing" ? {} : { finishInput: finish }),
+    });
+    hardware.provider.supportsClientInputEnd = kind !== "provider-missing";
+    const selected = kind === "client-missing" ? capabilities : [...capabilities, "input-end"];
+    if (kind !== "supported") {
+      const response = await dispatch("talk.session.create", {
+        sessionKey: "main",
+        mode: "stt-tts",
+        transport: "gateway-relay",
+        brain: "agent-consult",
+        provider: "synthetic-transcription",
+        capabilities: selected,
+      });
+      expect(response.mock.calls[0]?.[0]).toBe(false);
+      expect(JSON.stringify(response.mock.calls)).toContain(
+        kind === "client-missing"
+          ? "input-end capability"
+          : kind === "provider-missing"
+            ? "does not support client input end"
+            : "must implement finishInput",
+      );
+      if (kind === "method-missing") {
+        expect(hardware.close).toHaveBeenCalledOnce();
+        expect(hardware.releaseStt).toHaveBeenCalledOnce();
+        expect(hardware.releaseTts).toHaveBeenCalledOnce();
+      } else {
+        expect(hardware.provider.prepareSession).not.toHaveBeenCalled();
+        expect(hardware.provider.createSession).not.toHaveBeenCalled();
+        expect(mocks.prepareSpeech).not.toHaveBeenCalled();
+      }
+      expect(mocks.runEmbeddedAgent).not.toHaveBeenCalled();
+      return;
+    }
+    const call = await createSpeechRelayCall({ capabilities: selected });
+    try {
+      expect(call.audio).toMatchObject({ inputEndMode: "client", supportsInputEnd: true });
+      expect(vi.mocked(hardware.provider.createSession).mock.calls[0]?.[0].inputEndMode).toBe(
+        "client",
+      );
+      await dispatch("talk.session.acknowledgeMark", {
+        sessionId: call.sessionId,
+        markName: call.readyMark,
+      });
+      const audioBase64 = Buffer.alloc(320, 1).toString("base64");
+      const rejected = await dispatch("talk.session.appendAudio", {
+        sessionId: call.sessionId,
+        audioBase64,
+      });
+      expect(rejected.mock.calls[0]?.[0]).toBe(false);
+      expect(hardware.input).not.toHaveBeenCalled();
+      await dispatch("talk.session.appendAudio", {
+        sessionId: call.sessionId,
+        captureId: "capture-a",
+        audioBase64,
+      });
+      expect(hardware.input).toHaveBeenCalledOnce();
+      await dispatch("talk.session.appendAudio", {
+        sessionId: call.sessionId,
+        captureId: "capture-a",
+        audioBase64: "",
+        endOfInput: true,
+      });
+      expect(finish).toHaveBeenCalledExactlyOnceWith({ captureId: "capture-a" });
+      expect(mocks.runEmbeddedAgent).not.toHaveBeenCalled();
+    } finally {
+      await dispatch("talk.session.close", { sessionId: call.sessionId });
+    }
+  },
+);
+
 function activityEvents() {
   return vi.mocked(context.broadcastToConnIds).mock.calls.flatMap(([, payload]) => {
     if (!isRecord(payload) || !isRecord(payload.talkEvent)) {

@@ -272,17 +272,19 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "talk.consultFastMode":
     "Use this to set true or false fast mode for the regular agent run behind Talk realtime consults.",
   "talk.speech":
-    "Server-processed speech presentation policy. These settings do not select an agent or grant session, tool, or device access.",
+    "Server-processed speech policy. These settings do not select an agent or grant session, tool, or device access.",
   "talk.speech.agentProfiles":
     "Policies keyed by exact admitted agent ID. Missing entries use normal speech behavior, never another agent's profile or the ambient Talk owner.",
   "talk.speech.agentProfiles.*":
-    "Streaming, spoken commentary, waiting audio and optional greeting for this exact agent's server-processed Talk sessions.",
+    "Input completion, streaming, spoken commentary, waiting audio and optional greeting for this exact agent's server-processed Talk sessions.",
   "talk.speech.agentProfiles.*.responseStreaming":
     'Speech synthesis delivery: "sentence" (default) produces incremental speech; "off" waits for the final response. Spoken commentary requires explicit "sentence".',
   "talk.speech.agentProfiles.*.speakCommentary":
     "Allows brief model progress statements to be synthesized between actions. Default: false. Requires responseStreaming=sentence; it does not expose reasoning text.",
   "talk.speech.agentProfiles.*.echoSuppressionTailSeconds":
     "Gateway STT/TTS relay input suppression after estimated output playback on nonisolated speech transports, in seconds (default: 3). Zero removes only the additional tail, not playback protection. Isolated/full-duplex media policy is unchanged.",
+  "talk.speech.agentProfiles.*.inputEndMode":
+    'Gateway STT/TTS relay input completion: "server" (default) uses acoustic endpoints; "client" finalizes only at explicit capture end. Client mode requires the device input-end capability, provider supportsClientInputEnd and captureId on every PCM/end request. Unsupported sessions reject startup without falling back.',
   "talk.speech.agentProfiles.*.sourceOverrides":
     "Optional exact verified-source overrides for this agent. Each channel/account/sender triplet must be unique; no wildcard, display-name, or client-supplied source matching. Unmatched or unavailable source identities use the agent's base setting.",
   "talk.speech.agentProfiles.*.sourceOverrides.*.source":
@@ -295,6 +297,8 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     "Exact native source sender ID, matched together with channelId and accountId.",
   "talk.speech.agentProfiles.*.sourceOverrides.*.echoSuppressionTailSeconds":
     "Additional nonisolated output echo-suppression tail in seconds for this exact verified source. Overrides the agent base setting; zero is supported. Does not change playback protection or grant full-duplex input.",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.inputEndMode":
+    'Input completion for this exact verified source, overriding the agent base setting. "client" requires device input-end capability, provider supportsClientInputEnd and captureId on every PCM/end request; "server" retains acoustic endpoints. This does not grant access or change continuous Matrix input.',
   "talk.speech.agentProfiles.*.waitingAudio":
     "Optional local waiting music prepared with speech readiness and played only while work is pending and no speech is playing.",
   "talk.speech.agentProfiles.*.waitingAudio.filePath":

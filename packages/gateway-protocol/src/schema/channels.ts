@@ -292,6 +292,7 @@ export const TalkSessionCreateParamsSchema = closedObject({
         Type.Literal("isolated-input"),
         Type.Literal("output-gate"),
         Type.Literal("activity-v1"),
+        Type.Literal("input-end"),
       ]),
       { uniqueItems: true },
     ),
