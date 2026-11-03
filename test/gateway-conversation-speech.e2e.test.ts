@@ -338,7 +338,15 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
               Promise.all([
                 turn.completion.promise,
                 turn.audioDone.promise,
-                ...(activity ? [turn.outcome.promise] : []),
+                ...(activity
+                  ? [
+                      turn.outcome.promise.then((outcome) =>
+                        expect(outcome).toMatchObject({
+                          payload: { scope: "capture", outcome: "transcribed" },
+                        }),
+                      ),
+                    ]
+                  : []),
               ]),
               signal,
             );
