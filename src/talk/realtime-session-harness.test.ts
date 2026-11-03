@@ -415,6 +415,142 @@ describe("realtime voice session harness", () => {
     });
   });
 
+  it("publishes half-duplex input availability at the extended native deadline without input", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const changed = vi.fn();
+    const harness = createHarness({
+      onInputAvailabilityChanged: changed,
+      echoSuppression: { bytesPerMs: 2, tailMs: 30, transcriptLookbackMs: 100 },
+    });
+    try {
+      expect(harness.isInputAudioAvailable()).toBe(true);
+      harness.recordOutputAudio(Buffer.alloc(20));
+      expect(changed.mock.calls).toEqual([[false]]);
+      expect(harness.recordInputAudio(Buffer.alloc(2))).toBe(false);
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(20);
+      harness.recordOutputAudio(Buffer.alloc(20));
+      harness.finishOutputAudio("completed");
+      harness.endTurn();
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(20); // The old expiry rechecks the extended deadline.
+      expect(harness.isInputAudioAvailable()).toBe(false);
+      expect(changed.mock.calls).toEqual([[false]]);
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(19);
+      expect(harness.recordInputAudio(Buffer.alloc(2))).toBe(false);
+      vi.advanceTimersByTime(1);
+      expect(changed.mock.calls).toEqual([[false], [true]]);
+      expect(harness.isInputAudioAvailable()).toBe(true);
+      expect(harness.recordInputAudio(Buffer.alloc(2))).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it("fences canceled and closed input-expiry callbacks without restoring stale readiness", () => {
+    vi.useFakeTimers();
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const changed = vi.fn();
+    const harness = createHarness({
+      onInputAvailabilityChanged: changed,
+      echoSuppression: { bytesPerMs: 2, tailMs: 30, transcriptLookbackMs: 100 },
+    });
+    try {
+      harness.recordOutputAudio(Buffer.alloc(20));
+      const canceled = timers.mock.calls.at(-1)?.[0];
+      harness.flushOutput(() => {});
+      expect(changed.mock.calls).toEqual([[false], [true]]);
+      expect(vi.getTimerCount()).toBe(0);
+      harness.recordOutputAudio(Buffer.alloc(20));
+      const closed = timers.mock.calls.at(-1)?.[0];
+      if (typeof canceled !== "function" || typeof closed !== "function") {
+        throw new Error("Expected native input-expiry callbacks");
+      }
+      canceled();
+      expect(harness.isInputAudioAvailable()).toBe(false);
+      expect(vi.getTimerCount()).toBe(1);
+      harness.close();
+      closed();
+      vi.advanceTimersByTime(1_000);
+      expect(harness.isInputAudioAvailable()).toBe(false);
+      expect(harness.recordInputAudio(Buffer.alloc(2))).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(changed.mock.calls).toEqual([[false], [true], [false]]);
+    } finally {
+      harness.close();
+      timers.mockRestore();
+    }
+  });
+
+  it("keeps full-duplex readiness true without an expiry timer and closes it once", () => {
+    vi.useFakeTimers();
+    const changed = vi.fn();
+    const harness = createHarness({
+      onInputAvailabilityChanged: changed,
+      echoSuppression: {
+        bytesPerMs: 2,
+        tailMs: 30,
+        transcriptLookbackMs: 100,
+        suppressInputDuringOutput: false,
+      },
+    });
+    try {
+      harness.recordOutputAudio(Buffer.alloc(20));
+      expect(harness.isInputAudioAvailable()).toBe(true);
+      expect(harness.recordInputAudio(Buffer.alloc(2))).toBe(true);
+      expect(changed).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      harness.close();
+      harness.close();
+      expect(changed.mock.calls).toEqual([[false]]);
+      expect(harness.isInputAudioAvailable()).toBe(false);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it("keeps readiness observations best-effort without changing PCM acceptance", () => {
+    vi.useFakeTimers();
+    const harness = createHarness({
+      onInputAvailabilityChanged() {
+        throw new Error("Unavailable telemetry sink");
+      },
+      echoSuppression: { bytesPerMs: 2, tailMs: 30, transcriptLookbackMs: 100 },
+    });
+    try {
+      expect(() => harness.recordOutputAudio(Buffer.alloc(20))).not.toThrow();
+      expect(harness.recordInputAudio(Buffer.alloc(2))).toBe(false);
+      expect(() => vi.advanceTimersByTime(40)).not.toThrow();
+      expect(harness.recordInputAudio(Buffer.alloc(2))).toBe(true);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it("does not rearm readiness or restore output when its observer flushes synchronously", () => {
+    vi.useFakeTimers();
+    const harness = createHarness({
+      onInputAvailabilityChanged(available) {
+        if (!available) {
+          harness.flushOutput(() => harness.outputActivity.reset());
+        }
+      },
+      echoSuppression: { bytesPerMs: 2, tailMs: 30, transcriptLookbackMs: 100 },
+    });
+    try {
+      harness.recordOutputAudio(Buffer.alloc(20));
+      expect(harness.isInputAudioAvailable()).toBe(true);
+      expect(harness.recordInputAudio(Buffer.alloc(2))).toBe(true);
+      expect(harness.outputActivity.snapshot().chunks).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      harness.close();
+    }
+  });
+
   it("delegates debounced talkback fragments through one consult", async () => {
     vi.useFakeTimers();
     const consult = vi.fn(async ({ question }: { question: string }) => ({

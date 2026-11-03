@@ -33,6 +33,7 @@ export function createSpeechActivity(params: {
 }) {
   let connection: "preparing" | "ready" | "closed" = "preparing";
   let closed = false;
+  let inputAvailable = false;
   let current: Capture | undefined;
   let previousSnapshot: string | undefined;
   let outputGeneration = 0;
@@ -100,6 +101,7 @@ export function createSpeechActivity(params: {
       connection,
       input: {
         phase,
+        available: connection === "ready" && inputAvailable,
         ...(current ? { captureId: current.id } : {}),
         ...(latest ? { utteranceId: latest.id } : {}),
         pending: utterances.size,
@@ -205,6 +207,12 @@ export function createSpeechActivity(params: {
         close();
       } else if (!closed && state !== connection) {
         connection = state;
+        publish();
+      }
+    },
+    inputAvailable: (available: boolean) => {
+      if (!closed && inputAvailable !== available) {
+        inputAvailable = available;
         publish();
       }
     },

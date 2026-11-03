@@ -33,6 +33,35 @@ function fixture() {
 }
 
 describe("native speech activity observation", () => {
+  it("projects media availability separately from connection, work and output state", () => {
+    const f = fixture();
+    f.activity.inputAvailable(true);
+    expect(f.snapshot()).toMatchObject({
+      payload: { connection: "preparing", input: { available: false } },
+    });
+    f.activity.connection("ready");
+    expect(f.snapshot()).toMatchObject({ payload: { input: { available: true } } });
+    f.activity.inputAvailable(false);
+    f.activity.output(1, "submitted", "speech");
+    expect(f.snapshot()).toMatchObject({
+      payload: { input: { available: false }, output: { state: "submitted" } },
+    });
+    const before = f.events.length;
+    f.activity.inputAvailable(false);
+    expect(f.events).toHaveLength(before);
+    f.activity.inputAvailable(true);
+    expect(f.events).toHaveLength(before + 1);
+    expect(f.snapshot()).toMatchObject({ payload: { input: { available: true } } });
+    f.activity.close();
+    expect(f.snapshot()).toMatchObject({
+      payload: { connection: "closed", input: { available: false } },
+    });
+    const closed = f.events.length;
+    f.activity.inputAvailable(true);
+    f.activity.connection("ready");
+    expect(f.events).toHaveLength(closed);
+  });
+
   it("starts without callbacks and forces initial publication while coalescing PCM observations", () => {
     const f = fixture();
     expect(f.events).toEqual([]);
@@ -43,7 +72,7 @@ describe("native speech activity observation", () => {
       payload: {
         version: 1,
         connection: "preparing",
-        input: { phase: "listening", pending: 0 },
+        input: { phase: "listening", available: false, pending: 0 },
         work: { pending: 0, queued: 0, running: 0 },
         output: { generation: 1, state: "idle" },
       },
@@ -81,7 +110,7 @@ describe("native speech activity observation", () => {
         payload: {
           version: 1,
           connection: "preparing",
-          input: { phase: "listening", captureId: "capture-empty", pending: 0 },
+          input: { phase: "listening", available: false, captureId: "capture-empty", pending: 0 },
           work: { pending: 0, queued: 0, running: 0 },
           output: { generation: 1, state: "idle" },
         },

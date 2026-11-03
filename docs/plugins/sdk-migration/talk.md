@@ -206,7 +206,7 @@ not initiate or cancel work. Output submission and `output.audio.done` do not
 prove that a client's hardware playback buffer has drained.
 
 Version-1 activity has `connection` (`preparing`, `ready`, `closed`), `input`
-(`phase`, optional `captureId`/`utteranceId`, and `pending`), `work`
+(`phase`, `available`, optional `captureId`/`utteranceId`, and `pending`), `work`
 (`pending`, `queued`, `running` counts), and `output` (`generation`, `state`,
 optional `purpose`). Input phases distinguish `listening`, `receiving`,
 `candidate`, `speech`, `transcribing`, and `unknown`: sustained acoustic energy
@@ -214,6 +214,16 @@ is still a candidate; only the provider's positive speech confirmation reports
 `speech`. Native work counters observe actual admission/run callbacks. Legacy
 Talkback consults remain `pending` through their existing delivery handoff;
 they do not manufacture native running IDs.
+
+`input.available` reports whether Core currently accepts PCM, independently of
+recognition, work, and output submission. A non-isolated input stays unavailable
+through estimated output playback and its echo-suppression tail. Core publishes
+availability changes when that window expires, even without another input or RPC.
+Before a connected follow-up, wait for both server availability and local playback
+drain. A client may retain captured audio in its existing bounded input queue;
+never infer readiness from `turn.ended` or add a guessed device delay. Availability
+does not replace the initial ready-mark acknowledgment or caller authorization.
+Older servers may omit this additive field; absence is not evidence of isolation.
 
 An input outcome has `scope: "capture" | "utterance"` and `outcome: "no-input" |
 "rejected" | "transcribed" | "failed" | "cancelled" | "unknown"`. Only the

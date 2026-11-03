@@ -256,6 +256,7 @@ export async function startSpeechSession(
   // Annotate the self-referencing harness; earlier closures run only after construction.
   const harness: RealtimeVoiceSessionHarness = createRealtimeVoiceSessionHarness({
     onTalkEvent: params.onTalkEvent,
+    onInputAvailabilityChanged: activity.inputAvailable,
     talk: {
       sessionId: params.sessionId,
       mode: "stt-tts",
@@ -687,6 +688,7 @@ export async function startSpeechSession(
     throw error;
   }
   realtimeReady = true;
+  activity.inputAvailable(harness.isInputAudioAvailable());
   activity.connection("ready");
   harness.emit({
     type: "session.ready",

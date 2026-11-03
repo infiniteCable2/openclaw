@@ -23,10 +23,15 @@ export default {
             chunks.push(Buffer.from(audio));
           },
           finishInput() {
+            const text = Buffer.concat(chunks).toString("utf8");
+            chunks = [];
+            if (!text.trim()) {
+              return { activity: "none" };
+            }
             const utteranceId = `offline-utterance-${++utterance}`;
             request.onSpeechActivity?.({ utteranceId, state: "candidate" });
-            request.onTranscript?.(Buffer.concat(chunks).toString("utf8"), { utteranceId });
-            chunks = [];
+            request.onTranscript?.(text, { utteranceId });
+            return { activity: "observed" };
           },
           close() {
             connected = false;

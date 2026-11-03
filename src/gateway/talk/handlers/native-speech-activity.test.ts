@@ -53,6 +53,10 @@ it.for(["none", "legacy"] as const)(
         markName: call.readyMark,
       });
       expect(activityEvents().some((event) => event.type === "session.activity")).toBe(true);
+      expect(activityEvents().at(-1)).toMatchObject({
+        type: "session.activity",
+        payload: { connection: "ready", input: { available: true } },
+      });
       expect(
         await dispatch("talk.session.appendAudio", {
           sessionId: call.sessionId,

@@ -123,6 +123,8 @@ export type RealtimeVoiceSessionHarness<TForcedConsultContext = unknown> = {
   /** Estimated PCM playout only; excludes the separate echo-suppression tail. */
   isOutputPlaybackActive(): boolean;
   isOutputPlaybackWindowActive(): boolean;
+  /** Media acceptance only; connection readiness and caller authority remain separate. */
+  isInputAudioAvailable(): boolean;
   recordInputAudio(audio: Buffer): boolean;
   recordOutputAudio(audio: Buffer, activity?: RealtimeVoiceOutputActivityDelta): void;
   recordTranscript(role: RealtimeVoiceRole, text: string): RealtimeVoiceTranscriptEntry;
@@ -132,6 +134,7 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
   talk: TalkSessionControllerParams;
   talkPayloads: RealtimeVoiceSessionHarnessTalkPayloads;
   onTalkEvent?: (event: TalkEvent) => void;
+  onInputAvailabilityChanged?: (available: boolean) => void;
   talkback?: Omit<RealtimeVoiceAgentTalkbackQueueParams, "isStopped">;
   forcedConsults?: RealtimeVoiceForcedConsultCoordinatorOptions;
   echoSuppression?: RealtimeVoiceSessionHarnessEchoSuppression;
@@ -148,6 +151,45 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
   let suppressedInputBytes = 0;
   let suppressInputUntilMs = 0;
   let lastOutputPlayableUntilMs = 0;
+  let inputAvailable = true;
+  let inputExpiry: ReturnType<typeof setTimeout> | undefined;
+  const isInputAudioAvailable = () =>
+    !closed &&
+    (!params.echoSuppression ||
+      params.echoSuppression.suppressInputDuringOutput === false ||
+      Date.now() >= suppressInputUntilMs);
+  const clearInputExpiry = () => {
+    if (inputExpiry !== undefined) {
+      clearTimeout(inputExpiry);
+      inputExpiry = undefined;
+    }
+  };
+  const updateInputAvailability = () => {
+    const available = isInputAudioAvailable();
+    if (available !== inputAvailable) {
+      inputAvailable = available;
+      try {
+        params.onInputAvailabilityChanged?.(available);
+      } catch {
+        // Readiness observation cannot admit input or fail audio delivery.
+      }
+    }
+    if (closed || isInputAudioAvailable()) {
+      clearInputExpiry();
+    } else if (params.onInputAvailabilityChanged && inputExpiry === undefined) {
+      // Output may extend the deadline while this one timer is armed. Recheck
+      // its exact current deadline on expiry instead of polling or per-frame timers.
+      const timer = setTimeout(() => {
+        if (inputExpiry !== timer || closed) {
+          return;
+        }
+        inputExpiry = undefined;
+        updateInputAvailability();
+      }, suppressInputUntilMs - Date.now());
+      inputExpiry = timer;
+      timer.unref();
+    }
+  };
   let outputFlushGeneration = 0;
   let responseOwnerTurnId: string | undefined;
   let responseOwnerId: string | undefined;
@@ -287,7 +329,11 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
     outputFlushGeneration += 1;
     suppressInputUntilMs = 0;
     lastOutputPlayableUntilMs = 0;
-    flush();
+    try {
+      flush();
+    } finally {
+      updateInputAvailability();
+    }
   };
 
   const harness: RealtimeVoiceSessionHarness<TForcedConsultContext> = {
@@ -301,6 +347,8 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
         return;
       }
       closed = true;
+      clearInputExpiry();
+      updateInputAvailability();
       talkback?.close();
       forcedConsults.clear();
       responseOwnerTurnId = undefined;
@@ -394,6 +442,7 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
         return;
       }
       suppressInputUntilMs = 0;
+      updateInputAvailability();
       const flushGeneration = outputFlushGeneration;
       bridge?.handleBargeIn(options);
       if (flushGeneration === outputFlushGeneration) {
@@ -415,13 +464,13 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
     isOutputPlaybackActive() {
       return Date.now() < lastOutputPlayableUntilMs;
     },
+    isInputAudioAvailable,
     recordInputAudio(audio) {
-      if (
-        params.echoSuppression?.suppressInputDuringOutput !== false &&
-        Date.now() < suppressInputUntilMs
-      ) {
-        lastSuppressedInputAt = new Date().toISOString();
-        suppressedInputBytes += audio.byteLength;
+      if (!isInputAudioAvailable()) {
+        if (!closed) {
+          lastSuppressedInputAt = new Date().toISOString();
+          suppressedInputBytes += audio.byteLength;
+        }
         return false;
       }
       lastInputAt = new Date().toISOString();
@@ -459,6 +508,10 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
         sinkAudioBytes: activity.sinkAudioBytes ?? audio.byteLength,
       });
       lastOutputAt = new Date().toISOString();
+      updateInputAvailability();
+      if (closed || flushGeneration !== outputFlushGeneration) {
+        return;
+      }
       const turnId = ensureTurn();
       if (closed || flushGeneration !== outputFlushGeneration) {
         return;

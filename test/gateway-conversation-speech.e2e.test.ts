@@ -123,6 +123,8 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
       let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
       const sessions = new Set<string>();
       const events: Array<Record<string, unknown>> = [];
+      const inputAvailability = new Map<string, boolean>();
+      const inputWaiters = new Map<string, ReturnType<typeof createDeferred<void>>>();
       const expectedSpeech: Array<{ input: string; reply: string }> = [];
       let pendingTurn:
         | {
@@ -170,6 +172,30 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
                 return;
               }
               events.push(payload);
+              if (typeof payload.sessionId === "string" && isRecord(payload.talkEvent)) {
+                const event = payload.talkEvent;
+                if (
+                  event.type === "session.activity" &&
+                  isRecord(event.payload) &&
+                  isRecord(event.payload.input) &&
+                  typeof event.payload.input.available === "boolean"
+                ) {
+                  inputAvailability.set(payload.sessionId, event.payload.input.available);
+                  if (event.payload.input.available) {
+                    inputWaiters.get(payload.sessionId)?.resolve();
+                  }
+                } else if (
+                  event.type === "session.error" ||
+                  event.type === "session.closed" ||
+                  event.type === "session.replaced"
+                ) {
+                  inputWaiters
+                    .get(payload.sessionId)
+                    ?.reject(
+                      new Error(`Talk closed before input readiness: ${JSON.stringify(event)}`),
+                    );
+                }
+              }
               const turn = pendingTurn;
               if (!turn || payload.sessionId !== turn.sessionId) {
                 return;
@@ -302,6 +328,16 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           const sessionId = ownsTransport ? await create() : existingSessionId;
           if (!sessionId) {
             throw new Error("Talk transport was not opened");
+          }
+          if (activity && inputAvailability.get(sessionId) !== true) {
+            phase = `speech-${index}:input-readiness`;
+            const ready = createDeferred<void>();
+            inputWaiters.set(sessionId, ready);
+            try {
+              await withinTest(ready.promise, signal);
+            } finally {
+              inputWaiters.delete(sessionId);
+            }
           }
           phase = `speech-${index}`;
           const before = model.requests.length;
