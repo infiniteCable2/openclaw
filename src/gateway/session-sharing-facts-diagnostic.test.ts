@@ -70,17 +70,25 @@ it("keeps failed diagnostics observational and preserves native error wrapping",
 });
 
 it("keeps publication invalidation silent even if a process stack formatter throws", () => {
-  const previous = Error.prepareStackTrace;
+  const previous = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace");
   try {
-    Error.prepareStackTrace = () => {
-      throw new Error("stack formatter unavailable");
-    };
+    Object.defineProperty(Error, "prepareStackTrace", {
+      configurable: true,
+      writable: true,
+      value: () => {
+        throw new Error("stack formatter unavailable");
+      },
+    });
     expect(captureSessionFactsInvalidation("session-identity")).toEqual({
       reason: "session-identity",
       origins: [],
     });
   } finally {
-    Error.prepareStackTrace = previous;
+    if (previous) {
+      Object.defineProperty(Error, "prepareStackTrace", previous);
+    } else {
+      Reflect.deleteProperty(Error, "prepareStackTrace");
+    }
   }
 });
 

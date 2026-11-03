@@ -148,3 +148,11 @@ export function reportSessionFactsFailure(error: unknown, phase: "prepare" | "re
   }
   return failure;
 }
+
+export function withSessionFactsFailureDiagnostic<T>(phase: "prepare" | "read", read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    throw reportSessionFactsFailure(error, phase);
+  }
+}

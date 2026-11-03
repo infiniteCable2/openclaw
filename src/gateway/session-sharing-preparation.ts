@@ -46,6 +46,7 @@ import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent
 import {
   captureSessionFactsInvalidation,
   reportSessionFactsFailure,
+  withSessionFactsFailureDiagnostic,
   type SessionFactsInvalidation,
 } from "./session-sharing-facts-diagnostic.js";
 import {
@@ -676,8 +677,8 @@ export async function prepareSessionMutationFacts(
       };
     }
     let prepared = false;
-    const readCurrent = (cfg: OpenClawConfig) => {
-      try {
+    const readCurrent = (cfg: OpenClawConfig) =>
+      withSessionFactsFailureDiagnostic(prepared ? "read" : "prepare", () => {
         assertActive();
         assertRoutingCurrent(cfg);
         const currentIdentity = resolveSessionStoreIdentity({ ...params, cfg });
@@ -694,10 +695,7 @@ export async function prepareSessionMutationFacts(
           });
         }
         return readFacts();
-      } catch (error) {
-        throw reportSessionFactsFailure(error, prepared ? "read" : "prepare");
-      }
-    };
+      });
     readCurrent(params.cfg);
     prepared = true;
     const bindCreation = (operation: SessionEntryCreationOperation) => {
