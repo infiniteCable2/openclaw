@@ -1,9 +1,10 @@
 import "../config/sessions/session-entry-patch-delivery.test-support.js";
 import { isMainThread } from "node:worker_threads";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import { createConversationKnowledgePrefetchOwner } from "../auto-reply/reply/conversation-knowledge-prefetch-owner.js";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { readPreparedSessionSharingChange } from "../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
 import { readExactSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
@@ -46,6 +47,141 @@ import { createTalkOperatorRunSource } from "./talk/operator-run-source.js";
 const { getSessionEntryPatchDelivery } =
   await import("../config/sessions/session-entry-patch-delivery.test-support.js");
 const delivery = getSessionEntryPatchDelivery();
+
+it("resumes deferred native sharing reads on COMMIT publication without another input", async ({
+  signal,
+}) => {
+  expect(isMainThread).toBe(true);
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const storePath = state.statePath("prefetch-publication.sqlite");
+    const cfg = { agents: { entries: { main: {} } }, session: { store: storePath } };
+    await state.writeConfig(cfg);
+    setRuntimeConfigSnapshot(cfg);
+    const target = {
+      agentId: "main",
+      sessionKey: "agent:main:prefetch-publication",
+      storePath,
+      env: state.env,
+    };
+    const entry = {
+      sessionId: "prefetch-conversation",
+      lifecycleRevision: "prefetch-generation",
+      activeWriterRunId: "previous-writer",
+      updatedAt: 1,
+      chatType: "direct" as const,
+      visibility: "draft" as const,
+    };
+    replaceSessionEntrySync(target, entry);
+    const facts = await prepareSessionMutationFacts({ cfg, ...target });
+    const read = async () => facts.readCurrent(cfg).target?.entry.activeWriterRunId;
+    let pendingRead: ReturnType<typeof read> | undefined;
+    let deferredFailure: unknown;
+    let current = true;
+    let cleared = 0;
+    const prepared: Array<{ writer: string | undefined; sources: boolean | undefined }> = [];
+    const owner = createConversationKnowledgePrefetchOwner({
+      target: {
+        ...target,
+        sessionId: entry.sessionId,
+        root: { sessionKey: "agent:main:root", sessionId: "root", lifecycleRevision: "root-life" },
+      },
+      assertCurrent() {
+        // The retained principal is independent of a particular input's facts.
+        if (!current) {
+          throw new Error("Original prefetch principal revoked");
+        }
+      },
+      async prepare(_signal, sources) {
+        const admittedRead = pendingRead;
+        pendingRead = undefined;
+        try {
+          prepared.push({ writer: await (admittedRead ?? read()), sources });
+        } catch (error) {
+          deferredFailure = error;
+          throw error;
+        }
+      },
+      clear() {
+        cleared++;
+      },
+    });
+    const committed = createDeferredCore();
+    const releaseDelivery = createDeferredCore();
+    let commitGrants = 0;
+    const probe = sqliteWorkerOwnerProbe.admission(admission, (request, grant, admit) => {
+      if (request.stage !== "commit") {
+        admit(request, grant);
+        return;
+      }
+      admit(request, (beforeRelease) => {
+        commitGrants++;
+        // Capture the real synchronous guard rejection while the native writer
+        // is pending. Its async delivery can outlive this grant's call stack.
+        pendingRead = read();
+        void pendingRead.catch(() => {});
+        owner.request();
+        return grant(beforeRelease);
+      });
+    });
+    delivery.afterCommit = async () => {
+      committed.resolve();
+      await releaseDelivery.promise;
+    };
+    let mutation: Promise<unknown> | undefined;
+    try {
+      await withinTest(owner.wait(), signal);
+      expect(prepared).toEqual([{ writer: "previous-writer", sources: true }]);
+      // Keep native work real; control only the owner's retry delay so this case
+      // proves the COMMIT wakeup, rather than accidentally passing on its timer.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      mutation = applySessionEntryOperation(
+        target,
+        {
+          kind: "fields",
+          expected: { sessionId: entry.sessionId, lifecycleRevision: entry.lifecycleRevision },
+          patch: { activeWriterRunId: "next-writer" },
+        },
+        { skipMaintenance: true },
+      );
+      void mutation.catch(() => {});
+      await withinTest(
+        awaitGateBeforeSettlement(committed.promise, mutation, "Patch missed the COMMIT gate"),
+        signal,
+      );
+      await withinTest(owner.wait(), signal);
+      expect(commitGrants).toBe(1);
+      expect(deferredFailure).toBeInstanceOf(SessionMutationFactsUnavailableError);
+      expect(prepared).toHaveLength(1);
+      expect(cleared).toBe(0);
+      expect(() => owner.assertCurrent()).not.toThrow();
+      expect(await read()).toBe("next-writer");
+
+      // No user input or explicit request: the real writer's ordinary row
+      // publication must cancel backoff and resume the same retained owner.
+      releaseDelivery.resolve();
+      await withinTest(mutation, signal);
+      await withinTest(owner.wait(), signal);
+      expect(prepared).toEqual([
+        { writer: "previous-writer", sources: true },
+        { writer: "next-writer", sources: true },
+      ]);
+      expect(cleared).toBe(0);
+      current = false;
+      expect(() => owner.assertCurrent()).toThrow("Original prefetch principal revoked");
+    } finally {
+      releaseDelivery.resolve();
+      try {
+        await mutation;
+      } finally {
+        await owner.close();
+        vi.useRealTimers();
+        probe.mockRestore();
+        delivery.afterCommit = undefined;
+        facts.release();
+      }
+    }
+  });
+});
 
 it("retains the real Talk principal after normal input release and still observes profile revocation", async () => {
   expect(isMainThread).toBe(true);
