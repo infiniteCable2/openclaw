@@ -185,6 +185,9 @@ export async function preparePersonalConversationReadInternal(
     );
   }
   const audienceIdentity = conversationKnowledgeParticipantIdentity(participant);
+  if (!audienceIdentity) {
+    throw new PersonalConversationReadRefusedError("Personal source lacks an admitted audience");
+  }
   const rootValidation = contributions.length
     ? await import("../config/sessions/conversation-knowledge-store.js")
     : undefined;
@@ -646,6 +649,7 @@ export async function preparePersonalConversationReadInternal(
           reference: admitted,
           target,
           source: grantSource,
+          audienceIdentity,
           range: {
             origin: admitted.origin,
             originalLifecycleRevision: admitted.source.lifecycleRevision,

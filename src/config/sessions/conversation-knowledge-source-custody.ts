@@ -21,6 +21,7 @@ const custody = new WeakMap<
     reference: ConversationKnowledgeReference;
     target: ConversationKnowledgeBranch;
     source: SessionSourceAssertion;
+    audienceIdentity: string;
   }
 >();
 
@@ -30,6 +31,7 @@ export function issuePersonalConversationContributionRange(params: {
   reference: ConversationKnowledgeReference;
   target: ConversationKnowledgeBranch;
   source: SessionSourceAssertion;
+  audienceIdentity: string;
 }): PersonalConversationContributionRange {
   const range = Object.freeze({
     ...params.range,
@@ -40,6 +42,7 @@ export function issuePersonalConversationContributionRange(params: {
     reference: structuredClone(params.reference),
     target: structuredClone(params.target),
     source: params.source,
+    audienceIdentity: params.audienceIdentity,
   });
   return range;
 }
@@ -59,5 +62,9 @@ export function readPersonalConversationContributionCustody(params: {
     throw new SessionTranscriptReadFenceError("Knowledge packet contribution custody changed");
   }
   held.source();
-  return { lifecycleRevision: params.proof.currentLifecycleRevision, source: held.source };
+  return {
+    lifecycleRevision: params.proof.currentLifecycleRevision,
+    source: held.source,
+    audienceIdentity: held.audienceIdentity,
+  };
 }

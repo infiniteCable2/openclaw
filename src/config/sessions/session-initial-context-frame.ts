@@ -266,7 +266,7 @@ export async function prepareConversationKnowledgeInitialFrame(
         claim.reference,
       );
       const range = params.ranges[index]!;
-      readPersonalConversationContributionCustody({
+      const custody = readPersonalConversationContributionCustody({
         proof: range,
         reference: claim.reference,
         target: context.projection.branch,
@@ -277,9 +277,7 @@ export async function prepareConversationKnowledgeInitialFrame(
         (!isDeepStrictEqual(range.from, claim.from) && "from") ||
         (!source.checks.some((check) => isDeepStrictEqual(check.predicate, claim.predicate)) &&
           "predicate") ||
-        (conversationKnowledgeParticipantIdentity(claim.reference.privateAudience?.participant) !==
-          identity &&
-          "audience");
+        (custody.audienceIdentity !== identity && "audience");
       if (changed) {
         throw new Error(`Initial root frame changed an authorized original range (${changed})`);
       }

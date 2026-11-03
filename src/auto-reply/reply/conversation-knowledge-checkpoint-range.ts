@@ -116,6 +116,7 @@ export async function validateCheckpointCachedPackets(params: {
 /** Native read owners record exact range custody separately from disposable hydration. */
 export function createCheckpointRangeRecorder(params: {
   branch: ConversationKnowledgeBranch;
+  audienceIdentity: string;
   check: () => void;
   proofs: SessionSourceAssertion[];
 }) {
@@ -184,6 +185,7 @@ export function createCheckpointRangeRecorder(params: {
       reference,
       target: params.branch,
       source: composeSessionSourceAssertion([params.check, nativeAuthority]),
+      audienceIdentity: params.audienceIdentity,
       range: {
         origin: reference.origin,
         originalLifecycleRevision: reference.source.lifecycleRevision,

@@ -139,6 +139,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   const check = () => custody();
   const { record: recordVersionProof, nativeRanges } = createCheckpointRangeRecorder({
     branch,
+    audienceIdentity: audienceKey,
     check,
     proofs,
   });

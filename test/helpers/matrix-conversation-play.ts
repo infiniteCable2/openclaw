@@ -44,6 +44,21 @@ export async function playMatrixConversation(params: {
   const mark = (phase: string) =>
     phases.push({ phase, elapsedMs: Math.round(performance.now() - started) });
   try {
+    const beforeSeed = model.requests.length;
+    const seed = await sibling.call<{ runId: string }>("chat.send", {
+      sessionKey: "agent:main:matrix-linked-fresh-after-restart",
+      message: "Verify the shared context in this fresh conversation.",
+      deliver: false,
+      idempotencyKey: "matrix-linked-fresh-seed",
+    });
+    expect(
+      await sibling.call("agent.wait", { runId: seed.runId, timeoutMs: 30_000 }),
+    ).toMatchObject({ status: "ok" });
+    expect(model.requests).toHaveLength(beforeSeed + 1);
+    const seedText = strings(model.requests[beforeSeed]!.input).join("\n");
+    expect(seedText.split("CURRENT_MATRIX_FULL_PAYLOAD_1")).toHaveLength(2);
+    expect(seedText.split("SYNTHETIC_MATRIX_SIBLING_COBALT_47")).toHaveLength(2);
+    mark("fresh-branch-seeded-from-restored-root");
     const reply = matrix.nextSend();
     void reply.catch(() => {});
     matrix.push(intent, 5);

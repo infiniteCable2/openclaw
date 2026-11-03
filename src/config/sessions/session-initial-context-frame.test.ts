@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
 import type { PreparedConversationBranchCreation } from "./conversation-branch-creation.js";
 import { issuePersonalConversationContributionRange } from "./conversation-knowledge-source-custody.js";
 import type {
@@ -17,6 +18,7 @@ import {
   type PreparedConversationKnowledgeInitialFrame,
 } from "./session-initial-context-frame.js";
 import { assertInitialSessionContextReadSource } from "./session-initial-context.js";
+import type { SessionParticipantIdentity } from "./session-participant-identity.js";
 import {
   prepareSessionSourceAuthority,
   type SessionSourcePredicate,
@@ -39,8 +41,19 @@ vi.mock("./conversation-branch-creation.js", () => ({
 
 beforeEach(() => vi.clearAllMocks());
 
-function fixture() {
+function fixture(
+  options: {
+    originalParticipant?: SessionParticipantIdentity;
+    admittedParticipant?: SessionParticipantIdentity;
+  } = {},
+) {
   const participant = { type: "profile" as const, id: "person-example" };
+  const audienceIdentity = conversationKnowledgeParticipantIdentity(
+    options.admittedParticipant ?? participant,
+  );
+  if (!audienceIdentity) {
+    throw new Error("Synthetic frame requires an admitted personal audience");
+  }
   const branch: ConversationKnowledgeBranch = {
     agentId: "example",
     storePath: "/synthetic/frame.sqlite",
@@ -91,7 +104,10 @@ function fixture() {
     source: branch,
     origin: conversationKnowledgeOrigin(branch, "utterance-observation"),
     through,
-    privateAudience: { participant, admission: through },
+    privateAudience: {
+      participant: options.originalParticipant ?? participant,
+      admission: through,
+    },
   };
   const version = { generation: "donor-generation", rawSeq: 1, updatedAt: 1 };
   const predicate: SessionSourcePredicate = {
@@ -145,6 +161,7 @@ function fixture() {
     reference,
     target: branch,
     source,
+    audienceIdentity,
     range: {
       origin: reference.origin,
       originalLifecycleRevision: branch.lifecycleRevision,
@@ -286,6 +303,36 @@ it("borrows independently for two destinations without preparing donor authority
   expect(() => second.source()).not.toThrow();
   await frame.release();
   await frame.release();
+  expect(f.release).toHaveBeenCalledOnce();
+});
+
+it("preserves remote provenance while borrowing its natively admitted profile frame", async () => {
+  const f = fixture({
+    originalParticipant: {
+      type: "remote",
+      pluginId: "matrix",
+      domain: "matrix",
+      idKind: "user-id",
+      id: "@alex:example.test",
+    },
+  });
+  const original = structuredClone(f.params.context.projection.claims[0]!.reference);
+  const frame = await prepareConversationKnowledgeInitialFrame(f.params);
+  const borrowed = await borrowPreparedConversationKnowledgeInitialFrame({
+    frame,
+    ...f.destination("linked"),
+  });
+  expect(borrowed.context.projection.claims[0]!.reference).toEqual(original);
+  f.revoke();
+  expect(() => borrowed.source()).toThrow("Original broker revoked");
+  await frame.release();
+});
+
+it("refuses a range admitted to a different audience even when raw provenance matches", async () => {
+  const f = fixture({ admittedParticipant: { type: "profile", id: "another-person" } });
+  await expect(prepareConversationKnowledgeInitialFrame(f.params)).rejects.toThrow(
+    "Initial root frame changed an authorized original range (audience)",
+  );
   expect(f.release).toHaveBeenCalledOnce();
 });
 
