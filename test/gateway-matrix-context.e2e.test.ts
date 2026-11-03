@@ -8,6 +8,10 @@ import {
 } from "../src/auto-reply/envelope.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
+import { closeOpenClawStateDatabaseByPathAsync } from "../src/state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../src/state/openclaw-state-db.paths.js";
+import { setUserProfileRole } from "../src/state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../src/state/user-profiles.js";
 import { acquireTestPortBlock } from "../src/test-utils/port-claims.js";
 import {
   BRANCH_GATEWAY_ORIGIN,
@@ -15,6 +19,7 @@ import {
   connectConversationOperator,
   isolateConversationGatewayEnvironment,
   startConversationModel,
+  waitForConversationTransfer,
 } from "./helpers/conversation-branches-gateway.js";
 import {
   createOpenClawTestInstance,
@@ -23,6 +28,7 @@ import {
 import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
 
 type Model = Awaited<ReturnType<typeof startConversationModel>>;
+type Operator = Awaited<ReturnType<typeof connectConversationOperator>>;
 
 function config(model: Model, mode: "native" | "branches" = "native"): OpenClawConfig {
   const provider = buildMockOpenAiResponsesProvider(model.baseUrl, "bidirectional-proof");
@@ -91,6 +97,9 @@ function config(model: Model, mode: "native" | "branches" = "native"): OpenClawC
 const ROOM = "!synthetic-context:example.test";
 const BOT = "@assistant:example.test";
 const HUMAN = "@alex:example.test";
+const PERSON_EMAIL = "matrix-person@example.test";
+const SIBLING_CODE = "SYNTHETIC_MATRIX_SIBLING_COBALT_47";
+const MATRIX_KEY = `agent:main:matrix:channel:${ROOM}`;
 
 async function homeserver(signal: AbortSignal) {
   const claim = await acquireTestPortBlock({ offsets: [0], signal });
@@ -362,6 +371,7 @@ it.for(["native", "branches"] as const)(
     let gateway: OpenClawTestInstance | undefined;
     let model: Model | undefined;
     let matrix: Awaited<ReturnType<typeof homeserver>> | undefined;
+    let sibling: Operator | undefined;
     const reportFailure = (error: unknown): never => {
       process.stderr.write(
         JSON.stringify({
@@ -379,6 +389,17 @@ it.for(["native", "branches"] as const)(
         model = await startConversationModel(signal);
         matrix = await homeserver(signal);
         const selected = config(model, initialMode);
+        if (initialMode === "branches") {
+          selected.gateway!.roles!.definitions.provisioner = {
+            sessions: { others: "view" },
+            agents: "*",
+            scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
+          };
+          selected.gateway!.auth!.trustedProxy!.deviceAutoApprove!.scopes = [
+            ...BRANCH_GATEWAY_SCOPES,
+            "operator.admin",
+          ];
+        }
         selected.channels = {
           matrix: {
             enabled: true,
@@ -414,13 +435,87 @@ it.for(["native", "branches"] as const)(
           },
         });
         isolateConversationGatewayEnvironment(gateway);
+        let personId: string | undefined;
+        if (initialMode === "branches") {
+          // Native isolated-state bootstrap gives only this synthetic profile
+          // administration rights; the actual sibling uses read/write only.
+          const person = ensureProfileForEmail(PERSON_EMAIL, { env: gateway.env });
+          personId = person.id;
+          setUserProfileRole(person.id, "provisioner", { env: gateway.env });
+          await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(gateway.env));
+        }
         await gateway.startGateway();
         await vi.waitFor(() => expect(matrix!.syncCount).toBeGreaterThan(0), {
           timeout: 30_000,
           interval: 50,
         });
+        if (personId) {
+          const provisioner = await connectConversationOperator(gateway, PERSON_EMAIL, signal, {
+            scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
+          });
+          try {
+            await provisioner.call("users.linkChannelIdentity", {
+              profileId: personId,
+              identity: { channelId: "matrix", accountId: "default", senderId: HUMAN },
+            });
+          } finally {
+            await provisioner.close();
+          }
+          sibling = await connectConversationOperator(gateway, PERSON_EMAIL, signal);
+          expect(await sibling.call("users.self", {})).toMatchObject({ profile: { id: personId } });
+        }
         const reports = [];
         for (const index of [1, 2, 3, 4]) {
+          if (index === 2 && sibling) {
+            const requestCount = model.requests.length;
+            const started = performance.now();
+            const sourceKey = "agent:main:matrix-linked-sibling";
+            const run = await sibling.call<{ runId: string }>("chat.send", {
+              sessionKey: sourceKey,
+              message: `Remember the exact shared code ${SIBLING_CODE}.`,
+              deliver: false,
+              idempotencyKey: "matrix-linked-sibling-first",
+            });
+            expect(
+              await sibling.call("agent.wait", { runId: run.runId, timeoutMs: 30_000 }),
+            ).toMatchObject({
+              status: "ok",
+            });
+            expect(model.requests).toHaveLength(requestCount + 1);
+            const describe = async (key: string) =>
+              sibling!.call<{ session: { sessionId: string } }>("sessions.describe", { key });
+            const [source, recipient] = await Promise.all([
+              describe(sourceKey),
+              describe(MATRIX_KEY),
+            ]);
+            const history = await sibling.call<{
+              messages: Array<{
+                role: string;
+                content: unknown;
+                __openclaw?: { transcriptPosition?: { rawSeq?: number } };
+              }>;
+            }>("chat.history", { sessionKey: sourceKey, limit: 100 });
+            const sequence = history.messages.find(
+              (message) =>
+                message.role === "user" &&
+                strings(message.content).join("\n").includes(SIBLING_CODE),
+            )?.["__openclaw"]?.transcriptPosition?.rawSeq;
+            if (typeof sequence !== "number") {
+              throw new Error("Native sibling source sequence is unavailable");
+            }
+            await waitForConversationTransfer(gateway, signal, {
+              recipientId: recipient.session.sessionId,
+              sourceId: source.session.sessionId,
+              sequence,
+            });
+            expect(model.requests).toHaveLength(requestCount + 1);
+            console.info(
+              JSON.stringify({
+                fixture: "matrix-linked-idle-admission",
+                elapsedMs: Math.round(performance.now() - started),
+              }),
+            );
+          }
           if (index === 3) {
             if (initialMode === "branches") {
               await vi.waitFor(
@@ -433,12 +528,17 @@ it.for(["native", "branches"] as const)(
             }
             const readyOwners = preparedFrameOwners(gateway);
             const modelRequests = model.requests.length;
+            await sibling?.close();
+            sibling = undefined;
             await gateway.stopGateway();
             selected.agents!.entries!.main!.conversationMode = "branches";
             await gateway.state.writeConfig(selected);
             const previousSyncs = matrix.syncCount;
             matrix.beginConnection();
             await gateway.startGateway();
+            if (personId) {
+              sibling = await connectConversationOperator(gateway, PERSON_EMAIL, signal);
+            }
             await vi.waitFor(() => expect(matrix!.syncCount).toBeGreaterThan(previousSyncs), {
               timeout: 30_000,
               interval: 50,
@@ -484,6 +584,9 @@ it.for(["native", "branches"] as const)(
           expect(matrix.sends[index - 1]).toContain("FIXTURE_REPLY_" + (before + 1));
           const input = model.requests[before]!;
           const text = strings([input.instructions, input.input]).join("\n");
+          if (initialMode === "branches" && index >= 2) {
+            expect(text.split(SIBLING_CODE)).toHaveLength(2);
+          }
           const items = Array.isArray(input.input) ? input.input : [];
           const carriers = items.filter((item) => {
             // This provider projects trusted runtime additions as system items.
@@ -565,6 +668,7 @@ it.for(["native", "branches"] as const)(
           }
         }
       },
+      () => sibling?.close(),
       () => gateway?.cleanup(),
       () => matrix?.stop(),
       () => model?.stop(),

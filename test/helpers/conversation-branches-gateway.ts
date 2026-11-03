@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { WebSocket } from "ws";
 import { buildDeviceAuthPayloadV3 } from "../../packages/gateway-client/src/device-auth.js";
 import { rawDataToString } from "../../packages/gateway-client/src/websocket-data.js";
@@ -285,4 +286,67 @@ export function isolateConversationGatewayEnvironment(gateway: OpenClawTestInsta
   gateway.env.HOME = gateway.homeDir;
   gateway.env.USERPROFILE = gateway.homeDir;
   gateway.env.CODEX_HOME = path.join(gateway.homeDir, "empty-codex-home");
+}
+
+/** Observe a committed native admission without polling or starting another turn. */
+export function waitForConversationTransfer(
+  gateway: OpenClawTestInstance,
+  signal: AbortSignal,
+  expected: { recipientId: string; sourceId: string; sequence: number },
+) {
+  const child = gateway.child;
+  if (!child) {
+    throw new Error("Conversation transfer observer requires the running fixture Gateway");
+  }
+  const recipient = redactIdentifier(expected.recipientId);
+  const source = redactIdentifier(expected.sourceId);
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+  return new Promise<void>((resolve, reject) => {
+    const finish = (error?: Error) => {
+      child.stdout.off("data", inspect);
+      child.stderr.off("data", inspect);
+      child.off("exit", exited);
+      deadline.removeEventListener("abort", aborted);
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    const inspect = () => {
+      const admitted = gateway
+        .logs()
+        .split("\n")
+        .map((line) => line.replaceAll('\\"', '"'))
+        .some(
+          (line) =>
+            line.includes("Conversation knowledge transfer") &&
+            line.includes(recipient) &&
+            line.includes(source) &&
+            /"phase"\s*:\s*"admitted"/u.test(line) &&
+            /"complete"\s*:\s*true/u.test(line) &&
+            Number(/"throughSeq"\s*:\s*(\d+)/u.exec(line)?.[1] ?? -1) >= expected.sequence,
+        );
+      if (admitted) {
+        finish();
+      }
+    };
+    const exited = () =>
+      finish(new Error("Gateway exited before idle conversation context admission"));
+    const aborted = () =>
+      finish(
+        new Error("idle conversation context admission did not settle", {
+          cause: deadline.reason,
+        }),
+      );
+    child.stdout.on("data", inspect);
+    child.stderr.on("data", inspect);
+    child.once("exit", exited);
+    deadline.addEventListener("abort", aborted, { once: true });
+    if (deadline.aborted) {
+      aborted();
+    } else {
+      inspect();
+    }
+  });
 }
