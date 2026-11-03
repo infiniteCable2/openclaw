@@ -28,9 +28,9 @@ it.for(["client-missing", "provider-missing", "method-missing", "supported"] as 
       speech: { agentProfiles: { voice: { inputEndMode: "client" } } },
     };
     const finish = vi.fn();
-    const hardware = installSyntheticSpeechHardware({
-      ...(kind === "method-missing" ? {} : { finishInput: finish }),
-    });
+    const hardware = installSyntheticSpeechHardware(
+      kind === "method-missing" ? {} : { finishInput: finish },
+    );
     hardware.provider.supportsClientInputEnd = kind !== "provider-missing";
     const selected = kind === "client-missing" ? capabilities : [...capabilities, "input-end"];
     if (kind !== "supported") {
