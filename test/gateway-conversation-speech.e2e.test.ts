@@ -193,7 +193,9 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
               }
               if (
                 payload.talkEvent.type === "input.outcome" &&
-                payload.talkEvent.captureId === turn.captureId
+                payload.talkEvent.captureId === turn.captureId &&
+                isRecord(payload.talkEvent.payload) &&
+                payload.talkEvent.payload.scope === "capture"
               ) {
                 turn.outcome.resolve(payload.talkEvent);
               }
