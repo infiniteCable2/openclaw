@@ -123,7 +123,9 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
       let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
       const sessions = new Set<string>();
       const events: Array<Record<string, unknown>> = [];
-      let pendingTurn: ReturnType<typeof createDeferred<void>> | undefined;
+      let pendingTurn:
+        | { sessionId: string; completion: ReturnType<typeof createDeferred<void>> }
+        | undefined;
       try {
         await gateway.startGateway();
         const connect = () =>
@@ -134,13 +136,16 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
                 return;
               }
               events.push(payload);
-              if (isRecord(payload.talkEvent) && payload.talkEvent.type === "session.error") {
-                pendingTurn?.reject(
+              if (payload.sessionId !== pendingTurn?.sessionId || !isRecord(payload.talkEvent)) {
+                return;
+              }
+              if (payload.talkEvent.type === "session.error") {
+                pendingTurn?.completion.reject(
                   new Error(`Actual Talk failure: ${JSON.stringify(payload.talkEvent)}`),
                 );
               }
-              if (isRecord(payload.talkEvent) && payload.talkEvent.type === "turn.ended") {
-                pendingTurn?.resolve();
+              if (payload.talkEvent.type === "turn.ended") {
+                pendingTurn?.completion.resolve();
               }
             },
           });
@@ -212,9 +217,11 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
           }
           phase = `speech-${index}`;
           const before = model.requests.length;
-          const audioBefore = events.filter((e) => e.type === "audio").length;
-          pendingTurn = createDeferred();
-          void pendingTurn.promise.catch(() => {});
+          const audioCount = () =>
+            events.filter((e) => e.type === "audio" && e.sessionId === sessionId).length;
+          const audioBefore = audioCount();
+          pendingTurn = { sessionId, completion: createDeferred() };
+          void pendingTurn.completion.promise.catch(() => {});
           const started = performance.now();
           const captureId = randomUUID();
           try {
@@ -229,10 +236,10 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
               ...(ownsTransport ? { captureId } : {}),
               endOfInput: true,
             });
-            await withinTest(pendingTurn.promise, signal);
+            await withinTest(pendingTurn.completion.promise, signal);
             pendingTurn = undefined;
             expect(model.requests).toHaveLength(before + 1);
-            expect(events.filter((e) => e.type === "audio").length).toBeGreaterThan(audioBefore);
+            expect(audioCount()).toBeGreaterThan(audioBefore);
             if (ownsTransport) {
               expect(events).toContainEqual(
                 expect.objectContaining({
@@ -253,6 +260,9 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
             });
             return JSON.stringify(model.requests[before]);
           } finally {
+            if (pendingTurn?.sessionId === sessionId) {
+              pendingTurn = undefined;
+            }
             if (ownsTransport) {
               await closeTalk(sessionId);
             }

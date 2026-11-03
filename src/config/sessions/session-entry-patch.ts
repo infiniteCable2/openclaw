@@ -216,6 +216,7 @@ export async function runSessionEntryWorkerOperation<
   let transferred = false;
   let settlement: {
     candidate?: Candidate;
+    nativePublication?: Promise<void>;
     admitted?: {
       admission: SqliteWorkerOperationAdmission;
       retained: RetainedWorkerTransactionAdmission;
@@ -280,6 +281,13 @@ export async function runSessionEntryWorkerOperation<
           let publishedResult: { value: Result } | undefined;
           try {
             const failures: unknown[] = [];
+            try {
+              if (settlement.nativePublication) {
+                await settlement.nativePublication;
+              }
+            } catch (error) {
+              failures.push(error);
+            }
             try {
               if (committed) {
                 params.onAcknowledged?.(committed);
@@ -366,6 +374,19 @@ export async function runSessionEntryWorkerOperation<
           receipt.generationUnchangedKeys,
           receipt.transcriptPublication,
         );
+        const nativePublication = retained.settled.then(() => {
+          if (
+            admission.settlement?.kind === "completed" &&
+            matchesReceipt(admission.committed?.facts)
+          ) {
+            // Private facts follow the exact native COMMIT, not delayed result
+            // delivery. Public observers retain their existing settlement order.
+            publication?.installCommittedFacts(receipt);
+          }
+        });
+        settlement.nativePublication = nativePublication;
+        // The executing owner joins and reports failures before releasing custody.
+        void nativePublication.catch(() => {});
       }
     },
     params.retainedExecution,
