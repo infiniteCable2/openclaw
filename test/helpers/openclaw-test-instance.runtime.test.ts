@@ -1,10 +1,39 @@
-import { realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
-import { createOpenClawTestInstance, type OpenClawTestInstance } from "./openclaw-test-instance.js";
+import {
+  createOpenClawTestInstance,
+  type OpenClawTestInstance,
+  testing,
+} from "./openclaw-test-instance.js";
 
 const instances = new Set<OpenClawTestInstance>();
+
+it("refuses a relative installed root without attempting source preparation", async () => {
+  await expect(testing.resolveInstalledGatewayEntrypoint("relative-package")).rejects.toThrow(
+    "must be absolute",
+  );
+});
+
+it.each(["index.js", "index.mjs"])(
+  "selects installed %s without source build stamps",
+  async (name) => {
+    const root = await mkdtemp(path.join(tmpdir(), "openclaw-installed-entrypoint-"));
+    try {
+      await expect(testing.resolveInstalledGatewayEntrypoint(root)).rejects.toThrow(
+        "no compiled entrypoint",
+      );
+      await mkdir(path.join(root, "dist"));
+      const file = path.join(root, "dist", name);
+      await writeFile(file, "export {};\n");
+      expect(await testing.resolveInstalledGatewayEntrypoint(root)).toEqual([file]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 afterEach(async () => {
   for (const instance of instances) {

@@ -295,6 +295,19 @@ async function resolveGatewayEntrypoint(cwd: string): Promise<string[]> {
   return await promise;
 }
 
+async function resolveInstalledGatewayEntrypoint(root: string): Promise<string[]> {
+  if (!path.isAbsolute(root)) {
+    throw new Error("The selected installed Gateway root must be absolute");
+  }
+  for (const entry of ["dist/index.js", "dist/index.mjs"]) {
+    const file = path.join(root, entry);
+    if ((await fs.stat(file).catch(() => undefined))?.isFile()) {
+      return [file];
+    }
+  }
+  throw new Error("The selected installed Gateway has no compiled entrypoint");
+}
+
 async function reserveGatewayPort(
   port: number,
   verifyCleanup?: OpenClawTestInstanceOptions["verifyCleanup"],
@@ -848,7 +861,13 @@ function createInstanceEnv(params: {
 export async function createOpenClawTestInstance(
   options: OpenClawTestInstanceOptions,
 ): Promise<OpenClawTestInstance> {
-  const cwd = options.cwd ?? process.cwd();
+  // Explicit caller launch options keep their source/runtime selection. An
+  // installed package has no source build stamps and must never trigger a build.
+  const installedRoot =
+    options.cwd === undefined && options.entrypoint === undefined
+      ? process.env.OPENCLAW_E2E_INSTALLED_PACKAGE_ROOT
+      : undefined;
+  const cwd = options.cwd ?? installedRoot ?? process.cwd();
   const signal = options.signal;
   const verifyCleanup = options.verifyCleanup ?? ((cleanup: () => Promise<void>) => cleanup());
   let acceptingWork = !signal?.aborted;
@@ -859,7 +878,11 @@ export async function createOpenClawTestInstance(
     signal?.throwIfAborted();
     // Shared preparation remains joined for every borrower; one instance's
     // cancellation only refuses its own handoff and subsequent spawn.
-    const prepared = options.entrypoint ?? (await resolveGatewayEntrypoint(cwd));
+    const prepared =
+      options.entrypoint ??
+      (installedRoot !== undefined
+        ? await resolveInstalledGatewayEntrypoint(installedRoot)
+        : await resolveGatewayEntrypoint(cwd));
     signal?.throwIfAborted();
     return prepared;
   };
@@ -1386,6 +1409,7 @@ export const testing = {
   createBoundedStringLog,
   formatLogs,
   isGatewayMigrationConvergenceRefusal,
+  resolveInstalledGatewayEntrypoint,
   stopGatewayProcess,
   waitForGatewayReady,
 };
