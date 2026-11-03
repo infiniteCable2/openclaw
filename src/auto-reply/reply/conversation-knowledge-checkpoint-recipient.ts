@@ -29,11 +29,9 @@ import { SessionMutationFactsUnavailableError } from "../../gateway/session-shar
 import { preparePersonalConversationContributionGroup } from "../../gateway/session-transcript-personal-read.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
 import type { PreparedConversationKnowledgeRootCheckpoint } from "./conversation-knowledge-checkpoint-owner.js";
-import type {
-  ConversationKnowledgeSourceCache,
-  PreparedConversationKnowledgePacket,
-} from "./conversation-knowledge-source-cache.js";
+import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
 import type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-source-cache.types.js";
+import { checkpointReadCustody } from "./conversation-knowledge-source-custody.js";
 import {
   readConversationKnowledgeInputs,
   prepareConversationKnowledgeTarget,
@@ -46,55 +44,6 @@ import type {
 } from "./conversation-knowledge.types.js";
 
 export type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-source-cache.types.js";
-
-function checkpointReadCustody(releaseTarget: () => void, cache: ConversationKnowledgeSourceCache) {
-  const reads: ConversationKnowledgeHeldSource[] = [];
-  let targetReleased = false;
-  let active = true;
-  const drop = (read: ConversationKnowledgeHeldSource) => {
-    const index = reads.indexOf(read);
-    if (index < 0) {
-      return;
-    }
-    read.grant.release();
-    reads.splice(index, 1);
-  };
-  const release = () => {
-    if (!active) {
-      return;
-    }
-    const errors: unknown[] = [];
-    for (const read of reads.toReversed()) {
-      try {
-        drop(read);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (!targetReleased) {
-      try {
-        releaseTarget();
-        targetReleased = true;
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (errors.length) {
-      cache.retainCleanup(release);
-      throw new AggregateError(errors, "Checkpoint recipient custody cleanup remains pending");
-    }
-    active = false;
-    cache.forgetCleanup(release);
-  };
-  return {
-    reads,
-    drop,
-    release,
-    get active() {
-      return active;
-    },
-  };
-}
 
 /** Reuse ready original bytes with recipient-owned native custody and durable progress. */
 export async function prepareRecipientConversationProjection(
