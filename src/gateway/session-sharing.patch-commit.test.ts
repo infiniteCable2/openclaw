@@ -45,7 +45,7 @@ it.for(["continuous", "membership-revoked", "reset"] as const)(
         lifecycleRevision: "same-generation",
         activeWriterRunId: "previous-writer",
         updatedAt: 1,
-        visibility: "draft" as const,
+        visibility: "read-only" as const,
         createdActor: { type: "human" as const, source: "profile" as const, id: "owner" },
       };
       replaceSessionEntrySync(target, entry);
