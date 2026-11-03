@@ -271,15 +271,17 @@ export async function prepareConversationKnowledgeInitialFrame(
         reference: claim.reference,
         target: context.projection.branch,
       });
-      if (
-        !isDeepStrictEqual(range.version, claim.version) ||
-        !isDeepStrictEqual(range.through, claim.through) ||
-        !isDeepStrictEqual(range.from, claim.from) ||
-        !source.checks.some((check) => isDeepStrictEqual(check.predicate, claim.predicate)) ||
-        conversationKnowledgeParticipantIdentity(claim.reference.privateAudience?.participant) !==
-          identity
-      ) {
-        throw new Error("Initial root frame changed an authorized original range");
+      const changed =
+        (!isDeepStrictEqual(range.version, claim.version) && "version") ||
+        (!isDeepStrictEqual(range.through, claim.through) && "through") ||
+        (!isDeepStrictEqual(range.from, claim.from) && "from") ||
+        (!source.checks.some((check) => isDeepStrictEqual(check.predicate, claim.predicate)) &&
+          "predicate") ||
+        (conversationKnowledgeParticipantIdentity(claim.reference.privateAudience?.participant) !==
+          identity &&
+          "audience");
+      if (changed) {
+        throw new Error(`Initial root frame changed an authorized original range (${changed})`);
       }
     }
     const claims = new Map(
