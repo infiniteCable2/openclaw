@@ -455,23 +455,25 @@ it.for(["native", "branches"] as const)(
           interval: 50,
         });
         if (personId) {
-          const provisioner = await connectConversationOperator(gateway, PERSON_EMAIL, signal, {
-            scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
-          });
-          try {
-            await provisioner.call("users.linkChannelIdentity", {
-              profileId: personId,
-              identity: { channelId: "matrix", accountId: "default", senderId: HUMAN },
-            });
-          } finally {
-            await provisioner.close();
-          }
           sibling = await connectConversationOperator(gateway, PERSON_EMAIL, signal);
           expect(await sibling.call("users.self", {})).toMatchObject({ profile: { id: personId } });
         }
         const reports = [];
         for (const index of [1, 2, 3, 4]) {
           if (index === 2 && sibling) {
+            // The first real Matrix turn predates linking. The same existing
+            // branch and remote roster must adopt current native person access.
+            const provisioner = await connectConversationOperator(gateway, PERSON_EMAIL, signal, {
+              scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
+            });
+            try {
+              await provisioner.call("users.linkChannelIdentity", {
+                profileId: personId,
+                identity: { channelId: "matrix", accountId: "default", senderId: HUMAN },
+              });
+            } finally {
+              await provisioner.close();
+            }
             const requestCount = model.requests.length;
             const started = performance.now();
             const sourceKey = "agent:main:matrix-linked-sibling";
