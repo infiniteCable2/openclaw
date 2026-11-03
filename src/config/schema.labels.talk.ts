@@ -11,6 +11,15 @@ export const TALK_FIELD_LABELS: Record<string, string> = {
   "talk.speech.agentProfiles.*": "Talk Speech Agent Profile",
   "talk.speech.agentProfiles.*.responseStreaming": "Speech Response Streaming",
   "talk.speech.agentProfiles.*.speakCommentary": "Spoken Commentary",
+  "talk.speech.agentProfiles.*.echoSuppressionTailSeconds":
+    "Output Echo Suppression Tail (seconds)",
+  "talk.speech.agentProfiles.*.sourceOverrides": "Verified Speech Source Overrides",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.source": "Exact Verified Source Identity",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.source.channelId": "Source Channel ID",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.source.accountId": "Source Account ID",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.source.senderId": "Source Sender ID",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.echoSuppressionTailSeconds":
+    "Source Echo Suppression Tail (seconds)",
   "talk.speech.agentProfiles.*.waitingAudio": "Waiting Audio",
   "talk.speech.agentProfiles.*.waitingAudio.filePath": "Waiting Audio WAV File",
   "talk.speech.agentProfiles.*.waitingAudio.startDelayMs": "Waiting Audio Start Delay (ms)",

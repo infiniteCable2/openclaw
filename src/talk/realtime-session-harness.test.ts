@@ -450,6 +450,33 @@ describe("realtime voice session harness", () => {
     }
   });
 
+  it("bounds the existing expiry timer when queued PCM extends a maximum tail", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const changed = vi.fn();
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    const maximumDelay = 2_147_483_647;
+    const harness = createHarness({
+      onInputAvailabilityChanged: changed,
+      echoSuppression: { bytesPerMs: 2, tailMs: maximumDelay, transcriptLookbackMs: 100 },
+    });
+    try {
+      harness.recordOutputAudio(Buffer.alloc(20));
+      expect(timer).toHaveBeenLastCalledWith(expect.any(Function), maximumDelay);
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(maximumDelay);
+      expect(changed.mock.calls).toEqual([[false]]);
+      expect(timer).toHaveBeenLastCalledWith(expect.any(Function), 10);
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(10);
+      expect(changed.mock.calls).toEqual([[false], [true]]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      harness.close();
+      timer.mockRestore();
+    }
+  });
+
   it("fences canceled and closed input-expiry callbacks without restoring stale readiness", () => {
     vi.useFakeTimers();
     const timers = vi.spyOn(globalThis, "setTimeout");

@@ -1,4 +1,6 @@
+import { Value } from "typebox/value";
 import { z } from "zod";
+import { UserChannelIdentitySchema } from "../../packages/gateway-protocol/src/schema/users.js";
 import { ALL_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import type { SpeechWaitingAudioConfig } from "../talk/speech/waiting-audio.js";
@@ -59,10 +61,47 @@ const TalkSpeechAgentOverridesSchema = z.strictObject({
   ),
 });
 
+const TalkSpeechSourceIdentitySchema = z
+  .strictObject({ channelId: z.string(), accountId: z.string(), senderId: z.string() })
+  .refine((source) => Value.Check(UserChannelIdentitySchema, source), {
+    message: "Speech source must be an exact native channel identity",
+  });
+
+// Native timers accept signed 32-bit millisecond delays. The harness also
+// clamps each wait because queued PCM adds its own playback duration.
+const TalkSpeechEchoSuppressionTailSchema = z
+  .number()
+  .min(0)
+  .max(2_147_483_647 / 1_000);
+
+const TalkSpeechSourceOverridesSchema = z
+  .array(
+    z.strictObject({
+      source: TalkSpeechSourceIdentitySchema,
+      echoSuppressionTailSeconds: TalkSpeechEchoSuppressionTailSchema,
+    }),
+  )
+  .superRefine((overrides, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, { source }] of overrides.entries()) {
+      const key = JSON.stringify([source.channelId, source.accountId, source.senderId]);
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: [index, "source"],
+          message: "Speech source overrides must have distinct exact channel identities",
+        });
+      }
+      seen.add(key);
+    }
+  });
+
 const TalkSpeechAgentProfileSchema = z
   .strictObject({
     responseStreaming: z.enum(["off", "sentence"]).optional(),
     speakCommentary: z.boolean().optional(),
+    echoSuppressionTailSeconds: TalkSpeechEchoSuppressionTailSchema.optional(),
+    sourceOverrides: TalkSpeechSourceOverridesSchema.optional(),
     video: SpeechVideoSchema.optional(),
     agentOverrides: TalkSpeechAgentOverridesSchema.optional(),
     expression: z

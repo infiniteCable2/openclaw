@@ -22,7 +22,11 @@ describe("admitted-agent Talk speech policy", () => {
         },
         "reader",
       ),
-    ).toEqual({ responseStreaming: "sentence", speakCommentary: false });
+    ).toEqual({
+      responseStreaming: "sentence",
+      speakCommentary: false,
+      echoSuppressionTailSeconds: 3,
+    });
   });
 
   const config: OpenClawConfig = {
@@ -52,6 +56,7 @@ describe("admitted-agent Talk speech policy", () => {
     expect(resolveTalkSpeechAgentProfile(config, "reader")).toEqual({
       responseStreaming: "sentence",
       speakCommentary: true,
+      echoSuppressionTailSeconds: 3,
       waitingAudio: { filePath: "/tmp/wait.wav", startDelayMs: 0, volume: 0.2 },
       greeting: {
         enabled: true,
@@ -64,6 +69,7 @@ describe("admitted-agent Talk speech policy", () => {
     expect(resolveTalkSpeechAgentProfile(config, "writer")).toEqual({
       responseStreaming: "off",
       speakCommentary: false,
+      echoSuppressionTailSeconds: 3,
     });
   });
 
@@ -73,6 +79,7 @@ describe("admitted-agent Talk speech policy", () => {
       expect(resolveTalkSpeechAgentProfile(config, agentId)).toEqual({
         responseStreaming: "sentence",
         speakCommentary: false,
+        echoSuppressionTailSeconds: 3,
       });
     },
   );
@@ -90,6 +97,7 @@ describe("admitted-agent Talk speech policy", () => {
     expect(resolveTalkSpeechAgentProfile(inherited, "reader")).toEqual({
       responseStreaming: "sentence",
       speakCommentary: false,
+      echoSuppressionTailSeconds: 3,
     });
   });
 
@@ -102,5 +110,44 @@ describe("admitted-agent Talk speech policy", () => {
     expect(result.greeting?.prompt).toContain("time of day");
     expect(result.greeting).not.toHaveProperty("timeZone");
     expect(resolveTalkSpeechAgentProfile({}, "reader")).not.toHaveProperty("greeting");
+  });
+
+  it("uses only an exact verified source override and preserves zero", () => {
+    const source = { channelId: "gateway", accountId: "paired-device", senderId: "device-a" };
+    const configured: OpenClawConfig = {
+      talk: {
+        speech: {
+          agentProfiles: {
+            reader: {
+              echoSuppressionTailSeconds: 1.25,
+              sourceOverrides: [{ source, echoSuppressionTailSeconds: 0 }],
+            },
+          },
+        },
+      },
+    };
+    expect(
+      resolveTalkSpeechAgentProfile(configured, "reader", source).echoSuppressionTailSeconds,
+    ).toBe(0);
+    for (const other of [
+      undefined,
+      { ...source, channelId: "webchat" },
+      { ...source, accountId: "other-account" },
+      { ...source, senderId: "device-b" },
+      { ...source, senderId: "Device-a" },
+    ]) {
+      expect(
+        resolveTalkSpeechAgentProfile(configured, "reader", other).echoSuppressionTailSeconds,
+      ).toBe(1.25);
+    }
+    expect(
+      resolveTalkSpeechAgentProfile(configured, "writer", source).echoSuppressionTailSeconds,
+    ).toBe(3);
+    expect(
+      resolveTalkSpeechAgentProfile(
+        { talk: { speech: { agentProfiles: { reader: { echoSuppressionTailSeconds: 0 } } } } },
+        "reader",
+      ).echoSuppressionTailSeconds,
+    ).toBe(0);
   });
 });

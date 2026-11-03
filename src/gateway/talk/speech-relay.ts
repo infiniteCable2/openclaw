@@ -8,6 +8,7 @@ import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import type { RealtimeTranscriptionProviderPlugin } from "../../plugins/types.js";
 import type { RealtimeTranscriptionProviderConfig } from "../../realtime-transcription/provider-types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import type { UserChannelIdentity } from "../../state/user-profiles.types.js";
 import { resolveRealtimeVoiceAgentControlIntent } from "../../talk/agent-run-control-shared.js";
 import { createClientVoiceConfirmationReadiness } from "../../talk/client-voice-confirmation-readiness.js";
 import { releaseConversationInputAdmission } from "../../talk/conversation-input-admission.js";
@@ -63,6 +64,7 @@ export async function createTalkSpeechRelaySession(params: {
   captureOperatorAuthority?: TalkOperatorRunSource;
   callerId?: string;
   participant?: SessionParticipantIdentity;
+  verifiedSource?: Readonly<UserChannelIdentity>;
   provider: RealtimeTranscriptionProviderPlugin;
   providerConfig: RealtimeTranscriptionProviderConfig;
   capabilities?: readonly ("voice-selection" | "isolated-input" | "output-gate" | "activity-v1")[];
@@ -82,7 +84,11 @@ export async function createTalkSpeechRelaySession(params: {
     throw new Error(talkSpeech.error);
   }
   const speechConfig = talkSpeech?.cfg ?? params.cfg;
-  const profile = resolveTalkSpeechAgentProfile(params.cfg, params.sessionTarget.agentId);
+  const profile = resolveTalkSpeechAgentProfile(
+    params.cfg,
+    params.sessionTarget.agentId,
+    params.verifiedSource,
+  );
   const id = randomUUID();
   const expiresAtMs = Date.now() + SESSION_TTL_MS;
   const readyMark = `media-ready:${randomUUID()}`;
@@ -517,6 +523,7 @@ export async function createTalkSpeechRelaySession(params: {
     transcriptionProvider: params.provider.id,
     providers: { [params.provider.id]: params.providerConfig },
     responseStreaming: profile.responseStreaming,
+    echoSuppressionTailSeconds: profile.echoSuppressionTailSeconds,
     ...(profile.waitingAudio ? { waitingAudio: profile.waitingAudio } : {}),
   };
   const nativeInput = createNativeSpeechConfirmation({

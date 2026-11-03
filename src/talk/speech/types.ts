@@ -100,6 +100,8 @@ export type SpeechSessionConfig = {
   provider?: string;
   providers: Record<string, Record<string, unknown>>;
   responseStreaming?: "off" | "sentence";
+  /** Additional suppression after estimated nonisolated output playback; default 3 seconds. */
+  echoSuppressionTailSeconds?: number;
   waitingAudio?: SpeechWaitingAudioConfig;
   video?: import("../../config/zod-schema.media-frames.js").SpeechVideoConfig;
 };

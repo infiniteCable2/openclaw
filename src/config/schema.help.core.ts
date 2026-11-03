@@ -281,6 +281,20 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     'Speech synthesis delivery: "sentence" (default) produces incremental speech; "off" waits for the final response. Spoken commentary requires explicit "sentence".',
   "talk.speech.agentProfiles.*.speakCommentary":
     "Allows brief model progress statements to be synthesized between actions. Default: false. Requires responseStreaming=sentence; it does not expose reasoning text.",
+  "talk.speech.agentProfiles.*.echoSuppressionTailSeconds":
+    "Gateway STT/TTS relay input suppression after estimated output playback on nonisolated speech transports, in seconds (default: 3). Zero removes only the additional tail, not playback protection. Isolated/full-duplex media policy is unchanged.",
+  "talk.speech.agentProfiles.*.sourceOverrides":
+    "Optional exact verified-source overrides for this agent. Each channel/account/sender triplet must be unique; no wildcard, display-name, or client-supplied source matching. Unmatched or unavailable source identities use the agent's base setting.",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.source":
+    "Exact source identity supplied by native admission, not a routing hint or access grant. Gateway paired devices use channelId=gateway, accountId=paired-device, senderId equal to their signed device ID.",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.source.channelId":
+    "Exact native source channel ID; case and surrounding whitespace are not normalized.",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.source.accountId":
+    "Exact native source account ID, matched together with channelId and senderId.",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.source.senderId":
+    "Exact native source sender ID, matched together with channelId and accountId.",
+  "talk.speech.agentProfiles.*.sourceOverrides.*.echoSuppressionTailSeconds":
+    "Additional nonisolated output echo-suppression tail in seconds for this exact verified source. Overrides the agent base setting; zero is supported. Does not change playback protection or grant full-duplex input.",
   "talk.speech.agentProfiles.*.waitingAudio":
     "Optional local waiting music prepared with speech readiness and played only while work is pending and no speech is playing.",
   "talk.speech.agentProfiles.*.waitingAudio.filePath":

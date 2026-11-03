@@ -179,13 +179,16 @@ export function createRealtimeVoiceSessionHarness<TForcedConsultContext = unknow
     } else if (params.onInputAvailabilityChanged && inputExpiry === undefined) {
       // Output may extend the deadline while this one timer is armed. Recheck
       // its exact current deadline on expiry instead of polling or per-frame timers.
-      const timer = setTimeout(() => {
-        if (inputExpiry !== timer || closed) {
-          return;
-        }
-        inputExpiry = undefined;
-        updateInputAvailability();
-      }, suppressInputUntilMs - Date.now());
+      const timer = setTimeout(
+        () => {
+          if (inputExpiry !== timer || closed) {
+            return;
+          }
+          inputExpiry = undefined;
+          updateInputAvailability();
+        },
+        Math.min(2_147_483_647, suppressInputUntilMs - Date.now()),
+      );
       inputExpiry = timer;
       timer.unref();
     }

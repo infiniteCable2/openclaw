@@ -248,6 +248,17 @@ transport properties.
         reader: {
           responseStreaming: "sentence",
           speakCommentary: true,
+          echoSuppressionTailSeconds: 3,
+          sourceOverrides: [
+            {
+              source: {
+                channelId: "gateway",
+                accountId: "paired-device",
+                senderId: "example-signed-device-id",
+              },
+              echoSuppressionTailSeconds: 0,
+            },
+          ],
           agentOverrides: {
             channels: {
               matrix: {
@@ -284,6 +295,18 @@ transport properties.
 - `speakCommentary`: allows brief spoken progress statements; default `false`.
   Enabling it requires explicitly setting `responseStreaming: "sentence"`.
   This is model commentary, not reasoning visibility.
+- `echoSuppressionTailSeconds`: Gateway STT/TTS relay input suppression after estimated
+  output playback on nonisolated transports, in seconds; default `3`. Accepts
+  non-negative fractional seconds up to `2147483.647` (the native timer range).
+  Zero removes only this additional tail; estimated PCM playback remains protected.
+  This does not enable barge-in or change isolated/full-duplex media policy.
+- `sourceOverrides`: override that tail for an exact native-verified
+  `channelId` / `accountId` / `senderId` identity. Each triplet must be unique.
+  Gateway paired-device admission supplies `gateway` / `paired-device` / the
+  signed device ID. These fields cannot be claimed through `talk.session.create`.
+  Missing or unmatched identities, including ordinary browser sessions, retain
+  the agent base setting. No display-name, device-family, or wildcard matching
+  is performed. This policy never grants access or replaces source revocation checks.
 - `waitingAudio`: optional Gateway-readable PCM16 mono WAV. `startDelayMs` is
   required and non-negative; `resumeDelayMs` defaults to `800` when omitted.
   `volume` is a required amplitude multiplier from `0` to `1`. Music plays only

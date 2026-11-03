@@ -283,7 +283,9 @@ export async function startSpeechSession(
       ? undefined
       : {
           bytesPerMs: speechOutputBytesPerMs(params.config.audioFormat),
-          tailMs: SPEECH_OUTPUT_ECHO_SUPPRESSION_TAIL_MS,
+          tailMs:
+            (params.config.echoSuppressionTailSeconds ??
+              SPEECH_OUTPUT_ECHO_SUPPRESSION_TAIL_MS / 1_000) * 1_000,
           transcriptLookbackMs: SPEECH_TRANSCRIPT_ECHO_LOOKBACK_MS,
           suppressInputDuringOutput: params.transport.supportsFullDuplexInput !== true,
         },

@@ -22,6 +22,7 @@ import {
   rememberUnifiedTalkSession,
 } from "../../../talk/session-registry.js";
 import { ADMIN_SCOPE, hasGatewayAdminScope } from "../../operator-scopes.js";
+import { readGatewayPairedDeviceProfileBinding } from "../../paired-device-profile.js";
 import { gatewayClientSenderFields } from "../../server-methods/gateway-client-identity.js";
 import type { GatewayRequestHandlers, RespondFn } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
@@ -273,6 +274,8 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           assertCurrent();
           const { createTalkSpeechRelaySession } = await loadSpeechRelay();
           assertCurrent();
+          const pairedSource = readGatewayPairedDeviceProfileBinding(client);
+          pairedSource?.authority.assertCurrent();
           const session = await createTalkSpeechRelaySession({
             context,
             connId,
@@ -282,6 +285,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
             callerId: gatewayClientSenderFields(client).sender?.id ?? undefined,
             participant: resolveGatewayInputParticipant(client),
+            verifiedSource: pairedSource?.identity,
             provider: resolution.provider,
             providerConfig: resolution.providerConfig,
             capabilities: params.capabilities,

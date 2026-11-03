@@ -6,6 +6,7 @@ import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.j
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
+import { attachGatewayPairedDeviceProfileBinding } from "../../paired-device-profile.js";
 import {
   context,
   mocks,
@@ -28,6 +29,94 @@ function activityEvents() {
     return event.type === "input.outcome" || event.type === "session.activity" ? [event] : [];
   });
 }
+
+it.for(["exact-source", "other-source", "unbound-browser"] as const)(
+  "native speech resolves the %s tail and retains estimated PCM protection",
+  async (kind, { signal }) => {
+    const source = { channelId: "gateway", accountId: "paired-device", senderId: "device-a" };
+    testState.config.talk = {
+      ...testState.config.talk,
+      speech: {
+        agentProfiles: {
+          voice: {
+            greeting: { enabled: true, timeZone: "UTC" },
+            sourceOverrides: [{ source, echoSuppressionTailSeconds: 0 }],
+          },
+        },
+      },
+    };
+    if (kind !== "unbound-browser") {
+      const profileId = testState.client.authenticatedUserId;
+      if (!profileId) {
+        throw new Error("Expected the fixture's existing admitted user");
+      }
+      // Exercise native source projection, not signed-credential authentication:
+      // this fixture already owns its admitted person and connection authority.
+      attachGatewayPairedDeviceProfileBinding(testState.client, {
+        identity: kind === "exact-source" ? source : { ...source, senderId: "device-b" },
+        profileId,
+        isCurrent: () => true,
+        authority: { assertCurrent() {}, signal: new AbortController().signal },
+      });
+    }
+    const hardware = installSyntheticSpeechHardware();
+    mocks.runEmbeddedAgent.mockImplementation(async (params) =>
+      publishNativeSpeechModelRun(params, async () => ({
+        payloads: [{ text: "Hello, synthetic caller." }],
+        meta: { durationMs: 0 },
+      })),
+    );
+    const ended = createDeferredCore();
+    void ended.promise.catch(() => {});
+    vi.mocked(context.broadcastToConnIds).mockImplementation((_name, payload) => {
+      if (isRecord(payload) && isRecord(payload.talkEvent)) {
+        if (payload.talkEvent.type === "turn.ended") {
+          ended.resolve();
+        } else if (payload.talkEvent.type === "session.error") {
+          ended.reject(new Error("Native greeting failed"));
+        }
+      }
+    });
+    const call = await createSpeechRelayCall({ capabilities: ["activity-v1"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      await dispatch("talk.session.acknowledgeMark", {
+        sessionId: call.sessionId,
+        markName: call.readyMark,
+      });
+      await vi.advanceTimersByTimeAsync(150);
+      await withinTest(ended.promise, signal);
+      expect(
+        activityEvents().some(
+          (event) =>
+            isRecord(event.payload) &&
+            isRecord(event.payload.input) &&
+            event.payload.input.available === false,
+        ),
+      ).toBe(true);
+      // The synthetic TTS leaf emits exactly 20ms PCM. Even a zero tail cannot
+      // admit input during that output's estimated playback window.
+      const tailMs = kind === "exact-source" ? 0 : 3_000;
+      await vi.advanceTimersByTimeAsync(19 + tailMs);
+      await dispatch("talk.session.appendAudio", {
+        sessionId: call.sessionId,
+        audioBase64: Buffer.alloc(320, 1).toString("base64"),
+      });
+      expect(hardware.input).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(activityEvents().at(-1)).toMatchObject({ payload: { input: { available: true } } });
+      const audio = Buffer.alloc(320, 2);
+      await dispatch("talk.session.appendAudio", {
+        sessionId: call.sessionId,
+        audioBase64: audio.toString("base64"),
+      });
+      expect(hardware.input).toHaveBeenCalledExactlyOnceWith(audio);
+    } finally {
+      vi.useRealTimers();
+      await dispatch("talk.session.close", { sessionId: call.sessionId });
+    }
+  },
+);
 
 it.for(["none", "legacy"] as const)(
   "native speech forwards a correlated %s boundary outcome after readiness without dispatching work",

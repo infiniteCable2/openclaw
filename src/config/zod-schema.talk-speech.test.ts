@@ -3,6 +3,81 @@ import { TalkSchema } from "./zod-schema.root-support.js";
 import { TalkSpeechSchema } from "./zod-schema.talk-speech.js";
 
 describe("Talk speech profile admission", () => {
+  const source = { channelId: "gateway", accountId: "paired-device", senderId: "device-a" };
+
+  it.each([0, 0.25, 3, 2_147_483_647 / 1_000])(
+    "admits a timer-safe suppression tail of %s seconds",
+    (seconds) => {
+      const profile = {
+        echoSuppressionTailSeconds: seconds,
+        sourceOverrides: [{ source, echoSuppressionTailSeconds: seconds }],
+      };
+      expect(
+        TalkSpeechSchema.parse({ agentProfiles: { reader: profile } }).agentProfiles.reader,
+      ).toEqual(profile);
+    },
+  );
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648 / 1_000, "0", null])(
+    "rejects invalid suppression tail %j",
+    (seconds) => {
+      for (const profile of [
+        { echoSuppressionTailSeconds: seconds },
+        { sourceOverrides: [{ source, echoSuppressionTailSeconds: seconds }] },
+      ]) {
+        expect(TalkSpeechSchema.safeParse({ agentProfiles: { reader: profile } }).success).toBe(
+          false,
+        );
+      }
+    },
+  );
+
+  it.each(["channelId", "accountId", "senderId"] as const)(
+    "rejects malformed source identity %s without normalizing it",
+    (field) => {
+      for (const value of ["", " gateway", "gateway ", "x".repeat(513), 1]) {
+        expect(
+          TalkSpeechSchema.safeParse({
+            agentProfiles: {
+              reader: {
+                sourceOverrides: [
+                  { source: { ...source, [field]: value }, echoSuppressionTailSeconds: 0 },
+                ],
+              },
+            },
+          }).success,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it("rejects duplicate exact sources, unknown identity fields and missing tails", () => {
+    for (const sourceOverrides of [
+      [
+        { source, echoSuppressionTailSeconds: 0 },
+        { source: { ...source }, echoSuppressionTailSeconds: 1 },
+      ],
+      [{ source: { ...source, deviceId: "device-a" }, echoSuppressionTailSeconds: 0 }],
+      [{ source }],
+    ]) {
+      expect(
+        TalkSpeechSchema.safeParse({ agentProfiles: { reader: { sourceOverrides } } }).success,
+      ).toBe(false);
+    }
+    expect(
+      TalkSpeechSchema.safeParse({
+        agentProfiles: {
+          reader: {
+            sourceOverrides: [
+              { source, echoSuppressionTailSeconds: 0 },
+              { source: { ...source, accountId: "other-account" }, echoSuppressionTailSeconds: 1 },
+            ],
+          },
+        },
+      }).success,
+    ).toBe(true);
+  });
+
   it("admits independent channel/provider-bound agent execution controls", () => {
     const agentOverrides = {
       channels: {

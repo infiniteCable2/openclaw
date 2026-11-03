@@ -14,6 +14,7 @@ async function createLiveFixture(
   options: {
     isolated?: boolean;
     continuous?: boolean;
+    echoSuppressionTailSeconds?: number;
     toolPolicy?: RealtimeVoiceAgentConsultToolPolicy;
     connect?: () => Promise<void>;
     consultAgent?: (params: SpeechAgentConsultParams) => Promise<{ text: string }>;
@@ -78,6 +79,7 @@ async function createLiveFixture(
   const handle = await startSpeechRealtimeSession({
     config: {
       audioFormat: "pcm16-24khz",
+      echoSuppressionTailSeconds: options.echoSuppressionTailSeconds,
 
       strategy: "bidi",
       provider: provider.id,
@@ -116,6 +118,33 @@ async function createLiveFixture(
 afterEach(() => vi.useRealTimers());
 
 describe("meeting native continuous voice", () => {
+  it.for([undefined, 0, 0.25] as const)(
+    "keeps PCM playback protected with a %s-second configured tail",
+    async (tailSeconds) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(10_000);
+      const fixture = await createLiveFixture({
+        continuous: false,
+        isolated: false,
+        echoSuppressionTailSeconds: tailSeconds,
+      });
+      try {
+        const speech = Buffer.alloc(960, 1); // 20ms at 24kHz PCM16.
+        fixture.callbacks.onAudio(speech);
+        fixture.input(speech);
+        expect(fixture.sendAudio).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(19 + (tailSeconds ?? 3) * 1_000);
+        fixture.input(speech);
+        expect(fixture.sendAudio).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        fixture.input(speech);
+        expect(fixture.sendAudio).toHaveBeenCalledExactlyOnceWith(speech);
+      } finally {
+        await fixture.handle.stop();
+      }
+    },
+  );
+
   it("keeps isolated input open during playback and ignores idle transport silence", async () => {
     vi.useFakeTimers();
     const fixture = await createLiveFixture();
