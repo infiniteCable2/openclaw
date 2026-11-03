@@ -80,11 +80,14 @@ export async function playMatrixConversation(params: {
     const observer = await connectConversationOperator(gateway, params.personEmail, signal, {
       scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
     });
-    const recipient = await observer
-      .call<{ session: { sessionId: string } | null }>("sessions.describe", {
+    let recipient: { session: { sessionId: string } | null };
+    try {
+      recipient = await observer.call("sessions.describe", {
         key: params.matrixKey,
-      })
-      .finally(() => observer.close());
+      });
+    } finally {
+      await observer.close();
+    }
     if (!recipient.session) {
       throw new Error("Native Matrix recipient row is unavailable");
     }
@@ -123,12 +126,15 @@ export async function playMatrixConversation(params: {
     const administrator = await connectConversationOperator(gateway, params.personEmail, signal, {
       scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
     });
-    const reset = await administrator
-      .call<{ entry: { sessionId: string; lifecycleRevision: string } }>("sessions.reset", {
+    let reset: { entry: { sessionId: string; lifecycleRevision: string } };
+    try {
+      reset = await administrator.call("sessions.reset", {
         key: sourceKey,
         expectedSessionId: source.session.sessionId,
-      })
-      .finally(() => administrator.close());
+      });
+    } finally {
+      await administrator.close();
+    }
     expect(reset.entry.sessionId).toBe(source.session.sessionId);
     expect(reset.entry.lifecycleRevision).toEqual(expect.any(String));
     expect(reset.entry.lifecycleRevision.length).toBeGreaterThan(0);

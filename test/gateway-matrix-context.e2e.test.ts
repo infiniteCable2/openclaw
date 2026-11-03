@@ -494,11 +494,14 @@ it.for(["native", "branches"] as const)(
             const observer = await connectConversationOperator(gateway, PERSON_EMAIL, signal, {
               scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
             });
-            const recipient = await observer
-              .call<{ session: { sessionId: string } | null }>("sessions.describe", {
+            let recipient: { session: { sessionId: string } | null };
+            try {
+              recipient = await observer.call("sessions.describe", {
                 key: MATRIX_KEY,
-              })
-              .finally(() => observer.close());
+              });
+            } finally {
+              await observer.close();
+            }
             expect(recipient.session).not.toBeNull();
             const source = await sibling.call<{ session: { sessionId: string } }>(
               "sessions.describe",
