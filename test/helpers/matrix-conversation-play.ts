@@ -103,10 +103,15 @@ export async function playMatrixConversation(params: {
     const text = strings(continued.input).join("\n");
     expect(text.split(fact)).toHaveLength(2);
     expect(text.split(intent)).toHaveLength(2);
-    const reset = await sibling.call<{ entry: { sessionId: string } }>("sessions.reset", {
-      key: sourceKey,
-      expectedSessionId: source.session.sessionId,
+    const administrator = await connectConversationOperator(gateway, params.personEmail, signal, {
+      scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
     });
+    const reset = await administrator
+      .call<{ entry: { sessionId: string } }>("sessions.reset", {
+        key: sourceKey,
+        expectedSessionId: source.session.sessionId,
+      })
+      .finally(() => administrator.close());
     expect(reset.entry.sessionId).not.toBe(source.session.sessionId);
     mark("donor-reset-after-copy");
     continuation.release();
