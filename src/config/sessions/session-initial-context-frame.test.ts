@@ -18,7 +18,6 @@ import {
   type PreparedConversationKnowledgeInitialFrame,
 } from "./session-initial-context-frame.js";
 import { assertInitialSessionContextReadSource } from "./session-initial-context.js";
-import type { SessionParticipantIdentity } from "./session-participant-identity.js";
 import {
   prepareSessionSourceAuthority,
   type SessionSourcePredicate,
@@ -41,10 +40,14 @@ vi.mock("./conversation-branch-creation.js", () => ({
 
 beforeEach(() => vi.clearAllMocks());
 
+type PrivateParticipant = NonNullable<
+  ConversationKnowledgeReference["privateAudience"]
+>["participant"];
+
 function fixture(
   options: {
-    originalParticipant?: SessionParticipantIdentity;
-    admittedParticipant?: SessionParticipantIdentity;
+    originalParticipant?: PrivateParticipant;
+    admittedParticipant?: PrivateParticipant;
   } = {},
 ) {
   const participant = { type: "profile" as const, id: "person-example" };
