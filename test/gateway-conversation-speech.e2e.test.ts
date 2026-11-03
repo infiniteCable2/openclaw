@@ -10,6 +10,7 @@ import {
   isolateConversationGatewayEnvironment,
   startConversationModel,
 } from "./helpers/conversation-branches-gateway.js";
+import { playLocalMediaInputEnd } from "./helpers/local-media-input-end-play.js";
 import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
 import { awaitGateBeforeSettlement, createDeferred, withinTest } from "./helpers/promise.js";
 import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
@@ -545,5 +546,23 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         await model.stop();
       }
     });
+  },
+);
+
+const stagedLocalMedia = process.env.OPENCLAW_E2E_LOCAL_MEDIA_PLUGIN_ROOT;
+it.skipIf(stagedLocalMedia === undefined)(
+  "uses the actual local-media provider with exclusive client input completion",
+  async (context) => {
+    if (stagedLocalMedia === undefined) {
+      throw new Error("The actual local-media scenario requires a selected staged plugin");
+    }
+    await runQaGatewayTestFixture(context, ({ signal, verifyCleanup }) =>
+      playLocalMediaInputEnd({
+        pluginRoot: stagedLocalMedia,
+        configuration,
+        signal,
+        verifyCleanup,
+      }),
+    );
   },
 );
