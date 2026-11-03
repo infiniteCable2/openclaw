@@ -27,7 +27,7 @@ const { getSessionEntryPatchDelivery } =
   await import("../config/sessions/session-entry-patch-delivery.test-support.js");
 const delivery = getSessionEntryPatchDelivery();
 
-it.each(["continuous", "membership-revoked", "reset"] as const)(
+it.for(["continuous", "membership-revoked", "reset"] as const)(
   "keeps acknowledged writer-claim facts current before patch delivery without reviving %s authority",
   async (intervention, { signal }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
