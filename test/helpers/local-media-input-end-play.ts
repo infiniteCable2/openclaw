@@ -26,7 +26,9 @@ async function requireStagedLocalMedia(root: string) {
   const manifest: unknown = JSON.parse(
     await fs.readFile(path.join(canonical, "openclaw.plugin.json"), "utf8"),
   );
-  if (!isRecord(manifest)) throw new Error("The staged local-media manifest must be an object");
+  if (!isRecord(manifest)) {
+    throw new Error("The staged local-media manifest must be an object");
+  }
   expect(manifest.id).toBe("local-media");
   const entry = await fs.realpath(path.join(canonical, "dist/index.js"));
   expect(path.relative(canonical, entry).startsWith("..")).toBe(false);
@@ -39,9 +41,9 @@ async function requireStagedLocalMedia(root: string) {
 /** Only the neural decoder is synthetic; the selected plugin owns real batching/endpoints. */
 async function startDecoder(signal: AbortSignal) {
   const claim = await acquireTestPortBlock({ offsets: [0], signal });
-  const firstRequest = createDeferred<void>();
+  const firstRequest = createDeferred();
   void firstRequest.promise.catch(() => {});
-  const releaseFirst = createDeferred<void>();
+  const releaseFirst = createDeferred();
   const requests: number[] = [];
   const errors: unknown[] = [];
   const tasks = new Set<Promise<void>>();
@@ -66,7 +68,9 @@ async function startDecoder(signal: AbortSignal) {
       }).formData();
       const file = form.get("file");
       expect(file).toBeInstanceOf(File);
-      if (!(file instanceof File)) throw new Error("Synthetic decoder requires actual WAV input");
+      if (!(file instanceof File)) {
+        throw new Error("Synthetic decoder requires actual WAV input");
+      }
       const wav = Buffer.from(await file.arrayBuffer());
       expect(wav.subarray(0, 4).toString()).toBe("RIFF");
       expect(wav.readUInt32LE(24)).toBe(8_000);
@@ -119,9 +123,9 @@ async function startDecoder(signal: AbortSignal) {
       releaseFirst.resolve();
       server.closeAllConnections();
       try {
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
         await Promise.allSettled(tasks);
       } finally {
         await claim.release();
@@ -144,7 +148,7 @@ export async function playLocalMediaInputEnd(params: {
   pluginRoot: string;
   configuration(baseUrl: string): OpenClawConfig;
   signal: AbortSignal;
-  verifyCleanup(cleanup: () => Promise<void>): Promise<void>;
+  verifyCleanup: (cleanup: () => Promise<void>) => Promise<void>;
 }) {
   const pluginRoot = await requireStagedLocalMedia(params.pluginRoot);
   let decoder: Awaited<ReturnType<typeof startDecoder>> | undefined;
@@ -207,8 +211,8 @@ export async function playLocalMediaInputEnd(params: {
           createDeferred<Record<string, unknown>>(),
         ]),
       );
-      const firstTranscript = createDeferred<void>(),
-        outputs = createDeferred<void>();
+      const firstTranscript = createDeferred(),
+        outputs = createDeferred();
       const frames: Buffer[] = [],
         events: Record<string, unknown>[] = [];
       const assistantReplies = new Set<string>();
@@ -217,41 +221,55 @@ export async function playLocalMediaInputEnd(params: {
         firstTranscript.promise,
         outputs.promise,
         ...[...outcomes.values()].map((gate) => gate.promise),
-      ])
+      ]) {
         void promise.catch(() => {});
+      }
       await gateway.startGateway();
       operator = await connectConversationOperator(gateway, "alex@example.test", params.signal, {
         scopes: ["operator.read", "operator.write", "operator.talk"],
         onEvent(event, value) {
-          if (event !== "talk.event" || !isRecord(value)) return;
+          if (event !== "talk.event" || !isRecord(value)) {
+            return;
+          }
           events.push(value);
-          if (value.type === "audio" && typeof value.audioBase64 === "string")
+          if (value.type === "audio" && typeof value.audioBase64 === "string") {
             frames.push(Buffer.from(value.audioBase64, "base64"));
+          }
           if (value.type === "transcript" && value.final === true) {
-            if (value.role === "user" && value.text === FIRST) firstTranscript.resolve();
-            if (value.role === "assistant" && typeof value.text === "string")
+            if (value.role === "user" && value.text === FIRST) {
+              firstTranscript.resolve();
+            }
+            if (value.role === "assistant" && typeof value.text === "string") {
               assistantReplies.add(value.text);
+            }
           }
           const talk = value.talkEvent;
           if (isRecord(talk)) {
-            if (talk.type === "output.audio.done") audioDone++;
+            if (talk.type === "output.audio.done") {
+              audioDone++;
+            }
             if (talk.type === "session.error") {
               const error = new Error(`Native Talk failed: ${JSON.stringify(talk)}`);
               firstTranscript.reject(error);
               outputs.reject(error);
-              for (const gate of outcomes.values()) gate.reject(error);
+              for (const gate of outcomes.values()) {
+                gate.reject(error);
+              }
             }
             if (
               talk.type === "input.outcome" &&
               typeof talk.captureId === "string" &&
               isRecord(talk.payload) &&
               talk.payload.scope === "capture"
-            )
+            ) {
               outcomes.get(talk.captureId)?.resolve(talk);
+            }
           }
           // B's finalized input intentionally supersedes A's held output
           // generation. Both native requests remain valid; only B is audible.
-          if (audioDone === 1 && assistantReplies.has("ENDPOINT_REPLY_2.")) outputs.resolve();
+          if (audioDone === 1 && assistantReplies.has("ENDPOINT_REPLY_2.")) {
+            outputs.resolve();
+          }
         },
       });
       const voiceKey = `agent:main:voice:local-end-${randomUUID()}`;
@@ -336,7 +354,7 @@ export async function playLocalMediaInputEnd(params: {
       }
       expect(model.requests).toHaveLength(2);
       expect(JSON.stringify(model.requests[1])).toContain(SECOND);
-      for (const text of [FIRST, SECOND])
+      for (const text of [FIRST, SECOND]) {
         expect(
           events.filter(
             (event) =>
@@ -346,6 +364,7 @@ export async function playLocalMediaInputEnd(params: {
               event.final === true,
           ),
         ).toHaveLength(1);
+      }
       expect(frames.length).toBeGreaterThan(0);
       expect(frames.every((frame) => frame.length > 0 && frame.length % 2 === 0)).toBe(true);
       expect(Buffer.concat(frames).length).toBe(960);
@@ -376,7 +395,9 @@ export async function playLocalMediaInputEnd(params: {
     () => {
       releaseModel?.();
       decoder?.release();
-      if (gateway) console.info(JSON.stringify({ fixture: "actual-local-media-end-phase", phase }));
+      if (gateway) {
+        console.info(JSON.stringify({ fixture: "actual-local-media-end-phase", phase }));
+      }
     },
     () =>
       params.verifyCleanup(async () => {
