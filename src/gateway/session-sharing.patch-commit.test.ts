@@ -73,6 +73,7 @@ it.for(["continuous", "membership-revoked", "reset"] as const)(
       };
       const committed = createDeferredCore();
       const releaseDelivery = createDeferredCore();
+      let deliveryHeld = false;
       let beforeCommit: unknown;
       let commitGrants = 0;
       const probe = sqliteWorkerOwnerProbe.admission(admission, (request, grant, admit) => {
@@ -96,6 +97,7 @@ it.for(["continuous", "membership-revoked", "reset"] as const)(
         // The real executor and SQL have completed. Delay only ordinary result
         // adoption, independently of the admission owner's native COMMIT receipt.
         expect(result).toMatchObject({ kind: "session-entry-patch-committed" });
+        deliveryHeld = true;
         committed.resolve();
         await releaseDelivery.promise;
       };
@@ -113,7 +115,19 @@ it.for(["continuous", "membership-revoked", "reset"] as const)(
             patch: { activeWriterRunId: "next-writer" },
           },
           { skipMaintenance: true },
-        );
+        ).then((result) => {
+          if (!deliveryHeld) {
+            throw new Error(
+              `Patch did not reach native delivery: ${JSON.stringify({
+                commands: delivery.commands,
+                commitGrants,
+                result,
+                stored: readExactSessionEntryRow(database, target.sessionKey)?.entry,
+              })}`,
+            );
+          }
+          return result;
+        });
         void mutation.catch(() => {});
         await withinTest(
           awaitGateBeforeSettlement(
