@@ -30,6 +30,7 @@ import {
   prepareConversationReplyContext,
 } from "../talk/conversation-input-admission.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import type { OperatorScope } from "./operator-scopes.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import {
   createContext,
@@ -51,7 +52,7 @@ it("retains the real Talk principal after normal input release and still observe
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const profile = ensureProfileForEmail("retained-talk-principal@example.test");
     const storePath = state.statePath("retained-talk-principal.sqlite");
-    const scopes = ["operator.read", "operator.write"];
+    const scopes: OperatorScope[] = ["operator.read", "operator.write"];
     const cfg = {
       agents: { entries: { main: {} } },
       session: { store: storePath },
