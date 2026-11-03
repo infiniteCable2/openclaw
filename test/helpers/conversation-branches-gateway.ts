@@ -16,7 +16,7 @@ import {
 import { acquireTestPortBlock } from "../../src/test-utils/port-claims.js";
 import { VERSION } from "../../src/version.js";
 import { acquireGatewayTestWebSocket, closeGatewayTestWebSocket } from "./gateway-websocket.js";
-import { writeOpenAiResponsesText } from "./openai-responses-sse.js";
+import { writeOpenAiResponsesSse, writeOpenAiResponsesText } from "./openai-responses-sse.js";
 import type { OpenClawTestInstance } from "./openclaw-test-instance.js";
 import { createDeferred } from "./promise.js";
 
@@ -33,6 +33,7 @@ export async function startConversationModel(
   const requests: Record<string, unknown>[] = [];
   const requestTimes: number[] = [];
   const errors: unknown[] = [];
+  const toolReplies = new WeakMap<Record<string, unknown>, { name: string; args: object }>();
   const gates = new Set<{
     matches: (request: Record<string, unknown>) => boolean;
     entered: ReturnType<typeof createDeferred<Record<string, unknown>>>;
@@ -72,6 +73,37 @@ export async function startConversationModel(
         gates.delete(gate);
       }
       signal.throwIfAborted();
+      const tool = toolReplies.get(input);
+      if (tool) {
+        const item = {
+          type: "function_call",
+          id: `fc_branch_${index}`,
+          call_id: `call_branch_${index}`,
+          name: tool.name,
+          arguments: JSON.stringify(tool.args),
+          status: "completed",
+        };
+        writeOpenAiResponsesSse(response, [
+          { type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } },
+          {
+            type: "response.function_call_arguments.delta",
+            output_index: 0,
+            item_id: item.id,
+            delta: item.arguments,
+          },
+          { type: "response.output_item.done", output_index: 0, item },
+          {
+            type: "response.completed",
+            response: {
+              id: `resp_branch_${index}`,
+              status: "completed",
+              output: [item],
+              usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            },
+          },
+        ]);
+        return;
+      }
       writeOpenAiResponsesText(response, {
         text: respond(input, index),
         messageId: `msg_branch_${index}`,
@@ -97,6 +129,12 @@ export async function startConversationModel(
     requests,
     requestTimes,
     errors,
+    respondWithTool(request: Record<string, unknown>, name: string, args: object) {
+      if (!requests.includes(request)) {
+        throw new Error("Tool response requires an observed synthetic provider request");
+      }
+      toolReplies.set(request, { name, args });
+    },
     holdNext(matches: (request: Record<string, unknown>) => boolean) {
       const gate = {
         matches,
@@ -288,11 +326,16 @@ export function isolateConversationGatewayEnvironment(gateway: OpenClawTestInsta
   gateway.env.CODEX_HOME = path.join(gateway.homeDir, "empty-codex-home");
 }
 
-/** Observe a committed native admission without polling or starting another turn. */
+/** Observe native preparation or committed admission without dispatching another turn. */
 export function waitForConversationTransfer(
   gateway: OpenClawTestInstance,
   signal: AbortSignal,
-  expected: { recipientId: string; sourceId: string; sequence: number },
+  expected: {
+    recipientId: string;
+    sourceId: string;
+    sequence: number;
+    phase?: "prepared" | "admitted";
+  },
 ) {
   const child = gateway.child;
   if (!child) {
@@ -320,12 +363,17 @@ export function waitForConversationTransfer(
         .map((line) => line.replaceAll('\\"', '"'))
         .some(
           (line) =>
-            line.includes("Conversation knowledge transfer") &&
             line.includes(recipient) &&
-            line.includes(source) &&
-            /"phase"\s*:\s*"admitted"/u.test(line) &&
-            /"complete"\s*:\s*true/u.test(line) &&
-            Number(/"throughSeq"\s*:\s*(\d+)/u.exec(line)?.[1] ?? -1) >= expected.sequence,
+            (expected.phase === "prepared"
+              ? line.includes("Related-history source preparation settled") &&
+                Array.from(
+                  line.matchAll(/"sourceHash"\s*:\s*"([^"]+)"\s*,\s*"throughSeq"\s*:\s*(\d+)/gu),
+                ).some((match) => match[1] === source && Number(match[2]) >= expected.sequence)
+              : line.includes("Conversation knowledge transfer") &&
+                line.includes(source) &&
+                /"phase"\s*:\s*"admitted"/u.test(line) &&
+                /"complete"\s*:\s*true/u.test(line) &&
+                Number(/"throughSeq"\s*:\s*(\d+)/u.exec(line)?.[1] ?? -1) >= expected.sequence),
         );
       if (admitted) {
         finish();

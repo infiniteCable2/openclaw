@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { createServer } from "node:http";
 import { json as readJson } from "node:stream/consumers";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
@@ -21,6 +22,7 @@ import {
   startConversationModel,
   waitForConversationTransfer,
 } from "./helpers/conversation-branches-gateway.js";
+import { playMatrixConversation } from "./helpers/matrix-conversation-play.js";
 import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
@@ -198,6 +200,7 @@ async function homeserver(signal: AbortSignal) {
         const content = (await readJson(request)) as { body?: string };
         if (path.includes("/send/m.room.message/") && content.body) {
           sends.push(content.body);
+          server.emit("fixture-send", content.body);
         }
         body = { event_id: "$fixture-output-" + sends.length };
       } else if (
@@ -243,6 +246,7 @@ async function homeserver(signal: AbortSignal) {
       firstSync = true;
     },
     sends,
+    nextSend: () => once(server, "fixture-send", { signal }).then(([text]) => String(text)),
     errors,
     requests,
     get syncCount() {
@@ -390,6 +394,7 @@ it.for(["native", "branches"] as const)(
         matrix = await homeserver(signal);
         const selected = config(model, initialMode);
         if (initialMode === "branches") {
+          selected.tools = { allow: ["sessions_list"] };
           selected.gateway!.roles!.definitions.provisioner = {
             sessions: { others: "view" },
             agents: "*",
@@ -623,8 +628,6 @@ it.for(["native", "branches"] as const)(
             mode: index < 3 ? initialMode : "branches",
             currentCopies: text.split(marker).length - 1,
             currentCopiesInRuntime: runtime.split(marker).length - 1,
-            previousNativeCopies:
-              index === 3 ? text.split("CURRENT_MATRIX_FULL_PAYLOAD_2").length - 1 : undefined,
             previousCopies: Array.from(
               { length: index - 1 },
               (_, prior) => text.split("CURRENT_MATRIX_FULL_PAYLOAD_" + (prior + 1)).length - 1,
@@ -655,6 +658,17 @@ it.for(["native", "branches"] as const)(
             providerChars: text.length,
           });
         }
+        if (sibling) {
+          await playMatrixConversation({
+            gateway,
+            model,
+            sibling,
+            matrix,
+            signal,
+            matrixKey: MATRIX_KEY,
+            personEmail: PERSON_EMAIL,
+          });
+        }
         console.info(
           JSON.stringify({
             fixture: "matrix-current-request-context",
@@ -672,9 +686,6 @@ it.for(["native", "branches"] as const)(
           expect(report.currentMessageIdCopies).toBe(1);
           expect(report.currentCopiesInRuntime).toBe(0);
           expect(report.previousCopies).toEqual(Array(report.index - 1).fill(1));
-          if (report.index === 3) {
-            expect(report.previousNativeCopies).toBe(1);
-          }
         }
       },
       () => sibling?.close(),

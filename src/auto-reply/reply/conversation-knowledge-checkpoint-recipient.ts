@@ -643,16 +643,17 @@ export async function admitRecipientConversationCheckpoint(
       });
       reads.push({ grant });
     }
-    const authority = composeSessionSourceAssertion(
-      [check, ...reads.map((read) => read.grant.assertCurrent)],
-      (assert) => {
-        if (!custody.active) {
-          throw new Error("Checkpoint recipient grant was released");
-        }
-        (params.retainedSignal ?? params.signal)?.throwIfAborted();
-        assert();
-      },
-    );
+    const recipientAuthority = composeSessionSourceAssertion([check], (assert) => {
+      if (!custody.active) {
+        throw new Error("Checkpoint recipient grant was released");
+      }
+      (params.retainedSignal ?? params.signal)?.throwIfAborted();
+      assert();
+    });
+    const authority = composeSessionSourceAssertion([
+      recipientAuthority,
+      ...reads.map((read) => read.grant.assertCurrent),
+    ]);
     const report = createConversationKnowledgeCheckpointContext({
       checkpoint: candidate.checkpoint,
       branch,
@@ -705,8 +706,19 @@ export async function admitRecipientConversationCheckpoint(
     }
     cache.consumeCheckpoint(candidate);
     params.onPacket?.(message);
+    // The committed summary is now recipient history; donor custody ends at
+    // this copy boundary without shortening the recipient's live authority.
+    for (const read of reads.toReversed()) {
+      custody.drop(read);
+    }
     retained = true;
-    return { fragments: [], observed: [], assertCurrent: authority, release, pendingPackets: true };
+    return {
+      fragments: [],
+      observed: [],
+      assertCurrent: recipientAuthority,
+      release,
+      pendingPackets: true,
+    };
   } catch (error) {
     cache.clearCheckpoint(candidate);
     params.assertCurrent();
