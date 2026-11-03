@@ -254,6 +254,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-sharing-preparation.creation-settlement.test.ts",
   "src/gateway/session-sharing-preparation.test.ts",
   "src/gateway/session-sharing.metadata-supersession.test.ts",
+  "src/gateway/session-sharing.patch-commit.test.ts",
   "src/gateway/session-sharing.incognito.test.ts",
   "src/gateway/session-sharing.worker.test.ts",
   "src/gateway/session-startup-migration.test.ts",

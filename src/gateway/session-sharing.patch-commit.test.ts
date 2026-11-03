@@ -1,4 +1,5 @@
 import "../config/sessions/session-entry-patch-delivery.test-support.js";
+import { isMainThread } from "node:worker_threads";
 import { expect, it } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
@@ -30,6 +31,7 @@ const delivery = getSessionEntryPatchDelivery();
 it.for(["continuous", "membership-revoked", "reset"] as const)(
   "keeps acknowledged writer-claim facts current before patch delivery without reviving %s authority",
   async (intervention, { signal }) => {
+    expect(isMainThread).toBe(true);
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const storePath = state.statePath("patch-commit-sharing.sqlite");
       const cfg = {
@@ -121,8 +123,6 @@ it.for(["continuous", "membership-revoked", "reset"] as const)(
               `Patch did not reach native delivery: ${JSON.stringify({
                 commands: delivery.commands,
                 commitGrants,
-                result,
-                stored: readExactSessionEntryRow(database, target.sessionKey)?.entry,
               })}`,
             );
           }
