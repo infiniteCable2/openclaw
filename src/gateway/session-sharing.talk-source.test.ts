@@ -12,11 +12,18 @@ import {
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { recordSessionParticipant } from "../config/sessions/session-accessor.sqlite-participants.native.js";
+import { releaseSessionSourceAuthorities } from "../config/sessions/session-source-authority.js";
 import * as admission from "../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe } from "../infra/sqlite-worker-owner-probe.test-support.js";
+import {
+  readConversationPrivateAudience,
+  retainConversationPrivateAudience,
+} from "../sessions/conversation-private-audience.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
 import {
   claimConversationInputExecution,
   consumeConversationInputAdmission,
@@ -25,14 +32,115 @@ import {
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import {
+  createContext,
+  createOperatorClient,
+} from "./server-plugin-in-process-dispatch.test-support.js";
+import {
   prepareSessionMutationFacts,
   SessionMutationFactsUnavailableError,
 } from "./session-sharing-preparation.js";
 import { createGatewayTalkConversationInputSource } from "./talk/conversation-input-source.js";
+import { createTalkOperatorRunSource } from "./talk/operator-run-source.js";
 
 const { getSessionEntryPatchDelivery } =
   await import("../config/sessions/session-entry-patch-delivery.test-support.js");
 const delivery = getSessionEntryPatchDelivery();
+
+it("retains the real Talk principal after normal input release and still observes profile revocation", async () => {
+  expect(isMainThread).toBe(true);
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const profile = ensureProfileForEmail("retained-talk-principal@example.test");
+    const storePath = state.statePath("retained-talk-principal.sqlite");
+    const scopes = ["operator.read", "operator.write"];
+    const cfg = {
+      agents: { entries: { main: {} } },
+      session: { store: storePath },
+      gateway: {
+        roles: {
+          default: "speaker",
+          definitions: {
+            speaker: { scopes, agents: ["main"], sessions: { others: "none" as const } },
+            blocked: { scopes: [], agents: [], sessions: { others: "none" as const } },
+          },
+        },
+      },
+    };
+    await state.writeConfig(cfg);
+    setRuntimeConfigSnapshot(cfg);
+    const target = { agentId: "main", sessionKey: "agent:main:retained-talk", storePath };
+    replaceSessionEntrySync(target, {
+      sessionId: "original-conversation",
+      lifecycleRevision: "original-generation",
+      updatedAt: 1,
+      chatType: "direct",
+      visibility: "draft",
+      createdActor: { type: "human", source: "profile", id: profile.id },
+    });
+    const context = createContext();
+    context.getRuntimeConfig = () => cfg;
+    const client = createOperatorClient({ profileId: profile.id, scopes });
+    const source = createGatewayTalkConversationInputSource({
+      target: { ...target, canonicalKey: target.sessionKey },
+      conversationId: "original-connection",
+      getRuntimeConfig: () => cfg,
+      // The actual Talk adapter calls the real native operator-capture owner;
+      // neither its profile preparation nor its retain/revocation logic is mocked.
+      captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+      authority: { senderIsOwner: false },
+      participant: { type: "profile", id: profile.id },
+      assertInputCurrent() {},
+      resolveGatewayContext: () => context,
+    });
+    const cleanup: Array<{ release(): void }> = [];
+    const admit = async (inputId: string) => {
+      const scope = {
+        agentId: "main",
+        conversationId: "original-connection",
+        inputId,
+        purpose: "user" as const,
+      };
+      const input = consumeConversationInputAdmission(await source.admitInput(scope), scope);
+      cleanup.push({ release: () => input.release?.() });
+      claimConversationInputExecution(input);
+      const replyContext = await prepareConversationReplyContext(input, {
+        text: "An admitted input.",
+      });
+      const audience = readConversationPrivateAudience(replyContext);
+      if (!audience) {
+        throw new Error("The original personal Talk input has no native private audience");
+      }
+      const retained = retainConversationPrivateAudience(audience);
+      cleanup.push(...retained);
+      return { input, retained };
+    };
+    try {
+      const completed = await admit("completed-input");
+      const active = await admit("independent-active-input");
+      completed.input.release?.();
+      let normalReleaseFailure: unknown;
+      try {
+        for (const held of completed.retained) {
+          held.audience.assertCurrent();
+        }
+      } catch (error) {
+        normalReleaseFailure = error;
+      }
+      // An independent still-live input distinguishes actual profile revocation
+      // from the first principal's accidentally latched input-release failure.
+      for (const held of active.retained) {
+        expect(() => held.audience.assertCurrent()).not.toThrow();
+      }
+      setUserProfileRole(profile.id, "blocked");
+      for (const held of active.retained) {
+        expect(held.signal?.aborted).toBe(true);
+        expect(() => held.audience.assertCurrent()).toThrow();
+      }
+      expect(normalReleaseFailure).toBeUndefined();
+    } finally {
+      await releaseSessionSourceAuthorities(cleanup);
+    }
+  });
+});
 
 it.for(["continuous", "reset"] as const)(
   "keeps a native admitted Talk source current across COMMIT and participant publication: %s",
