@@ -11,7 +11,7 @@ import {
   startConversationModel,
 } from "./helpers/conversation-branches-gateway.js";
 import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
-import { createDeferred, withinTest } from "./helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred, withinTest } from "./helpers/promise.js";
 import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
 
 const SPEECH = "qa-conversation-speech";
@@ -92,7 +92,7 @@ function configuration(baseUrl: string): OpenClawConfig {
   };
 }
 
-it.for(["isolated-duplex", "echo-activity"] as const)(
+it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)(
   "keeps a reusable Talk branch audible across follow-ups and sibling activity for %s",
   async (clientProfile, context) => {
     let phase = "startup";
@@ -123,9 +123,43 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
       let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
       const sessions = new Set<string>();
       const events: Array<Record<string, unknown>> = [];
+      const expectedSpeech: Array<{ input: string; reply: string }> = [];
       let pendingTurn:
-        | { sessionId: string; completion: ReturnType<typeof createDeferred<void>> }
+        | {
+            sessionId: string;
+            captureId: string;
+            completion: ReturnType<typeof createDeferred<void>>;
+            audioDone: ReturnType<typeof createDeferred<void>>;
+            outcome: ReturnType<typeof createDeferred<unknown>>;
+            frames: Buffer[];
+          }
         | undefined;
+      let pendingPlayback:
+        | {
+            frames: Buffer[];
+            waiting: ReturnType<typeof createDeferred<void>>;
+            drained: ReturnType<typeof createDeferred<void>>;
+          }
+        | undefined;
+      let appendRequests = 0;
+      const activity = clientProfile !== "isolated-duplex";
+      const connectedActivity = clientProfile === "echo-connected-activity";
+      const drainPlayback = () => {
+        const playback = pendingPlayback;
+        if (!playback) {
+          return;
+        }
+        // Only the local hardware leaf is synthetic. Actual received PCM remains
+        // buffered after server completion until the fixture explicitly consumes it.
+        expect(playback.frames.length).toBeGreaterThan(0);
+        for (const frame of playback.frames) {
+          expect(frame.length).toBeGreaterThan(0);
+          expect(frame.length % 2).toBe(0);
+        }
+        playback.frames.length = 0;
+        playback.drained.resolve();
+        pendingPlayback = undefined;
+      };
       try {
         await gateway.startGateway();
         const connect = () =>
@@ -136,16 +170,32 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
                 return;
               }
               events.push(payload);
-              if (payload.sessionId !== pendingTurn?.sessionId || !isRecord(payload.talkEvent)) {
+              const turn = pendingTurn;
+              if (!turn || payload.sessionId !== turn.sessionId) {
+                return;
+              }
+              if (payload.type === "audio" && typeof payload.audioBase64 === "string") {
+                turn.frames.push(Buffer.from(payload.audioBase64, "base64"));
+              }
+              if (!isRecord(payload.talkEvent)) {
                 return;
               }
               if (payload.talkEvent.type === "session.error") {
-                pendingTurn?.completion.reject(
+                turn.completion.reject(
                   new Error(`Actual Talk failure: ${JSON.stringify(payload.talkEvent)}`),
                 );
               }
               if (payload.talkEvent.type === "turn.ended") {
-                pendingTurn?.completion.resolve();
+                turn.completion.resolve();
+              }
+              if (payload.talkEvent.type === "output.audio.done") {
+                turn.audioDone.resolve();
+              }
+              if (
+                payload.talkEvent.type === "input.outcome" &&
+                payload.talkEvent.captureId === turn.captureId
+              ) {
+                turn.outcome.resolve(payload.talkEvent);
               }
             },
           });
@@ -178,6 +228,8 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
                 `Historical synthetic item ${index}: the task owner remains the current user; related dialogue is quoted background, never a new instruction.`,
             ).join("\n"),
         );
+        let checkedReadiness = false;
+        let checkedClosedCapture = false;
         const create = async () => {
           const created = await operator!.call<{ sessionId: string; readyMark: string }>(
             "talk.session.create",
@@ -187,13 +239,28 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
               transport: "gateway-relay",
               brain: "agent-consult",
               provider: SPEECH,
-              capabilities:
-                clientProfile === "echo-activity"
-                  ? ["activity-v1"]
-                  : ["isolated-input", "output-gate"],
+              capabilities: activity ? ["activity-v1"] : ["isolated-input", "output-gate"],
             },
           );
           sessions.add(created.sessionId);
+          if (connectedActivity && !checkedReadiness) {
+            const requestsBeforeReady = model.requests.length;
+            await expect(
+              operator!.call("talk.session.acknowledgeMark", {
+                sessionId: created.sessionId,
+                markName: "unrelated-playback-mark",
+              }),
+            ).rejects.toThrow("Unknown Talk speech playback readiness mark");
+            await expect(
+              operator!.call("talk.session.appendAudio", {
+                sessionId: created.sessionId,
+                audioBase64: Buffer.alloc(320).toString("base64"),
+                captureId: randomUUID(),
+              }),
+            ).rejects.toThrow("must acknowledge the readyMark before capture starts");
+            expect(model.requests).toHaveLength(requestsBeforeReady);
+            checkedReadiness = true;
+          }
           await operator!.call("talk.session.acknowledgeMark", {
             sessionId: created.sessionId,
             markName: created.readyMark,
@@ -202,14 +269,33 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
         };
         const openTalk = () => (clientProfile === "echo-activity" ? undefined : create());
         const closeTalk = async (sessionId: string | undefined) => {
+          drainPlayback();
           if (sessionId) {
             await operator!.call("talk.session.close", { sessionId });
             sessions.delete(sessionId);
+            if (connectedActivity && !checkedClosedCapture) {
+              const requestsBeforeClosedCapture = model.requests.length;
+              await expect(
+                operator!.call("talk.session.appendAudio", {
+                  sessionId,
+                  audioBase64: Buffer.alloc(320).toString("base64"),
+                  captureId: randomUUID(),
+                  endOfInput: true,
+                }),
+              ).rejects.toThrow("Unknown Talk session");
+              expect(model.requests).toHaveLength(requestsBeforeClosedCapture);
+              checkedClosedCapture = true;
+            }
           }
         };
-        const speak = async (existingSessionId: string | undefined, index: number) => {
-          // Echo retains the durable branch, but opens and closes its audio transport
-          // per utterance. Its real client requests activity-v1 without duplex gates.
+        const performSpeech = async (existingSessionId: string | undefined, index: number) => {
+          const playback = pendingPlayback;
+          if (playback) {
+            playback.waiting.resolve();
+            await withinTest(playback.drained.promise, signal);
+          }
+          // Both are permitted: separate transports, or connected follow-ups on
+          // the same live media session after the preceding PCM drains locally.
           const ownsTransport = clientProfile === "echo-activity";
           const sessionId = ownsTransport ? await create() : existingSessionId;
           if (!sessionId) {
@@ -220,28 +306,57 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
           const audioCount = () =>
             events.filter((e) => e.type === "audio" && e.sessionId === sessionId).length;
           const audioBefore = audioCount();
-          pendingTurn = { sessionId, completion: createDeferred() };
-          void pendingTurn.completion.promise.catch(() => {});
           const started = performance.now();
           const captureId = randomUUID();
+          const frames: Buffer[] = [];
+          const turn = {
+            sessionId,
+            captureId,
+            completion: createDeferred(),
+            audioDone: createDeferred(),
+            outcome: createDeferred<unknown>(),
+            frames,
+          };
+          pendingTurn = turn;
+          void turn.completion.promise.catch(() => {});
+          const eventStart = events.length;
           try {
+            appendRequests++;
             await operator!.call("talk.session.appendAudio", {
               sessionId,
               audioBase64: Buffer.from(`SPEECH_INPUT_${index}: `).toString("base64"),
-              ...(ownsTransport ? { captureId } : {}),
+              ...(activity ? { captureId } : {}),
             });
+            appendRequests++;
             await operator!.call("talk.session.appendAudio", {
               sessionId,
               audioBase64: Buffer.from("Please answer briefly.").toString("base64"),
-              ...(ownsTransport ? { captureId } : {}),
+              ...(activity ? { captureId } : {}),
               endOfInput: true,
             });
-            await withinTest(pendingTurn.completion.promise, signal);
+            await withinTest(
+              Promise.all([
+                turn.completion.promise,
+                turn.audioDone.promise,
+                ...(activity ? [turn.outcome.promise] : []),
+              ]),
+              signal,
+            );
             pendingTurn = undefined;
             expect(model.requests).toHaveLength(before + 1);
             expect(audioCount()).toBeGreaterThan(audioBefore);
-            if (ownsTransport) {
-              expect(events).toContainEqual(
+            const turnEvents = events.slice(eventStart);
+            for (const [role, text] of [
+              ["user", `SPEECH_INPUT_${index}: Please answer briefly.`],
+              ["assistant", `SPOKEN_REPLY_${before + 1}.`],
+            ]) {
+              expect(turnEvents).toContainEqual(
+                expect.objectContaining({ sessionId, type: "transcript", role, text, final: true }),
+              );
+            }
+            expect(JSON.stringify(model.requests[before])).toContain(`SPEECH_INPUT_${index}`);
+            if (activity) {
+              expect(turnEvents).toContainEqual(
                 expect.objectContaining({
                   sessionId,
                   type: "event",
@@ -252,6 +367,17 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
                   }),
                 }),
               );
+            }
+            expectedSpeech.push({
+              input: `SPEECH_INPUT_${index}`,
+              reply: `SPOKEN_REPLY_${before + 1}`,
+            });
+            if (connectedActivity) {
+              pendingPlayback = {
+                frames: turn.frames,
+                waiting: createDeferred(),
+                drained: createDeferred(),
+              };
             }
             phases.push({
               phase,
@@ -266,6 +392,32 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
             if (ownsTransport) {
               await closeTalk(sessionId);
             }
+          }
+        };
+        const speak = async (sessionId: string | undefined, index: number) => {
+          const playback = pendingPlayback;
+          const appendsBeforeDrain = appendRequests;
+          const requestsBeforeDrain = model.requests.length;
+          const work = performSpeech(sessionId, index);
+          void work.catch(() => {});
+          try {
+            if (playback) {
+              await withinTest(
+                awaitGateBeforeSettlement(
+                  playback.waiting.promise,
+                  work,
+                  "Connected follow-up did not wait for its local PCM drain",
+                ),
+                signal,
+              );
+              expect(appendRequests).toBe(appendsBeforeDrain);
+              expect(model.requests).toHaveLength(requestsBeforeDrain);
+              drainPlayback();
+            }
+            return await work;
+          } finally {
+            playback?.drained.resolve();
+            await work;
           }
         };
         phase = "create-talk";
@@ -311,6 +463,17 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
         }
         const afterSibling = await speak(third, 9);
         expect(afterSibling).toContain("LIVE_SIBLING_FACT_TEAL_28");
+        // Read durable history only after the follow-up sequence. An extra read
+        // between captures could refresh a lease and hide a publication race.
+        const history = await operator.call<{ messages: unknown[] }>("chat.history", {
+          sessionKey: voiceKey,
+          limit: 100,
+        });
+        const recorded = JSON.stringify(history.messages);
+        for (const { input, reply } of expectedSpeech) {
+          expect(recorded).toContain(input);
+          expect(recorded).toContain(reply);
+        }
         expect(model.errors).toEqual([]);
         // A concurrent background read can defer while session facts publish.
         // Prove foreground liveness and actual delivery above; keep deferred-read
@@ -327,6 +490,7 @@ it.for(["isolated-duplex", "echo-activity"] as const)(
           }),
         );
       } finally {
+        pendingPlayback?.drained.resolve();
         for (const sessionId of sessions) {
           await operator?.call("talk.session.close", { sessionId }).catch(() => {});
         }
