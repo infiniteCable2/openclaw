@@ -10,9 +10,11 @@ import {
   recordConversationKnowledgeTurn,
 } from "../config/sessions/conversation-knowledge-store.js";
 import { readConversationKnowledgeReceipt } from "../config/sessions/conversation-knowledge.js";
-import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
+import { recordSessionParticipantInWorker } from "../config/sessions/session-sharing-store.async.js";
 import { prepareSessionSourceAuthority } from "../config/sessions/session-source-authority.js";
+import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import { changeCanonicalUserChannelIdentity } from "../state/user-channel-identity-operations.js";
 import { ensureCanonicalUserProfileForEmail } from "../state/user-profile-writes.js";
@@ -234,6 +236,129 @@ it("qualifies saved legacy remote ranges through a native source-account link an
         // Linking never rewrites or promotes the immutable remote audience/ranges.
         expect(await fixture.receipts()).toEqual(allSavedReferences);
       } finally {
+        await fixture.close();
+      }
+    },
+  );
+});
+
+it("admits profile Echo ranges into a currently private profile recipient with a legacy Matrix roster", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "personal-native-reverse" },
+    async (state) => {
+      const fixture = await createConversationKnowledgeScenario(state);
+      const cache = createConversationKnowledgeSourceCache();
+      try {
+        const profile = await ensureCanonicalUserProfileForEmail("reader@example.test", {
+          env: state.env,
+        });
+        const person: SessionParticipantIdentity = { type: "profile", id: profile.id };
+        const legacy: SessionParticipantIdentity = {
+          type: "remote",
+          pluginId: "matrix",
+          domain: "matrix",
+          idKind: "user-id",
+          id: "@reader:example.test",
+        };
+        const identity = {
+          channelId: "matrix",
+          accountId: "recipient-account",
+          senderId: legacy.id,
+        };
+        await changeCanonicalUserChannelIdentity("link", profile.id, identity);
+        const destination = await fixture.branch("legacy-matrix-recipient", legacy, "channel");
+        await upsertSessionEntryCore(destination, {
+          createdActor: { type: "human", source: "channel", id: legacy.id },
+          delivery: {
+            kind: "external",
+            route: { channel: "matrix", accountId: identity.accountId },
+            context: {},
+            origin: { from: legacy.id },
+          },
+        });
+        for (const participant of [
+          {
+            type: "observation",
+            pluginId: "matrix",
+            accountId: identity.accountId,
+            senderKind: "human",
+            id: legacy.id,
+          } satisfies SessionParticipantIdentity,
+          person,
+        ]) {
+          expect(
+            await recordSessionParticipantInWorker(destination, {
+              identity: participant,
+              promptedAt: Date.now(),
+              sessionAgentId: destination.agentId,
+              expectedSession: destination,
+            }),
+          ).toBe("inserted");
+        }
+        const source = await fixture.branch("profile-echo-source", person);
+        await upsertSessionEntryCore(source, {
+          createdActor: { type: "human", source: "profile", id: profile.id },
+        });
+        const sourceOwner = await fixture.claim(source);
+        const destinationOwner = await fixture.claim(destination);
+        const turn = await fixture.append(source, "reverse-profile-echo");
+        if (!turn.admission) {
+          throw new Error("Native source input has no exact admission anchor");
+        }
+        expect(
+          await recordConversationKnowledgeTurn({
+            ...sourceOwner,
+            ...turn,
+            privateAudience: { participant: person, admission: turn.admission },
+          }),
+        ).toBe(true);
+        const roster = structuredClone(loadSessionEntry(destination)?.participants);
+        expect(roster?.map((row) => row.identity.type).toSorted()).toEqual([
+          "observation",
+          "profile",
+          "remote",
+        ]);
+        // Only the host's current private ingress proves disclosure to this
+        // existing channel. A historical mixed roster cannot supply that proof.
+        const audience: ConversationPrivateAudience = {
+          agentId: destination.agentId,
+          sessionKey: destination.sessionKey,
+          channelId: "matrix",
+          accountId: identity.accountId,
+          nativeChannelId: "synthetic-private-matrix-room",
+          participant: person,
+          assertCurrent: destinationOwner.assertCurrent,
+        };
+        const params = {
+          ...destinationOwner,
+          originalParticipant: person,
+          destinationAudience: audience,
+          getRuntimeConfig: () => fixture.cfg,
+          sourceCache: cache,
+        };
+        const prepared = await prepareReplyConversationKnowledge({
+          ...params,
+          preparationOnly: true,
+        });
+        prepared?.release();
+        expect(cache.preparedRoot).toBeDefined();
+        const ready = await prepareReplyConversationKnowledge({ ...params, readyOnly: true });
+        if (!ready) {
+          throw new Error("Native reverse profile source was not prepared");
+        }
+        try {
+          ready.assertCurrent();
+          expect(ready.fragments.map((fragment) => fragment.text).join("\n")).toContain(
+            "reverse-profile-echo answer",
+          );
+          expect(loadSessionEntry(destination)?.participants).toEqual(roster);
+          destinationOwner.revoke();
+          expect(() => ready.assertCurrent()).toThrow();
+        } finally {
+          ready.release();
+        }
+      } finally {
+        cache.clear();
         await fixture.close();
       }
     },
