@@ -73,9 +73,11 @@ export async function playMatrixConversation(params: {
     if (!recipient.session) {
       throw new Error("Native Matrix recipient row is unavailable");
     }
-    const source = await sibling.call<{ session: { sessionId: string } }>("sessions.describe", {
-      key: sourceKey,
-    });
+    const source = await sibling.call<{
+      session: { sessionId: string; lifecycleRevision: string };
+    }>("sessions.describe", { key: sourceKey });
+    expect(source.session.lifecycleRevision).toEqual(expect.any(String));
+    expect(source.session.lifecycleRevision.length).toBeGreaterThan(0);
     const history = await sibling.call<{ messages: unknown[] }>("chat.history", {
       sessionKey: sourceKey,
       limit: 100,
@@ -107,12 +109,15 @@ export async function playMatrixConversation(params: {
       scopes: [...BRANCH_GATEWAY_SCOPES, "operator.admin"],
     });
     const reset = await administrator
-      .call<{ entry: { sessionId: string } }>("sessions.reset", {
+      .call<{ entry: { sessionId: string; lifecycleRevision: string } }>("sessions.reset", {
         key: sourceKey,
         expectedSessionId: source.session.sessionId,
       })
       .finally(() => administrator.close());
-    expect(reset.entry.sessionId).not.toBe(source.session.sessionId);
+    expect(reset.entry.sessionId).toBe(source.session.sessionId);
+    expect(reset.entry.lifecycleRevision).toEqual(expect.any(String));
+    expect(reset.entry.lifecycleRevision.length).toBeGreaterThan(0);
+    expect(reset.entry.lifecycleRevision).not.toBe(source.session.lifecycleRevision);
     mark("donor-reset-after-copy");
     continuation.release();
     expect(await withinTest(reply, signal)).toMatch(/^FIXTURE_REPLY_\d+$/u);
