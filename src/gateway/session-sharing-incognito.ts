@@ -5,6 +5,7 @@ import {
   type IncognitoSessionBinding,
 } from "../config/sessions/session-incognito-binding.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
+import type { SessionFactsFailure } from "./session-sharing-facts-diagnostic.js";
 
 export type IncognitoSessionSharingTarget = {
   agentId?: string;
@@ -35,9 +36,12 @@ export function hasNativeIncognitoSessionSharingSource(
 }
 
 export class SessionMutationFactsUnavailableError extends Error {
-  constructor(options?: ErrorOptions) {
+  readonly diagnostic?: SessionFactsFailure;
+
+  constructor(options?: ErrorOptions & { diagnostic?: SessionFactsFailure }) {
     super("Session access facts are unavailable; retry after session storage is ready.", options);
     this.name = "SessionMutationFactsUnavailableError";
+    this.diagnostic = options?.diagnostic;
   }
 }
 

@@ -44,6 +44,11 @@ import {
 } from "../state/openclaw-agent-db-resources.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import {
+  captureSessionFactsInvalidation,
+  reportSessionFactsFailure,
+  type SessionFactsInvalidation,
+} from "./session-sharing-facts-diagnostic.js";
+import {
   captureIncognitoSessionMutationFacts,
   SessionMutationFactsUnavailableError,
 } from "./session-sharing-incognito.js";
@@ -69,7 +74,8 @@ export { SessionMutationFactsUnavailableError } from "./session-sharing-incognit
 
 export function captureSessionMutationRouting(
   cfg: OpenClawConfig,
-  changed: () => Error = () => new SessionMutationFactsUnavailableError(),
+  changed: () => Error = () =>
+    new SessionMutationFactsUnavailableError({ diagnostic: { reason: "routing-changed" } }),
 ) {
   const route = readSessionSharingRoutingFacts(cfg);
   return (current: OpenClawConfig) => {
@@ -116,6 +122,7 @@ export async function prepareSessionMutationFacts(
   let beforeDiscovery = params.storageReady !== undefined;
   let waitingForStorage = false;
   let invalidated = false;
+  let firstInvalidation: SessionFactsInvalidation | undefined;
   let facts: PreparedSessionSourceFacts | undefined;
   let assertRegistryPublication: (() => void) | undefined;
   let creation: SessionEntryCreationOperation | undefined;
@@ -169,11 +176,14 @@ export async function prepareSessionMutationFacts(
   };
   const assertActive = () => {
     if (!active || invalidated) {
-      throw new SessionMutationFactsUnavailableError();
+      throw new SessionMutationFactsUnavailableError({
+        diagnostic: { reason: active ? "invalidated" : "released", firstInvalidation },
+      });
     }
   };
-  const invalidate = () => {
+  const invalidate = (...args: Parameters<typeof captureSessionFactsInvalidation>) => {
     invalidated = true;
+    firstInvalidation ??= captureSessionFactsInvalidation(...args);
   };
   const changed = (change: SessionRowChange) => {
     if ("all" in change) {
@@ -186,10 +196,10 @@ export async function prepareSessionMutationFacts(
           try {
             assertRegistryPublication();
           } catch {
-            invalidate();
+            invalidate("store-registry", change);
           }
         } else {
-          invalidate();
+          invalidate("store-topology", change);
         }
         return;
       }
@@ -217,7 +227,7 @@ export async function prepareSessionMutationFacts(
       ) {
         return;
       }
-      invalidate();
+      invalidate("broad-publication", change);
       return;
     }
     if (
@@ -245,7 +255,7 @@ export async function prepareSessionMutationFacts(
       try {
         actorRead!.assertCurrent();
       } catch {
-        invalidate();
+        invalidate("actor-source", change);
       }
       return;
     }
@@ -263,7 +273,7 @@ export async function prepareSessionMutationFacts(
           expectedPlaceholder = placeholder;
           return;
         } catch {
-          invalidate();
+          invalidate("creation-source", change);
           return;
         }
       }
@@ -283,7 +293,7 @@ export async function prepareSessionMutationFacts(
       !selectedPaths.has(path.resolve(change.storePath)) ||
       readPreparedSessionSharingChange(change) === undefined
     ) {
-      invalidate();
+      invalidate("row-publication", change);
     }
   };
   releases.push(
@@ -293,7 +303,7 @@ export async function prepareSessionMutationFacts(
         change.agentId === agentId &&
         change.previous.sessionKeys.some((key) => initialStoreKeys.includes(key))
       ) {
-        invalidate();
+        invalidate("session-identity");
       }
     }),
   );
@@ -381,8 +391,10 @@ export async function prepareSessionMutationFacts(
           current?.entry?.lifecycleRevision !== lifecycleRevision ||
           current?.placeholder !== expectedPlaceholder
         ) {
-          invalidate();
-          throw new SessionMutationFactsUnavailableError();
+          invalidate("actor-source");
+          throw new SessionMutationFactsUnavailableError({
+            diagnostic: { reason: "invalidated", firstInvalidation },
+          });
         }
         if (!current?.entry) {
           return { target: null, membership: new Set<string>() };
@@ -431,7 +443,9 @@ export async function prepareSessionMutationFacts(
               candidate.physicalPath ||
             !isDeepStrictEqual(current, identity)
           ) {
-            throw new SessionMutationFactsUnavailableError();
+            throw new SessionMutationFactsUnavailableError({
+              diagnostic: { reason: "source-identity-changed" },
+            });
           }
         }
       };
@@ -654,11 +668,14 @@ export async function prepareSessionMutationFacts(
         }
         for (const read of retainedReads.values()) {
           if (!read.readCurrent()) {
-            throw new SessionMutationFactsUnavailableError();
+            throw new SessionMutationFactsUnavailableError({
+              diagnostic: { reason: "retained-read-unavailable" },
+            });
           }
         }
       };
     }
+    let prepared = false;
     const readCurrent = (cfg: OpenClawConfig) => {
       try {
         assertActive();
@@ -678,12 +695,11 @@ export async function prepareSessionMutationFacts(
         }
         return readFacts();
       } catch (error) {
-        throw error instanceof SessionMutationFactsUnavailableError
-          ? error
-          : new SessionMutationFactsUnavailableError({ cause: error });
+        throw reportSessionFactsFailure(error, prepared ? "read" : "prepare");
       }
     };
     readCurrent(params.cfg);
+    prepared = true;
     const bindCreation = (operation: SessionEntryCreationOperation) => {
       readCurrent(params.cfg);
       if (creation && creation !== operation) {
@@ -701,8 +717,6 @@ export async function prepareSessionMutationFacts(
     return { storageTarget, bindCreation, readCurrent, release };
   } catch (error) {
     release();
-    throw waitingForStorage || error instanceof SessionMutationFactsUnavailableError
-      ? error
-      : new SessionMutationFactsUnavailableError({ cause: error });
+    throw waitingForStorage ? error : reportSessionFactsFailure(error, "prepare");
   }
 }
