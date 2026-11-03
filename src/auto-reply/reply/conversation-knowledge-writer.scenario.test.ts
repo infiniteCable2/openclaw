@@ -15,9 +15,14 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { rewritePreparedTranscriptMessageAtAnchor } from "../../config/sessions/session-message-rewrite.js";
+import {
+  addSessionMemberInWorker,
+  removeSessionMemberInWorker,
+} from "../../config/sessions/session-sharing-store.async.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
+import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
 import {
   createConversationKnowledgeScenario,
   person,
@@ -134,6 +139,48 @@ describe("native turn packet writer custody", () => {
             expect(packets).toHaveLength(1);
             expect(packets[0]?.content).toContain("The color is yellow.");
             expect(budget.compact).toHaveBeenCalled();
+
+            // A preview still borrows the donor's live authority. A successful
+            // native copy belongs to the recipient and must not borrow it for
+            // the rest of its foreground model/tool/speech admission.
+            const previewBranch = await fixture.branch("preview-recipient");
+            const preview = await prepareReplyConversationKnowledge({
+              ...(await fixture.claim(previewBranch)),
+              originalParticipant: person,
+              getRuntimeConfig: () => fixture.cfg,
+            });
+            if (!preview) {
+              throw new Error("Expected live native preview authority");
+            }
+            try {
+              expect(preview.fragments.map((fragment) => fragment.text).join("\n")).toContain(
+                "The color is yellow.",
+              );
+              preview.assertCurrent();
+              const changed = await addSessionMemberInWorker(donor, {
+                identityId: "synthetic-other-reader",
+                addedBy: "synthetic-owner",
+                expectedSessionId: donor.sessionId,
+              });
+              expect(changed.inserted).toBe(true);
+              expect(() => preview.assertCurrent()).toThrow();
+              expect(() => owner.assertCurrent()).not.toThrow();
+              expect(() => knowledge.assertCurrent()).not.toThrow();
+              expect(
+                (await loadTranscriptEvents(recipient))
+                  .map(asOptionalRecord)
+                  .filter((event) => event?.customType === CONVERSATION_KNOWLEDGE_CONTEXT),
+              ).toEqual(packets);
+            } finally {
+              preview.release();
+              await removeSessionMemberInWorker(
+                donor,
+                "synthetic-other-reader",
+                undefined,
+                donor.sessionId,
+              );
+            }
+
             await knowledge.prepareHistory(run);
             expect(
               (await loadTranscriptEvents(recipient))
@@ -179,6 +226,16 @@ describe("native turn packet writer custody", () => {
             expect((await fixture.read(await fixture.claim(fresh))).text).toContain(
               "The color is yellow.",
             );
+
+            // Copy ownership never replaces the recipient's current authority.
+            await upsertSessionEntryCore(recipient, {
+              ...loadSessionEntry(recipient)!,
+              incognito: true,
+            });
+            expect(() => owner.assertCurrent()).not.toThrow();
+            expect(() => knowledge.assertCurrent()).toThrow();
+            owner.revoke();
+            expect(() => knowledge.assertCurrent()).toThrow("Original scenario input revoked");
           } finally {
             knowledge.release();
             admission.close();
