@@ -173,26 +173,26 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
               }
               events.push(payload);
               if (typeof payload.sessionId === "string" && isRecord(payload.talkEvent)) {
-                const event = payload.talkEvent;
+                const talkEvent = payload.talkEvent;
                 if (
-                  event.type === "session.activity" &&
-                  isRecord(event.payload) &&
-                  isRecord(event.payload.input) &&
-                  typeof event.payload.input.available === "boolean"
+                  talkEvent.type === "session.activity" &&
+                  isRecord(talkEvent.payload) &&
+                  isRecord(talkEvent.payload.input) &&
+                  typeof talkEvent.payload.input.available === "boolean"
                 ) {
-                  inputAvailability.set(payload.sessionId, event.payload.input.available);
-                  if (event.payload.input.available) {
+                  inputAvailability.set(payload.sessionId, talkEvent.payload.input.available);
+                  if (talkEvent.payload.input.available) {
                     inputWaiters.get(payload.sessionId)?.resolve();
                   }
                 } else if (
-                  event.type === "session.error" ||
-                  event.type === "session.closed" ||
-                  event.type === "session.replaced"
+                  talkEvent.type === "session.error" ||
+                  talkEvent.type === "session.closed" ||
+                  talkEvent.type === "session.replaced"
                 ) {
                   inputWaiters
                     .get(payload.sessionId)
                     ?.reject(
-                      new Error(`Talk closed before input readiness: ${JSON.stringify(event)}`),
+                      new Error(`Talk closed before input readiness: ${JSON.stringify(talkEvent)}`),
                     );
                 }
               }
@@ -331,7 +331,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           }
           if (activity && inputAvailability.get(sessionId) !== true) {
             phase = `speech-${index}:input-readiness`;
-            const ready = createDeferred<void>();
+            const ready = createDeferred();
             inputWaiters.set(sessionId, ready);
             try {
               await withinTest(ready.promise, signal);
