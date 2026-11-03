@@ -205,7 +205,7 @@ export async function playLocalMediaInputEnd(params: {
       const captureA = randomUUID(),
         captureB = randomUUID(),
         captureEmpty = randomUUID();
-      const outcomes = new Map(
+      const outcomes = new Map<string, ReturnType<typeof createDeferred<Record<string, unknown>>>>(
         [captureA, captureB, captureEmpty].map((id) => [
           id,
           createDeferred<Record<string, unknown>>(),
