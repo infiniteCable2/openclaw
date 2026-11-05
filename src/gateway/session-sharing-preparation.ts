@@ -45,6 +45,7 @@ import {
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import {
   captureSessionFactsInvalidation,
+  readRetainedSessionSharingFacts,
   reportSessionFactsFailure,
   withSessionFactsFailureDiagnostic,
   type SessionFactsInvalidation,
@@ -552,10 +553,7 @@ export async function prepareSessionMutationFacts(
                     });
                     initializedReads.add(key);
                   }
-                  const current = retained.readCurrent();
-                  if (!current) {
-                    throw new SessionMutationFactsUnavailableError();
-                  }
+                  const current = readRetainedSessionSharingFacts(retained);
                   if (current.entry) {
                     store[sessionKey] = current.entry;
                   }
@@ -668,11 +666,7 @@ export async function prepareSessionMutationFacts(
           assertExistingDatabaseIdentity(source.path, source.identity, source.birthtime);
         }
         for (const read of retainedReads.values()) {
-          if (!read.readCurrent()) {
-            throw new SessionMutationFactsUnavailableError({
-              diagnostic: { reason: "retained-read-unavailable" },
-            });
-          }
+          readRetainedSessionSharingFacts(read);
         }
       };
     }

@@ -6,12 +6,44 @@ vi.mock("../logging/subsystem.js", () => ({ createSubsystemLogger: () => logging
 
 import {
   captureSessionFactsInvalidation,
+  readRetainedSessionSharingFacts,
   reportSessionFactsFailure,
   sessionFactsFailureDiagnostic,
 } from "./session-sharing-facts-diagnostic.js";
 import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
 
 afterEach(() => logging.warn.mockReset());
+
+it.for([true, false])(
+  "reports pending publication separately from unavailable facts: %s",
+  (pending) => {
+    expect(() =>
+      readRetainedSessionSharingFacts({
+        readCurrent: () => undefined,
+        hasPendingPublication: () => pending,
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        diagnostic: { reason: "retained-read-unavailable", publicationPending: pending },
+      }),
+    );
+    expect(
+      sessionFactsFailureDiagnostic(new SessionMutationFactsUnavailableError(), "read"),
+    ).not.toHaveProperty("publicationPending");
+  },
+);
+
+it("returns retained facts unchanged without querying the failure classification", () => {
+  const facts = { entry: undefined, membership: new Set<string>() };
+  const pending = vi.fn(() => true);
+  expect(
+    readRetainedSessionSharingFacts({
+      readCurrent: () => facts,
+      hasPendingPublication: pending,
+    }),
+  ).toBe(facts);
+  expect(pending).not.toHaveBeenCalled();
+});
 
 it("keeps target, arbitrary scope and exception payload out of the diagnostic", () => {
   const firstInvalidation = captureSessionFactsInvalidation("broad-publication", {

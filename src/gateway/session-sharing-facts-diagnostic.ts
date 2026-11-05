@@ -1,3 +1,4 @@
+import type { retainPreparedSessionSharingFacts } from "../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { SessionRowChange } from "../sessions/session-row-changes.js";
 import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
@@ -27,6 +28,8 @@ export type SessionFactsFailure = {
     | "retained-read-unavailable"
     | "source-identity-changed";
   firstInvalidation?: SessionFactsInvalidation;
+  /** Observational only: a pending publication is not a revoked permission. */
+  publicationPending?: boolean;
 };
 
 const scopes = new Set([
@@ -59,6 +62,25 @@ const kinds = new Set([
 ]);
 const log = createSubsystemLogger("gateway/session-facts");
 const reported = new WeakSet<SessionMutationFactsUnavailableError>();
+
+/** Keep native retained-read refusal and its publication classification at one boundary. */
+export function readRetainedSessionSharingFacts(
+  read: Pick<
+    ReturnType<typeof retainPreparedSessionSharingFacts>,
+    "readCurrent" | "hasPendingPublication"
+  >,
+) {
+  const current = read.readCurrent();
+  if (!current) {
+    throw new SessionMutationFactsUnavailableError({
+      diagnostic: {
+        reason: "retained-read-unavailable",
+        publicationPending: read.hasPendingPublication(),
+      },
+    });
+  }
+  return current;
+}
 
 function sourceFrames(error: Error): string[] {
   try {
@@ -125,6 +147,9 @@ export function sessionFactsFailureDiagnostic(
   return {
     phase,
     reason: error.diagnostic?.reason ?? "unclassified",
+    ...(typeof error.diagnostic?.publicationPending === "boolean"
+      ? { publicationPending: error.diagnostic.publicationPending }
+      : {}),
     ...(error.diagnostic?.firstInvalidation
       ? { firstInvalidation: error.diagnostic.firstInvalidation }
       : {}),
