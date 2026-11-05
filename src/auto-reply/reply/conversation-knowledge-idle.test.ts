@@ -308,6 +308,9 @@ it.each(["missing-budget", "config-version", "no-prepared", "busy", "model"] as 
         reason,
         preparedPackets: reason === "no-prepared" ? 0 : 1,
         checkpoint: false,
+        ...(reason === "model"
+          ? { consumptionChanges: 0, capacityChecks: 0, capacityRefusals: 0 }
+          : {}),
       });
       expect(boundary.prepare).not.toHaveBeenCalled();
     } finally {
