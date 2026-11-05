@@ -11,6 +11,7 @@ import * as runRegistry from "../../infra/agent-run-registry.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { admitPreparedConversationKnowledgeWhileIdle } from "./conversation-knowledge-idle.js";
 import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
+import * as knowledgeStatus from "./conversation-knowledge-status.js";
 import type { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
 
 const boundary = vi.hoisted(() => ({
@@ -168,10 +169,19 @@ it("prepares only when no native request has issued a reusable budget", async ()
   }
 });
 
-it.each(["consume", "invalidate", "unchanged", "execution-started-during-read"] as const)(
+it.each([
+  "consume",
+  "invalidate",
+  "unchanged",
+  "execution-started-during-read",
+  "capacity",
+] as const)(
   "does not forward preparation-only mode and continues only after changed work (%s)",
   async (outcome) => {
     const f = fixture();
+    const diagnostics = vi
+      .spyOn(knowledgeStatus, "logConversationKnowledgeIdleDeferral")
+      .mockImplementation(() => {});
     f.stage();
     f.facts.entries[0]!.entry.activeWriterRunId = "settled-user-run";
     f.facts.entries[0]!.entry.status = "done";
@@ -204,6 +214,17 @@ it.each(["consume", "invalidate", "unchanged", "execution-started-during-read"] 
     });
     boundary.prepare.mockImplementation(async (input) => {
       input.assertCurrent();
+      if (outcome === "capacity") {
+        const packet = {
+          role: "custom" as const,
+          customType: "synthetic-idle-capacity",
+          content: "Small prepared fact.",
+          display: false,
+          timestamp: 1,
+        };
+        expect(input.canAdmitPacket?.(packet)).toBe(true);
+        expect(input.canAdmitPacket?.({ ...packet, content: "word ".repeat(120_000) })).toBe(false);
+      }
       if (!input.preparationOnly) {
         if (outcome === "consume") {
           f.cache.consume("synthetic-contribution", 0);
@@ -232,12 +253,63 @@ it.each(["consume", "invalidate", "unchanged", "execution-started-during-read"] 
         retainInHistory: { expectedTranscriptVersion: version },
       });
       expect(f.cache.consumptionRevision).toBe(outcome === "consume" ? 1 : 0);
-      expect(f.cache.preparedPackets(1)).toHaveLength(outcome === "unchanged" ? 1 : 0);
-      if (outcome !== "unchanged") {
+      expect(f.cache.preparedPackets(1)).toHaveLength(
+        outcome === "unchanged" || outcome === "capacity" ? 1 : 0,
+      );
+      if (outcome === "capacity") {
+        expect(diagnostics).toHaveBeenCalledExactlyOnceWith({
+          recipient: branch.sessionId,
+          reason: "capacity",
+          preparedPackets: 1,
+          checkpoint: false,
+          consumptionChanges: 0,
+          capacityChecks: 2,
+          capacityRefusals: 1,
+        });
+      }
+      if (outcome !== "unchanged" && outcome !== "capacity") {
         boundary.prepare.mockClear();
         await expect(admitPreparedConversationKnowledgeWhileIdle(preparation)).resolves.toBe(false);
         expect(boundary.prepare).not.toHaveBeenCalled();
       }
+    } finally {
+      f.cache.clear();
+    }
+  },
+);
+
+it.each(["missing-budget", "config-version", "no-prepared", "busy", "model"] as const)(
+  "reports the native idle deferral reason without dispatching work: %s",
+  async (reason) => {
+    const f = fixture();
+    const diagnostics = vi
+      .spyOn(knowledgeStatus, "logConversationKnowledgeIdleDeferral")
+      .mockImplementation(() => {});
+    if (reason !== "no-prepared") {
+      f.stage();
+    }
+    if (reason === "missing-budget") {
+      f.params.budget = undefined;
+    } else if (reason === "config-version") {
+      const changed = structuredClone(f.params.getRuntimeConfig());
+      f.params.getRuntimeConfig = () => changed;
+    } else if (reason === "busy") {
+      boundary.busy.mockReturnValue(true);
+    } else if (reason === "model") {
+      if (!f.params.budget) {
+        throw new Error("Expected native issued idle budget");
+      }
+      f.params.budget = { ...f.params.budget, model: "other-model" };
+    }
+    try {
+      await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(false);
+      expect(diagnostics).toHaveBeenCalledExactlyOnceWith({
+        recipient: branch.sessionId,
+        reason,
+        preparedPackets: reason === "no-prepared" ? 0 : 1,
+        checkpoint: false,
+      });
+      expect(boundary.prepare).not.toHaveBeenCalled();
     } finally {
       f.cache.clear();
     }
@@ -330,12 +402,18 @@ it("defers pending delivery independently of a settled writer fence", async () =
 
 it("defers an unknown model budget without provider discovery, writes or compaction", async () => {
   const f = fixture();
+  const diagnostics = vi
+    .spyOn(knowledgeStatus, "logConversationKnowledgeIdleDeferral")
+    .mockImplementation(() => {});
   f.stage();
   try {
     await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(false);
     expect(f.read).toHaveBeenCalled();
     expect(boundary.prepare).not.toHaveBeenCalled();
     expect(f.cache.preparedPackets(1)).toHaveLength(1);
+    expect(diagnostics).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ reason: "context-window" }),
+    );
   } finally {
     f.cache.clear();
   }
@@ -343,6 +421,9 @@ it("defers an unknown model budget without provider discovery, writes or compact
 
 it("defers a provider-owned runtime even without a session runtime override", async () => {
   const f = fixture();
+  const diagnostics = vi
+    .spyOn(knowledgeStatus, "logConversationKnowledgeIdleDeferral")
+    .mockImplementation(() => {});
   f.stage();
   const config: OpenClawConfig = {
     agents: { defaults: { model: "synthetic-idle-provider/unknown-model" } },
@@ -366,6 +447,9 @@ it("defers a provider-owned runtime even without a session runtime override", as
     expect(f.read).toHaveBeenCalled();
     expect(boundary.prepare).not.toHaveBeenCalled();
     expect(f.cache.preparedPackets(1)).toHaveLength(1);
+    expect(diagnostics).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ reason: "harness" }),
+    );
   } finally {
     f.cache.clear();
   }

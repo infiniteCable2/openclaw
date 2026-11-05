@@ -5,6 +5,43 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 
 const log = createSubsystemLogger("auto-reply/conversation-knowledge");
 
+export type ConversationKnowledgeIdleDeferralReason =
+  | "missing-budget"
+  | "config-version"
+  | "no-prepared"
+  | "busy"
+  | "context-engine"
+  | "model"
+  | "harness"
+  | "context-window"
+  | "context-unavailable"
+  | "capacity"
+  | "no-progress";
+
+/** Observe the existing idle decision without publishing status into model history. */
+export function logConversationKnowledgeIdleDeferral(params: {
+  recipient: string;
+  reason: ConversationKnowledgeIdleDeferralReason;
+  preparedPackets: number;
+  checkpoint: boolean;
+  consumptionChanges?: number;
+  capacityChecks?: number;
+  capacityRefusals?: number;
+}) {
+  if (!log.isEnabled("debug")) {
+    return;
+  }
+  log.debug("Conversation knowledge idle admission deferred", {
+    recipientHash: redactIdentifier(params.recipient),
+    reason: params.reason,
+    preparedPackets: params.preparedPackets,
+    checkpoint: params.checkpoint,
+    consumptionChanges: params.consumptionChanges ?? 0,
+    capacityChecks: params.capacityChecks ?? 0,
+    capacityRefusals: params.capacityRefusals ?? 0,
+  });
+}
+
 /** Correlate disposable readiness with native admission without recording dialogue. */
 export function logConversationKnowledgeTransfer(params: {
   phase: "prepared" | "admitted";

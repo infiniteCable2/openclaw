@@ -8,6 +8,7 @@ vi.mock("../../logging/subsystem.js", () => ({ createSubsystemLogger: () => log 
 import {
   createConversationKnowledgeGapCollector,
   logConversationKnowledgeDiagnostic,
+  logConversationKnowledgeIdleDeferral,
   logConversationKnowledgeTransfer,
 } from "./conversation-knowledge-status.js";
 
@@ -17,6 +18,40 @@ beforeEach(() => {
 });
 
 describe("operational-only conversation diagnostics", () => {
+  it("reports only correlated idle reasons and observed numeric progress", () => {
+    logConversationKnowledgeIdleDeferral({
+      recipient: "private-idle-recipient",
+      reason: "capacity",
+      preparedPackets: 2,
+      checkpoint: false,
+      consumptionChanges: 1,
+      capacityChecks: 3,
+      capacityRefusals: 2,
+    });
+    expect(log.debug).toHaveBeenCalledExactlyOnceWith(
+      "Conversation knowledge idle admission deferred",
+      {
+        recipientHash: redactIdentifier("private-idle-recipient"),
+        reason: "capacity",
+        preparedPackets: 2,
+        checkpoint: false,
+        consumptionChanges: 1,
+        capacityChecks: 3,
+        capacityRefusals: 2,
+      },
+    );
+    expect(JSON.stringify(log.debug.mock.calls)).not.toContain("private-idle-recipient");
+    log.debug.mockClear();
+    log.isEnabled.mockReturnValue(false);
+    logConversationKnowledgeIdleDeferral({
+      recipient: "private-idle-recipient",
+      reason: "missing-budget",
+      preparedPackets: 2,
+      checkpoint: false,
+    });
+    expect(log.debug).not.toHaveBeenCalled();
+  });
+
   it("logs one bounded, correlated event without raw source or endpoint identifiers", () => {
     const { gaps, gap } = createConversationKnowledgeGapCollector();
     for (let index = 0; index < 5; index++) {

@@ -352,8 +352,7 @@ export function prepareConversationKnowledgeRecipient(params: {
             consumed = await admitPreparedConversationKnowledgeWhileIdle({
               ...preparation,
               branch,
-              budget:
-                contextBudget?.config === params.getRuntimeConfig() ? contextBudget : undefined,
+              budget: contextBudget,
             });
           } catch (error) {
             // A failed admission may already have retired source custody. Its

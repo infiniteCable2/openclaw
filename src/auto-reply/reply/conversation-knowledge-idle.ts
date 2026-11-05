@@ -28,6 +28,10 @@ import {
   beginSessionWorkAdmission,
   isSessionWorkAdmissionActive,
 } from "../../sessions/session-lifecycle-admission.js";
+import {
+  logConversationKnowledgeIdleDeferral,
+  type ConversationKnowledgeIdleDeferralReason,
+} from "./conversation-knowledge-status.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
 import type { ReplyConversationKnowledgeParams } from "./conversation-knowledge.types.js";
 
@@ -84,15 +88,29 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
   const { branch, reader, sourceCache, budget } = params;
   const target = captureSessionTranscriptTargetBinding({ ...branch, env: reader.database.env });
   const lane = resolveSessionLane(branch.sessionKey);
+  const defer = (reason: ConversationKnowledgeIdleDeferralReason) => {
+    logConversationKnowledgeIdleDeferral({
+      recipient: branch.sessionId,
+      reason,
+      preparedPackets: sourceCache?.diagnosticCapacity().preparedPackets ?? 0,
+      checkpoint: sourceCache?.preparedCheckpoint !== undefined,
+    });
+    return false;
+  };
+  if (!budget) {
+    return defer("missing-budget");
+  }
+  if (params.getRuntimeConfig() !== budget.config) {
+    return defer("config-version");
+  }
+  if (!sourceCache || (!sourceCache.preparedCheckpoint && !sourceCache.preparedPackets(1).length)) {
+    return defer("no-prepared");
+  }
   if (
-    !budget ||
-    params.getRuntimeConfig() !== budget.config ||
-    !sourceCache ||
-    (!sourceCache.preparedCheckpoint && !sourceCache.preparedPackets(1).length) ||
     getQueueSize(lane) > 0 ||
     isSessionWorkAdmissionActive(branch.storePath, [branch.sessionKey, branch.sessionId])
   ) {
-    return false;
+    return defer("busy");
   }
   // The persisted writer ID fences future commits; native completion need not
   // clear it. Runtime owners, rather than that durable ID, establish activity.
@@ -103,7 +121,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
     (entry?.activeWriterRunId !== undefined &&
       hasAgentRunContextExecutionOwner(entry.activeWriterRunId));
   if (executing()) {
-    return false;
+    return defer("busy");
   }
   const queued = new AbortController();
   const owner = tryCreateIdleSessionMaintenanceOwner({
@@ -111,12 +129,15 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
     abortSignal: params.signal ? AbortSignal.any([params.signal, queued.signal]) : queued.signal,
   });
   if (!owner) {
-    return false;
+    return defer("busy");
   }
   const assertCurrent = composeSessionSourceAssertion([params.assertCurrent, owner.assertCurrent]);
   const before = sourceCache.consumptionRevision;
   const preparedBefore = sourceCache.diagnosticCapacity().preparedPackets;
   const checkpointBefore = sourceCache.preparedCheckpoint;
+  let reason: ConversationKnowledgeIdleDeferralReason = "no-progress";
+  let capacityChecks = 0;
+  let capacityRefusals = 0;
   try {
     await owner.track(
       owner.run(() =>
@@ -144,6 +165,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                     if (!isIdleEntry(entry, branch) || executing(entry)) {
                       // Ordinary contention retains prepared work for the
                       // next owner-settlement signal; it is not a lane error.
+                      reason = "busy";
                       return;
                     }
                     const expected = structuredClone(entry);
@@ -184,6 +206,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                 try {
                   await admission.run(async () => {
                     if (!entry || !source || !isIdleEntry(entry, branch)) {
+                      reason = "busy";
                       return;
                     }
                     const cfg = params.getRuntimeConfig();
@@ -191,12 +214,14 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                       cfg.plugins?.slots?.contextEngine &&
                       cfg.plugins.slots.contextEngine !== "legacy"
                     ) {
+                      reason = "context-engine";
                       return;
                     }
                     const model = resolveSessionModelRef(cfg, entry, branch.agentId, {
                       allowPluginNormalization: false,
                     });
                     if (model.provider !== budget.provider || model.model !== budget.model) {
+                      reason = "model";
                       return;
                     }
                     const runtimePolicy = (
@@ -226,6 +251,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                     };
                     const harness = runtimePolicy(cfg);
                     if (!harness?.builtIn) {
+                      reason = "harness";
                       return;
                     }
                     const contextWindow = resolveContextTokensForModelFromCache({
@@ -234,6 +260,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                       allowUnscopedModelLookup: false,
                     });
                     if (!contextWindow || contextWindow !== budget.value.contextWindow) {
+                      reason = "context-window";
                       return;
                     }
                     const compactionPolicy = structuredClone(cfg.agents?.defaults?.compaction);
@@ -253,9 +280,19 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                     );
                     source();
                     if (!snapshot.version) {
+                      reason = "context-unavailable";
                       return;
                     }
-                    const canAdmit = budget.value.capacityForMessages(snapshot.messages);
+                    const capacity = budget.value.capacityForMessages(snapshot.messages);
+                    const canAdmit: typeof capacity = (message) => {
+                      capacityChecks++;
+                      const allowed = capacity(message);
+                      if (!allowed) {
+                        capacityRefusals++;
+                        reason = "capacity";
+                      }
+                      return allowed;
+                    };
                     const check = composeSessionSourceAssertion([source], (assertSource) => {
                       assertSource();
                       const current = params.getRuntimeConfig();
@@ -336,13 +373,25 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
     if (!owner.signal.aborted && !isAbortError(error)) {
       throw error;
     }
+    reason = "busy";
   }
   // A failed native CAS can retire prepared packets without consuming history.
   // Let the existing owner reprepare that lost work once; ordinary metadata
   // publication and an unchanged over-budget queue must not create a retry loop.
-  return (
+  const progressed =
     sourceCache.consumptionRevision !== before ||
     sourceCache.diagnosticCapacity().preparedPackets < preparedBefore ||
-    (checkpointBefore !== undefined && sourceCache.preparedCheckpoint === undefined)
-  );
+    (checkpointBefore !== undefined && sourceCache.preparedCheckpoint === undefined);
+  if (!progressed || capacityRefusals > 0) {
+    logConversationKnowledgeIdleDeferral({
+      recipient: branch.sessionId,
+      reason,
+      preparedPackets: sourceCache.diagnosticCapacity().preparedPackets,
+      checkpoint: sourceCache.preparedCheckpoint !== undefined,
+      consumptionChanges: sourceCache.consumptionRevision - before,
+      capacityChecks,
+      capacityRefusals,
+    });
+  }
+  return progressed;
 }
