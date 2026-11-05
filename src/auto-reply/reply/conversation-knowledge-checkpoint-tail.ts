@@ -1,4 +1,7 @@
-import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
+import {
+  conversationKnowledgeCheckpointRangeDigest,
+  type PreparedConversationKnowledgeCheckpointCoverage,
+} from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
 import type { PreparedRootKnowledgeContribution } from "./conversation-knowledge-checkpoint-range.js";
@@ -33,6 +36,18 @@ export function createConversationKnowledgeCheckpointTail() {
     },
     get(id: string) {
       return entries.get(id)?.value;
+    },
+    assertRange(value: PreparedRootKnowledgeContribution) {
+      if (
+        conversationKnowledgeCheckpointRangeDigest(value.reference, value.packet) !==
+        conversationKnowledgeCheckpointRangeDigest(value.reference, {
+          through: value.reference.readRange?.through ?? value.reference.through,
+          from: value.reference.readRange?.admission ?? value.reference.privateAudience?.admission,
+        })
+      ) {
+        evict(value.contributionId);
+        throw new Error("Checkpoint prepared source bytes changed");
+      }
     },
     values() {
       return Array.from(entries.values(), ({ value }) => value);

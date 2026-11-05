@@ -24,7 +24,7 @@ vi.mock("../../config/sessions/conversation-knowledge-seed.js", () => ({
 vi.mock("./conversation-knowledge-prefetch.js", () => ({
   prepareConversationKnowledgeRecipient: boundary.register,
 }));
-// mock-isolation: Test root-only enrollment without launching the existing detached RootOwner.
+// mock-isolation: Test startup enrollment without launching the existing detached RootOwner.
 vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
   registerConversationKnowledgeCheckpointOwner: boundary.root,
 }));
@@ -88,7 +88,7 @@ beforeEach(() => {
 });
 
 describe("opening a private conversation recipient", () => {
-  it("prepares only an existing private root without creating recipient state or backfilling history", async () => {
+  it("restores root and recipient preparation before input without creating or backfilling history", async () => {
     const { params, release, reader } = fixture();
     const close = vi.fn(async () => {});
     boundary.root.mockReturnValue({ close });
@@ -118,7 +118,16 @@ describe("opening a private conversation recipient", () => {
       }),
     );
     expect(boundary.seed).not.toHaveBeenCalled();
-    expect(boundary.register).not.toHaveBeenCalled();
+    expect(boundary.register).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch,
+        participant: params.participant,
+        audience: params.audience,
+      }),
+    );
+    expect(release.mock.invocationCallOrder[0]).toBeLessThan(
+      boundary.register.mock.invocationCallOrder[0]!,
+    );
     expect(release).toHaveBeenCalledOnce();
     await registration?.close();
     expect(close).toHaveBeenCalledOnce();
@@ -144,12 +153,13 @@ describe("opening a private conversation recipient", () => {
       await expect(openConversationKnowledgeRoot(params)).resolves.toBeUndefined();
       expect(boundary.root).not.toHaveBeenCalled();
       expect(boundary.seed).not.toHaveBeenCalled();
+      expect(boundary.register).not.toHaveBeenCalled();
       expect(release).toHaveBeenCalledOnce();
     },
   );
 
   it.each(["old-remote", "shared-owner", "different-person", "partial-roster"])(
-    "prepares only the current attested person's root despite historical %s metadata",
+    "prepares the current attested person's view without relabeling historical %s metadata",
     async (history) => {
       const { params, reader, release } = fixture();
       const close = vi.fn(async () => {});
@@ -185,7 +195,13 @@ describe("opening a private conversation recipient", () => {
         expect.objectContaining({ participant: params.participant, audience: params.audience }),
       );
       expect(boundary.seed).not.toHaveBeenCalled();
-      expect(boundary.register).not.toHaveBeenCalled();
+      expect(boundary.register).toHaveBeenCalledWith(
+        expect.objectContaining({
+          branch,
+          participant: params.participant,
+          audience: params.audience,
+        }),
+      );
       await registration?.close();
     },
   );
@@ -229,6 +245,7 @@ describe("opening a private conversation recipient", () => {
     });
     await expect(openConversationKnowledgeRoot(params)).rejects.toThrow("reader cleanup deferred");
     expect(close).toHaveBeenCalledOnce();
+    expect(boundary.register).not.toHaveBeenCalled();
   });
 
   it("seeds and registers before any input, releasing only its native read hold", async () => {

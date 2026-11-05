@@ -24,15 +24,21 @@ type OpenConversationParams = {
   onReady?: () => void;
 };
 
-/** Startup uses only an already private enrolled broker, never a synthetic conversation. */
+/** Restore preparation for an existing private endpoint, without creating a conversation or input. */
 export async function openConversationKnowledgeRoot(params: OpenConversationParams) {
   let registration: ReturnType<typeof registerConversationKnowledgeCheckpointOwner> | undefined;
   try {
-    await openConversationKnowledge(params, true, (value) => {
+    const enrollment = await openConversationKnowledge(params, true, (value) => {
       registration = value;
     });
     params.signal?.throwIfAborted();
     params.audience?.assertCurrent();
+    // The root prepares shared bytes; the existing recipient owner prepares its
+    // independently authorized view. Neither needs a first input or a token budget.
+    // Native model capacity still governs eventual transcript admission.
+    if (enrollment) {
+      prepareConversationKnowledgeRecipient(enrollment);
+    }
     return registration;
   } catch (error) {
     await registration?.close();
@@ -71,7 +77,7 @@ async function openConversationKnowledge(
     audience.sessionKey !== target.sessionKey ||
     resolveAgentConversationMode(params.getRuntimeConfig(), target.agentId) !== "branches"
   ) {
-    return;
+    return undefined;
   }
   const assertCurrent = () => {
     params.signal?.throwIfAborted();
@@ -89,7 +95,7 @@ async function openConversationKnowledge(
     assertCurrent();
     held.databaseClaim.assertCurrent();
     if (!held.entry) {
-      return;
+      return undefined;
     }
     if (target.sessionId !== undefined && held.entry.sessionId !== target.sessionId) {
       throw new Error("Conversation recipient changed before opening");
@@ -104,7 +110,7 @@ async function openConversationKnowledge(
         held.entry.publicShare !== undefined ||
         held.entry.archivedAt !== undefined
       ) {
-        return;
+        return undefined;
       }
     }
     const reader =
@@ -112,7 +118,7 @@ async function openConversationKnowledge(
         ? held.databaseClaim.reader
         : undefined;
     if (!reader) {
-      return;
+      return undefined;
     }
     const check = () => {
       assertCurrent();
@@ -125,7 +131,7 @@ async function openConversationKnowledge(
     });
     check();
     if (!branch) {
-      return;
+      return undefined;
     }
     const enrollment = {
       branch,
@@ -135,8 +141,8 @@ async function openConversationKnowledge(
       getRuntimeConfig: () => params.getRuntimeConfig(),
     };
     if (rootOnly) {
-      // Historical enrollment stays with its native seed owner. Startup only
-      // prepares the root's existing references; it does not backfill dialogue.
+      // Historical enrollment stays with its native seed owner. Restore only
+      // preparation over existing references; do not backfill dialogue.
       retainRoot?.(
         registerConversationKnowledgeCheckpointOwner({
           ...enrollment,
@@ -144,7 +150,7 @@ async function openConversationKnowledge(
           onReady: params.onReady,
         }),
       );
-      return;
+      return enrollment;
     }
     const seed = await ensureConversationKnowledgeSeed({
       reader,
@@ -154,9 +160,10 @@ async function openConversationKnowledge(
     });
     check();
     if (seed.status === "pending") {
-      return;
+      return undefined;
     }
     prepareConversationKnowledgeRecipient(enrollment);
+    return undefined;
   } finally {
     await held.databaseClaim.release();
   }

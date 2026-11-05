@@ -657,6 +657,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/run/attempt-prompt-submit.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-prompt-submit.conversation-context.test.ts",
   "src/auto-reply/reply/conversation-knowledge-prefetch.scenario.test.ts",
+  "src/auto-reply/reply/conversation-knowledge-startup-recipient.scenario.test.ts",
   "src/auto-reply/reply/conversation-knowledge-legacy-quiescence.scenario.test.ts",
   "src/auto-reply/reply/conversation-knowledge-cold-history.scenario.test.ts",
   "src/auto-reply/reply/conversation-knowledge-private-replay.scenario.test.ts",

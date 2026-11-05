@@ -66,6 +66,12 @@ const boundary = vi.hoisted(() => ({
   summarize: vi.fn(),
   load: vi.fn(),
   warn: vi.fn(),
+  preparationYield: vi.fn(),
+}));
+// mock-isolation: Own the cooperative boundary without real timers or changing source custody.
+vi.mock("node:timers/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:timers/promises")>()),
+  setImmediate: boundary.preparationYield,
 }));
 // mock-isolation: Drive one root quantum deterministically; the native lifecycle is separately exercised by prefetch-owner tests.
 vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
@@ -306,6 +312,25 @@ afterEach(async () => {
 });
 
 describe("shared root projection preparation", () => {
+  it("preserves completed tail entries when foreground cancels a bounded source batch", async () => {
+    const f = register();
+    boundary.refs = Array.from({ length: 9 }, (_, index) => reference(index + 1));
+    const controller = new AbortController();
+    boundary.preparationYield.mockImplementationOnce(async () => {
+      expect(boundary.read).toHaveBeenCalledTimes(8);
+      controller.abort(new Error("Foreground acquired admission"));
+      controller.signal.throwIfAborted();
+    });
+    await expect(boundary.owner!.prepare(controller.signal)).rejects.toThrow(
+      "Foreground acquired admission",
+    );
+    expect(f.registration.projection().tail).toHaveLength(8);
+    expect(boundary.frame).not.toHaveBeenCalled();
+    expect(await quantum()).toBe(false);
+    expect(boundary.read).toHaveBeenCalledTimes(9);
+    expect(f.registration.projection().tail).toHaveLength(9);
+  });
+
   it("repairs all disproven same-version packets in one follow-up without rereading healthy originals", async () => {
     const f = register();
     boundary.refs = [reference(1), reference(2), reference(3)];

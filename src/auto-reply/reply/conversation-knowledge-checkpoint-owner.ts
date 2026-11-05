@@ -1,4 +1,5 @@
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
@@ -16,7 +17,6 @@ import {
 } from "../../config/sessions/conversation-knowledge-checkpoint-store.js";
 import {
   createConversationKnowledgeCheckpoint,
-  conversationKnowledgeCheckpointRangeDigest,
   type ConversationKnowledgeCheckpoint,
   type PreparedConversationKnowledgeCheckpointCoverage,
 } from "../../config/sessions/conversation-knowledge-checkpoint.js";
@@ -190,6 +190,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     },
     async prepare(parentSignal) {
       await settle();
+      parentSignal.throwIfAborted();
       const selected = selectBroker();
       const { broker, audience } = selected;
       const controller = new AbortController();
@@ -435,7 +436,12 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         const contributions: PreparedCheckpointContribution[] = [];
         const selectedContributions = new Map<string, PreparedRootKnowledgeContribution>();
         let unavailableContributions = 0;
-        for (const reference of remaining) {
+        for (const [index, reference] of remaining.entries()) {
+          if (index > 0 && index % 8 === 0) {
+            // Cached sources can otherwise keep this quantum entirely in microtasks.
+            await setImmediate(undefined, { signal });
+            check();
+          }
           const id = conversationKnowledgeContributionId(reference);
           let cached = tail.get(id);
           if (!cached) {
@@ -496,20 +502,13 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         if (plan.kind !== "ready") {
           return false;
         }
-        for (const contribution of contributions) {
-          const current = selectedContributions.get(contribution.contributionId)!;
-          if (
-            conversationKnowledgeCheckpointRangeDigest(current.reference, current.packet) !==
-            conversationKnowledgeCheckpointRangeDigest(current.reference, {
-              through: current.reference.readRange?.through ?? current.reference.through,
-              from:
-                current.reference.readRange?.admission ??
-                current.reference.privateAudience?.admission,
-            })
-          ) {
-            tail.evict(contribution.contributionId);
-            throw new Error("Checkpoint prepared source bytes changed");
+        for (const [index, contribution] of contributions.entries()) {
+          if (index > 0 && index % 8 === 0) {
+            await setImmediate(undefined, { signal });
+            check();
           }
+          const current = selectedContributions.get(contribution.contributionId)!;
+          tail.assertRange(current);
           if (!(await sources.validate(current.reference, current.packet))) {
             tail.evict(contribution.contributionId);
             return false;

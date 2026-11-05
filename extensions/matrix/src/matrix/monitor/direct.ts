@@ -18,6 +18,14 @@ type DirectMessageCheck = {
   allowPromotion?: false;
 };
 
+/** Startup may retry an unavailable read after the original token has been revoked. */
+export class MatrixPrivateAudienceReadError extends Error {
+  constructor(cause: unknown) {
+    super("Matrix private audience read unavailable", { cause });
+    this.name = "MatrixPrivateAudienceReadError";
+  }
+}
+
 type DirectRoomTrackerOptions = {
   log?: (message: string) => void;
   /** The owning account generation, not a user's room-routing preference. */
@@ -322,7 +330,7 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
     },
     /** Privacy evidence is independent of DM routing and never promotes a configured room. */
     preparePrivateAudience: async (
-      params: DirectMessageCheck & { senderId: string },
+      params: DirectMessageCheck & { senderId: string; throwOnReadError?: true },
     ): Promise<{ assertCurrent(): void } | undefined> => {
       const { roomId, senderId } = params;
       if (
@@ -383,8 +391,13 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
             }
           },
         };
-      } catch {
-        return deny();
+      } catch (error) {
+        const stillCurrent = current();
+        deny();
+        if (stillCurrent && params.throwOnReadError) {
+          throw new MatrixPrivateAudienceReadError(error);
+        }
+        return undefined;
       }
     },
     isDirectMessage: async (params: DirectMessageCheck): Promise<boolean> => {

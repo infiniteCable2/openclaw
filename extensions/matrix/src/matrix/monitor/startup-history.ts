@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import { retryAsync, sleepWithAbort } from "openclaw/plugin-sdk/retry-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import {
   cloneRuntimeConfigSnapshot,
@@ -25,7 +26,53 @@ type RoomScope = {
   signal: AbortSignal;
   assertCurrent(): void;
   onState(state: RootState): void;
+  failed(): void;
 };
+
+type QualificationPhase =
+  | "account"
+  | "rooms"
+  | "allowlist"
+  | "membership"
+  | "privacy"
+  | "route"
+  | "ingress"
+  | "registration";
+
+class StartupQualificationError extends Error {
+  constructor() {
+    super("Matrix startup qualification remains unavailable");
+  }
+}
+
+function reportQualificationFailure(
+  runtime: RuntimeEnv,
+  phase: QualificationPhase,
+  error: unknown,
+) {
+  const refused = [
+    "AbortError",
+    "ConversationInputAdmissionError",
+    "PersonalConversationReadRefusedError",
+    "SessionMutationAuthorizationChangedError",
+  ];
+  const failureClass =
+    error instanceof StartupQualificationError
+      ? "unavailable"
+      : error instanceof Error &&
+          [
+            ...refused,
+            "SessionMutationFactsUnavailableError",
+            "SessionTranscriptReadFenceError",
+            "MatrixPrivateAudienceReadError",
+            "TimeoutError",
+            "TypeError",
+          ].includes(error.name)
+        ? error.name
+        : "unknown";
+  runtime.log?.("matrix: related-history startup qualification failed", { phase, failureClass });
+  return !refused.includes(failureClass);
+}
 
 /** One healthy account snapshot supplies real endpoint proofs, never synthetic user input. */
 export async function prepareMatrixStartupConversationRoots(params: {
@@ -75,29 +122,45 @@ export async function prepareMatrixStartupConversationRoots(params: {
       throw new Error("Matrix startup conversation configuration changed");
     }
   };
+  const observe = async <T>(phase: QualificationPhase, run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      assertCurrent();
+      if (reportQualificationFailure(params.runtime, phase, error)) {
+        throw new StartupQualificationError();
+      }
+      throw error;
+    }
+  };
   assertCurrent();
   const account = resolveMatrixAccountConfig({ cfg, accountId: params.accountId });
-  const selfUserId = await params.client.getUserId();
+  const selfUserId = await observe("account", () => params.client.getUserId());
   assertCurrent();
-  const rooms = await params.client.getJoinedRooms();
+  const rooms = await observe("rooms", () => params.client.getJoinedRooms());
   assertCurrent();
-  const allowFrom = await resolveMatrixMonitorLiveUserAllowlist({
-    cfg,
-    accountId: params.accountId,
-    entries: account.dm?.allowFrom,
-    startupResolvedEntries: params.startupAllowFrom,
-    runtime: params.runtime,
-    failClosedOnUnresolved: true,
-  });
-  const groupAllowFrom = await resolveMatrixMonitorLiveUserAllowlist({
-    cfg,
-    accountId: params.accountId,
-    entries: account.groupAllowFrom,
-    startupResolvedEntries: params.startupGroupAllowFrom,
-    runtime: params.runtime,
-    failClosedOnUnresolved: true,
-  });
+  const allowFrom = await observe("allowlist", () =>
+    resolveMatrixMonitorLiveUserAllowlist({
+      cfg,
+      accountId: params.accountId,
+      entries: account.dm?.allowFrom,
+      startupResolvedEntries: params.startupAllowFrom,
+      runtime: params.runtime,
+      failClosedOnUnresolved: true,
+    }),
+  );
+  const groupAllowFrom = await observe("allowlist", () =>
+    resolveMatrixMonitorLiveUserAllowlist({
+      cfg,
+      accountId: params.accountId,
+      entries: account.groupAllowFrom,
+      startupResolvedEntries: params.startupGroupAllowFrom,
+      runtime: params.runtime,
+      failClosedOnUnresolved: true,
+    }),
+  );
   assertCurrent();
+  let retryNeeded = false;
   for (const roomId of new Set(rooms)) {
     assertCurrent();
     if (params.roomIds && !params.roomIds.has(roomId)) {
@@ -111,9 +174,15 @@ export async function prepareMatrixStartupConversationRoots(params: {
       assertCurrent();
       scope?.assertCurrent();
     };
+    let phase: QualificationPhase = "membership";
     try {
       const joinedMembers = await readJoinedMatrixMembers(params.client, roomId);
       check();
+      // This helper returns null only after a failed read. Shared/empty membership
+      // is an actual array and remains an ordinary refusal below.
+      if (joinedMembers === null) {
+        throw new StartupQualificationError();
+      }
       if (joinedMembers?.length !== 2 || !joinedMembers.includes(selfUserId)) {
         continue;
       }
@@ -121,9 +190,11 @@ export async function prepareMatrixStartupConversationRoots(params: {
       if (!senderId || !isMatrixQualifiedUserId(senderId)) {
         continue;
       }
+      phase = "privacy";
       const privateAudience = await params.directTracker.preparePrivateAudience({
         roomId,
         senderId,
+        throwOnReadError: true,
       });
       check();
       if (!privateAudience) {
@@ -137,6 +208,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
         allowPromotion: false,
       });
       check();
+      phase = "route";
       const roomInfo = await params.getRoomInfo(roomId);
       check();
       const room = resolveMatrixRoomConfig({
@@ -169,6 +241,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
       if (!bindingOwnerAvailable) {
         continue;
       }
+      phase = "ingress";
       const access = await resolveMatrixMonitorAccessState({
         accountId: params.accountId,
         senderId,
@@ -202,6 +275,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
       if (ingress.ingress.admission !== "dispatch") {
         continue;
       }
+      phase = "registration";
       await prepare({
         ingress,
         scope: {
@@ -218,13 +292,19 @@ export async function prepareMatrixStartupConversationRoots(params: {
         onRootPreparationState: scope ? (state) => scope.onState(state) : undefined,
       });
       check();
-    } catch {
+    } catch (error) {
       assertCurrent();
       if (scope?.signal.aborted) {
         continue;
       }
-      params.runtime.log?.("matrix: related-history startup endpoint preparation deferred");
+      if (reportQualificationFailure(params.runtime, phase, error)) {
+        scope?.failed();
+        retryNeeded = true;
+      }
     }
+  }
+  if (retryNeeded) {
+    throw new StartupQualificationError();
   }
 }
 
@@ -241,6 +321,8 @@ export function createMatrixStartupRootPreparation(
   let all = false;
   const pending = new Set<string>();
   let running: Promise<void> | undefined;
+  let retryController: AbortController | undefined;
+  let retrySleeping = false;
   let closed = params.signal.aborted;
   const report = (state: RootState | "pass-complete") => {
     const counts = { registered: 0, prepared: 0, unavailable: 0 };
@@ -255,54 +337,95 @@ export function createMatrixStartupRootPreparation(
     if (closed || running || params.signal.aborted) {
       return;
     }
+    const controller = new AbortController();
+    retryController = controller;
+    const retrySignal = AbortSignal.any([params.signal, controller.signal]);
     const task = params.runTask(async () => {
-      while (all || pending.size > 0) {
-        if (closed || params.signal.aborted) {
-          break;
+      try {
+        while (all || pending.size > 0) {
+          if (closed || retrySignal.aborted) {
+            break;
+          }
+          params.assertCurrent();
+          const roomIds = all ? undefined : new Set(pending);
+          all = false;
+          pending.clear();
+          await retryAsync(
+            () =>
+              prepareMatrixStartupConversationRoots({
+                ...params,
+                roomIds,
+                scopeForRoom(roomId) {
+                  if (scopes.has(roomId)) {
+                    return undefined;
+                  }
+                  const scope: { controller: AbortController; state: RootState } = {
+                    controller: new AbortController(),
+                    state: "unavailable",
+                  };
+                  scopes.set(roomId, scope);
+                  const signal = AbortSignal.any([params.signal, scope.controller.signal]);
+                  return {
+                    signal,
+                    failed() {
+                      if (!signal.aborted && scopes.get(roomId) === scope) {
+                        scope.controller.abort();
+                        scopes.delete(roomId);
+                      }
+                    },
+                    assertCurrent() {
+                      signal.throwIfAborted();
+                      params.assertCurrent();
+                      if (scopes.get(roomId) !== scope) {
+                        throw new Error("Matrix startup endpoint generation changed");
+                      }
+                    },
+                    onState(state) {
+                      if (signal.aborted || scopes.get(roomId) !== scope) {
+                        return;
+                      }
+                      if (state === "invalidated") {
+                        report(state);
+                        request(roomId);
+                      } else if (scope.state !== state) {
+                        scope.state = state;
+                        report(state);
+                      }
+                    },
+                  };
+                },
+              }),
+            {
+              attempts: 4,
+              minDelayMs: 1_000,
+              maxDelayMs: 8_000,
+              jitter: 0,
+              shouldRetry: (error) =>
+                error instanceof StartupQualificationError && !retrySignal.aborted,
+              sleep: async (ms) => {
+                retrySleeping = true;
+                try {
+                  await sleepWithAbort(ms, retrySignal);
+                } finally {
+                  retrySleeping = false;
+                }
+              },
+              onRetry: ({ attempt, delayMs }) => {
+                retrySleeping = true;
+                params.runtime.log?.("matrix: related-history startup qualification retry", {
+                  attempt,
+                  delayMs,
+                });
+              },
+            },
+          );
+          params.assertCurrent();
+          report("pass-complete");
         }
-        params.assertCurrent();
-        const roomIds = all ? undefined : new Set(pending);
-        all = false;
-        pending.clear();
-        await prepareMatrixStartupConversationRoots({
-          ...params,
-          roomIds,
-          scopeForRoom(roomId) {
-            if (scopes.has(roomId)) {
-              return undefined;
-            }
-            const scope: { controller: AbortController; state: RootState } = {
-              controller: new AbortController(),
-              state: "unavailable",
-            };
-            scopes.set(roomId, scope);
-            const signal = AbortSignal.any([params.signal, scope.controller.signal]);
-            return {
-              signal,
-              assertCurrent() {
-                signal.throwIfAborted();
-                params.assertCurrent();
-                if (scopes.get(roomId) !== scope) {
-                  throw new Error("Matrix startup endpoint generation changed");
-                }
-              },
-              onState(state) {
-                if (signal.aborted || scopes.get(roomId) !== scope) {
-                  return;
-                }
-                if (state === "invalidated") {
-                  report(state);
-                  request(roomId);
-                } else if (scope.state !== state) {
-                  scope.state = state;
-                  report(state);
-                }
-              },
-            };
-          },
-        });
-        params.assertCurrent();
-        report("pass-complete");
+      } catch {
+        if (!retrySignal.aborted) {
+          params.runtime.log?.("matrix: related-history startup qualification deferred");
+        }
       }
     });
     running = task;
@@ -310,6 +433,8 @@ export function createMatrixStartupRootPreparation(
       .finally(() => {
         if (running === task) {
           running = undefined;
+          retryController = undefined;
+          retrySleeping = false;
         }
         if (all || pending.size > 0) {
           schedule();
@@ -320,6 +445,9 @@ export function createMatrixStartupRootPreparation(
   const request = (roomId?: string) => {
     if (closed || params.signal.aborted) {
       return;
+    }
+    if (retrySleeping) {
+      retryController?.abort();
     }
     if (roomId === undefined) {
       for (const scope of scopes.values()) {
@@ -339,6 +467,7 @@ export function createMatrixStartupRootPreparation(
     "abort",
     () => {
       closed = true;
+      retryController?.abort();
       unsubscribeConfig();
       for (const scope of scopes.values()) {
         scope.controller.abort();

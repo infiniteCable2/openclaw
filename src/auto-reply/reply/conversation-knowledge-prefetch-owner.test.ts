@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beginForegroundSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import type { SessionTranscriptAuthority } from "../../config/sessions/session-transcript-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
@@ -127,6 +128,49 @@ afterEach(async () => {
 });
 
 describe("conversation knowledge prefetch lifecycle", () => {
+  it("yields root and recipient preparation to another foreground session without joining them", async () => {
+    const owners = [fixture(), fixture()];
+    const began = owners.map(() => gate());
+    const finish = gate();
+    owners.forEach((f, index) => {
+      f.prepare.mockImplementationOnce(async (signal) => {
+        began[index]!.resolve();
+        await finish.promise;
+        signal.throwIfAborted();
+      });
+    });
+    await Promise.all(began.map((started) => started.promise));
+    const releaseFirst = await beginForegroundSessionMaintenance("session:unrelated-foreground");
+    const releaseSecond = await beginForegroundSessionMaintenance("session:another-foreground");
+    const late = fixture();
+    try {
+      owners.forEach((f) => expect(f.prepare.mock.calls[0]![0].aborted).toBe(true));
+      rootUpdate();
+      finish.resolve();
+      await Promise.all([...owners, late].map((f) => f.owner.wait()));
+      owners.forEach((f) => {
+        expect(f.prepare).toHaveBeenCalledOnce();
+        expect(f.clear).not.toHaveBeenCalled();
+      });
+      expect(late.prepare).not.toHaveBeenCalled();
+      releaseFirst();
+      await Promise.all(owners.map((f) => f.owner.wait()));
+      owners.forEach((f) => expect(f.prepare).toHaveBeenCalledOnce());
+      await late.owner.close();
+      releaseSecond();
+      await Promise.all(owners.map((f) => f.owner.wait()));
+      owners.forEach((f) => {
+        expect(f.prepare).toHaveBeenCalledTimes(2);
+        expect(f.prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
+      });
+      expect(late.prepare).not.toHaveBeenCalled();
+    } finally {
+      finish.resolve();
+      releaseFirst();
+      releaseSecond();
+    }
+  });
+
   it("refreshes watched donor context controls without waking on ordinary transcript appends", async () => {
     const prepare = vi.fn(async () => {});
     const donorKey = "agent:example:donor";

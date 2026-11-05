@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
@@ -512,8 +513,11 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       ) {
         let complete = true;
         const bySource = new Map<string, ConversationKnowledgeReference[]>();
-        for (const reference of references) {
-          check();
+        for (const [index, reference] of references.entries()) {
+          if (index > 0 && index % 8 === 0) {
+            await setImmediate(undefined, { signal: params.signal });
+          }
+          workCheck();
           assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
           if (
             reference.source.sessionKey === branch.sessionKey &&
@@ -540,8 +544,13 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           values.push(reference);
           bySource.set(key, values);
         }
+        let checkedGroups = 0;
         for (const contributions of bySource.values()) {
-          check();
+          if (checkedGroups > 0 && checkedGroups % 8 === 0) {
+            await setImmediate(undefined, { signal: params.signal });
+          }
+          checkedGroups++;
+          workCheck();
           const available = await readAvailableSource(contributions[0]!, async () => {
             const selectedGroup = await prepareCheckpointGroupRead({
               branch,
@@ -569,19 +578,24 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                 "Checkpoint grouped source lifecycle is unavailable",
               );
             }
-            const selectedRanges = contributions.map((reference) => {
+            const selectedRanges = [];
+            for (const [index, reference] of contributions.entries()) {
+              if (index > 0 && index % 8 === 0) {
+                await setImmediate(undefined, { signal: params.signal });
+                workCheck();
+              }
               const range = grant.selectContribution(reference);
               if (!range?.version) {
                 throw new SessionTranscriptReadFenceError(
                   "Checkpoint grouped source range is unavailable",
                 );
               }
-              return {
+              selectedRanges.push({
                 reference,
                 range: { ...range, version: range.version },
                 packet: cachedPackets?.get(conversationKnowledgeContributionId(reference)),
-              };
-            });
+              });
+            }
             if (
               !(await validateCheckpointCachedPackets({
                 selected: selectedRanges,
@@ -604,7 +618,11 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
               );
             }
             const selected = [];
-            for (const { reference, range, packet } of selectedRanges) {
+            for (const [index, { reference, range, packet }] of selectedRanges.entries()) {
+              if (index > 0 && index % 8 === 0) {
+                await setImmediate(undefined, { signal: params.signal });
+                workCheck();
+              }
               if (packet) {
                 recordVersionProof(
                   reference,

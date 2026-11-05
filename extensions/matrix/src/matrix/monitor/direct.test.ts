@@ -324,6 +324,56 @@ describe("createDirectRoomTracker", () => {
   });
 
   it.each(["self", "state", "dm"] as const)(
+    "reports an opted-in %s read failure only after revoking the prior private token",
+    async (stage) => {
+      const client = createMockClient({ isDm: true });
+      const invalidated = vi.fn();
+      const tracker = createDirectRoomTracker(client, { onAudienceInvalidated: invalidated });
+      const error = new Error("private transport details");
+      try {
+        const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
+        expect(first).toBeDefined();
+        if (stage === "self") {
+          client.getUserId.mockRejectedValueOnce(error);
+        } else if (stage === "state") {
+          client.doRequest.mockRejectedValueOnce(error);
+        } else {
+          client.dms.update.mockRejectedValueOnce(error);
+        }
+        await expect(
+          tracker.preparePrivateAudience({
+            ...DEFAULT_DIRECT_CHECK,
+            throwOnReadError: true,
+          }),
+        ).rejects.toMatchObject({ name: "MatrixPrivateAudienceReadError", cause: error });
+        expect(() => first?.assertCurrent()).toThrow("no longer current");
+        expect(invalidated).not.toHaveBeenCalled();
+        // Existing message callers still receive no audience after a failed read.
+        client.doRequest.mockRejectedValueOnce(error);
+        await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
+      } finally {
+        tracker.dispose();
+      }
+    },
+  );
+
+  it("does not turn refused or concurrently revoked privacy into a retryable read failure", async () => {
+    const client = createMockClient({ isDm: true, roomState: [] });
+    const tracker = createDirectRoomTracker(client);
+    const input = { ...DEFAULT_DIRECT_CHECK, throwOnReadError: true as const };
+    try {
+      await expect(tracker.preparePrivateAudience(input)).resolves.toBeUndefined();
+      client.doRequest.mockImplementationOnce(async () => {
+        tracker.invalidateRoom(DEFAULT_DIRECT_CHECK.roomId);
+        throw new Error("transport failed after revocation");
+      });
+      await expect(tracker.preparePrivateAudience(input)).resolves.toBeUndefined();
+    } finally {
+      tracker.dispose();
+    }
+  });
+
+  it.each(["self", "state", "dm"] as const)(
     "refuses room invalidation during the awaited %s preparation",
     async (stage) => {
       const client = createMockClient({ isDm: true });

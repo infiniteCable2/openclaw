@@ -29,6 +29,12 @@ const boundary = vi.hoisted(() => ({
   personal: vi.fn(),
   targetRelease: vi.fn(),
   debug: vi.fn(),
+  preparationYield: vi.fn(),
+}));
+// mock-isolation: Control the native batch yield without scheduling timers or media work.
+vi.mock("node:timers/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:timers/promises")>()),
+  setImmediate: boundary.preparationYield,
 }));
 // mock-isolation: Supply native root provenance without opening storage or indexing histories.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
@@ -230,6 +236,37 @@ afterEach(() => {
 });
 
 describe("checkpoint unavailable source custody", () => {
+  it("stops large verification scans at the cooperative boundary without revoking published custody", async () => {
+    const references = Array.from({ length: 9 }, (_, index) => {
+      const value = reference(`generation-${index}`);
+      value.source.sessionKey = "agent:example:foreign";
+      value.through.sessionKey = value.source.sessionKey;
+      value.origin = conversationKnowledgeOrigin(value.source, "utterance-observation");
+      return value;
+    });
+    boundary.root = references.map((details) => ({
+      type: "custom_message",
+      customType: "openclaw.conversation-utterance.v1",
+      details,
+    }));
+    const controller = new AbortController();
+    const held = await sources(() => {}, {
+      signal: controller.signal,
+      authority: { signal: new AbortController().signal, assertCurrent() {} },
+    });
+    const published = held.source();
+    boundary.preparationYield.mockImplementationOnce(async () => {
+      controller.abort(new Error("Foreground acquired admission"));
+      controller.signal.throwIfAborted();
+    });
+    await expect(held.verifyAll(held.references, () => {})).rejects.toThrow(
+      "Foreground acquired admission",
+    );
+    expect(boundary.preparationYield).toHaveBeenCalledOnce();
+    expect(boundary.group).not.toHaveBeenCalled();
+    expect(() => published()).not.toThrow();
+  });
+
   it("checks each source owner once while retaining both native predicates and live revocation", async () => {
     const live = { parent: true, target: true, audience: true };
     const parent = Object.assign(

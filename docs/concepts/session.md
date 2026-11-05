@@ -182,13 +182,21 @@ In branch mode, opening an authorized private conversation starts background
 source preparation without manufacturing a user input. Committed root updates wake its
 existing database-lifetime owner; notifications carry no dialogue or read permission.
 Healthy channel startup can register an already enrolled private conversation
-before its first input. Endpoint, enrollment, or authorization changes require
+and prepare its recipient view before its first input. This reuses the same
+recipient owner as an ordinary connection; it neither creates a dialogue nor
+backfills historical enrollment. Endpoint, enrollment, or authorization changes require
 fresh native admission; a skipped registration is retried on the corresponding
 state change rather than by polling or manufacturing a turn.
 One coalesced, read-only scheduler prepares bounded source segments fairly across
 open recipients. Each quantum releases shared background capacity. A transient
 preparation failure receives a cancellable retry with bounded backoff, without
 waiting for another user input. Closing or revoking a recipient cancels that work.
+Native foreground admission pauses optional root and recipient preparation across
+sessions. Completed segments and pending source notifications are retained;
+the last foreground release resumes preparation without polling. Journal
+publication and atomic write settlement continue. Already prepared observations
+remain available at the running turn's safe boundaries. Long foreground work can
+therefore defer preparation of newly published observations.
 Disposable caches are bounded per recipient; cache capacity does not acknowledge
 unread data or remove references from the root.
 Unchanged root references and recipient progress reuse separate background
@@ -208,6 +216,11 @@ the observations prepared for a later safe boundary. Native owner availability
 and selected donor changes schedule retries without polling or a new user turn.
 When no live preparation remains, an opening rebuilds it from the existing root
 and durable packet receipts.
+
+After a restart, source preparation does not wait for a model request. The
+prepared observations remain available for the first native model boundary,
+which checks its actual system/tool footprint before admitting them. Preparing
+context is not evidence of durable admission or permission to guess that budget.
 
 Root checkpoints bound the context offered to new branches. A separate background
 owner prepares an audience-scoped summary when the projected context reaches the

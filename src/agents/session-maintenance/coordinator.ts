@@ -43,10 +43,13 @@ const state = resolveGlobalSingleton(
   Symbol.for("openclaw.sessionMaintenance"),
   () => ({
     sequence: 0,
+    foreground: 0,
+    foregroundListeners: new Set<(active: boolean) => void>(),
     sessions: new Map<string, SessionMaintenance>(),
     current: new AsyncLocalStorage<ReadonlySet<MaintenanceOwner>>(),
   }),
   (current) => {
+    current.foregroundListeners.clear();
     for (const session of current.sessions.values()) {
       session.availabilityListeners?.clear();
       for (const owner of session.owners) {
@@ -55,6 +58,31 @@ const state = resolveGlobalSingleton(
     }
   },
 );
+
+function notifyForegroundActivity(): void {
+  for (const listener of state.foregroundListeners) {
+    try {
+      listener(state.foreground > 0);
+    } catch {
+      // Optional preparation cannot prevent a native foreground owner from settling.
+      log.warn("Session maintenance foreground observer failed");
+    }
+  }
+}
+
+/** Scheduling only: optional read-ahead yields across sessions without joining their work. */
+export function onForegroundSessionMaintenanceChange(listener: (active: boolean) => void) {
+  state.foregroundListeners.add(listener);
+  try {
+    listener(state.foreground > 0);
+  } catch (error) {
+    state.foregroundListeners.delete(listener);
+    throw error;
+  }
+  return () => {
+    state.foregroundListeners.delete(listener);
+  };
+}
 
 function sessionState(key: string): SessionMaintenance {
   let session = state.sessions.get(key);
@@ -123,6 +151,7 @@ function independentOwners(
 }
 
 registerAgentEventLifecycleRotationHandler("session-maintenance", () => {
+  state.foregroundListeners.clear();
   for (const session of state.sessions.values()) {
     session.availabilityListeners?.clear();
     for (const owner of session.owners) {
@@ -235,6 +264,10 @@ export async function beginForegroundSessionMaintenance(sessionKey?: string): Pr
   }
   const session = sessionState(key);
   session.foreground += 1;
+  state.foreground += 1;
+  if (state.foreground === 1) {
+    notifyForegroundActivity();
+  }
   let released = false;
   const release = () => {
     if (released) {
@@ -242,6 +275,10 @@ export async function beginForegroundSessionMaintenance(sessionKey?: string): Pr
     }
     released = true;
     session.foreground -= 1;
+    state.foreground -= 1;
+    if (!state.foreground) {
+      notifyForegroundActivity();
+    }
     if (!session.foreground) {
       for (const wake of session.wake) {
         wake();

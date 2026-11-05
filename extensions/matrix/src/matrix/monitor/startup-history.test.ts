@@ -72,9 +72,234 @@ function fixture() {
   return { cfg, core, client, tracker, params, prepare, admit, abort };
 }
 
+function startupTaskFixture() {
+  const f = fixture();
+  f.client.getJoinedRooms.mockResolvedValue([roomId]);
+  const firstRetry = Promise.withResolvers<void>();
+  const tasks: Promise<void>[] = [];
+  let configChanged = () => {};
+  vi.mocked(f.core.config.subscribe).mockImplementation((listener) => {
+    configChanged = listener;
+    return () => {};
+  });
+  const log = vi.fn((...args: unknown[]) => {
+    if (args[0] === "matrix: related-history startup qualification retry") {
+      firstRetry.resolve();
+    }
+  });
+  const preparation = createMatrixStartupRootPreparation({
+    ...f.params,
+    runtime: { ...f.params.runtime, log },
+    runTask(task) {
+      const pending = Promise.resolve().then(task);
+      tasks.push(pending);
+      return pending;
+    },
+  });
+  return {
+    ...f,
+    preparation,
+    tasks,
+    log,
+    firstRetry,
+    configChanged: () => configChanged(),
+    async close() {
+      f.abort.abort();
+      await Promise.allSettled(tasks);
+      f.tracker.dispose();
+    },
+  };
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("healthy Matrix startup root preparation", () => {
+  it("retries a failed qualification through the account task while keeping successful scopes", async () => {
+    vi.useFakeTimers();
+    const f = startupTaskFixture();
+    const otherRoom = "!other-private:example.test";
+    f.client.getJoinedRooms.mockResolvedValue([roomId, otherRoom]);
+    f.client.getJoinedRoomMembers.mockResolvedValue([self, person]);
+    f.prepare.mockImplementation(async (input) => {
+      input.onRootPreparationState?.("prepared");
+    });
+    f.prepare.mockRejectedValueOnce(new Error("private endpoint https://private.example.test"));
+    try {
+      f.preparation.request();
+      await f.firstRetry.promise;
+      expect(f.prepare).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(f.prepare).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      await f.tasks[0];
+      expect(f.prepare).toHaveBeenCalledTimes(3);
+      expect(
+        f.prepare.mock.calls.filter(([input]) => input.scope.binding.nativeChannelId === otherRoom),
+      ).toHaveLength(1);
+      expect(f.prepare.mock.calls[0]![0].signal?.aborted).toBe(true);
+      expect(f.admit).not.toHaveBeenCalled();
+      expect(f.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+      const diagnostics = JSON.stringify(f.log.mock.calls);
+      expect(diagnostics).toContain('"phase":"registration"');
+      expect(diagnostics).toContain('"failureClass":"unknown"');
+      expect(diagnostics).not.toContain(roomId);
+      expect(diagnostics).not.toContain(person);
+      expect(diagnostics).not.toContain("https://");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await f.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries an account lookup failure before creating any room scope", async () => {
+    vi.useFakeTimers();
+    const f = startupTaskFixture();
+    f.client.getJoinedRooms.mockRejectedValueOnce(new TypeError("private network details"));
+    try {
+      f.preparation.request();
+      await f.firstRetry.promise;
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.log).toHaveBeenCalledWith("matrix: related-history startup qualification failed", {
+        phase: "rooms",
+        failureClass: "TypeError",
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await f.tasks[0];
+      expect(f.prepare).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await f.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an explicit admission refusal event-driven", async () => {
+    vi.useFakeTimers();
+    const f = startupTaskFixture();
+    const error = new Error("private refusal details");
+    error.name = "ConversationInputAdmissionError";
+    f.prepare.mockRejectedValue(error);
+    try {
+      f.preparation.request();
+      await f.tasks[0];
+      expect(f.prepare).toHaveBeenCalledOnce();
+      expect(f.log).toHaveBeenCalledWith("matrix: related-history startup qualification failed", {
+        phase: "registration",
+        failureClass: "ConversationInputAdmissionError",
+      });
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(f.prepare).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await f.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a failed membership read but leaves refused privacy evidence event-driven", async () => {
+    vi.useFakeTimers();
+    const f = startupTaskFixture();
+    f.client.getJoinedRoomMembers.mockRejectedValueOnce(new Error("temporary lookup failure"));
+    // An authoritative private-room refusal on the retry must not create another timer.
+    f.client.doRequest.mockResolvedValue([]);
+    try {
+      f.preparation.request();
+      await f.firstRetry.promise;
+      expect(f.log).toHaveBeenCalledWith("matrix: related-history startup qualification failed", {
+        phase: "membership",
+        failureClass: "unavailable",
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await f.tasks[0];
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.client.getJoinedRoomMembers).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await f.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries rejected private-room state reads without retrying an actual privacy refusal", async () => {
+    vi.useFakeTimers();
+    const f = startupTaskFixture();
+    f.client.doRequest.mockRejectedValueOnce(new Error("private homeserver URL and details"));
+    try {
+      f.preparation.request();
+      await f.firstRetry.promise;
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.log).toHaveBeenCalledWith("matrix: related-history startup qualification failed", {
+        phase: "privacy",
+        failureClass: "MatrixPrivateAudienceReadError",
+      });
+      expect(JSON.stringify(f.log.mock.calls)).not.toContain("homeserver URL");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await f.tasks[0];
+      expect(f.prepare).toHaveBeenCalledOnce();
+      // A later real room event requalifies, but denied state itself starts no retry.
+      f.client.doRequest.mockResolvedValue([]);
+      f.preparation.request(roomId);
+      await f.tasks[1];
+      expect(f.prepare).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await f.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds transient registration retries and rearms on the next native room event", async () => {
+    vi.useFakeTimers();
+    const f = startupTaskFixture();
+    const error = new Error("private transient details");
+    error.name = "SessionMutationFactsUnavailableError";
+    f.prepare.mockRejectedValue(error);
+    try {
+      f.preparation.request();
+      await f.firstRetry.promise;
+      await vi.advanceTimersByTimeAsync(7_000);
+      await f.tasks[0];
+      expect(f.prepare).toHaveBeenCalledTimes(4);
+      expect(f.log).toHaveBeenCalledWith("matrix: related-history startup qualification deferred");
+      expect(vi.getTimerCount()).toBe(0);
+      f.prepare.mockResolvedValue(undefined);
+      f.preparation.request(roomId);
+      await f.tasks[1];
+      expect(f.prepare).toHaveBeenCalledTimes(5);
+      expect(f.tasks).toHaveLength(2);
+    } finally {
+      await f.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["abort", "config"] as const)("retires a pending retry on %s", async (change) => {
+    vi.useFakeTimers();
+    const f = startupTaskFixture();
+    f.prepare.mockRejectedValueOnce(new Error("temporary registration failure"));
+    try {
+      f.preparation.request();
+      await f.firstRetry.promise;
+      if (change === "abort") {
+        f.abort.abort();
+      } else {
+        f.configChanged();
+      }
+      await f.tasks[0];
+      if (change === "config") {
+        await f.tasks[1];
+      }
+      expect(f.prepare).toHaveBeenCalledTimes(change === "abort" ? 1 : 2);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(f.prepare).toHaveBeenCalledTimes(change === "abort" ? 1 : 2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await f.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("admits a configured private channel with DMs disabled, but enforces the room allowlist", async () => {
     const f = fixture();
     const cfg: CoreConfig = {
