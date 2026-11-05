@@ -9,6 +9,7 @@ import {
   connectConversationOperator,
   isolateConversationGatewayEnvironment,
   startConversationModel,
+  waitForConversationTransfer,
 } from "./helpers/conversation-branches-gateway.js";
 import { playLocalMediaInputEnd } from "./helpers/local-media-input-end-play.js";
 import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
@@ -470,13 +471,67 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         phase = "create-talk";
         const first = await openTalk();
         const firstInput = await speak(first, 1);
+        // Observe the logical recipient before a further real speech round.
+        // No recipient read may refresh its facts during the idle proof below.
+        const idleRecipient = connectedActivity
+          ? await operator.call<{ session: { sessionId: string } | null }>("sessions.describe", {
+              key: voiceKey,
+            })
+          : undefined;
+        if (connectedActivity) {
+          expect(idleRecipient?.session).not.toBeNull();
+        }
         // Immediate follow-ups exercise genuine admission and asynchronous
         // preparation races, without holding or replacing their native owners.
         await speak(first, 2);
-        await sendChat("SECOND_SIBLING_FACT_AMBER_94");
+        const secondFact = "SECOND_SIBLING_FACT_AMBER_94";
+        const idleStartedAt = performance.now();
+        const requestsBeforeSibling = model.requests.length;
+        if (connectedActivity) {
+          phase = "connected-idle-sibling-admission";
+          drainPlayback();
+        }
+        await sendChat(secondFact);
+        if (connectedActivity) {
+          const source = await operator.call<{ session: { sessionId: string } }>(
+            "sessions.describe",
+            { key: chatKey },
+          );
+          const history = await operator.call<{
+            messages: Array<{
+              role: string;
+              content: unknown;
+              __openclaw?: { transcriptPosition?: { rawSeq?: number } };
+            }>;
+          }>("chat.history", { sessionKey: chatKey, limit: 100 });
+          const sequence = history.messages.find(
+            (message) =>
+              message.role === "user" && JSON.stringify(message.content).includes(secondFact),
+          )?.["__openclaw"]?.transcriptPosition?.rawSeq;
+          if (!idleRecipient?.session || typeof sequence !== "number") {
+            throw new Error("Native idle speech recipient or sibling sequence unavailable");
+          }
+          // Keep the Talk connection open with no new capture or model boundary.
+          // Ordinary output/foreground settlement must admit the prepared packet.
+          await waitForConversationTransfer(gateway, signal, {
+            recipientId: idleRecipient.session.sessionId,
+            sourceId: source.session.sessionId,
+            sequence,
+            phase: "admitted",
+          });
+          expect(model.requests).toHaveLength(requestsBeforeSibling + 1);
+          phases.push({
+            phase,
+            durationMs: performance.now() - idleStartedAt,
+            idleModelRequests: model.requests.length - requestsBeforeSibling - 1,
+          });
+        }
         const laterInput = await speak(first, 3);
         expect(laterInput).toContain("SPEECH_INPUT_1");
         expect(laterInput).toContain("SPEECH_INPUT_2");
+        if (connectedActivity) {
+          expect(laterInput.split(secondFact)).toHaveLength(2);
+        }
         await speak(first, 4);
         await closeTalk(first);
         phase = "reopen-talk";
@@ -484,7 +539,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         const reopenedInput = await speak(second, 5);
         await speak(second, 6);
         expect(firstInput).toContain(FACT);
-        expect(laterInput).toContain("SECOND_SIBLING_FACT_AMBER_94");
+        expect(laterInput).toContain(secondFact);
         expect(reopenedInput).toContain(FACT);
         await closeTalk(second);
         await operator.close();
