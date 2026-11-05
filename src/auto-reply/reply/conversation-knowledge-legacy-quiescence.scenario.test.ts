@@ -6,6 +6,7 @@ import {
   registerAgentSessionLoopTestLifecycle,
   streamMocks,
 } from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
+import { conversationKnowledgeAudienceIdentity } from "../../config/sessions/conversation-audience.js";
 import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
@@ -76,7 +77,9 @@ it("settles idle imports past denied legacy pages and wakes only for a new origi
       };
       await state.writeConfig(fixture.cfg);
       const valid = await fixture.branch("valid-legacy-neighbor");
-      const legacy = await fixture.branch("unaudienced-legacy");
+      // A missing saved audience alone is not denial: a current same-person
+      // native roster can authorize ordinary history. This old source has neither.
+      const legacy = await fixture.branch("unconfirmed-legacy", null);
       const unlinked = await fixture.branch("unlinked-legacy", otherPerson);
       const owners = new Map(
         await Promise.all(
@@ -84,6 +87,16 @@ it("settles idle imports past denied legacy pages and wakes only for a new origi
             async (source) => [source, await fixture.claim(source)] as const,
           ),
         ),
+      );
+      const legacyOwner = owners.get(legacy)!;
+      await legacyOwner.reader.withRead(
+        { sessionKeys: [legacy.sessionKey] },
+        legacyOwner.assertCurrent,
+        (facts) => {
+          const entry = facts.entries.find((row) => row.sessionKey === legacy.sessionKey)?.entry;
+          expect(entry).toBeDefined();
+          expect(conversationKnowledgeAudienceIdentity(entry ?? {})).toBeUndefined();
+        },
       );
       const publish = async (source: typeof valid, id: string) => {
         const terminal = await fixture.append(source, id);
@@ -201,11 +214,13 @@ it("settles idle imports past denied legacy pages and wakes only for a new origi
       expect(budget.compact).not.toHaveBeenCalled();
       expect(streamMocks.streamSimple).not.toHaveBeenCalled();
     } finally {
+      // Restore the real clock before joining asynchronous native cleanup;
+      // the assertion clock must not strand a worker or mask the original failure.
+      vi.useRealTimers();
       try {
         cleanupStage = "recipient";
         await prefetch?.owner.close();
       } finally {
-        vi.useRealTimers();
         cleanupStage = "fixture";
         await fixture.close();
         cleanupStage = "complete";
