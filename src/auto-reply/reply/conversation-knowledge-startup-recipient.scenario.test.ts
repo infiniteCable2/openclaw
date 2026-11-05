@@ -38,8 +38,7 @@ import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const model = vi.hoisted(() => ({ summarize: vi.fn(), compact: vi.fn() }));
-// mock-isolation: Supply only model planning metadata; native startup, authority,
-// worker reads, prepared packets and recipient COMMIT remain real.
+// mock-isolation: Isolate model calls; startup, authority, worker reads, packets and COMMIT remain real.
 vi.mock("./conversation-knowledge-checkpoint-model.js", () => ({
   acquireConversationKnowledgeCheckpointModel: async () => ({
     planning: {
