@@ -775,6 +775,11 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
               logs.match(/SessionMutationFactsUnavailableError/gu)?.length ?? 0,
           }),
         );
+      } catch (error) {
+        throw new Error(
+          `Conversation speech fixture failed during ${phase}\n${gateway.logs().slice(-24_000)}`,
+          { cause: error },
+        );
       } finally {
         pendingPlayback?.drained.resolve();
         for (const sessionId of sessions) {
