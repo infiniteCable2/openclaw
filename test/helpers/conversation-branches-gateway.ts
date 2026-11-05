@@ -383,9 +383,12 @@ export function waitForConversationTransfer(
       finish(new Error("Gateway exited before idle conversation context admission"));
     const aborted = () =>
       finish(
-        new Error("idle conversation context admission did not settle", {
-          cause: deadline.reason,
-        }),
+        new Error(
+          `Conversation ${expected.phase ?? "admitted"} did not settle: recipient=${recipient} source=${source} through=${expected.sequence}`,
+          {
+            cause: deadline.reason,
+          },
+        ),
       );
     child.stdout.on("data", inspect);
     child.stderr.on("data", inspect);

@@ -98,10 +98,8 @@ function configuration(baseUrl: string): OpenClawConfig {
 function restartPreparationCounts(
   gateway: Awaited<ReturnType<typeof createOpenClawTestInstance>>,
   recipientId: string,
-  source: { sessionId: string; sequence: number },
 ) {
   const recipient = redactIdentifier(recipientId);
-  const sourceHash = redactIdentifier(source.sessionId);
   const lines = gateway
     .logs()
     .split("\n")
@@ -115,19 +113,19 @@ function restartPreparationCounts(
       (line) =>
         line.includes("Related-history source preparation settled") &&
         line.includes(recipient) &&
-        Array.from(
-          line.matchAll(/"sourceHash"\s*:\s*"([^"]+)"\s*,\s*"throughSeq"\s*:\s*(\d+)/gu),
-        ).some((match) => match[1] === sourceHash && Number(match[2]) >= source.sequence),
+        /"preparingSources"\s*:\s*true/u.test(line) &&
+        /"hasContinuation"\s*:\s*false/u.test(line) &&
+        /"saturated"\s*:\s*false/u.test(line),
     ).length,
   };
 }
 
-/** Observe the restarted native owners without opening a transport or dispatching input. */
+/** Observe native enrollment or settled preparation without dispatching input. */
 function waitForRestartPreparations(
   gateway: Awaited<ReturnType<typeof createOpenClawTestInstance>>,
   signal: AbortSignal,
-  source: { sessionId: string; sequence: number },
   before: Array<{ sessionId: string; restored: number; prepared: number }>,
+  options: { prepared?: boolean } = {},
 ) {
   const child = gateway.child;
   if (!child) {
@@ -149,8 +147,11 @@ function waitForRestartPreparations(
     const inspect = () => {
       if (
         before.every((previous) => {
-          const current = restartPreparationCounts(gateway, previous.sessionId, source);
-          return current.restored > previous.restored && current.prepared > previous.prepared;
+          const current = restartPreparationCounts(gateway, previous.sessionId);
+          return (
+            current.restored > previous.restored &&
+            (options.prepared === false || current.prepared > previous.prepared)
+          );
         })
       ) {
         finish();
@@ -208,7 +209,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
       const events: Array<Record<string, unknown>> = [];
       const inputAvailability = new Map<string, boolean>();
       const inputWaiters = new Map<string, ReturnType<typeof createDeferred<void>>>();
-      const expectedSpeech: Array<{ input: string; reply: string }> = [];
+      const expectedSpeech: Array<{ conversationKey: string; input: string; reply: string }> = [];
       let pendingTurn:
         | {
             sessionId: string;
@@ -399,7 +400,11 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             }
           }
         };
-        const performSpeech = async (existingSessionId: string | undefined, index: number) => {
+        const performSpeech = async (
+          existingSessionId: string | undefined,
+          index: number,
+          conversationKey = voiceKey,
+        ) => {
           const playback = pendingPlayback;
           if (playback) {
             playback.waiting.resolve();
@@ -408,7 +413,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           // Both are permitted: separate transports, or connected follow-ups on
           // the same live media session after the preceding PCM drains locally.
           const ownsTransport = clientProfile === "echo-activity";
-          const sessionId = ownsTransport ? await create() : existingSessionId;
+          const sessionId = ownsTransport ? await create(conversationKey) : existingSessionId;
           if (!sessionId) {
             throw new Error("Talk transport was not opened");
           }
@@ -498,6 +503,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
               );
             }
             expectedSpeech.push({
+              conversationKey,
               input: `SPEECH_INPUT_${index}`,
               reply: `SPOKEN_REPLY_${before + 1}`,
             });
@@ -523,11 +529,15 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             }
           }
         };
-        const speak = async (sessionId: string | undefined, index: number) => {
+        const speak = async (
+          sessionId: string | undefined,
+          index: number,
+          conversationKey = voiceKey,
+        ) => {
           const playback = pendingPlayback;
           const appendsBeforeDrain = appendRequests;
           const requestsBeforeDrain = model.requests.length;
-          const work = performSpeech(sessionId, index);
+          const work = performSpeech(sessionId, index, conversationKey);
           void work.catch(() => {});
           try {
             if (playback) {
@@ -623,9 +633,9 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         expect(laterInput).toContain(secondFact);
         expect(reopenedInput).toContain(FACT);
         await closeTalk(second);
-        let restartSource: { sessionId: string; sequence: number } | undefined;
         const restartRecipients: Array<{ sessionId: string; restored: number; prepared: number }> =
           [];
+        const dormantKeys: string[] = [];
         const restartFact = "RESTART_SIBLING_FACT_SILVER_52";
         const unrelatedFact = "OTHER_PERSON_PRIVATE_FACT_MAUVE_16";
         if (connectedActivity) {
@@ -637,22 +647,32 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           const ids = [originalRecipient.sessionId];
           for (let index = 0; index < 2; index++) {
             const key = `agent:main:voice:dormant-${index}-${randomUUID()}`;
+            dormantKeys.push(key);
             const dormant = await create(key);
             const described = await operator.call<{ session: { sessionId: string } }>(
               "sessions.describe",
               { key },
             );
             ids.push(described.session.sessionId);
-            const chatSource = await operator.call<{ session: { sessionId: string } }>(
-              "sessions.describe",
-              { key: chatKey },
+            await waitForRestartPreparations(
+              gateway,
+              signal,
+              [
+                {
+                  sessionId: described.session.sessionId,
+                  restored: 0,
+                  prepared: 0,
+                },
+              ],
+              { prepared: false },
             );
-            await waitForConversationTransfer(gateway, signal, {
-              recipientId: described.session.sessionId,
-              sourceId: chatSource.session.sessionId,
-              sequence: 1,
-              phase: "prepared",
+            // Creation may already have copied chat through native initial context;
+            // its pending cache need not offer that same source for delivery again.
+            const inherited = await operator.call<{ messages: unknown[] }>("chat.history", {
+              sessionKey: key,
+              limit: 100,
             });
+            expect(JSON.stringify(inherited.messages)).toContain(FACT);
             await closeTalk(dormant);
           }
           const other = await connectConversationOperator(gateway, "blair@example.test", signal, {
@@ -679,30 +699,10 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             await other.close();
           }
           await sendChat(restartFact);
-          const source = await operator.call<{ session: { sessionId: string } }>(
-            "sessions.describe",
-            { key: chatKey },
-          );
-          const history = await operator.call<{
-            messages: Array<{
-              role: string;
-              content: unknown;
-              __openclaw?: { transcriptPosition?: { rawSeq?: number } };
-            }>;
-          }>("chat.history", { sessionKey: chatKey, limit: 100 });
-          const sequence = history.messages.find(
-            (message) =>
-              message.role === "user" && JSON.stringify(message.content).includes(restartFact),
-          )?.["__openclaw"]?.transcriptPosition?.rawSeq;
-          if (typeof sequence !== "number") {
-            throw new Error("Restart source has no native transcript frontier");
-          }
-          const frontier = { sessionId: source.session.sessionId, sequence };
-          restartSource = frontier;
           restartRecipients.push(
             ...ids.map((sessionId) => ({
               sessionId,
-              ...restartPreparationCounts(gateway, sessionId, frontier),
+              ...restartPreparationCounts(gateway, sessionId),
             })),
           );
         }
@@ -711,18 +711,15 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         phase = "restart-with-existing-personal-branch";
         const requestsBeforeRestart = model.requests.length;
         await gateway.stopGateway();
-        if (restartSource) {
+        if (connectedActivity) {
           // Snapshot only after the old process and its output have joined.
           for (const recipient of restartRecipients) {
-            Object.assign(
-              recipient,
-              restartPreparationCounts(gateway, recipient.sessionId, restartSource),
-            );
+            Object.assign(recipient, restartPreparationCounts(gateway, recipient.sessionId));
           }
         }
         await gateway.startGateway();
-        if (restartSource) {
-          await waitForRestartPreparations(gateway, signal, restartSource, restartRecipients);
+        if (connectedActivity) {
+          await waitForRestartPreparations(gateway, signal, restartRecipients);
           expect(restartRecipients).toHaveLength(3);
           // No new login, Talk creation or model input has re-enrolled these recipients.
           expect(model.requests).toHaveLength(requestsBeforeRestart);
@@ -749,16 +746,31 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         }
         const afterSibling = await speak(third, 9);
         expect(afterSibling).toContain("LIVE_SIBLING_FACT_TEAL_28");
+        if (connectedActivity) {
+          await closeTalk(third);
+          for (const [index, conversationKey] of dormantKeys.entries()) {
+            const resumed = await create(conversationKey);
+            const input = await speak(resumed, 10 + index, conversationKey);
+            expect(input).toContain(FACT);
+            expect(input.split(restartFact)).toHaveLength(2);
+            expect(input).not.toContain(unrelatedFact);
+            await closeTalk(resumed);
+          }
+        }
         // Read durable history only after the follow-up sequence. An extra read
         // between captures could refresh a lease and hide a publication race.
-        const history = await operator.call<{ messages: unknown[] }>("chat.history", {
-          sessionKey: voiceKey,
-          limit: 100,
-        });
-        const recorded = JSON.stringify(history.messages);
-        for (const { input, reply } of expectedSpeech) {
-          expect(recorded).toContain(input);
-          expect(recorded).toContain(reply);
+        for (const conversationKey of new Set(expectedSpeech.map((item) => item.conversationKey))) {
+          const history = await operator.call<{ messages: unknown[] }>("chat.history", {
+            sessionKey: conversationKey,
+            limit: 100,
+          });
+          const recorded = JSON.stringify(history.messages);
+          for (const { input, reply } of expectedSpeech.filter(
+            (item) => item.conversationKey === conversationKey,
+          )) {
+            expect(recorded).toContain(input);
+            expect(recorded).toContain(reply);
+          }
         }
         expect(model.errors).toEqual([]);
         // A concurrent background read can defer while session facts publish.
@@ -776,8 +788,17 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           }),
         );
       } catch (error) {
+        const diagnostics = gateway
+          .logs()
+          .split("\n")
+          .filter((line) =>
+            /conversation-knowledge|Reusable conversation|talk native speech|lane task error/u.test(
+              line,
+            ),
+          )
+          .join("\n");
         throw new Error(
-          `Conversation speech fixture failed during ${phase}\n${gateway.logs().slice(-24_000)}`,
+          `Conversation speech fixture failed during ${phase}\n${diagnostics.slice(-24_000)}`,
           { cause: error },
         );
       } finally {
