@@ -16,6 +16,7 @@ import { leaseMcpAppModelContextForSessionTurn } from "../../agents/mcp-ui-resou
 import { resolveReplyExpectation } from "../../agents/reply-completion.js";
 import { createAgentPatchedSessionModelRunGuard } from "../../agents/session-model-auto-revert.js";
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
+import { createRuntimeConfigReader } from "../../config/runtime-snapshot.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
@@ -566,11 +567,19 @@ async function executeAgentTurnOutcome(
           resolveReplyRunTrigger(executionParams) === "user"
             ? await import("./conversation-knowledge-turn.js")
             : undefined;
+        let knowledgeConfig = executionParams.followupRun.run.config;
+        let readKnowledgeConfig: ReturnType<typeof createRuntimeConfigReader> | undefined;
         const conversationKnowledge = knowledgeModule?.createReplyConversationKnowledgeTurn({
           turn: executionParams,
           originalSource,
-          getRuntimeConfig: () =>
-            resolveQueuedReplyRuntimeConfig(executionParams.followupRun.run.config),
+          getRuntimeConfig: () => {
+            const current = executionParams.followupRun.run.config;
+            if (!readKnowledgeConfig || current !== knowledgeConfig) {
+              knowledgeConfig = current;
+              readKnowledgeConfig = createRuntimeConfigReader(current, { capture: true });
+            }
+            return readKnowledgeConfig();
+          },
         });
         const preparedRunAdmission = prepareChannelRunAdmission({
           sourceContext: executionParams.followupRun.run,

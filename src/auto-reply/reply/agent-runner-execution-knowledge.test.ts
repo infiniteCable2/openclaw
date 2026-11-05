@@ -2,6 +2,18 @@ import { inspect } from "node:util";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { RunEmbeddedAgentInternalParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import { fallbackModelAttemptOptions } from "../../agents/test-helpers/model-fallback-runner.test-support.js";
+import {
+  createConfigResolutionFacts,
+  serializeConfigResolutionFacts,
+  setConfigResolutionFacts,
+} from "../../config/resolution-facts.js";
+import * as configMatch from "../../config/runtime-config-snapshot-match.js";
+import {
+  clearRuntimeConfigSnapshot,
+  getRuntimeConfigSnapshot,
+  getRuntimeConfigSourceSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -12,7 +24,12 @@ import {
   setupAgentRunnerExecutionTestState,
   type FallbackRunnerParams,
 } from "./agent-runner-execution.test-support.js";
+import * as runnerUtils from "./agent-runner-utils.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
+
+type KnowledgeTurnInput = Parameters<
+  typeof import("./conversation-knowledge-turn.js").createReplyConversationKnowledgeTurn
+>[0];
 
 const knowledge = vi.hoisted(() => ({ create: vi.fn() }));
 // mock-isolation: This execution-lifetime fixture supplies knowledge receipts without transcript workers.
@@ -58,17 +75,21 @@ function fixture(provider = "anthropic", model = "claude") {
   const record = vi.fn(async () => {
     order.push("record");
   });
-  knowledge.create.mockReturnValue({
-    fragments,
-    assertCurrent,
-    release,
-    prepare,
-    withPublication<T>(run: () => T): T {
-      return run();
-    },
-    prepareSnapshot,
-    prepareHistory,
-    record,
+  const knowledgeInputs: KnowledgeTurnInput[] = [];
+  knowledge.create.mockImplementation((input: KnowledgeTurnInput) => {
+    knowledgeInputs.push(input);
+    return {
+      fragments,
+      assertCurrent,
+      release,
+      prepare,
+      withPublication<T>(run: () => T): T {
+        return run();
+      },
+      prepareSnapshot,
+      prepareHistory,
+      record,
+    };
   });
   followupRun.speechPresentation = {
     speakCommentary: true,
@@ -118,10 +139,131 @@ function fixture(provider = "anthropic", model = "claude") {
     prepareHistory,
     record,
     order,
+    knowledgeInputs,
   };
 }
 
+function restoreRuntimeConfigAfterTest() {
+  const previous = getRuntimeConfigSnapshot();
+  const source = getRuntimeConfigSourceSnapshot();
+  onTestFinished(() => {
+    if (previous) {
+      setRuntimeConfigSnapshot(previous, source ?? undefined);
+    } else {
+      clearRuntimeConfigSnapshot();
+    }
+  });
+}
+
 describe("actual native execution conversation knowledge lifetime", () => {
+  it("binds the native config reader once, follows publications, and rebinds replaced run config", async () => {
+    restoreRuntimeConfigAfterTest();
+    const f = fixture();
+    const runtime = { ...f.params.followupRun.run.config, gateway: { port: 19001 } };
+    setRuntimeConfigSnapshot(runtime, runtime);
+    f.params.followupRun.run.config = structuredClone(runtime);
+    const compares = vi.spyOn(configMatch, "configSnapshotsMatch");
+    const selects = vi.spyOn(runnerUtils, "resolveQueuedReplyRuntimeConfig");
+    onTestFinished(() => {
+      compares.mockRestore();
+      selects.mockRestore();
+    });
+    let probeFailure: unknown;
+    state.runEmbeddedAgentMock.mockImplementationOnce(async () => {
+      try {
+        const read = f.knowledgeInputs[0]?.getRuntimeConfig;
+        if (!read) {
+          throw new Error("Native execution did not register its knowledge config reader");
+        }
+        const initial = read();
+        expect(initial).toEqual(runtime);
+        expect(initial).not.toBe(runtime);
+        expect(Object.isFrozen(initial.gateway)).toBe(true);
+        const admittedComparisons = compares.mock.calls.length;
+        const admittedSelections = selects.mock.calls.length;
+        for (let index = 0; index < 100; index++) {
+          expect(read()).toBe(initial);
+        }
+        expect(compares).toHaveBeenCalledTimes(admittedComparisons);
+        expect(selects).toHaveBeenCalledTimes(admittedSelections);
+
+        const replacement = { ...runtime, gateway: { port: 19002 } };
+        setRuntimeConfigSnapshot(replacement, replacement);
+        const published = read();
+        expect(published).toEqual(replacement);
+        expect(published).not.toBe(initial);
+        expect(read()).toBe(published);
+
+        // A fallback can replace the run's explicitly scoped configuration. Its
+        // mutable values remain visible; native publications cannot overwrite it.
+        const scoped = { ...runtime, gateway: { port: 19003 } };
+        f.params.followupRun.run.config = scoped;
+        expect(read()).toBe(scoped);
+        scoped.gateway.port = 19004;
+        expect(read().gateway?.port).toBe(19004);
+        const latest = { ...runtime, gateway: { port: 19005 } };
+        setRuntimeConfigSnapshot(latest, latest);
+        expect(read()).toBe(scoped);
+        return f.result;
+      } catch (error) {
+        probeFailure = error;
+        throw error;
+      }
+    });
+    const outcome = await executeAgentTurn(f.params);
+    if (probeFailure) {
+      throw probeFailure;
+    }
+    expect(outcome).toMatchObject({
+      outcome: { kind: "settled", status: "ok" },
+    });
+  });
+
+  it("keeps same-value scoped resolution provenance distinct from the native runtime", async () => {
+    restoreRuntimeConfigAfterTest();
+    const f = fixture();
+    const runtime = { ...f.params.followupRun.run.config, gateway: { port: 19001 } };
+    const scoped = structuredClone(runtime);
+    setConfigResolutionFacts(
+      runtime,
+      createConfigResolutionFacts([], new Map([["gateway.port", "EXAMPLE_PORT_A"]])),
+    );
+    setConfigResolutionFacts(
+      scoped,
+      createConfigResolutionFacts([], new Map([["gateway.port", "EXAMPLE_PORT_B"]])),
+    );
+    setRuntimeConfigSnapshot(runtime, runtime);
+    f.params.followupRun.run.config = scoped;
+    let probeFailure: unknown;
+    state.runEmbeddedAgentMock.mockImplementationOnce(async () => {
+      try {
+        const read = f.knowledgeInputs[0]?.getRuntimeConfig;
+        if (!read) {
+          throw new Error("Native execution did not register its knowledge config reader");
+        }
+        expect(read()).toBe(scoped);
+        expect(read()).toEqual(runtime);
+        expect(serializeConfigResolutionFacts(read())).not.toEqual(
+          serializeConfigResolutionFacts(runtime),
+        );
+        scoped.gateway.port = 19002;
+        expect(read().gateway?.port).toBe(19002);
+        expect(runtime.gateway.port).toBe(19001);
+        return f.result;
+      } catch (error) {
+        probeFailure = error;
+        throw error;
+      }
+    });
+    const outcome = await executeAgentTurn(f.params);
+    if (probeFailure) {
+      throw probeFailure;
+    }
+    expect(outcome).toMatchObject({
+      outcome: { kind: "settled", status: "ok" },
+    });
+  });
+
   it("defers native knowledge hydration to its admitted history callback", async () => {
     const f = fixture();
     await expect(executeAgentTurn(f.params)).resolves.toMatchObject({
