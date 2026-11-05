@@ -700,10 +700,9 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           }
           await sendChat(restartFact);
           restartRecipients.push(
-            ...ids.map((sessionId) => ({
-              sessionId,
-              ...restartPreparationCounts(gateway, sessionId),
-            })),
+            ...ids.map((sessionId) =>
+              Object.assign({ sessionId }, restartPreparationCounts(gateway, sessionId)),
+            ),
           );
         }
         await operator.close();
