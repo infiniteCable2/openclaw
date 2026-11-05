@@ -462,17 +462,21 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           pendingTurn = turn;
           void turn.completion.promise.catch(() => {});
           const eventStart = events.length;
+          const inputText = `SPEECH_INPUT_${index}: Please answer briefly.`;
+          // The offline provider decodes text, but the real relay still requires
+          // complete PCM16 samples in every frame, including two-digit rounds.
+          const inputAudio = Buffer.from(inputText + (Buffer.byteLength(inputText) % 2 ? " " : ""));
           try {
             appendRequests++;
             await operator!.call("talk.session.appendAudio", {
               sessionId,
-              audioBase64: Buffer.from(`SPEECH_INPUT_${index}: `).toString("base64"),
+              audioBase64: inputAudio.subarray(0, 16).toString("base64"),
               ...(activity ? { captureId } : {}),
             });
             appendRequests++;
             await operator!.call("talk.session.appendAudio", {
               sessionId,
-              audioBase64: Buffer.from("Please answer briefly.").toString("base64"),
+              audioBase64: inputAudio.subarray(16).toString("base64"),
               ...(activity ? { captureId } : {}),
               endOfInput: true,
             });
