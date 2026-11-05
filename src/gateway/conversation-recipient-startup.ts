@@ -181,7 +181,7 @@ export function startGatewayConversationRecipients(params: {
         throw new AggregateError(
           [error, cleanupError],
           "Conversation recipient cleanup remains pending",
-          { cause: error },
+          { cause: cleanupError },
         );
       }
       throw error;
