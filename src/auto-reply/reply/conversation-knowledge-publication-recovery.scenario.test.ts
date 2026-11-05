@@ -1,3 +1,4 @@
+import "../../config/sessions/session-entry-patch-delivery.test-support.js";
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import { isMainThread } from "node:worker_threads";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
@@ -17,7 +18,6 @@ import {
 } from "../../config/sessions/conversation-knowledge-store.js";
 import { loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
 import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
-import { getSessionEntryPatchDelivery } from "../../config/sessions/session-entry-patch-delivery.test-support.js";
 import { addSessionMemberInWorker } from "../../config/sessions/session-sharing-store.async.js";
 import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
@@ -35,6 +35,9 @@ import {
   createConversationKnowledgeScenario,
   person,
 } from "./conversation-knowledge.scenario.test-support.js";
+
+const { getSessionEntryPatchDelivery } =
+  await import("../../config/sessions/session-entry-patch-delivery.test-support.js");
 
 // Real native source groups, SQLite publications and packet imports; only writer
 // result delivery and the prefetch retry clock are held at existing test seams.
@@ -234,7 +237,15 @@ it("imports a cached donor group after transient publication without another use
           patch: { activeWriterRunId: "publication-next-writer" },
         },
         { skipMaintenance: true },
-      );
+      ).then((result) => {
+        expect(result).toMatchObject({
+          sessionId: donor.sessionId,
+          lifecycleRevision: donor.lifecycleRevision,
+          activeWriterRunId: "publication-next-writer",
+        });
+        expect(delivery.commands).toContain("session.entry.patch.commit");
+        return result;
+      });
       void mutation.catch(() => {});
       await withinTest(
         awaitGateBeforeSettlement(committed.promise, mutation, "Donor missed native COMMIT gate"),
