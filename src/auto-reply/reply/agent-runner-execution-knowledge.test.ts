@@ -168,13 +168,14 @@ describe("actual native execution conversation knowledge lifetime", () => {
       compares.mockRestore();
       selects.mockRestore();
     });
-    let probeFailure: unknown;
+    let probeFailure: Error | undefined;
     state.runEmbeddedAgentMock.mockImplementationOnce(async () => {
       try {
-        const read = f.knowledgeInputs[0]?.getRuntimeConfig;
-        if (!read) {
+        const input = f.knowledgeInputs[0];
+        if (!input) {
           throw new Error("Native execution did not register its knowledge config reader");
         }
+        const read = () => input.getRuntimeConfig();
         const initial = read();
         expect(initial).toEqual(runtime);
         expect(initial).not.toBe(runtime);
@@ -206,7 +207,10 @@ describe("actual native execution conversation knowledge lifetime", () => {
         expect(read()).toBe(scoped);
         return f.result;
       } catch (error) {
-        probeFailure = error;
+        probeFailure =
+          error instanceof Error
+            ? error
+            : new Error("Knowledge config probe failed", { cause: error });
         throw error;
       }
     });
@@ -234,13 +238,14 @@ describe("actual native execution conversation knowledge lifetime", () => {
     );
     setRuntimeConfigSnapshot(runtime, runtime);
     f.params.followupRun.run.config = scoped;
-    let probeFailure: unknown;
+    let probeFailure: Error | undefined;
     state.runEmbeddedAgentMock.mockImplementationOnce(async () => {
       try {
-        const read = f.knowledgeInputs[0]?.getRuntimeConfig;
-        if (!read) {
+        const input = f.knowledgeInputs[0];
+        if (!input) {
           throw new Error("Native execution did not register its knowledge config reader");
         }
+        const read = () => input.getRuntimeConfig();
         expect(read()).toBe(scoped);
         expect(read()).toEqual(runtime);
         expect(serializeConfigResolutionFacts(read())).not.toEqual(
@@ -251,7 +256,10 @@ describe("actual native execution conversation knowledge lifetime", () => {
         expect(runtime.gateway.port).toBe(19001);
         return f.result;
       } catch (error) {
-        probeFailure = error;
+        probeFailure =
+          error instanceof Error
+            ? error
+            : new Error("Knowledge config probe failed", { cause: error });
         throw error;
       }
     });
