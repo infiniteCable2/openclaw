@@ -95,15 +95,27 @@ function configuration(baseUrl: string): OpenClawConfig {
   };
 }
 
+function completeGatewayLogLines(logs: string) {
+  return logs
+    .split("\n")
+    .filter((line) => {
+      // The bounded log tail may start inside an older JSON record.
+      try {
+        return isRecord(JSON.parse(line));
+      } catch {
+        return false;
+      }
+    })
+    .map((line) => line.replaceAll('\\"', '"'));
+}
+
 function restartPreparationCounts(
   gateway: Awaited<ReturnType<typeof createOpenClawTestInstance>>,
   recipientId: string,
+  excludedLines: ReadonlySet<string> = new Set(),
 ) {
   const recipient = redactIdentifier(recipientId);
-  const lines = gateway
-    .logs()
-    .split("\n")
-    .map((line) => line.replaceAll('\\"', '"'));
+  const lines = completeGatewayLogLines(gateway.logs()).filter((line) => !excludedLines.has(line));
   return {
     restored: lines.filter(
       (line) =>
@@ -125,7 +137,7 @@ function waitForRestartPreparations(
   gateway: Awaited<ReturnType<typeof createOpenClawTestInstance>>,
   signal: AbortSignal,
   before: Array<{ sessionId: string; restored: number; prepared: number }>,
-  options: { prepared?: boolean } = {},
+  options: { prepared?: boolean; excludedLines?: ReadonlySet<string> } = {},
 ) {
   const child = gateway.child;
   if (!child) {
@@ -147,7 +159,11 @@ function waitForRestartPreparations(
     const inspect = () => {
       if (
         before.every((previous) => {
-          const current = restartPreparationCounts(gateway, previous.sessionId);
+          const current = restartPreparationCounts(
+            gateway,
+            previous.sessionId,
+            options.excludedLines,
+          );
           return (
             current.restored > previous.restored &&
             (options.prepared === false || current.prepared > previous.prepared)
@@ -635,6 +651,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         await closeTalk(second);
         const restartRecipients: Array<{ sessionId: string; restored: number; prepared: number }> =
           [];
+        let priorGatewayLines = new Set<string>();
         const dormantKeys: string[] = [];
         const restartFact = "RESTART_SIBLING_FACT_SILVER_52";
         const unrelatedFact = "OTHER_PERSON_PRIVATE_FACT_MAUVE_16";
@@ -666,13 +683,8 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
               ],
               { prepared: false },
             );
-            // Creation may already have copied chat through native initial context;
-            // its pending cache need not offer that same source for delivery again.
-            const inherited = await operator.call<{ messages: unknown[] }>("chat.history", {
-              sessionKey: key,
-              limit: 100,
-            });
-            expect(JSON.stringify(inherited.messages)).toContain(FACT);
+            // Native initial-context packets are display:false. Their content is
+            // checked in this destination's first real model prompt after restart.
             await closeTalk(dormant);
           }
           const other = await connectConversationOperator(gateway, "blair@example.test", signal, {
@@ -700,9 +712,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           }
           await sendChat(restartFact);
           restartRecipients.push(
-            ...ids.map((sessionId) =>
-              Object.assign({ sessionId }, restartPreparationCounts(gateway, sessionId)),
-            ),
+            ...ids.map((sessionId) => ({ sessionId, restored: 0, prepared: 0 })),
           );
         }
         await operator.close();
@@ -711,14 +721,14 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         const requestsBeforeRestart = model.requests.length;
         await gateway.stopGateway();
         if (connectedActivity) {
-          // Snapshot only after the old process and its output have joined.
-          for (const recipient of restartRecipients) {
-            Object.assign(recipient, restartPreparationCounts(gateway, recipient.sessionId));
-          }
+          // Exclude the joined old process's lines; rolling tails cannot preserve counts.
+          priorGatewayLines = new Set(completeGatewayLogLines(gateway.logs()));
         }
         await gateway.startGateway();
         if (connectedActivity) {
-          await waitForRestartPreparations(gateway, signal, restartRecipients);
+          await waitForRestartPreparations(gateway, signal, restartRecipients, {
+            excludedLines: priorGatewayLines,
+          });
           expect(restartRecipients).toHaveLength(3);
           // No new login, Talk creation or model input has re-enrolled these recipients.
           expect(model.requests).toHaveLength(requestsBeforeRestart);
