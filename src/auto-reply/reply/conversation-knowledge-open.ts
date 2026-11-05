@@ -133,6 +133,18 @@ async function openConversationKnowledge(
     if (!branch) {
       return undefined;
     }
+    if (audience.restartSource) {
+      const { retainConversationRecipientEnrollment } =
+        await import("../../config/sessions/conversation-recipient-enrollment.js");
+      await retainConversationRecipientEnrollment({
+        reader,
+        branch,
+        audience,
+        assertCurrent: check,
+        signal: params.signal,
+      });
+    }
+    check();
     const enrollment = {
       branch,
       participant,

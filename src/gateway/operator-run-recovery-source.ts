@@ -76,6 +76,19 @@ export type OperatorRunRecoverySnapshot = z.infer<typeof snapshotSchema>;
 /** Private input custody; copied attribution or another session cannot authorize recovery. */
 export type RestartRecoveryOperatorSource = z.infer<typeof sourceSchema>;
 
+/** Decode the original principal basis independently of any recoverable model run. */
+export function decodeGatewayOperatorRecoverySnapshot(value: unknown): OperatorRunRecoverySnapshot {
+  const json = JSON.stringify(value);
+  if (!json || Buffer.byteLength(json, "utf8") > MAX_RECOVERY_SOURCE_BYTES) {
+    throw new Error("Operator source snapshot exceeds its storage bound.");
+  }
+  const parsed = snapshotSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("Operator source snapshot is invalid.");
+  }
+  return freezeJsonSnapshot(parsed.data);
+}
+
 export function decodeGatewayOperatorRecoverySource(value: unknown): RestartRecoveryOperatorSource {
   const json = JSON.stringify(value);
   if (!json || Buffer.byteLength(json, "utf8") > MAX_RECOVERY_SOURCE_BYTES) {

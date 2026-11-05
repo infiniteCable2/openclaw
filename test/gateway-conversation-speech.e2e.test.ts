@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it } from "vitest";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
@@ -92,6 +93,86 @@ function configuration(baseUrl: string): OpenClawConfig {
     },
     messages: { queue: { mode: "steer", debounceMsByChannel: { webchat: 0 } } },
   };
+}
+
+function restartPreparationCounts(
+  gateway: Awaited<ReturnType<typeof createOpenClawTestInstance>>,
+  recipientId: string,
+  source: { sessionId: string; sequence: number },
+) {
+  const recipient = redactIdentifier(recipientId);
+  const sourceHash = redactIdentifier(source.sessionId);
+  const lines = gateway
+    .logs()
+    .split("\n")
+    .map((line) => line.replaceAll('\\"', '"'));
+  return {
+    restored: lines.filter(
+      (line) =>
+        line.includes("Reusable conversation recipient restored") && line.includes(recipient),
+    ).length,
+    prepared: lines.filter(
+      (line) =>
+        line.includes("Related-history source preparation settled") &&
+        line.includes(recipient) &&
+        Array.from(
+          line.matchAll(/"sourceHash"\s*:\s*"([^"]+)"\s*,\s*"throughSeq"\s*:\s*(\d+)/gu),
+        ).some((match) => match[1] === sourceHash && Number(match[2]) >= source.sequence),
+    ).length,
+  };
+}
+
+/** Observe the restarted native owners without opening a transport or dispatching input. */
+function waitForRestartPreparations(
+  gateway: Awaited<ReturnType<typeof createOpenClawTestInstance>>,
+  signal: AbortSignal,
+  source: { sessionId: string; sequence: number },
+  before: Array<{ sessionId: string; restored: number; prepared: number }>,
+) {
+  const child = gateway.child;
+  if (!child) {
+    throw new Error("Restart preparation observer requires the running Gateway");
+  }
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+  return new Promise<void>((resolve, reject) => {
+    const finish = (error?: Error) => {
+      child.stdout.off("data", inspect);
+      child.stderr.off("data", inspect);
+      child.off("exit", exited);
+      deadline.removeEventListener("abort", aborted);
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    const inspect = () => {
+      if (
+        before.every((previous) => {
+          const current = restartPreparationCounts(gateway, previous.sessionId, source);
+          return current.restored > previous.restored && current.prepared > previous.prepared;
+        })
+      ) {
+        finish();
+      }
+    };
+    const exited = () => finish(new Error("Gateway exited before reusable recipients restored"));
+    const aborted = () =>
+      finish(
+        new Error("Reusable recipient startup did not settle", {
+          cause: deadline.reason,
+        }),
+      );
+    child.stdout.on("data", inspect);
+    child.stderr.on("data", inspect);
+    child.once("exit", exited);
+    deadline.addEventListener("abort", aborted, { once: true });
+    if (deadline.aborted) {
+      aborted();
+    } else {
+      inspect();
+    }
+  });
 }
 
 it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)(
@@ -260,11 +341,11 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         );
         let checkedReadiness = false;
         let checkedClosedCapture = false;
-        const create = async () => {
+        const create = async (sessionKey = voiceKey) => {
           const created = await operator!.call<{ sessionId: string; readyMark: string }>(
             "talk.session.create",
             {
-              sessionKey: voiceKey,
+              sessionKey,
               mode: "stt-tts",
               transport: "gateway-relay",
               brain: "agent-consult",
@@ -542,15 +623,118 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         expect(laterInput).toContain(secondFact);
         expect(reopenedInput).toContain(FACT);
         await closeTalk(second);
+        let restartSource: { sessionId: string; sequence: number } | undefined;
+        const restartRecipients: Array<{ sessionId: string; restored: number; prepared: number }> =
+          [];
+        const restartFact = "RESTART_SIBLING_FACT_SILVER_52";
+        const unrelatedFact = "OTHER_PERSON_PRIVATE_FACT_MAUVE_16";
+        if (connectedActivity) {
+          phase = "prepare-dormant-personal-recipients";
+          const originalRecipient = idleRecipient?.session;
+          if (!originalRecipient) {
+            throw new Error("Original personal recipient unavailable before restart");
+          }
+          const ids = [originalRecipient.sessionId];
+          for (let index = 0; index < 2; index++) {
+            const key = `agent:main:voice:dormant-${index}-${randomUUID()}`;
+            const dormant = await create(key);
+            const described = await operator.call<{ session: { sessionId: string } }>(
+              "sessions.describe",
+              { key },
+            );
+            ids.push(described.session.sessionId);
+            const chatSource = await operator.call<{ session: { sessionId: string } }>(
+              "sessions.describe",
+              { key: chatKey },
+            );
+            await waitForConversationTransfer(gateway, signal, {
+              recipientId: described.session.sessionId,
+              sourceId: chatSource.session.sessionId,
+              sequence: 1,
+              phase: "prepared",
+            });
+            await closeTalk(dormant);
+          }
+          const other = await connectConversationOperator(gateway, "blair@example.test", signal, {
+            scopes: [...SCOPES],
+          });
+          try {
+            const started = await other.call<{ runId: string }>("chat.send", {
+              sessionKey: `agent:main:other-person-${randomUUID()}`,
+              message: unrelatedFact,
+              deliver: false,
+              idempotencyKey: randomUUID(),
+            });
+            expect(
+              await other.call(
+                "agent.wait",
+                {
+                  runId: started.runId,
+                  timeoutMs: 30_000,
+                },
+                { timeoutMs: 31_000 },
+              ),
+            ).toMatchObject({ status: "ok" });
+          } finally {
+            await other.close();
+          }
+          await sendChat(restartFact);
+          const source = await operator.call<{ session: { sessionId: string } }>(
+            "sessions.describe",
+            { key: chatKey },
+          );
+          const history = await operator.call<{
+            messages: Array<{
+              role: string;
+              content: unknown;
+              __openclaw?: { transcriptPosition?: { rawSeq?: number } };
+            }>;
+          }>("chat.history", { sessionKey: chatKey, limit: 100 });
+          const sequence = history.messages.find(
+            (message) =>
+              message.role === "user" && JSON.stringify(message.content).includes(restartFact),
+          )?.["__openclaw"]?.transcriptPosition?.rawSeq;
+          if (typeof sequence !== "number") {
+            throw new Error("Restart source has no native transcript frontier");
+          }
+          const frontier = { sessionId: source.session.sessionId, sequence };
+          restartSource = frontier;
+          restartRecipients.push(
+            ...ids.map((sessionId) => ({
+              sessionId,
+              ...restartPreparationCounts(gateway, sessionId, frontier),
+            })),
+          );
+        }
         await operator.close();
         operator = undefined;
         phase = "restart-with-existing-personal-branch";
+        const requestsBeforeRestart = model.requests.length;
         await gateway.stopGateway();
+        if (restartSource) {
+          // Snapshot only after the old process and its output have joined.
+          for (const recipient of restartRecipients) {
+            Object.assign(
+              recipient,
+              restartPreparationCounts(gateway, recipient.sessionId, restartSource),
+            );
+          }
+        }
         await gateway.startGateway();
+        if (restartSource) {
+          await waitForRestartPreparations(gateway, signal, restartSource, restartRecipients);
+          expect(restartRecipients).toHaveLength(3);
+          // No new login, Talk creation or model input has re-enrolled these recipients.
+          expect(model.requests).toHaveLength(requestsBeforeRestart);
+        }
         operator = await connect();
         const third = await openTalk();
         const resumedInput = await speak(third, 7);
         expect(resumedInput).toContain(FACT);
+        if (connectedActivity) {
+          expect(resumedInput.split(restartFact)).toHaveLength(2);
+          expect(resumedInput).not.toContain(unrelatedFact);
+        }
         // Keep a real sibling model request active while the personal voice
         // branch accepts another input and background preparation receives writes.
         const heldSibling = model.holdNext(() => true);

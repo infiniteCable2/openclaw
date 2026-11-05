@@ -14,6 +14,7 @@ type RetiredSessionMetadata = {
 
 export const SESSION_ENTRY_PRIVATE_CLEAR_PATCH = {
   conversationTopology: undefined,
+  conversationRecipientEnrollment: undefined,
   activeWriterRunId: undefined,
   lastRunId: undefined,
   lifecycleRunId: undefined,
@@ -27,6 +28,7 @@ export const SESSION_ENTRY_PRIVATE_CLEAR_PATCH = {
 
 const PRIVATE_SESSION_ENTRY_KEYS = [
   "conversationTopology",
+  "conversationRecipientEnrollment",
   "inheritedGitContributorProfileIds",
   "profileInvolvement",
   "cliHistoryBoundary",

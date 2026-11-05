@@ -100,6 +100,12 @@ export async function runGatewayStartupObservers(params: {
             includeMaintenance: true,
             isCancelled: () => params.signal.aborted || params.isClosing?.() === true,
           });
+          const context = params.resolveGatewayContext();
+          if (context && !params.signal.aborted && params.isClosing?.() !== true) {
+            const { startGatewayConversationRecipients } =
+              await import("./conversation-recipient-startup.js");
+            startGatewayConversationRecipients({ context, signal: params.signal, log: params.log });
+          }
           const activateSubagentRegistry = await params.loadSubagentRegistryActivation();
           if (!params.signal.aborted && params.isClosing?.() !== true) {
             await activateSubagentRegistry(params.resolveGatewayContext);

@@ -46,6 +46,9 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
     pendingWorktree: entry.pendingWorktree ? structuredClone(entry.pendingWorktree) : undefined,
     lifecycleRevision: entry.lifecycleRevision,
     conversationTopology: captureSessionConversationTopology(entry.conversationTopology),
+    conversationRecipientEnrollment: entry.conversationRecipientEnrollment
+      ? structuredClone(entry.conversationRecipientEnrollment)
+      : undefined,
     lifecycleRunId: entry.lifecycleRunId,
     activeWriterRunId: entry.activeWriterRunId,
     ...(entry.subagentRecovery

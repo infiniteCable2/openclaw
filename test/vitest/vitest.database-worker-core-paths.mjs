@@ -16,6 +16,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/config/sessions/conversation-publication.test.ts",
   "src/config/sessions/conversation-publication-publish.test.ts",
   "src/config/sessions/conversation-publication-locked.test.ts",
+  "src/config/sessions/conversation-recipient-enrollment.test.ts",
   "src/config/sessions/session-accessor.sqlite-append-participants.test.ts",
   "src/config/sessions/session-conversation-admission.test.ts",
   "src/config/sessions/session-conversation-activation.test.ts",

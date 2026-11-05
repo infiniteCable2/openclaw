@@ -187,6 +187,15 @@ recipient owner as an ordinary connection; it neither creates a dialogue nor
 backfills historical enrollment. Endpoint, enrollment, or authorization changes require
 fresh native admission; a skipped registration is retried on the corresponding
 state change rather than by polling or manufacturing a turn.
+Reusable private Gateway conversations retain their original admitted source
+metadata. On restart, the Gateway rechecks that source's current native permissions
+and exact branch/root identities, then registers background preparation without a
+connected device or a new input. A completed model run does not end a reusable
+conversation. Archived, shared, incognito, or replaced conversations are excluded;
+temporary conversations without reusable enrollment are not restored as recipients.
+Older conversations without this enrollment require one authorized opening or turn;
+historical routing metadata alone never establishes permission. Preparation does not
+mean model-context admission: native request budgets and safe boundaries still apply.
 One coalesced, read-only scheduler prepares bounded source segments fairly across
 open recipients. Each quantum releases shared background capacity. A transient
 preparation failure receives a cancellable retry with bounded backoff, without

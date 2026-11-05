@@ -58,6 +58,9 @@ export function generationValidPrivateFieldsForSameSession(
     ...(existingEntry.conversationTopology !== undefined
       ? preserveSessionConversationTopology(existingEntry)
       : {}),
+    ...(existingEntry.conversationRecipientEnrollment
+      ? { conversationRecipientEnrollment: existingEntry.conversationRecipientEnrollment }
+      : {}),
     ...(existingEntry.cliHistoryBoundary
       ? { cliHistoryBoundary: existingEntry.cliHistoryBoundary }
       : {}),

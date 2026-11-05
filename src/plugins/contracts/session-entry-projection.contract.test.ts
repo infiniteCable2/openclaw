@@ -287,6 +287,7 @@ describe("plugin session extension SessionEntry projection", () => {
       "pending-final-text": "pendingFinalDeliveryText",
       "completion-custody": "restartRecoveryHarnessCompletion",
       "conversation-topology": "conversationTopology",
+      "conversation-recipient-enrollment": "conversationRecipientEnrollment",
       "retired-execsecurity": "execSecurity",
       "retired-execask": "execAsk",
       "retired-conversation-link": "conversationLink",

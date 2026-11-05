@@ -117,6 +117,24 @@ export function createReplyConversationKnowledgeTurn(params: {
           }),
         );
       if (enabled) {
+        if (sourceMode === "branches" && followupRun.conversationAudience?.restartSource) {
+          const branch = await readConversationKnowledgeBranch({
+            reader,
+            sessionId,
+            assertCurrent: assertTurnSourceCurrent,
+          });
+          if (branch) {
+            const { retainConversationRecipientEnrollment } =
+              await import("../../config/sessions/conversation-recipient-enrollment.js");
+            await retainConversationRecipientEnrollment({
+              reader,
+              branch,
+              audience: followupRun.conversationAudience,
+              assertCurrent: assertTurnSourceCurrent,
+              signal,
+            });
+          }
+        }
         // This is the actual admitted native turn, not a read-only CLI/provider
         // startup snapshot. Establish the seed even without a verified audience
         // before this source may publish its first live completion reference.

@@ -79,6 +79,12 @@ export function captureGatewayPrivateConversationAudience(input: {
     operatorAuthority.assertCurrent();
   };
   check();
+  // Read-ahead requalifies the original person/device policy, never model execution.
+  let restartSource: ConversationPrivateAudience["restartSource"];
+  if (operatorAuthority.recoverySnapshot) {
+    const { modelPolicy: _modelPolicy, ...snapshot } = operatorAuthority.recoverySnapshot;
+    restartSource = Object.freeze({ kind: "operator", snapshot });
+  }
   const metadata = {
     agentId: input.agentId,
     sessionKey: input.sessionKey,
@@ -86,6 +92,7 @@ export function captureGatewayPrivateConversationAudience(input: {
     accountId: DEFAULT_ACCOUNT_ID,
     nativeChannelId: input.sessionKey,
     participant: Object.freeze({ ...participant }),
+    ...(restartSource ? { restartSource } : {}),
   };
   const retainOperator = operatorAuthority.retain;
   return Object.freeze({

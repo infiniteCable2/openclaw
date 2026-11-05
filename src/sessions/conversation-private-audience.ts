@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import type { ConversationRecipientRestartSource } from "../config/sessions/conversation-recipient-enrollment.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
@@ -13,6 +15,8 @@ export type ConversationPrivateAudience = Readonly<{
   accountId: string;
   nativeChannelId: string;
   participant: SessionParticipantIdentity;
+  /** Original native principal basis for fresh requalification after restart, never a grant. */
+  restartSource?: ConversationRecipientRestartSource;
   assertCurrent(): void;
   /** Retain the original host principal for idle read-ahead, independently of its input turn. */
   retain?(this: void): readonly RetainedConversationPrivateAudience[];
@@ -68,6 +72,7 @@ export function retainConversationPrivateAudience(
         audience.channelId !== original.channelId ||
         audience.accountId !== original.accountId ||
         audience.nativeChannelId !== original.nativeChannelId ||
+        !isDeepStrictEqual(audience.restartSource, original.restartSource) ||
         !captureConsistentConversationParticipant([original.participant, audience.participant])
       ) {
         throw new Error("Retained private audience differs from its original input");
@@ -142,6 +147,11 @@ export function collectConversationPrivateAudiences(
       value!.assertCurrent();
     }
   };
+  const restartSource = values.every((value) =>
+    isDeepStrictEqual(value?.restartSource, first.restartSource),
+  )
+    ? first.restartSource
+    : undefined;
   return Object.freeze({
     agentId: first.agentId,
     sessionKey: first.sessionKey,
@@ -149,6 +159,7 @@ export function collectConversationPrivateAudiences(
     accountId: first.accountId,
     nativeChannelId: first.nativeChannelId,
     participant,
+    restartSource,
     assertCurrent: check,
     retain() {
       check();
@@ -164,6 +175,7 @@ export function collectConversationPrivateAudiences(
           accountId: first.accountId,
           nativeChannelId: first.nativeChannelId,
           participant,
+          restartSource,
           assertCurrent() {
             for (const value of retained) {
               value.audience.assertCurrent();
