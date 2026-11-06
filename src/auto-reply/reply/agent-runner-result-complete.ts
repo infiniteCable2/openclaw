@@ -20,6 +20,11 @@ import type { prepareReplyAgentPayloads } from "./agent-runner-result-payloads.j
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
 import { appendUsageLine } from "./agent-runner-usage-line.js";
 import {
+  createCompactionNoticePayload,
+  isUserCompactionNoticeTurn,
+  shouldNotifyUserAboutCompaction,
+} from "./compaction-notice.js";
+import {
   buildRecoverablePendingFinalDeliveryText,
   normalizePendingFinalDeliveryPayloads,
   normalizePendingFinalRecoveryPayloads,
@@ -98,11 +103,19 @@ export async function completeReplyAgentRun(input: {
       }
     }
 
-    if (verboseEnabled) {
+    const noticeTurn = { followupRun, isHeartbeat, opts };
+    if (
+      verboseEnabled &&
+      isUserCompactionNoticeTurn(noticeTurn) &&
+      !shouldNotifyUserAboutCompaction(cfg, noticeTurn)
+    ) {
       const suffix = typeof count === "number" ? ` (count ${count})` : "";
       prefixNotices.push(
         setReplyPayloadMetadata(
-          { text: `🧹 Auto-compaction complete${suffix}.` },
+          createCompactionNoticePayload({
+            phase: "end",
+            text: `🧹 Auto-compaction complete${suffix}.`,
+          }),
           { hostNotice: true },
         ),
       );

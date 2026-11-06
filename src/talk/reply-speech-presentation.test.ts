@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
+import { setReplyPayloadMetadata, type ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { AgentTurnInternalResult } from "../auto-reply/reply/agent-runner-execution.types.js";
 import {
   withReplySpeechPresentation,
@@ -14,6 +14,7 @@ function setup() {
   const events: RealtimeVoiceAgentConsultSpeechEvent[] = [];
   const onResult = vi.fn();
   const onError = vi.fn();
+  const onCompactionNotice = vi.fn<(payload: ReplyPayload) => void | Promise<void>>();
   const output = { available: true };
   const assertCurrent = vi.fn();
   const controller = new AbortController();
@@ -34,11 +35,12 @@ function setup() {
       events.push(event);
     },
     speakCommentary: true,
+    onCompactionNotice,
     onResult,
     onError,
     logger: { warn: vi.fn() },
   });
-  return { source, binding, events, onResult, onError, output, controller };
+  return { source, binding, events, onResult, onError, onCompactionNotice, output, controller };
 }
 
 function completed(
@@ -56,6 +58,47 @@ function completed(
 }
 
 describe("native turn-owned speech presentation", () => {
+  it("routes canonical native status before run binding without adding it to the answer", async () => {
+    const f = setup();
+    const notice = { text: "Context maintenance.", isCompactionNotice: true };
+    setReplyPayloadMetadata(notice, { nativeCompactionNotice: true });
+    await f.source.onCompactionNotice?.(notice);
+    expect(f.onCompactionNotice).toHaveBeenCalledExactlyOnceWith(notice);
+    expect(f.events).toEqual([]);
+    await withReplySpeechPresentation(f.source, f.binding, async () => completed("Answer."));
+    expect(f.events).toEqual([{ type: "done", text: "Answer." }]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["closed", "failed"] as const)(
+    "keeps %s status delivery separate from answer failure",
+    async (kind) => {
+      const f = setup();
+      const notice = { text: "Context maintenance.", isCompactionNotice: true };
+      setReplyPayloadMetadata(notice, { nativeCompactionNotice: true });
+      if (kind === "closed") {
+        f.output.available = false;
+      } else {
+        f.onCompactionNotice.mockRejectedValueOnce(new Error("Status sink unavailable"));
+      }
+      await expect(f.source.onCompactionNotice?.(notice)).resolves.toBeUndefined();
+      expect(f.onError).not.toHaveBeenCalled();
+      expect(f.events).toEqual([]);
+      expect(f.onResult).not.toHaveBeenCalled();
+      expect(f.onCompactionNotice).toHaveBeenCalledTimes(kind === "closed" ? 0 : 1);
+    },
+  );
+
+  it("does not speak free-hook or unmarked status text", async () => {
+    const f = setup();
+    await f.source.onCompactionNotice?.({ text: "Free hook.", isCompactionNotice: true });
+    const ordinary = { text: "Ordinary answer." };
+    setReplyPayloadMetadata(ordinary, { nativeCompactionNotice: true });
+    await f.source.onCompactionNotice?.(ordinary);
+    expect(f.onCompactionNotice).not.toHaveBeenCalled();
+    expect(f.events).toEqual([]);
+  });
+
   it.for([undefined, "not a silent reply", SILENT_REPLY_TOKEN])(
     "preserves canonical deliberate silence while unmarked empty output still falls back: %s",
     async (finalText) => {

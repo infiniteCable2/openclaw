@@ -74,6 +74,7 @@ function setup(purpose: ConversationInputScopeV1["purpose"] = "user") {
     release,
   });
   const onError = vi.fn();
+  const onCompactionNotice = vi.fn<(payload: ReplyPayload) => void | Promise<void>>();
   const settlements: Promise<void>[] = [];
   const releaseSettlement = vi.fn();
   const chunks: string[] = [];
@@ -109,6 +110,7 @@ function setup(purpose: ConversationInputScopeV1["purpose"] = "user") {
         }
       },
       onSpeakableText,
+      onCompactionNotice,
       speakCommentary: true,
       onError,
       logger: { warn: vi.fn() },
@@ -164,6 +166,40 @@ describe("original conversation input through native reply", () => {
     mocks.getReplyFromConfig.mockReset();
     mocks.prepareGreeting.mockReset();
   });
+
+  it.each(["current", "closed"] as const)(
+    "keeps %s original-request status on its owned output route without channel fallback",
+    async (kind) => {
+      const f = setup();
+      const notice = { text: "Context maintenance.", isCompactionNotice: true };
+      setReplyPayloadMetadata(notice, { nativeCompactionNotice: true });
+      if (kind === "closed") {
+        f.output.current = false;
+      }
+      let status: InternalGetReplyOptions["onCompactionNotice"];
+      mocks.getReplyFromConfig.mockImplementation(
+        async (_context, options: InternalGetReplyOptions) => {
+          status = options.onCompactionNotice;
+          expect(options.onCompactionNotice).toBeTypeOf("function");
+          expect(options.onBlockReply).toBeUndefined();
+          await options.onCompactionNotice?.(notice);
+          expect(f.onError).not.toHaveBeenCalled();
+          await present(options, "The actual answer.");
+          return [{ text: "The actual answer." }];
+        },
+      );
+      const result = await replyToConversationInput(f.params);
+      expect(mocks.getReplyFromConfig).toHaveBeenCalledOnce();
+      expect(f.params.speech.onCompactionNotice).toHaveBeenCalledTimes(kind === "current" ? 1 : 0);
+      expect(result).toMatchObject({
+        kind: "reply",
+        reply: { text: kind === "current" ? "The actual answer." : "" },
+      });
+      expect(f.release).toHaveBeenCalledOnce();
+      await status?.(notice);
+      expect(f.params.speech.onCompactionNotice).toHaveBeenCalledTimes(kind === "current" ? 1 : 0);
+    },
+  );
 
   it.each([
     { label: "immediate", queued: false, mixed: false },

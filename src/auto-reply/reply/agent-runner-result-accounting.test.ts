@@ -173,6 +173,31 @@ describe("accountFollowupTurn", () => {
     mocks.resolveContextTokensForModel.mockReturnValue(200_000);
   });
 
+  it.each(["user-verbose", "notify-user", "automatic"] as const)(
+    "emits no duplicate or background verbose compaction notice for %s",
+    async (scenario) => {
+      const params = createParams();
+      const outcome = params.execution.execution.outcome;
+      if (outcome.kind !== "settled") {
+        throw new Error("expected settled test execution");
+      }
+      outcome.autoCompactionCount = 1;
+      params.turn.queued.run.verboseLevelOverride = "on";
+      params.turn.config = {
+        agents: { defaults: { compaction: { notifyUser: scenario === "notify-user" } } },
+      };
+      if (scenario === "automatic") {
+        params.turn.queued.run.inputProvenance = { kind: "internal_system" };
+      }
+      const result = await accountFollowupTurn(params);
+      if (scenario === "user-verbose") {
+        expect(result?.compactionNotice).toMatchObject({ isCompactionNotice: true });
+      } else {
+        expect(result?.compactionNotice).toBeUndefined();
+      }
+    },
+  );
+
   it("forwards typed runtime context provenance to session persistence", async () => {
     const params = createParams();
     const result = params.execution.execution.outcome;

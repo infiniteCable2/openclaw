@@ -282,6 +282,10 @@ async function executeConversationReply(
     },
     operatorAuthority: input.operatorAuthority,
     speechPresentation,
+    onCompactionNotice:
+      input.scope.purpose !== "greeting" && speechPresentation.onCompactionNotice
+        ? (payload) => (completed ? undefined : speechPresentation.onCompactionNotice?.(payload))
+        : undefined,
     images: params.images,
     thinkingLevelOverride: params.thinkingLevelOverride,
     toolsAllow: params.toolsAllow,

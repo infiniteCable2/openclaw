@@ -2,6 +2,7 @@ import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { isMessagingToolSendAction } from "../../agents/embedded-agent-messaging.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { normalizeAgentPlanSteps } from "../../channels/streaming.js";
 import { logVerbose } from "../../globals.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -13,7 +14,9 @@ import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import {
   createCompactionHookNoticePayload,
   createCompactionNoticePayload,
+  deliverSpeechSourceCompactionNotice,
   formatCompactionModelRef,
+  isUserCompactionNoticeTurn,
 } from "./compaction-notice.js";
 
 const agentCompactionLog = createSubsystemLogger("auto-reply/compaction");
@@ -45,7 +48,21 @@ export function createAgentRunEventHandler(params: {
   const currentMessageId =
     params.turn.sessionCtx.MessageSidFull ?? params.turn.sessionCtx.MessageSid;
   const deliverCompactionNoticePayload = async (noticePayload: ReplyPayload, label: string) => {
-    const deliver = params.turn.opts?.onBlockReply ?? params.turn.onCompactionNoticePayload;
+    if (!isUserCompactionNoticeTurn(params.turn)) {
+      return;
+    }
+    const requestNotice = params.turn.opts?.onCompactionNotice;
+    if (
+      !requestNotice &&
+      (await deliverSpeechSourceCompactionNotice(
+        params.turn.followupRun.speechPresentation,
+        noticePayload,
+      ))
+    ) {
+      return;
+    }
+    const deliver =
+      requestNotice ?? params.turn.opts?.onBlockReply ?? params.turn.onCompactionNoticePayload;
     if (!deliver) {
       return;
     }
@@ -236,6 +253,10 @@ export function createAgentRunEventHandler(params: {
         await deliverCompactionNoticePayload(
           createCompactionNoticePayload({
             phase: noticePhase,
+            language: resolveAgentLanguage(
+              params.turn.followupRun.run.config,
+              params.turn.followupRun.run.agentId,
+            ),
             currentMessageId,
             applyReplyToMode: params.turn.applyReplyToMode,
           }),

@@ -33,6 +33,8 @@ export type SpeechUtterance = {
   playbackStarted: boolean;
   finalized: boolean;
   failed: boolean;
+  /** Operational speech has no final-answer receipt or native turn completion. */
+  status?: true;
 };
 
 /** Own the existing per-session synthesis/playout queue; the engine retains turn and generation authority. */
@@ -351,6 +353,11 @@ export function createSpeechOutput(params: {
         }
         utterance.failed = true;
         utterance.finalized = true;
+        if (utterance.status) {
+          harness.finishOutputAudio("failed");
+          params.logger.warn("[talk] compaction status TTS unavailable; native turn continues");
+          return;
+        }
         if (utterance.waitingTurn !== undefined) {
           params.finishWaitingTurn(utterance.waitingTurn);
         }
@@ -374,6 +381,37 @@ export function createSpeechOutput(params: {
         }
         playbackDone.resolve();
       });
+  };
+
+  const enqueueSpeechStatus = (text: string, generation: number, waitingTurn?: number) => {
+    const utterance: SpeechUtterance = {
+      ...createSpeechUtterance(waitingTurn),
+      generation,
+      status: true,
+    };
+    enqueueSpeechChunk(text, utterance, undefined, undefined, undefined, "commentary");
+    if (!utterance.chunks.length) {
+      return false;
+    }
+    // The existing queue owns synthesis, sink handoff and stream/provider release.
+    // A status ends its audio span, never the current native task or Talk turn.
+    ttsQueue = ttsQueue
+      .then(() => {
+        if (isCurrentSpeechUtterance(utterance)) {
+          params.getHarness().finishOutputAudio("completed");
+        }
+      })
+      .catch(() => {
+        try {
+          params.logger.warn("[talk] compaction status output unavailable; native turn continues");
+        } catch {
+          /* Status diagnostics cannot poison the shared answer queue. */
+        }
+      })
+      .finally(() => {
+        utterance.finalized = true;
+      });
+    return true;
   };
 
   const finalizeSpeechUtterance = (
@@ -548,6 +586,7 @@ export function createSpeechOutput(params: {
     createSpeechUtterance,
     isCurrentSpeechUtterance,
     enqueueSpeechChunk,
+    enqueueSpeechStatus,
     enqueueSpeechPart,
     enqueueSpeechResult,
     enqueueSpeakText,

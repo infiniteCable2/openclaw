@@ -404,6 +404,8 @@ export type GetReplyOptions = {
     deleted?: string[];
     summary?: string;
   }) => Promise<ProgressCallbackResult> | ProgressCallbackResult;
+  /** Native request-owned status delivery, separate from ordinary answer blocks. */
+  onCompactionNotice?: (payload: ReplyPayload) => void | Promise<void>;
   /** Called when context auto-compaction starts (allows UX feedback during the pause). */
   onCompactionStart?: () => Promise<ProgressCallbackResult> | ProgressCallbackResult;
   /** Called when context auto-compaction ends; omitted outcome means completed for legacy callers. */

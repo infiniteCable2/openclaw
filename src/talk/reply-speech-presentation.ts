@@ -2,6 +2,7 @@ import { hasDeliberateSilentTerminalReply } from "../agents/embedded-agent-runne
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import {
   getReplyPayloadMetadata,
+  type ReplyPayload,
   type ReplySpeechOutputReceipt,
 } from "../auto-reply/reply-payload.js";
 import type {
@@ -44,6 +45,7 @@ export function createReplySpeechPresentation(
     speechSegmentationProfile?: SpeechSegmentationProfile;
     /** Buffer ordinary text; explicit current-source speech retains its native contract. */
     bufferReply?: boolean;
+    onCompactionNotice?: (payload: ReplyPayload) => void | Promise<void>;
     onRunBound?: (binding: ReplySpeechRunBinding) => void;
     onResult(result: RealtimeVoiceAgentConsultResult): void | Promise<void>;
     onError(error: unknown): void;
@@ -57,6 +59,27 @@ export function createReplySpeechPresentation(
     modelRequestProfile: params.modelRequestProfile,
     waitForPendingInput: params.waitForPendingInput,
     speakCommentary: params.speakCommentary === true && Boolean(params.onSpeakableText),
+    onCompactionNotice: params.onCompactionNotice
+      ? async (payload) => {
+          if (
+            payload.isCompactionNotice !== true ||
+            getReplyPayloadMetadata(payload)?.nativeCompactionNotice !== true
+          ) {
+            return;
+          }
+          try {
+            params.assertOutputCurrent();
+            await params.onCompactionNotice?.(payload);
+          } catch {
+            // Status failure cannot poison the answer, trigger fallback, or cancel accepted work.
+            try {
+              params.logger.warn("[talk] compaction status unavailable; native turn continues");
+            } catch {
+              /* Diagnostics do not own delivery or task lifetime. */
+            }
+          }
+        }
+      : undefined,
     blockReplyChunking: {
       minChars: params.speechSegmentationProfile?.minChars ?? 48,
       maxChars: params.speechSegmentationProfile?.maxChars ?? 320,

@@ -240,6 +240,8 @@ export type SessionWriterDeliveryAuthority = {
 };
 
 export type ReplyPayloadMetadata = {
+  /** Native localized phase template, not arbitrary hook or model-written progress. */
+  nativeCompactionNotice?: true;
   /** Raw parsing classified the text as silent before removing its control token. */
   silentReply?: true;
   /** The model failed after a committed recovery compaction in the same turn. */

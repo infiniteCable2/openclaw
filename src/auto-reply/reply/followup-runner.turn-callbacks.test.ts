@@ -21,12 +21,20 @@ import { getExistingFollowupQueue } from "./queue/state.js";
 import { FollowupRunDeferredError, type FollowupRun } from "./queue/types.js";
 import type { SessionEventExecution } from "./session-event-contract.js";
 
+const notices = vi.hoisted(() => ({ admission: false }));
+
 // mock-isolation: Keep database admission outside this queue-to-execution ownership proof.
 vi.mock("./followup-turn-admission.js", () => ({
-  admitFollowupTurn: async ({ queued }: Parameters<typeof admitFollowupTurn>[0]) => ({
-    kind: "admitted",
-    turn: createFollowupTurnTestTurn({ runId: `execution-${queued.prompt}`, queued }),
-  }),
+  admitFollowupTurn: async ({
+    queued,
+    onCompactionNoticePayload,
+  }: Parameters<typeof admitFollowupTurn>[0]) => {
+    const turn = createFollowupTurnTestTurn({ runId: `execution-${queued.prompt}`, queued });
+    if (notices.admission) {
+      await onCompactionNoticePayload?.({ text: "native-start", isCompactionNotice: true }, turn);
+    }
+    return { kind: "admitted", turn };
+  },
 }));
 
 // mock-isolation: No result accounting or worker initialization is needed for an aborted stub turn.
@@ -68,6 +76,7 @@ function createObservers() {
 }
 
 beforeEach(() => {
+  notices.admission = false;
   vi.useFakeTimers();
   resetFollowupTurnTestState();
 });
@@ -78,6 +87,60 @@ afterEach(() => {
 });
 
 describe("queued turn callback ownership", () => {
+  it.for(["open", "closed", "without-hook"] as const)(
+    "routes %s original Talk status before final delivery without borrowing queue defaults",
+    async (sinkState, { signal }) => {
+      notices.admission = true;
+      const started = createDeferred();
+      const release = createDeferred();
+      const originalStatus = vi.fn(async () => {
+        if (sinkState === "closed") {
+          throw new Error("closed original sink");
+        }
+      });
+      const wrongStatus = vi.fn();
+      const finalDelivery = Object.assign(
+        vi.fn(async () => {}),
+        { ownsCompletion: () => true },
+      );
+      const runner = createFollowupRunner({
+        typing: createFollowupTurnTestTypingController(),
+        typingMode: "never",
+        defaultModel: "gpt-test",
+        opts: { onCompactionNotice: wrongStatus },
+      });
+      const run = createQueueTestRun({ prompt: "status-source", messageId: "status-source" });
+      run.speechPresentation = {
+        speakCommentary: false,
+        ...(sinkState !== "without-hook" ? { onCompactionNotice: originalStatus } : {}),
+        onError: vi.fn(),
+        openRun: () => ({
+          onBlockReply: () => {},
+          finish: async () => {},
+          abort: async () => {},
+          close: () => {},
+        }),
+      };
+      run.queuedFollowupReplyDisposition = { kind: "deliver", deliver: finalDelivery };
+      state.execute.mockImplementation(async (params: AgentTurnParams) => {
+        await params.opts?.onCompactionNotice?.({ text: "native-end", isCompactionNotice: true });
+        started.resolve();
+        await release.promise;
+        return { runId: params.opts?.runId, outcome: { kind: "aborted", reason: "user" } };
+      });
+      const execution = runner(run);
+      try {
+        await withinTest(started.promise, signal);
+        expect(originalStatus).toHaveBeenCalledTimes(sinkState === "without-hook" ? 0 : 2);
+        expect(wrongStatus).not.toHaveBeenCalled();
+        expect(finalDelivery).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await execution;
+      }
+    },
+  );
+
   it.for(["before drain", "enqueue during drain", "deferred restart"] as const)(
     "keeps each queued item's observers through %s",
     async (scenario, { signal }) => {

@@ -13,6 +13,11 @@ import { refreshSessionEntryFromStore, resolveFallbackOriginModel } from "./agen
 import type { AgentTurnCompaction } from "./agent-runner-execution.types.js";
 import { buildReplyDiagnosticsPayload } from "./agent-runner-result-diagnostics.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
+import {
+  createCompactionNoticePayload,
+  isUserCompactionNoticeTurn,
+  shouldNotifyUserAboutCompaction,
+} from "./compaction-notice.js";
 import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./followup-turn-admission.js";
 import type { FollowupExecutionResult } from "./followup-turn-execution.js";
 import { drainPendingToolTasks } from "./pending-tool-task-drain.js";
@@ -448,9 +453,17 @@ export async function accountFollowupTurn(params: {
         nextSessionFile: queueKey ?? sessionKey,
       });
     }
-    if (accounting.verboseEnabled) {
+    const noticeTurn = { followupRun: turn.queued, isHeartbeat: false };
+    if (
+      accounting.verboseEnabled &&
+      isUserCompactionNoticeTurn(noticeTurn) &&
+      !shouldNotifyUserAboutCompaction(turn.config, noticeTurn)
+    ) {
       const suffix = typeof count === "number" ? ` (count ${count})` : "";
-      compactionNotice = { text: `🧹 Auto-compaction complete${suffix}.` };
+      compactionNotice = createCompactionNoticePayload({
+        phase: "end",
+        text: `🧹 Auto-compaction complete${suffix}.`,
+      });
     }
   }
   if (turn.queued.run.verboseLevelOverride !== "off" || turn.queued.run.traceAuthorized === true) {

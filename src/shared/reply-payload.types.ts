@@ -87,9 +87,8 @@ export type ReplyPayload = {
   isCommentary?: boolean;
   /** Reasoning stream text is a complete replacement snapshot, not a delta. */
   isReasoningSnapshot?: boolean;
-  /** Marks this payload as a compaction status notice (start/end).
-   *  Should be excluded from TTS transcript accumulation so compaction
-   *  status lines are not synthesised into the spoken assistant reply. */
+  /** Marks a compaction status, excluded from final-answer TTS accumulation.
+   * Native localized statuses may use the selected speech route independently. */
   isCompactionNotice?: boolean;
   /** Marks this payload as a model-fallback transition/recovery notice. */
   isFallbackNotice?: boolean;

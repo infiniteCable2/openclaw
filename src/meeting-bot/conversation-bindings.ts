@@ -126,6 +126,7 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
       assertOutputCurrent: params.assertOutputCurrent.bind(params),
       onError,
       onSpeakableText: consult.onSpeakableText,
+      onCompactionNotice: consult.onCompactionNotice,
       waitForPendingInput: consult.waitForPendingInput,
       speechExpressionCaptureOnly: consult.speechExpressionCaptureOnly,
       ...("bufferReply" in consult ? { bufferReply: consult.bufferReply } : {}),

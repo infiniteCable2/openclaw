@@ -36,6 +36,63 @@ function createNotifyUserRun() {
 }
 
 describe("executeAgentTurn: compaction events", () => {
+  it.each(["heartbeat", "internal_system", "inter_session", "room_event"] as const)(
+    "keeps %s compaction hooks observable without sending user notices",
+    async (kind) => {
+      const onBlockReply = vi.fn();
+      const onCompactionNotice = vi.fn();
+      const onCompactionStart = vi.fn();
+      const onCompactionEnd = vi.fn();
+      const followupRun = createNotifyUserRun();
+      if (kind === "internal_system" || kind === "inter_session") {
+        followupRun.run.inputProvenance = { kind };
+      } else if (kind === "room_event") {
+        followupRun.currentInboundEventKind = kind;
+      }
+      state.runEmbeddedAgentMock.mockImplementationOnce(async (params: EmbeddedAgentParams) => {
+        await params.onAgentEvent?.({
+          stream: "compaction",
+          data: { phase: "start", messages: ["Hook before"] },
+        });
+        await params.onAgentEvent?.({
+          stream: "compaction",
+          data: { phase: "end", completed: true, messages: ["Hook after"] },
+        });
+        return { payloads: [{ text: "final" }], meta: {} };
+      });
+      await executeTestTurn(
+        {
+          followupRun,
+          opts: { onBlockReply, onCompactionNotice, onCompactionStart, onCompactionEnd },
+        },
+        { isHeartbeat: kind === "heartbeat" },
+      );
+      expect(onCompactionStart).toHaveBeenCalledOnce();
+      expect(onCompactionEnd).toHaveBeenCalledWith({ completed: true });
+      expect(onBlockReply).not.toHaveBeenCalled();
+      expect(onCompactionNotice).not.toHaveBeenCalled();
+    },
+  );
+
+  it("routes a genuine user's runtime notices through the dedicated presentation hook", async () => {
+    const onBlockReply = vi.fn();
+    const onCompactionNotice = vi.fn();
+    state.runEmbeddedAgentMock.mockImplementationOnce(async (params: EmbeddedAgentParams) => {
+      await params.onAgentEvent?.({ stream: "compaction", data: { phase: "start" } });
+      await params.onAgentEvent?.({
+        stream: "compaction",
+        data: { phase: "end", completed: true },
+      });
+      return { payloads: [{ text: "final" }], meta: {} };
+    });
+    await executeTestTurn({
+      followupRun: createNotifyUserRun(),
+      opts: { onBlockReply, onCompactionNotice },
+    });
+    expect(onCompactionNotice).toHaveBeenCalledTimes(2);
+    expect(onBlockReply).not.toHaveBeenCalled();
+  });
+
   it("keeps compaction callbacks active when notices are silent by default", async () => {
     const onBlockReply = vi.fn();
     const onCompactionStart = vi.fn();

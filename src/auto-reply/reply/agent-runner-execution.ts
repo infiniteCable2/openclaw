@@ -345,7 +345,11 @@ async function executeAgentTurnInternalLoop(
       },
     };
   };
-  const notifyUserAboutCompaction = shouldNotifyUserAboutCompaction(runtimeConfig);
+  const notifyUserAboutCompaction = shouldNotifyUserAboutCompaction(runtimeConfig, {
+    followupRun: params.followupRun,
+    isHeartbeat: params.isHeartbeat,
+    opts: params.opts,
+  });
   let cycle: AgentFallbackCycleResult;
   let liveModelSwitchRetries = 0;
   const fallbackCycleState: AgentFallbackCycleState = {

@@ -5,6 +5,15 @@ import { resolveUserMessageLocale, type UserMessageLocale } from "./language.js"
 
 /** Native user-facing copy. Protocol codes, tool names and diagnostics stay separate. */
 type UserMessages = {
+  compactionNotice: Readonly<{
+    start: string;
+    end: string;
+    incomplete: string;
+    skipped: string;
+    queued: string;
+    memory_flush_degraded: string;
+    context_bounded: string;
+  }>;
   voiceActionNotExecuted(toolName: string): string;
   voiceConfirmationRequest: string;
   voiceConfirmationPending: string;
@@ -64,6 +73,17 @@ type UserMessages = {
 
 const catalogs: Record<UserMessageLocale, UserMessages> = {
   en: {
+    compactionNotice: {
+      start: "🧹 Compacting context...",
+      end: "🧹 Compaction complete",
+      incomplete: "🧹 Compaction incomplete",
+      skipped: "🧹 Compaction not needed",
+      queued:
+        "🧹 Compacting context. Your message has been received and will be handled afterward.",
+      memory_flush_degraded: "⚠️ Memory maintenance temporarily failed; continuing your reply.",
+      context_bounded:
+        "⚠️ Continuing with bounded recent context. Older history outside that window is omitted for this turn; resend any earlier details needed for your request. Full history remains saved.",
+    },
     skillWorkshopAction: {
       create: "created",
       patch: "updated",
@@ -203,6 +223,18 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
       "An action in that request was not run because its spoken confirmation is no longer current. Make a new request if you still want it.",
   },
   de: {
+    compactionNotice: {
+      start: "🧹 Ich fasse den Kontext zusammen...",
+      end: "🧹 Der Kontext ist zusammengefasst.",
+      incomplete: "🧹 Die Kontextzusammenfassung ist noch nicht abgeschlossen.",
+      skipped: "🧹 Eine Kontextzusammenfassung ist nicht nötig.",
+      queued:
+        "🧹 Ich fasse den Kontext zusammen. Deine Nachricht ist angekommen und wird danach bearbeitet.",
+      memory_flush_degraded:
+        "⚠️ Die Gedächtnispflege ist vorübergehend fehlgeschlagen. Ich fahre mit deiner Antwort fort.",
+      context_bounded:
+        "⚠️ Ich fahre mit dem jüngeren Kontext fort. Ältere Inhalte außerhalb dieses Fensters fehlen für diese Anfrage. Sende benötigte frühere Details bitte erneut. Der vollständige Verlauf bleibt gespeichert.",
+    },
     skillWorkshopAction: {
       create: "erstellt",
       patch: "aktualisiert",

@@ -83,6 +83,7 @@ function fixture(video = createSpeechVideoInput(undefined)) {
       }
     }),
     finalizeSpeechUtterance: vi.fn(),
+    enqueueSpeechStatus: vi.fn(() => true),
     enqueueSpeechResult: vi.fn(),
   };
   const finished = new Map<number, ReturnType<typeof deferred<void>>>();
@@ -202,6 +203,48 @@ function fixture(video = createSpeechVideoInput(undefined)) {
 }
 
 describe("native speech input media ownership", () => {
+  it("keeps pre-run compaction status bound to its input generation and rejects it after settlement", async () => {
+    const f = fixture();
+    const pending = f.owner.submit({ text: "Original", hasOnset: false });
+    await f.waitForCall(1);
+    const notice = { text: "Context maintenance.", isCompactionNotice: true };
+    await f.calls[0]!.onCompactionNotice?.(notice);
+    expect(f.output.enqueueSpeechStatus).toHaveBeenCalledExactlyOnceWith(notice.text, 1, 1);
+    expect(f.output.finalizeSpeechUtterance).not.toHaveBeenCalled();
+    f.calls[0]!.onNativeRunBound(f.bound("original"));
+    f.pending[0]!.resolve({ kind: "reply", reply: { text: "The actual answer." } });
+    await pending;
+    await f.calls[0]!.onCompactionNotice?.(notice);
+    expect(f.output.enqueueSpeechStatus).toHaveBeenCalledOnce();
+    expect(f.output.finalizeSpeechUtterance).toHaveBeenCalledWith(
+      expect.any(Object),
+      "The actual answer.",
+    );
+  });
+
+  it.each(["closed", "superseded"] as const)(
+    "drops %s original-input status without replacing or redirecting native work",
+    async (kind) => {
+      const f = fixture();
+      const pending = f.owner.submit({ text: "Original", hasOnset: false });
+      await f.waitForCall(1);
+      if (kind === "closed") {
+        f.close();
+      } else {
+        f.nextGeneration();
+      }
+      await f.calls[0]!.onCompactionNotice?.({
+        text: "Context maintenance.",
+        isCompactionNotice: true,
+      });
+      expect(f.output.enqueueSpeechStatus).not.toHaveBeenCalled();
+      f.pending[0]!.resolve({ kind: "reply", reply: { text: "The actual answer." } });
+      await expect(pending).resolves.toMatchObject({ kind: "reply" });
+      expect(f.output.finalizeSpeechUtterance).not.toHaveBeenCalled();
+      expect(f.output.enqueueSpeechResult).not.toHaveBeenCalled();
+    },
+  );
+
   it("reports actual admission and run facts without holding native work for audio", async () => {
     const f = fixture();
     const input = f.owner.submit({ text: "Original", inputId: "input-a", hasOnset: false });

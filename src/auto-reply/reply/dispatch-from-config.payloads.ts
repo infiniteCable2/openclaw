@@ -142,7 +142,13 @@ export async function maybeApplyTtsToReplyPayload(
     Awaited<ReturnType<typeof ttsRuntimeLoader.load>>["maybeApplyTtsToPayload"]
   >[0] & { preparedTtsPreferences: PreparedTtsPreferences },
 ) {
-  if (isReplyPayloadStatusNotice(params.payload)) {
+  if (
+    isReplyPayloadStatusNotice(params.payload) &&
+    !(
+      params.payload.isCompactionNotice === true &&
+      getReplyPayloadMetadata(params.payload)?.nativeCompactionNotice === true
+    )
+  ) {
     return params.payload;
   }
   if (

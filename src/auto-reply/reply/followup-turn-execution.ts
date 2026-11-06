@@ -22,6 +22,7 @@ import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js
 import { buildTerminalAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js";
 import { resolveFollowupCurrentMessageId } from "./agent-runner-utils.js";
 import { resolveTurnCommentaryProgressOwner } from "./commentary-progress-owner.js";
+import { deliverSpeechSourceCompactionNotice } from "./compaction-notice.js";
 import { requiresDurableToolResultDelivery } from "./dispatch-from-config.payloads.js";
 import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./followup-turn-admission.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
@@ -309,6 +310,13 @@ export async function executeFollowupTurn(params: {
     commentaryPayloadsEnabled,
     runId: turn.runId,
     onBlockReply: undefined,
+    // Queue defaults may belong to a different ingress. Status follows only the
+    // retained original speech source, including its closed-sink refusal.
+    onCompactionNotice: turn.queued.speechPresentation
+      ? async (payload) => {
+          await deliverSpeechSourceCompactionNotice(turn.queued.speechPresentation, payload);
+        }
+      : undefined,
     onPreparedBlockReply: undefined,
     onPartialReply: undefined,
     onAssistantMessageStart: undefined,

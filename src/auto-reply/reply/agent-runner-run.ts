@@ -50,7 +50,10 @@ import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { resolveQueuedReplyExecutionConfig } from "./agent-runner-utils.js";
 import { createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { resolveEffectiveBlockStreamingConfig } from "./block-streaming.js";
-import { createDirectCompactionNoticeSender } from "./compaction-notice.js";
+import {
+  createDirectCompactionNoticeSender,
+  isCompactionNoticePending,
+} from "./compaction-notice.js";
 import { bindConversationInputPublication } from "./conversation-publication-input.js";
 import { createFollowupRunner } from "./followup-runner.js";
 import { buildReplyRunShuttingDownPayload } from "./get-reply-run-queue.js";
@@ -260,6 +263,29 @@ export async function runReplyAgent(
   const activeReplyOperation = sessionKey
     ? replyRunRegistry.get(sessionKey)
     : providedReplyOperation;
+  const notifyQueuedCompaction = async () => {
+    if (
+      !activeReplyOperation ||
+      replyRunRegistry.get(activeReplyOperation.key) !== activeReplyOperation ||
+      !isCompactionNoticePending(activeReplyOperation)
+    ) {
+      return;
+    }
+    try {
+      opts?.abortSignal?.throwIfAborted();
+      followupRun.operatorAuthority?.assertCurrent();
+      followupRun.assertSourceCurrent?.();
+    } catch {
+      return;
+    }
+    await createDirectCompactionNoticeSender({
+      cfg: followupRun.run.config,
+      language: resolveAgentLanguage(followupRun.run.config, followupRun.run.agentId),
+      turn: { followupRun, isHeartbeat, opts },
+      opts,
+      currentMessageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
+    })("queued");
+  };
   // A source-only reservation still owns completion, but is not a steering target.
   const shouldQueueProvidedSteer =
     effectiveShouldSteer &&
@@ -345,6 +371,7 @@ export async function runReplyAgent(
     if (replyOperationRunState) {
       replyOperationRunState.admission = { status: "accepted", mode: "steer" };
     }
+    await notifyQueuedCompaction();
     releaseUnusedAdmission();
     return undefined;
   }
@@ -387,6 +414,7 @@ export async function runReplyAgent(
       touchActiveSessionEntry,
       typing,
       typingSignals,
+      onInputQueued: notifyQueuedCompaction,
     });
     return result === "handled" ? undefined : result;
   }
@@ -440,6 +468,7 @@ export async function runReplyAgent(
     if (replyOperationRunState) {
       replyOperationRunState.admission = { status: "accepted", mode: "followup" };
     }
+    await notifyQueuedCompaction();
     // The queue must stay dormant while the active owner can still collect
     // messages. Registering after enqueue closes the owner-clear race.
     const queuedOperationOwner =
@@ -492,6 +521,8 @@ export async function runReplyAgent(
   const sendDirectCompactionNotice = createDirectCompactionNoticeSender({
     cfg,
     opts,
+    turn: { followupRun, isHeartbeat, opts },
+    language: resolveAgentLanguage(cfg, followupRun.run.agentId),
     currentMessageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
     applyReplyToMode,
   });

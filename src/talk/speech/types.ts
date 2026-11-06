@@ -139,6 +139,7 @@ export type SpeechAgentConsultParams = Partial<SpeechInputIdentity> & {
   transcript: RealtimeVoiceAgentConsultTranscriptEntry[];
   abortSignal?: AbortSignal;
   onSpeakableText?: (event: RealtimeVoiceAgentConsultSpeechEvent) => void | Promise<void>;
+  onCompactionNotice?: ConversationReplyParams["speech"]["onCompactionNotice"];
   speechExpressionCaptureOnly?: true;
   speechSegmentationProfile?: import("../../tts/provider-types.js").SpeechSegmentationProfile;
   waitForPendingInput?: (signal?: AbortSignal) => void | Promise<void>;

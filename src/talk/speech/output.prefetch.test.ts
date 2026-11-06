@@ -140,6 +140,90 @@ function completeResult(audio = Buffer.alloc(4_800), release = vi.fn(async () =>
 }
 
 describe("speech output compute/playout overlap", () => {
+  it("queues status without holding native work and retains waiting/answer custody until physical release", async () => {
+    const releasing = createDeferred();
+    const allowRelease = createDeferred();
+    const release = vi.fn(async () => {
+      releasing.resolve();
+      await allowRelease.promise;
+    });
+    const synthesize = vi.fn(async () => completeResult());
+    synthesize.mockImplementationOnce(async () => completeResult(Buffer.alloc(4_800), release));
+    const f = createFixture(synthesize, async () => {});
+    f.setWaitingTurn(9);
+    expect(f.output.enqueueSpeechStatus("Context maintenance.", 0, 9)).toBe(true);
+    let receipt: ReturnType<typeof f.output.finalizeSpeechUtterance>;
+    try {
+      await releasing.promise;
+      expect(f.endTurn).not.toHaveBeenCalled();
+      expect(f.finishWaitingTurn).not.toHaveBeenCalled();
+      expect(f.finishOutputAudio).not.toHaveBeenCalled();
+      const answer = f.output.createSpeechUtterance(9);
+      receipt = f.output.finalizeSpeechUtterance(answer, "The actual answer.");
+    } finally {
+      allowRelease.resolve();
+      await f.output.drain();
+    }
+    expect(release).toHaveBeenCalledOnce();
+    expect(f.waitingIdle).toHaveBeenCalledWith(9);
+    expect(f.endTurn).toHaveBeenCalledOnce();
+    expect(f.finishWaitingTurn).toHaveBeenCalledExactlyOnceWith(9);
+    await expect(receipt?.completion).resolves.toEqual(["The actual answer."]);
+    expect(synthesize).toHaveBeenCalledTimes(2);
+    expect(synthesize).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ text: "Context maintenance." }),
+    );
+    expect(synthesize).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ text: "The actual answer." }),
+    );
+  });
+
+  it.each(["synthesis", "sink", "audio-completion"] as const)(
+    "does not fail the native turn or replace its answer after status %s failure",
+    async (phase) => {
+      const synthesize = vi.fn(async () => completeResult());
+      const write = vi.fn(async () => {});
+      const f = createFixture(synthesize, write);
+      if (phase === "synthesis") {
+        synthesize.mockRejectedValueOnce(new Error("Status TTS unavailable"));
+      }
+      if (phase === "sink") {
+        write.mockRejectedValueOnce(new Error("Status sink unavailable"));
+      }
+      if (phase === "audio-completion") {
+        f.finishOutputAudio.mockImplementationOnce(() => {
+          throw new Error("Status observer unavailable");
+        });
+      }
+      f.setWaitingTurn(9);
+      f.output.enqueueSpeechStatus("Context maintenance.", 0, 9);
+      await f.output.drain();
+      expect(f.endTurn).not.toHaveBeenCalled();
+      expect(f.finishWaitingTurn).not.toHaveBeenCalled();
+      const answer = f.output.createSpeechUtterance(9);
+      const receipt = f.output.finalizeSpeechUtterance(answer, "The actual answer.");
+      await f.output.drain();
+      await expect(receipt?.completion).resolves.toEqual(["The actual answer."]);
+      expect(f.endTurn).toHaveBeenCalledOnce();
+      expect(synthesize).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not enqueue stale or closed status output", async () => {
+    const synthesize = vi.fn(async () => completeResult());
+    const f = createFixture(synthesize, async () => {});
+    await f.cancel();
+    expect(f.output.enqueueSpeechStatus("Old status.", 0)).toBe(false);
+    f.close();
+    expect(f.output.enqueueSpeechStatus("Closed status.", 1)).toBe(false);
+    await f.output.drain();
+    expect(synthesize).not.toHaveBeenCalled();
+    expect(f.emit).not.toHaveBeenCalled();
+    expect(f.endTurn).not.toHaveBeenCalled();
+  });
+
   it("keeps an empty public speak request a no-op", async () => {
     const synthesize = vi.fn(async () => completeResult());
     const fixture = createFixture(synthesize, async () => {});

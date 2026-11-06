@@ -366,6 +366,7 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       const selected = config(model);
       selected.agents!.defaults!.compaction = {
         enabled: true,
+        notifyUser: true,
         keepRecentTokens: 1_024,
         recentTurnsPreserve: 0,
         qualityGuard: { enabled: false },
@@ -390,9 +391,28 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       });
       isolateConversationGatewayEnvironment(gateway);
       await gateway.startGateway();
-      owner = await connectConversationOperator(gateway, "alex@example.test", signal);
       const donor = `agent:main:pressure-donor-${randomUUID()}`;
       const recipient = `agent:main:pressure-recipient-${randomUUID()}`;
+      let recipientOutputs = 0;
+      let lastFinalOutputRun: string | undefined;
+      let lastRecipientRun: string | undefined;
+      owner = await connectConversationOperator(gateway, "alex@example.test", signal, {
+        onEvent(event, payload) {
+          const row = asOptionalRecord(payload);
+          if (
+            event === "chat" &&
+            row?.sessionKey === recipient &&
+            typeof row.runId === "string" &&
+            (row.state === "final" || row.state === "delta") &&
+            row.message
+          ) {
+            recipientOutputs++;
+            if (row.state === "final") {
+              lastFinalOutputRun = row.runId;
+            }
+          }
+        },
+      });
       const normalRequests = () => model!.requests.filter((request) => !isSummary(request));
       const send = async (key: string, message: string) => {
         const before = model!.requests.length;
@@ -403,6 +423,9 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
           idempotencyKey: randomUUID(),
         });
         expect(started.status).toBe("started");
+        if (key === recipient) {
+          lastRecipientRun = started.runId;
+        }
         expect(
           await owner!.call(
             "agent.wait",
@@ -477,6 +500,10 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       }
       expect(renderedChars + padding.length).toBeGreaterThanOrEqual(84_000);
       const original = await owner.call<Description>("sessions.describe", { key: recipient });
+      // Establish that the observer saw real output before testing a quiet window.
+      expect(lastRecipientRun).toBeDefined();
+      await vi.waitFor(() => expect(lastFinalOutputRun).toBe(lastRecipientRun));
+      const outputsBeforePressure = recipientOutputs;
       const beforePressure = new Set(logs());
       const warmInput = normalRequests().at(-1);
       const normalBeforePressure = normalRequests().length;
@@ -584,6 +611,7 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       // The only new ordinary model request was the legitimate donor input.
       // Native idle compaction and admission completed before any recipient probe.
       expect(normalRequests()).toHaveLength(normalBeforePressure + 1);
+      expect(recipientOutputs).toBe(outputsBeforePressure);
       expect(model.requests.filter(isSummary).length).toBeGreaterThan(summaryBeforePressure);
       const verify = (request: Record<string, unknown>, current: string) => {
         const messages = [

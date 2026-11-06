@@ -210,9 +210,10 @@ By default, compaction runs silently. Set `notifyUser` to show brief status mess
 }
 ```
 
-Matrix delivers these notices as text. Talk does not currently present them
-through its speech output. Idle conversation maintenance records its progress
-in the Gateway log without opening a user turn.
+A notice belongs to the user request waiting for compaction. The current
+delivery path presents it as chat text or, when voice output is selected, as
+speech. Hanging up closes that audio destination. Idle branch maintenance
+records compaction in the Gateway log and does not contact the user.
 
 ### Memory flush
 

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { renderAgentHarnessPreflightUserMessage } from "../../agents/embedded-agent-helpers/user-facing-text.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
@@ -23,6 +24,7 @@ import {
 } from "./agent-runner-utils.js";
 import {
   createCompactionNoticePayload,
+  isUserCompactionNoticeTurn,
   shouldNotifyUserAboutCompaction,
   type CompactionNoticePhase,
 } from "./compaction-notice.js";
@@ -315,9 +317,13 @@ export async function admitFollowupTurn(params: {
       | undefined;
     let compactionNoticeGenerationInvalidated = false;
     const notifyPreflightCompaction =
-      turn.sendPolicy === "allow" && queued.currentInboundEventKind !== "room_event"
+      turn.sendPolicy === "allow" &&
+      isUserCompactionNoticeTurn({ followupRun: queued, isHeartbeat: false })
         ? async (phase: CompactionNoticePhase, text?: string) => {
-            if (phase !== "context_bounded" && !shouldNotifyUserAboutCompaction(config)) {
+            if (
+              phase !== "context_bounded" &&
+              !shouldNotifyUserAboutCompaction(config, { followupRun: queued, isHeartbeat: false })
+            ) {
               return;
             }
             if (phase !== "start") {
@@ -340,6 +346,7 @@ export async function admitFollowupTurn(params: {
             await params.onCompactionNoticePayload?.(
               createCompactionNoticePayload({
                 phase,
+                language: resolveAgentLanguage(config, turn.queued.run.agentId),
                 currentMessageId: resolveFollowupCurrentMessageId(queued),
               }),
               turn,
@@ -437,11 +444,12 @@ export async function admitFollowupTurn(params: {
     if (
       pendingTerminalCompactionNotice &&
       turn.sendPolicy === "allow" &&
-      turn.queued.currentInboundEventKind !== "room_event"
+      isUserCompactionNoticeTurn({ followupRun: turn.queued, isHeartbeat: false })
     ) {
       await params.onCompactionNoticePayload?.(
         createCompactionNoticePayload({
           phase: pendingTerminalCompactionNotice.phase,
+          language: resolveAgentLanguage(config, turn.queued.run.agentId),
           text: pendingTerminalCompactionNotice.text,
           currentMessageId: resolveFollowupCurrentMessageId(turn.queued),
         }),

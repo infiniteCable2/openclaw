@@ -135,6 +135,8 @@ export async function maybeApplyTtsToPayloadCore(
 ): Promise<ReplyPayload> {
   params.signal?.throwIfAborted();
   const ttsMetadata = getReplyPayloadMetadata(params.payload);
+  const nativeCompactionNotice =
+    params.payload.isCompactionNotice === true && ttsMetadata?.nativeCompactionNotice === true;
   const expressionEnabled =
     Boolean(ttsMetadata?.tts?.expression) &&
     isSpeechExpressionEnabled({
@@ -152,7 +154,7 @@ export async function maybeApplyTtsToPayloadCore(
     }
     return applyExplicitSpeechVisibleFallback(params.payload, params.channel);
   }
-  if (params.payload.isCompactionNotice) {
+  if (params.payload.isCompactionNotice && !nativeCompactionNotice) {
     return params.payload;
   }
   const cfg = resolveTtsRuntimeConfig(params.cfg);
@@ -165,6 +167,15 @@ export async function maybeApplyTtsToPayloadCore(
     accountId: params.accountId,
   });
   params.signal?.throwIfAborted();
+  // Native status follows an already selected automatic voice reply. A status
+  // template cannot opt a text/tagged/off request into speech by itself.
+  if (
+    nativeCompactionNotice &&
+    autoMode !== "always" &&
+    !(autoMode === "inbound" && params.inboundAudio === true)
+  ) {
+    return params.payload;
+  }
   const explicitTts = ttsMetadata?.ttsExplicit === true;
   params.messageSpeechAdmission?.assertCurrent();
   if (params.messageSpeechAdmission && autoMode !== "always" && autoMode !== "inbound") {
@@ -235,7 +246,7 @@ export async function maybeApplyTtsToPayloadCore(
   const allowShortInboundVoiceReply = configuredInboundVoiceReply;
 
   const mode = config.mode;
-  if (mode === "final" && params.kind && params.kind !== "final") {
+  if (mode === "final" && params.kind && params.kind !== "final" && !nativeCompactionNotice) {
     return nextPayload;
   }
 

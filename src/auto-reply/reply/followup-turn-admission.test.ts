@@ -55,10 +55,15 @@ vi.mock("./inbound-meta.js", () => ({
   refreshActiveGoalContext: (...args: unknown[]) => state.refreshGoal(...args),
 }));
 
-vi.mock("./compaction-notice.js", () => ({
-  createCompactionNoticePayload: ({ phase }: { phase: string }) => ({ text: phase }),
-  shouldNotifyUserAboutCompaction: () => state.shouldNotifyCompaction,
-}));
+vi.mock("./compaction-notice.js", async (importOriginal) => {
+  const { isUserCompactionNoticeTurn } =
+    await importOriginal<typeof import("./compaction-notice.js")>();
+  return {
+    isUserCompactionNoticeTurn,
+    createCompactionNoticePayload: ({ phase }: { phase: string }) => ({ text: phase }),
+    shouldNotifyUserAboutCompaction: () => state.shouldNotifyCompaction,
+  };
+});
 
 vi.mock("./agent-runner-failure-reply.js", () => ({
   buildPreflightCompactionFailureText: (...args: unknown[]) =>

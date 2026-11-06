@@ -68,6 +68,7 @@ type ActiveReplySteerParams = {
   touchActiveSessionEntry: () => Promise<void>;
   typing: RunReplyAgentParams["typing"];
   typingSignals: TypingSignaler;
+  onInputQueued?: () => Promise<void>;
 };
 
 function resolveAcceptedSteerRunId(params: ActiveReplySteerParams): string {
@@ -173,6 +174,8 @@ export async function runActiveReplySteer(
       parked.consume();
       return "handled";
     }
+    assertReadCurrent();
+    await params.onInputQueued?.();
     if (admission === "fallback") {
       return await fallback("admission-changed");
     }

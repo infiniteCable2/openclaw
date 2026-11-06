@@ -82,6 +82,8 @@ export type ReplySpeechPresentationSource = Readonly<{
   modelRequestProfile?: RunEmbeddedAgentParams["modelRequestProfile"];
   blockReplyChunking?: RunEmbeddedAgentParams["blockReplyChunking"];
   speakCommentary: boolean;
+  /** Request-owned status output, available before a native run is bound. */
+  onCompactionNotice?: (payload: ReplyPayload) => void | Promise<void>;
   waitForPendingInput?: RunEmbeddedAgentParams["waitForPendingInput"];
   openRun(binding: ReplySpeechRunBinding): ReplySpeechPresentationRun;
   /** Reports output failure without changing the result of already executed work. */

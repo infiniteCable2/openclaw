@@ -38,6 +38,7 @@ export function createNativeSpeechInput(params: {
     ReturnType<typeof createSpeechOutput>,
     | "createSpeechUtterance"
     | "enqueueSpeechChunk"
+    | "enqueueSpeechStatus"
     | "finalizeSpeechUtterance"
     | "enqueueSpeechResult"
     | "isCurrentSpeechUtterance"
@@ -107,6 +108,8 @@ export function createNativeSpeechInput(params: {
     let run: NativeSpeechRun | undefined;
     let adopted = false;
     let finalized = false;
+    let acceptingStatus = true;
+    let statusQueued = false;
     let settleAdmission!: () => void;
     const admission = new Promise<void>((resolve) => {
       settleAdmission = resolve;
@@ -160,6 +163,20 @@ export function createNativeSpeechInput(params: {
           input.onQueueAccepted?.();
         },
         bufferReply: params.session.config.responseStreaming !== "sentence",
+        onCompactionNotice(payload) {
+          if (
+            !acceptingStatus ||
+            params.isStopped() ||
+            generation !== params.getGeneration() ||
+            !payload.text?.trim()
+          ) {
+            return;
+          }
+          input.assertCurrent?.();
+          statusQueued =
+            params.output.enqueueSpeechStatus(payload.text, generation, waitingTurn) ||
+            statusQueued;
+        },
         onNativeRunBound(binding) {
           observe("running", binding.runId);
           const utterance = params.output.createSpeechUtterance(waitingTurn);
@@ -256,6 +273,11 @@ export function createNativeSpeechInput(params: {
           const utterance = params.output.createSpeechUtterance(waitingTurn);
           utterance.generation = generation;
           params.output.finalizeSpeechUtterance(utterance, result.reply.text);
+        } else if (statusQueued && !params.isStopped() && generation === params.getGeneration()) {
+          params.output.finalizeSpeechUtterance(
+            params.output.createSpeechUtterance(waitingTurn),
+            "",
+          );
         }
         return result;
       }
@@ -287,6 +309,7 @@ export function createNativeSpeechInput(params: {
       }
       return result;
     } finally {
+      acceptingStatus = false;
       observe("settled", run?.binding.runId);
       input.onAccepted?.();
       releaseAdmission();
