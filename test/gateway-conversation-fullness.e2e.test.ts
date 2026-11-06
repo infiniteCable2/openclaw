@@ -521,7 +521,7 @@ it("compacts a warm recipient across a config reload and imports every pending t
       // No user turn may preempt idle maintenance from the held summary onward.
       const summary = model.holdNext(isSummary);
       try {
-        nextOrdinaryReply = "PRESSURE_FOREIGN_DONOR_REPLY_281";
+        nextOrdinaryReply = `PRESSURE_FOREIGN_DONOR_REPLY_281 ${padding}`.slice(0, padding.length);
         await send(donor, "PRESSURE_FOREIGN_LATE_281");
         await withinTest(summary.entered, signal);
         const beforeConfig = await owner.call<{ hash: string }>("config.get", {});
@@ -557,7 +557,9 @@ it("compacts a warm recipient across a config reload and imports every pending t
       const donorReplies = originalDonor.messages.filter(
         (item) =>
           item.role === "assistant" &&
-          textLeaves(item.content).includes("PRESSURE_FOREIGN_DONOR_REPLY_281"),
+          textLeaves(item.content).some((text) =>
+            text.startsWith("PRESSURE_FOREIGN_DONOR_REPLY_281"),
+          ),
       );
       expect(donorReplies).toHaveLength(1);
       const latestSeq = donorReplies[0]?.["__openclaw"]?.transcriptPosition?.rawSeq;
