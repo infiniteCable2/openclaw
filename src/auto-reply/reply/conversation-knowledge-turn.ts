@@ -382,7 +382,7 @@ export function createReplyConversationKnowledgeTurn(params: {
     ): Promise<CustomMessage[]> {
       assertCurrent();
       const run = preparedRun;
-      if (!recipient || !run || !execution || phase === "released") {
+      if (!run || !execution || phase === "released") {
         return [];
       }
       const retainContextBudget = () =>
@@ -393,10 +393,13 @@ export function createReplyConversationKnowledgeTurn(params: {
             : undefined,
         );
       try {
-        recipient.owner.assertCurrent();
+        recipient?.owner.assertCurrent();
       } catch {
-        // A retired recipient may enroll again under still-live host evidence.
-        // Expired audiences cannot be revived from stored participant metadata.
+        recipient = undefined;
+      }
+      if (!recipient) {
+        // Initial warm-up can also lose a read race. This boundary still has
+        // the original host evidence and the actual request footprint.
         if (publicationBranch) {
           try {
             const { prepareConversationKnowledgeRecipient } =

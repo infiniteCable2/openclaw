@@ -51,7 +51,7 @@ beforeEach(() => {
   });
 });
 
-async function fixture() {
+async function fixture(options: { warmupFailed?: boolean } = {}) {
   const cfg: OpenClawConfig = {
     agents: { entries: { example: { conversationMode: "branches" } } },
   };
@@ -79,6 +79,9 @@ async function fixture() {
   const replacement = recipient();
   preparation.recipient.mockImplementation((params) => {
     params.audience.assertCurrent();
+    if (options.warmupFailed && preparation.recipient.mock.calls.length === 1) {
+      throw new Error("Initial recipient preparation deferred");
+    }
     return preparation.recipient.mock.calls.length === 1 ? original : replacement;
   });
   const followupRun = createMockFollowupRun({
@@ -148,33 +151,36 @@ async function fixture() {
   };
 }
 
-it("hands the current native budget to a replacement before deferring foreground context", async () => {
-  const f = await fixture();
-  const canAdmit = createConversationContextCapacity({
-    messages: [],
-    systemPrompt: "Actual request prompt.",
-    tools: [],
-    contextWindow: 100_000,
-    reserveTokens: 8192,
-    modelIdentity: { provider: "synthetic", model: "actual-request-model" },
-  });
-  expect(capturePreparedConversationContextBudget(canAdmit)).toMatchObject({
-    contextWindow: 100_000,
-    reserveTokens: 8192,
-    modelIdentity: { provider: "synthetic", model: "actual-request-model" },
-  });
-  expect(await f.turn.refreshPrepared({ canAdmit })).toEqual([]);
-  expect(f.replacement.retainContextBudget).toHaveBeenCalledExactlyOnceWith(canAdmit, {
-    provider: "synthetic",
-    model: "example-model",
-    config: f.cfg,
-  });
-  expect(f.replacement.owner.request).toHaveBeenCalledExactlyOnceWith("recipient");
-  expect(f.replacement.retainContextBudget.mock.invocationCallOrder[0]).toBeLessThan(
-    f.replacement.owner.request.mock.invocationCallOrder[0]!,
-  );
-  expect(f.original.retainContextBudget).not.toHaveBeenCalled();
-});
+it.each([false, true])(
+  "recovers the native budget at the model boundary (warmupFailed=%s)",
+  async (warmupFailed) => {
+    const f = await fixture({ warmupFailed });
+    const canAdmit = createConversationContextCapacity({
+      messages: [],
+      systemPrompt: "Actual request prompt.",
+      tools: [],
+      contextWindow: 100_000,
+      reserveTokens: 8192,
+      modelIdentity: { provider: "synthetic", model: "actual-request-model" },
+    });
+    expect(capturePreparedConversationContextBudget(canAdmit)).toMatchObject({
+      contextWindow: 100_000,
+      reserveTokens: 8192,
+      modelIdentity: { provider: "synthetic", model: "actual-request-model" },
+    });
+    expect(await f.turn.refreshPrepared({ canAdmit })).toEqual([]);
+    expect(f.replacement.retainContextBudget).toHaveBeenCalledExactlyOnceWith(canAdmit, {
+      provider: "synthetic",
+      model: "example-model",
+      config: f.cfg,
+    });
+    expect(f.replacement.owner.request).toHaveBeenCalledExactlyOnceWith("recipient");
+    expect(f.replacement.retainContextBudget.mock.invocationCallOrder[0]).toBeLessThan(
+      f.replacement.owner.request.mock.invocationCallOrder[0]!,
+    );
+    expect(f.original.retainContextBudget).not.toHaveBeenCalled();
+  },
+);
 
 it("does not manufacture an issued budget for an unsupported request capacity", async () => {
   const f = await fixture();
