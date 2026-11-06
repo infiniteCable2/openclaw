@@ -3,6 +3,7 @@ import path from "node:path";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginForegroundSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
+import { SessionEntryChangedDuringReadError } from "../../config/sessions/session-entry-read-errors.js";
 import type { SessionTranscriptAuthority } from "../../config/sessions/session-transcript-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
@@ -611,11 +612,59 @@ describe("conversation knowledge prefetch lifecycle", () => {
       recipientHash: redactIdentifier(target.sessionId),
       rootHash: redactIdentifier(target.root.sessionId),
       failureClass: "SessionTranscriptReadFenceError",
+      cause: "preparation-deferred",
+      retryEligible: true,
     });
     await vi.advanceTimersByTimeAsync(1_000);
     await f.owner.wait();
     expect(f.prepare).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(boundary.warn.mock.calls)).not.toContain("synthetic source changed");
+  });
+
+  it("identifies a changed session read without inventing a selected source or changing its retry", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const f = fixture();
+    f.prepare.mockRejectedValueOnce(new SessionEntryChangedDuringReadError());
+    await f.owner.wait();
+    expect(boundary.warn).toHaveBeenCalledWith(expect.any(String), {
+      errorCode: "preparation-deferred",
+      recipientHash: redactIdentifier(target.sessionId),
+      rootHash: redactIdentifier(target.root.sessionId),
+      failureClass: "SessionEntryChangedDuringReadError",
+      cause: "session-entry-changed-during-read",
+      retryEligible: true,
+    });
+    expect(JSON.stringify(boundary.warn.mock.calls)).not.toContain("sourceHash");
+    expect(f.clear).not.toHaveBeenCalled();
+    expect(f.prepare).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await f.owner.wait();
+    expect(f.prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports authority invalidation separately when a changed read no longer has a current recipient", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const f = fixture();
+    f.prepare.mockImplementationOnce(async () => {
+      f.assertCurrent.mockImplementation(() => {
+        throw new Error("private revoked recipient");
+      });
+      throw new SessionEntryChangedDuringReadError();
+    });
+    await f.owner.wait();
+    await f.owner.close();
+    expect(boundary.warn).toHaveBeenCalledWith(
+      "Related-history background preparation stopped.",
+      expect.objectContaining({
+        errorCode: "authority-invalidated",
+        cause: "recipient-authority-invalidated",
+        retryEligible: false,
+      }),
+    );
+    expect(f.prepare).toHaveBeenCalledOnce();
+    expect(f.clear).toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(JSON.stringify(boundary.warn.mock.calls)).not.toContain("private revoked recipient");
   });
 
   it("joins actual preparation before native release and cannot resurrect a closed owner", async () => {

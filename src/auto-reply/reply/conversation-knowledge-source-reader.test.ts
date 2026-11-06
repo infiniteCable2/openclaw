@@ -37,6 +37,7 @@ const boundary = vi.hoisted(() => ({
   version: vi.fn(),
   register: vi.fn<(resource: OpenClawAgentDatabaseAsyncResource) => () => void>(),
   debug: vi.fn(),
+  info: vi.fn(),
   logEnabled: false,
 }));
 
@@ -97,7 +98,7 @@ vi.mock("../../logging/subsystem.js", () => ({
     debug: boundary.debug,
     warn() {},
     error() {},
-    info() {},
+    info: boundary.info,
   }),
 }));
 // mock-isolation: Keep real queue scheduling without external diagnostic side effects.
@@ -535,12 +536,22 @@ describe("bounded authorized source preparation", () => {
       expect(await f.reader.stage(request)).toBe("cache-full");
       expect(f.cache.firstPreparedOffset(f.receipt.origin)).toBe(0);
       expect(boundary.debug).not.toHaveBeenCalled();
+      f.reader.reportPreparation();
+      expect(boundary.info).not.toHaveBeenCalled();
       expect(await f.reader.stage(request)).toBe("complete");
       expect(boundary.debug).toHaveBeenCalledExactlyOnceWith(
         "Conversation knowledge transfer",
         expect.objectContaining({ phase: "prepared", complete: true, offset: 0 }),
       );
       expect(JSON.stringify(boundary.debug.mock.calls)).not.toContain(f.branch.sessionKey);
+      expect(boundary.info).not.toHaveBeenCalled();
+      f.reader.reportPreparation();
+      expect(boundary.info).toHaveBeenCalledExactlyOnceWith(
+        "Conversation knowledge transfer outcome",
+        expect.objectContaining({ outcome: "prepared", sourceCount: 1, ranges: 1 }),
+      );
+      f.reader.reportPreparation();
+      expect(boundary.info).toHaveBeenCalledOnce();
     } finally {
       retain.mockRestore();
       f.drop(source.read);

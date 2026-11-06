@@ -71,13 +71,18 @@ export function createConversationKnowledgePrefetchOwner(params: {
     params.assertCurrent();
     execution?.assertCurrent();
   };
-  const warn = (errorCode: "preparation-deferred" | "cleanup-pending", error?: unknown) => {
+  const warn = (
+    errorCode: "preparation-deferred" | "cleanup-pending" | "authority-invalidated",
+    error?: unknown,
+    retryEligible = false,
+  ) => {
     if (!reportedFailures.has(errorCode)) {
       reportedFailures.add(errorCode);
       const failureClass =
         error instanceof Error &&
         [
           "SessionTranscriptReadFenceError",
+          "SessionEntryChangedDuringReadError",
           "SessionMutationFactsUnavailableError",
           "SessionMutationAuthorizationChangedError",
           "PersonalConversationReadRefusedError",
@@ -86,12 +91,24 @@ export function createConversationKnowledgePrefetchOwner(params: {
         ].includes(error.name)
           ? error.name
           : "unknown";
-      log.warn("Related-history background preparation remains deferred.", {
-        errorCode,
-        recipientHash: redactIdentifier(target.sessionId),
-        rootHash: redactIdentifier(root.sessionId),
-        failureClass,
-      });
+      log.warn(
+        errorCode === "authority-invalidated"
+          ? "Related-history background preparation stopped."
+          : "Related-history background preparation remains deferred.",
+        {
+          errorCode,
+          recipientHash: redactIdentifier(target.sessionId),
+          rootHash: redactIdentifier(root.sessionId),
+          failureClass,
+          cause:
+            errorCode === "authority-invalidated"
+              ? "recipient-authority-invalidated"
+              : retryEligible && failureClass === "SessionEntryChangedDuringReadError"
+                ? "session-entry-changed-during-read"
+                : errorCode,
+          retryEligible,
+        },
+      );
     }
   };
   const cancelRetry = () => {
@@ -256,11 +273,12 @@ export function createConversationKnowledgePrefetchOwner(params: {
             }
             try {
               check();
-            } catch {
+            } catch (authorityError) {
+              warn("authority-invalidated", authorityError);
               stop();
               return;
             }
-            warn("preparation-deferred", error);
+            warn("preparation-deferred", error, true);
             if (!requested) {
               retry();
             }

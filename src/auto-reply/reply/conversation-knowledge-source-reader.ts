@@ -61,7 +61,10 @@ import type {
   PreparedConversationKnowledgePacket,
 } from "./conversation-knowledge-source-cache.js";
 import { createConversationKnowledgeSourceCustody } from "./conversation-knowledge-source-custody.js";
-import { logConversationKnowledgeTransfer } from "./conversation-knowledge-status.js";
+import {
+  logConversationKnowledgePreparedRanges,
+  logConversationKnowledgeTransfer,
+} from "./conversation-knowledge-status.js";
 
 export type ConversationKnowledgeHeldSource = {
   grant: Awaited<ReturnType<typeof preparePersonalConversationRead>>;
@@ -512,6 +515,9 @@ export function createConversationKnowledgeSourceReader(
   const prepareSource = createConversationKnowledgeSourceCustody(params);
   type PreparedSource = NonNullable<Awaited<ReturnType<typeof prepareSource>>>;
   const preparedSources = new Map<string, PreparedSource>();
+  const preparedRanges: Parameters<
+    typeof logConversationKnowledgePreparedRanges
+  >[0]["ranges"][number][] = [];
   // At most the current and next range are hydrated; future grants are not an eager all-source scan.
   const preparedProjections = new Map<string, SessionTranscriptModelContextRangeResult>();
   const acceptProjection = (result: SessionTranscriptModelContextRangeResult) => {
@@ -524,6 +530,13 @@ export function createConversationKnowledgeSourceReader(
     throw new SessionTranscriptReadFenceError("Conversation source range is no longer verified");
   };
   return {
+    reportPreparation() {
+      logConversationKnowledgePreparedRanges({
+        recipient: branch.sessionId,
+        ranges: preparedRanges,
+      });
+      preparedRanges.length = 0;
+    },
     async validate(source: PreparedSource, staged: PreparedConversationKnowledgePacket) {
       if (source.grouped && params.readyOnly && params.retainInHistory) {
         source.sourceAssertion();
@@ -583,6 +596,11 @@ export function createConversationKnowledgeSourceReader(
           return "cache-full" as const;
         }
         if (!previouslyUsable) {
+          preparedRanges.push({
+            receipt,
+            offset: input.offset,
+            complete: preparation === "complete",
+          });
           logConversationKnowledgeTransfer({
             phase: "prepared",
             recipient: branch.sessionId,

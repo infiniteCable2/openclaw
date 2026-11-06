@@ -35,7 +35,9 @@ import {
 } from "./conversation-knowledge-source-reader.js";
 import {
   createConversationKnowledgeGapCollector,
+  logConversationKnowledgeAdmission,
   logConversationKnowledgeDiagnostic,
+  logConversationKnowledgeReusedAdmission,
   logConversationKnowledgeTransfer,
 } from "./conversation-knowledge-status.js";
 import type {
@@ -243,6 +245,11 @@ async function prepareReplyConversationKnowledgeInMode(
           }
           return { accepted: 0, appended: 0, deferred: true, packetIds: [] };
         });
+      logConversationKnowledgeAdmission({
+        recipient: branch.sessionId,
+        packets: batch.slice(0, result.accepted).map(({ admission }) => admission),
+        appended: result.appended,
+      });
       for (const { admission, message } of batch.slice(0, result.accepted)) {
         params.onPacket?.(message);
         params.sourceCache?.consume(
@@ -573,8 +580,7 @@ async function prepareReplyConversationKnowledgeInMode(
           sourceAssertion();
           params.onPacket?.(message);
           params.sourceCache?.consume(contributionId, offset);
-          logConversationKnowledgeTransfer({
-            phase: "admitted",
+          logConversationKnowledgeReusedAdmission({
             recipient: branch.sessionId,
             receipt,
             offset,
@@ -634,6 +640,7 @@ async function prepareReplyConversationKnowledgeInMode(
         break;
       }
     }
+    sourceReader.reportPreparation();
     await flushPackets();
     params.assertCurrent();
     params.signal?.throwIfAborted();
@@ -704,6 +711,11 @@ async function prepareReplyConversationKnowledgeInMode(
       release,
     };
   } catch (error) {
+    logConversationKnowledgeDiagnostic({
+      recipient: branch.sessionId,
+      reason: "preparation-deferred",
+      failure: error,
+    });
     try {
       release();
     } catch (cleanupError) {

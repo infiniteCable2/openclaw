@@ -331,11 +331,13 @@ prevent independent later contributions from being admitted.
 
 A reset/replaced source is not silently treated as its previous incarnation.
 An exact source range that is no longer projectable is not marked consumed.
-Supplementary-history status stays in operational debug logs, never in model
-context or transcripts. Bounded diagnostics record closed reason codes, counts
-and hashed recipient/source references without dialogue text. Correlated debug
-events identify when a contribution becomes prepared and when a native recipient
-accepts it. Neither event creates a user input or another model request. Old unverified
+At info level, `Conversation knowledge transfer outcome` identifies the recipient
+and the contributing sources by stable hashes. A `prepared` outcome reports
+work staged in memory. An `admitted` outcome reports packets accepted by the
+recipient, including how many were newly appended or already present. A
+`deferred` outcome gives the reason and the available progress counts. Debug
+events add individual packet offsets and source sequences. These operational
+records contain no dialogue and stay outside model context. Old unverified
 ranges need source revalidation, not a promise of success next turn. Missing
 reads, changed generations and denied access do not prove permanent data loss.
 This does not reconstruct deleted history.

@@ -45,6 +45,7 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
 vi.mock("./conversation-knowledge-source-reader.js", () => ({
   prepareConversationKnowledgeTarget: boundary.target,
   createConversationKnowledgeSourceReader: () => ({
+    reportPreparation() {},
     async take() {
       return {};
     },
@@ -65,7 +66,7 @@ vi.mock("../../gateway/session-transcript-personal-read.js", () => ({
 }));
 // mock-isolation: Verify content-free diagnostics without initializing process-wide log outputs.
 vi.mock("../../logging/subsystem.js", () => ({
-  createSubsystemLogger: () => ({ debug: boundary.debug }),
+  createSubsystemLogger: () => ({ isEnabled: () => false, debug: boundary.debug }),
 }));
 
 const branch: ConversationKnowledgeBranch = {

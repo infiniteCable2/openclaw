@@ -38,6 +38,10 @@ import {
   prepareConversationKnowledgeSourceSelection,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
+import {
+  logConversationKnowledgeCheckpointAdmission,
+  logConversationKnowledgePreparedRanges,
+} from "./conversation-knowledge-status.js";
 import type {
   PreparedReplyConversationKnowledge,
   ReplyConversationKnowledgeParams,
@@ -144,7 +148,7 @@ export async function prepareRecipientConversationProjection(
     const bySource = new Map<string, ConversationKnowledgeReference[]>();
     const prepared = new Map<
       string,
-      { offset: number; packet: PreparedConversationKnowledgePacket }
+      { offset: number; packet: PreparedConversationKnowledgePacket; alreadyStaged: boolean }
     >();
     let complete = true;
     for (const reference of current) {
@@ -188,7 +192,7 @@ export async function prepareRecipientConversationProjection(
       } else if (!packet.part.complete) {
         complete = false;
       }
-      prepared.set(id, { offset: firstOffset ?? 0, packet });
+      prepared.set(id, { offset: firstOffset ?? 0, packet, alreadyStaged: staged !== undefined });
       const key = JSON.stringify([reference.source, reference.through.storePath]);
       const references = bySource.get(key) ?? [];
       references.push(reference);
@@ -295,6 +299,9 @@ export async function prepareRecipientConversationProjection(
           return false;
         }
         const preparedIds: string[] = [];
+        const newlyPrepared: Parameters<
+          typeof logConversationKnowledgePreparedRanges
+        >[0]["ranges"][number][] = [];
         for (const reference of references) {
           const id = conversationKnowledgeContributionId(reference);
           const selected = prepared.get(id);
@@ -309,11 +316,21 @@ export async function prepareRecipientConversationProjection(
             complete = false;
             continue;
           }
+          const previouslyUsable =
+            selected!.alreadyStaged &&
+            cache.preparedContributionGroup(sourceTarget, manifest, id) !== undefined;
           if (!cache.stage(id, selected!.offset, packet)) {
             complete = false;
             break;
           }
           preparedIds.push(id);
+          if (!previouslyUsable) {
+            newlyPrepared.push({
+              receipt: reference,
+              offset: selected!.offset,
+              complete: packet.part.complete,
+            });
+          }
         }
         drop(read);
         if (!preparedIds.length) {
@@ -321,6 +338,7 @@ export async function prepareRecipientConversationProjection(
           continue;
         }
         // The cache owns release even when bounded admission refuses the group.
+        let custodyRetained = true;
         if (retire && group) {
           transfer = true;
           if (
@@ -333,7 +351,14 @@ export async function prepareRecipientConversationProjection(
             )
           ) {
             complete = false;
+            custodyRetained = false;
           }
+        }
+        if (custodyRetained) {
+          logConversationKnowledgePreparedRanges({
+            recipient: branch.sessionId,
+            ranges: newlyPrepared,
+          });
         }
       } catch (error) {
         check();
@@ -653,6 +678,13 @@ export async function admitRecipientConversationCheckpoint(
     if (!result.accepted) {
       return undefined;
     }
+    logConversationKnowledgeCheckpointAdmission({
+      recipient: branch.sessionId,
+      root: candidate.checkpoint.root.sessionId,
+      checkpointId: candidate.checkpoint.checkpointId,
+      appended: result.appended,
+      coveredRanges: candidate.coverage.size,
+    });
     cache.consumeCheckpoint(candidate);
     params.onPacket?.(message);
     // The committed summary is now recipient history; donor custody ends at
