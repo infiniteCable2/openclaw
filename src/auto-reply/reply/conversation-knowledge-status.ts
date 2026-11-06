@@ -28,20 +28,27 @@ function failureCause(failure: unknown) {
   return "native-outcome-unavailable";
 }
 
+type OutcomeFields = Record<string, unknown> & {
+  outcome: "prepared" | "admitted" | "deferred";
+  recipientHash: string;
+  sourceHash?: string;
+  sourceChunk?: number;
+};
+
 /** Bounded diagnostic memory only; it never records or decides transfer progress. */
-function operationalOutcome(fields: Record<string, unknown>, repeat = false) {
+function operationalOutcome(fields: OutcomeFields, repeat = false) {
   if (!log.isEnabled("info")) {
     return;
   }
   const signature = JSON.stringify(fields);
-  const recipient = String(fields.recipientHash);
+  const recipient = fields.recipientHash;
   const scope =
     fields.sourceHash !== undefined
-      ? `source:${String(fields.sourceHash)}`
+      ? `source:${fields.sourceHash}`
       : fields.sourceChunk !== undefined
-        ? `chunk:${String(fields.sourceChunk)}`
+        ? `chunk:${fields.sourceChunk}`
         : "all";
-  const key = `${recipient}|${String(fields.outcome)}|${scope}`;
+  const key = `${recipient}|${fields.outcome}|${scope}`;
   if (!repeat && reportedOutcomes.get(key) === signature) {
     return;
   }
@@ -68,7 +75,7 @@ function operationalOutcome(fields: Record<string, unknown>, repeat = false) {
 
 /** Every observed source is included; each individual record remains bounded. */
 function sourceOutcomes(
-  fields: Record<string, unknown>,
+  fields: OutcomeFields,
   sources: readonly Record<string, unknown>[],
   repeat = false,
 ) {
@@ -76,7 +83,7 @@ function sourceOutcomes(
     return;
   }
   const chunks = Math.max(1, Math.ceil(sources.length / 3));
-  const prefix = `${String(fields.recipientHash)}|${String(fields.outcome)}|chunk:`;
+  const prefix = `${fields.recipientHash}|${fields.outcome}|chunk:`;
   for (const previous of reportedOutcomes.keys()) {
     if (previous.startsWith(prefix) && Number(previous.slice(prefix.length)) > chunks) {
       reportedOutcomes.delete(previous);

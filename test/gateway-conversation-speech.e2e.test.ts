@@ -590,7 +590,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           const sequence = history.messages.find(
             (message) =>
               message.role === "user" && JSON.stringify(message.content).includes(marker),
-          )?.__openclaw?.transcriptPosition?.rawSeq;
+          )?.["__openclaw"]?.transcriptPosition?.rawSeq;
           if (typeof sequence !== "number") {
             throw new Error("Native user transcript sequence unavailable");
           }
