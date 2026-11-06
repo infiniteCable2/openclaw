@@ -51,7 +51,7 @@ function fixture() {
     cwd: "/virtual/workspace",
     authProfileId: "selected-profile",
     authProfileIdSource: "user" as const,
-    requireWorkspaceOnly: true,
+    requireWorkspaceOnly: true as const,
   };
   const value = capturePreparedConversationContextBudget(
     createConversationContextCapacity({

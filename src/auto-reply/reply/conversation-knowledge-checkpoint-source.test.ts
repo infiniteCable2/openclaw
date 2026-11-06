@@ -241,9 +241,8 @@ describe("checkpoint unavailable source custody", () => {
     const references = Array.from({ length: 9 }, (_, index) => {
       const value = reference(`generation-${index}`);
       value.source.sessionKey = "agent:example:foreign";
-      value.through.sessionKey = value.source.sessionKey;
       value.origin = conversationKnowledgeOrigin(value.source, "utterance-observation");
-      return value;
+      return { ...value, through: { ...value.through, sessionKey: value.source.sessionKey } };
     });
     boundary.root = references.map((details) => ({
       type: "custom_message",

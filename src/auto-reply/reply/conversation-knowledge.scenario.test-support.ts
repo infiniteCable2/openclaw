@@ -44,7 +44,10 @@ export const person = {
   idKind: "user-id",
   id: "@person-a:example.test",
 } satisfies SessionParticipantIdentity;
-export const otherPerson: SessionParticipantIdentity = { ...person, id: "@person-b:example.test" };
+export const otherPerson = {
+  ...person,
+  id: "@person-b:example.test",
+} satisfies SessionParticipantIdentity;
 
 export async function createConversationKnowledgeScenario(state: OpenClawTestState) {
   const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });

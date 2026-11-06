@@ -122,14 +122,14 @@ describe("idle maintenance request placement", () => {
 
   it("defers a current model ceiling rather than restoring a previous unrestricted model", () => {
     const input = withRole();
-    input.config.gateway!.roles!.definitions.member.modelPolicy = { allow: ["example/current"] };
+    input.config.gateway!.roles!.definitions.member!.modelPolicy = { allow: ["example/current"] };
     expect(hasIdleConversationKnowledgeMaintenanceModelAuthority(input)).toBe(false);
     expect(resolveIdleConversationKnowledgeMaintenanceRequest(input)).toBeUndefined();
   });
 
   it("shares the required-sandbox refusal with warm maintenance", () => {
     const input = withRole();
-    input.config.gateway!.roles!.definitions.member.sandbox = "required";
+    input.config.gateway!.roles!.definitions.member!.sandbox = "required";
     expect(hasIdleConversationKnowledgeMaintenanceModelAuthority(input)).toBe(false);
     expect(resolveIdleConversationKnowledgeMaintenanceRequest(input)).toBeUndefined();
   });
