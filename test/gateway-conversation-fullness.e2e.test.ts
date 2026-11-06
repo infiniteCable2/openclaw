@@ -585,16 +585,40 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       expect(normalRequests()).toHaveLength(normalBeforePressure + 1);
       expect(model.requests.filter(isSummary).length).toBeGreaterThan(summaryBeforePressure);
       const verify = (request: Record<string, unknown>, current: string) => {
-        const text = textLeaves([request.instructions, request.input]).join("\n");
+        const messages = [
+          request.instructions,
+          ...(Array.isArray(request.input) ? request.input : [request.input]),
+        ].map((message) => textLeaves(message).join("\n"));
+        const text = messages.join("\n");
         expect(text).toContain("NATIVE_PRESSURE_SUMMARY_281");
         expect(text).not.toContain("Summary of related conversations");
-        for (const fact of [
-          ...localFacts,
-          "PRESSURE_FOREIGN_INITIAL_281",
-          "PRESSURE_FOREIGN_LATE_281",
-          current,
-        ]) {
+        for (const fact of [...localFacts, "PRESSURE_FOREIGN_INITIAL_281"]) {
+          // Native compaction can both mention a fact in its summary and keep
+          // its original recent turn. Each carrier may contain the fact once.
+          const carrying = messages.filter((message) => message.includes(fact));
+          expect(carrying.length, fact).toBeGreaterThan(0);
+          const summaries = carrying.filter((message) =>
+            message.includes("NATIVE_PRESSURE_SUMMARY_281"),
+          );
+          expect(summaries.length, fact).toBeLessThanOrEqual(1);
+          expect(carrying.length - summaries.length, fact).toBeLessThanOrEqual(1);
+          for (const message of carrying) {
+            expect(message.split(fact).length - 1, fact).toBe(1);
+          }
+        }
+        // The late observation was still pending at compaction. It must have
+        // precisely one carrier, as must this turn's actual input.
+        for (const fact of ["PRESSURE_FOREIGN_LATE_281", current]) {
           expect(text.split(fact).length - 1, fact).toBe(1);
+        }
+        if (current === "PRESSURE_WARM_PROBE_281") {
+          expect(
+            messages.some(
+              (message) =>
+                message.includes("NATIVE_PRESSURE_SUMMARY_281") &&
+                message.includes("PRESSURE_FOREIGN_LATE_281"),
+            ),
+          ).toBe(false);
         }
       };
       verify(await send(recipient, "PRESSURE_WARM_PROBE_281"), "PRESSURE_WARM_PROBE_281");
