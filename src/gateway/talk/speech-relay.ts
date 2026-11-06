@@ -507,7 +507,8 @@ export async function createTalkSpeechRelaySession(params: {
         speakCommentary: profile.speakCommentary,
       },
     },
-    fullConfig: speechConfig,
+    fullConfig: params.cfg,
+    speechConfig,
     runtime: createPluginRuntime(),
     logger: params.context.logGateway,
     connectionPresentation: {

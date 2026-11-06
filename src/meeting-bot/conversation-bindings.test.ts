@@ -238,10 +238,16 @@ describe("original speech binding to native reply", () => {
 
   it("uses the original host input and native queue with no task-subagent dispatch", async () => {
     const f = fixture();
+    f.params.speechConfig = { tts: { auto: "always" } };
     const onRunStarted = vi.fn();
     const onOriginalInputCommitted = vi.fn();
     mocks.getReplyFromConfig.mockImplementation(
-      async (context, options: InternalGetReplyOptions) => {
+      async (context, options: InternalGetReplyOptions, config) => {
+        expect(config).toBe(f.params.fullConfig);
+        expect(mocks.prepareExpression.mock.lastCall?.[0].cfg).toBe(f.params.speechConfig);
+        expect(vi.mocked(f.tts.prepareTextToSpeechTelephony).mock.lastCall?.[0].cfg).toBe(
+          f.params.speechConfig,
+        );
         expect(context.SessionKey).toBe("agent:example:call");
         expect(context.Body).toBe("A question");
         expect(context.ChannelStructuredContext).toEqual([

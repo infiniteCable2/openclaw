@@ -27,6 +27,8 @@ export type MeetingRealtimeBindingsV2Params = Omit<
   "runtime"
 > & {
   runtime: Pick<Parameters<typeof createMeetingRealtimeEngineBindings>[0]["runtime"], "tts">;
+  /** Presentation-only provider overrides; the agent uses its admitted runtime configuration. */
+  speechConfig?: ConversationReplyParams["cfg"];
   inputSource: ConversationInputSourceV1;
   agentId: string;
   conversationId: string;
@@ -182,7 +184,7 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
         try {
           params.assertOutputCurrent();
           expression = await prepareSpeechExpressionContext({
-            cfg: params.fullConfig,
+            cfg: params.speechConfig ?? params.fullConfig,
             tts: params.runtime.tts,
             agentId: params.agentId,
             channelId: params.ttsContext?.channelId,
@@ -196,7 +198,7 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
           params.assertOutputCurrent();
           if (consult.onSpeakableText && !expression) {
             preparation = await params.runtime.tts.prepareTextToSpeechTelephony({
-              cfg: params.fullConfig,
+              cfg: params.speechConfig ?? params.fullConfig,
               agentId: params.agentId,
               channelId: params.ttsContext?.channelId,
               accountId: params.ttsContext?.accountId,
