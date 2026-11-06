@@ -519,7 +519,17 @@ it("compacts a warm recipient across a config reload and imports every pending t
       const summaryBeforePressure = model.requests.filter(isSummary).length;
       // The donor's user input and assistant reply are distinct publications.
       // No user turn may preempt idle maintenance from the held summary onward.
-      const summary = model.holdNext(isSummary);
+      // Root checkpoints summarize quoted source observations as user messages.
+      // Only this recipient has the padding as an actual assistant response.
+      const summary = model.holdNext(
+        (request) =>
+          isSummary(request) &&
+          textLeaves(request.input).some((part) =>
+            part.includes(
+              "[Assistant]: Synthetic local archive padding records cobalt storage items.",
+            ),
+          ),
+      );
       try {
         nextOrdinaryReply = `PRESSURE_FOREIGN_DONOR_REPLY_281 ${padding}`.slice(0, padding.length);
         await send(donor, "PRESSURE_FOREIGN_LATE_281");

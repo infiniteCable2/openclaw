@@ -227,8 +227,11 @@ export async function compactConversationKnowledgeWhileIdle(params: {
     }
     let compacted = false;
     let version = fresh.version;
-    const warmPressure = budget && !budget.capacityForMessages(fresh.messages)(packet);
-    if (!pressure.fits || warmPressure) {
+    // Native replay can fit after trimming while the durable recipient window is
+    // still full. Compare the same window that the subsequent append will charge.
+    const needsReduction =
+      !pressure.fits || !(budget ?? pressure.budget).capacityForMessages(fresh.messages)(packet);
+    if (needsReduction) {
       if (params.config.agents?.defaults?.compaction?.enabled === false) {
         return false;
       }
@@ -236,7 +239,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
         ...params,
         request: {
           ...request,
-          ...(pressure.fits && warmPressure
+          ...(pressure.fits
             ? {
                 forcePreflight: true,
                 preflightRequired: true,

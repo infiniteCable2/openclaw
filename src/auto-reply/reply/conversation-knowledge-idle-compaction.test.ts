@@ -277,6 +277,33 @@ it("does not admit under a smaller maintenance footprint while the real warmed r
   expect(onReady).not.toHaveBeenCalled();
 });
 
+it("reduces a cold recipient when replay fits but its durable context cannot accept the packet", async () => {
+  const f = fixture();
+  const request = { ...f.placement, ...f.params.target, sessionTarget: f.params.target };
+  const after = { ...f.version, rawSeq: 13 };
+  f.readContext
+    .mockResolvedValueOnce({ messages: f.history, version: f.version })
+    .mockResolvedValue({ messages: [], version: after });
+  mocks.compact.mockImplementation(async (input) => {
+    if (input.budgetPreflight?.checkOnly) {
+      f.issue(input, true);
+      return { ok: true, compacted: false };
+    }
+    expect(input).toMatchObject({ forcePreflight: true, preflightRequired: true });
+    return { ok: true, compacted: true };
+  });
+  const onReady = vi.fn(async (budget: typeof f.params.budget, version: typeof after) => {
+    expect(version).toEqual(after);
+    expect(budget.capacityForMessages([])(f.packet)).toBe(true);
+    return true;
+  });
+  await expect(
+    compactConversationKnowledgeWhileIdle({ ...f.params, budget: undefined, request, onReady }),
+  ).resolves.toBe(true);
+  expect(mocks.compact).toHaveBeenCalledTimes(3);
+  expect(onReady).toHaveBeenCalledOnce();
+});
+
 it("native refusal cannot be overridden by an apparently fitting maintenance capacity", async () => {
   const f = fixture();
   const onReady = vi.fn(async () => true);

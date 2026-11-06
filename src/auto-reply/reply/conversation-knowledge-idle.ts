@@ -172,6 +172,16 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
   let reason: ConversationKnowledgeIdleDeferralReason = "no-progress";
   let capacityChecks = 0;
   let capacityRefusals = 0;
+  const recordCapacity = (allowed: boolean) => {
+    capacityChecks++;
+    if (!allowed) {
+      capacityRefusals++;
+      reason = "capacity";
+    } else if (reason === "missing-budget") {
+      reason = "no-progress";
+    }
+    return allowed;
+  };
   let compacted = false;
   try {
     await owner.track(
@@ -406,12 +416,9 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                         refusedPacket ??= message;
                         return false;
                       }
-                      capacityChecks++;
-                      const allowed = capacity(message);
+                      const allowed = recordCapacity(capacity(message));
                       if (!allowed) {
-                        capacityRefusals++;
                         refusedPacket ??= message;
-                        reason = "capacity";
                       }
                       return allowed;
                     };
@@ -521,13 +528,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                         state: params.compaction,
                         assertCurrent: check,
                         signal: owner.signal,
-                        onNativeDecision: (allowed) => {
-                          capacityChecks++;
-                          if (!allowed) {
-                            capacityRefusals++;
-                            reason = "capacity";
-                          }
-                        },
+                        onNativeDecision: recordCapacity,
                         onReady: async (nativeBudget, version) => {
                           const current = await readContext();
                           check();
@@ -541,7 +542,9 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                           );
                           await admit(
                             (message) =>
-                              nativeCapacity(message) && (foregroundCapacity?.(message) ?? true),
+                              recordCapacity(
+                                nativeCapacity(message) && (foregroundCapacity?.(message) ?? true),
+                              ),
                             version,
                           );
                           return consumptionBefore !== sourceCache.consumptionRevision;
