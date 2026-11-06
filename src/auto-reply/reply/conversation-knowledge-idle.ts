@@ -360,19 +360,21 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                     }
                     const compactionPolicy = structuredClone(cfg.agents?.defaults?.compaction);
                     const contextEngine = cfg.plugins?.slots?.contextEngine;
-                    const snapshot = await readSessionTranscriptContextProjectionAsync(
-                      target,
-                      async (selected) => {
-                        const value = await readSessionTranscriptContextMessagesInWorker(
-                          selected.target,
-                          selected.admission,
-                          owner.signal,
-                          selected.physicalSource?.expectedIdentity,
-                        );
-                        return { value, version: value.version };
-                      },
-                      owner.signal,
-                    );
+                    const readContext = () =>
+                      readSessionTranscriptContextProjectionAsync(
+                        target,
+                        async (selected) => {
+                          const value = await readSessionTranscriptContextMessagesInWorker(
+                            selected.target,
+                            selected.admission,
+                            owner.signal,
+                            selected.physicalSource?.expectedIdentity,
+                          );
+                          return { value, version: value.version };
+                        },
+                        owner.signal,
+                      );
+                    const snapshot = await readContext();
                     source();
                     if (!snapshot.version) {
                       reason = "context-unavailable";
@@ -546,22 +548,6 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                         },
                         readContext,
                       });
-                    }
-                    async function readContext() {
-                      const current = await readSessionTranscriptContextProjectionAsync(
-                        target,
-                        async (selected) => {
-                          const value = await readSessionTranscriptContextMessagesInWorker(
-                            selected.target,
-                            selected.admission,
-                            owner.signal,
-                            selected.physicalSource?.expectedIdentity,
-                          );
-                          return { value, version: value.version };
-                        },
-                        owner.signal,
-                      );
-                      return current;
                     }
                   });
                 } finally {

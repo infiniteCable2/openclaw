@@ -432,7 +432,7 @@ export async function runEmbeddedAttemptPromptPhase(
                 workspaceDir: effectiveWorkspace,
                 cwd: input.setup.effectiveCwd,
                 agentDir: attempt.agentDir,
-                requireWorkspaceOnly: effectiveFsWorkspaceOnly,
+                requireWorkspaceOnly: effectiveFsWorkspaceOnly ? true : undefined,
                 permissionMode: attempt.permissionMode,
                 sessionRoot: attempt.sessionRoot,
                 sandboxSessionKey: attempt.sandboxSessionKey,

@@ -118,7 +118,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
   signal: AbortSignal;
   readContext(): Promise<{
     messages: AgentMessage[];
-    version: SessionTranscriptContextVersion | undefined;
+    version?: SessionTranscriptContextVersion;
   }>;
   onReady?(
     value: PreparedConversationContextBudget,
@@ -249,6 +249,10 @@ export async function compactConversationKnowledgeWhileIdle(params: {
         return false;
       }
       compacted = true;
+      log.info("Conversation knowledge idle maintenance", {
+        outcome: "compacted",
+        recipientHash: redactIdentifier(target.sessionId),
+      });
       const current = await params.readContext();
       check();
       if (!current.version) {
@@ -256,10 +260,6 @@ export async function compactConversationKnowledgeWhileIdle(params: {
       }
       version = current.version;
       state.blocked = { version: { ...version }, consumptionRevision: params.consumptionRevision };
-      log.info("Conversation knowledge idle maintenance", {
-        outcome: "compacted",
-        recipientHash: redactIdentifier(target.sessionId),
-      });
       pressure = await probe(version);
     }
     // Native refusal wins even if the conservative reusable estimate would allow it.
