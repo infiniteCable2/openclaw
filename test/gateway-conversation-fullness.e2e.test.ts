@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
@@ -324,6 +325,229 @@ it("delivers every already prepared foreign part in the first safe request witho
         expect(probe.duplicated, probe.label).toEqual([]);
         expect(probe.completeParts, probe.label).toBe(PART_COUNT);
       }
+    },
+    () => owner?.close(),
+    () => gateway?.cleanup(),
+    () => model?.stop(),
+  );
+}, 300_000);
+
+it("compacts a warm recipient under real idle pressure and imports the pending source without another user request", async (context) => {
+  let gateway: OpenClawTestInstance | undefined;
+  let model: Model | undefined;
+  let owner: Operator | undefined;
+  context.onTestFailed(() => console.error(gateway?.logs()));
+  await runQaGatewayTestFixture(
+    context,
+    async ({ signal, verifyCleanup }) => {
+      const padding = "Synthetic local archive padding records cobalt storage items. "
+        .repeat(280)
+        .slice(0, 16_000);
+      const isSummary = (request: Record<string, unknown>) =>
+        JSON.stringify(request).includes("You are a context summarization assistant.");
+      model = await startConversationModel(signal, (request, index) => {
+        if (isSummary(request)) {
+          const facts = [
+            ...new Set(
+              JSON.stringify(request).match(
+                /PRESSURE_LOCAL_FACT_\d+_281|PRESSURE_FOREIGN_(?:INITIAL|LATE)_281/gu,
+              ) ?? [],
+            ),
+          ];
+          return `## Decisions\nNATIVE_PRESSURE_SUMMARY_281\n${facts.join("\n")}\n## Open tasks\nNone.`;
+        }
+        const lastUser = Array.isArray(request.input)
+          ? request.input.findLast((item: unknown) => asOptionalRecord(item)?.role === "user")
+          : undefined;
+        return textLeaves(lastUser).join("\n").includes("PRESSURE_LOCAL_FACT_")
+          ? padding
+          : `PRESSURE_REPLY_${index}`;
+      });
+      const selected = config(model);
+      selected.agents!.defaults!.compaction = {
+        enabled: true,
+        keepRecentTokens: 1_024,
+        recentTurnsPreserve: 0,
+        qualityGuard: { enabled: false },
+        memoryFlush: { enabled: false },
+      };
+      for (const provider of Object.values(selected.models!.providers!)) {
+        provider.models = provider.models.map((entry) =>
+          Object.assign({}, entry, { contextWindow: 32_768 }),
+        );
+      }
+      gateway = await createOpenClawTestInstance({
+        name: "warm-recipient-idle-pressure",
+        signal,
+        verifyCleanup,
+        config: selected,
+        env: {
+          OPENCLAW_SKIP_PROVIDERS: undefined,
+          OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+          OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
+          OPENCLAW_LOG_LEVEL: "debug",
+        },
+      });
+      isolateConversationGatewayEnvironment(gateway);
+      await gateway.startGateway();
+      owner = await connectConversationOperator(gateway, "alex@example.test", signal);
+      const donor = `agent:main:pressure-donor-${randomUUID()}`;
+      const recipient = `agent:main:pressure-recipient-${randomUUID()}`;
+      const normalRequests = () => model!.requests.filter((request) => !isSummary(request));
+      const send = async (key: string, message: string) => {
+        const before = model!.requests.length;
+        const started = await owner!.call<{ runId: string; status: string }>("chat.send", {
+          sessionKey: key,
+          message,
+          deliver: false,
+          idempotencyKey: randomUUID(),
+        });
+        expect(started.status).toBe("started");
+        expect(
+          await owner!.call(
+            "agent.wait",
+            { runId: started.runId, timeoutMs: 60_000 },
+            { timeoutMs: 61_000 },
+          ),
+        ).toMatchObject({ status: "ok" });
+        const calls = model!.requests
+          .slice(before)
+          .filter((request) => !isSummary(request) && JSON.stringify(request).includes(message));
+        expect(calls).toHaveLength(1);
+        expect(model!.errors).toEqual([]);
+        return calls[0]!;
+      };
+      // Ignore incomplete rolling-log fragments, including after a process restart.
+      const logs = () =>
+        gateway!
+          .logs()
+          .split("\n")
+          .flatMap((line) => {
+            try {
+              return asOptionalRecord(JSON.parse(line)) ? [line.replaceAll('\\"', '"')] : [];
+            } catch {
+              return [];
+            }
+          });
+      const frontier = (line: string, sessionId: string) =>
+        Number(
+          new RegExp(
+            `"sourceHash"\\s*:\\s*"${redactIdentifier(sessionId)}"[^}\\]]*"throughSeq"\\s*:\\s*(\\d+)`,
+            "u",
+          ).exec(line)?.[1] ?? -1,
+        );
+      const donorHistory = () =>
+        owner!.call<{
+          messages: Array<{
+            role: string;
+            content: unknown;
+            __openclaw?: { transcriptPosition?: { rawSeq?: number } };
+          }>;
+        }>("chat.history", { sessionKey: donor, limit: 100 });
+      await send(donor, "PRESSURE_FOREIGN_INITIAL_281");
+      const donorDescription = await owner.call<Description>("sessions.describe", { key: donor });
+      const initialSeq = (await donorHistory()).messages.findLast(
+        (item) => item.role === "assistant",
+      )?.__openclaw?.transcriptPosition?.rawSeq;
+      expect(initialSeq).toBeTypeOf("number");
+      await vi.waitFor(
+        () => {
+          expect(
+            logs().some(
+              (line) =>
+                line.includes("Related-history root projection ready") &&
+                frontier(line, donorDescription.session.sessionId) >= initialSeq!,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 60_000, interval: 50 },
+      );
+      const localFacts: string[] = [];
+      let renderedChars = 0;
+      // At most eight ordinary turns. Size the fixture from the real provider
+      // prompt, not a guessed fixed system-prompt footprint. Each reply remains
+      // below this provider's configured 4096-token output allowance.
+      for (let index = 0; index < 8 && renderedChars + padding.length < 84_000; index++) {
+        const fact = `PRESSURE_LOCAL_FACT_${index}_281`;
+        localFacts.push(fact);
+        const request = await send(recipient, fact);
+        const text = textLeaves([request.instructions, request.input]).join("\n");
+        expect(text.split("PRESSURE_FOREIGN_INITIAL_281")).toHaveLength(2);
+        renderedChars = text.length;
+      }
+      expect(renderedChars + padding.length).toBeGreaterThanOrEqual(84_000);
+      const original = await owner.call<Description>("sessions.describe", { key: recipient });
+      const beforePressure = new Set(logs());
+      const normalBeforePressure = normalRequests().length;
+      const summaryBeforePressure = model.requests.filter(isSummary).length;
+      await send(donor, "PRESSURE_FOREIGN_LATE_281");
+      const originalDonor = await donorHistory();
+      expect(
+        originalDonor.messages.filter(
+          (item) =>
+            item.role === "user" &&
+            JSON.stringify(item.content).includes("PRESSURE_FOREIGN_LATE_281"),
+        ),
+      ).toHaveLength(1);
+      const latestSeq = originalDonor.messages.findLast((item) => item.role === "assistant")
+        ?.__openclaw?.transcriptPosition?.rawSeq;
+      expect(latestSeq).toBeTypeOf("number");
+      const recipientHash = redactIdentifier(original.session.sessionId);
+      const recipientLine = (line: string) =>
+        new RegExp(`"recipientHash"\\s*:\\s*"${recipientHash}"`, "u").test(line);
+      await vi.waitFor(
+        () => {
+          const fresh = logs().filter((line) => !beforePressure.has(line));
+          expect(
+            fresh.some(
+              (line) =>
+                line.includes("[compaction-diag] end") &&
+                line.includes(`sessionKey=${recipient} `) &&
+                line.includes("trigger=budget") &&
+                line.includes("outcome=compacted") &&
+                line.includes("reason=none"),
+            ),
+          ).toBe(true);
+          expect(
+            fresh.some(
+              (line) =>
+                line.includes("Conversation knowledge transfer outcome") &&
+                recipientLine(line) &&
+                /"cause"\s*:\s*"native-transcript-commit"/u.test(line) &&
+                frontier(line, donorDescription.session.sessionId) >= latestSeq!,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 60_000, interval: 50 },
+      );
+      // The only new ordinary model request was the legitimate donor input.
+      // Native idle compaction and admission completed before any recipient probe.
+      expect(normalRequests()).toHaveLength(normalBeforePressure + 1);
+      expect(model.requests.filter(isSummary).length).toBeGreaterThan(summaryBeforePressure);
+      const verify = (request: Record<string, unknown>, current: string) => {
+        const text = textLeaves([request.instructions, request.input]).join("\n");
+        expect(text).toContain("NATIVE_PRESSURE_SUMMARY_281");
+        expect(text).not.toContain("Summary of related conversations");
+        for (const fact of [
+          ...localFacts,
+          "PRESSURE_FOREIGN_INITIAL_281",
+          "PRESSURE_FOREIGN_LATE_281",
+          current,
+        ]) {
+          expect(text.split(fact).length - 1, fact).toBe(1);
+        }
+      };
+      verify(await send(recipient, "PRESSURE_WARM_PROBE_281"), "PRESSURE_WARM_PROBE_281");
+      await owner.close();
+      owner = undefined;
+      await gateway.stopGateway();
+      await gateway.startGateway();
+      owner = await connectConversationOperator(gateway, "alex@example.test", signal);
+      expect(
+        (await owner.call<Description>("sessions.describe", { key: recipient })).session.sessionId,
+      ).toBe(original.session.sessionId);
+      verify(await send(recipient, "PRESSURE_RESTART_PROBE_281"), "PRESSURE_RESTART_PROBE_281");
+      expect(model.errors).toEqual([]);
     },
     () => owner?.close(),
     () => gateway?.cleanup(),

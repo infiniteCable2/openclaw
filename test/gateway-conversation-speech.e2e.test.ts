@@ -621,7 +621,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         const idleStartedAt = performance.now();
         const requestsBeforeSibling = model.requests.length;
         if (connectedActivity) {
-          phase = "connected-idle-sibling-admission";
+          phase = "speech-to-idle-chat-admission";
           drainPlayback();
           if (!chatRecipient || !idleRecipient?.session) {
             throw new Error("Native conversation recipient unavailable");
@@ -643,6 +643,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             throw new Error("Native conversation recipient unavailable");
           }
           expect(JSON.stringify(model.requests[requestsBeforeSibling])).toContain("SPEECH_INPUT_2");
+          phase = "chat-to-idle-speech-admission";
           // Keep the Talk connection open with no new capture or model boundary.
           // Ordinary output/foreground settlement must admit the prepared packet.
           await waitForConversationTransfer(gateway, signal, {
