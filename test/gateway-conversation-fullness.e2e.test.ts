@@ -593,8 +593,8 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
         expect(text).toContain("NATIVE_PRESSURE_SUMMARY_281");
         expect(text).not.toContain("Summary of related conversations");
         for (const fact of [...localFacts, "PRESSURE_FOREIGN_INITIAL_281"]) {
-          // Native compaction can both mention a fact in its summary and keep
-          // its original recent turn. Each carrier may contain the fact once.
+          // A single native summary can combine the history and split-turn
+          // summaries. Repeated prose inside it is not a second imported packet.
           const carrying = messages.filter((message) => message.includes(fact));
           expect(carrying.length, fact).toBeGreaterThan(0);
           const summaries = carrying.filter((message) =>
@@ -602,17 +602,8 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
           );
           expect(summaries.length, fact).toBeLessThanOrEqual(1);
           expect(carrying.length - summaries.length, fact).toBeLessThanOrEqual(1);
-          for (const message of carrying) {
-            // A native summary may prepend the verbatim outstanding user ask.
-            // Keep the exactly-once assertion on each summary/original body.
-            const body =
-              localFacts.includes(fact) && summaries.includes(message)
-                ? message.replace(/## Latest unresolved user request\n[^\n]*\n/u, "")
-                : message;
-            expect(
-              body.split(fact).length - 1,
-              `${fact} in ${message.match(/^#{1,3} [^\n]+/gmu)?.join(", ") ?? "original turn"}`,
-            ).toBeLessThanOrEqual(1);
+          for (const message of carrying.filter((item) => !summaries.includes(item))) {
+            expect(message.split(fact).length - 1, fact).toBe(1);
           }
         }
         // The late observation was still pending at compaction. It must have
