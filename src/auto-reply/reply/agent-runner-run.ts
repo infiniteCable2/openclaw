@@ -52,7 +52,7 @@ import { createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { resolveEffectiveBlockStreamingConfig } from "./block-streaming.js";
 import {
   createDirectCompactionNoticeSender,
-  isCompactionNoticePending,
+  notifyAcceptedInputDuringCompaction,
 } from "./compaction-notice.js";
 import { bindConversationInputPublication } from "./conversation-publication-input.js";
 import { createFollowupRunner } from "./followup-runner.js";
@@ -263,29 +263,14 @@ export async function runReplyAgent(
   const activeReplyOperation = sessionKey
     ? replyRunRegistry.get(sessionKey)
     : providedReplyOperation;
-  const notifyQueuedCompaction = async () => {
-    if (
-      !activeReplyOperation ||
-      replyRunRegistry.get(activeReplyOperation.key) !== activeReplyOperation ||
-      !isCompactionNoticePending(activeReplyOperation)
-    ) {
-      return;
-    }
-    try {
-      opts?.abortSignal?.throwIfAborted();
-      followupRun.operatorAuthority?.assertCurrent();
-      followupRun.assertSourceCurrent?.();
-    } catch {
-      return;
-    }
-    await createDirectCompactionNoticeSender({
-      cfg: followupRun.run.config,
-      language: resolveAgentLanguage(followupRun.run.config, followupRun.run.agentId),
-      turn: { followupRun, isHeartbeat, opts },
+  const notifyQueuedCompaction = () =>
+    notifyAcceptedInputDuringCompaction({
+      operation: activeReplyOperation,
+      followupRun,
+      isHeartbeat,
       opts,
       currentMessageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
-    })("queued");
-  };
+    });
   // A source-only reservation still owns completion, but is not a steering target.
   const shouldQueueProvidedSteer =
     effectiveShouldSteer &&

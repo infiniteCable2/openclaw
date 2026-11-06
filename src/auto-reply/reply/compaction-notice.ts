@@ -1,13 +1,15 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
+import { resolveAgentLanguage } from "../../agents/identity.js";
 import { isSyntheticSourceReplyTurn } from "../../agents/reply-completion.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { resolveUserMessages } from "../../shared/user-messages.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
+import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import type { FollowupRun } from "./queue/types.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
+import { type ReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
 import { getAttachedBackend } from "./reply-run-registry.state.js";
 import type { ReplySpeechPresentationSource } from "./reply-speech-presentation.js";
 
@@ -64,6 +66,37 @@ export function isCompactionNoticePending(operation: ReplyOperation | undefined)
     (operation.phase === "preflight_compacting" ||
       getAttachedBackend(operation)?.isCompacting?.() === true),
   );
+}
+
+export async function notifyAcceptedInputDuringCompaction(params: {
+  operation?: ReplyOperation;
+  followupRun: FollowupRun;
+  isHeartbeat: boolean;
+  opts?: InternalGetReplyOptions;
+  currentMessageId?: string;
+}) {
+  const { operation, followupRun, opts } = params;
+  if (
+    !operation ||
+    replyRunRegistry.get(operation.key) !== operation ||
+    !isCompactionNoticePending(operation)
+  ) {
+    return;
+  }
+  try {
+    opts?.abortSignal?.throwIfAborted();
+    followupRun.operatorAuthority?.assertCurrent();
+    followupRun.assertSourceCurrent?.();
+  } catch {
+    return;
+  }
+  await createDirectCompactionNoticeSender({
+    cfg: followupRun.run.config,
+    language: resolveAgentLanguage(followupRun.run.config, followupRun.run.agentId),
+    turn: params,
+    opts,
+    currentMessageId: params.currentMessageId,
+  })("queued");
 }
 
 /** A closed source's sink still owns the status; it cannot fall back to another route. */
