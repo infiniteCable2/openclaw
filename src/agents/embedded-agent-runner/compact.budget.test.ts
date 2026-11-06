@@ -47,6 +47,33 @@ function args() {
 }
 
 describe("native ingestion-budget compaction dispatch", () => {
+  it("issues a reusable own-request footprint only when the internal caller opts in", async () => {
+    const { capturePreparedConversationContextBudget } =
+      await import("./run/prepared-conversation-context.js");
+    const onDecision =
+      vi.fn<
+        NonNullable<NonNullable<Parameters<typeof compact>[0]["budgetPreflight"]>["onDecision"]>
+      >();
+    const original = structuredClone(sessionMessages);
+    const result = await compact({
+      ...args(),
+      budgetPreflight: { prompt: "", checkOnly: true, captureCapacity: true, onDecision },
+    });
+    expect(result).toMatchObject({ ok: true, compacted: false });
+    expect(onDecision).toHaveBeenCalledOnce();
+    const [fits, capacity] = onDecision.mock.calls[0]!;
+    expect(fits).toBe(true);
+    expect(capacity).toBeTypeOf("function");
+    if (!capacity) {
+      throw new Error("Native footprint was not issued");
+    }
+    const budget = capturePreparedConversationContextBudget(capacity);
+    expect(budget?.contextWindow).toBeGreaterThan(0);
+    expect(budget?.reserveTokens).toBeGreaterThanOrEqual(0);
+    expect(sessionMessages).toEqual(original);
+    expect(sessionCompactImpl).not.toHaveBeenCalled();
+    expect(hookRunner.runBeforeCompaction).not.toHaveBeenCalled();
+  });
   it("does not admit pending packets against a merely prospective tool-result reduction", async () => {
     const { prepareCompactionBudgetPreflight } = await import("./compaction-budget-preflight.js");
     const history = [

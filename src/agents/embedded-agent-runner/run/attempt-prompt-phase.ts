@@ -411,6 +411,39 @@ export async function runEmbeddedAttemptPromptPhase(
         activeSession,
         contextTokenBudget: promptContext.contextTokenBudget,
         compactionRequestBudget,
+        // Capture the selected attempt, not the requesting run before fallback/auth
+        // selection. Idle maintenance retains placement facts, never its credentials.
+        ...(attempt.refreshConversationContext &&
+        (!activeContextEngine || activeContextEngine.info.id === "legacy") &&
+        attempt.sessionTarget?.agentId &&
+        attempt.sessionTarget.sessionId &&
+        attempt.sessionTarget.sessionKey &&
+        attempt.sessionTarget.storePath
+          ? {
+              compactionPlacement: {
+                provider: attempt.provider,
+                model: attempt.modelId,
+                target: {
+                  agentId: attempt.sessionTarget.agentId,
+                  sessionId: attempt.sessionTarget.sessionId,
+                  sessionKey: attempt.sessionTarget.sessionKey,
+                  storePath: attempt.sessionTarget.storePath,
+                },
+                workspaceDir: effectiveWorkspace,
+                cwd: input.setup.effectiveCwd,
+                agentDir: attempt.agentDir,
+                requireWorkspaceOnly: effectiveFsWorkspaceOnly,
+                permissionMode: attempt.permissionMode,
+                sessionRoot: attempt.sessionRoot,
+                sandboxSessionKey: attempt.sandboxSessionKey,
+                sandboxAgentId: attempt.sandboxAgentId,
+                authProfileId: attempt.authProfileId,
+                authProfileIdSource: attempt.authProfileIdSource,
+                agentHarnessId: attempt.agentHarnessId,
+                modelSelectionLocked: attempt.modelSelectionLocked,
+              },
+            }
+          : {}),
         // Custom engines own their assembled window. This additive hook is
         // supported only by legacy; it cannot bypass a selected custom engine.
         refreshConversationContext:

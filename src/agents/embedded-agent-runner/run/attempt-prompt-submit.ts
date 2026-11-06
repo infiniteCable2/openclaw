@@ -44,6 +44,7 @@ import { isMidTurnPrecheckSignal, type MidTurnPrecheckRequest } from "./midturn-
 import {
   createConversationContextCapacity,
   createPreparedConversationContextProjection,
+  type PreparedConversationCompactionPlacement,
 } from "./prepared-conversation-context.js";
 import type { RuntimeContextCustomMessage } from "./runtime-context-prompt.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
@@ -89,6 +90,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
   appendContext?: string;
   contextTokenBudget: number;
   compactionRequestBudget?: CompactionRequestBudget;
+  compactionPlacement?: PreparedConversationCompactionPlacement;
   refreshConversationContext?: RunEmbeddedAgentInternalParams["refreshConversationContext"];
   images: ImageContent[];
   leasedSteering?: SteeringLease;
@@ -306,6 +308,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
               contextWindow: input.contextTokenBudget,
               reserveTokens: input.compactionRequestBudget.reserveTokens,
               modelIdentity: { provider: model.provider, model: model.id },
+              compactionPlacement: input.compactionPlacement,
             })
           : () => false;
         try {

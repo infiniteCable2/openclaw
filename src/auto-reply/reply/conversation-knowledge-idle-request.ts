@@ -15,16 +15,47 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveOperatorRoleSelection } from "../../gateway/operator-role-policy.js";
 import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
 
+type IdleMaintenanceRequestContext = {
+  config: OpenClawConfig;
+  entry: InternalSessionEntry;
+  branch: ConversationKnowledgeBranch;
+};
+
+/** Additional model/placement restriction; the caller still holds native source custody. */
+export function hasIdleConversationKnowledgeMaintenanceModelAuthority(
+  params: IdleMaintenanceRequestContext,
+): boolean {
+  const { config, entry, branch } = params;
+  if (!config.gateway?.roles) {
+    return true;
+  }
+  const enrollment = entry.conversationRecipientEnrollment;
+  if (!enrollment || !isDeepStrictEqual(enrollment.branch, branch)) {
+    return false;
+  }
+  const original = enrollment.source.snapshot;
+  const selected = resolveOperatorRoleSelection(
+    original.profileId,
+    original.assignedRole,
+    config,
+    original.githubLogin,
+  );
+  const role = selected.effectiveRole
+    ? config.gateway.roles.definitions[selected.effectiveRole]
+    : undefined;
+  // Source custody requalifies the principal, but deliberately excludes model
+  // ceilings. A foreground footprint also does not authorize compaction.model.
+  return role !== undefined && !role.modelPolicy && role.sandbox !== "required";
+}
+
 /**
  * Resolve this maintenance operation's placement, never a restored foreground
  * footprint or a source grant. The admitted idle owner retains current audience,
  * model/config, transcript-version and writer custody around every native call.
  */
-export function resolveIdleConversationKnowledgeMaintenanceRequest(params: {
-  config: OpenClawConfig;
-  entry: InternalSessionEntry;
-  branch: ConversationKnowledgeBranch;
-}): CompactEmbeddedAgentSessionRuntimeParams | undefined {
+export function resolveIdleConversationKnowledgeMaintenanceRequest(
+  params: IdleMaintenanceRequestContext,
+): CompactEmbeddedAgentSessionRuntimeParams | undefined {
   const { config, entry, branch } = params;
   const agent = resolveAgentConfig(config, branch.agentId);
   if (
@@ -56,26 +87,8 @@ export function resolveIdleConversationKnowledgeMaintenanceRequest(params: {
   ) {
     return undefined;
   }
-  if (config.gateway?.roles) {
-    const enrollment = entry.conversationRecipientEnrollment;
-    if (!enrollment || !isDeepStrictEqual(enrollment.branch, branch)) {
-      return undefined;
-    }
-    const original = enrollment.source.snapshot;
-    const selected = resolveOperatorRoleSelection(
-      original.profileId,
-      original.assignedRole,
-      config,
-      original.githubLogin,
-    );
-    const role = selected.effectiveRole
-      ? config.gateway.roles.definitions[selected.effectiveRole]
-      : undefined;
-    // Source custody requalifies the principal, but deliberately excludes model
-    // ceilings. Do not turn an absent foreground model proof into unrestricted use.
-    if (!role || role.modelPolicy || role.sandbox === "required") {
-      return undefined;
-    }
+  if (!hasIdleConversationKnowledgeMaintenanceModelAuthority(params)) {
+    return undefined;
   }
   const model = resolveSessionModelRef(config, entry, branch.agentId, {
     allowPluginNormalization: false,

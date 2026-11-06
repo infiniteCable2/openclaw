@@ -72,6 +72,40 @@ describe("prepared conversation context projection", () => {
 });
 
 describe("prepared conversation request capacity", () => {
+  it("retains only a matching actually selected model placement and freezes its target", () => {
+    const modelIdentity = { provider: "example-provider", model: "example-model" };
+    const target = {
+      agentId: "example",
+      sessionId: "session",
+      sessionKey: "agent:example:branch",
+      storePath: "/virtual/example.sqlite",
+    };
+    const placement = {
+      ...modelIdentity,
+      target,
+      workspaceDir: "/virtual/workspace",
+      authProfileId: "selected-profile",
+      authProfileIdSource: "user" as const,
+    };
+    const issue = (model = modelIdentity) =>
+      capturePreparedConversationContextBudget(
+        createConversationContextCapacity({
+          messages: [],
+          contextWindow: 10_000,
+          reserveTokens: 1_000,
+          modelIdentity: model,
+          compactionPlacement: placement,
+        }),
+      );
+    const budget = issue();
+    target.sessionId = "later-mutated";
+    expect(budget?.compactionPlacement?.target.sessionId).toBe("session");
+    expect(Object.isFrozen(budget?.compactionPlacement?.target)).toBe(true);
+    expect(budget?.compactionPlacement?.authProfileId).toBe("selected-profile");
+    expect(
+      issue({ ...modelIdentity, model: "fallback-model" })?.compactionPlacement,
+    ).toBeUndefined();
+  });
   it("reuses the native system/tool footprint with fresh history and independent reservations", () => {
     const systemPrompt = "Required instructions. ".repeat(100);
     const tools = [

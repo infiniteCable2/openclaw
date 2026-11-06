@@ -20,6 +20,7 @@ import {
 } from "../../sessions/conversation-private-audience.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
+import type { IdleConversationKnowledgeCompactionState } from "./conversation-knowledge-idle-compaction.js";
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
 import {
   createConversationKnowledgeSourceCache,
@@ -87,6 +88,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     }
   }
   const cache = createConversationKnowledgeSourceCache();
+  const compaction: IdleConversationKnowledgeCompactionState = {};
   let contextBudget:
     | {
         config: OpenClawConfig;
@@ -101,6 +103,9 @@ export function prepareConversationKnowledgeRecipient(params: {
   ) => {
     const value = capturePreparedConversationContextBudget(capacity);
     const current = params.getRuntimeConfig();
+    if (contextBudget?.value !== value) {
+      compaction.blocked = undefined;
+    }
     contextBudget =
       value && model && configSnapshotsMatch(model.config, current)
         ? {
@@ -110,6 +115,14 @@ export function prepareConversationKnowledgeRecipient(params: {
             model: value.modelIdentity?.model ?? model.model,
           }
         : undefined;
+    if (!contextBudget && log.isEnabled("debug")) {
+      log.debug("Native model boundary did not retain a recipient budget", {
+        recipientHash: redactIdentifier(branch.sessionId),
+        issuedBudget: Boolean(value),
+        modelBound: Boolean(model),
+        configMismatch: Boolean(value && model),
+      });
+    }
   };
   const audiences = new Map<object, RetainedConversationPrivateAudience>();
   const retireAudience = (proof: RetainedConversationPrivateAudience) => {
@@ -238,6 +251,7 @@ export function prepareConversationKnowledgeRecipient(params: {
         unsubscribeAvailability();
         unsubscribeAvailability = () => {};
         contextBudget = undefined;
+        compaction.blocked = undefined;
         for (const proof of audiences.values()) {
           retireAudience(proof);
         }
@@ -353,6 +367,7 @@ export function prepareConversationKnowledgeRecipient(params: {
               ...preparation,
               branch,
               budget: contextBudget,
+              compaction,
             });
           } catch (error) {
             // A failed admission may already have retired source custody. Its

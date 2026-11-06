@@ -144,7 +144,12 @@ export type CompactEmbeddedAgentSessionRuntimeParams = Omit<
     pendingMessages?: readonly import("../sessions/messages.js").CustomMessage[];
     /** Evaluate admission without requesting a durable-history summary. */
     checkOnly?: boolean;
+    /** Internal idle maintenance may retain this request's numeric native footprint. */
+    captureCapacity?: boolean;
     /** Internal observation of the prepared native decision; never write/source authority. */
-    onDecision?: (fits: boolean) => void;
+    onDecision?: (
+      fits: boolean,
+      capacity?: (message: import("../sessions/messages.js").CustomMessage) => boolean,
+    ) => void;
   };
 };

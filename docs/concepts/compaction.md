@@ -210,6 +210,10 @@ By default, compaction runs silently. Set `notifyUser` to show brief status mess
 }
 ```
 
+Matrix delivers these notices as text. Talk does not currently present them
+through its speech output. Idle conversation maintenance records its progress
+in the Gateway log without opening a user turn.
+
 ### Memory flush
 
 Before compaction, OpenClaw can run a **silent memory flush** turn to save durable context. Memory Core appends to a workspace memory file; another selected memory plugin can persist through its own tools and use declared read-only lookup tools to check existing memory first. The tools retain the source conversation's memory audience and sandbox restrictions. Missing lookup tools produce a warning but do not block persistence. If policy removes every declared persistence tool, OpenClaw skips the flush and continues compaction.

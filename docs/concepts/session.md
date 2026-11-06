@@ -215,21 +215,25 @@ storage-fact unavailability retries preparation instead of settling a source as 
 
 The root remains the authoritative source-reference ledger. Prepared segments are
 a rebuildable view, not a second root, durable admission receipt, or guarantee
-that a model has seen every contribution. Source preparation is read-only. After
-a real native request supplies its prepared system/tool budget, separate idle
-maintenance may retain one ready native packet batch under the session lane.
-It checks the exact recipient version and current source permissions at commit,
-yields to foreground input, and never starts inference or compaction. Missing
-budget, changed configuration, another writer or insufficient capacity leaves
-the observations prepared for a later safe boundary. Native owner availability
+that a model has seen every contribution. Source preparation is read-only. Idle
+maintenance admits prepared packets under the recipient's session lane, using
+the native request's system/tool footprint and response reserve. It checks the
+exact recipient version and current permissions and yields to foreground input.
+When a verified missing packet fits an empty window but exceeds the space left
+in this branch, idle maintenance can compact the branch's existing history.
+The pending packet stays outside the summary and is checked again for admission.
+A failed summary leaves its receipt open. Native owner availability
 and selected donor changes schedule retries without polling or a new user turn.
 When no live preparation remains, an opening rebuilds it from the existing root
 and durable packet receipts.
 
 After a restart, source preparation does not wait for a model request. The
 prepared observations remain available for the first native model boundary,
-which checks its actual system/tool footprint before admitting them. Preparing
-context is not evidence of durable admission or permission to guess that budget.
+which checks its actual system/tool footprint before admitting them. Eligible
+idle recipients can also check ready packets using a fresh native maintenance
+request. Its budget applies to that operation. A later user request calculates
+its own budget. Where native placement or model selection cannot be established,
+preparation waits for a supported admission boundary.
 
 Root checkpoints bound the context offered to new branches. A separate background
 owner prepares an audience-scoped summary when the projected context reaches the
@@ -300,7 +304,7 @@ range validation precede each durable packet write under the current writer.
 Append-only source growth uses native prefix proof; replacement, reset, and
 rewritten navigation remain fenced. Native prospective token accounting preserves
 the current request and response reserve. If an addition does not fit, it remains
-pending until a later native request can make room; this live boundary
+pending for idle maintenance or a later native request; this live boundary
 never starts compaction, restarts generation, or creates a turn. SQL receipt batches
 do not limit the number of ready packets admitted at one model boundary: successive
 batches share the same prospective token budget and yield between operations.

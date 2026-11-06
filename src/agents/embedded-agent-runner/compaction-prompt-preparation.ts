@@ -15,6 +15,7 @@ import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "./history.js";
 import type { PreparedCompactionRuntime } from "./prepared-compaction-runtime.js";
 import { sanitizeSessionHistory, validateReplayTurns } from "./replay-history.js";
 import { estimateToolSchemaTokenPressure } from "./run/preemptive-compaction.js";
+import { createConversationContextCapacity } from "./run/prepared-conversation-context.js";
 
 /** Prepare the native compaction prompt view before admitting summary work or hooks. */
 export async function prepareCompactionPromptContext(input: {
@@ -122,9 +123,22 @@ export async function prepareCompactionPromptContext(input: {
   const outgoingPressure = pressure.compactionReplay ?? pressure;
   // A truncate-only route has not applied its prospective reduction yet and is
   // not admission. Replay's outgoing window, rather than raw diagnostics, owns fit.
-  foreground.onDecision?.(
-    outgoingPressure.route === "fits" && outgoingPressure.overflowTokens <= 0,
-  );
+  const fits = outgoingPressure.route === "fits" && outgoingPressure.overflowTokens <= 0;
+  if (foreground.captureCapacity && foreground.onDecision) {
+    foreground.onDecision(
+      fits,
+      createConversationContextCapacity({
+        messages: session.messages,
+        systemPrompt: input.systemPrompt,
+        tools: session.agent.state.tools,
+        contextWindow: foreground.contextTokenBudget,
+        reserveTokens: foregroundSettings.getCompactionReserveTokens(),
+        modelIdentity: { provider: foreground.model.provider, model: foreground.model.id },
+      }),
+    );
+  } else {
+    foreground.onDecision?.(fits);
+  }
   // Prospective admission may choose a smaller ordered prefix before asking the
   // native owner to rewrite durable history. The pressure decision stays exact.
   return {

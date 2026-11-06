@@ -12,8 +12,11 @@ export type PreparedCompactionBudgetPreflight = {
   pendingMessages?: NonNullable<
     CompactEmbeddedAgentSessionRuntimeParams["budgetPreflight"]
   >["pendingMessages"];
-  onDecision?: (fits: boolean) => void;
+  onDecision?: NonNullable<
+    CompactEmbeddedAgentSessionRuntimeParams["budgetPreflight"]
+  >["onDecision"];
   checkOnly?: boolean;
+  captureCapacity?: boolean;
 };
 
 /** Capture the foreground route before any summarizer override or fallback changes it. */
@@ -52,6 +55,7 @@ export async function prepareCompactionForegroundBudget(
     pendingMessages: params.budgetPreflight.pendingMessages,
     onDecision: params.budgetPreflight.onDecision,
     checkOnly: params.budgetPreflight.checkOnly,
+    captureCapacity: params.budgetPreflight.captureCapacity,
     model,
     contextTokenBudget: resolveCompactionContextTokenBudget({
       config: params.config,

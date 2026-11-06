@@ -478,6 +478,7 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       expect(renderedChars + padding.length).toBeGreaterThanOrEqual(84_000);
       const original = await owner.call<Description>("sessions.describe", { key: recipient });
       const beforePressure = new Set(logs());
+      const warmInput = normalRequests().at(-1);
       const normalBeforePressure = normalRequests().length;
       const summaryBeforePressure = model.requests.filter(isSummary).length;
       await send(donor, "PRESSURE_FOREIGN_LATE_281");
@@ -495,31 +496,90 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       const recipientHash = redactIdentifier(original.session.sessionId);
       const recipientLine = (line: string) =>
         new RegExp(`"recipientHash"\\s*:\\s*"${recipientHash}"`, "u").test(line);
-      await vi.waitFor(
-        () => {
+      await vi
+        .waitFor(
+          () => {
+            const fresh = logs().filter((line) => !beforePressure.has(line));
+            expect(
+              fresh.some(
+                (line) =>
+                  line.includes("[compaction-diag] end") &&
+                  line.includes(`sessionKey=${recipient} `) &&
+                  line.includes("trigger=budget") &&
+                  line.includes("outcome=compacted") &&
+                  line.includes("reason=none"),
+              ),
+            ).toBe(true);
+            expect(
+              fresh.some(
+                (line) =>
+                  line.includes("Conversation knowledge transfer outcome") &&
+                  recipientLine(line) &&
+                  /"cause"\s*:\s*"native-transcript-commit"/u.test(line) &&
+                  frontier(line, donorDescription.session.sessionId) >= latestSeq!,
+              ),
+            ).toBe(true);
+          },
+          { timeout: 60_000, interval: 50 },
+        )
+        .catch((error: unknown) => {
           const fresh = logs().filter((line) => !beforePressure.has(line));
-          expect(
-            fresh.some(
-              (line) =>
-                line.includes("[compaction-diag] end") &&
-                line.includes(`sessionKey=${recipient} `) &&
-                line.includes("trigger=budget") &&
-                line.includes("outcome=compacted") &&
-                line.includes("reason=none"),
-            ),
-          ).toBe(true);
-          expect(
-            fresh.some(
-              (line) =>
-                line.includes("Conversation knowledge transfer outcome") &&
-                recipientLine(line) &&
-                /"cause"\s*:\s*"native-transcript-commit"/u.test(line) &&
-                frontier(line, donorDescription.session.sessionId) >= latestSeq!,
-            ),
-          ).toBe(true);
-        },
-        { timeout: 60_000, interval: 50 },
-      );
+          const status = fresh.filter(recipientLine);
+          const observed = (field: string) =>
+            status.flatMap((line) =>
+              [...line.matchAll(new RegExp(`"${field}"\\s*:\\s*([0-9]+)`, "gu"))].map((match) =>
+                Number(match[1]),
+              ),
+            );
+          const markers = (requests: Record<string, unknown>[]) => {
+            const input = requests.map((request) =>
+              textLeaves([request.instructions, request.input]).join("\n"),
+            );
+            return {
+              initialForeign: input.some((text) => text.includes("PRESSURE_FOREIGN_INITIAL_281")),
+              lateForeign: input.some((text) => text.includes("PRESSURE_FOREIGN_LATE_281")),
+              localPadding: input.some((text) => text.includes("Synthetic local archive padding")),
+            };
+          };
+          console.error(
+            JSON.stringify({
+              fixture: "warm-recipient-idle-pressure-timeout",
+              recipientHash,
+              renderedChars,
+              localFacts: localFacts.length,
+              summaryCalls: model!.requests.filter(isSummary).length,
+              summaryCallsBeforePressure: summaryBeforePressure,
+              ordinaryCallsSincePressure: normalRequests().length - normalBeforePressure,
+              recipientStatusRecords: status.length,
+              deferredStatusRecords: status.filter((line) =>
+                /deferred|unavailable|refused/u.test(line),
+              ).length,
+              causes: [
+                ...new Set(
+                  status.flatMap((line) =>
+                    [
+                      ...line.matchAll(
+                        /"(?:cause|reason|pending|errorCode|failureClass)"\s*:\s*"([A-Za-z][A-Za-z0-9_-]{0,63})"/gu,
+                      ),
+                    ].map((match) => match[1]),
+                  ),
+                ),
+              ].slice(0, 24),
+              capacityChecksMaxPerRecord: Math.max(0, ...observed("capacityChecks")),
+              capacityRefusalsMaxPerRecord: Math.max(0, ...observed("capacityRefusals")),
+              preparedPacketsMaxPerRecord: Math.max(0, ...observed("preparedPackets")),
+              recipientModelMarkers: markers(warmInput ? [warmInput] : []),
+              allModelMarkers: markers(model!.requests),
+              summaryModelMarkers: markers(model!.requests.filter(isSummary)),
+              recipientCompactions: fresh.filter(
+                (line) =>
+                  line.includes("[compaction-diag] end") &&
+                  line.includes(`sessionKey=${recipient} `),
+              ).length,
+            }),
+          );
+          throw error;
+        });
       // The only new ordinary model request was the legitimate donor input.
       // Native idle compaction and admission completed before any recipient probe.
       expect(normalRequests()).toHaveLength(normalBeforePressure + 1);

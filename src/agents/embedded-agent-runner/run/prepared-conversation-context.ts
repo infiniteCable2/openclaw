@@ -6,11 +6,41 @@ import {
   estimateMessageTokenPressure,
 } from "../../sessions/context-token-pressure.js";
 import { convertToLlm, type CustomMessage } from "../../sessions/messages.js";
+import type { CompactEmbeddedAgentSessionParams } from "../compact.types.js";
+
+/** Nonsecret placement selected by the actual native attempt, never a retained run grant. */
+export type PreparedConversationCompactionPlacement = Readonly<
+  Pick<
+    CompactEmbeddedAgentSessionParams,
+    | "workspaceDir"
+    | "cwd"
+    | "agentDir"
+    | "requireWorkspaceOnly"
+    | "permissionMode"
+    | "sessionRoot"
+    | "sandboxSessionKey"
+    | "sandboxAgentId"
+    | "authProfileId"
+    | "authProfileIdSource"
+    | "agentHarnessId"
+    | "modelSelectionLocked"
+  > & {
+    provider: string;
+    model: string;
+    target: Readonly<{
+      agentId: string;
+      sessionId: string;
+      sessionKey: string;
+      storePath: string;
+    }>;
+  }
+>;
 
 export type PreparedConversationContextBudget = Readonly<{
   contextWindow: number;
   reserveTokens: number;
   modelIdentity?: Readonly<{ provider: string; model: string }>;
+  compactionPlacement?: PreparedConversationCompactionPlacement;
   capacityForMessages(messages: AgentMessage[]): (message: CustomMessage) => boolean;
 }>;
 
@@ -34,6 +64,7 @@ export function createConversationContextCapacity(params: {
   contextWindow: number;
   reserveTokens: number;
   modelIdentity?: { provider: string; model: string };
+  compactionPlacement?: PreparedConversationCompactionPlacement;
 }): (message: CustomMessage) => boolean {
   const estimate = createFreshLlmBoundaryTokenEstimator(params);
   const limit = params.contextWindow - params.reserveTokens;
@@ -43,6 +74,17 @@ export function createConversationContextCapacity(params: {
     contextWindow: params.contextWindow,
     reserveTokens: params.reserveTokens,
     ...(params.modelIdentity ? { modelIdentity: Object.freeze({ ...params.modelIdentity }) } : {}),
+    ...(params.compactionPlacement &&
+    params.modelIdentity &&
+    params.compactionPlacement.provider === params.modelIdentity.provider &&
+    params.compactionPlacement.model === params.modelIdentity.model
+      ? {
+          compactionPlacement: Object.freeze({
+            ...params.compactionPlacement,
+            target: Object.freeze({ ...params.compactionPlacement.target }),
+          }),
+        }
+      : {}),
     capacityForMessages(messages: AgentMessage[]) {
       let reservedTokens: number | undefined;
       const capacity = (message: CustomMessage) => {

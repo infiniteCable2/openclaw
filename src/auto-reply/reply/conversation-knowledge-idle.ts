@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveContextTokensForModelFromCache } from "../../agents/context-resolution.js";
 import { resolveSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
 import type { PreparedConversationContextBudget } from "../../agents/embedded-agent-runner/run/prepared-conversation-context.js";
@@ -9,6 +10,7 @@ import { tryCreateIdleSessionMaintenanceOwner } from "../../agents/session-maint
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
+import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
@@ -29,6 +31,14 @@ import {
   isSessionWorkAdmissionActive,
 } from "../../sessions/session-lifecycle-admission.js";
 import {
+  compactConversationKnowledgeWhileIdle,
+  type IdleConversationKnowledgeCompactionState,
+} from "./conversation-knowledge-idle-compaction.js";
+import {
+  resolveIdleConversationKnowledgeMaintenanceRequest,
+  hasIdleConversationKnowledgeMaintenanceModelAuthority,
+} from "./conversation-knowledge-idle-request.js";
+import {
   logConversationKnowledgeIdleDeferral,
   type ConversationKnowledgeIdleDeferralReason,
 } from "./conversation-knowledge-status.js";
@@ -47,6 +57,7 @@ type IdleKnowledgeParams = Pick<
   | "signal"
 > & {
   branch: ConversationKnowledgeBranch;
+  compaction?: IdleConversationKnowledgeCompactionState;
   budget?: {
     value: PreparedConversationContextBudget;
     provider: string;
@@ -69,6 +80,29 @@ const IDLE_FIELDS: SessionSourcePredicate["fields"] = [
   "modelSelectionLocked",
   "agentHarnessId",
   "pluginOwnerId",
+  "authProfileOverride",
+  "authProfileOverrideSource",
+  "permissionMode",
+  "sandboxMode",
+  "sandbox",
+  "sessionRoot",
+  "visibility",
+  "incognito",
+  "publicShare",
+  "conversationTopology",
+  "participants",
+  "participantCount",
+  "chatType",
+  "delivery",
+  "repositoryWorkspaceId",
+  "worktree",
+  "spawnedBy",
+  "spawnedWorkspaceDir",
+  "spawnedCwd",
+  "execNode",
+  "execHost",
+  "execCwd",
+  "conversationRecipientEnrollment",
 ];
 
 function isIdleEntry(entry: InternalSessionEntry | undefined, branch: ConversationKnowledgeBranch) {
@@ -81,7 +115,7 @@ function isIdleEntry(entry: InternalSessionEntry | undefined, branch: Conversati
   );
 }
 
-/** Idle native maintenance admits prepared observations, never wakes a model or compacts a turn. */
+/** Idle maintenance admits observations; proven pressure may summarize existing history natively. */
 export async function admitPreparedConversationKnowledgeWhileIdle(
   params: IdleKnowledgeParams,
 ): Promise<boolean> {
@@ -97,10 +131,10 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
     });
     return false;
   };
-  if (!budget) {
+  if (!budget && !params.compaction) {
     return defer("missing-budget");
   }
-  if (params.getRuntimeConfig() !== budget.config) {
+  if (budget && params.getRuntimeConfig() !== budget.config) {
     return defer("config-version");
   }
   if (!sourceCache || (!sourceCache.preparedCheckpoint && !sourceCache.preparedPackets(1).length)) {
@@ -138,6 +172,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
   let reason: ConversationKnowledgeIdleDeferralReason = "no-progress";
   let capacityChecks = 0;
   let capacityRefusals = 0;
+  let compacted = false;
   try {
     await owner.track(
       owner.run(() =>
@@ -149,6 +184,8 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                 assertCurrent();
                 let entry: InternalSessionEntry | undefined;
                 let source: SessionSourceAssertion | undefined;
+                let recipientSource: CapturedSessionEntryReadSource | undefined;
+                let privateRecipient = false;
                 const assertIdle = () => {
                   assertCurrent();
                   if (executing(entry)) {
@@ -156,7 +193,11 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                   }
                 };
                 await reader.withRead(
-                  { sessionKeys: [branch.sessionKey], snapshotFields: [] },
+                  {
+                    sessionKeys: [branch.sessionKey, branch.root.sessionKey],
+                    snapshotFields: [],
+                    includeMembers: true,
+                  },
                   assertCurrent,
                   (facts) => {
                     entry = facts.entries.find(
@@ -169,6 +210,31 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                       return;
                     }
                     const expected = structuredClone(entry);
+                    recipientSource = facts.source;
+                    const members = facts.members?.[branch.sessionKey]?.map(
+                      (member) => member.identityId,
+                    );
+                    const root = facts.entries.find(
+                      (row) => row.sessionKey === branch.root.sessionKey,
+                    )?.entry;
+                    const topology = entry?.conversationTopology;
+                    privateRecipient = Boolean(
+                      entry?.visibility === "draft" &&
+                      !entry.incognito &&
+                      entry.publicShare === undefined &&
+                      topology?.role === "branch" &&
+                      topology.rootSessionKey === branch.root.sessionKey &&
+                      topology.rootSessionId === branch.root.sessionId &&
+                      topology.rootSessionLifecycleRevision === branch.root.lifecycleRevision &&
+                      root?.sessionId === branch.root.sessionId &&
+                      root.lifecycleRevision === branch.root.lifecycleRevision &&
+                      members &&
+                      members.every(
+                        (member) =>
+                          params.originalParticipant?.type === "profile" &&
+                          member === params.originalParticipant.id,
+                      ),
+                    );
                     source = composeSessionSourceAssertion([
                       assertIdle,
                       Object.assign(() => assertIdle(), {
@@ -181,6 +247,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                                 sessionKey: branch.sessionKey,
                                 fields: IDLE_FIELDS,
                                 expected,
+                                ...(members ? { members } : {}),
                               },
                               refuse: (): never => {
                                 throw new Error(
@@ -188,6 +255,28 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                                 );
                               },
                             },
+                            ...(privateRecipient
+                              ? [
+                                  {
+                                    predicate: {
+                                      source: facts.source,
+                                      sessionKey: branch.root.sessionKey,
+                                      fields: [
+                                        "sessionId",
+                                        "lifecycleRevision",
+                                        "conversationTopology",
+                                        "archivedAt",
+                                      ] satisfies SessionSourcePredicate["fields"],
+                                      expected: structuredClone(root),
+                                    },
+                                    refuse: (): never => {
+                                      throw new Error(
+                                        "Idle maintenance root changed before commit",
+                                      );
+                                    },
+                                  },
+                                ]
+                              : []),
                           ],
                         }),
                       }),
@@ -220,7 +309,10 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                     const model = resolveSessionModelRef(cfg, entry, branch.agentId, {
                       allowPluginNormalization: false,
                     });
-                    if (model.provider !== budget.provider || model.model !== budget.model) {
+                    if (
+                      budget &&
+                      (model.provider !== budget.provider || model.model !== budget.model)
+                    ) {
                       reason = "model";
                       return;
                     }
@@ -259,7 +351,10 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                       ...model,
                       allowUnscopedModelLookup: false,
                     });
-                    if (!contextWindow || contextWindow !== budget.value.contextWindow) {
+                    if (
+                      !contextWindow ||
+                      (budget && contextWindow !== budget.value.contextWindow)
+                    ) {
                       reason = "context-window";
                       return;
                     }
@@ -283,12 +378,37 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                       reason = "context-unavailable";
                       return;
                     }
-                    const capacity = budget.value.capacityForMessages(snapshot.messages);
-                    const canAdmit: typeof capacity = (message) => {
+                    const capacity = budget?.value.capacityForMessages(snapshot.messages);
+                    let refusedPacket: Parameters<NonNullable<typeof capacity>>[0] | undefined;
+                    let existingCarriers: Set<string> | undefined;
+                    const canAdmit: NonNullable<typeof capacity> = (message) => {
+                      const id = asOptionalRecord(message.details)?.packetId;
+                      if (typeof id === "string") {
+                        existingCarriers ??= new Set(
+                          snapshot.messages.flatMap((candidate) => {
+                            if (candidate.role !== "custom") {
+                              return [];
+                            }
+                            const packetId = asOptionalRecord(candidate.details)?.packetId;
+                            return typeof packetId === "string"
+                              ? [`${candidate.customType}\0${packetId}`]
+                              : [];
+                          }),
+                        );
+                        if (existingCarriers.has(`${message.customType}\0${id}`)) {
+                          return true;
+                        }
+                      }
+                      if (!capacity) {
+                        reason = "missing-budget";
+                        refusedPacket ??= message;
+                        return false;
+                      }
                       capacityChecks++;
                       const allowed = capacity(message);
                       if (!allowed) {
                         capacityRefusals++;
+                        refusedPacket ??= message;
                         reason = "capacity";
                       }
                       return allowed;
@@ -297,7 +417,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                       assertSource();
                       const current = params.getRuntimeConfig();
                       if (
-                        current !== budget.config ||
+                        current !== (budget?.config ?? cfg) ||
                         !isDeepStrictEqual(
                           model,
                           resolveSessionModelRef(current, entry, branch.agentId, {
@@ -321,34 +441,128 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                       }
                     });
                     check();
-                    const prepared = await prepareReplyConversationKnowledge({
-                      reader,
-                      sourceCache,
-                      originalParticipant: params.originalParticipant,
-                      destinationAudience: params.destinationAudience,
-                      expectedAudienceIdentity: params.expectedAudienceIdentity,
-                      getRuntimeConfig: params.getRuntimeConfig,
-                      sessionId: branch.sessionId,
-                      signal: owner.signal,
-                      assertCurrent: check,
-                      readyOnly: true,
-                      packetBudget: MAX_TRANSCRIPT_REPORT_BATCH_SIZE,
-                      canAdmitPacket: canAdmit,
-                      retainInHistory: {
-                        writeTarget: {
+                    const admit = async (
+                      canAdmitPacket: typeof canAdmit,
+                      version: typeof snapshot.version,
+                    ) => {
+                      const prepared = await prepareReplyConversationKnowledge({
+                        reader,
+                        sourceCache,
+                        originalParticipant: params.originalParticipant,
+                        destinationAudience: params.destinationAudience,
+                        expectedAudienceIdentity: params.expectedAudienceIdentity,
+                        getRuntimeConfig: params.getRuntimeConfig,
+                        sessionId: branch.sessionId,
+                        signal: owner.signal,
+                        assertCurrent: check,
+                        readyOnly: true,
+                        packetBudget: MAX_TRANSCRIPT_REPORT_BATCH_SIZE,
+                        canAdmitPacket,
+                        retainInHistory: {
+                          writeTarget: {
+                            ...target,
+                            expectedLifecycleRevision: branch.lifecycleRevision,
+                          },
+                          contextLimits: resolveEmbeddedSessionContextLimits(contextWindow),
+                          expectedTranscriptVersion: version,
+                          maintainContext: async () => ({
+                            compacted: false,
+                            complete: true,
+                            canAdmitPending: true,
+                          }),
+                        },
+                      });
+                      prepared?.release();
+                    };
+                    await admit(canAdmit, snapshot.version);
+                    if (
+                      refusedPacket &&
+                      recipientSource &&
+                      params.compaction &&
+                      privateRecipient &&
+                      hasIdleConversationKnowledgeMaintenanceModelAuthority({
+                        config: cfg,
+                        entry,
+                        branch,
+                      }) &&
+                      (!budget ||
+                        !entry.authProfileOverride ||
+                        entry.authProfileOverride ===
+                          budget.value.compactionPlacement?.authProfileId) &&
+                      (!budget ||
+                        !entry.permissionMode ||
+                        entry.permissionMode ===
+                          budget.value.compactionPlacement?.permissionMode) &&
+                      (!budget ||
+                        !entry.sessionRoot ||
+                        entry.sessionRoot === budget.value.compactionPlacement?.sessionRoot) &&
+                      sourceCache.consumptionRevision === before
+                    ) {
+                      compacted = await compactConversationKnowledgeWhileIdle({
+                        budget: budget?.value,
+                        request: budget
+                          ? undefined
+                          : resolveIdleConversationKnowledgeMaintenanceRequest({
+                              config: cfg,
+                              entry,
+                              branch,
+                            }),
+                        config: cfg,
+                        target: {
                           ...target,
                           expectedLifecycleRevision: branch.lifecycleRevision,
                         },
-                        contextLimits: resolveEmbeddedSessionContextLimits(contextWindow),
-                        expectedTranscriptVersion: snapshot.version,
-                        maintainContext: async () => ({
-                          compacted: false,
-                          complete: true,
-                          canAdmitPending: true,
-                        }),
-                      },
-                    });
-                    prepared?.release();
+                        version: snapshot.version,
+                        source: recipientSource,
+                        consumptionRevision: sourceCache.consumptionRevision,
+                        packet: refusedPacket,
+                        state: params.compaction,
+                        assertCurrent: check,
+                        signal: owner.signal,
+                        onNativeDecision: (allowed) => {
+                          capacityChecks++;
+                          if (!allowed) {
+                            capacityRefusals++;
+                            reason = "capacity";
+                          }
+                        },
+                        onReady: async (nativeBudget, version) => {
+                          const current = await readContext();
+                          check();
+                          if (!isDeepStrictEqual(current.version, version)) {
+                            return false;
+                          }
+                          const consumptionBefore = sourceCache.consumptionRevision;
+                          const nativeCapacity = nativeBudget.capacityForMessages(current.messages);
+                          const foregroundCapacity = budget?.value.capacityForMessages(
+                            current.messages,
+                          );
+                          await admit(
+                            (message) =>
+                              nativeCapacity(message) && (foregroundCapacity?.(message) ?? true),
+                            version,
+                          );
+                          return consumptionBefore !== sourceCache.consumptionRevision;
+                        },
+                        readContext,
+                      });
+                    }
+                    async function readContext() {
+                      const current = await readSessionTranscriptContextProjectionAsync(
+                        target,
+                        async (selected) => {
+                          const value = await readSessionTranscriptContextMessagesInWorker(
+                            selected.target,
+                            selected.admission,
+                            owner.signal,
+                            selected.physicalSource?.expectedIdentity,
+                          );
+                          return { value, version: value.version };
+                        },
+                        owner.signal,
+                      );
+                      return current;
+                    }
                   });
                 } finally {
                   admission.release();
@@ -393,5 +607,5 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
       capacityRefusals,
     });
   }
-  return progressed;
+  return progressed || compacted;
 }

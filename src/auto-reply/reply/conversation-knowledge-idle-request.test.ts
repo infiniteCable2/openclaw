@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { resolveIdleConversationKnowledgeMaintenanceRequest } from "./conversation-knowledge-idle-request.js";
+import {
+  hasIdleConversationKnowledgeMaintenanceModelAuthority,
+  resolveIdleConversationKnowledgeMaintenanceRequest,
+} from "./conversation-knowledge-idle-request.js";
 
 const branch: ConversationKnowledgeBranch = {
   agentId: "example",
@@ -112,12 +115,22 @@ describe("idle maintenance request placement", () => {
   });
 
   it("does not exclude a role that only limits source/session scopes", () => {
-    expect(resolveIdleConversationKnowledgeMaintenanceRequest(withRole())).toBeDefined();
+    const input = withRole();
+    expect(hasIdleConversationKnowledgeMaintenanceModelAuthority(input)).toBe(true);
+    expect(resolveIdleConversationKnowledgeMaintenanceRequest(input)).toBeDefined();
   });
 
   it("defers a current model ceiling rather than restoring a previous unrestricted model", () => {
     const input = withRole();
     input.config.gateway!.roles!.definitions.member.modelPolicy = { allow: ["example/current"] };
+    expect(hasIdleConversationKnowledgeMaintenanceModelAuthority(input)).toBe(false);
+    expect(resolveIdleConversationKnowledgeMaintenanceRequest(input)).toBeUndefined();
+  });
+
+  it("shares the required-sandbox refusal with warm maintenance", () => {
+    const input = withRole();
+    input.config.gateway!.roles!.definitions.member.sandbox = "required";
+    expect(hasIdleConversationKnowledgeMaintenanceModelAuthority(input)).toBe(false);
     expect(resolveIdleConversationKnowledgeMaintenanceRequest(input)).toBeUndefined();
   });
 
@@ -127,6 +140,7 @@ describe("idle maintenance request placement", () => {
       ...input.entry.conversationRecipientEnrollment!,
       branch: { ...branch, lifecycleRevision: "other-life" },
     };
+    expect(hasIdleConversationKnowledgeMaintenanceModelAuthority(input)).toBe(false);
     expect(resolveIdleConversationKnowledgeMaintenanceRequest(input)).toBeUndefined();
   });
 
