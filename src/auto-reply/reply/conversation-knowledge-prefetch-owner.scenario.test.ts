@@ -258,9 +258,9 @@ describe("automatic recipient preparation scenarios", () => {
     const resumeRecipient = owner.pausePreparation();
     resumeRecipient();
     await owner.wait();
-    // A foreground drain can invalidate staged sources without publishing a
-    // source change, so its explicit resume remains a recovery refresh.
-    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true, true, true]);
+    // The previous pause had a committed source update. This pause neither
+    // cancelled source work nor received an update, so only the recipient resumes.
+    expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true, true, false]);
   });
 
   it("restores failed source intent through recipient wakeups and existing backoff", async () => {
