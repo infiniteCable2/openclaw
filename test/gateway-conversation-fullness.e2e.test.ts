@@ -448,7 +448,7 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       const donorDescription = await owner.call<Description>("sessions.describe", { key: donor });
       const initialSeq = (await donorHistory()).messages.findLast(
         (item) => item.role === "assistant",
-      )?.__openclaw?.transcriptPosition?.rawSeq;
+      )?.["__openclaw"]?.transcriptPosition?.rawSeq;
       expect(initialSeq).toBeTypeOf("number");
       await vi.waitFor(
         () => {
@@ -490,8 +490,9 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
             JSON.stringify(item.content).includes("PRESSURE_FOREIGN_LATE_281"),
         ),
       ).toHaveLength(1);
-      const latestSeq = originalDonor.messages.findLast((item) => item.role === "assistant")
-        ?.__openclaw?.transcriptPosition?.rawSeq;
+      const latestSeq = originalDonor.messages.findLast((item) => item.role === "assistant")?.[
+        "__openclaw"
+      ]?.transcriptPosition?.rawSeq;
       expect(latestSeq).toBeTypeOf("number");
       const recipientHash = redactIdentifier(original.session.sessionId);
       const recipientLine = (line: string) =>
