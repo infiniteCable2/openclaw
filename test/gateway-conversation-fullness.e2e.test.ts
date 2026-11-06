@@ -3,6 +3,7 @@ import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
+import type { OperatorScope } from "../src/gateway/operator-scopes.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
 import {
   BRANCH_GATEWAY_ORIGIN,
@@ -15,6 +16,7 @@ import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
 } from "./helpers/openclaw-test-instance.js";
+import { withinTest } from "./helpers/promise.js";
 import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
 
 type Operator = Awaited<ReturnType<typeof connectConversationOperator>>;
@@ -22,7 +24,7 @@ type Model = Awaited<ReturnType<typeof startConversationModel>>;
 type Turn = { runId: string; callStartedAt: number; acknowledgedAt: number };
 type Description = { session: { sessionId: string; visibility: string; sharingRole: string } };
 
-function config(model: Model): OpenClawConfig {
+function config(model: Model, scopes: OperatorScope[] = BRANCH_GATEWAY_SCOPES): OpenClawConfig {
   const provider = buildMockOpenAiResponsesProvider(model.baseUrl, "bidirectional-proof");
   return {
     gateway: {
@@ -36,14 +38,14 @@ function config(model: Model): OpenClawConfig {
           userHeader: "x-forwarded-user",
           requiredHeaders: ["x-forwarded-proto"],
           allowLoopback: true,
-          deviceAutoApprove: { enabled: true, scopes: BRANCH_GATEWAY_SCOPES },
+          deviceAutoApprove: { enabled: true, scopes },
         },
       },
       controlUi: { enabled: false, allowedOrigins: [BRANCH_GATEWAY_ORIGIN] },
       roles: {
         default: "limited",
         definitions: {
-          limited: { sessions: { others: "view" }, agents: "*", scopes: BRANCH_GATEWAY_SCOPES },
+          limited: { sessions: { others: "view" }, agents: "*", scopes },
         },
       },
     },
@@ -332,7 +334,7 @@ it("delivers every already prepared foreign part in the first safe request witho
   );
 }, 300_000);
 
-it("compacts a warm recipient under real idle pressure and imports the pending source without another user request", async (context) => {
+it("compacts a warm recipient across a config reload and imports every pending turn without recipient input", async (context) => {
   let gateway: OpenClawTestInstance | undefined;
   let model: Model | undefined;
   let owner: Operator | undefined;
@@ -359,14 +361,17 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
         const lastUser = Array.isArray(request.input)
           ? request.input.findLast((item: unknown) => asOptionalRecord(item)?.role === "user")
           : undefined;
-        return textLeaves(lastUser).join("\n").includes("PRESSURE_LOCAL_FACT_")
-          ? padding
-          : `PRESSURE_REPLY_${index}`;
+        const lastInput = textLeaves(lastUser).join("\n");
+        if (lastInput.includes("PRESSURE_FOREIGN_LATE_281")) {
+          return "PRESSURE_FOREIGN_DONOR_REPLY_281";
+        }
+        return lastInput.includes("PRESSURE_LOCAL_FACT_") ? padding : `PRESSURE_REPLY_${index}`;
       });
-      const selected = config(model);
+      const scopes = [...BRANCH_GATEWAY_SCOPES, "operator.admin" as const];
+      const selected = config(model, scopes);
       selected.agents!.defaults!.compaction = {
         enabled: true,
-        notifyUser: true,
+        notifyUser: false,
         keepRecentTokens: 1_024,
         recentTurnsPreserve: 0,
         qualityGuard: { enabled: false },
@@ -397,6 +402,7 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       let lastFinalOutputRun: string | undefined;
       let lastRecipientRun: string | undefined;
       owner = await connectConversationOperator(gateway, "alex@example.test", signal, {
+        scopes,
         onEvent(event, payload) {
           const row = asOptionalRecord(payload);
           if (
@@ -508,7 +514,34 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       const warmInput = normalRequests().at(-1);
       const normalBeforePressure = normalRequests().length;
       const summaryBeforePressure = model.requests.filter(isSummary).length;
-      await send(donor, "PRESSURE_FOREIGN_LATE_281");
+      // The donor's user input and assistant reply are distinct publications.
+      // No user turn may preempt idle maintenance from the held summary onward.
+      const summary = model.holdNext(isSummary);
+      try {
+        await send(donor, "PRESSURE_FOREIGN_LATE_281");
+        await withinTest(summary.entered, signal);
+        const beforeConfig = await owner.call<{ hash: string }>("config.get", {});
+        const pid = gateway.child!.pid;
+        await expect(
+          owner.call("config.patch", {
+            baseHash: beforeConfig.hash,
+            raw: JSON.stringify({ agents: { defaults: { compaction: { notifyUser: true } } } }),
+          }),
+        ).resolves.toMatchObject({
+          ok: true,
+          changedPaths: ["agents.defaults.compaction.notifyUser"],
+        });
+        const applied = await owner.call<{ appliedConfigHash: string; configRevisionHash: string }>(
+          "config.get",
+          {},
+        );
+        expect(applied.configRevisionHash).toBeTypeOf("string");
+        expect(applied.appliedConfigHash).toBe(applied.configRevisionHash);
+        expect(gateway.child!.pid).toBe(pid);
+      } finally {
+        summary.release();
+      }
+      const releasedAt = performance.now();
       const originalDonor = await donorHistory();
       expect(
         originalDonor.messages.filter(
@@ -520,6 +553,9 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
       const latestSeq = originalDonor.messages.findLast((item) => item.role === "assistant")?.[
         "__openclaw"
       ]?.transcriptPosition?.rawSeq;
+      expect(JSON.stringify(originalDonor.messages.at(-1)?.content)).toContain(
+        "PRESSURE_FOREIGN_DONOR_REPLY_281",
+      );
       expect(latestSeq).toBeTypeOf("number");
       const recipientHash = redactIdentifier(original.session.sessionId);
       const recipientLine = (line: string) =>
@@ -608,11 +644,21 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
           );
           throw error;
         });
-      // The only new ordinary model request was the legitimate donor input.
+      // Only the genuine donor turn may start an ordinary model request.
       // Native idle compaction and admission completed before any recipient probe.
       expect(normalRequests()).toHaveLength(normalBeforePressure + 1);
       expect(recipientOutputs).toBe(outputsBeforePressure);
       expect(model.requests.filter(isSummary).length).toBeGreaterThan(summaryBeforePressure);
+      console.info(
+        JSON.stringify({
+          fixture: "idle-recipient-after-hot-reload",
+          observedDrainMs: Math.round(performance.now() - releasedAt),
+          ordinaryProviderRequests: normalRequests().length - normalBeforePressure,
+          summaryProviderRequests: model.requests.filter(isSummary).length - summaryBeforePressure,
+          recipientOutputs: recipientOutputs - outputsBeforePressure,
+          donorThroughSeq: latestSeq,
+        }),
+      );
       const verify = (request: Record<string, unknown>, current: string) => {
         const messages = [
           request.instructions,
@@ -637,7 +683,11 @@ it("compacts a warm recipient under real idle pressure and imports the pending s
         }
         // The late observation was still pending at compaction. It must have
         // precisely one carrier, as must this turn's actual input.
-        for (const fact of ["PRESSURE_FOREIGN_LATE_281", current]) {
+        for (const fact of [
+          "PRESSURE_FOREIGN_LATE_281",
+          "PRESSURE_FOREIGN_DONOR_REPLY_281",
+          current,
+        ]) {
           expect(text.split(fact).length - 1, fact).toBe(1);
         }
         if (current === "PRESSURE_WARM_PROBE_281") {

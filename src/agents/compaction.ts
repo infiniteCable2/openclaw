@@ -1,6 +1,8 @@
 import {
   CompactionError,
+  InvalidSummaryOutputError,
   SummaryOutputBudgetError,
+  isSummaryProviderError,
 } from "../../packages/agent-core/src/harness/types.js";
 import type { AgentCompactionIdentifierPolicy } from "../config/types.agent-defaults.js";
 import { isAbortError } from "../infra/abort-signal.js";
@@ -92,6 +94,16 @@ function buildCompactionSummarizationInstructions(
     : `Additional focus:\n${custom}`;
 }
 
+function summaryFailureKind(err: unknown) {
+  if (err instanceof SummaryOutputBudgetError) {
+    return "length-without-visible-text";
+  }
+  if (err instanceof InvalidSummaryOutputError) {
+    return "empty-text";
+  }
+  return isSummaryProviderError(err) ? "provider" : "other";
+}
+
 async function summarizeChunks(params: CompactionSummaryParams): Promise<string> {
   if (params.messages.length === 0) {
     return params.previousSummary ?? DEFAULT_SUMMARY_FALLBACK;
@@ -155,7 +167,7 @@ async function summarizeChunks(params: CompactionSummaryParams): Promise<string>
       }
       // Preserve partial progress if the oversized-message retry also fails.
       log.warn("chunk summarization failed after retries; partial summary available", {
-        err,
+        failureKind: summaryFailureKind(err),
         completedChunks,
         totalChunks: chunks.length,
       });

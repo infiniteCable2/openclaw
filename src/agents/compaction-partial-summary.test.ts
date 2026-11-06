@@ -98,8 +98,28 @@ describe("summarizeChunks partial summary preservation (#82952)", () => {
     expect(result).toMatch(/chunks 1-1 of 2 were summarized/);
     expect(compactionMocks.logWarn).toHaveBeenCalledWith(
       "chunk summarization failed after retries; partial summary available",
-      expect.objectContaining({ err: expect.any(Error) }),
+      { failureKind: "other", completedChunks: 1, totalChunks: 2 },
     );
+  });
+
+  it("reports why a partial summary was refused without logging provider content", async () => {
+    const { InvalidSummaryOutputError, SummaryOutputBudgetError, SummaryProviderError } =
+      await import("../../packages/agent-core/src/harness/types.js");
+    const response = makeAgentAssistantMessage({ content: [], stopReason: "error" });
+    for (const [error, failureKind] of [
+      [new SummaryOutputBudgetError("provider detail"), "length-without-visible-text"],
+      [new InvalidSummaryOutputError("provider detail"), "empty-text"],
+      [new SummaryProviderError("provider detail", response), "provider"],
+    ] as const) {
+      compactionMocks.generateSummary
+        .mockResolvedValueOnce("Summary of chunk 1")
+        .mockRejectedValue(error);
+      await expect(withCompleteCompactionSummary(callSummarize)).rejects.toThrow();
+      expect(compactionMocks.logWarn).toHaveBeenLastCalledWith(
+        "chunk summarization failed after retries; partial summary available",
+        { failureKind, completedChunks: 1, totalChunks: 2 },
+      );
+    }
   });
 
   it("keeps catch-up pending instead of accepting a partial chunk fallback", async () => {
@@ -164,7 +184,7 @@ describe("summarizeChunks partial summary preservation (#82952)", () => {
     expect(result).toMatch(/chunks 1-1 of 2 were summarized/);
     expect(compactionMocks.logWarn).toHaveBeenCalledWith(
       "chunk summarization failed after retries; partial summary available",
-      expect.objectContaining({ err: providerAbortErr }),
+      { failureKind: "other", completedChunks: 1, totalChunks: 2 },
     );
   });
 

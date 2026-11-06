@@ -4,6 +4,7 @@ import { projectSessionSharingEntry } from "../config/sessions/session-accessor.
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { startGatewayConversationRecipients } from "./conversation-recipient-startup.js";
+import { publishOperatorRoleConfigChange } from "./operator-role-policy.js";
 import { createContext } from "./server-plugin-in-process-dispatch.test-support.js";
 import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
 
@@ -12,10 +13,15 @@ const mocks = vi.hoisted(() => ({
   custody: vi.fn(),
   projection: vi.fn(),
   foreground: vi.fn(),
+  wake: vi.fn(),
 }));
 // mock-isolation: This scheduler test owns signals; native authority and SQLite have separate proofs.
 vi.mock("../auto-reply/reply/conversation-knowledge-open.js", () => ({
   openConversationKnowledgeRoot: mocks.open,
+}));
+// mock-isolation: This boundary observes the committed snapshot wake, not a model run.
+vi.mock("../auto-reply/reply/conversation-knowledge-prefetch.js", () => ({
+  wakeConversationRecipientsAfterConfigChange: mocks.wake,
 }));
 // mock-isolation: Observe original-principal reuse without booting identity storage for each scheduler case.
 vi.mock("./operator-source-custody.js", () => ({
@@ -127,7 +133,7 @@ function start(rows: ReturnType<typeof row>[], initiallyBusy = false) {
     },
   });
   const context = createContext();
-  const cfg = { agents: { entries: { main: { conversationMode: "branches" as const } } } };
+  let cfg = { agents: { entries: { main: { conversationMode: "branches" as const } } } };
   context.getRuntimeConfig = () => cfg;
   context.getCommittedRuntimeConfig = () => cfg;
   const signal = new AbortController();
@@ -138,6 +144,12 @@ function start(rows: ReturnType<typeof row>[], initiallyBusy = false) {
     log,
     change: (key: string) => onFacts({ kind: "row", key }),
     foreground: (active: boolean) => onForeground(active),
+    configEvent: (replace = false) => {
+      if (replace) {
+        cfg = structuredClone(cfg);
+      }
+      publishOperatorRoleConfigChange(context);
+    },
   };
 }
 
@@ -228,6 +240,36 @@ it("rearms unavailable native facts only after a later publication", async () =>
   } finally {
     await owner.close();
   }
+});
+
+it("requalifies revoked durable recipients once per committed generation after foreground release", async () => {
+  const revoked = new AbortController();
+  mocks.custody.mockImplementationOnce(async ({ assertCurrent }) => ({
+    signal: revoked.signal,
+    assertCurrent,
+    profileId: "person",
+    release: vi.fn(),
+  }));
+  const owner = start([row("changed"), row("still-current")]);
+  try {
+    await owner.settled();
+    owner.foreground(true);
+    revoked.abort();
+    owner.configEvent();
+    expect(mocks.wake).not.toHaveBeenCalled();
+    owner.configEvent(true);
+    owner.configEvent();
+    expect(mocks.wake).toHaveBeenCalledOnce();
+    expect(mocks.custody).toHaveBeenCalledTimes(2);
+    owner.foreground(false);
+    await owner.settled();
+    expect(mocks.custody).toHaveBeenCalledTimes(3);
+    expect(mocks.open).toHaveBeenCalledTimes(3);
+  } finally {
+    await owner.close();
+  }
+  owner.configEvent(true);
+  expect(mocks.wake).toHaveBeenCalledOnce();
 });
 
 it("joins every recipient cleanup and retains a failed close for retry", async () => {

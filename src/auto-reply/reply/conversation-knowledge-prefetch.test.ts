@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createConversationContextCapacity } from "../../agents/embedded-agent-runner/run/prepared-conversation-context.js";
+import { captureRuntimeConfigWithSource } from "../../config/runtime-config-capture-state.js";
 
 const preparation = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -74,7 +76,10 @@ vi.mock("../../shared/global-singleton.js", () => ({
   resolveGlobalSingleton: (_key: symbol, create: () => unknown) => create(),
 }));
 
-import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
+import {
+  prepareConversationKnowledgeRecipient,
+  wakeConversationRecipientsAfterConfigChange,
+} from "./conversation-knowledge-prefetch.js";
 
 beforeEach(() => {
   preparation.prepare.mockReset();
@@ -108,6 +113,8 @@ describe("recipient preparation scheduling", () => {
     const participant = { type: "profile" as const, id: "example-person" };
     const source = Object.freeze({});
     const revocation = new AbortController();
+    const base = { agents: { entries: { example: { conversationMode: "branches" as const } } } };
+    let config = captureRuntimeConfigWithSource(base, base);
     let originalCurrent = true;
     const releases: ReturnType<typeof vi.fn>[] = [];
     const open = (endpoint?: { source: object; sourceClosed: AbortSignal }) => {
@@ -157,9 +164,7 @@ describe("recipient preparation scheduling", () => {
         participant,
         audience,
         env: {},
-        getRuntimeConfig: () => ({
-          agents: { entries: { example: { conversationMode: "branches" } } },
-        }),
+        getRuntimeConfig: () => config,
       });
     return {
       branch,
@@ -167,6 +172,11 @@ describe("recipient preparation scheduling", () => {
       register,
       releases,
       revocation,
+      base,
+      config: () => config,
+      reload() {
+        config = structuredClone(base);
+      },
       endTurn() {
         originalCurrent = false;
       },
@@ -175,7 +185,7 @@ describe("recipient preparation scheduling", () => {
 
   function sourcePreparationOpening() {
     const f = retainedOpening();
-    f.register();
+    const recipient = f.register()!;
     const scheduled = preparation.create.mock.calls[0]![0];
     const release = vi.fn();
     preparation.load.mockResolvedValue({
@@ -183,8 +193,40 @@ describe("recipient preparation scheduling", () => {
       databaseClaim: { kind: "worker", reader: {}, assertCurrent() {}, release },
     });
     preparation.prepare.mockResolvedValue({ release() {} });
-    return { scheduled, release, cache: preparation.caches.at(-1)! };
+    return { f, recipient, scheduled, release, cache: preparation.caches.at(-1)! };
   }
+
+  it("reprobes a prepared recipient after its runtime snapshot changes without rereading donors", async () => {
+    const { f, recipient, scheduled } = sourcePreparationOpening();
+    const signal = new AbortController().signal;
+    try {
+      recipient.retainContextBudget(
+        createConversationContextCapacity({
+          messages: [],
+          contextWindow: 8192,
+          reserveTokens: 256,
+        }),
+        { provider: "example", model: "test", config: f.config() },
+      );
+      await scheduled.prepare(signal);
+      const initial = preparation.idle.mock.calls[0]![0];
+      expect(initial.budget).toBeDefined();
+      initial.compaction.blocked = { version: { rawSeq: 17 }, consumptionRevision: 3 };
+      preparation.owner.request.mockClear();
+      wakeConversationRecipientsAfterConfigChange(structuredClone(f.base));
+      expect(preparation.owner.request).not.toHaveBeenCalled();
+      f.reload();
+      wakeConversationRecipientsAfterConfigChange({}, f.base);
+      expect(preparation.owner.request).toHaveBeenCalledExactlyOnceWith("recipient");
+      await scheduled.prepare(signal, false);
+      const next = preparation.idle.mock.calls[1]![0];
+      expect(next.budget).toBeUndefined();
+      expect(next.compaction.blocked).toBeUndefined();
+      expect(preparation.projection).toHaveBeenCalledOnce();
+    } finally {
+      scheduled.clear();
+    }
+  });
 
   it("reuses prepared sources for recipient-only metadata wakeups", async () => {
     const f = sourcePreparationOpening();

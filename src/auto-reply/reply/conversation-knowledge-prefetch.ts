@@ -6,6 +6,7 @@ import {
 import { onSessionMaintenanceAvailable } from "../../agents/session-maintenance/coordinator.js";
 import type { CustomMessage } from "../../agents/sessions/messages.js";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
+import { getRuntimeConfigCapture } from "../../config/runtime-config-capture-state.js";
 import { configSnapshotsMatch } from "../../config/runtime-config-snapshot-match.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
@@ -32,6 +33,7 @@ type Recipient = {
   owner: ReturnType<typeof createConversationKnowledgePrefetchOwner>;
   cache: ConversationKnowledgeSourceCache;
   checkpoint: ReturnType<typeof registerConversationKnowledgeCheckpointOwner>;
+  wakeAfterConfigChange(previous: ReadonlySet<OpenClawConfig>): void;
   retainAudience(audience: ConversationPrivateAudience): void;
   retainContextBudget(
     capacity: (message: CustomMessage) => boolean,
@@ -43,6 +45,14 @@ const recipients = resolveGlobalSingleton(
   Symbol.for("openclaw.conversationKnowledgePrefetch"),
   () => new Map<string, Recipient>(),
 );
+
+/** Wake only owners of the replaced snapshot. Native admission checks the new one. */
+export function wakeConversationRecipientsAfterConfigChange(...snapshots: OpenClawConfig[]): void {
+  const previous = new Set(snapshots.map((cfg) => getRuntimeConfigCapture(cfg)?.origin ?? cfg));
+  for (const recipient of recipients.values()) {
+    recipient.wakeAfterConfigChange(previous);
+  }
+}
 
 /** Prepare authorized sources off-turn; native idle maintenance may retain ready observations. */
 export function prepareConversationKnowledgeRecipient(params: {
@@ -88,7 +98,8 @@ export function prepareConversationKnowledgeRecipient(params: {
     }
   }
   const cache = createConversationKnowledgeSourceCache();
-  const compaction: IdleConversationKnowledgeCompactionState = {};
+  let maintenanceConfig = params.getRuntimeConfig();
+  let compaction: IdleConversationKnowledgeCompactionState = {};
   let contextBudget:
     | {
         config: OpenClawConfig;
@@ -363,6 +374,16 @@ export function prepareConversationKnowledgeRecipient(params: {
           const rootBefore = cache.preparedRoot;
           let consumed = false;
           try {
+            const current = params.getRuntimeConfig();
+            if (current !== maintenanceConfig) {
+              // A refusal and its model footprint belong to the same config generation.
+              // Keep authorized source preparation, then re-probe under fresh custody.
+              maintenanceConfig = current;
+              compaction = {};
+            }
+            if (contextBudget?.config !== current) {
+              contextBudget = undefined;
+            }
             consumed = await admitPreparedConversationKnowledgeWhileIdle({
               ...preparation,
               branch,
@@ -393,12 +414,17 @@ export function prepareConversationKnowledgeRecipient(params: {
       owner,
       cache,
       checkpoint: rootCheckpoint,
+      wakeAfterConfigChange(previous: ReadonlySet<OpenClawConfig>) {
+        if (previous.has(getRuntimeConfigCapture(maintenanceConfig)?.origin ?? maintenanceConfig)) {
+          owner.request("recipient");
+        }
+      },
       retainAudience,
       retainContextBudget,
     };
     recipients.set(key, recipient);
     unsubscribeAvailability = onSessionMaintenanceAvailable(branch.sessionKey, () => {
-      if (contextBudget && (cache.preparedCheckpoint || cache.preparedPackets(1).length)) {
+      if (cache.preparedCheckpoint || cache.preparedPackets(1).length) {
         owner.request("recipient");
       }
     });

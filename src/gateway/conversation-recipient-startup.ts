@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { onForegroundSessionMaintenanceChange } from "../agents/session-maintenance/coordinator.js";
 import { openConversationKnowledgeRoot } from "../auto-reply/reply/conversation-knowledge-open.js";
+import { wakeConversationRecipientsAfterConfigChange } from "../auto-reply/reply/conversation-knowledge-prefetch.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
 import { captureConversationRecipientEnrollment } from "../config/sessions/conversation-recipient-enrollment.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
@@ -9,6 +10,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createBackgroundWorkOwner } from "../process/background-work.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
+import { onOperatorRolePolicyChanged } from "./operator-role-policy.js";
 import { prepareGatewayOperatorSourceCustody } from "./operator-source-custody.js";
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
@@ -46,9 +48,11 @@ export function startGatewayConversationRecipients(params: {
     return undefined;
   }
   const getConfig = context.getCommittedRuntimeConfig ?? context.getRuntimeConfig;
+  let committed = getConfig();
+  let runtime = context.getRuntimeConfig();
   const owners = new Map<
     string,
-    { sessionKey: string; fingerprint: string; stop(): Promise<void> }
+    { sessionKey: string; fingerprint: string; custodySignal: AbortSignal; stop(): Promise<void> }
   >();
   const attempted = new Map<string, string>();
   const retryable = new Map<string, string>();
@@ -71,7 +75,10 @@ export function startGatewayConversationRecipients(params: {
     if (!stored && !previous) {
       return;
     }
-    if (previous?.fingerprint === fingerprint || attempted.get(key) === fingerprint) {
+    if (
+      (previous?.fingerprint === fingerprint && !previous.custodySignal.aborted) ||
+      attempted.get(key) === fingerprint
+    ) {
       return;
     }
     attempted.set(key, fingerprint);
@@ -129,6 +136,7 @@ export function startGatewayConversationRecipients(params: {
     const owner = {
       sessionKey: row.key,
       fingerprint,
+      custodySignal: custody.signal,
       async stop() {
         recipientController.abort();
         await registration?.close();
@@ -270,6 +278,22 @@ export function startGatewayConversationRecipients(params: {
     }
     request();
   });
+  const gatewayOwner = context.resolveGatewayContext?.() ?? context;
+  const unsubscribeConfig = onOperatorRolePolicyChanged((change) => {
+    if (closing || signal.aborted || change.kind !== "config" || change.context !== gatewayOwner) {
+      return;
+    }
+    const current = getConfig();
+    if (current !== committed) {
+      // Channel readers can hold the runtime snapshot; operator sources hold the committed one.
+      wakeConversationRecipientsAfterConfigChange(committed, runtime);
+      committed = current;
+      runtime = context.getRuntimeConfig();
+      attempted.clear();
+      all = true;
+      request();
+    }
+  });
   const unsubscribe = onForegroundSessionMaintenanceChange((active) => {
     foreground = active;
     if (!active) {
@@ -282,6 +306,7 @@ export function startGatewayConversationRecipients(params: {
       return closed;
     }
     closing = true;
+    unsubscribeConfig();
     unsubscribe();
     closed = Promise.resolve(pending).then(async () => {
       const failures: unknown[] = [];
