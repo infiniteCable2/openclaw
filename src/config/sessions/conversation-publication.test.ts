@@ -254,6 +254,91 @@ it("journals native terminals atomically and settles only the exact accepted can
   );
 });
 
+it("publishes an unstaged native input with its recorder-owned fallback key exactly once", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const fixture = await createConversationKnowledgeScenario(state);
+    try {
+      const source = await fixture.branch("unstaged-native-input");
+      const owner = await fixture.claim(source);
+      const entry = loadSessionEntry(source);
+      if (!entry) {
+        throw new Error("Expected the original enrolled branch");
+      }
+      const target = { ...source, sessionEntry: entry, config: fixture.cfg };
+      const bind = (recorder: ReturnType<typeof createUserTurnTranscriptRecorder>) =>
+        bindConversationInputPublication({
+          ...source,
+          entry,
+          assertCurrent: owner.assertCurrent,
+          recorder,
+          config: fixture.cfg,
+          participant: person,
+          audience: {
+            ...source,
+            channelId: "webchat",
+            accountId: "default",
+            nativeChannelId: source.sessionKey,
+            participant: person,
+            assertCurrent: owner.assertCurrent,
+          },
+        });
+      const recorder = createUserTurnTranscriptRecorder({
+        input: {
+          text: "Remember the spoken silver triangle.",
+          provenance: { kind: "external_user", sourceChannel: "webchat" },
+        },
+        target,
+      });
+      bind(recorder);
+      expect(recorder.getPendingInputMessage?.()).toBeUndefined();
+      const saved = await recorder.persistApproved();
+      if (!saved?.admission || !saved.message.idempotencyKey) {
+        throw new Error("Expected the native recorder admission and fallback key");
+      }
+      const { logicalTurnId: _logicalTurnId, role: _role, ...admissionAnchor } = saved.admission;
+      const publicationTarget = {
+        agentId: source.agentId,
+        path: source.storePath,
+        env: source.env,
+      };
+      const journal = openConversationPublicationStore({
+        ...publicationTarget,
+        assertCurrent: owner.assertCurrent,
+      });
+      expect(await journal.stats()).toEqual([{ state: "ready", count: 1 }]);
+      const [original] = await journal.readReadyHeads({ now: Date.now(), limit: 8 });
+      expect(original?.anchor).toEqual(admissionAnchor);
+      expect(original?.intent.privateAudience?.admission).toEqual(admissionAnchor);
+      await recorder.persistApproved();
+      // A new recorder must retain the explicit recovered key, not mint a successor.
+      const recovered = createUserTurnTranscriptRecorder({ message: saved.message, target });
+      bind(recovered);
+      const replay = await recovered.persistApproved();
+      expect(recovered.message?.idempotencyKey).toBe(saved.message.idempotencyKey);
+      expect(replay?.admission).toMatchObject(admissionAnchor);
+      expect(replay?.appended).toBe(false);
+      expect(await journal.stats()).toEqual([{ state: "ready", count: 1 }]);
+      startConversationKnowledgePublication(publicationTarget);
+      await waitForConversationKnowledgePublication(publicationTarget);
+      const receipts = selectConversationKnowledgeReceipts(
+        await loadTranscriptEvents(fixture.root),
+        "other",
+      );
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({ kind: "utterance-observation", role: "user" });
+      const projected = projectConversationKnowledge(
+        receipts[0]!,
+        await loadTranscriptEvents(source),
+      );
+      expect(JSON.parse(projected?.text ?? "{}").observations).toEqual([
+        { speaker: "user", text: "Remember the spoken silver triangle." },
+      ]);
+    } finally {
+      await fixture.close();
+    }
+  });
+});
+
 it("publishes original input, steered input and commentary before final completion without recopying them", async () => {
   await withOpenClawTestState(
     { scenario: "minimal", label: "early-conversation-publication" },

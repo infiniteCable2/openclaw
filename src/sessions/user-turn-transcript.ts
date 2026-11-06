@@ -238,6 +238,8 @@ export function createUserTurnTranscriptRecorder(
       ? { ...next, idempotencyKey: buildRunUserTurnIdempotencyKey(logicalTurnId) }
       : next;
   };
+  // Original-input publication must see the same factory-owned key as its fresh append.
+  message = applyMessageOverrides(message);
 
   const handlePersistenceError = (error: unknown) => {
     if (params.onPersistenceError) {

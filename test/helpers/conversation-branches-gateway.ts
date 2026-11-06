@@ -334,6 +334,7 @@ export function waitForConversationTransfer(
     recipientId: string;
     sourceId: string;
     sequence: number;
+    exactSequence?: boolean;
     phase?: "prepared" | "admitted";
   },
 ) {
@@ -343,6 +344,8 @@ export function waitForConversationTransfer(
   }
   const recipient = redactIdentifier(expected.recipientId);
   const source = redactIdentifier(expected.sourceId);
+  const matchesSequence = (actual: number) =>
+    expected.exactSequence ? actual === expected.sequence : actual >= expected.sequence;
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
   return new Promise<void>((resolve, reject) => {
     const finish = (error?: Error) => {
@@ -373,7 +376,7 @@ export function waitForConversationTransfer(
                 line.includes(source) &&
                 /"phase"\s*:\s*"admitted"/u.test(line) &&
                 /"complete"\s*:\s*true/u.test(line) &&
-                Number(/"throughSeq"\s*:\s*(\d+)/u.exec(line)?.[1] ?? -1) >= expected.sequence),
+                matchesSequence(Number(/"throughSeq"\s*:\s*(\d+)/u.exec(line)?.[1] ?? -1))),
         );
       if (admitted) {
         finish();

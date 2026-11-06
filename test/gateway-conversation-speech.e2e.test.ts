@@ -579,6 +579,28 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             await work;
           }
         };
+        const userSequence = async (sessionKey: string, marker: string) => {
+          const history = await operator!.call<{
+            messages: Array<{
+              role: string;
+              content: unknown;
+              __openclaw?: { transcriptPosition?: { rawSeq?: number } };
+            }>;
+          }>("chat.history", { sessionKey, limit: 100 });
+          const sequence = history.messages.find(
+            (message) =>
+              message.role === "user" && JSON.stringify(message.content).includes(marker),
+          )?.__openclaw?.transcriptPosition?.rawSeq;
+          if (typeof sequence !== "number") {
+            throw new Error("Native user transcript sequence unavailable");
+          }
+          return sequence;
+        };
+        const chatRecipient = connectedActivity
+          ? await operator.call<{ session: { sessionId: string } }>("sessions.describe", {
+              key: chatKey,
+            })
+          : undefined;
         phase = "create-talk";
         const first = await openTalk();
         const firstInput = await speak(first, 1);
@@ -601,33 +623,32 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         if (connectedActivity) {
           phase = "connected-idle-sibling-admission";
           drainPlayback();
+          if (!chatRecipient || !idleRecipient?.session) {
+            throw new Error("Native conversation recipient unavailable");
+          }
+          // Speech and its answer have separate source entries. A later assistant
+          // packet cannot acknowledge the spoken user input in the idle chat.
+          await waitForConversationTransfer(gateway, signal, {
+            recipientId: chatRecipient.session.sessionId,
+            sourceId: idleRecipient.session.sessionId,
+            sequence: await userSequence(voiceKey, "SPEECH_INPUT_2"),
+            exactSequence: true,
+            phase: "admitted",
+          });
+          expect(model.requests).toHaveLength(requestsBeforeSibling);
         }
         await sendChat(secondFact);
         if (connectedActivity) {
-          const source = await operator.call<{ session: { sessionId: string } }>(
-            "sessions.describe",
-            { key: chatKey },
-          );
-          const history = await operator.call<{
-            messages: Array<{
-              role: string;
-              content: unknown;
-              __openclaw?: { transcriptPosition?: { rawSeq?: number } };
-            }>;
-          }>("chat.history", { sessionKey: chatKey, limit: 100 });
-          const sequence = history.messages.find(
-            (message) =>
-              message.role === "user" && JSON.stringify(message.content).includes(secondFact),
-          )?.["__openclaw"]?.transcriptPosition?.rawSeq;
-          if (!idleRecipient?.session || typeof sequence !== "number") {
-            throw new Error("Native idle speech recipient or sibling sequence unavailable");
+          if (!chatRecipient || !idleRecipient?.session) {
+            throw new Error("Native conversation recipient unavailable");
           }
+          expect(JSON.stringify(model.requests[requestsBeforeSibling])).toContain("SPEECH_INPUT_2");
           // Keep the Talk connection open with no new capture or model boundary.
           // Ordinary output/foreground settlement must admit the prepared packet.
           await waitForConversationTransfer(gateway, signal, {
             recipientId: idleRecipient.session.sessionId,
-            sourceId: source.session.sessionId,
-            sequence,
+            sourceId: chatRecipient.session.sessionId,
+            sequence: await userSequence(chatKey, secondFact),
             phase: "admitted",
           });
           expect(model.requests).toHaveLength(requestsBeforeSibling + 1);
