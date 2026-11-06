@@ -347,6 +347,7 @@ it("compacts a warm recipient across a config reload and imports every pending t
         .slice(0, 16_000);
       const isSummary = (request: Record<string, unknown>) =>
         JSON.stringify(request).includes("You are a context summarization assistant.");
+      let nextOrdinaryReply: string | undefined;
       model = await startConversationModel(signal, (request, index) => {
         if (isSummary(request)) {
           const facts = [
@@ -358,13 +359,15 @@ it("compacts a warm recipient across a config reload and imports every pending t
           ];
           return `## Decisions\nNATIVE_PRESSURE_SUMMARY_281\n${facts.join("\n")}\n## Open tasks\nNone.`;
         }
+        if (nextOrdinaryReply !== undefined) {
+          const reply = nextOrdinaryReply;
+          nextOrdinaryReply = undefined;
+          return reply;
+        }
         const lastUser = Array.isArray(request.input)
           ? request.input.findLast((item: unknown) => asOptionalRecord(item)?.role === "user")
           : undefined;
         const lastInput = textLeaves(lastUser).join("\n");
-        if (lastInput.includes("PRESSURE_FOREIGN_LATE_281")) {
-          return "PRESSURE_FOREIGN_DONOR_REPLY_281";
-        }
         return lastInput.includes("PRESSURE_LOCAL_FACT_") ? padding : `PRESSURE_REPLY_${index}`;
       });
       const scopes = [...BRANCH_GATEWAY_SCOPES, "operator.admin" as const];
@@ -518,6 +521,7 @@ it("compacts a warm recipient across a config reload and imports every pending t
       // No user turn may preempt idle maintenance from the held summary onward.
       const summary = model.holdNext(isSummary);
       try {
+        nextOrdinaryReply = "PRESSURE_FOREIGN_DONOR_REPLY_281";
         await send(donor, "PRESSURE_FOREIGN_LATE_281");
         await withinTest(summary.entered, signal);
         const beforeConfig = await owner.call<{ hash: string }>("config.get", {});
@@ -550,12 +554,13 @@ it("compacts a warm recipient across a config reload and imports every pending t
             JSON.stringify(item.content).includes("PRESSURE_FOREIGN_LATE_281"),
         ),
       ).toHaveLength(1);
-      const latestSeq = originalDonor.messages.findLast((item) => item.role === "assistant")?.[
-        "__openclaw"
-      ]?.transcriptPosition?.rawSeq;
-      expect(JSON.stringify(originalDonor.messages.at(-1)?.content)).toContain(
-        "PRESSURE_FOREIGN_DONOR_REPLY_281",
+      const donorReplies = originalDonor.messages.filter(
+        (item) =>
+          item.role === "assistant" &&
+          textLeaves(item.content).includes("PRESSURE_FOREIGN_DONOR_REPLY_281"),
       );
+      expect(donorReplies).toHaveLength(1);
+      const latestSeq = donorReplies[0]?.["__openclaw"]?.transcriptPosition?.rawSeq;
       expect(latestSeq).toBeTypeOf("number");
       const recipientHash = redactIdentifier(original.session.sessionId);
       const recipientLine = (line: string) =>
