@@ -285,6 +285,7 @@ it("publishes an unstaged native input with its recorder-owned fallback key exac
       const recorder = createUserTurnTranscriptRecorder({
         input: {
           text: "Remember the spoken silver triangle.",
+          timestamp: 1,
           provenance: { kind: "external_user", sourceChannel: "webchat" },
         },
         target,
@@ -331,7 +332,11 @@ it("publishes an unstaged native input with its recorder-owned fallback key exac
         await loadTranscriptEvents(source),
       );
       expect(JSON.parse(projected?.text ?? "{}").observations).toEqual([
-        { speaker: "user", text: "Remember the spoken silver triangle." },
+        {
+          speaker: "user",
+          text: "Remember the spoken silver triangle.",
+          timestamp: new Date(1).toISOString(),
+        },
       ]);
     } finally {
       await fixture.close();
@@ -360,9 +365,9 @@ it("publishes original input, steered input and commentary before final completi
             throw new Error("Original audience revoked");
           }
         };
-        const makeInput = (key: string, text: string) => {
+        const makeInput = (key: string, text: string, timestamp: number) => {
           const recorder = createUserTurnTranscriptRecorder({
-            input: { text, idempotencyKey: key },
+            input: { text, idempotencyKey: key, timestamp },
             target: { ...source, sessionEntry: entry, config: fixture.cfg },
           });
           bindConversationInputPublication({
@@ -383,7 +388,7 @@ it("publishes original input, steered input and commentary before final completi
           });
           return recorder;
         };
-        const first = makeInput("input-one", "Remember the blue circle.");
+        const first = makeInput("input-one", "Remember the blue circle.", 1);
         const savedFirst = await first.persistApproved();
         expect(savedFirst?.admission).toBeDefined();
         const target = { agentId: source.agentId, path: source.storePath, env: source.env };
@@ -425,7 +430,7 @@ it("publishes original input, steered input and commentary before final completi
         expect(await journal.stats()).toEqual([{ state: "ready", count: 1 }]);
         expect(wake).toHaveBeenCalledTimes(wakesBeforeRollback);
         await upsertSessionEntryCore(source, { activeWriterRunId: "writer-one" });
-        const second = makeInput("input-two", "Also remember the green square.");
+        const second = makeInput("input-two", "Also remember the green square.", 2);
         if (!second.message) {
           throw new Error("Expected the steered original input");
         }
@@ -531,10 +536,26 @@ it("publishes original input, steered input and commentary before final completi
           return JSON.parse(projected?.text ?? "{}").observations;
         });
         expect(observations).toEqual([
-          { speaker: "user", text: "Remember the blue circle." },
-          { speaker: "user", text: "Also remember the green square." },
-          { speaker: "assistant", text: "I am checking both shapes." },
-          { speaker: "assistant", text: "Both shapes are noted." },
+          {
+            speaker: "user",
+            text: "Remember the blue circle.",
+            timestamp: new Date(1).toISOString(),
+          },
+          {
+            speaker: "user",
+            text: "Also remember the green square.",
+            timestamp: new Date(2).toISOString(),
+          },
+          {
+            speaker: "assistant",
+            text: "I am checking both shapes.",
+            timestamp: new Date(3).toISOString(),
+          },
+          {
+            speaker: "assistant",
+            text: "Both shapes are noted.",
+            timestamp: new Date(4).toISOString(),
+          },
         ]);
         expect(JSON.stringify(observations)).not.toMatch(/Private reasoning|private|toolCall/);
         expect(await journal.stats()).toEqual([]);
