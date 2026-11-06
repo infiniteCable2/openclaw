@@ -680,6 +680,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         let priorGatewayLines = new Set<string>();
         const dormantKeys: string[] = [];
         const restartFact = "RESTART_SIBLING_FACT_SILVER_52";
+        const coldFact = "COLD_IDLE_DELIVERY_INDIGO_83";
         const unrelatedFact = "OTHER_PERSON_PRIVATE_FACT_MAUVE_16";
         if (connectedActivity) {
           phase = "prepare-dormant-personal-recipients";
@@ -760,11 +761,34 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           expect(model.requests).toHaveLength(requestsBeforeRestart);
         }
         operator = await connect();
+        if (connectedActivity) {
+          if (!chatRecipient) {
+            throw new Error("Expected the original chat donor");
+          }
+          // New donor data rules out a pre-restart receipt. All three recipients
+          // are still disconnected and have no post-restart foreground budget.
+          phase = "cold-idle-recipient-admission";
+          await sendChat(coldFact);
+          const sequence = await userSequence(chatKey, coldFact);
+          await Promise.all(
+            restartRecipients.map(({ sessionId }) =>
+              waitForConversationTransfer(gateway, signal, {
+                recipientId: sessionId,
+                sourceId: chatRecipient.session.sessionId,
+                sequence,
+                exactSequence: true,
+                phase: "admitted",
+              }),
+            ),
+          );
+          expect(model.requests).toHaveLength(requestsBeforeRestart + 1);
+        }
         const third = await openTalk();
         const resumedInput = await speak(third, 7);
         expect(resumedInput).toContain(FACT);
         if (connectedActivity) {
           expect(resumedInput.split(restartFact)).toHaveLength(2);
+          expect(resumedInput.split(coldFact)).toHaveLength(2);
           expect(resumedInput).not.toContain(unrelatedFact);
         }
         // Keep a real sibling model request active while the personal voice
@@ -788,6 +812,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             const input = await speak(resumed, 10 + index, conversationKey);
             expect(input).toContain(FACT);
             expect(input.split(restartFact)).toHaveLength(2);
+            expect(input.split(coldFact)).toHaveLength(2);
             expect(input).not.toContain(unrelatedFact);
             await closeTalk(resumed);
           }
