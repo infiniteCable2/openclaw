@@ -23,6 +23,7 @@ async function withSteeringFixture(
     context<T>(work: () => T): T;
     original: UserTurnTranscriptRecorder;
     steer(): Promise<void>;
+    rewriteLater(): Promise<void>;
     overlap(): Promise<void>;
     answer(label: string): ReturnType<typeof appendTranscriptMessage>;
     revoke(): void;
@@ -125,6 +126,42 @@ async function withSteeringFixture(
           context,
           original,
           steer,
+          rewriteLater: async () => {
+            const input = {
+              role: "user" as const,
+              content: "A later original whose metadata is amended.",
+              timestamp: 2,
+            };
+            const committed = await appendTranscriptMessage(source, { message: input });
+            if (!committed.anchor) {
+              throw new Error("Expected later admitted user anchor");
+            }
+            // Unlike steer correlation, this metadata change rotates admission
+            // while preserving the projection and the earlier original prefix.
+            const rewritten = await rewritePreparedTranscriptMessageAtAnchor(
+              committed.anchor,
+              (candidate) => ({
+                ...asOptionalRecord(candidate),
+                __openclaw: {
+                  ...asOptionalRecord(asOptionalRecord(candidate)?.["__openclaw"]),
+                  testAnnotation: true,
+                },
+              }),
+            );
+            expect(rewritten?.generation).toBeTypeOf("string");
+            expect(rewritten?.generation).not.toBe(committed.anchor.generation);
+            expect(await loadSessionTranscriptEvents(source)).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  id: committed.anchor.entryId,
+                  message: expect.objectContaining({
+                    content: input.content,
+                    __openclaw: expect.objectContaining({ testAnnotation: true }),
+                  }),
+                }),
+              ]),
+            );
+          },
           journal,
           source,
           revoke: () => {
@@ -226,7 +263,7 @@ it.each(["settled", "failed"] as const)(
   },
 );
 
-it("retires revoked optional continuity without invalidating a legitimate steering commit", async () => {
+it("retires revoked optional continuity without invalidating a legitimate later rewrite", async () => {
   await withSteeringFixture(async (f) => {
     const original = f.original.getAdmissionReceipt();
     const invalidated: SessionRowChange[] = [];
@@ -247,7 +284,7 @@ it("retires revoked optional continuity without invalidating a legitimate steeri
     try {
       await f.context(async () => {
         f.revoke();
-        await f.steer();
+        await f.rewriteLater();
         expect(committed).toBeGreaterThan(0);
         expect(invalidated).toEqual([]);
         expect(f.original.getAdmissionReceipt()).toEqual(original);
@@ -259,7 +296,7 @@ it("retires revoked optional continuity without invalidating a legitimate steeri
   });
 });
 
-it("never renews from an invalidation retaining its original native postimage", async () => {
+it("never renews from an invalidation retaining a later rewrite's native postimage", async () => {
   await withSteeringFixture(async (f) => {
     const original = f.original.getAdmissionReceipt();
     let committed: SessionRowChange | undefined;
@@ -280,7 +317,7 @@ it("never renews from an invalidation retaining its original native postimage", 
       }
     });
     try {
-      await f.steer();
+      await f.rewriteLater();
     } finally {
       release();
     }

@@ -162,7 +162,7 @@ describe("isolated full Gateway conversation continuity", () => {
     let model: Model | undefined;
     let owner: Operator | undefined;
     context.onTestFailed(() => console.error(gateway?.logs()));
-    const markers = Array.from({ length: 9 }, (_, index) => `SUMMARY_FACT_${index}_73`);
+    const markers = Array.from({ length: 10 }, (_, index) => `SUMMARY_FACT_${index}_73`);
     await runQaGatewayTestFixture(
       context,
       async ({ signal, verifyCleanup }) => {
@@ -265,7 +265,51 @@ describe("isolated full Gateway conversation continuity", () => {
         const initialReuse = JSON.stringify(await send(reusable, "REUSABLE_FIRST_IMPORT_PROBE_73"));
         expect(initialReuse.split(markers[0]!).length - 1).toBe(1);
         expect(initialReuse).not.toContain("Summary of related conversations");
-        for (const marker of markers.slice(1)) {
+        const rootCheckpointIds = (throughSequence?: number) =>
+          new Set(
+            gateway!
+              .logs()
+              .split("\n")
+              .filter(
+                (line) =>
+                  line.includes("Related-history root projection ready") &&
+                  (throughSequence === undefined ||
+                    sourceFrontierReached(
+                      line,
+                      sourceDescription.session.sessionId,
+                      throughSequence,
+                    )),
+              )
+              .flatMap((line) =>
+                Array.from(
+                  line.replaceAll('\\"', '"').matchAll(/"checkpointId"\s*:\s*"([a-f0-9]{64})"/gu),
+                  (match) => match[1],
+                ),
+              ),
+          );
+        // Background work may coalesce inputs and choose its commit time after
+        // foreground activity. Require one committed pressure phase before the
+        // next, rather than expecting two checkpoints from one final large tail.
+        for (const marker of markers.slice(1, 5)) {
+          await send(source, `${marker}. ${filler}`);
+        }
+        const firstPhaseHistory = await owner.call<{ messages: NativeHistoryMessage[] }>(
+          "chat.history",
+          { sessionKey: source, limit: 100 },
+        );
+        const firstPhaseSequence = firstPhaseHistory.messages.find(
+          (message) =>
+            message.role === "user" && JSON.stringify(message.content).includes(markers[4]!),
+        )?.["__openclaw"]?.transcriptPosition?.rawSeq;
+        if (typeof firstPhaseSequence !== "number") {
+          throw new Error("Native first pressure phase sequence is missing");
+        }
+        await vi.waitFor(
+          () => expect(rootCheckpointIds(firstPhaseSequence).size).toBeGreaterThan(0),
+          { timeout: 60_000, interval: 100 },
+        );
+        const firstPhaseCheckpointIds = rootCheckpointIds();
+        for (const marker of markers.slice(5)) {
           await send(source, `${marker}. ${filler}`);
         }
         const history = await owner.call<{
@@ -283,28 +327,9 @@ describe("isolated full Gateway conversation continuity", () => {
           () => {
             // Cross two native generations. A nearly full quoted tail alone can
             // fit the root yet exceed a recipient's additional system/tool costs.
-            const checkpoints = new Set(
-              gateway!
-                .logs()
-                .split("\n")
-                .filter((line) => line.includes("Related-history root projection ready"))
-                .flatMap((line) =>
-                  Array.from(
-                    line.replaceAll('\\"', '"').matchAll(/"checkpointId"\s*:\s*"([a-f0-9]{64})"/gu),
-                    (match) => match[1],
-                  ),
-                ),
-            );
-            expect(checkpoints.size).toBeGreaterThanOrEqual(2);
+            expect(rootCheckpointIds().size).toBeGreaterThanOrEqual(2);
             expect(
-              gateway!
-                .logs()
-                .split("\n")
-                .some(
-                  (line) =>
-                    line.includes("Related-history root projection ready") &&
-                    sourceFrontierReached(line, sourceDescription.session.sessionId, lastSequence),
-                ),
+              [...rootCheckpointIds(lastSequence)].some((id) => !firstPhaseCheckpointIds.has(id)),
             ).toBe(true);
           },
           { timeout: 60_000, interval: 100 },

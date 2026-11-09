@@ -580,20 +580,15 @@ it("compacts a warm recipient across a config reload and imports every pending t
       const recipientHash = redactIdentifier(original.session.sessionId);
       const recipientLine = (line: string) =>
         new RegExp(`"recipientHash"\\s*:\\s*"${recipientHash}"`, "u").test(line);
+      const recipientCompacted = (line: string) =>
+        line.includes("Conversation knowledge idle maintenance") &&
+        recipientLine(line) &&
+        /"outcome"\s*:\s*"compacted"/u.test(line);
       await vi
         .waitFor(
           () => {
             const fresh = logs().filter((line) => !beforePressure.has(line));
-            expect(
-              fresh.some(
-                (line) =>
-                  line.includes("[compaction-diag] end") &&
-                  line.includes(`sessionKey=${recipient} `) &&
-                  line.includes("trigger=budget") &&
-                  line.includes("outcome=compacted") &&
-                  line.includes("reason=none"),
-              ),
-            ).toBe(true);
+            expect(fresh.some(recipientCompacted)).toBe(true);
             expect(
               fresh.some(
                 (line) =>
@@ -655,11 +650,7 @@ it("compacts a warm recipient across a config reload and imports every pending t
               recipientModelMarkers: markers(warmInput ? [warmInput] : []),
               allModelMarkers: markers(model!.requests),
               summaryModelMarkers: markers(model!.requests.filter(isSummary)),
-              recipientCompactions: fresh.filter(
-                (line) =>
-                  line.includes("[compaction-diag] end") &&
-                  line.includes(`sessionKey=${recipient} `),
-              ).length,
+              recipientCompactions: fresh.filter(recipientCompacted).length,
             }),
           );
           throw error;

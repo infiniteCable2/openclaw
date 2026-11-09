@@ -823,6 +823,27 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           heldSibling.release();
           await chatWork;
         }
+        if (!idleRecipient.session) {
+          throw new Error("Native conversation recipient unavailable");
+        }
+        phase = "live-sibling-to-speech-preparation";
+        const livePreparationStartedAt = performance.now();
+        const requestsAfterSibling = model.requests.length;
+        // The concurrent round above must not wait for sibling knowledge. Once
+        // both foreground owners settle, observe background preparation before
+        // asserting that the next real input can consume the new source range.
+        await waitForConversationTransfer(gateway, signal, {
+          recipientId: idleRecipient.session.sessionId,
+          sourceId: chatRecipient.session.sessionId,
+          sequence: await userSequence(chatKey, "LIVE_SIBLING_FACT_TEAL_28"),
+          phase: "prepared",
+        });
+        expect(model.requests).toHaveLength(requestsAfterSibling);
+        phases.push({
+          phase,
+          durationMs: performance.now() - livePreparationStartedAt,
+          idleModelRequests: model.requests.length - requestsAfterSibling,
+        });
         const afterSibling = await speak(third, 9);
         expect(afterSibling).toContain("LIVE_SIBLING_FACT_TEAL_28");
         if (connectedActivity) {

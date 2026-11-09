@@ -158,7 +158,10 @@ describe("host conversation root admission", () => {
           history = await loadTranscriptEvents(scope);
           return { ok: true, entry: rootFixture({ sessionId: "losing-root" }) };
         }),
-      ).rejects.toThrow("unclaimed conversation");
+      ).rejects.toMatchObject({
+        name: "Error",
+        message: `SQLite session entry changed before replacement for ${scope.sessionKey}`,
+      });
       expect(await readSessionEntryReadOnlyInWorker(scope)).toEqual(winner);
       expect(await loadTranscriptEvents(scope)).toEqual(history);
       expect(await loadTranscriptEvents({ ...scope, sessionId: "losing-root" })).toEqual([]);

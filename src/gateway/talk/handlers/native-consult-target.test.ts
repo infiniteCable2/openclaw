@@ -3,12 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/promise.js";
 import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
-import {
-  clearTestEmbeddedRun as clearActiveEmbeddedRun,
-  registerTestEmbeddedRun as setActiveEmbeddedRun,
-  createEmbeddedRunHandle,
-  testing as embeddedRunTesting,
-} from "../../../agents/embedded-agent-runner/runs.test-support.js";
+import { testing as embeddedRunTesting } from "../../../agents/embedded-agent-runner/runs.test-support.js";
 import { REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS } from "../../../agents/realtime-bootstrap-context.test-support.js";
 import * as workspace from "../../../agents/workspace.js";
 import { setRuntimeConfigSnapshot } from "../../../config/runtime-snapshot.js";
@@ -35,7 +30,6 @@ import { updateRpcSourceSessionId } from "../../../sessions/session-controller.r
 import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
-import { controlRealtimeVoiceAgentRun } from "../../../talk/agent-run-control.js";
 import * as voiceSessions from "../../../talk/client-voice-session.js";
 import {
   createOrResumeClientVoiceSession,
@@ -81,7 +75,12 @@ import {
   createNativeTalkCall,
   registerNativeConsultExactControlTests,
 } from "./native-consult-control.test-support.js";
-import { registerOwnedNativeConsultRun } from "./native-consult-target.test-support.js";
+import {
+  controlNativeConsultRun as control,
+  pauseNativeConsultControl as pauseControl,
+  registerOwnedNativeConsultRun,
+  registerUnrelatedNativeConsultRun as unrelatedRun,
+} from "./native-consult-target.test-support.js";
 import { talkSessionHandlers } from "./session.js";
 import {
   createTalkWebSocketTestClient,
@@ -205,65 +204,6 @@ function runTarget(
     scope,
     assertCurrent,
   });
-}
-
-function control(
-  target: Parameters<typeof controlRealtimeVoiceAgentRun>[0]["runTarget"],
-  text = "cancel",
-  options: Partial<Parameters<typeof controlRealtimeVoiceAgentRun>[0]> = {},
-) {
-  return controlRealtimeVoiceAgentRun({
-    sessionKey: "global",
-    runTarget: target,
-    text,
-    ...options,
-  });
-}
-
-function unrelatedRun(storePath: string, sessionId: string, runId: string) {
-  const operation = createReplyOperation({
-    ...replyIdentity,
-    sessionId,
-    target: captureSessionTarget({
-      storeScope: `${storePath}.unrelated`,
-      sessionKey: "global",
-      agentId: "voice",
-      incarnation: sessionId,
-    }),
-  });
-  const abort = vi.fn();
-  const handle = createEmbeddedRunHandle({ runId, abort });
-  setActiveEmbeddedRun(sessionId, handle, "global", undefined, "voice", operation);
-  return {
-    operation,
-    abort,
-    dispose() {
-      clearActiveEmbeddedRun(sessionId, handle, "global");
-      operation.complete();
-    },
-  };
-}
-
-function pauseControl(
-  target: Parameters<typeof control>[0],
-  cancelRun?: NonNullable<Parameters<typeof control>[2]>["cancelRun"],
-) {
-  const preparing = createDeferredCore();
-  const prepared = createDeferredCore();
-  const pending = control(target, "cancel", {
-    mode: "cancel",
-    cancelRun,
-    getToolAuthorityOverlay: () => ({
-      senderIsOwner: false,
-      disableTools: false,
-      traceAuthorized: false,
-    }),
-    prepareToolAuthorityOverlay: async () => {
-      preparing.resolve();
-      await prepared.promise;
-    },
-  });
-  return { preparing, prepared, pending };
 }
 
 function configureProvider(provider: RealtimeVoiceProviderPlugin, supportsGatewayControl = true) {
@@ -929,8 +869,17 @@ it.each([
   async ({ transport, changeAt }) => {
     const changesStore = changeAt !== "unchanged";
     const canonicalKey = changesStore ? "agent:voice:main" : "agent:voice:home";
+    // Preserve the native per-agent database owner while changing the store root.
     config.session = changesStore
-      ? { store: state.statePath("route-a.sqlite") }
+      ? {
+          store: state.statePath(
+            "route-a",
+            "agents",
+            "{agentId}",
+            "agent",
+            "openclaw-agent.sqlite",
+          ),
+        }
       : { mainKey: "home", scope: "per-sender" };
     config.talk = { ...config.talk, realtime: { instructions: "Keep native answers brief." } };
     setRuntimeConfigSnapshot(config);
@@ -984,7 +933,16 @@ it.each([
     const changeStore = () => {
       config = {
         ...config,
-        session: { ...config.session, store: state.statePath("route-b.sqlite") },
+        session: {
+          ...config.session,
+          store: state.statePath(
+            "route-b",
+            "agents",
+            "{agentId}",
+            "agent",
+            "openclaw-agent.sqlite",
+          ),
+        },
       };
       setRuntimeConfigSnapshot(config);
     };

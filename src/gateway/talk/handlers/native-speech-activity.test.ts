@@ -310,9 +310,7 @@ it("native speech keeps telemetry delivery failures separate from call and input
 
 it("a native silent answer settles activity and leaves the same connection usable", async ({
   signal,
-  onTestFailed,
 }) => {
-  let stage = "create";
   const readinessReleased = [createDeferredCore(), createDeferredCore()] as const;
   let readinessReleases = 0;
   const hardware = installSyntheticSpeechHardware({
@@ -341,23 +339,6 @@ it("a native silent answer settles activity and leaves the same connection usabl
   let models = 0;
   let terminalSeq: number | undefined;
   let secondSpokenTurnId: string | undefined;
-  onTestFailed(() => {
-    const events = activityEvents();
-    console.error(
-      JSON.stringify({
-        stage,
-        captures,
-        models,
-        readinessReleases,
-        ownerSettlements: ownerSettlements.length,
-        modelCalls: mocks.runEmbeddedAgent.mock.calls.length,
-        ttsCalls: mocks.streamSpeech.mock.calls.length,
-        warnings: vi.mocked(context.logGateway.warn).mock.calls,
-        lastActivity: events.findLast((event) => event.type === "session.activity"),
-        lastOutcome: events.findLast((event) => event.type === "input.outcome"),
-      }),
-    );
-  });
   vi.mocked(context.broadcastToConnIds).mockImplementation((_name, payload) => {
     if (!isRecord(payload) || !isRecord(payload.talkEvent)) {
       return;
@@ -462,11 +443,8 @@ it("a native silent answer settles activity and leaves the same connection usabl
       endOfInput: true,
       captureId: "capture-silent",
     });
-    stage = "silent-activity-idle";
     await withinTest(quiet.promise, signal);
-    stage = "silent-tts-release";
     await withinTest(readinessReleased[0].promise, signal);
-    stage = "silent-owner-settlement";
     await withinTest(Promise.all(ownerSettlements), signal);
     expect(models).toBe(1);
     expect(mocks.streamSpeech).not.toHaveBeenCalled();
@@ -484,16 +462,13 @@ it("a native silent answer settles activity and leaves the same connection usabl
     );
     expect(getUnifiedTalkSession(call.sessionId).kind).toBe("speech-relay");
     expect(hardware.close).not.toHaveBeenCalled();
-    stage = "spoken-capture";
     await dispatch("talk.session.appendAudio", {
       sessionId: call.sessionId,
       audioBase64: Buffer.alloc(640).toString("base64"),
       endOfInput: true,
       captureId: "capture-spoken",
     });
-    stage = "spoken-turn-and-tts-release";
     await withinTest(Promise.all([spoken.promise, readinessReleased[1].promise]), signal);
-    stage = "spoken-owner-settlement";
     await withinTest(Promise.all(ownerSettlements), signal);
     expect(models).toBe(2);
     expect(captures).toBe(2);
