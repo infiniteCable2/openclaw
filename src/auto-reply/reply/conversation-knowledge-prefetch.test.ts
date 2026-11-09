@@ -75,7 +75,8 @@ vi.mock("./conversation-knowledge-source-cache.js", () => ({
   },
 }));
 // mock-isolation: Keep process-global recipient retention private to this test module.
-vi.mock("../../shared/global-singleton.js", () => ({
+vi.mock("../../shared/global-singleton.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../shared/global-singleton.js")>()),
   resolveGlobalSingleton: (_key: symbol, create: () => unknown) => create(),
 }));
 
