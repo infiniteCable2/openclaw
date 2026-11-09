@@ -278,11 +278,12 @@ describe("provider local service", () => {
       const requestPath = path.join(tempDir, "request-stop");
       const checksPath = path.join(tempDir, "checks");
       const model = attachModelProviderLocalService(
-        {
+        makeProviderModelFixture<"openai-completions">({
           id: "demo",
           provider: "local-idle-check",
+          api: "openai-completions",
           baseUrl: `http://127.0.0.1:${port}/v1`,
-        } as unknown as Model<"openai-completions">,
+        }),
         {
           command: process.execPath,
           args: [

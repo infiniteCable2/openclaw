@@ -1,10 +1,19 @@
 import { IncomingMessage } from "node:http";
 import { Socket } from "node:net";
-import type { RealtimeTranscriptionProviderPlugin } from "openclaw/plugin-sdk/realtime-transcription";
+import type {
+  RealtimeTranscriptionProviderPlugin,
+  RealtimeTranscriptionSessionCreateRequest,
+} from "openclaw/plugin-sdk/realtime-transcription";
+import * as realtimeVoiceSdk from "openclaw/plugin-sdk/realtime-voice";
 import { createWebhookInFlightLimiter } from "openclaw/plugin-sdk/webhook-ingress";
 import * as webhookRequestGuards from "openclaw/plugin-sdk/webhook-request-guards";
 import { describe, expect, it, vi } from "vitest";
 import type { CallManager } from "./manager.js";
+import {
+  createStubSession,
+  createStubSttProvider,
+  sendStart,
+} from "./media-stream.test-support.js";
 import {
   provider,
   createConfig,
@@ -16,6 +25,7 @@ import {
   createAsteriskRegistrationFixture,
 } from "./webhook.test-fixtures.js";
 import { handleAsteriskRegistrationRequest } from "./webhook/asterisk-registration.js";
+import { connectWs } from "./websocket-test-support.js";
 
 const mocks = vi.hoisted(() => {
   const realtimeTranscriptionProvider: RealtimeTranscriptionProviderPlugin = {
@@ -174,7 +184,17 @@ describe("VoiceCallWebhookServer realtime transcription provider selection", () 
       await server.stop();
     }
   });
-  it("records media stream Talk events on the active call metadata", async () => {
+  it("records admitted media stream Talk events through the native Talk observer", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-05-05T06:00:00.000Z"));
+    const observed = vi.spyOn(realtimeVoiceSdk, "recordTalkObservabilityEvent");
+    let callbacks: RealtimeTranscriptionSessionCreateRequest | undefined;
+    mocks.getRealtimeTranscriptionProvider.mockReset().mockReturnValue(
+      createStubSttProvider((request) => {
+        callbacks = request;
+        return createStubSession();
+      }),
+    );
     const call = createCall(Date.now());
     const manager = {
       ...automaticReplyManagerStub,
@@ -182,7 +202,7 @@ describe("VoiceCallWebhookServer realtime transcription provider selection", () 
       getCallByProviderCallId: (providerCallId: string) =>
         providerCallId === "provider-call-1" ? call : undefined,
       endCall: vi.fn(async () => ({ success: true })),
-      processEvent: vi.fn(),
+      processEvent: vi.fn<CallManager["processEvent"]>(async () => ({ kind: "processed" })),
       speakInitialMessage: vi.fn(async () => {}),
     } as unknown as CallManager;
     const config = createConfig({
@@ -190,6 +210,7 @@ describe("VoiceCallWebhookServer realtime transcription provider selection", () 
       streaming: {
         ...createConfig().streaming,
         enabled: true,
+        provider: "openai",
         providers: {
           openai: {
             apiKey: "sk-test", // pragma: allowlist secret
@@ -199,40 +220,51 @@ describe("VoiceCallWebhookServer realtime transcription provider selection", () 
     });
 
     const server = createServer(config, manager, createTwilioStreamingProvider());
+    let ws: Awaited<ReturnType<typeof connectWs>> | undefined;
     try {
-      await server.start();
-      const mediaHandler = server.getMediaStreamHandler() as unknown as {
-        config: {
-          onTalkEvent?: NonNullable<import("./media-stream.js").MediaStreamConfig["onTalkEvent"]>;
-        };
-      };
-      mediaHandler.config.onTalkEvent?.("provider-call-1", "MZ-talk", {
-        id: "voice-call:provider-call-1:MZ-talk:1",
-        type: "transcript.done",
-        sessionId: "voice-call:provider-call-1:MZ-talk",
-        turnId: "MZ-talk:turn:1",
-        seq: 1,
-        timestamp: "2026-05-05T06:00:00.000Z",
-        mode: "stt-tts",
-        transport: "gateway-relay",
-        brain: "agent-consult",
-        provider: "openai",
-        final: true,
-        payload: { text: "hello", role: "user" },
-      });
-
-      expect(call.metadata?.lastTalkEventAt).toBe("2026-05-05T06:00:00.000Z");
-      expect(call.metadata?.lastTalkEventType).toBe("transcript.done");
-      expect(call.metadata?.recentTalkEvents).toEqual([
-        {
-          at: "2026-05-05T06:00:00.000Z",
+      const address = new URL(await server.start());
+      address.protocol = "ws:";
+      address.pathname = config.streaming.streamPath;
+      ws = await connectWs(address.toString());
+      sendStart(ws, "MZ-talk", "provider-call-1", { token: "synthetic-stream-token" });
+      const events = () =>
+        observed.mock.calls
+          .map(([event]) => event)
+          .filter((event) => event.sessionId === "voice-call:provider-call-1:MZ-talk");
+      await vi.waitFor(() =>
+        expect(events().map((event) => event.type)).toContain("session.ready"),
+      );
+      if (!callbacks?.onTranscript) {
+        throw new Error("Expected the admitted media stream transcription session");
+      }
+      callbacks.onTranscript("hello");
+      expect(events().filter((event) => event.type === "transcript.done")).toEqual([
+        expect.objectContaining({
+          timestamp: "2026-05-05T06:00:00.000Z",
           type: "transcript.done",
           sessionId: "voice-call:provider-call-1:MZ-talk",
-          turnId: "MZ-talk:turn:1",
-        },
+          turnId: "MZ-talk:turn-1",
+          mode: "stt-tts",
+          transport: "gateway-relay",
+          brain: "agent-consult",
+          provider: "openai",
+          final: true,
+          payload: {
+            callId: "provider-call-1",
+            streamSid: "MZ-talk",
+            text: "hello",
+            role: "user",
+          },
+        }),
       ]);
     } finally {
-      await server.stop();
+      ws?.terminate();
+      try {
+        await server.stop();
+      } finally {
+        observed.mockRestore();
+        vi.useRealTimers();
+      }
     }
   });
 });

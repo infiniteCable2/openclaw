@@ -1,7 +1,8 @@
+import { SessionManager, type SessionEntry } from "openclaw/plugin-sdk/agent-sessions";
 import { describe, expect, it } from "vitest";
-import type { CompactionEntry } from "../../agents/sessions/session-manager-types.js";
-import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { restoreExperienceReviewContextTail } from "./experience-review-context.js";
+
+type CompactionEntry = Extract<SessionEntry, { type: "compaction" }>;
 
 describe("experience review maintenance snapshot", () => {
   function fixture() {
