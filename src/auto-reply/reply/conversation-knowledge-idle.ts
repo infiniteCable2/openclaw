@@ -513,6 +513,7 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                           prepared?.release();
                         };
                         await admit(canAdmit, snapshot.version);
+                        const placement = budget?.value.compactionPlacement;
                         if (
                           refusedPacket &&
                           recipientSource &&
@@ -523,22 +524,21 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                             entry,
                             branch,
                           }) &&
-                          (!budget ||
+                          (!placement ||
                             !entry.authProfileOverride ||
-                            entry.authProfileOverride ===
-                              budget.value.compactionPlacement?.authProfileId) &&
-                          (!budget ||
+                            entry.authProfileOverride === placement.authProfileId) &&
+                          (!placement ||
                             !entry.permissionMode ||
-                            entry.permissionMode ===
-                              budget.value.compactionPlacement?.permissionMode) &&
-                          (!budget ||
+                            entry.permissionMode === placement.permissionMode) &&
+                          (!placement ||
                             !entry.sessionRoot ||
-                            entry.sessionRoot === budget.value.compactionPlacement?.sessionRoot) &&
+                            entry.sessionRoot === placement.sessionRoot) &&
                           sourceCache.consumptionRevision === before
                         ) {
                           compacted = await compactConversationKnowledgeWhileIdle({
                             budget: budget?.value,
-                            request: budget
+                            // A native probe retains capacity, not foreground placement.
+                            request: placement
                               ? undefined
                               : resolveIdleConversationKnowledgeMaintenanceRequest({
                                   config: cfg,

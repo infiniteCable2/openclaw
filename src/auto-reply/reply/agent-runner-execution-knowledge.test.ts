@@ -16,6 +16,7 @@ import {
 } from "../../config/runtime-snapshot.js";
 import * as runtimeSnapshots from "../../config/runtime-snapshot.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
+import { withSessionControllerOwner } from "../../sessions/session-controller.context.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -366,7 +367,11 @@ describe("actual native execution conversation knowledge lifetime", () => {
     state.runCliAgentMock.mockResolvedValue(f.result);
     const { defaultRuntime } = await import("../../runtime.js");
     const priorErrors = vi.mocked(defaultRuntime.error).mock.calls.length;
-    const result = await executeAgentTurn(f.params);
+    // The native CLI settlement borrows its caller's current controller owner;
+    // creating an operation without this scope would queue behind that same turn.
+    const result = await withSessionControllerOwner(f.replyOperation, () =>
+      executeAgentTurn(f.params),
+    );
     expect(
       result,
       `Actual native CLI failure: ${inspect(
@@ -444,7 +449,9 @@ describe("actual native execution conversation knowledge lifetime", () => {
           };
         },
       );
-      await expect(executeAgentTurn(f.params)).resolves.toMatchObject({
+      await expect(
+        withSessionControllerOwner(f.replyOperation, () => executeAgentTurn(f.params)),
+      ).resolves.toMatchObject({
         outcome: { kind: "settled", status: "ok" },
       });
       expect(f.prepareSnapshot).toHaveBeenCalledOnce();
