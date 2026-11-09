@@ -137,6 +137,12 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
   ).toHaveBeenCalledWith(true, { ok: true }, undefined);
   expect(finishInput).toHaveBeenCalledOnce();
   await withinTest(turnEnded.promise, signal);
+  await vi.waitFor(() => {
+    expect(
+      mocks.runEmbeddedAgent.mock.calls.length +
+        vi.mocked(context.logGateway.warn).mock.calls.length,
+    ).toBeGreaterThan(0);
+  });
   expect(
     mocks.runEmbeddedAgent,
     mocks.runEmbeddedAgent.mock.calls.length === 1
