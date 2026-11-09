@@ -14,6 +14,7 @@ import {
   type SessionTranscriptModelContextRangeResult,
 } from "./session-accessor.sqlite-model-context.js";
 import { readActiveTranscriptEntryAnchor } from "./session-accessor.sqlite-transcript-admitted-read.js";
+import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { readSessionTranscriptModelContextsAsync } from "./session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
 import * as transcriptReadSource from "./session-transcript-read-source.js";
@@ -40,6 +41,60 @@ function individual(
     };
   }
 }
+
+it("hydrates the original header from shared navigation without repeating a header search", async () => {
+  await withBoundedContextScope(async (scope) => {
+    const header = {
+      type: "session",
+      id: scope.sessionId,
+      version: 3,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      cwd: "/synthetic/workspace",
+      inheritedThrough: ["source-boundary"],
+    };
+    await replaceTranscriptEvents(scope, [
+      header,
+      transcriptMessage("question", null, {
+        role: "user",
+        content: "Synthetic question.",
+        timestamp: 1,
+      }),
+      transcriptMessage("answer", "question", {
+        role: "assistant",
+        content: "Synthetic answer.",
+        timestamp: 2,
+      }),
+    ]);
+    await waitForSessionTranscriptProjection(scope);
+    const through = readActiveTranscriptEntryAnchor({ ...scope, entryId: "answer" });
+    if (!through) {
+      throw new Error("Synthetic range anchor missing");
+    }
+    const ranges = [
+      { through, limits: { maxBytes: 16_384, maxEvents: 10 } },
+      { through, limits: { from: through, maxBytes: 16_384, maxEvents: 10 } },
+    ];
+    const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
+    const counter = trackSqliteStatementExecutions(db, ["headerSearch"], (sql) =>
+      sql.includes('from "transcript_events"') &&
+      sql.includes("navigation_type") &&
+      sql.includes("limit")
+        ? "headerSearch"
+        : null,
+    );
+    try {
+      const expected = ranges.map((range) => individual(scope, range));
+      expect(counter.counts.headerSearch).toBe(1);
+      const actual = readSessionTranscriptModelContexts(scope, ranges);
+      expect(actual).toEqual(expected);
+      expect(actual[0]?.ok && actual[0].context.events[0]).toEqual(header);
+      expect(actual[1]?.ok && actual[1].context.events).not.toContainEqual(header);
+      expect(counter.counts.headerSearch).toBe(1);
+    } finally {
+      counter.restore();
+    }
+  });
+});
 
 it("rejects process-held batch scheduling overflow before opening its source or consuming data", async () => {
   const target = {

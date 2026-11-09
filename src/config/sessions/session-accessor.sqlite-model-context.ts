@@ -39,8 +39,10 @@ import type {
 } from "./session-history-read.types.js";
 import {
   readSessionTranscriptModelContextRanges,
+  type PreparedTranscriptContextRange,
   type SessionTranscriptModelContextRange,
   type SessionTranscriptModelContextRangeResult,
+  type TranscriptContextNavigationEntry,
 } from "./session-model-context-batch-reader.js";
 import { readModelContextNavigationPages } from "./session-model-context-pages.js";
 import {
@@ -289,8 +291,7 @@ export function readSessionTranscriptModelContexts(
     scope,
     ranges,
     readTranscriptNavigationEntries,
-    (database, entries, range) =>
-      readModelContext(scope, range.through, range.limits, { database, entries }),
+    (snapshot, range) => readModelContext(scope, range.through, range.limits, snapshot),
   );
 }
 
@@ -298,7 +299,7 @@ function readModelContext(
   scope: SessionTranscriptReadScope,
   through?: TranscriptEntryAnchor,
   limits?: SessionModelContextLimits,
-  prepared?: PreparedContextSnapshot,
+  prepared?: PreparedTranscriptContextRange,
 ): SessionTranscriptModelContext {
   const from = limits?.from;
   if (from !== undefined && (!from || !through)) {
@@ -355,18 +356,13 @@ export function readSessionTranscriptContextMessages<T>(
   return result.found ? result.value : read([], undefined);
 }
 
-type PreparedContextSnapshot = {
-  database: OpenClawAgentReadOnlyDatabase;
-  entries: ContextEntry[];
-};
-
 function withTranscriptContextSnapshot<T>(
   scope: SessionTranscriptReadScope,
   read: (snapshot: TranscriptContextSnapshot) => T,
   through?: TranscriptEntryAnchor,
   limits?: SessionModelContextLimits,
   from?: TranscriptEntryAnchor,
-  prepared?: PreparedContextSnapshot,
+  prepared?: PreparedTranscriptContextRange,
 ): { found: true; value: T } | { found: false } {
   const resolved = resolveSqliteTranscriptReadScope(scope);
   if (prepared) {
@@ -379,6 +375,7 @@ function withTranscriptContextSnapshot<T>(
         through,
         from,
         prepared.entries,
+        prepared.header,
       ),
     };
   }
@@ -614,7 +611,7 @@ function readTranscriptNavigationEntries(
   resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
   through?: TranscriptEntryAnchor,
   fence?: ReturnType<typeof resolveSqliteSessionTranscriptReadFence>,
-): ContextEntry[] {
+): TranscriptContextNavigationEntry[] {
   return Array.from(
     iterateSqliteQuerySync(
       database.db,
@@ -627,8 +624,11 @@ function readTranscriptNavigationEntries(
         .orderBy("seq", "asc"),
     ),
     (row) => {
-      // SAFETY: Codec-owned navigation retains canonical discriminants and parent links.
-      return { ...(JSON.parse(row.navigation_json) as SessionTreeEntry), seq: row.seq };
+      // SAFETY: Codec-owned navigation retains the header and canonical tree discriminants.
+      return {
+        ...(JSON.parse(row.navigation_json) as TranscriptContextNavigationEntry),
+        seq: row.seq,
+      };
     },
   );
 }
@@ -640,6 +640,7 @@ function readTranscriptContextSnapshot<T>(
   through?: TranscriptEntryAnchor,
   from?: TranscriptEntryAnchor,
   preparedEntries?: ContextEntry[],
+  preparedHeader?: Pick<ContextEntry, "seq">,
 ): T {
   const db = getSessionKysely(database.db);
   const role = transcriptPredicateSql(database.db, "message_role");
@@ -659,21 +660,12 @@ function readTranscriptContextSnapshot<T>(
     .where("session_id", "=", resolved.sessionId)
     .$if(fence !== undefined, (query) => query.where("seq", "<", fence!.beforeRawSeq))
     .$if(through !== undefined, (query) => query.where("seq", "<=", through!.rawSeq));
-  const header =
-    from === undefined
-      ? executeSqliteQueryTakeFirstSync(
-          database.db,
-          base
-            .select(transcriptEventJsonSql(database.db).as("event_json"))
-            .where(transcriptPredicateSql(database.db, "navigation_type"), "=", "session")
-            .orderBy("seq", "asc")
-            .limit(1),
-        )
-      : undefined;
   let selectedEntries = preparedEntries;
   if (!selectedEntries) {
     const tree = scanSessionTranscriptTree(
-      readTranscriptNavigationEntries(database, resolved, through, fence),
+      readTranscriptNavigationEntries(database, resolved, through, fence).filter(
+        (entry) => entry.type !== "session",
+      ),
     );
     if (through && !tree.byId.has(through.entryId)) {
       throw new SessionTranscriptReadFenceError(
@@ -696,7 +688,7 @@ function readTranscriptContextSnapshot<T>(
   const payloadBase = base.$if(from !== undefined, (query) =>
     query.where("seq", ">=", from!.rawSeq),
   );
-  const readPayload = prepareSqliteQuerySync<ContextEntry, { event_json: string }>(
+  const readPayload = prepareSqliteQuerySync<Pick<ContextEntry, "seq">, { event_json: string }>(
     database.db,
     (parameter) =>
       payloadBase.select(transcriptEventJsonSql(database.db).as("event_json")).where(
@@ -706,7 +698,12 @@ function readTranscriptContextSnapshot<T>(
       ),
   );
   return read({
-    header: header ? JSON.parse(header.event_json) : undefined,
+    // Batch navigation already selected the header in this exact fenced snapshot.
+    // Hydrate its full payload with the same owner as model entries, not another search.
+    header:
+      from === undefined && preparedHeader
+        ? JSON.parse(readPayload(preparedHeader).rows[0]!.event_json)
+        : undefined,
     entries: selectedEntries,
     version,
     readEntry: (entry) => {

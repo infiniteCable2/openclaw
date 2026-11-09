@@ -35,6 +35,16 @@ export type SessionTranscriptModelContextRangeResult =
   | { ok: true; context: SessionTranscriptModelContext }
   | { ok: false; reason: "source-range-unverified" | "source-range-over-capacity" };
 
+/** Raw navigation includes the header, which is not a parent-linked tree entry. */
+export type TranscriptContextNavigationEntry = ContextEntry | { type: "session"; seq: number };
+
+/** Exact snapshot retained while the batch reader hydrates one selected range. */
+export type PreparedTranscriptContextRange = {
+  database: OpenClawAgentReadOnlyDatabase;
+  entries: ContextEntry[];
+  header?: Pick<ContextEntry, "seq">;
+};
+
 /** Two historical ranges share navigation only inside this exact SQLite read snapshot. */
 export function readSessionTranscriptModelContextRanges(
   scope: SessionTranscriptReadScope,
@@ -44,10 +54,9 @@ export function readSessionTranscriptModelContextRanges(
     resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
     through?: TranscriptEntryAnchor,
     fence?: ReturnType<typeof resolveSqliteSessionTranscriptReadFence>,
-  ) => ContextEntry[],
+  ) => TranscriptContextNavigationEntry[],
   readRange: (
-    database: OpenClawAgentReadOnlyDatabase,
-    entries: ContextEntry[],
+    snapshot: PreparedTranscriptContextRange,
     range: SessionTranscriptModelContextRange,
   ) => SessionTranscriptModelContext,
 ): SessionTranscriptModelContextRangeResult[] {
@@ -68,6 +77,7 @@ export function readSessionTranscriptModelContextRanges(
           const nodes: SessionTranscriptTreeNode<ContextEntry>[] = [];
           const byId = new Map<string, SessionTranscriptTreeNode<ContextEntry>>();
           let next = 0;
+          let header: Pick<ContextEntry, "seq"> | undefined;
           const finish = () => {
             const { range, index } = ordered[next++]!;
             try {
@@ -94,7 +104,7 @@ export function readSessionTranscriptModelContextRanges(
               const entries = normalizeSessionContextEntryBoundaries(detached, nodes);
               results[index] = {
                 ok: true,
-                context: readRange(database, entries, range),
+                context: readRange({ database, entries, header }, range),
               };
             } catch (error) {
               if (
@@ -125,6 +135,10 @@ export function readSessionTranscriptModelContextRanges(
               for (const entry of navigation) {
                 while (next < ordered.length && ordered[next]!.range.through.rawSeq < entry.seq) {
                   finish();
+                }
+                if (entry.type === "session") {
+                  header ??= { seq: entry.seq };
+                  continue;
                 }
                 yield entry;
               }
