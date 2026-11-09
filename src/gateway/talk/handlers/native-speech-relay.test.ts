@@ -137,28 +137,7 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
   ).toHaveBeenCalledWith(true, { ok: true }, undefined);
   expect(finishInput).toHaveBeenCalledOnce();
   await withinTest(turnEnded.promise, signal);
-  await vi.waitFor(
-    () => {
-      expect(
-        mocks.runEmbeddedAgent.mock.calls.length +
-          vi.mocked(context.logGateway.warn).mock.calls.length,
-        JSON.stringify(mocks.replyDiagnostic),
-      ).toBeGreaterThan(0);
-    },
-    { timeout: 30_000 },
-  );
-  expect(
-    mocks.runEmbeddedAgent,
-    mocks.runEmbeddedAgent.mock.calls.length === 1
-      ? undefined
-      : JSON.stringify({
-          warnings: vi.mocked(context.logGateway.warn).mock.calls,
-          reply: mocks.replyDiagnostic,
-          info: vi.mocked(context.logGateway.info).mock.calls,
-          events: vi.mocked(context.broadcastToConnIds).mock.calls.map(([, payload]) => payload),
-          spokenText: mocks.streamSpeech.mock.calls.map(([request]) => request.text),
-        }),
-  ).toHaveBeenCalledOnce();
+  expect(mocks.runEmbeddedAgent).toHaveBeenCalledOnce();
   expect(hardware.close).not.toHaveBeenCalled();
   expect(getUnifiedTalkSession(call.sessionId).kind).toBe("speech-relay");
   await dispatch("talk.session.close", { sessionId: call.sessionId });

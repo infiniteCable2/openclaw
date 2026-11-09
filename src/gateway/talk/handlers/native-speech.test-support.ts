@@ -21,6 +21,7 @@ import { SessionManager } from "../../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../../agents/test-helpers/agent-message-fixtures.js";
 import { withGatewayToolCallerIdentity } from "../../../agents/tools/gateway-caller-context.js";
 import { markCompleteReplyConfig } from "../../../auto-reply/reply/get-reply-fast-path.test-support.js";
+import { setRuntimeConfigSnapshot } from "../../../config/runtime-snapshot.js";
 import { withOwnedSessionTranscriptWriterFence } from "../../../config/sessions/transcript-write-context.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { validateConfigObject } from "../../../config/validation-core.js";
@@ -59,7 +60,6 @@ import {
 } from "./talk-websocket.test-support.js";
 
 const mocks = vi.hoisted(() => ({
-  replyDiagnostic: [] as unknown[],
   capabilities: {
     transports: ["webrtc", "gateway-relay"],
     inputAudioFormats: [{ encoding: "pcm16", sampleRateHz: 24000, channels: 1 }],
@@ -76,25 +76,6 @@ const mocks = vi.hoisted(() => ({
     meta: { durationMs: 0 },
   })),
 }));
-
-// Temporary merge diagnostic: observe the real reply owner without replacing its work.
-vi.mock("../../../auto-reply/reply/get-reply.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../auto-reply/reply/get-reply.js")>();
-  return {
-    ...actual,
-    getReplyFromConfig: async (...args: Parameters<typeof actual.getReplyFromConfig>) => {
-      mocks.replyDiagnostic.push({ phase: "entered" });
-      try {
-        const result = await actual.getReplyFromConfig(...args);
-        mocks.replyDiagnostic.push({ phase: "returned", result });
-        return result;
-      } catch (error) {
-        mocks.replyDiagnostic.push({ phase: "failed", error: String(error) });
-        throw error;
-      }
-    },
-  };
-});
 
 // mock-isolation: detached greetings use this native runner entry; keep their admission/presentation real and replace the same controlled model boundary as ordinary replies.
 vi.mock("../../../agents/embedded-agent-runner/run.js", async (importOriginal) => ({
@@ -156,6 +137,9 @@ function resolveNativeConsultConfig(raw: OpenClawConfig): OpenClawConfig {
   }
   // Preserve real Session/SQLite initialization, rather than the abbreviated
   // fast-test bootstrap. Only hardware/model leaf implementations are mocked.
+  // Native run preparation reads the Gateway's published config owner, not only
+  // the per-request override. Test-state cleanup resets this snapshot afterward.
+  setRuntimeConfigSnapshot(validated.config);
   return markCompleteReplyConfig(validated.config, { runtimeMode: "full" });
 }
 
@@ -199,7 +183,6 @@ async function dispatch(
 }
 
 beforeEach(async () => {
-  mocks.replyDiagnostic.length = 0;
   state = await createOpenClawTestState({ label: "talk-native-consult" });
   config = resolveNativeConsultConfig({
     agents: {
