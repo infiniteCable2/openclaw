@@ -24,9 +24,16 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../sessions/session-participant-recording.js", () => ({
   waitForSessionParticipantRecording: mocks.waitForRecording,
 }));
-// mock-isolation: Baseline disk capture is independent of participant ordering.
-vi.mock("./session-diff-baseline.js", () => ({
-  prepareReplySessionDiffBaseline: vi.fn(async () => undefined),
+// mock-isolation: Replace baseline disk I/O, retaining the reply owner's native join/finally.
+vi.mock("../../sessions/session-diff-baseline.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/session-diff-baseline.js")>()),
+  ensureSessionDiffBaseline: vi.fn(
+    async ({
+      entry,
+    }: Parameters<
+      typeof import("../../sessions/session-diff-baseline.js").ensureSessionDiffBaseline
+    >[0]) => entry,
+  ),
 }));
 registerGetReplyRuntimeOverrides(mocks);
 const { getReplyFromConfig } = await import("./get-reply.js");

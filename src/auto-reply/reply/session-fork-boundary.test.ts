@@ -360,13 +360,17 @@ it.each(
     const context = readCodexSessionContext(childScope, (messages) => Array.from(messages));
     expect(JSON.stringify(context)).not.toContain("Retired private");
     expect(JSON.stringify(context)).not.toContain("Unfinished task");
-    if (settledAfter) {
+    // Native reset is itself a stable boundary with an explicitly retained tail;
+    // a compaction alone does not settle the interrupted turn.
+    if (settledAfter || type === "reset") {
       expect(result.fork.contextStatus).toBeUndefined();
       expect(inherited).toContainEqual(expect.objectContaining({ id: "boundary", type }));
       expect(context).toContainEqual(expect.objectContaining({ content: "Retained result" }));
-      expect(context).toContainEqual(
-        expect.objectContaining({ content: "Completed after boundary" }),
-      );
+      if (settledAfter) {
+        expect(context).toContainEqual(
+          expect.objectContaining({ content: "Completed after boundary" }),
+        );
+      }
       if (type === "compaction") {
         expect(JSON.stringify(context)).toContain("Safe summary");
       }

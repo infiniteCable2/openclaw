@@ -90,6 +90,7 @@ describe("branch communication owner pilot", () => {
           };
           await state.writeConfig(cfg);
           const profile = ensureProfileForEmail("owner@example.test");
+          const participant = { type: "profile" as const, id: profile.id };
           setUserProfileRole(profile.id, "admin");
           linkUserChannelIdentity(profile.id, {
             channelId: "matrix",
@@ -161,9 +162,9 @@ describe("branch communication owner pilot", () => {
             sourceSessionKey: chatRoute.sessionKey,
             conversationId: "pilot-call",
           });
-          const chat = await fixture.branch("chat", person, "direct", chatRoute.sessionKey);
-          const call = await fixture.branch("call", person, "direct", callRoute.sessionKey);
-          const parallel = await fixture.branch("parallel", person);
+          const chat = await fixture.branch("chat", participant, "direct", chatRoute.sessionKey);
+          const call = await fixture.branch("call", participant, "direct", callRoute.sessionKey);
+          const parallel = await fixture.branch("parallel", participant);
           expect(chatRoute.rootSessionKey).toBe(fixture.root.sessionKey);
           expect(callRoute.rootSessionKey).toBe(fixture.root.sessionKey);
           expect(call.sessionKey).not.toContain(":subagent:");
@@ -274,7 +275,7 @@ describe("branch communication owner pilot", () => {
           };
           const before = await fixture.append(chat, "chat-before-call");
           await recordConversationKnowledgeTurn({ ...chatOwner, ...before });
-          const inherited = await fixture.read(owner);
+          const inherited = await fixture.read(owner, participant);
           expect(inherited.text).toContain("chat-before-call answer");
           // A concurrent sibling can publish knowledge, not rewrite this captured turn.
           const sibling = await fixture.append(parallel, "parallel-result");
@@ -286,7 +287,7 @@ describe("branch communication owner pilot", () => {
             ...completed,
             observed: inherited.observed,
           });
-          expect((await fixture.read(owner)).text).toContain("parallel-result answer");
+          expect((await fixture.read(owner, participant)).text).toContain("parallel-result answer");
 
           // The call's admitted native Matrix destination is a stable address. Its
           // transient audio connection is not an external chat address or a subagent.
@@ -438,7 +439,7 @@ describe("branch communication owner pilot", () => {
 
           transportOpen = false;
           await expect(admit("after-hangup")).rejects.toThrow("Call closed");
-          const back = await fixture.read(chatOwner);
+          const back = await fixture.read(chatOwner, participant);
           expect(back.text).toContain("call-result answer");
           expect(back.text).toContain("parallel-result answer");
           expect(back.text).not.toContain("chat-before-call answer");
@@ -448,7 +449,7 @@ describe("branch communication owner pilot", () => {
             ...chatFinal,
             observed: back.observed,
           });
-          expect((await fixture.read(chatOwner)).text).toBe("");
+          expect((await fixture.read(chatOwner, participant)).text).toBe("");
           const anonymous = await fixture.branch("room-assistant", null, "group");
           const unknown = await prepareReplyConversationKnowledge({
             ...(await fixture.claim(anonymous)),

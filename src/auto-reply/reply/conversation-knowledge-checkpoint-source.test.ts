@@ -246,7 +246,8 @@ describe("checkpoint unavailable source custody", () => {
       const value = reference(`generation-${index}`);
       value.source.sessionKey = "agent:example:foreign";
       value.origin = conversationKnowledgeOrigin(value.source, "utterance-observation");
-      return { ...value, through: { ...value.through, sessionKey: value.source.sessionKey } };
+      const through = { ...value.through, sessionKey: value.source.sessionKey };
+      return { ...value, through, privateAudience: { participant: person, admission: through } };
     });
     boundary.root = references.map((details) => ({
       type: "custom_message",
@@ -259,6 +260,7 @@ describe("checkpoint unavailable source custody", () => {
       authority: { signal: new AbortController().signal, assertCurrent() {} },
     });
     const published = held.source();
+    expect(held.references).toHaveLength(references.length);
     boundary.preparationYield.mockImplementationOnce(async () => {
       controller.abort(new Error("Foreground acquired admission"));
       controller.signal.throwIfAborted();

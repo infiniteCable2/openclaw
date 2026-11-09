@@ -68,7 +68,7 @@ function measure<T>(database: OpenClawAgentDatabase, run: () => T) {
       if (/^insert into "transcript_rewrite_watermarks"/i.test(sql)) {
         return "generation";
       }
-      if (/^update "session_windows" set "transcript_updated_at"/i.test(sql)) {
+      if (/^update "session_windows" set [\s\S]*"transcript_updated_at"\s*=/i.test(sql)) {
         return "mutation";
       }
       return null;
@@ -137,8 +137,9 @@ it.each([1, 32])(
         );
         expect(baseline.counts).toEqual({
           header: count,
-          window: count,
-          generation: count,
+          // Native append reuses the existing window and generation; recency joins its mutation.
+          window: 0,
+          generation: 0,
           mutation: count,
         });
         let rejectCommit = false;
@@ -169,7 +170,7 @@ it.each([1, 32])(
             ok: true,
             value: { committed: true, accepted: count, appended: count },
           });
-          expect(optimized.counts).toEqual({ header: 1, window: 1, generation: 1, mutation: 1 });
+          expect(optimized.counts).toEqual({ header: 1, window: 0, generation: 0, mutation: 1 });
           const committed = await loadTranscriptEvents(batch);
           const old = await loadTranscriptEvents(legacy);
           expect(committed).toHaveLength(count + 2);

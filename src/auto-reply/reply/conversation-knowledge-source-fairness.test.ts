@@ -18,6 +18,7 @@ const source = vi.hoisted(() => ({
   root: vi.fn(),
   preparedRoot: vi.fn(),
   issueRoot: vi.fn(),
+  subset: vi.fn(),
   observe: vi.fn(),
   facts: vi.fn(),
   grant: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readConversationKnowledgeRoot: source.root,
   readPreparedConversationKnowledgeRoot: source.preparedRoot,
   issuePreparedKnowledgeRootCandidates: source.issueRoot,
+  prepareConversationKnowledgeRootSubset: source.subset,
   recordConversationKnowledgeTurn: vi.fn(),
 }));
 // mock-isolation: Observe packet custody without starting native packet storage.
@@ -125,6 +127,18 @@ beforeEach(() => {
   source.contribution.mockReturnValue("synthetic-contribution");
   source.progress.mockImplementation(async () => new Map());
   source.issueRoot.mockImplementation(() => Object.freeze({ byteLength: 128 }));
+  // Keep the same synthetic root evidence while exercising the real source/cache lifecycle.
+  source.subset.mockImplementation(
+    (
+      params: Parameters<
+        typeof import("../../config/sessions/conversation-knowledge-store.js").prepareConversationKnowledgeRootSubset
+      >[0],
+    ) => ({
+      evidence: params.evidence,
+      manifest: "manifest" in params ? params.manifest : source.issueRoot(),
+      scopeKey: JSON.stringify(params.branch),
+    }),
+  );
   source.observe.mockImplementation(
     async (_target, queries: readonly TranscriptReportReceiptQuery[]) => ({
       ok: true,

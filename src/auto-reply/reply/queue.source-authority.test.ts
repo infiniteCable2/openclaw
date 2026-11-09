@@ -11,7 +11,6 @@ import {
 } from "./queue/delivery-context.js";
 import { admitFollowupRunLifecycle } from "./queue/lifecycle.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
-import { isFollowupRunAborted } from "./queue/types.js";
 import type { ReplySpeechPresentationSource } from "./reply-speech-presentation.js";
 
 const queueKeys = new Set<string>();
@@ -122,7 +121,6 @@ describe("native queued non-owner source authority", () => {
     const original = source("guest");
     const abandoned = createDeferred();
     const settled = createDeferred();
-    const cleanup = createDeferred();
     const onAdopted = vi.fn();
     const onAbandoned = vi.fn(() => abandoned.resolve());
     const onSettled = vi.fn(() => settled.resolve());
@@ -131,14 +129,10 @@ describe("native queued non-owner source authority", () => {
     queued.turnAdoptionLifecycle = { admission: "exclusive", onAdopted, onAbandoned, onSettled };
     expect(q.add(queued)).toBe(true);
     original.refuse();
-    q.start(async (input) => {
-      expect(input).toBe(queued);
-      expect(isFollowupRunAborted(input)).toBe(true);
-      expect(input.operatorAuthority).toBeUndefined();
-      expect(input.abortSignal).toBeUndefined();
-      cleanup.resolve();
-    });
-    await Promise.all([abandoned.promise, settled.promise, cleanup.promise]);
+    const execute = vi.fn(async () => {});
+    q.start(execute);
+    await Promise.all([abandoned.promise, settled.promise]);
+    expect(execute).not.toHaveBeenCalled();
     expect(onAdopted).not.toHaveBeenCalled();
     expect(onAbandoned).toHaveBeenCalledOnce();
     expect(onSettled).toHaveBeenCalledOnce();
@@ -191,11 +185,11 @@ describe("native queued non-owner source authority", () => {
     await Promise.all(settlements.map((settlement) => settlement.promise));
     expect(observed).toEqual([
       {
-        prompt: "[Queued messages while agent was busy]\n\n---\nQueued #1\nspeech 0",
+        prompt: "speech 0",
         output: outputs[0],
       },
       {
-        prompt: "[Queued messages while agent was busy]\n\n---\nQueued #1\nspeech 1",
+        prompt: "speech 1",
         output: outputs[1],
       },
     ]);

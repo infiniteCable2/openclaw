@@ -427,83 +427,88 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             resolution.provider.voices ??
             []),
         ];
-        const providerContext = await prepareTalkProviderConversationContext({
-          target,
-          agentConsultAvailable:
-            capabilities?.supportsToolCalls !== false || capabilities?.handlesAgentConsult === true,
-          participant: resolveGatewayInputParticipant(client),
-          assertCurrent: assertEnsuredTargetCurrent,
-          getRuntimeConfig: context.getRuntimeConfig,
-          captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+        const runAuthority = await retainTalkClientRunAuthority({
+          client,
+          context,
+          hasCurrentClientAuthority,
+          session: { target, sessionId: ensuredSessionId },
         });
+        let providerContext:
+          | Awaited<ReturnType<typeof prepareTalkProviderConversationContext>>
+          | undefined;
         let contextTransferred = false;
         let session: ReturnType<typeof createTalkRealtimeRelaySession>;
         try {
-          session = await retainTalkClientRunAuthority({
-            client,
-            context,
-            hasCurrentClientAuthority,
-          }).then((runAuthority) => {
-            try {
-              assertEnsuredTargetCurrent();
-              runAuthority.accept();
-              providerContext.assertCurrent();
-              const created = createTalkRealtimeRelaySession({
-                startupContext: {
-                  ...providerContext,
-                  assertCurrent: () => {
-                    assertEnsuredTargetCurrent();
-                    providerContext.assertCurrent();
-                  },
-                },
-                participant: resolveGatewayInputParticipant(client),
-                preparePrivateAudience: createGatewayVoiceTranscriptAudience({
-                  target,
-                  expectedSessionId: ensuredSessionId,
-                  client,
-                  context,
-                }),
-                runAuthority,
-                context,
-                connId,
-                cfg: runtimeConfig,
-                consultAuthority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
-                provider: resolution.provider,
-                providerConfig,
-                controlSource,
-                capabilities,
-                clientCapabilities: params.capabilities?.filter(
-                  (capability) => capability === "voice-selection",
-                ),
-                voiceChangeId: params.voiceChangeId,
-                initialItems,
-                voiceSelectionVoices: voices,
-                instructions:
-                  (controlSource === "delegation"
-                    ? (providerInstructions ?? "")
-                    : buildRealtimeInstructions(providerInstructions)) +
-                  buildTalkRealtimeHistoryInstructions(initialItems) +
-                  providerContext.instructions,
-                tools:
-                  controlSource === "delegation"
-                    ? []
-                    : [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
-                model: launchOptions.model,
-                sessionTarget: target,
-                voice: launchOptions.voice,
-                language: params.language,
-                forceAgentConsultOnFinalTranscript,
-              });
-              contextTransferred = true;
-              return created;
-            } catch (error) {
-              runAuthority.release();
-              throw error;
-            }
+          assertEnsuredTargetCurrent();
+          providerContext = await prepareTalkProviderConversationContext({
+            target,
+            agentConsultAvailable:
+              capabilities?.supportsToolCalls !== false ||
+              capabilities?.handlesAgentConsult === true,
+            participant: resolveGatewayInputParticipant(client),
+            assertCurrent: runAuthority.assertCurrent,
+            getRuntimeConfig: context.getRuntimeConfig,
+            captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
           });
+          assertEnsuredTargetCurrent();
+          runAuthority.accept();
+          providerContext.assertCurrent();
+          const startupContext = providerContext;
+          session = createTalkRealtimeRelaySession({
+            startupContext: {
+              ...startupContext,
+              // Provider connection may settle after the create RPC has released its guards.
+              assertCurrent: () => {
+                runAuthority.assertCurrent();
+                startupContext.assertCurrent();
+              },
+            },
+            participant: resolveGatewayInputParticipant(client),
+            preparePrivateAudience: createGatewayVoiceTranscriptAudience({
+              target,
+              expectedSessionId: ensuredSessionId,
+              client,
+              context,
+            }),
+            runAuthority,
+            context,
+            connId,
+            cfg: runtimeConfig,
+            consultAuthority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
+            provider: resolution.provider,
+            providerConfig,
+            controlSource,
+            capabilities,
+            clientCapabilities: params.capabilities?.filter(
+              (capability) => capability === "voice-selection",
+            ),
+            voiceChangeId: params.voiceChangeId,
+            initialItems,
+            voiceSelectionVoices: voices,
+            instructions:
+              (controlSource === "delegation"
+                ? (providerInstructions ?? "")
+                : buildRealtimeInstructions(providerInstructions)) +
+              buildTalkRealtimeHistoryInstructions(initialItems) +
+              providerContext.instructions,
+            tools:
+              controlSource === "delegation"
+                ? []
+                : [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
+            model: launchOptions.model,
+            sessionTarget: target,
+            voice: launchOptions.voice,
+            language: params.language,
+            forceAgentConsultOnFinalTranscript,
+          });
+          contextTransferred = true;
         } finally {
           if (!contextTransferred) {
-            await providerContext.release();
+            try {
+              await providerContext?.release();
+            } finally {
+              runAuthority.release();
+            }
           }
         }
         rememberUnifiedTalkSession(session.relaySessionId, {

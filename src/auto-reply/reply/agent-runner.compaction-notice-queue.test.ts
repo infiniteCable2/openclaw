@@ -37,6 +37,8 @@ describe("new input while the native reply owner is compacting", () => {
             opts: { onCompactionNotice },
           },
         });
+        // Interrupt mode bypasses queuing; this case admits input behind the compacting owner.
+        input.resolvedQueue.mode = "collect";
         await expect(input.run()).resolves.toBeUndefined();
       }
       expect(enqueueFollowupRun).toHaveBeenCalledTimes(2);
@@ -87,6 +89,7 @@ describe("new input while the native reply owner is compacting", () => {
           opts: { onCompactionNotice },
         },
       });
+      input.resolvedQueue.mode = "collect";
       try {
         await expect(input.run()).resolves.toBeUndefined();
         expect(onCompactionNotice).not.toHaveBeenCalled();

@@ -1,0 +1,3 @@
+108
+# Native merge regression fixtures: canonical participants, retained Talk authority,
+# reset/token boundaries and exact pressure-listener cleanup; net growth only.

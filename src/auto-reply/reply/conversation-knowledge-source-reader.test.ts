@@ -84,11 +84,13 @@ vi.mock("../../config/sessions/session-transcript-anchor-read.js", () => ({
   readSessionTranscriptAnchorsAsync: vi.fn(),
 }));
 // mock-isolation: Retain actual background scheduling while isolating database generation custody.
-vi.mock("../../state/openclaw-agent-db-resources.js", () => ({
+vi.mock("../../state/openclaw-agent-db-resources.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/openclaw-agent-db-resources.js")>()),
   registerOpenClawAgentDatabaseAsyncResource: boundary.register,
 }));
 // mock-isolation: No agent database is opened by the scheduler/source-reader composition.
-vi.mock("../../state/openclaw-agent-execution.js", () => ({
+vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/openclaw-agent-execution.js")>()),
   captureOpenClawAgentDatabaseExecution: () => ({ assertCurrent() {}, release: async () => {} }),
 }));
 // mock-isolation: Synthetic failures must not create application logs or disclose source errors.

@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { channel } from "node:diagnostics_channel";
+import { channel, type Channel } from "node:diagnostics_channel";
 import { once } from "node:events";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { Worker, WorkerOptions } from "node:worker_threads";
@@ -92,13 +92,37 @@ const validation = vi.hoisted<{
 }>(() => ({
   checks: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
 }));
+const pressureSubscriptions = vi.hoisted(() => new Set<Parameters<Channel["subscribe"]>[0]>());
 vi.mock("node:diagnostics_channel", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:diagnostics_channel")>();
   const pressure = actual.channel(Symbol("reclamation-worker-pressure"));
+  const subscribe = (listener: Parameters<Channel["subscribe"]>[0]) => {
+    pressure.subscribe(listener);
+    pressureSubscriptions.add(listener);
+  };
+  const unsubscribe = (listener: Parameters<Channel["unsubscribe"]>[0]) => {
+    const removed = pressure.unsubscribe(listener);
+    if (removed) {
+      pressureSubscriptions.delete(listener);
+    }
+    return removed;
+  };
+  const observedPressure = new Proxy(pressure, {
+    get(target, property) {
+      if (property === "subscribe") {
+        return subscribe;
+      }
+      if (property === "unsubscribe") {
+        return unsubscribe;
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
   return {
     ...actual,
     channel: (name: string | symbol) =>
-      name === "openclaw.memory.critical" ? pressure : actual.channel(name),
+      name === "openclaw.memory.critical" ? observedPressure : actual.channel(name),
   };
 });
 vi.mock("node:worker_threads", async (importOriginal) => {
@@ -602,7 +626,8 @@ test.each(["path", "root"] as const)(
 
 test("retains reclamation Workers across alternating databases and retires all idle heaps under pressure", async () => {
   const pressure = channel("openclaw.memory.critical");
-  expect(pressure.hasSubscribers).toBe(false);
+  // Process-lifetime cache listeners may already exist; each Worker must release its own.
+  const baselineSubscriptions = new Set(pressureSubscriptions);
   const fixtures = [createFixture(), createFixture()];
   const spawned = observeReclamationWorkers();
   for (let pass = 0; pass < 6; pass += 1) {
@@ -625,6 +650,7 @@ test("retains reclamation Workers across alternating databases and retires all i
     expect(leasesFor(fixture)).toHaveLength(2);
   }
   expect(pressure.hasSubscribers).toBe(true);
+  expect(pressureSubscriptions.size).toBeGreaterThan(baselineSubscriptions.size);
   const retired = Promise.all(spawned.map((worker) => once(worker, "exit")));
   pressure.publish({});
   await retired;
@@ -633,18 +659,19 @@ test("retains reclamation Workers across alternating databases and retires all i
     expect(leasesFor(fixture)).toHaveLength(0);
   }
   await closeOpenClawStateDatabaseAsync();
-  expect(pressure.hasSubscribers).toBe(false);
+  expect(pressureSubscriptions).toEqual(baselineSubscriptions);
 
   const fixture = fixtures[0]!;
   await reclaim({ plan: fixture.plans[1]! });
   expect(spawned).toHaveLength(3);
   expect(pressure.hasSubscribers).toBe(true);
+  expect(pressureSubscriptions.size).toBeGreaterThan(baselineSubscriptions.size);
   const reopenedExit = once(spawned[2]!, "exit");
   pressure.publish({});
   await reopenedExit;
   await closeOpenClawAgentDatabasesAsync();
   await closeOpenClawStateDatabaseAsync();
-  expect(pressure.hasSubscribers).toBe(false);
+  expect(pressureSubscriptions).toEqual(baselineSubscriptions);
 });
 
 test("joins explicit Worker retirement before opening a different agent store", async () => {

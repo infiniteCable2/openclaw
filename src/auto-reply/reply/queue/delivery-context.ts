@@ -202,10 +202,22 @@ export async function prepareNextDeliveryGroup(
   assertDrainCurrent: () => void,
 ): Promise<{ items: FollowupRun[]; assertCurrent: () => void }> {
   const items = readItems().slice();
+  const sources = items.map((item) => ({
+    item,
+    assertSourceCurrent: item.assertSourceCurrent,
+    speechPresentation: item.speechPresentation,
+  }));
   const assertCurrent = () => {
     assertDrainCurrent();
-    for (const item of items) {
-      item.assertSourceCurrent?.();
+    for (const source of sources) {
+      const { item } = source;
+      if (
+        item.assertSourceCurrent !== source.assertSourceCurrent ||
+        item.speechPresentation !== source.speechPresentation
+      ) {
+        throw new FollowupRunDeferredError("Queued delivery source changed during preparation");
+      }
+      source.assertSourceCurrent?.();
       item.operatorAuthority?.assertCurrent();
       if (isFollowupRunAborted(item)) {
         throw new FollowupRunDeferredError("Queued delivery source changed during preparation");

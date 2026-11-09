@@ -391,14 +391,16 @@ describe("MatrixRTC text-free conversation admission", () => {
         ...(cfg.bindings ?? []),
         { agentId: "main", match: { channel: "matrix", accountId: "call-fixture-account" } },
       ];
-      const sourceSessionKey = routes.resolveMatrixInboundRoute({
-        cfg,
-        accountId: "call-fixture-account",
-        roomId,
-        senderId,
-        isDirectMessage: true,
-        resolveAgentRoute: runtime.channel.routing.resolveAgentRoute,
-      }).route.sessionKey;
+      const sourceSessionKey = (
+        await routes.resolveMatrixInboundRouteAsync({
+          cfg,
+          accountId: "call-fixture-account",
+          roomId,
+          senderId,
+          isDirectMessage: true,
+          resolveAgentRoute: runtime.channel.routing.resolveAgentRoute,
+        })
+      ).route.sessionKey;
       const source = createSource({ accountId: "call-fixture-account", sourceSessionKey });
       delete matrix.accounts["call-fixture-account"];
       await expect(source.admitInput(input)).rejects.toThrow("account is no longer available");

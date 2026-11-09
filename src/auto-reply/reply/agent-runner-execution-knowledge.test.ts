@@ -52,6 +52,9 @@ function fixture(provider = "anthropic", model = "claude") {
   followupRun.run.provider = provider;
   followupRun.run.model = model;
   followupRun.run.config = { agents: { entries: { main: { conversationMode: "branches" } } } };
+  // Match the shared execution fixture's native runtime publication before a
+  // direct call; the config-reader cases can still replace this publication.
+  setRuntimeConfigSnapshot(followupRun.run.config);
   const { replyOperation } = createMockReplyOperation();
   const reader: SessionEntryCohortReader = {
     database: { agentId: "main", path: "/synthetic/agent.sqlite", env: {} },
@@ -157,6 +160,12 @@ function restoreRuntimeConfigAfterTest() {
       clearRuntimeConfigSnapshot();
     }
   });
+}
+
+async function bindToolAuthority(f: ReturnType<typeof fixture>) {
+  const snapshot = prepareReplyToolAuthority(f.params.followupRun);
+  onTestFinished(() => snapshot.close());
+  await f.replyOperation.bindToolAuthoritySnapshotAsync(snapshot);
 }
 
 describe("actual native execution conversation knowledge lifetime", () => {
@@ -278,7 +287,19 @@ describe("actual native execution conversation knowledge lifetime", () => {
 
   it("defers native knowledge hydration to its admitted history callback", async () => {
     const f = fixture();
-    await expect(executeAgentTurn(f.params)).resolves.toMatchObject({
+    const { defaultRuntime } = await import("../../runtime.js");
+    const priorErrors = vi.mocked(defaultRuntime.error).mock.calls.length;
+    const result = await executeAgentTurn(f.params);
+    expect(
+      result,
+      inspect(
+        {
+          outcome: result.outcome,
+          errors: vi.mocked(defaultRuntime.error).mock.calls.slice(priorErrors),
+        },
+        { depth: 8 },
+      ),
+    ).toMatchObject({
       outcome: { kind: "settled", status: "ok" },
     });
     expect(knowledge.create).toHaveBeenCalledWith(
@@ -314,7 +335,7 @@ describe("actual native execution conversation knowledge lifetime", () => {
     const f = fixture(provider, model);
     // Direct execution fixtures must supply the snapshot normally bound by
     // runReplyAgent before the CLI candidate selects its actual tool route.
-    f.replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(f.params.followupRun));
+    await bindToolAuthority(f);
     state.isCliProviderMock.mockImplementation((candidate) => candidate === provider);
     // Select an actual configured CLI backend through the same native fallback
     // contract as the existing CLI execution fixtures, not an HTTP provider
@@ -384,7 +405,7 @@ describe("actual native execution conversation knowledge lifetime", () => {
       const f = fixture(first.provider, first.model);
       const base = { kind: "conversation-data" as const, text: "Other retained runtime context." };
       f.params.runtimeContextFragments = [base];
-      f.replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(f.params.followupRun));
+      await bindToolAuthority(f);
       state.isCliProviderMock.mockImplementation((provider) => provider === cli.provider);
       state.runCliAgentMock.mockResolvedValue(f.result);
       const firstRunner =

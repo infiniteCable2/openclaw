@@ -18,6 +18,7 @@ const source = vi.hoisted(() => ({
   root: vi.fn(),
   preparedRoot: vi.fn(),
   issueRoot: vi.fn(),
+  subset: vi.fn(),
   observe: vi.fn(),
   facts: vi.fn(),
   grant: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readConversationKnowledgeRoot: source.root,
   readPreparedConversationKnowledgeRoot: source.preparedRoot,
   issuePreparedKnowledgeRootCandidates: source.issueRoot,
+  prepareConversationKnowledgeRootSubset: source.subset,
   recordConversationKnowledgeTurn: vi.fn(),
 }));
 // mock-isolation: Observe packet custody without starting native packet storage.
@@ -125,6 +127,18 @@ beforeEach(() => {
   source.contribution.mockReturnValue("synthetic-contribution");
   source.progress.mockImplementation(async () => new Map());
   source.issueRoot.mockImplementation(() => Object.freeze({ byteLength: 128 }));
+  // Keep the same synthetic root evidence while exercising the real source/cache lifecycle.
+  source.subset.mockImplementation(
+    (
+      params: Parameters<
+        typeof import("../../config/sessions/conversation-knowledge-store.js").prepareConversationKnowledgeRootSubset
+      >[0],
+    ) => ({
+      evidence: params.evidence,
+      manifest: "manifest" in params ? params.manifest : source.issueRoot(),
+      scopeKey: JSON.stringify(params.branch),
+    }),
+  );
   source.observe.mockImplementation(
     async (_target, queries: readonly TranscriptReportReceiptQuery[]) => ({
       ok: true,
@@ -208,6 +222,7 @@ describe("related-history source custody without model status", () => {
     const release = vi.fn();
     const targetRelease = vi.fn();
     let readable = true;
+    let targetReadable = true;
     let donorFactsPending = false;
     const factsUnavailable = new SessionMutationFactsUnavailableError();
     const transientFacts = kind.includes("-facts-");
@@ -231,7 +246,11 @@ describe("related-history source custody without model status", () => {
     source.facts.mockResolvedValue({
       audience: "private-direct",
       audienceIdentity: audience,
-      assertCurrent() {},
+      assertCurrent() {
+        if (!targetReadable) {
+          throw new Error("Diagnostic recipient revoked");
+        }
+      },
       release: targetRelease,
     });
     const preparedAdmission = await createPreparedKnowledgeAdmission({
@@ -617,7 +636,7 @@ describe("related-history source custody without model status", () => {
     }
     try {
       expect(prepared?.fragments).toEqual([]);
-      if (kind === "admitted" || kind === "ready-historical" || kind === "snapshot-observed") {
+      if (kind === "ready-historical" || kind === "snapshot-observed") {
         expect(release).not.toHaveBeenCalled();
       } else {
         expect(release).toHaveBeenCalledTimes(
@@ -714,10 +733,13 @@ describe("related-history source custody without model status", () => {
         expect(() => prepared?.assertCurrent()).not.toThrow();
       }
       readable = false;
+      // Durable packet admission releases donor custody; subsequent recipient work
+      // must retain its own authority without borrowing the donor's lifetime.
+      expect(() => prepared?.assertCurrent()).not.toThrow();
       if (kind === "admitted") {
-        expect(() => prepared?.assertCurrent()).toThrow("Diagnostic source revoked");
-      } else {
-        expect(() => prepared?.assertCurrent()).not.toThrow();
+        expect(targetRelease).not.toHaveBeenCalled();
+        targetReadable = false;
+        expect(() => prepared?.assertCurrent()).toThrow("Diagnostic recipient revoked");
       }
     } finally {
       prepared?.release();

@@ -193,11 +193,12 @@ it("forwards structured tool images without serializing their base64 into model 
   expect(text.text.length).toBeLessThan(1_000);
   expect(text.text).not.toContain(image.data.slice(0, 100));
   // Native tool_call forwards images separately, not as JSON placeholder blocks.
-  expect(JSON.parse(text.text)).toMatchObject({
+  const modelResult = JSON.parse(text.text);
+  expect(modelResult).toMatchObject({
     result: {
       content: [{ type: "text", text: "Screen captured" }],
-      details: targetResult.details,
     },
   });
+  expect(modelResult.result).not.toHaveProperty("details");
   expect(result.content[1]).toEqual(image);
 });

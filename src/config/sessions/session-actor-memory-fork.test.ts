@@ -12,7 +12,11 @@ import {
 } from "./session-actor-memory-publication.test-support.js";
 import { createMemorySessionActorOwner } from "./session-actor-memory.js";
 import type { SessionActorStorageAuthority } from "./session-actor-storage-contract.js";
-import type { InternalSessionEntry as SessionEntry } from "./types.js";
+import {
+  resolveFreshSessionTotalTokens,
+  SESSION_TOTAL_TOKENS_VERSION,
+  type InternalSessionEntry as SessionEntry,
+} from "./types.js";
 
 const parentKey = "agent:main:dashboard:incognito-fork-parent";
 const childKey = "agent:main:dashboard:incognito-fork-child";
@@ -218,11 +222,14 @@ describe("memory actor fork and cut", () => {
     { forkFrom: "last-completed" as const, maxTokens: 1, status: "skipped" },
     { forkFrom: undefined, maxTokens: 1_000, status: "skipped" },
   ])("budgets memory inheritance from the selected source: %j", async (selection) => {
-    const { child, forkInput } = await fixture({
+    const { parent, child, forkInput } = await fixture({
       totalTokens: 200_000,
       totalTokensFresh: true,
-      totalTokensVersion: 1,
+      totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
     });
+    expect(
+      resolveFreshSessionTotalTokens(await readMemory(storage(parent), "session.entry.read", {})),
+    ).toBe(200_000);
     const result = await commitMemory(storage(child), "session.parentFork.commit", {
       ...forkInput,
       params: {
