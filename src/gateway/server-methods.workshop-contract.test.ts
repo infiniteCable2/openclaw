@@ -18,6 +18,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import { listCoreGatewayMethodNames } from "./methods/core-method-policy.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import type { GatewayRequestOptions } from "./server-methods/types.js";
 
@@ -77,7 +78,17 @@ beforeEach(async () => {
   await state.writeConfig(config);
   // The skills.workshop.* methods belong to the bundled skill-workshop plugin.
   await shareCoreWithWorkshopPluginForTest();
-  registry = loadOpenClawPlugins({ config, cache: false, activate: true });
+  registry = loadOpenClawPlugins({
+    config,
+    cache: false,
+    activate: true,
+    coreGatewayMethodNames: listCoreGatewayMethodNames(),
+  });
+  expect(
+    registry.diagnostics.filter(
+      (diagnostic) => diagnostic.pluginId === "skill-workshop" && diagnostic.level === "error",
+    ),
+  ).toEqual([]);
   root = path.join(state.agentDir("ops"), "workshop-skills");
   await fs.mkdir(path.join(root, "deploy-notes"), { recursive: true });
   await fs.writeFile(path.join(root, "deploy-notes", "SKILL.md"), skill);
