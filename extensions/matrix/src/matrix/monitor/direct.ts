@@ -317,7 +317,10 @@ export function createDirectRoomTracker(client: MatrixClient, opts: DirectRoomTr
     },
     /** Privacy evidence is independent of DM routing and never promotes a configured room. */
     preparePrivateAudience: async (
-      params: DirectMessageCheck & { senderId: string; throwOnReadError?: true },
+      params: Pick<DirectMessageCheck, "roomId" | "senderId"> & {
+        selfUserId?: string;
+        throwOnReadError?: true;
+      },
     ): Promise<{ assertCurrent(): void } | undefined> => {
       const { roomId, senderId } = params;
       if (

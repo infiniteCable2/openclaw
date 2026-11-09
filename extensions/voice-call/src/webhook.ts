@@ -163,7 +163,7 @@ export class VoiceCallWebhookServer {
     await this.processEventWithAutoResponse(event);
   }
 
-  getStreamDisconnectLifecycle(): StreamDisconnectLifecycle {
+  getStreamDisconnectLifecycle(): StreamDisconnectGrace {
     return this.streamDisconnectGrace;
   }
 

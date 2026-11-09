@@ -137,12 +137,11 @@ export function createHarness(
     slotId: "m.call#ROOM",
     getRtcSlot: vi.fn(() => undefined),
     isSlotClosed: vi.fn((): boolean | undefined => undefined),
-    getOldestMembership: vi.fn(() => remoteMembership),
     on: emitter.on.bind(emitter),
     off: emitter.off.bind(emitter),
     reemitEncryptionKeys: vi.fn(),
-    leaveRoomSession: vi.fn(async () => true),
-    joinRTCSession: vi.fn((ownMembership: Record<string, string>) => {
+    leave: vi.fn(async () => true),
+    join: vi.fn((ownMembership: Record<string, string>) => {
       if (options.emitInitialKeys === false) {
         return;
       }

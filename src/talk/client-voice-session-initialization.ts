@@ -63,6 +63,7 @@ export async function initializePreparedVoiceConversation(
   params: VoiceSessionInitializationParams & {
     cfg: OpenClawConfig;
     creationSource?: SessionSourceTransactionGrant;
+    activationSource?: SessionSourceAssertion;
   },
 ): Promise<string | undefined> {
   const cfg = params.cfg;
@@ -100,10 +101,13 @@ export async function initializePreparedVoiceConversation(
       cfg,
       storePath,
       getConfig: getRuntimeConfig,
-      assertCurrent: composeSessionSourceAssertion([params.source], (check) => {
-        assertCurrent();
-        check();
-      }),
+      assertCurrent: composeSessionSourceAssertion(
+        [params.activationSource ?? params.source],
+        (check) => {
+          assertCurrent();
+          check();
+        },
+      ),
     });
   await activate();
   const target = { agentId: params.agentId, sessionKey: params.sessionKey, storePath };

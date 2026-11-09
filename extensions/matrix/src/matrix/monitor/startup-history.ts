@@ -84,7 +84,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
   directTracker: ReturnType<typeof createDirectRoomTracker>;
   startupAllowFrom: readonly MatrixResolvedAllowlistEntry[];
   startupGroupAllowFrom: readonly MatrixResolvedAllowlistEntry[];
-  getRuntimeConfig: PluginRuntime["config"]["current"];
+  getRuntimeConfig: () => ReturnType<PluginRuntime["config"]["current"]>;
   getRoomInfo(roomId: string): Promise<{
     canonicalAlias?: string | null;
     altAliases?: string[];

@@ -1,3 +1,4 @@
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createChannelPreflightAudio } from "openclaw/plugin-sdk/media-understanding-runtime";
 
 export function isMatrixAudioContent(params: { msgtype?: string; mimetype?: string }): boolean {

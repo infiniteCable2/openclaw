@@ -274,9 +274,7 @@ export function registerMatrixRtcController(params: {
 
         const preferredTransport = await params.client.matrixRtc.getPreferredLivekitTransport();
         const currentRemote = assertCurrentMembership();
-        const remoteTransport = currentRemote.getTransport(
-          session.getOldestMembership() ?? currentRemote,
-        );
+        const remoteTransport = currentRemote.getTransport();
         assertMatrixRtcPinnedTransports({
           pinnedAuthServiceUrl: params.config.authServiceUrl,
           homeserverLivekitServiceUrl: preferredTransport.livekit_service_url,
@@ -508,16 +506,11 @@ export function registerMatrixRtcController(params: {
         // Greeting synthesis can take many seconds. Recheck the live membership
         // immediately before joining; a once-valid caller may have left meanwhile.
         assertCurrentMembership();
-        session.joinRTCSession(
-          ownMembership,
-          [ownTransport],
-          rtcMode === "compatibility" ? undefined : ownTransport,
-          {
-            callIntent: "audio",
-            manageMediaKeys: true,
-            unstableSendStickyEvents: rtcMode === "matrix_2_0",
-          },
-        );
+        session.join(ownMembership, [ownTransport], {
+          callIntent: "audio",
+          manageMediaKeys: true,
+          unstableSendStickyEvents: rtcMode === "matrix_2_0",
+        });
         call.joined = true;
         params.logger.info("matrix rtc: local membership joined");
         session.reemitEncryptionKeys();

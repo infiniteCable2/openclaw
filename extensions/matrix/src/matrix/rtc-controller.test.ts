@@ -44,7 +44,7 @@ describe("registerMatrixRtcController", () => {
     await flushPromises();
     expect(mocks.prepareMeetingAgentGreeting).toHaveBeenCalledOnce();
     expect(mocks.prepareMeetingAgentGreeting.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.session.joinRTCSession.mock.invocationCallOrder[0]!,
+      harness.session.join.mock.invocationCallOrder[0]!,
     );
     expect(mocks.createMatrixRtcMediaTransport).toHaveBeenCalledWith(
       expect.objectContaining({ requireRemoteAudioReady: true }),
@@ -73,7 +73,7 @@ describe("registerMatrixRtcController", () => {
     harness.session.memberships = [];
     pending.resolve({ text: "Hello, caller.", audio: Buffer.from([1, 0]) });
     await flushPromises();
-    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(harness.session.join).not.toHaveBeenCalled();
     await harness.controller.stop();
   });
 
@@ -87,7 +87,7 @@ describe("registerMatrixRtcController", () => {
     harness.managerEmitter.emit("session_started", roomId, harness.session);
     await flushPromises();
     expect(mocks.prepareMeetingAgentGreeting).toHaveBeenCalledOnce();
-    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(harness.session.join).not.toHaveBeenCalled();
     const renewed = { ...harness.remoteMembership, createdTs: vi.fn(() => 2) };
     harness.session.memberships = [renewed];
     pending.resolve({ text: "Hello, caller.", audio: Buffer.from([1, 0]) });
@@ -98,7 +98,7 @@ describe("registerMatrixRtcController", () => {
     harness.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
     await flushPromises();
     expect(engine.stop).not.toHaveBeenCalled();
-    expect(harness.session.leaveRoomSession).not.toHaveBeenCalled();
+    expect(harness.session.leave).not.toHaveBeenCalled();
     await harness.controller.stop();
   });
 
@@ -115,7 +115,7 @@ describe("registerMatrixRtcController", () => {
         const engine = await mocks.startMeetingAgentRealtimeEngine.mock.results[0]!.value;
         const preparation = await mocks.prepareMeetingAgentRealtimeEngine.mock.results[0]!.value;
         const callbacks = harness.emitter.listeners(MatrixRTCSessionEvent.MembershipsChanged);
-        const leave = harness.session.leaveRoomSession;
+        const leave = harness.session.leave;
         if (phase === "engine-stop") {
           engine.stop.mockImplementationOnce(() => release.promise.then(() => undefined));
         } else {
@@ -134,11 +134,10 @@ describe("registerMatrixRtcController", () => {
           ...harness.session,
           memberships: [remote],
           initialMembershipCalculated: Promise.resolve(),
-          getOldestMembership: vi.fn(() => remote),
           on: replacementEmitter.on.bind(replacementEmitter),
           off: replacementEmitter.off.bind(replacementEmitter),
-          leaveRoomSession: vi.fn(async () => true),
-          joinRTCSession: vi.fn((ownMembership: Record<string, string>) => {
+          leave: vi.fn(async () => true),
+          join: vi.fn((ownMembership: Record<string, string>) => {
             harness.emitRemoteKey(0, 3, remote.memberId);
             replacementEmitter.emit(
               MatrixRTCSessionEvent.EncryptionKeyChanged,
@@ -176,7 +175,7 @@ describe("registerMatrixRtcController", () => {
         harness.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
         await flushPromises();
         expect(successor.stop).not.toHaveBeenCalled();
-        expect(replacement.leaveRoomSession).not.toHaveBeenCalled();
+        expect(replacement.leave).not.toHaveBeenCalled();
         expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledTimes(2);
         harness.managerEmitter.emit("session_ended", roomId, replacement);
         await flushPromises();
@@ -201,7 +200,7 @@ describe("registerMatrixRtcController", () => {
       harness.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
       await flushPromises();
       expect(engine.stop).toHaveBeenCalledOnce();
-      expect(harness.session.leaveRoomSession).toHaveBeenCalledOnce();
+      expect(harness.session.leave).toHaveBeenCalledOnce();
       expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
       await harness.controller.stop();
     },
@@ -239,7 +238,7 @@ describe("registerMatrixRtcController", () => {
     harness.managerEmitter.emit("session_started", roomId, replacement);
     pending.resolve({ text: "Hello, caller.", audio: Buffer.from([1, 0]) });
     await flushPromises();
-    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(harness.session.join).not.toHaveBeenCalled();
     expect(mocks.requestMatrixRtcCredentials).not.toHaveBeenCalled();
     expect(mocks.startMeetingAgentRealtimeEngine).not.toHaveBeenCalled();
     await harness.controller.stop();
@@ -260,7 +259,7 @@ describe("registerMatrixRtcController", () => {
     openId.resolve({ access_token: "openid-token" });
     await flushPromises();
     expect(mocks.requestMatrixRtcCredentials).not.toHaveBeenCalled();
-    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(harness.session.join).not.toHaveBeenCalled();
     await harness.controller.stop();
   });
 
@@ -281,7 +280,7 @@ describe("registerMatrixRtcController", () => {
     harness.managerEmitter.emit("session_started", roomId, harness.session);
     await flushPromises();
     expect(mocks.prepareMeetingAgentGreeting).toHaveBeenCalledOnce();
-    expect(harness.session.joinRTCSession.mock.calls.length > 0).toBe(joins);
+    expect(harness.session.join.mock.calls.length > 0).toBe(joins);
     await harness.controller.stop();
   });
 
@@ -304,7 +303,7 @@ describe("registerMatrixRtcController", () => {
     harness.managerEmitter.emit("session_started", roomId, harness.session);
     await flushPromises();
     expect(greetingRelease).toHaveBeenCalledTimes(2);
-    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(harness.session.join).not.toHaveBeenCalled();
     expect(mocks.requestMatrixRtcCredentials).not.toHaveBeenCalled();
     expect(mocks.startMeetingAgentRealtimeEngine).not.toHaveBeenCalled();
     expect(readinessRelease).not.toHaveBeenCalled();
@@ -340,7 +339,7 @@ describe("registerMatrixRtcController", () => {
     pending.resolve({ release });
     await stopping;
     expect(release).toHaveBeenCalledOnce();
-    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(harness.session.join).not.toHaveBeenCalled();
     expect(mocks.requestMatrixRtcCredentials).not.toHaveBeenCalled();
   });
 
@@ -369,7 +368,7 @@ describe("registerMatrixRtcController", () => {
     await harness.controller.stop();
     await harness.controller.stop();
     expect(release).toHaveBeenCalledTimes(3);
-    expect(harness.session.joinRTCSession).not.toHaveBeenCalled();
+    expect(harness.session.join).not.toHaveBeenCalled();
     expect(mocks.requestMatrixRtcCredentials).not.toHaveBeenCalled();
   });
 
@@ -399,7 +398,7 @@ describe("registerMatrixRtcController", () => {
     expect(transport.dispose).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
     expect(mocks.startMeetingAgentRealtimeEngine).not.toHaveBeenCalled();
-    expect(harness.session.leaveRoomSession).toHaveBeenCalledOnce();
+    expect(harness.session.leave).toHaveBeenCalledOnce();
   });
 
   it("stops an engine arriving after cancellation through its adopted transport owner", async () => {
@@ -422,7 +421,7 @@ describe("registerMatrixRtcController", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(transport.stop).not.toHaveBeenCalled();
     expect(transport.dispose).not.toHaveBeenCalled();
-    expect(harness.session.leaveRoomSession).toHaveBeenCalledOnce();
+    expect(harness.session.leave).toHaveBeenCalledOnce();
   });
 
   it("reconciles keys rotated during startup and forwards only admitted later rotations", async () => {
@@ -501,15 +500,14 @@ describe("registerMatrixRtcController", () => {
       }),
     );
     expect(mocks.prepareMeetingAgentRealtimeEngine.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.session.joinRTCSession.mock.invocationCallOrder[0] ?? 0,
+      harness.session.join.mock.invocationCallOrder[0] ?? 0,
     );
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledWith(
       expect.objectContaining({ mode: "matrix_2_0" }),
     );
-    expect(harness.session.joinRTCSession).toHaveBeenCalledWith(
+    expect(harness.session.join).toHaveBeenCalledWith(
       expect.any(Object),
       [expect.not.objectContaining({ livekit_alias: expect.anything() })],
-      expect.not.objectContaining({ livekit_alias: expect.anything() }),
       expect.objectContaining({ unstableSendStickyEvents: true }),
     );
     expect(mocks.createMatrixRtcMediaTransport).toHaveBeenCalledOnce();
@@ -565,10 +563,9 @@ describe("registerMatrixRtcController", () => {
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledWith(
       expect.objectContaining({ mode: "compatibility" }),
     );
-    expect(harness.session.joinRTCSession).toHaveBeenCalledWith(
+    expect(harness.session.join).toHaveBeenCalledWith(
       expect.any(Object),
       [harness.remoteTransport],
-      undefined,
       expect.objectContaining({ unstableSendStickyEvents: false }),
     );
     expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
@@ -652,7 +649,7 @@ describe("registerMatrixRtcController", () => {
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
 
     const leave = Promise.withResolvers<boolean>();
-    harness.session.leaveRoomSession.mockImplementation(() => {
+    harness.session.leave.mockImplementation(() => {
       harness.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
       return leave.promise;
     });
@@ -678,7 +675,7 @@ describe("registerMatrixRtcController", () => {
       harness.managerEmitter.emit("session_started", roomId, harness.session);
       await flushPromises();
       const engine = await mocks.startMeetingAgentRealtimeEngine.mock.results[0]!.value;
-      harness.session.leaveRoomSession.mockImplementation(async () => {
+      harness.session.leave.mockImplementation(async () => {
         if (failureMode === "rejected") {
           throw new Error("synthetic membership leave failure");
         }
@@ -687,7 +684,7 @@ describe("registerMatrixRtcController", () => {
 
       harness.managerEmitter.emit("session_ended", roomId, harness.session);
       await flushPromises();
-      expect(harness.session.leaveRoomSession).toHaveBeenCalledWith(5_000);
+      expect(harness.session.leave).toHaveBeenCalledWith(5_000);
       expect(engine.stop).toHaveBeenCalledOnce();
       expect(release).toHaveBeenCalledOnce();
       // The still-owned membership blocks replacement admission even though its
@@ -696,14 +693,14 @@ describe("registerMatrixRtcController", () => {
       await flushPromises();
       expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
       await expect(harness.controller.stop()).rejects.toThrow("retry controller.stop()");
-      expect(harness.session.leaveRoomSession).toHaveBeenCalledTimes(2);
+      expect(harness.session.leave).toHaveBeenCalledTimes(2);
       expect(engine.stop).toHaveBeenCalledOnce();
       expect(release).toHaveBeenCalledOnce();
 
-      harness.session.leaveRoomSession.mockResolvedValue(true);
+      harness.session.leave.mockResolvedValue(true);
       await harness.controller.stop();
       await harness.controller.stop();
-      expect(harness.session.leaveRoomSession).toHaveBeenCalledTimes(3);
+      expect(harness.session.leave).toHaveBeenCalledTimes(3);
       expect(engine.stop).toHaveBeenCalledOnce();
       expect(release).toHaveBeenCalledOnce();
     },
@@ -721,7 +718,7 @@ describe("registerMatrixRtcController", () => {
     await flushPromises();
     const engine = await mocks.startMeetingAgentRealtimeEngine.mock.results[0]!.value;
     engine.stop.mockRejectedValueOnce(mediaFailure);
-    harness.session.leaveRoomSession.mockRejectedValueOnce(membershipFailure);
+    harness.session.leave.mockRejectedValueOnce(membershipFailure);
 
     await expect(harness.controller.stop()).rejects.toMatchObject({
       errors: [expect.objectContaining({ errors: [mediaFailure, membershipFailure] })],
@@ -729,7 +726,7 @@ describe("registerMatrixRtcController", () => {
     expect(release).not.toHaveBeenCalled();
     await harness.controller.stop();
     expect(engine.stop).toHaveBeenCalledTimes(2);
-    expect(harness.session.leaveRoomSession).toHaveBeenCalledTimes(2);
+    expect(harness.session.leave).toHaveBeenCalledTimes(2);
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -737,7 +734,7 @@ describe("registerMatrixRtcController", () => {
     vi.useFakeTimers();
     const harness = createHarness("compatibility", { emitInitialKeys: false });
     const left = Promise.withResolvers<void>();
-    harness.session.leaveRoomSession.mockImplementation(async () => {
+    harness.session.leave.mockImplementation(async () => {
       left.resolve();
       return true;
     });
@@ -750,7 +747,7 @@ describe("registerMatrixRtcController", () => {
       // advancing the deadline, rather than assuming a fake clock drains it.
       await left.promise;
 
-      expect(harness.session.leaveRoomSession).toHaveBeenCalledOnce();
+      expect(harness.session.leave).toHaveBeenCalledOnce();
       expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
 
       harness.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
@@ -780,7 +777,7 @@ describe("registerMatrixRtcController", () => {
     harness.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
     await flushPromises();
 
-    expect(harness.session.leaveRoomSession).toHaveBeenCalledOnce();
+    expect(harness.session.leave).toHaveBeenCalledOnce();
     expect(mocks.requestMatrixRtcCredentials).toHaveBeenCalledOnce();
 
     await harness.controller.stop();

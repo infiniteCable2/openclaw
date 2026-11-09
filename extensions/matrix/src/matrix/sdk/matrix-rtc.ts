@@ -5,7 +5,7 @@ import {
   type IOpenIDToken,
   type MatrixClient as MatrixJsClient,
 } from "matrix-js-sdk/lib/client.js";
-import type { LivekitTransportConfig } from "matrix-js-sdk/lib/matrixrtc/LivekitTransport.js";
+import type { LivekitTransport as LivekitTransportConfig } from "matrix-js-sdk/lib/matrixrtc/LivekitTransport.js";
 import type { MatrixRTCSession } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
 import { MatrixRTCSessionManagerEvents } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSessionManager.js";
 import type { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";

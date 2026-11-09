@@ -306,7 +306,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   return withClientVoiceSessionResources(resources, async () => {
     const selected = await captureClientVoiceEntrySource(params, assertLifetimeCurrent);
     resources.push(selected.execution);
-    return await runOpenClawAgentWriteAdmission(
+    const initialized = await runOpenClawAgentWriteAdmission(
       selected.options,
       async () => {
         const { execution, agentId } = selected;
@@ -372,57 +372,63 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
           }
           assertPreparationCurrent();
           grant?.assertLifetimeCurrent();
-          if (
-            params.cfg &&
-            !isSubagentSessionKey(canonicalKey) &&
-            !isIncognitoSessionKey(canonicalKey)
-          ) {
-            const { initializePreparedVoiceConversation } =
-              await import("./client-voice-session-initialization.js");
-            const created = await initializePreparedVoiceConversation({
-              ...params,
-              cfg: params.cfg,
-              agentId,
-              sessionKey: canonicalKey,
-              storePath: selected.storePath,
-              creationSource: grant?.transaction,
-              source: grant?.transaction ? borrowedRequester : source,
-              assertCurrent: () => {
-                assertPreparationCurrent();
-                grant?.assertLifetimeCurrent();
-                params.assertCurrent?.();
-              },
-            });
-            if (created !== undefined) {
-              return created;
-            }
-          }
-          const { operation, fallbackEntry } = reduction();
-          return complete(
-            await applySessionEntryTargetOperation(
-              {
-                agentId,
-                env: selected.options.env,
-                storePath: selected.storePath,
-                target: { canonicalKey, storeKeys: collectSessionEntryLookupKeys(canonicalKey) },
-                readSource,
-              },
-              operation,
-              {
-                ...publication,
-                fallbackEntry,
-                retainedExecution: execution,
-                workerGuard: {
-                  source: grant?.transaction ? borrowedRequester : source,
-                  ensureIdentitySource: grant?.transaction,
-                  assertCurrent: () => {
-                    assertPreparationCurrent();
-                    grant?.assertLifetimeCurrent();
+          const ensureIdentity = async () => {
+            const { operation, fallbackEntry } = reduction();
+            return complete(
+              await applySessionEntryTargetOperation(
+                {
+                  agentId,
+                  env: selected.options.env,
+                  storePath: selected.storePath,
+                  target: { canonicalKey, storeKeys: collectSessionEntryLookupKeys(canonicalKey) },
+                  readSource,
+                },
+                operation,
+                {
+                  ...publication,
+                  fallbackEntry,
+                  retainedExecution: execution,
+                  workerGuard: {
+                    source: grant?.transaction ? borrowedRequester : source,
+                    ensureIdentitySource: grant?.transaction,
+                    assertCurrent: () => {
+                      assertPreparationCurrent();
+                      grant?.assertLifetimeCurrent();
+                    },
                   },
                 },
-              },
-            ),
-          );
+              ),
+            );
+          };
+          const cfg = params.cfg;
+          if (cfg && !isSubagentSessionKey(canonicalKey) && !isIncognitoSessionKey(canonicalKey)) {
+            // Lifecycle preparation reads and writes through the worker's own
+            // admission. Release this physical-preparation permit before entering
+            // that owner; otherwise its reads wait behind this same caller.
+            return async () => {
+              const { initializePreparedVoiceConversation } =
+                await import("./client-voice-session-initialization.js");
+              const created = await initializePreparedVoiceConversation({
+                ...params,
+                cfg,
+                agentId,
+                sessionKey: canonicalKey,
+                storePath: selected.storePath,
+                creationSource: grant?.transaction,
+                activationSource: source,
+                source: grant?.transaction ? borrowedRequester : source,
+                assertCurrent: () => {
+                  assertPreparationCurrent();
+                  grant?.assertLifetimeCurrent();
+                  params.assertCurrent?.();
+                },
+              });
+              return (
+                created ?? runOpenClawAgentWriteAdmission(selected.options, ensureIdentity, true)
+              );
+            };
+          }
+          return ensureIdentity();
         };
         if (!requester.opaqueCommitGuard) {
           return apply();
@@ -442,6 +448,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
       },
       true,
     );
+    return typeof initialized === "function" ? initialized() : initialized;
   });
 }
 

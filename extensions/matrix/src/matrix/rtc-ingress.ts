@@ -217,6 +217,10 @@ export function createMatrixRtcConversationInputSource(
       throw new Error("MatrixRTC conversation input is closed");
     }
     const selected = selectCurrent(prepared.inspect);
+    if (!selected.route) {
+      throw new Error("MatrixRTC conversation input has no prepared route");
+    }
+    const route = selected.route;
     const assertCurrent = () => {
       signal?.throwIfAborted();
       if (selectCurrent(prepared.inspect).policyKey !== selected.policyKey) {
@@ -270,7 +274,7 @@ export function createMatrixRtcConversationInputSource(
       },
     });
     assertCurrent();
-    return { conversation, ingress, scope, selected, assertCurrent, signal };
+    return { conversation, ingress, scope, selected, route, assertCurrent, signal };
   };
   return Object.freeze({
     version: 1 as const,
@@ -299,8 +303,10 @@ export function createMatrixRtcConversationInputSource(
       if (scopeInput.agentId !== agentId || scopeInput.conversationId !== conversationId) {
         throw new Error("MatrixRTC conversation input does not match its call binding");
       }
-      const { conversation, ingress, scope, selected, assertCurrent, signal } =
-        await resolveAdmission(scopeInput.inputId, inputSignal);
+      const { conversation, ingress, scope, route, assertCurrent, signal } = await resolveAdmission(
+        scopeInput.inputId,
+        inputSignal,
+      );
       return conversation.admitInput({
         ingress,
         scope,
@@ -317,8 +323,8 @@ export function createMatrixRtcConversationInputSource(
             routePeer: { kind: "direct", id: senderId },
           },
           route: {
-            ...selected.route,
-            routeSessionKey: selected.route!.sessionKey,
+            ...route,
+            routeSessionKey: route.sessionKey,
             dispatchSessionKey,
           },
           reply: { to: roomId, nativeChannelId: roomId },

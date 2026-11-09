@@ -1296,6 +1296,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/talk/agent-consult-runtime.storage.test.ts",
   "src/talk/agent-consult-runtime.test.ts",
   "src/talk/client-voice-session-lifecycle.test.ts",
+  "src/talk/client-voice-session-creation.test.ts",
   "src/talk/client-voice-session.digest-source.test.ts",
   "src/talk/client-voice-session.test.ts",
   "src/talk/client-voice-session.worker.test.ts",

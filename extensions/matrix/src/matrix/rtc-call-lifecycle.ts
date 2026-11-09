@@ -59,7 +59,7 @@ export async function stopCall(call: ActiveCall): Promise<void> {
   await preparationClosed;
   try {
     if (call.joined) {
-      if (!(await call.session.leaveRoomSession(LEAVE_TIMEOUT_MS))) {
+      if (!(await call.session.leave(LEAVE_TIMEOUT_MS))) {
         // The SDK also returns false after a timed-out leave locally disables
         // participation. Local isJoined=false does not confirm server custody.
         throw new Error("MatrixRTC membership leave was not confirmed");

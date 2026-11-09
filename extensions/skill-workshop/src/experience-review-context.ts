@@ -1,6 +1,5 @@
-import type { SessionEntry } from "../../agents/sessions/session-manager-types.js";
-import { SessionManager } from "../../agents/sessions/session-manager.js";
-import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
+import { SessionManager, type SessionEntry } from "openclaw/plugin-sdk/agent-sessions";
+import { SessionTranscriptReadFenceError } from "openclaw/plugin-sdk/context-engine-transcript-runtime";
 
 /** Reuse completed native compaction, while keeping the review's evidence boundary exact. */
 export function restoreExperienceReviewContextTail(
