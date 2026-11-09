@@ -45,6 +45,29 @@ it("returns retained facts unchanged without querying the failure classification
   expect(pending).not.toHaveBeenCalled();
 });
 
+it.each(["sharing", "session-access"] as const)(
+  "preserves the native %s read scope and classifies only its refusal",
+  (scope) => {
+    const facts = { entry: undefined, membership: new Set<string>() };
+    const readCurrent = vi.fn((): typeof facts | undefined => facts);
+    const hasPendingPublication = vi.fn(() => true);
+    const read = { readCurrent, hasPendingPublication };
+    expect(readRetainedSessionSharingFacts(read, scope)).toBe(facts);
+    expect(readCurrent).toHaveBeenCalledExactlyOnceWith(scope);
+    expect(hasPendingPublication).not.toHaveBeenCalled();
+
+    readCurrent.mockReturnValueOnce(undefined);
+    expect(() => readRetainedSessionSharingFacts(read, scope)).toThrow(
+      expect.objectContaining({
+        diagnostic: { reason: "retained-read-unavailable", publicationPending: true },
+      }),
+    );
+    expect(readCurrent).toHaveBeenCalledTimes(2);
+    expect(readCurrent).toHaveBeenLastCalledWith(scope);
+    expect(hasPendingPublication).toHaveBeenCalledOnce();
+  },
+);
+
 it("keeps target, arbitrary scope and exception payload out of the diagnostic", () => {
   const firstInvalidation = captureSessionFactsInvalidation("broad-publication", {
     all: true,

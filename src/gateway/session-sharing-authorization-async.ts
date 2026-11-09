@@ -301,7 +301,12 @@ export async function resolveSessionMutationAuthorizationAsync(
         preparedTalkSessionTarget:
           talk.kind === "relay" || talk.kind === "retained"
             ? talk.target
-            : await prepareTalkSessionTarget(params.context.getRuntimeConfig(), talk.sessionKey),
+            : await prepareTalkSessionTarget(
+                params.context.getRuntimeConfig(),
+                talk.sessionKey,
+                talk.purpose ?? "address-resolution",
+                params.client?.connId,
+              ),
       };
     } catch (error) {
       return {

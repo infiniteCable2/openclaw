@@ -810,7 +810,7 @@ it("reuses only one report operation's unchanged prefix proof while rechecking s
         expect(append).toThrow("source authority refused");
         backend.assertSettled?.();
         await backend.close();
-        expect(prepare).toThrow("domain is closed");
+        expect(prepare).toThrow("SQLite worker binding is closed");
       } finally {
         counter.restore();
         port1.close();

@@ -111,7 +111,12 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
           if (state.options.ending === "error") { controller.error(new Error("native read failure")); return; }
           controller.close();
         },
-        async cancel() { canceled = true; record("cancel"); if (state.options.explicitRelease === false) state.aborted.resolve(); await state.aborted.promise; }
+        async cancel() {
+          canceled = true; record("cancel");
+          // Cancellation owns abort when no release callback can be captured.
+          if (state.options.explicitRelease === false || state.options.projectionFailure === "release") state.aborted.resolve();
+          await state.aborted.promise;
+        }
       }, { highWaterMark: 0 });
       let cleanup;
       const release = () => cleanup ??= (async () => {
@@ -270,6 +275,13 @@ describe("streaming speech registration ownership", () => {
         await fixture.runTest(async () => {
           const result = await fixture.run();
           expect(result.success).toBe(false);
+          if (projectionFailure === "release") {
+            expect(result.error).toContain("native release projection failure");
+            expect(fixture.state.events.filter((event) => event.phase === "cancel")).toHaveLength(
+              1,
+            );
+            expect(fixture.hasEvent("release")).toBe(false);
+          }
           expect(release).toHaveBeenCalledOnce();
           expectClosed(fixture);
         });

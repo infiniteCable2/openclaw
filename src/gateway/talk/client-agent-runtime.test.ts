@@ -17,10 +17,19 @@ type NativeRunParams = Parameters<
 const mocks = vi.hoisted(() => ({
   runEmbeddedAgent: vi.fn<(params: NativeRunParams) => Promise<{ payloads: [] }>>(),
   onTerminalDrain: vi.fn<() => void>(),
+  prepareSessionEntryPatch: vi.fn<PluginRuntime["agent"]["session"]["prepareSessionEntryPatch"]>(
+    () => {
+      throw new Error("Original-source run admission must not prepare consult metadata");
+    },
+  ),
 }));
 
 // mock-isolation: Do not load the plugin catalog or a production execution backend.
-vi.mock("../../plugins/runtime/index.js", () => ({ createPluginRuntime: () => ({ agent: {} }) }));
+vi.mock("../../plugins/runtime/index.js", () => ({
+  createPluginRuntime: () => ({
+    agent: { session: { prepareSessionEntryPatch: mocks.prepareSessionEntryPatch } },
+  }),
+}));
 // mock-isolation: Admission is real; the model backend is deliberately not executed.
 vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: mocks.runEmbeddedAgent }));
 // mock-isolation: Transcript persistence is separate from this original-source admission boundary.

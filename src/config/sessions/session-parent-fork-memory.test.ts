@@ -67,7 +67,7 @@ async function acquire(agentId: string, sessionKey: string) {
   };
 }
 
-async function fixture(childAgent = "main") {
+async function fixture(childAgent = "main", completed = true) {
   const parent = await acquire("main", parentKey);
   const entry = {
     sessionId: "parent-session",
@@ -78,7 +78,7 @@ async function fixture(childAgent = "main") {
   const events = [
     { type: "session", id: entry.sessionId, version: 3, cwd: "/synthetic" },
     { type: "message", id: "u1", parentId: null, message: { role: "user", content: "Question" } },
-    { type: "message", id: "a1", parentId: "u1", message: answer() },
+    ...(completed ? [{ type: "message", id: "a1", parentId: "u1", message: answer() }] : []),
   ];
   await parent.create({ entry, transcriptEvents: events });
   const childKey = `agent:${childAgent}:dashboard:incognito-child-fork`;
@@ -207,26 +207,49 @@ it("does not create a missing cross-agent source while preparing a child", async
   expect(memorySessionActorOwners.list().map((owner) => owner.agentId)).toEqual(["research"]);
 });
 
-it.each(["main", "research"])("adopts transcript-only forks in %s memory", async (childAgent) => {
-  const { child, childKey, forkInput } = await fixture(childAgent);
-  const fork = await forkSessionTranscriptFromParent({
-    ...forkInput,
-    targetSessionId: "pending-child-transcript",
-  });
-  expect(fork.status).toBe("created");
-  expect(child.owner.readSession(childKey, authority)?.entry).toBeUndefined();
-  const pending = await child.readHistory("pending-child-transcript");
-  expect(pending).toMatchObject(
-    history(expect.arrayContaining([expect.objectContaining({ id: "a1" })])),
-  );
-  await upsertSessionEntryCore(child.scope, {
-    sessionId: "pending-child-transcript",
-    updatedAt: 2,
-  });
-  expect(await child.readHistory()).toMatchObject(
-    history(pending.kind === "full" ? pending.snapshot.events : []),
-  );
-});
+it.each(
+  ["main", "research"].flatMap((childAgent) =>
+    [
+      { completed: true, forkFrom: undefined },
+      { completed: true, forkFrom: "last-completed" as const },
+      { completed: false, forkFrom: "last-completed" as const },
+    ].map((selection) => ({ childAgent, ...selection })),
+  ),
+)(
+  "adopts transcript-only forks in $childAgent memory (completed=$completed, forkFrom=$forkFrom)",
+  async ({ childAgent, completed, forkFrom }) => {
+    const { child, childKey, forkInput } = await fixture(childAgent, completed);
+    const prepared = await prepareSessionForkTranscript({
+      ...forkInput,
+      forkFrom,
+      sessionActor: child.binding,
+    });
+    assert(prepared.status === "prepared");
+    expect(prepared.transcript.contextStatus).toBe(completed ? undefined : "no-completed-turn");
+    const fork = await forkSessionTranscriptFromParent({
+      ...forkInput,
+      targetSessionId: "pending-child-transcript",
+      forkFrom,
+    });
+    assert(fork.status === "created");
+    expect(fork.transcript.contextStatus).toBe(completed ? undefined : "no-completed-turn");
+    expect(child.owner.readSession(childKey, authority)?.entry).toBeUndefined();
+    const pending = await child.readHistory("pending-child-transcript");
+    assert(pending.kind === "full");
+    if (completed) {
+      expect(pending).toMatchObject(
+        history(expect.arrayContaining([expect.objectContaining({ id: "a1" })])),
+      );
+    } else {
+      expect(pending.snapshot.events).toHaveLength(1);
+    }
+    await upsertSessionEntryCore(child.scope, {
+      sessionId: "pending-child-transcript",
+      updatedAt: 2,
+    });
+    expect(await child.readHistory()).toMatchObject(history(pending.snapshot.events));
+  },
+);
 
 it("forks current memory state with a data-only entry patch", async () => {
   const { parent, childKey } = await fixture();

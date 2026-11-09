@@ -23,6 +23,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
+import { handleGatewayRequest } from "../../server-methods.js";
 import { bindInProcessRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
 import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
@@ -282,38 +283,68 @@ describe("Talk target preparation through Gateway authorization", () => {
     },
     set config(value) {
       config = value;
+      setRuntimeConfigSnapshot(value);
     },
   }));
 
-  it("retains native routing authority through the actual relay startup await", async () => {
-    let startupContext: CreateTalkRealtimeRelaySessionParams["startupContext"];
-    mocks.createRelay.mockImplementationOnce((params) => {
-      startupContext = params.startupContext;
-      return {
-        relaySessionId: "test-relay",
-        provider: "test-voice",
-        transport: "gateway-relay",
-      };
-    });
-    const respond = await dispatch("talk.session.create", {
-      mode: "realtime",
-      transport: "gateway-relay",
-      brain: "agent-consult",
-    });
-    expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
-    expect(startupContext).toBeDefined();
-    const gate = createDeferredCore();
-    const startup = createRelayProviderStartup(startupContext, vi.fn());
-    const pending = startup.connect({ connect: () => gate.promise });
-    const rejected = expect(pending).rejects.toThrow("session changed before talk.session.create");
-    try {
-      config = { ...config, session: { scope: "global" } };
-      expect(() => startup.assertCurrent()).toThrow("session changed before talk.session.create");
-    } finally {
-      gate.resolve();
-      await rejected;
-    }
-  });
+  it.each([false, true])(
+    "retains relay startup authority after its RPC (routing changed: %s)",
+    async (routingChanged) => {
+      const gate = createDeferredCore();
+      const connect = vi.fn(() => gate.promise);
+      let startup: ReturnType<typeof createRelayProviderStartup> | undefined;
+      let runAuthority: CreateTalkRealtimeRelaySessionParams["runAuthority"];
+      let pending: Promise<void> | undefined;
+      let settled = false;
+      mocks.createRelay.mockImplementationOnce((params) => {
+        runAuthority = params.runAuthority;
+        startup = createRelayProviderStartup(params.startupContext, vi.fn());
+        // The real relay starts connecting before returning its synchronous handle.
+        pending = startup.connect({ connect });
+        void pending.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        return {
+          relaySessionId: "test-relay",
+          provider: "test-voice",
+          transport: "gateway-relay",
+        };
+      });
+      try {
+        expect(
+          await dispatch("talk.session.create", {
+            mode: "realtime",
+            transport: "gateway-relay",
+            brain: "agent-consult",
+          }),
+        ).toHaveBeenCalledWith(true, expect.any(Object), undefined);
+        expect(connect).toHaveBeenCalledOnce();
+        expect(settled).toBe(false);
+        expect(startup).toBeDefined();
+        expect(() => startup!.assertCurrent()).not.toThrow();
+        if (routingChanged) {
+          config = { ...config, session: { scope: "global" } };
+          setRuntimeConfigSnapshot(config);
+          expect(() => startup!.assertCurrent()).toThrow("Talk session storage target changed");
+          const rejected = expect(pending).rejects.toThrow("Talk session storage target changed");
+          gate.resolve();
+          await rejected;
+        } else {
+          gate.resolve();
+          await expect(pending).resolves.toBeUndefined();
+        }
+      } finally {
+        gate.resolve();
+        await pending?.catch(() => undefined);
+        runAuthority?.release();
+      }
+    },
+  );
 
   it.each(["native", "branches"] as const)(
     "keeps a foreign root hidden before applying the %s conversation fence",
@@ -567,6 +598,8 @@ it("shares the global fixed-store target while retaining the exact voice key", a
     store: state.statePath("shared", "sessions.sqlite"),
   };
   config.agents!.defaults = { sessionStore: { agentId } };
+  // An exact shared-store locator retains its durable physical owner independently of aliases.
+  openOpenClawAgentDatabase({ agentId, path: config.session.store });
   setRuntimeConfigSnapshot(config);
   const params = Object.freeze({ ...createParams, sessionKey: voiceKey });
   const respond = await dispatch("talk.client.create", params);
@@ -850,24 +883,21 @@ it.each(
   let respond = vi.fn();
   if (reason === "automation") {
     // Synthetic automation is an in-process caller, never a WebSocket identity.
-    const handler = talkClientHandlers[start.method] ?? talkSessionHandlers[start.method];
-    if (!handler) {
-      throw new Error("Missing native Talk start handler");
-    }
-    await handler(
+    const params = {
+      ...createParams,
+      transport: start.transport,
+      capabilities: start.capabilities,
+      sessionKey: "main",
+    };
+    await handleGatewayRequest(
       bindInProcessRequestMutationAuthority(
         {
-          req: { type: "req", id: "automation-start", method: start.method },
-          params: {
-            ...createParams,
-            transport: start.transport,
-            capabilities: start.capabilities,
-            sessionKey: "main",
-          },
+          req: { type: "req", id: "automation-start", method: start.method, params },
           client: { ...client, internal: { ...client.internal, syntheticClient: true } },
           context,
           isWebchatConnect: () => false,
           respond,
+          extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers },
         },
         undefined,
         undefined,

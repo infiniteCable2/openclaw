@@ -2,6 +2,7 @@ import type { ParentForkSourceTranscript } from "./session-accessor.sqlite-paren
 import type {
   ForkSessionEntryFromParentTargetResult,
   ForkSessionFromParentTranscriptResult,
+  ParentForkedSessionTranscript,
 } from "./session-accessor.types.js";
 import type {
   SessionMessageCutIntent,
@@ -31,7 +32,9 @@ export type SessionActorMemoryForkWrites = {
     output: ForkSessionEntryFromParentTargetResult;
   };
   "session.parentFork.transcript": {
-    input: { sessionId: string; events: readonly unknown[] };
+    input: Pick<ParentForkedSessionTranscript, "sessionId" | "contextStatus"> & {
+      events: readonly unknown[];
+    };
     output: Extract<ForkSessionFromParentTranscriptResult, { status: "created" }>;
   };
   "session.messageCut": {

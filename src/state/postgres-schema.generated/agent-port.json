@@ -114,6 +114,15 @@
       "identities": []
     },
     {
+      "name": "session_conversation_publications",
+      "identities": [
+        {
+          "column": "capture_sequence",
+          "autoIncrement": true
+        }
+      ]
+    },
+    {
       "name": "session_conversations",
       "identities": []
     },
@@ -392,6 +401,21 @@
       "identities": []
     },
     {
+      "name": "session_transcript_fts_data",
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "block",
+          "type": "BLOB"
+        }
+      ],
+      "pk": [],
+      "identities": []
+    },
+    {
       "name": "session_transcript_fts_docsize",
       "columns": [
         {
@@ -416,21 +440,6 @@
         {
           "name": "v",
           "type": ""
-        }
-      ],
-      "pk": [],
-      "identities": []
-    },
-    {
-      "name": "session_transcript_fts_data",
-      "columns": [
-        {
-          "name": "id",
-          "type": "INTEGER"
-        },
-        {
-          "name": "block",
-          "type": "BLOB"
         }
       ],
       "pk": [],
@@ -474,41 +483,41 @@
       "name": "session_transcript_fts_rows_after_delete",
       "table": "session_transcript_fts_rows",
       "range": [
-        33249,
-        33432
+        34199,
+        34382
       ]
     },
     {
       "name": "standing_intents_fts_after_delete",
       "table": "standing_intents",
       "range": [
-        30353,
-        30600
+        31303,
+        31550
       ]
     },
     {
       "name": "standing_intents_fts_after_insert",
       "table": "standing_intents",
       "range": [
-        30136,
-        30351
+        31086,
+        31301
       ]
     },
     {
       "name": "standing_intents_fts_after_update",
       "table": "standing_intents",
       "range": [
-        30602,
-        30978
+        31552,
+        31928
       ]
     }
   ],
   "preData": [
     0,
-    31102
+    31878
   ],
   "postData": [
-    31102,
-    47459
+    31878,
+    48735
   ]
 }

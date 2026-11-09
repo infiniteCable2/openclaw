@@ -13,6 +13,7 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { captureRuntimeConfigAsyncReader } from "../io.runtime.js";
 import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";
 import type { ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import {
@@ -86,6 +87,7 @@ it.each([1, 32])(
     await withOpenClawTestState(
       { scenario: "minimal", label: "report-cursor-scaling" },
       async (state) => {
+        await captureRuntimeConfigAsyncReader()();
         const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
         const scope = (name: string): ResolvedTranscriptScope => ({
           agentId: "main",
@@ -208,6 +210,7 @@ it("includes first-header creation in the single committed batch mutation", asyn
   await withOpenClawTestState(
     { scenario: "minimal", label: "report-cursor-first-header" },
     async (state) => {
+      await captureRuntimeConfigAsyncReader()();
       const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
       const resolved = {
         agentId: "main",

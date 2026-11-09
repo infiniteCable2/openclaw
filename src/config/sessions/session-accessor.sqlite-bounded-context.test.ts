@@ -784,19 +784,19 @@ it("reports active model-context omission without treating a retained complete v
       ],
       touchSessionEntry: false,
     });
+    for (const [maxBytes, maxEvents, truncated] of [
+      [16_384, 3, undefined],
+      [16_384, 2, true],
+      [1_024, 3, true],
+    ] as const) {
+      // The second read can reuse the native navigation suffix and its omitted prefix facts.
+      for (let repeat = 0; repeat < 2; repeat++) {
+        expect(
+          readSessionTranscriptModelContext(scope, undefined, { maxBytes, maxEvents }).truncated,
+        ).toBe(truncated);
+      }
+    }
     expect(readSessionTranscriptModelContext(scope).truncated).toBeUndefined();
-    expect(
-      readSessionTranscriptModelContext(scope, undefined, { maxBytes: 16_384, maxEvents: 3 })
-        .truncated,
-    ).toBeUndefined();
-    expect(
-      readSessionTranscriptModelContext(scope, undefined, { maxBytes: 16_384, maxEvents: 2 })
-        .truncated,
-    ).toBe(true);
-    expect(
-      readSessionTranscriptModelContext(scope, undefined, { maxBytes: 1_024, maxEvents: 3 })
-        .truncated,
-    ).toBe(true);
   });
 });
 

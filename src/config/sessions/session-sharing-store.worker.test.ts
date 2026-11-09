@@ -371,7 +371,15 @@ it("commits aliased worker membership and participant facts before publishing, a
       );
       expectFact({ kind: "member", identityId: "guest", present: false });
       expect(actor.snapshot(authority)).toBeUndefined();
-      expect((await actor.read(authority)).participants).toEqual(after?.participants);
+      expect((await actor.read(authority)).participants).toEqual([
+        { identity: peer, contributionCount: 2, firstPromptedAt: 3, lastPromptedAt: 4 },
+        {
+          identity: { type: "agent", id: "courier" },
+          contributionCount: 1,
+          firstPromptedAt: 5,
+          lastPromptedAt: 5,
+        },
+      ]);
       expect(sql.queries).toEqual([]);
       expect(getOpenClawAgentDatabaseIfOpen({ agentId: "main" })).toBeUndefined();
     } finally {

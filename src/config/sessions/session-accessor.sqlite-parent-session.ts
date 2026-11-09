@@ -18,6 +18,7 @@ import {
   formatLegacySqliteSessionMarkerForScope,
   prepareSqliteScope,
 } from "./session-accessor.sqlite-scope.js";
+import type { ParentForkedSessionTranscript } from "./session-accessor.types.js";
 import { withSessionActorStorage } from "./session-actor-storage-acquisition.js";
 import {
   captureSessionActorStorageOwner,
@@ -46,7 +47,7 @@ export async function prepareSessionForkTranscript(
   | { status: "too-large"; decision: Extract<SessionParentForkDecision, { status: "skip" }> }
   | {
       status: "prepared";
-      transcript: { sessionId: string; sessionFile: string };
+      transcript: ParentForkedSessionTranscript;
       events: ReturnType<typeof buildForkedChildTranscriptEvents>;
     }
 > {
@@ -164,7 +165,11 @@ export async function forkSessionTranscriptFromParent(
             await memory.actor.storage.mutate(
               {
                 type: "session.parentFork.transcript",
-                input: { sessionId: prepared.transcript.sessionId, events: prepared.events },
+                input: {
+                  sessionId: prepared.transcript.sessionId,
+                  contextStatus: prepared.transcript.contextStatus,
+                  events: prepared.events,
+                },
               },
               memory.authority,
             ),

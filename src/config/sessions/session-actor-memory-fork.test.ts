@@ -62,7 +62,7 @@ const transcript = [
   message("a2", "u2", 4, { role: "assistant", content: "Second answer", stopReason: "stop" }),
 ];
 
-async function fixture(entry: Partial<SessionEntry> = {}) {
+async function fixture(entry: Partial<SessionEntry> = {}, transcriptEvents = transcript) {
   const owner = createMemorySessionActorOwner({ agentId: "main", path: storePath });
   owners.push(owner);
   const acquire = (sessionKey = parentKey) =>
@@ -76,7 +76,7 @@ async function fixture(entry: Partial<SessionEntry> = {}) {
       incognito: true,
       ...entry,
     },
-    transcriptEvents: transcript,
+    transcriptEvents,
   });
   const child = await acquire(childKey);
   const forkInput = {
@@ -164,6 +164,119 @@ describe("memory actor fork and cut", () => {
     expect(result.status).toBe("forked");
     assert(result.status === "forked", "Fork failed");
     expect(result.sessionEntry.cliSessionBindings).toBeUndefined();
+  });
+
+  it.each([undefined, "last-completed"] as const)(
+    "keeps the selected memory fork boundary and matching CLI resume scope (%s)",
+    async (forkFrom) => {
+      const events = [
+        ...transcript.slice(0, 4),
+        message("interrupted", "u2", 4, {
+          role: "assistant",
+          content: "Unfinished answer",
+          stopReason: "aborted",
+        }),
+      ];
+      const { parent, child, forkInput } = await fixture(
+        {
+          cliSessionBindings: {
+            claude: { sessionId: "cli-parent", resumeCheckpointId: "unbounded-checkpoint" },
+          },
+        },
+        events,
+      );
+      const result = await commitMemory(
+        storage(child),
+        "session.parentFork.commit",
+        { ...forkInput, params: { ...forkInput.params, forkFrom } },
+        forkAuthority,
+      );
+      assert(result.status === "forked");
+      expect(result.sessionEntry.cliSessionBindings).toEqual(
+        forkFrom
+          ? undefined
+          : {
+              claude: {
+                sessionId: "cli-parent",
+                resumeCheckpointId: "unbounded-checkpoint",
+                forkNextResume: true,
+              },
+            },
+      );
+      expect(result.fork.contextStatus).toBeUndefined();
+      expect(
+        (await readMemory(storage(child), "session.parentFork.source", {}))?.branchEntries,
+      ).toEqual(forkFrom ? events.slice(1, 3) : events.slice(1));
+      expect(
+        (await readMemory(storage(parent), "session.parentFork.source", {}))?.branchEntries,
+      ).toEqual(events.slice(1));
+    },
+  );
+
+  it.each([
+    { forkFrom: "last-completed" as const, maxTokens: 1_000, status: "forked" },
+    { forkFrom: "last-completed" as const, maxTokens: 1, status: "skipped" },
+    { forkFrom: undefined, maxTokens: 1_000, status: "skipped" },
+  ])("budgets memory inheritance from the selected source: %j", async (selection) => {
+    const { child, forkInput } = await fixture({
+      totalTokens: 200_000,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+    });
+    const result = await commitMemory(storage(child), "session.parentFork.commit", {
+      ...forkInput,
+      params: {
+        ...forkInput.params,
+        forkFrom: selection.forkFrom,
+        maxTokens: selection.maxTokens,
+      },
+    });
+    expect(result).toMatchObject({
+      status: selection.status,
+      decision: { maxTokens: selection.maxTokens },
+    });
+    if (selection.status === "skipped") {
+      expect(result).toMatchObject({
+        reason: "decision-skip",
+        decision: { reason: "parent-too-large" },
+      });
+      expect(await readMemory(storage(child), "session.entry.read", {})).toBeUndefined();
+    }
+  });
+
+  it.each(["current", "sessionId", "lifecycleRevision"] as const)(
+    "keeps the expected memory parent incarnation at commit (%s)",
+    async (change) => {
+      const expectedParent = {
+        sessionId: "parent-session",
+        lifecycleRevision: "parent-lifecycle",
+        ...(change === "current" ? {} : { [change]: "previous-parent" }),
+      };
+      const { child, forkInput } = await fixture();
+      const result = await commitMemory(storage(child), "session.parentFork.commit", {
+        ...forkInput,
+        params: { ...forkInput.params, expectedParent, forkFrom: "last-completed" },
+      });
+      expect(result.status).toBe(change === "current" ? "forked" : "failed");
+      if (change !== "current") {
+        expect(await readMemory(storage(child), "session.entry.read", {})).toBeUndefined();
+      }
+    },
+  );
+
+  it("reports empty completed context through the memory entry writer", async () => {
+    const { child, forkInput } = await fixture({}, transcript.slice(0, 2));
+    const result = await commitMemory(storage(child), "session.parentFork.commit", {
+      ...forkInput,
+      params: { ...forkInput.params, forkFrom: "last-completed" },
+    });
+    expect(result).toMatchObject({
+      status: "forked",
+      fork: { contextStatus: "no-completed-turn" },
+    });
+    const copied = await readMemory(storage(child), "session.history.hydrate", {});
+    assert(copied.kind === "full");
+    expect(copied.snapshot.events).toHaveLength(1);
   });
 
   it("rewinds and switches branches while retaining the original window and rejecting old identity", async () => {

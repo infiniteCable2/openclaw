@@ -842,7 +842,10 @@ it("prepares long-source observations while idle and consumes them once through 
                 .split("\n")
                 .slice(2)
                 .map((line) => {
-                  const match = /^(?:user|assistant): (.+)$/.exec(line);
+                  const match =
+                    /^(?:user|assistant) \[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\]: (.+)$/.exec(
+                      line,
+                    );
                   if (!match) {
                     throw new Error("Expected native quoted observation role");
                   }

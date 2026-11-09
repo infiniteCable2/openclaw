@@ -240,7 +240,10 @@ describe("branch communication owner pilot", () => {
             const context = await prepareConversationReplyContext(admitted, {
               text: "Send this to my chat.",
             });
-            expect(readSessionConversationParticipant(context)).toEqual(person);
+            expect(readSessionConversationParticipant(context)).toEqual({
+              type: "profile",
+              id: profile.id,
+            });
             expect(admitted.requesterProfile?.id).toBe(profile.id);
             expect(admitted.operatorAuthority?.scopes).toEqual(["operator.admin"]);
             releases.push(() => admitted.release?.());

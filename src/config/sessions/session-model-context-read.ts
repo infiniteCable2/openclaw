@@ -195,5 +195,11 @@ export function projectSessionModelContext(
   return {
     events: [...(header ? [header] : []), ...contextEntries],
     version,
+    ...(limits &&
+    ((prepared?.prefix.count ?? 0) > 0 ||
+      selected.length < requests.length ||
+      selected.some((request) => request.toolResultOmission !== undefined))
+      ? { truncated: true as const }
+      : {}),
   };
 }

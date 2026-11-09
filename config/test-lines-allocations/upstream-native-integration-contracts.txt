@@ -1,0 +1,4 @@
+246
+# Native upstream integration regressions: bounded SQLite/memory fork inheritance,
+# retained publication diagnostics, and provider startup after its creating RPC.
+# Includes updated native contract fixtures; no credit beyond this change's net growth.

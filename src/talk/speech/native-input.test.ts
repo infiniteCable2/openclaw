@@ -2,6 +2,7 @@ import { encodePngRgba } from "rastermill";
 import { describe, expect, it, vi } from "vitest";
 import type { ReplySpeechOutputReceipt } from "../../auto-reply/reply-payload.js";
 import type { ReplySpeechRunBinding } from "../../auto-reply/reply/reply-speech-presentation.js";
+import type { realtimeVoiceControlRuntime } from "../agent-run-control.runtime.js";
 import {
   claimConversationInputExecution,
   consumeConversationInputAdmission,
@@ -17,10 +18,13 @@ import type { SpeechNativeInputParams } from "./types.js";
 import { createSpeechVideoInput } from "./video-input.js";
 
 const controlRuntime = vi.hoisted(() => ({
-  resolveActiveEmbeddedRunOwnerByRunId: vi.fn(),
-  resolveActiveReplyRunOwnerForSignal: vi.fn(),
-  resolveActiveEmbeddedRunSessionId: vi.fn(),
-  abortEmbeddedAgentRun: vi.fn(),
+  resolveSourceRunOwner: vi.fn<typeof realtimeVoiceControlRuntime.resolveSourceRunOwner>(),
+  resolveActiveSessionRunId: vi.fn<typeof realtimeVoiceControlRuntime.resolveActiveSessionRunId>(),
+  stopRealtimeVoiceSessionRun:
+    vi.fn<typeof realtimeVoiceControlRuntime.stopRealtimeVoiceSessionRun>(),
+  steerActiveRun: vi.fn<typeof realtimeVoiceControlRuntime.steerActiveRun>(),
+  getDiagnosticSessionActivitySnapshot:
+    vi.fn<typeof realtimeVoiceControlRuntime.getDiagnosticSessionActivitySnapshot>(),
 }));
 
 // mock-isolation: control selection is real; this unit suite owns no embedded model runtime.
@@ -514,17 +518,24 @@ describe("native speech input media ownership", () => {
       const f = fixture();
       const first = f.owner.submit({ text: "Original request", hasOnset: false });
       await f.waitForCall(1);
-      f.calls[0]!.onNativeRunBound?.(f.bound("run-a"));
+      const binding = f.bound("run-a");
+      f.calls[0]!.onNativeRunBound?.(binding);
       const abort = vi.fn(() => true);
-      controlRuntime.resolveActiveEmbeddedRunOwnerByRunId
-        .mockReset()
-        .mockImplementation((runId) =>
-          runId === "run-a"
-            ? { sessionId: "native-session", sessionKey: "agent:example:call", abort }
-            : undefined,
-        );
-      controlRuntime.resolveActiveEmbeddedRunSessionId.mockClear();
-      controlRuntime.abortEmbeddedAgentRun.mockClear();
+      controlRuntime.resolveSourceRunOwner.mockReset().mockImplementation((runId, signal) =>
+        runId === binding.runId && signal === binding.abortSignal
+          ? {
+              runId,
+              sessionId: "native-session",
+              sessionKey: "agent:example:call",
+              abort,
+              stop: () => "aborted",
+              waitForSettlement: async () => {},
+              operation: undefined,
+            }
+          : undefined,
+      );
+      controlRuntime.resolveActiveSessionRunId.mockClear();
+      controlRuntime.stopRealtimeVoiceSessionRun.mockClear();
       const admitted = f.admitControl(mode);
       expect(await f.owner.control(admitted.control)).toMatchObject({
         ok: true,
@@ -534,13 +545,18 @@ describe("native speech input media ownership", () => {
         ...(mode === "cancel" ? { aborted: true } : {}),
       });
       expect(abort).toHaveBeenCalledTimes(mode === "cancel" ? 1 : 0);
-      expect(controlRuntime.resolveActiveEmbeddedRunSessionId).not.toHaveBeenCalled();
-      expect(controlRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
+      expect(controlRuntime.resolveSourceRunOwner).toHaveBeenCalled();
+      for (const [runId, signal] of controlRuntime.resolveSourceRunOwner.mock.calls) {
+        expect(runId).toBe(binding.runId);
+        expect(signal).toBe(binding.abortSignal);
+      }
+      expect(controlRuntime.resolveActiveSessionRunId).not.toHaveBeenCalled();
+      expect(controlRuntime.stopRealtimeVoiceSessionRun).not.toHaveBeenCalled();
       expect(f.calls).toHaveLength(1);
       expect(admitted.release).toHaveBeenCalledOnce();
       f.pending[0]!.resolve({ kind: "reply", reply: { text: "" } });
       await first;
-      controlRuntime.resolveActiveEmbeddedRunOwnerByRunId.mockReset();
+      controlRuntime.resolveSourceRunOwner.mockReset();
     },
   );
 

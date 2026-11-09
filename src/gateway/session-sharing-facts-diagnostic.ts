@@ -69,8 +69,11 @@ export function readRetainedSessionSharingFacts(
     ReturnType<typeof retainPreparedSessionSharingFacts>,
     "readCurrent" | "hasPendingPublication"
   >,
+  scope: Parameters<
+    ReturnType<typeof retainPreparedSessionSharingFacts>["readCurrent"]
+  >[0] = "sharing",
 ) {
-  const current = read.readCurrent();
+  const current = read.readCurrent(scope);
   if (!current) {
     throw new SessionMutationFactsUnavailableError({
       diagnostic: {

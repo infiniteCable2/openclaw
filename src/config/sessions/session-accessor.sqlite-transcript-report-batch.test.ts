@@ -13,6 +13,7 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { captureRuntimeConfigAsyncReader } from "../io.runtime.js";
 import { loadTranscriptEvents, upsertSessionEntryCore } from "./session-accessor.js";
 import {
   appendSessionTranscriptReportBatch,
@@ -520,6 +521,7 @@ it("rolls back a deferred first header and publishes only a committed native bat
   await withOpenClawTestState(
     { scenario: "minimal", label: "report-batch-publication" },
     async (state) => {
+      await captureRuntimeConfigAsyncReader()();
       const scope = {
         agentId: "main",
         sessionKey: "agent:main:batch-publication",

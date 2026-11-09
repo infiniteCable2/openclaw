@@ -76,9 +76,22 @@ function commitParentFork(
       : base;
     return { status: "skipped", reason: "existing-entry", parentEntry, sessionEntry };
   }
+  if (
+    input.params.expectedParent &&
+    (parentEntry.sessionId !== input.params.expectedParent.sessionId ||
+      parentEntry.lifecycleRevision !== input.params.expectedParent.lifecycleRevision)
+  ) {
+    return { status: "failed" };
+  }
   assertModelSelectionUnlocked(parentEntry, MODEL_SELECTION_LOCKED_PARENT_FORK_MESSAGE);
-  const source = resolveParentForkSourceTranscript(parent.events.map(({ event }) => event));
-  const decision = planParentForkDecision(parentEntry, estimateParentForkPromptTokens(source));
+  const source = resolveParentForkSourceTranscript(
+    parent.events.map(({ event }) => event),
+    input.params.forkFrom,
+  );
+  const decision = planParentForkDecision(parentEntry, estimateParentForkPromptTokens(source), {
+    maxTokens: input.params.maxTokens,
+    preferTranscriptEstimate: input.params.forkFrom === "last-completed",
+  });
   if (decision.status === "skip") {
     return {
       status: "skipped",
@@ -102,10 +115,13 @@ function commitParentFork(
       totalTokens: undefined,
       totalTokensFresh: false,
       totalTokensVersion: undefined,
-      cliSessionBindings: forkCliSessionBindings(
-        parentEntry,
-        (provider) => callbacks?.supportsCliFork?.(provider) ?? false,
-      ),
+      cliSessionBindings:
+        input.params.forkFrom === "last-completed"
+          ? undefined
+          : forkCliSessionBindings(
+              parentEntry,
+              (provider) => callbacks?.supportsCliFork?.(provider) ?? false,
+            ),
       cliSessionIds: undefined,
       claudeCliSessionId: undefined,
     }),
@@ -135,7 +151,11 @@ function commitParentFork(
   return {
     status: "forked",
     decision,
-    fork: { sessionFile: targetKey, sessionId },
+    fork: {
+      sessionFile: targetKey,
+      sessionId,
+      ...(source.contextStatus ? { contextStatus: source.contextStatus } : {}),
+    },
     parentEntry,
     sessionEntry,
   };
@@ -189,6 +209,7 @@ export function executeSessionActorMemoryForkCommand(
         transcript: {
           sessionId: command.input.sessionId,
           sessionFile: target.hot.target.sessionKey,
+          ...(command.input.contextStatus ? { contextStatus: command.input.contextStatus } : {}),
         },
       };
     }

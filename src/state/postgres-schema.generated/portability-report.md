@@ -21,11 +21,11 @@
 | state    | trigger       |     0 |          0 |        0 |
 | state    | virtualTable  |     0 |          0 |        0 |
 | state    | internalTable |     1 |          0 |        1 |
-| agent    | table         |    48 |         48 |        0 |
-| agent    | column        |   442 |        406 |       36 |
-| agent    | index         |   108 |        104 |        4 |
-| agent    | foreignKey    |    30 |         30 |        0 |
-| agent    | check         |    74 |         74 |        0 |
+| agent    | table         |    49 |         49 |        0 |
+| agent    | column        |   456 |        420 |       36 |
+| agent    | index         |   111 |        107 |        4 |
+| agent    | foreignKey    |    31 |         31 |        0 |
+| agent    | check         |    75 |         75 |        0 |
 | agent    | trigger       |     8 |          4 |        4 |
 | agent    | virtualTable  |     2 |          0 |        2 |
 | agent    | internalTable |    10 |          0 |       10 |
@@ -57,6 +57,7 @@
 - memory_index_sources.id: rowid alias becomes identity; rowid reuse semantics differ: PostgreSQL sequences are nontransactional and explicit values do not advance them.
 - memory_index_state.id: rowid alias becomes identity; rowid reuse semantics differ: PostgreSQL sequences are nontransactional and explicit values do not advance them.
 - message_tool_run_outcomes.id: rowid alias becomes identity; rowid reuse semantics differ: PostgreSQL sequences are nontransactional and explicit values do not advance them.
+- session_conversation_publications.capture_sequence: rowid alias becomes identity; AUTOINCREMENT/sqlite_sequence never-reuse semantics differ: PostgreSQL sequences are nontransactional and explicit values do not advance them.
 - session_input_completions.succeeded: 0/1 boolean candidate retained as bigint.
 - session_key_contract.id: rowid alias becomes identity; rowid reuse semantics differ: PostgreSQL sequences are nontransactional and explicit values do not advance them.
 - session_pending_inputs.seq: rowid alias becomes identity; AUTOINCREMENT/sqlite_sequence never-reuse semantics differ: PostgreSQL sequences are nontransactional and explicit values do not advance them.

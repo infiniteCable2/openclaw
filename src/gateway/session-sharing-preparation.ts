@@ -45,6 +45,7 @@ import {
 import { getPendingOpenClawAgentDatabasePreparation } from "../state/openclaw-agent-execution.js";
 import {
   captureSessionFactsInvalidation,
+  readRetainedSessionSharingFacts,
   reportSessionFactsFailure,
   type SessionFactsInvalidation,
 } from "./session-sharing-facts-diagnostic.js";
@@ -516,10 +517,7 @@ export async function prepareSessionMutationFacts(
                   phases.mark("sessionFacts.selection");
                   assertActive();
                 }
-                const current = retained.readCurrent(readScope);
-                if (!current) {
-                  throw new SessionMutationFactsUnavailableError();
-                }
+                const current = readRetainedSessionSharingFacts(retained, readScope);
                 if (current.entry) {
                   store[sessionKey] = current.entry;
                 }
@@ -590,7 +588,7 @@ export async function prepareSessionMutationFacts(
         };
       };
       readFacts = () => {
-        const current = retained?.readCurrent(readScope);
+        const current = retained ? readRetainedSessionSharingFacts(retained, readScope) : undefined;
         if (facts!.target && current?.entry) {
           return {
             ...facts!,
@@ -598,11 +596,7 @@ export async function prepareSessionMutationFacts(
             membership: current.membership,
           };
         }
-        if (
-          (retained && !current) ||
-          current?.entry ||
-          current?.placeholder?.sessionId !== expectedPlaceholder?.sessionId
-        ) {
+        if (current?.entry || current?.placeholder?.sessionId !== expectedPlaceholder?.sessionId) {
           throw new SessionMutationFactsUnavailableError();
         }
         return { ...facts!, target: null, membership: new Set<string>() };
@@ -634,8 +628,8 @@ export async function prepareSessionMutationFacts(
         throw new SessionMutationFactsUnavailableError();
       }
       readFacts = () => {
-        const current = retained.readCurrent(readScope);
-        if (!current?.entry) {
+        const current = readRetainedSessionSharingFacts(retained, readScope);
+        if (!current.entry) {
           throw new SessionMutationFactsUnavailableError();
         }
         return {

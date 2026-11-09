@@ -345,6 +345,7 @@ function forkSqliteParentTranscriptInTransaction(
     transcript: {
       sessionFile: targetScope.sessionKey,
       sessionId,
+      ...(source.contextStatus ? { contextStatus: source.contextStatus } : {}),
     },
   };
 }
