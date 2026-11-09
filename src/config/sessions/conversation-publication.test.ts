@@ -557,14 +557,27 @@ it("publishes original input, steered input and commentary before final completi
               appendTranscriptMessage(source, { message: runtimeMessage }),
             );
             expect(savedSecond.anchor).toBeDefined();
-            const beforeSteerGeneration = first.getAdmissionReceipt()?.generation;
+            const beforeSteerAdmission = first.getAdmissionReceipt();
             const steered = await confirmPersistedSteerTargetRunId({
               admission: { ...savedSecond.anchor!, logicalTurnId: "input-two", role: "user" },
               targetRunId: "run-one",
             });
             expect(steered).toBeDefined();
             expect(first.getAdmissionReceipt()?.generation).toBe(steered!.admission.generation);
-            expect(first.getAdmissionReceipt()?.generation).not.toBe(beforeSteerGeneration);
+            // Native steering changes correlation, not the admitted original input.
+            expect(first.getAdmissionReceipt()).toEqual(beforeSteerAdmission);
+            expect(steered!.admission.entryId).toBe(savedSecond.anchor!.entryId);
+            expect(steered!.message.__openclaw?.steerTargetRunId).toBe("run-one");
+            expect(await loadTranscriptEvents(source)).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  id: savedSecond.anchor!.entryId,
+                  message: expect.objectContaining({
+                    __openclaw: expect.objectContaining({ steerTargetRunId: "run-one" }),
+                  }),
+                }),
+              ]),
+            );
             await appendTranscriptMessage(source, {
               message: {
                 role: "user",

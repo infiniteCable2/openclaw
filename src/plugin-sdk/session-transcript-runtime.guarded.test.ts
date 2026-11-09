@@ -362,7 +362,7 @@ describe("session transcript runtime read fence", () => {
     });
   });
 
-  it("restores cold history before channel preparation with its history boundary", async () => {
+  it("restores fenced cold native history without duplicating channel context", async () => {
     const { receipt } = await seedHistory();
     const options = { agentId: scope.agentId, path: receipt.storePath };
     await waitForSessionTranscriptIndexReconcile(options);
@@ -403,18 +403,25 @@ describe("session transcript runtime read fence", () => {
       SessionTranscriptContext: { historyLimit: 10 },
     };
     let dispatched = false;
-    await runPreparedChannelTurn({
-      channel: "slack",
-      routeSessionKey: scope.sessionKey,
-      storePath: scope.storePath,
-      ctxPayload: ctx,
-      recordInboundSession: async () => undefined,
-      runDispatch: async () => {
-        dispatched = true;
-        expect(ctx.InboundHistory?.map((entry) => entry.body)).toEqual(["prompt", "prior"]);
-        return { queuedFinal: false };
-      },
-    });
+    await runWithSessionTranscriptReadFence(receipt, () =>
+      runPreparedChannelTurn({
+        channel: "slack",
+        routeSessionKey: scope.sessionKey,
+        storePath: scope.storePath,
+        ctxPayload: ctx,
+        recordInboundSession: async () => undefined,
+        runDispatch: async () => {
+          dispatched = true;
+          // Native history owns ordinary turns; channel context must not replay them.
+          expect(ctx.InboundHistory).toBeUndefined();
+          expect(await readEntries(scope)).toMatchObject([
+            { message: { role: "user", content: "prompt" } },
+            { message: { role: "assistant", content: "prior" } },
+          ]);
+          return { queuedFinal: false };
+        },
+      }),
+    );
     expect(dispatched).toBe(true);
   });
 

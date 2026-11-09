@@ -144,13 +144,12 @@ describe("native conversation root maintenance protection", () => {
       } finally {
         projection.mockRestore();
       }
-      expect(prepared.kind).toBe("write");
-      if (prepared.kind !== "write") {
+      expect(prepared.requiresWrite).toBe(true);
+      if (!prepared.requiresWrite) {
         throw new Error("Fixture failed to prepare its deliberate stale root victim");
       }
-      const apply = prepared.captureMutation();
       expect(() =>
-        runOpenClawAgentWriteTransaction((owned) => apply(owned), {
+        runOpenClawAgentWriteTransaction((owned) => prepared.apply(owned), {
           agentId: "main",
           env: state.env,
           path: database.path,

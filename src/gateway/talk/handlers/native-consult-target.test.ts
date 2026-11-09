@@ -55,8 +55,9 @@ import {
 } from "../../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../../chat-abort.js";
 import { createChatRunState } from "../../server-chat-state.js";
-import { handleGatewayRequest } from "../../server-methods.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
+import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
+import type { GatewayWsClient } from "../../server/ws-types.js";
 import { resolveSessionMutationAuthorizationAsync } from "../../session-sharing-authorization-async.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { adoptRpcSourceSessionKeyForTest } from "../../test-helpers.rpc-source.js";
@@ -82,6 +83,10 @@ import {
 } from "./native-consult-control.test-support.js";
 import { registerOwnedNativeConsultRun } from "./native-consult-target.test-support.js";
 import { talkSessionHandlers } from "./session.js";
+import {
+  createTalkWebSocketTestClient,
+  dispatchTalkWebSocketTestRequest,
+} from "./talk-websocket.test-support.js";
 import { talkVoiceHandlers } from "./voice.js";
 
 const mocks = vi.hoisted(() => ({
@@ -110,7 +115,9 @@ vi.mock("../../../talk/provider-registry.js", () => ({ listRealtimeVoiceProvider
 
 let state: OpenClawTestState;
 let config: OpenClawConfig;
-let client: ReturnType<typeof sharingPolicyClient> & { connId: string };
+let client: GatewayWsClient;
+let connection: AbortController;
+let generation: SharedGatewaySessionGenerationState;
 let callback: GatewayControlOwner["runAgentConsult"] | undefined;
 let relayRequest: RealtimeVoiceBridgeCreateRequest | undefined;
 let providerInstructions: string | undefined;
@@ -277,14 +284,17 @@ async function dispatch(
   handlers: GatewayRequestHandlers = {},
 ) {
   const respond = vi.fn();
-  await handleGatewayRequest({
-    req: { type: "req", id: "native-consult", method, params },
-    client,
-    context,
-    isWebchatConnect: () => false,
-    respond,
-    extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
-  });
+  await dispatchTalkWebSocketTestRequest(
+    {
+      req: { type: "req", id: "native-consult", method, params },
+      client,
+      context,
+      isWebchatConnect: () => false,
+      respond,
+      extraHandlers: { ...talkClientHandlers, ...talkSessionHandlers, ...handlers },
+    },
+    generation.reader,
+  );
   const payload = respond.mock.calls.at(-1)?.[1];
   if (
     method === "talk.client.create" &&
@@ -309,10 +319,15 @@ beforeEach(async () => {
     talk: { agentId: "voice" },
   };
   setRuntimeConfigSnapshot(config);
-  client = {
-    ...sharingPolicyClient({ user: ensureProfileForEmail("native-listener@example.test").id }),
+  connection = new AbortController();
+  generation = new SharedGatewaySessionGenerationState({ current: undefined, required: null });
+  client = createTalkWebSocketTestClient({
+    identity: sharingPolicyClient({
+      user: ensureProfileForEmail("native-listener@example.test").id,
+    }),
     connId: "native-consult-client",
-  };
+    connectionSignal: connection.signal,
+  });
   callback = undefined;
   relayRequest = undefined;
   providerInstructions = undefined;
@@ -370,6 +385,7 @@ afterEach(async () => {
       ),
     );
   } finally {
+    connection.abort();
     clientVoiceSessionTesting.reset();
     embeddedRunTesting.resetActiveEmbeddedRuns();
     setActivePluginRegistry(createEmptyPluginRegistry());

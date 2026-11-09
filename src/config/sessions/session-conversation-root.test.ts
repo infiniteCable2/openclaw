@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import { resolveSessionStorePathCore } from "./paths.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { appendTranscriptMessage } from "./session-accessor.sqlite-transcript-write.js";
 import { ensureAgentConversationRoot } from "./session-conversation-root.js";
@@ -142,6 +143,7 @@ describe("host conversation root admission", () => {
         env: state.env,
         sessionKey: "agent:main:internal:conversation-root",
         sessionId: "winning-root",
+        storePath: resolveSessionStorePathCore(undefined, { agentId: "main", env: state.env }),
       };
       let winner: InternalSessionEntry | undefined;
       let history: Awaited<ReturnType<typeof loadTranscriptEvents>> = [];
@@ -170,6 +172,7 @@ describe("host conversation root admission", () => {
         env: state.env,
         sessionKey: "agent:main:internal:conversation-root",
         sessionId: "revoked-root",
+        storePath: resolveSessionStorePathCore(undefined, { agentId: "main", env: state.env }),
       };
       let revoked = false;
       await expect(

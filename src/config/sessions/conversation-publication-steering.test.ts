@@ -16,6 +16,7 @@ import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";
 import { appendTranscriptMessage } from "./session-accessor.sqlite-transcript-write.js";
 import { rewritePreparedTranscriptMessageAtAnchor } from "./session-message-rewrite.js";
 import { readPreparedSessionTranscriptChange } from "./session-transcript-authority.js";
+import { loadSessionTranscriptEvents } from "./session-transcript-events.js";
 
 async function withSteeringFixture(
   run: (fixture: {
@@ -108,6 +109,17 @@ async function withSteeringFixture(
           expect(recorder.getPersistedMessage?.()?.["__openclaw"]?.steerTargetRunId).toBe(
             "active-run",
           );
+          expect(recorder.getAdmissionReceipt()?.entryId).toBe(committed.anchor.entryId);
+          expect(await loadSessionTranscriptEvents(source)).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                id: committed.anchor.entryId,
+                message: expect.objectContaining({
+                  __openclaw: expect.objectContaining({ steerTargetRunId: "active-run" }),
+                }),
+              }),
+            ]),
+          );
         };
         await run({
           context,
@@ -157,8 +169,8 @@ it("keeps an active original admission continuous when a rapid second input conf
       await f.answer("first-provisional-answer");
       await f.steer();
       const refreshed = f.original.getAdmissionReceipt();
-      expect(refreshed?.generation).not.toBe(original?.generation);
-      expect(refreshed).toEqual({ ...original, generation: refreshed?.generation });
+      // Correlation-only steering preserves the native original admission.
+      expect(refreshed).toEqual(original);
       const final = await f.answer("final-after-steering");
       expect(final.appended).toBe(true);
       expect(

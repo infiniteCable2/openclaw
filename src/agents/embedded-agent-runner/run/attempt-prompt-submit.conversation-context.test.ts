@@ -457,7 +457,17 @@ describe("prepared conversation context dispatch", () => {
     expect(publishInternalModelContext(firstRequest, [])).toBe(false);
     const providerMessages = (messages: Context["messages"] | undefined) =>
       messages?.map(({ role, content }) => ({ role, content }));
-    expect(providerMessages(requests[1])).toEqual(providerMessages(requests[0]));
+    // Native retries retain the failed assistant attempt; the prepared context
+    // must remain the same prefix rather than being appended a second time.
+    expect(providerMessages(requests[1])).toEqual([
+      ...providerMessages(requests[0])!,
+      { role: "assistant", content: [] },
+    ]);
+    expect(requests[1]?.at(-1)).toMatchObject({
+      role: "assistant",
+      stopReason: "error",
+      errorMessage: "503 overloaded",
+    });
     expect(
       session.messages.filter(
         (entry) => entry.role === "custom" && entry.customType === message.customType,

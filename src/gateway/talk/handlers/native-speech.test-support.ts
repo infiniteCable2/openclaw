@@ -93,6 +93,7 @@ vi.mock("../../../agents/bootstrap-files.js", async (importOriginal) => ({
 vi.mock("../../../talk/provider-resolver.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../talk/provider-resolver.js")>()),
   resolveConfiguredRealtimeVoiceProvider: mocks.resolveProvider,
+  resolveConfiguredRealtimeVoiceProviderAsync: mocks.resolveProvider,
 }));
 vi.mock("../../../talk/provider-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../talk/provider-registry.js")>()),
