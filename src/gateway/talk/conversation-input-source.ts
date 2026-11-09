@@ -49,6 +49,9 @@ export function createGatewayTalkConversationInputSource(input: {
       agentId: params.target.agentId,
       sessionKey: params.target.canonicalKey,
       preserveQualifiedAddress: true,
+      // A writer handoff does not revoke the authenticated conversation. The native
+      // access projection still fences identity, audience, membership and policy changes.
+      sessionAccessOnly: true,
     });
     let source: Awaited<ReturnType<TalkOperatorRunSource>>;
     let released = false;

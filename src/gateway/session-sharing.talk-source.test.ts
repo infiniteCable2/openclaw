@@ -154,12 +154,13 @@ it("resumes deferred native sharing reads on COMMIT publication without another 
       expect(prepared).toHaveLength(1);
       expect(cleared).toBe(0);
       expect(() => owner.assertCurrent()).not.toThrow();
-      expect(await read()).toBe("next-writer");
+      await expect(read()).rejects.toBeInstanceOf(SessionMutationFactsUnavailableError);
 
       // No user input or explicit request: the real writer's ordinary row
       // publication must cancel backoff and resume the same retained owner.
       releaseDelivery.resolve();
       await withinTest(mutation, signal);
+      expect(await read()).toBe("next-writer");
       await withinTest(owner.wait(), signal);
       expect(prepared).toEqual([
         { writer: "previous-writer", sources: true },
@@ -376,12 +377,6 @@ it.for(["continuous", "reset"] as const)(
       };
       const assertWithoutSql = () => {
         const failure = sourceOutcomeWithoutSql();
-        if (failure instanceof Error) {
-          console.error("Synthetic source failure", failure.stack, failure.cause);
-          if (failure instanceof SessionMutationFactsUnavailableError) {
-            console.error("Synthetic source facts", failure.diagnostic);
-          }
-        }
         expect(failure, JSON.stringify(publications)).toBeUndefined();
       };
       const committed = createDeferredCore();
@@ -445,7 +440,9 @@ it.for(["continuous", "reset"] as const)(
           signal,
         );
         expect(commitGrants).toBe(1);
-        expect(pendingError).toBeInstanceOf(SessionMutationFactsUnavailableError);
+        // Writer bookkeeping changes no access fact; the native access projection
+        // remains valid even while the broader row publication is pending.
+        expect(pendingError).toBeUndefined();
         // Sample the retained claim before an observational row read can publish facts.
         const acknowledgedFailure = sourceOutcomeWithoutSql();
         expect(readExactSessionEntryRow(database, target.sessionKey)?.entry).toMatchObject({
