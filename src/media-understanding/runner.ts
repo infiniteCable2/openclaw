@@ -48,11 +48,7 @@ import {
   resolveConfiguredMediaEntryCapabilities,
 } from "./entry-capabilities.js";
 import { inspectLocalAudioSelection } from "./local-audio.js";
-import {
-  assertMediaExecutionCurrent,
-  hasProviderAuthAvailable,
-  type MediaExecutionContext,
-} from "./provider-execution.js";
+import { hasProviderAuthAvailable, type MediaExecutionContext } from "./provider-execution.js";
 import {
   resolveAutoMediaKeyProvidersFromRegistry,
   resolveDefaultMediaModelFromRegistry,
