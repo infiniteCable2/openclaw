@@ -36,24 +36,31 @@ const boundary = vi.hoisted(() => ({
 }));
 
 // mock-isolation: Native publication tests prove the hint producer; this suite controls scheduling only.
-vi.mock("../../config/sessions/session-transcript-authority.js", () => ({
+vi.mock("../../config/sessions/session-transcript-authority.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../config/sessions/session-transcript-authority.js")
+  >()),
   readPreparedSessionTranscriptChange: boundary.transcriptFact,
 }));
 
-// mock-isolation: Test ownership and settlement without native databases or process-wide close fences.
-vi.mock("../../state/openclaw-agent-db-resources.js", () => ({
+// mock-isolation: Control this owner's registration while retaining native lifecycle registrations.
+vi.mock("../../state/openclaw-agent-db-resources.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/openclaw-agent-db-resources.js")>()),
   registerOpenClawAgentDatabaseAsyncResource: boundary.register,
 }));
 // mock-isolation: Control exact generation revocation and native release failure independently of storage.
-vi.mock("../../state/openclaw-agent-execution.js", () => ({
+vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/openclaw-agent-execution.js")>()),
   captureOpenClawAgentDatabaseExecution: boundary.capture,
 }));
 // mock-isolation: Exercise the leaf admission contract without starting global command queues.
-vi.mock("../../process/background-work.js", () => ({
+vi.mock("../../process/background-work.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../process/background-work.js")>()),
   getBackgroundOwnerLane: (owner: string) => `background:${owner}`,
 }));
 // mock-isolation: Preserve queue admission while controlling scheduling.
-vi.mock("../../process/command-queue.js", () => ({
+vi.mock("../../process/command-queue.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../process/command-queue.js")>()),
   enqueueCommandInLane: (
     _lane: string,
     task: () => Promise<void>,
