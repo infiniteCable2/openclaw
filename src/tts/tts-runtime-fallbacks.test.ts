@@ -16,7 +16,6 @@ import {
 } from "../plugins/runtime.js";
 import { clearSecretsRuntimeSnapshot } from "../secrets/runtime.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
-import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   MAX_TIMER_TIMEOUT_MS,
   createMockSpeechProvider,
@@ -29,13 +28,11 @@ import {
   requireFirstSynthesisRequest,
   requireRecord,
   resetTtsRuntime,
-  resolveTtsConfig,
   setSummarizationEnabled,
   setTtsMaxLength,
   synthesizeMock,
   synthesizeSpeech,
   textToSpeechStream,
-  textToSpeechTelephony,
   withTtsPayload,
   type OpenClawConfig,
   type ReplyPayload,

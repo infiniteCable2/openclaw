@@ -3,12 +3,18 @@ import type { DiagnosticTraceContext } from "../../../infra/diagnostic-trace-con
 import type { DiagnosticEmbeddedRunOwner } from "../../../logging/diagnostic-run-activity.js";
 import type { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
 import type { ToolSearchCatalogToolExecutor } from "../../tool-search.js";
+import type { EmbeddedAgentQueueHandle } from "../runs.js";
 import type { LlmBoundaryOptions } from "./attempt-llm-boundary.types.js";
 import type { AttemptNestedToolActivityState } from "./attempt-nested-tool-activity.js";
 import type { prepareEmbeddedAttemptAgentSession } from "./attempt-session-prepare.js";
 import type { createEmbeddedAttemptDeferredLifecycleOwner } from "./deferred-lifecycle-owner.js";
 import type { EmbeddedRunAttemptInternalParams } from "./internal-params.js";
 import type { EmbeddedRunAttemptParams, StreamRunState } from "./types.js";
+
+export type AttemptStreamQueueHandle = EmbeddedAgentQueueHandle & {
+  kind: "embedded";
+  cancel: (reason?: "user_abort" | "restart" | "superseded") => void;
+};
 
 export type PrepareEmbeddedAttemptStreamInput = {
   attempt: EmbeddedRunAttemptInternalParams;

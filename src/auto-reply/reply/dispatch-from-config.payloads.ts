@@ -57,6 +57,24 @@ export function hasExecApprovalPayload(payload: ReplyPayload): boolean {
   return isRecord(payload.channelData?.execApproval);
 }
 
+export async function shouldSuppressMessageToolOnlyErrorProgress(
+  payload: ReplyPayload,
+  state: {
+    sourceReplyDeliveryMode?: string;
+    shouldEmitFullVerboseProgressAsync: () => Promise<boolean>;
+  },
+): Promise<boolean> {
+  if (
+    state.sourceReplyDeliveryMode !== "message_tool_only" ||
+    (await state.shouldEmitFullVerboseProgressAsync()) ||
+    payload.isError !== true
+  ) {
+    return false;
+  }
+  const reply = resolveSendableOutboundReplyParts(payload);
+  return !reply.hasMedia && !hasExecApprovalPayload(payload);
+}
+
 export function hasExecApprovalUnavailablePayload(payload: ReplyPayload): boolean {
   return isRecord(payload.channelData?.execApprovalUnavailable);
 }

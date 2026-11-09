@@ -1,6 +1,10 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { MediaImageLayout } from "../../agents/embedded-agent-runner/run/prompt-image-metadata.js";
 import type { EmbeddedFullAccessBlockedReason } from "../../agents/embedded-agent-runner/types.js";
+import {
+  attachToolAllowlistIntersection,
+  readToolAllowlistIntersection,
+} from "../../agents/tool-policy.js";
 import { updateAmbientTranscriptWatermark } from "../../config/sessions/ambient-transcript-watermark.js";
 import { isImageMediaFact, type MediaFact } from "../../media/media-facts.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -9,6 +13,15 @@ import type { ElevatedLevel } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
 import type { ReplyExecOverrides } from "./get-reply-exec-overrides.js";
 import type { TypingController } from "./typing.js";
+
+export function cloneReplyToolAllowlist(toolsAllow: string[] | undefined): string[] | undefined {
+  const cloned = toolsAllow ? [...toolsAllow] : toolsAllow;
+  const intersections = toolsAllow ? readToolAllowlistIntersection(toolsAllow) : undefined;
+  if (cloned && intersections) {
+    attachToolAllowlistIntersection(cloned, intersections);
+  }
+  return cloned;
+}
 
 export function buildPersistedMediaImageLayout(params: {
   ctx: MsgContext;

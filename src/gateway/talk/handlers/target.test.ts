@@ -23,6 +23,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
+import { bindInProcessRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
 import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
 import type { GatewayWsClient } from "../../server/ws-types.js";
@@ -845,10 +846,36 @@ it.each(
     vi.spyOn(placements, "getManyAsync").mockResolvedValue(
       new Map([[sessionId, activePlacement(sessionId, { ...voiceScope })]]),
     );
-  } else if (reason === "automation") {
-    client.internal = { syntheticClient: true };
   }
-  const respond = await startRealtime(start, "main");
+  let respond = vi.fn();
+  if (reason === "automation") {
+    // Synthetic automation is an in-process caller, never a WebSocket identity.
+    const handler = talkClientHandlers[start.method] ?? talkSessionHandlers[start.method];
+    if (!handler) {
+      throw new Error("Missing native Talk start handler");
+    }
+    await handler(
+      bindInProcessRequestMutationAuthority(
+        {
+          req: { type: "req", id: "automation-start", method: start.method },
+          params: {
+            ...createParams,
+            transport: start.transport,
+            capabilities: start.capabilities,
+            sessionKey: "main",
+          },
+          client: { ...client, internal: { ...client.internal, syntheticClient: true } },
+          context,
+          isWebchatConnect: () => false,
+          respond,
+        },
+        undefined,
+        undefined,
+      ),
+    );
+  } else {
+    respond = await startRealtime(start, "main");
+  }
   expect(respond).toHaveBeenCalledWith(
     false,
     undefined,

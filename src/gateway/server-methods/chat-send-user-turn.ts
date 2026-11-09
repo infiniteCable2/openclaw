@@ -12,8 +12,10 @@ import { bindConversationPrivateAudience } from "../../sessions/conversation-pri
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import type { UserTurnInput } from "../../sessions/user-turn-transcript.js";
-import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
-import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
+import type {
+  UserTurnTranscriptRecorder,
+  PersistedUserTurnMessage,
+} from "../../sessions/user-turn-transcript.types.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { PreparedSkillLibrarySession } from "../../skills/library/selection.js";
 import {

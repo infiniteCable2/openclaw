@@ -16,6 +16,7 @@ function fixture() {
     sessionKey: "agent:example:voice:one",
     canonicalKey: "agent:example:voice:one",
     storePath: "/example/sessions.sqlite",
+    assertCurrent: vi.fn(),
   };
   const state = { ready: false, current: true, sourceCurrent: true };
   const native = {

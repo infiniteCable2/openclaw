@@ -1,10 +1,26 @@
 import { listAgentIds } from "../agents/agent-scope.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { assertExternalConversationTarget } from "../routing/conversation-mode.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import type { GatewaySessionResetParams } from "./session-create-service.types.js";
 import { resolveRequestedSessionAgentInput } from "./session-request-agent.js";
 import { invalidSessionRequest } from "./session-request-error.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "./session-utils-store-worker.js";
 import { resolveSessionStoreKey } from "./session-utils.js";
+
+/** Recheck external input routing against each generation inspected during reset. */
+export function createSessionResetConversationInputGuard(
+  cfg: OpenClawConfig,
+  agentId: string,
+  params: Pick<GatewaySessionResetParams, "conversationInput">,
+) {
+  return (entry: SessionEntry | undefined, sessionKey: string) => {
+    if (params.conversationInput) {
+      assertExternalConversationTarget({ cfg, agentId, sessionKey, entry, isSystemEvent: false });
+    }
+  };
+}
 
 export async function resolveSessionResetTarget(
   cfg: OpenClawConfig,

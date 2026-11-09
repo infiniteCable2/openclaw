@@ -158,7 +158,6 @@ function settledTurn(
       resolved: { provider: "openai", model: "gpt-5.4" },
       fallback: { exhausted: false, attempts: [] },
       autoCompactionCount: 0,
-      didLogHeartbeatStrip: false,
     },
   };
 }

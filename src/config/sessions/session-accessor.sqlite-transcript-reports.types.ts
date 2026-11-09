@@ -8,12 +8,12 @@ import type {
 import type { PreparedTranscriptMessageAppend } from "./session-accessor.sqlite-transcript-message-append.types.js";
 import type { SessionModelContextLimits } from "./session-history-read.types.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
+import type { InternalSessionEntry } from "./types.js";
 
 export type TranscriptReportContextAdmission = {
   limits: Pick<SessionModelContextLimits, "maxBytes" | "maxEvents">;
   onDeferred(): void;
 };
-import type { InternalSessionEntry } from "./types.js";
 
 export type AbortedSessionTranscriptPartial = {
   runId: string;

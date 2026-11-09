@@ -62,7 +62,7 @@ describe("resolveCurrentTurnImages", () => {
       await fs.mkdir(mediaDir, { recursive: true });
       setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
       const purposes = ["communication", "analysis", "recording", "relay"] as const;
-      const media = await Promise.all(
+      const historyMedia = await Promise.all(
         purposes.map(async (purpose, index) => {
           const imagePath = path.join(mediaDir, `${purpose}.png`);
           await fs.writeFile(
@@ -81,21 +81,21 @@ describe("resolveCurrentTurnImages", () => {
               sender: "@example",
               body: "source attachments",
               timestamp: 1_700_000_000_000,
-              media,
+              media: historyMedia,
             },
           ],
         } satisfies MsgContext,
         cfg: {},
       });
-      expect(result.recentHistoryImages.map((image) => image.purpose)).toEqual([
+      expect(result.recentHistoryImages.map((entry) => entry.purpose)).toEqual([
         "communication",
         "analysis",
       ]);
       expect(result.attachments).toEqual(
         await Promise.all(
-          media.slice(0, 2).map(async (image) => ({
+          historyMedia.slice(0, 2).map(async (entry) => ({
             mediaType: "image/png",
-            data: (await fs.readFile(image.path)).toString("base64"),
+            data: (await fs.readFile(entry.path)).toString("base64"),
           })),
         ),
       );

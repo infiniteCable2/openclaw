@@ -8,9 +8,7 @@ import {
   runWithSessionActorStorage,
 } from "../config/sessions/session-actor-storage-binding.js";
 import type { SessionPendingInputAuthorityFacts } from "../config/sessions/session-pending-input-authority.js";
-import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { assertExternalConversationTarget } from "../routing/conversation-mode.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { resolveSessionMethodScope } from "../shared/session-method-scopes-base.js";
 import {
@@ -38,6 +36,7 @@ import {
   type AuthorizedSessionMutationTarget,
   type SessionMutationAuthorizationParams,
 } from "./session-sharing-authorization.js";
+import { createConversationTalkInputAuthorizer } from "./session-sharing-conversation-target.js";
 import * as sessionSharingDescribe from "./session-sharing-describe.js";
 import {
   authorizeIncognitoSessionTarget,
@@ -214,30 +213,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
     return { error: preparedTalk.error };
   }
   const { talkInput, talkSessionTarget } = preparedTalk;
-  // Only inspect the root role after native access policy has admitted the row.
-  const authorizeTalkInput = (cfg: OpenClawConfig, entry?: InternalSessionEntry) => {
-    if (
-      !talkSessionTarget ||
-      (talkInput && talkInput.kind !== "relay" && talkInput.purpose === "settlement")
-    ) {
-      return null;
-    }
-    try {
-      assertExternalConversationTarget({
-        cfg,
-        agentId: talkSessionTarget.agentId,
-        sessionKey: talkSessionTarget.canonicalKey,
-        entry,
-        isSystemEvent: false,
-      });
-      return null;
-    } catch (error) {
-      return errorShape(
-        ErrorCodes.INVALID_REQUEST,
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  };
+  const authorizeTalkInput = createConversationTalkInputAuthorizer(preparedTalk);
   const talkTargets = talkSessionTarget
     ? [{ sessionKey: talkSessionTarget.canonicalKey, agentId: talkSessionTarget.agentId }]
     : undefined;

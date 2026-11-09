@@ -28,6 +28,7 @@ function fixture(profileId = "example-person") {
     sessionKey: "agent:example:speech",
     canonicalKey: "agent:example:speech",
     storePath: "/example/store.sqlite",
+    assertCurrent: vi.fn(),
   };
   const releaseSource = vi.fn();
   const releaseFacts = vi.fn();

@@ -10,12 +10,14 @@ import { captureSessionTarget } from "../../sessions/session-controller.target.j
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
-import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
+import { deliverFollowupDecision } from "./followup-delivery.js";
 import {
   createAccounting,
   createDefaults,
   createSettledExecution,
   createTurn,
+  decideFollowupDelivery as decide,
+  deliverTestFollowupDecision as deliverDecision,
 } from "./followup-delivery.test-helpers.js";
 import { scheduleFollowupDrain } from "./queue/drain.js";
 import { enqueueFollowupRun } from "./queue/enqueue.js";
@@ -53,30 +55,6 @@ vi.mock("./route-reply.js", () => ({
   isRoutableChannel: (channel: string | undefined) => channel === "discord" || channel === "slack",
   routeReply: (...args: unknown[]) => deliveryState.routeReply(...args),
 }));
-
-type DecisionParams = Parameters<typeof resolveFollowupDeliveryDecision>[0];
-function decide(
-  turn = createTurn(),
-  execution: DecisionParams["execution"] = createSettledExecution(),
-  accounting: DecisionParams["accounting"] = createAccounting(),
-  opts?: DecisionParams["opts"],
-) {
-  return resolveFollowupDeliveryDecision({ turn, execution, accounting, opts });
-}
-
-function deliverDecision({
-  turn = createTurn(),
-  ...params
-}: Pick<Parameters<typeof deliverFollowupDecision>[0], "decision"> &
-  Partial<Parameters<typeof deliverFollowupDecision>[0]>) {
-  return deliverFollowupDecision({
-    defaults: createDefaults(vi.fn(async () => {})),
-    runFollowup: vi.fn(async () => {}),
-    turn,
-    runId: turn.runId,
-    ...params,
-  });
-}
 
 const missingReply = {
   text: "No answer was returned. Ask again if you still need one.",

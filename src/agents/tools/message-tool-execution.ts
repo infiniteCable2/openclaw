@@ -1,5 +1,4 @@
 import {
-  hasNonEmptyString,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
@@ -34,7 +33,6 @@ import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
 import * as embeddedMessageDelivery from "../embedded-agent-message-delivery.js";
-import { createSandboxBridgeReadFile } from "../sandbox-media-paths.js";
 import { captureAgentWorkspaceReadiness } from "../workspace-readiness.js";
 import { type AnyAgentTool, jsonResult, readToolStringParam } from "./common.js";
 import { captureGatewayToolCallerAssertion } from "./gateway-caller-context.js";
@@ -61,6 +59,10 @@ import {
   resolveMessageToolScheduledAccountScope,
   supportsMessageToolPromptReactions,
 } from "./message-tool-discovery.js";
+import {
+  resolveMessageToolExecutionContext,
+  resolveMessageToolSandboxMediaAccess,
+} from "./message-tool-execution-context.js";
 import type { MessageToolOptions } from "./message-tool-execution.types.js";
 import { createMessageToolExplicitTargetGuard } from "./message-tool-explicit-target.js";
 import { createMessageToolGateway } from "./message-tool-gateway.js";
@@ -206,21 +208,7 @@ function* createMessageToolSteps(
     (supportsPromptReactions && (!actions || actions.includes("react"))
       ? " When the current WebChat prompt permits reactions, react with emoji (and optional remove:true) as the agent. Omit channel, target, and messageId. This stays local; use an explicit external channel and messageId for external reactions."
       : "");
-  const sandboxRoot = options?.sandboxRoot?.trim();
-  const sandboxWorkspaceMediaAccess =
-    sandboxRoot && options?.sandboxFsBridge && options.sandboxWorkspaceMediaReadAllowed === true
-      ? {
-          localRoots: [
-            sandboxRoot,
-            ...(options?.sandboxContainerWorkdir ? [options.sandboxContainerWorkdir] : []),
-            ...(options?.sandboxReadOnlyResourceMounts?.map((mount) => mount.containerPath) ?? []),
-          ],
-          readFile: createSandboxBridgeReadFile({
-            sandbox: { root: sandboxRoot, bridge: options.sandboxFsBridge },
-          }),
-          workspaceDir: sandboxRoot,
-        }
-      : undefined;
+  const sandboxWorkspaceMediaAccess = resolveMessageToolSandboxMediaAccess(options);
 
   return {
     label: "Message",
@@ -528,32 +516,12 @@ function* createMessageToolSteps(
         });
       }
 
-      const toolContext =
-        effectiveCurrentChannel.currentChannelId ||
-        effectiveCurrentChannel.currentChatType ||
-        effectiveCurrentChannel.currentChannelProvider ||
-        effectiveCurrentChannel.currentMessagingTarget ||
-        currentThreadTs ||
-        typeof options?.currentMessageId === "number" ||
-        hasNonEmptyString(options?.currentMessageId) ||
-        replyToMode ||
-        options?.hasRepliedRef ||
-        options?.sameChannelThreadRequired
-          ? {
-              currentChannelId: effectiveCurrentChannel.currentChannelId,
-              currentChatType: effectiveCurrentChannel.currentChatType,
-              currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
-              currentChannelProvider: effectiveCurrentChannel.currentChannelProvider,
-              currentThreadTs,
-              currentMessageId: options?.currentMessageId,
-              replyToMode,
-              hasRepliedRef: options?.hasRepliedRef,
-              sameChannelThreadRequired: options?.sameChannelThreadRequired,
-              // Direct tool invocations should not add cross-context decoration.
-              // The agent is composing a message, not forwarding from another chat.
-              skipCrossContextDecoration: true,
-            }
-          : undefined;
+      const toolContext = resolveMessageToolExecutionContext(
+        options,
+        effectiveCurrentChannel,
+        currentThreadTs,
+        replyToMode,
+      );
       const groupThread = prepareMessageToolGroupThread(params, {
         action,
         channel: scope.channel,

@@ -45,11 +45,7 @@ import {
   isRecoverableTerminalSessionStatus,
   recoverTerminalSessionEntryForVisibleTurn,
 } from "../../config/sessions/terminal-status.js";
-import {
-  SESSION_TOTAL_TOKENS_VERSION,
-  DEFAULT_RESET_TRIGGERS,
-  type SessionEntry,
-} from "../../config/sessions/types.js";
+import { DEFAULT_RESET_TRIGGERS, type SessionEntry } from "../../config/sessions/types.js";
 import {
   forgetActiveSessionForShutdown,
   noteActiveSessionForShutdown,
@@ -149,6 +145,7 @@ import {
 import { resolveAuthorizedSessionResetCommand } from "./session-reset-command.js";
 import { runReplySessionRolloverMutation } from "./session-rollover-mutation.js";
 import {
+  resetReplySessionRuntimeCaches,
   resolveReplySessionFreshness,
   resolveReplySessionRolloverState,
 } from "./session-rollover-state.js";
@@ -701,36 +698,7 @@ async function initSessionStateAttemptLocked(
     throw new Error("reply session initialization aborted");
   }
   if (isNewSession) {
-    sessionEntry.compactionCount = 0;
-    sessionEntry.memoryFlush = undefined;
-    // Runtime model fields are persisted last-run cache, not user selection.
-    // Reset must drop them so the next turn resolves current defaults or the
-    // explicit providerOverride/modelOverride values preserved above.
-    sessionEntry.modelProvider = undefined;
-    sessionEntry.model = undefined;
-    sessionEntry.fallbackNotice = undefined;
-    sessionEntry.systemPromptReport = undefined;
-    sessionEntry.startedAt = undefined;
-    sessionEntry.endedAt = undefined;
-    sessionEntry.runtimeMs = undefined;
-    sessionEntry.status = undefined;
-    // New empty transcripts have a known zero context. Parent-context forks
-    // inherit history without a fresh count, so keep those explicitly unknown.
-    sessionEntry.totalTokens = 0;
-    sessionEntry.totalTokensFresh = true;
-    sessionEntry.totalTokensVersion = SESSION_TOTAL_TOKENS_VERSION;
-    sessionEntry.inputTokens = undefined;
-    sessionEntry.outputTokens = undefined;
-    sessionEntry.estimatedCostUsd = undefined;
-    sessionEntry.cacheRead = undefined;
-    sessionEntry.cacheWrite = undefined;
-    sessionEntry.contextTokens = undefined;
-    sessionEntry.contextTokensSource = undefined;
-    sessionEntry.contextBudgetStatus = undefined;
-    sessionEntry.goal = undefined;
-    // Skills snapshots are prompt/runtime caches. Do not preserve a stale
-    // snapshot through /new; the next turn must rebuild the visible skill list.
-    sessionEntry.skillsSnapshot = undefined;
+    resetReplySessionRuntimeCaches(sessionEntry);
   }
   const resetBoundary = previousSessionEntry
     ? createReplySessionResetBoundary({

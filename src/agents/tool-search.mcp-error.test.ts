@@ -13,11 +13,11 @@ import {
   singleToolCallStreamFn,
   toolSearchTestModel as model,
 } from "./tool-search-loop.test-support.js";
-import { registerHeadlessToolSearchCatalog } from "./tool-search.js";
 import {
   applyToolSearchCatalog,
   createToolSearchCatalogRef,
   createToolSearchTools,
+  registerHeadlessToolSearchCatalog,
   TOOL_CALL_RAW_TOOL_NAME,
 } from "./tool-search.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";

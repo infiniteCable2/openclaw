@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConversationActiveConnectionSchema } from "../../packages/gateway-protocol/src/schema/agent.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import {
   forgetUnifiedTalkSession,
   publishTalkConnectionPresentation,
@@ -66,7 +67,11 @@ function reader() {
       }
       const read = { assertCurrent: vi.fn(), release: vi.fn() };
       reads.push(read);
-      return { ...read, sources: [{ sessionId: id }] };
+      return {
+        ...read,
+        assertCurrent: composeSessionSourceAssertion([read.assertCurrent]),
+        sources: [{ sessionId: id }],
+      };
     },
   );
   return { state, authority, reads, prepareRead };

@@ -10,6 +10,10 @@ import {
   scanFenceSpans,
 } from "../../packages/markdown-core/src/fences.js";
 import type { SpeechSegmentationProfile } from "../tts/provider-types.js";
+import {
+  findNextParagraphBreak,
+  skipLeadingNewlines,
+} from "./embedded-agent-block-chunker.breaks.js";
 import { prepareIndentedCode } from "./embedded-agent-block-chunker.code.js";
 import {
   findSpeechChunkEnd,
@@ -768,36 +772,4 @@ export class EmbeddedBlockChunker {
 
     return { index: -1 };
   }
-}
-
-function skipLeadingNewlines(value: string, start = 0): number {
-  let i = start;
-  while (i < value.length && value[i] === "\n") {
-    i++;
-  }
-  return i;
-}
-
-function findNextParagraphBreak(
-  buffer: string,
-  fenceSpans: FenceSpan[],
-  startIndex = 0,
-  minCharsFromStart = 1,
-): number | null {
-  const re = /\n[\t ]*\n+/g;
-  re.lastIndex = startIndex;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(buffer)) !== null) {
-    const index = match.index;
-    if (index - startIndex < minCharsFromStart) {
-      continue;
-    }
-    const fence = findFenceSpanAt(fenceSpans, index);
-    if (fence) {
-      re.lastIndex = fence.end;
-      continue;
-    }
-    return index;
-  }
-  return null;
 }

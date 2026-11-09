@@ -366,6 +366,9 @@ describe("versioned background input snapshots", () => {
       logicalAgentId: branch.agentId,
       storePaths: [branch.storePath],
       assertCurrent() {},
+      async readEntry() {
+        throw new Error("Only the mocked native snapshot boundaries may read this fixture");
+      },
       async withRead() {
         throw new Error("Only the mocked native snapshot boundaries may read this fixture");
       },

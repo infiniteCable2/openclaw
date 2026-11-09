@@ -6,12 +6,12 @@ import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 const mocks = vi.hoisted(() => ({ sessionId: vi.fn(), prepare: vi.fn(), entry: vi.fn() }));
 // mock-isolation: Exact row presentation belongs to the native accessor; no database in this unit.
-vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
-  loadSessionEntry: mocks.entry,
+vi.mock("../../config/sessions/session-entry-read-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/session-entry-read-runtime.js")>()),
+  readSessionEntryReadOnlyInWorker: mocks.entry,
 }));
 // mock-isolation: Existing transcript selection and worker reads are tested by their native owners.
-vi.mock("../../talk/client-voice-session.js", () => ({
+vi.mock("../../talk/client-voice-session-read.js", () => ({
   resolveClientVoiceAgentSessionId: mocks.sessionId,
 }));
 vi.mock("../../talk/voice-conversation-knowledge.js", async (importOriginal) => ({
@@ -29,6 +29,7 @@ const target: PreparedTalkSessionTarget = {
   sessionKey: "main",
   canonicalKey: "agent:example:speech:branch",
   storePath: "/example/store.sqlite",
+  assertCurrent: vi.fn(),
 };
 function setup() {
   let current = true;

@@ -310,7 +310,7 @@ export async function attachAuthenticatedGatewayConnect(
 
   context.recordAttachTiming?.("scopeGrantMs", scopesStartedAt);
 
-  let registrationStartedAt = performance.now();
+  const registrationStartedAt = performance.now();
   if (isClosed()) {
     await releasePendingNodePairingCleanup();
     setCloseCause("connect-aborted-before-register", {

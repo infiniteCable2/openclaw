@@ -7,6 +7,23 @@ import { applyGatewayToolPolicy } from "./gateway-tool-policy.js";
 import { hasRestrictiveAllowPolicy, replaceWithEffectiveToolAllowlist } from "./tool-policy.js";
 import { githubPublishToolDefinition } from "./tools/github-publish-tool.js";
 
+/** Capture callable source tools, including provider-hosted search without a function tool. */
+export function captureSessionEventSourcePolicy(
+  tools: AnyAgentTool[],
+  turnAuthorized: (tool: AnyAgentTool) => boolean,
+  capabilityProfile: ResolvedConversationCapabilityProfile,
+) {
+  return {
+    toolsAllow: [
+      ...tools.filter(turnAuthorized).map((tool) => tool.name),
+      ...(!tools.some((tool) => tool.name === "web_search") &&
+      isConversationToolAllowed(capabilityProfile, "web_search")
+        ? ["web_search"]
+        : []),
+    ],
+  };
+}
+
 /** Record parent restrictions for future children without adding callable parent tools. */
 export function captureChildToolAllowlist(params: {
   options?: InternalCodingToolsOptions;

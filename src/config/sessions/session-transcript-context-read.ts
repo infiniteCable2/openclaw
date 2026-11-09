@@ -110,7 +110,9 @@ export async function readSessionTranscriptModelContextsAsync<T>(
         throw new Error("Session context batch omitted a requested range");
       }
       for (const [index, result] of contexts.entries()) {
-        if (!result.ok) continue;
+        if (!result.ok) {
+          continue;
+        }
         await readSessionTranscriptAnchorsFromSource(
           { ...source, scope: selected },
           {

@@ -1,8 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import {
-  hasOutboundReplyContent,
-  resolveSendableOutboundReplyParts,
-} from "openclaw/plugin-sdk/reply-payload";
+import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
 import { resolveAgentLanguage } from "../../agents/identity.js";
 import { scopeCommandTranscriptId } from "../../config/sessions/command-transcript.js";
 import { logVerbose } from "../../globals.js";
@@ -40,8 +37,8 @@ import {
 } from "./dispatch-from-config.dispatch-admission.js";
 import { admittedSessionSettingsRestrictRuntime } from "./dispatch-from-config.events.js";
 import {
-  hasExecApprovalPayload,
   requiresDurableToolResultDelivery,
+  shouldSuppressMessageToolOnlyErrorProgress,
 } from "./dispatch-from-config.payloads.js";
 import { suppressPendingFinalDelivery } from "./dispatch-from-config.pending-final.js";
 import type { PrepareDispatchOperationReadyState } from "./dispatch-from-config.prepare-operation.js";
@@ -152,17 +149,8 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
             turnLedger.sendQueued("tool", payload);
           },
     });
-  const shouldSuppressMessageToolOnlyTextErrorProgress = async (payload: ReplyPayload) => {
-    if (
-      state.sourceReplyDeliveryMode !== "message_tool_only" ||
-      (await state.shouldEmitFullVerboseProgressAsync()) ||
-      payload.isError !== true
-    ) {
-      return false;
-    }
-    const reply = resolveSendableOutboundReplyParts(payload);
-    return !reply.hasMedia && !hasExecApprovalPayload(payload);
-  };
+  const shouldSuppressMessageToolOnlyTextErrorProgress = (payload: ReplyPayload) =>
+    shouldSuppressMessageToolOnlyErrorProgress(payload, state);
   const captionedFinalTtsContext = {
     cfg,
     preparedTtsPreferences: state.preparedTtsPreferences,

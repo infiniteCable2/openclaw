@@ -121,7 +121,10 @@ function createFixture(
   };
 }
 
-function completeResult(audio = Buffer.alloc(4_800), release = vi.fn(async () => undefined)) {
+function completeResult(
+  audio = Buffer.alloc(4_800),
+  release: () => Promise<void> = vi.fn(async () => undefined),
+) {
   return {
     success: true,
     sampleRate: 24_000,

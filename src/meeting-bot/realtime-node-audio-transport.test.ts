@@ -75,7 +75,7 @@ describe("node meeting realtime audio transport", () => {
     const onFatal = vi.fn();
     const onAudio = vi.fn();
     transport.onFatal(onFatal);
-    transport.startInput(onAudio);
+    await transport.startInput(onAudio);
     await vi.advanceTimersByTimeAsync(fatal ? 1_000 : 250);
     await vi.waitFor(() => expect(fatal ? onFatal : onAudio).toHaveBeenCalledOnce());
     if (fatal) {

@@ -13,8 +13,8 @@ import { captureConversationPublication } from "../../config/sessions/conversati
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
+import { lifecycleAdmissionByOperation } from "../../sessions/session-controller.state.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
-import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const source = vi.hoisted(() => ({
@@ -130,7 +130,7 @@ async function nativeTurn(
     },
   });
   const owner = createReplyConversationKnowledgeTurn({
-    turn: { isHeartbeat: false, followupRun, replyOperation },
+    turn: { followupRun, replyOperation },
     originalSource,
     getRuntimeConfig: () => cfg,
   });
@@ -150,7 +150,6 @@ async function nativeTurn(
     resolved: route,
     fallback: { exhausted: false, attempts: [] },
     autoCompactionCount: 0,
-    didLogHeartbeatStrip: false,
     result: {
       payloads: [{ text: "Completed answer." }],
       meta: {
@@ -355,6 +354,9 @@ function unusedReader(): SessionEntryCohortReader {
     logicalAgentId: "example",
     storePaths: ["/synthetic/agent.sqlite"],
     assertCurrent() {},
+    async readEntry() {
+      throw new Error("Missing authority cannot request a source read");
+    },
     async withRead() {
       throw new Error("Missing authority cannot request a source read");
     },

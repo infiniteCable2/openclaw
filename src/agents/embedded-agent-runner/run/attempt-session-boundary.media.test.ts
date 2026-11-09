@@ -84,6 +84,7 @@ it("keeps historical and runtime video on their own turns across queued text and
     applyRuntimeContextCarrierRetention(converted, true);
     const provider = await materializeProviderContext({
       context: { messages: converted },
+      model: { input: ["text", "video"] },
       workspaceDir,
       localRoots: [workspaceDir],
     });

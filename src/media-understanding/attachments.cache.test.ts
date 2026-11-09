@@ -1,7 +1,7 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it as baseIt, vi } from "vitest";
+import { afterEach, expect, expectTypeOf, it as baseIt, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { toInboundMediaFacts } from "../channels/inbound-event/media.js";
@@ -684,16 +684,16 @@ it("keeps cancellation requester-local while another borrower completes and cach
     return { buffer: PNG_1X1, fileName: "sample.png", contentType: "image/png" };
   });
   const cache = new MediaAttachmentCache([{ index: 0, url: "https://example.invalid/sample.png" }]);
-  const request = { attachmentIndex: 0, maxBytes: 4096, timeoutMs: 1000 };
-  const operation = cache.getBuffer({ ...request, signal: cancelled.signal });
+  const borrowerRequest = { attachmentIndex: 0, maxBytes: 4096, timeoutMs: 1000 };
+  const operation = cache.getBuffer({ ...borrowerRequest, signal: cancelled.signal });
   const rejected = expect(operation).rejects.toBe(reason);
   try {
     await entered.promise;
-    const successful = await cache.getBuffer({ ...request, signal: active.signal });
+    const successful = await cache.getBuffer({ ...borrowerRequest, signal: active.signal });
     cancelled.abort(reason);
     released.resolve();
     await rejected;
-    expect(await cache.getBuffer({ ...request, signal: active.signal })).toBe(successful);
+    expect(await cache.getBuffer({ ...borrowerRequest, signal: active.signal })).toBe(successful);
     expect(readRemoteMediaBufferMock).toHaveBeenCalledTimes(2);
   } finally {
     released.resolve();
@@ -722,10 +722,10 @@ it.each(["local", "staged"] as const)(
           ? { index: 0, path: attachmentPath }
           : { index: 0, url: "https://example.com/photo.png" };
       const cache = new MediaAttachmentCache([attachment], { localPathRoots: [base] });
-      const request = { attachmentIndex: 0, maxBytes: PNG_1X1.length, timeoutMs: 1000 };
+      const pathRequest = { attachmentIndex: 0, maxBytes: PNG_1X1.length, timeoutMs: 1000 };
       try {
-        await expect(cache.getPath(request)).resolves.toEqual(expect.any(String));
-        await expect(cache.getPath({ ...request, maxBytes: 0 })).rejects.toMatchObject({
+        await expect(cache.getPath(pathRequest)).resolves.toEqual(expect.any(String));
+        await expect(cache.getPath({ ...pathRequest, maxBytes: 0 })).rejects.toMatchObject({
           reason: "maxBytes",
         });
       } finally {

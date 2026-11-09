@@ -343,7 +343,7 @@ describe("createDirectRoomTracker", () => {
         const first = await tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK);
         expect(first).toBeDefined();
         if (stage === "self") {
-          vi.mocked(client.getUserId).mockRejectedValueOnce(error);
+          vi.spyOn(client, "getUserId").mockRejectedValueOnce(error);
         } else if (stage === "state") {
           client.doRequest.mockRejectedValueOnce(error);
         } else {

@@ -9,8 +9,10 @@ import {
   type SessionIdentityMutation,
 } from "../../sessions/session-lifecycle-events.js";
 import { sessionChanges, type SessionRowChange } from "../../sessions/session-row-changes.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { runOpenClawAgentWriteTransaction as writeTransaction } from "../../state/openclaw-agent-db.js";
+import {
+  openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction as writeTransaction,
+} from "../../state/openclaw-agent-db.js";
 import { emitUserProfilesChanged } from "../../state/user-profile-events.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { readPreparedSessionEntryChange } from "./session-accessor.sqlite-entry-cache-publication-state.js";
@@ -18,16 +20,16 @@ import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.j
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { loadTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
 import { resolveSqliteTranscriptScope } from "./session-accessor.sqlite-scope.js";
-import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import {
+  readTranscriptContextVersionInTransaction,
   readTranscriptContextVersionInTransaction as readVersion,
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
 import {
+  replaceSqliteTranscriptEventsInTransaction,
   appendTranscriptEventsInTransaction,
   appendTranscriptEventInTransaction,
 } from "./session-accessor.sqlite-transcript-store.js";
-import { replaceSqliteTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import {
   readPreparedSessionTranscriptChange,
   readFinalSessionTranscriptProjection,

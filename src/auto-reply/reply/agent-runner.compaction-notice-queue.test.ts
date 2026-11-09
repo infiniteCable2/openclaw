@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import {
   runCliAgentMock,
   runEmbeddedAgentMock,
@@ -6,7 +7,6 @@ import {
 } from "./agent-runner.misc.runreplyagent.test-support.js";
 import { createBaseRun } from "./agent-runner.runreplyagent.test-support.js";
 import { enqueueFollowupRun } from "./queue.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 
 // Use the existing runner harness: its queue sink decides actual admission in
 // these orchestration cases; native queue custody has its own focused tests.

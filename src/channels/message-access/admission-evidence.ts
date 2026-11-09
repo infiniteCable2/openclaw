@@ -12,6 +12,7 @@ import {
   contextAdmissionScope,
   type ChannelIngressAdmissionScope,
 } from "./admission-evidence-scope-key.js";
+import type { ChannelAdmissionEvidence } from "./admission-evidence.types.js";
 import { consumeHostIngressHandoffs, takeChannelParticipantInput } from "./admission-handoff.js";
 import type { ChannelIngressHostOwner, ChannelParticipantInput } from "./ingress-host-owner.js";
 import type { ResolvedChannelMessageIngress } from "./runtime-types.js";
@@ -21,7 +22,6 @@ export {
   takeChannelParticipantInput,
 } from "./admission-handoff.js";
 
-import type { ChannelAdmissionEvidence } from "./admission-evidence.types.js";
 export type { ChannelAdmissionEvidence } from "./admission-evidence.types.js";
 
 type ChannelAdmissionContribution = Readonly<{

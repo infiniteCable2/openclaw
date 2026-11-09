@@ -63,6 +63,7 @@ function fixture(mode: "native" | "branches") {
       sessionKey: "agent:researcher:talk:original",
       canonicalKey: "agent:researcher:talk:original",
       storePath: "/synthetic/agent.sqlite",
+      assertCurrent: vi.fn(),
     },
     assertCurrent() {},
     onCreatedSessionCommitted: vi.fn(),

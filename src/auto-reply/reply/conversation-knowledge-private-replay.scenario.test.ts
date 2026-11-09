@@ -31,6 +31,7 @@ import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-ent
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { lifecycleAdmissionByOperation } from "../../sessions/session-controller.state.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { ensureClientVoiceAgentSessionEntry } from "../../talk/client-voice-session-initialization.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -44,7 +45,6 @@ import {
   createConversationKnowledgeScenario,
   person,
 } from "./conversation-knowledge.scenario.test-support.js";
-import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const planning = vi.hoisted(() => ({ summarize: vi.fn(), compact: vi.fn() }));
@@ -639,7 +639,7 @@ it.skipIf(!replayPath)(
             });
             cleanup.push(() => admission.close());
             const knowledge = createReplyConversationKnowledgeTurn({
-              turn: { isHeartbeat: false, followupRun, replyOperation },
+              turn: { followupRun, replyOperation },
               originalSource: owner.assertCurrent,
               getRuntimeConfig: () => fixture.cfg,
             });

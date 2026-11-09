@@ -9,8 +9,6 @@ import { readSessionEntryInWorker } from "../../config/sessions/session-entry-re
 import type { TypingMode } from "../../config/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayContextResolver } from "../../gateway/server-methods/types.js";
-import { logVerbose } from "../../globals.js";
-import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { formatErrorMessage, toErrorObject } from "../../infra/errors.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { ReplyRunLifecycleAdmissionBlockedError } from "../../sessions/session-controller.contracts.js";
@@ -57,6 +55,7 @@ import {
   resolveFollowupAbortSignal,
   type FollowupRun,
 } from "./queue/types.js";
+import { persistReplyInputAfterPreflightFailure } from "./reply-preflight-failure-input.js";
 import {
   admitReplyMaintenance,
   prepareReplySourceAdmission,
@@ -609,26 +608,7 @@ export async function prepareReplyAgentTurn<TConfigured>(
             }),
           );
         } catch (error) {
-          const recorder = preparation.followupRun.userTurnTranscriptRecorder;
-          if (recorder && buildPreflightCompactionFailureText(formatErrorMessage(error)) !== null) {
-            try {
-              // Keep approved input after failed maintenance without claiming a recovery turn.
-              await recorder.persistApproved({
-                expectedSessionId: operation.sessionId,
-                beforeFreshMessageCommit: () => {
-                  operation.abortSignal.throwIfAborted();
-                  preparation.followupRun.operatorAuthority?.assertCurrent();
-                  if (operation.lifecycleGeneration) {
-                    assertAgentRunLifecycleGenerationCurrent(operation.lifecycleGeneration);
-                  }
-                },
-              });
-            } catch (persistError) {
-              logVerbose(
-                `user turn not kept after failed preflight: ${formatErrorMessage(persistError)}`,
-              );
-            }
-          }
+          await persistReplyInputAfterPreflightFailure(error, preparation.followupRun, operation);
           throw error;
         }
         if (activeEntry) {

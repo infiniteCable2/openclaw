@@ -162,7 +162,7 @@ export function appendTranscriptMessageSync<TMessage>(
 
 export function appendTranscriptMessageSnapshotSync<TMessage>(
   scope: SessionTranscriptWriteScope,
-  options: TranscriptMessageAppendOptions<TMessage>,
+  inputOptions: TranscriptMessageAppendOptions<TMessage>,
   preparedMessage?: PreparedTranscriptMessageAppend<TMessage>,
   workerOptions?: {
     scheduleProjectionReconcile?: boolean;
@@ -171,7 +171,7 @@ export function appendTranscriptMessageSnapshotSync<TMessage>(
   view?: TranscriptWriteViewGuard,
   transaction?: OpenClawAgentDatabase,
 ): Result<TranscriptMessageWriteSnapshot<TMessage>, TranscriptAppendRefusal> {
-  options = captureConversationPublicationAppend(scope, options);
+  const options = captureConversationPublicationAppend(scope, inputOptions);
   const snapshot = runTranscriptWriteSnapshotSync(
     scope,
     (database, resolved) => {

@@ -206,7 +206,7 @@ async function withSource(
             },
           });
         } finally {
-          await Promise.all(sources.map((source) => source.closeConnection?.()));
+          await Promise.all(sources.map(async (source) => source.closeConnection?.()));
         }
       },
     );

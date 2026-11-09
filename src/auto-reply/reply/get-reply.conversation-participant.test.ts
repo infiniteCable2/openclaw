@@ -33,10 +33,9 @@ const { getReplyFromConfig } = await import("./get-reply.js");
 const { runPreparedReply } = await import("./get-reply-run.js");
 
 function resolvedConfig(mode: "branches" | "native" = "branches"): OpenClawConfig {
-  const validated = validateConfigObject(
-    { agents: { entries: { main: { conversationMode: mode } } } },
-    { manifestRegistry: { plugins: [], diagnostics: [] } },
-  );
+  const validated = validateConfigObject({
+    agents: { entries: { main: { conversationMode: mode } } },
+  });
   if (!validated.ok) {
     throw new Error("Invalid participant reply fixture", { cause: validated.issues });
   }

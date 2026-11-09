@@ -437,12 +437,13 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
         });
         let contextTransferred = false;
-        const session = await retainTalkClientRunAuthority({
-          client,
-          context,
-          hasCurrentClientAuthority,
-        })
-          .then((runAuthority) => {
+        let session: ReturnType<typeof createTalkRealtimeRelaySession>;
+        try {
+          session = await retainTalkClientRunAuthority({
+            client,
+            context,
+            hasCurrentClientAuthority,
+          }).then((runAuthority) => {
             try {
               assertEnsuredTargetCurrent();
               runAuthority.accept();
@@ -499,12 +500,12 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
               runAuthority.release();
               throw error;
             }
-          })
-          .finally(async () => {
-            if (!contextTransferred) {
-              await providerContext.release();
-            }
           });
+        } finally {
+          if (!contextTransferred) {
+            await providerContext.release();
+          }
+        }
         rememberUnifiedTalkSession(session.relaySessionId, {
           kind: "realtime-relay",
           connId,

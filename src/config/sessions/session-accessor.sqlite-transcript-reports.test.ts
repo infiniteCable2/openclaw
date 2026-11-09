@@ -5,7 +5,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { MessageChannel } from "node:worker_threads";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { it } from "vitest";
 import { afterEach, describe, expect, it as baseIt, onTestFinished, vi } from "vitest";
 import { expectBytesEqual } from "../../../test/helpers/file-snapshots.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
@@ -33,8 +32,8 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { setRuntimeConfigSnapshot } from "../runtime-snapshot.js";
-import { appendTranscriptMessageSync } from "./session-accessor.js";
 import {
+  appendTranscriptMessageSync,
   appendSessionTranscriptReport,
   loadSessionEntry,
   loadTranscriptEvents,
@@ -45,8 +44,10 @@ import { appendAbortedSessionTranscriptPartial } from "./session-accessor.sqlite
 import { prepareCustomTranscriptReport } from "./session-accessor.sqlite-transcript-reports.kernel.js";
 import { bindSqliteWorkerBackend } from "./session-accessor.sqlite-transcript-reports.worker.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
-import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
-import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
+import {
+  appendTranscriptEventSync,
+  replaceTranscriptEvents,
+} from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
 import { createRetainedSkillsSnapshotFixture } from "./session-skills-snapshot.test-support.js";
 import type { SessionSourcePredicate } from "./session-source-authority.js";
@@ -712,12 +713,15 @@ it("reuses only one report operation's unchanged prefix proof while rechecking s
             },
           ),
       );
-      const counter = trackSqliteStatementExecutions(database.db, ["prefix"], (statement) =>
-        statement.startsWith('select "seq", ') &&
-        statement.includes('as "navigation_json" from "transcript_events"') &&
-        statement.endsWith('order by "seq" asc')
-          ? "prefix"
-          : null,
+      const counter = trackSqliteStatementExecutions(
+        requireNativeSqliteDatabase(database.db),
+        ["prefix"],
+        (statement) =>
+          statement.startsWith('select "seq", ') &&
+          statement.includes('as "navigation_json" from "transcript_events"') &&
+          statement.endsWith('order by "seq" asc')
+            ? "prefix"
+            : null,
       );
       const { port1, port2 } = new MessageChannel();
       let appendParentId: string | null = null;

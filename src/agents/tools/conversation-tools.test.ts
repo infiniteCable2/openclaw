@@ -95,7 +95,6 @@ describe("conversation tools", () => {
   it("binds list context to the host session, not model-supplied arguments", async () => {
     const callGateway = mockGateway();
     const tool = conversationTool("list", {
-      agentId: "main",
       agentSessionKey: "agent:main:subagent:call:test",
       sessionId: "call-incarnation",
     });

@@ -136,7 +136,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
       expect(consult.senderId).toBe("@caller:example.test");
       expect(consult).not.toHaveProperty("senderIsOwner");
       expect(consult.waitForPendingInput).toBe(waitForPendingInput);
-      const registration = consult.onRunStarted?.({
+      const registration = await consult.onRunStarted?.({
         runId: "run-1",
         sessionId: "session-1",
         timeoutMs: 1000,
@@ -197,7 +197,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
       };
     });
     consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
-      const registration = consult.onRunStarted?.({
+      const registration = await consult.onRunStarted?.({
         runId: "run-abort",
         sessionId: "session-abort",
         timeoutMs: 1000,
@@ -228,7 +228,11 @@ describe("createMeetingRealtimeEngineBindings", () => {
       throw new Error("must not reach injection");
     });
     consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
-      consult.onRunStarted?.({ runId: "original", sessionId: "session-original", timeoutMs: 1000 });
+      await consult.onRunStarted?.({
+        runId: "original",
+        sessionId: "session-original",
+        timeoutMs: 1000,
+      });
       const control = published.mock.calls[0]?.[0];
       await expect(control!("B")).rejects.toThrow("session has changed");
       throw new Error("consult failed");
@@ -296,7 +300,7 @@ describe("createMeetingRealtimeEngineBindings", () => {
       );
       expect(consult.speechChannelId).toBe("matrix");
       expect(consult.toolsAllow).toBeUndefined();
-      consult.onRunStarted?.({
+      await consult.onRunStarted?.({
         runId: "control-cleanup",
         sessionId: "session-cleanup",
         timeoutMs: 1000,

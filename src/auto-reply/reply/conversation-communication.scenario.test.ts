@@ -5,10 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { resolveConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
 import { projectConversationToolNames } from "../../agents/conversation-tool-policy-pipeline.js";
 import { readToolStringParam } from "../../agents/tools/common.js";
-import {
-  createConversationsListTool,
-  createConversationsSendTool,
-} from "../../agents/tools/conversation-tools.js";
+import { createHostedConversationTools } from "../../agents/tools/conversation-tools.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import * as gatewayTransport from "../../agents/tools/in-process-gateway.js";
 import { createMessageTool } from "../../agents/tools/message-tool-execution.js";
@@ -317,7 +314,7 @@ describe("branch communication owner pilot", () => {
           const options = {
             agentId: "main",
             agentSessionKey: call.sessionKey,
-            agentSessionId: call.sessionId,
+            sessionId: call.sessionId,
             config: cfg,
             senderIsOwner: true,
           };
@@ -353,7 +350,10 @@ describe("branch communication owner pilot", () => {
               });
             },
           );
-          const listed = await createConversationsListTool(options).execute("pilot-list", {});
+          const listed = await conversationTool("conversations_list", options).execute(
+            "pilot-list",
+            {},
+          );
           const destinations = (
             await runGatewayConversationList({
               config: cfg,
@@ -373,7 +373,7 @@ describe("branch communication owner pilot", () => {
             throw new Error("No exact chat destination for the admitted call");
           }
           expect(destination.target).toBe(room);
-          const send = createConversationsSendTool(options);
+          const send = conversationTool("conversations_send", options);
           const args = {
             conversationRef: destination.conversationRef,
             message: "Text from the call",
@@ -384,7 +384,7 @@ describe("branch communication owner pilot", () => {
           await send.execute("pilot-send", args);
           expect(delivered).toEqual([{ to: room, kind: "text", text: "Text from the call" }]);
           await expect(
-            createConversationsSendTool({ ...options, senderIsOwner: false }).execute(
+            conversationTool("conversations_send", { ...options, senderIsOwner: false }).execute(
               "denied-send",
               args,
             ),
@@ -399,7 +399,6 @@ describe("branch communication owner pilot", () => {
           const deliverToCall = vi.fn(async () => {});
           const message = createMessageTool({
             config: cfg,
-            getRuntimeConfig: () => cfg,
             agentId: "main",
             agentSessionKey: call.sessionKey,
             workspaceDir: state.workspaceDir,
@@ -472,3 +471,16 @@ describe("branch communication owner pilot", () => {
     );
   });
 });
+
+function conversationTool(
+  name: "conversations_list" | "conversations_send",
+  options: NonNullable<Parameters<typeof createHostedConversationTools>[0]>,
+) {
+  const tool = createHostedConversationTools(options, "main", options.config).find(
+    (candidate) => candidate.name === name,
+  );
+  if (!tool) {
+    throw new Error(`Missing native hosted conversation tool: ${name}`);
+  }
+  return tool;
+}

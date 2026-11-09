@@ -1,5 +1,5 @@
-import "../../test-utils/prepare-compiled-subprocesses.js";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import "../../test-utils/prepare-compiled-subprocesses.js";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
@@ -15,11 +15,11 @@ import {
   appendTranscriptMessage,
   loadSessionEntry,
   loadTranscriptEvents,
-  replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import * as reportStorage from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
 import { MAX_TRANSCRIPT_REPORT_BATCH_SIZE } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
+import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import {
   addSessionMemberInWorker,
   removeSessionMemberInWorker,

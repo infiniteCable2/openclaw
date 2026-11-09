@@ -46,11 +46,12 @@ vi.mock("../../infra/agent-run-terminal-writes.js", async (importOriginal) => {
   };
 });
 
-import { captureAgentRunTerminalWriteContext } from "../../infra/agent-run-terminal-writes.js";
+import { captureAgentRunTerminalPersistence } from "../../infra/agent-run-terminal-writes.js";
 import {
   createTalkClientAgentRuntime,
   type TalkOperatorRunSource,
 } from "./client-agent-runtime.js";
+import { createTestTalkRunAuthority } from "./client-agent-runtime.test-support.js";
 
 function runParams(abortSignal?: AbortSignal): RunParams {
   return {
@@ -125,7 +126,7 @@ describe("Talk original-source admission", () => {
 
     await createTalkClientAgentRuntime({
       config: {},
-      captureOperatorAuthority: source.capture,
+      runAuthority: createTestTalkRunAuthority(source.capture),
     }).runEmbeddedAgent(runParams());
 
     expect(source.capture).toHaveBeenCalledOnce();
@@ -145,7 +146,7 @@ describe("Talk original-source admission", () => {
     });
     await createTalkClientAgentRuntime({
       config: {},
-      captureOperatorAuthority: capture,
+      runAuthority: createTestTalkRunAuthority(capture),
     }).runEmbeddedAgent(runParams());
     expect(capture).toHaveBeenCalledOnce();
   });
@@ -158,19 +159,25 @@ describe("Talk original-source admission", () => {
       const resume = createDeferred();
       const controller = new AbortController();
       let current = true;
+      const assertCurrent = () => {
+        if (!current) {
+          throw new Error("Talk owner was replaced");
+        }
+      };
+      const runAuthority = createTestTalkRunAuthority(async (invocation) => {
+        entered.resolve();
+        await resume.promise;
+        return source.capture(invocation);
+      }, assertCurrent);
       const runtime = createTalkClientAgentRuntime({
         config: {},
-        assertCurrent: () => {
-          if (!current) {
-            throw new Error("Talk owner was replaced");
-          }
-        },
-        captureOperatorAuthority: async (invocation) => {
-          expect(invocation.signal).toBe(controller.signal);
-          invocation.assertCurrent();
-          entered.resolve();
-          await resume.promise;
-          return source.capture(invocation);
+        assertCurrent,
+        runAuthority: {
+          ...runAuthority,
+          async retainRun(runId) {
+            expect(runId).toBe("talk-source-run");
+            return runAuthority.retainRun(runId);
+          },
         },
       });
       const run = runtime.runEmbeddedAgent(runParams(controller.signal));
@@ -198,7 +205,7 @@ describe("Talk original-source admission", () => {
     await expect(
       createTalkClientAgentRuntime({
         config: {},
-        captureOperatorAuthority: source.capture,
+        runAuthority: createTestTalkRunAuthority(source.capture),
       }).runEmbeddedAgent(runParams()),
     ).rejects.toThrow("Original operator source was revoked");
     expect(mocks.runEmbeddedAgent).not.toHaveBeenCalled();
@@ -207,6 +214,11 @@ describe("Talk original-source admission", () => {
 
   it("retains live Talk ownership in native admission, not only before model dispatch", async () => {
     let current = true;
+    const assertCurrent = () => {
+      if (!current) {
+        throw new Error("Talk owner was replaced");
+      }
+    };
     mocks.runEmbeddedAgent.mockImplementationOnce(async (params) => {
       await params.preparedRunAdmission!.admit("embedded");
       current = false;
@@ -217,11 +229,8 @@ describe("Talk original-source admission", () => {
     });
     await createTalkClientAgentRuntime({
       config: {},
-      assertCurrent: () => {
-        if (!current) {
-          throw new Error("Talk owner was replaced");
-        }
-      },
+      assertCurrent,
+      runAuthority: createTestTalkRunAuthority(async () => undefined, assertCurrent),
     }).runEmbeddedAgent(runParams());
     expect(mocks.runEmbeddedAgent).toHaveBeenCalledOnce();
   });
@@ -239,7 +248,7 @@ describe("Talk original-source admission", () => {
       mocks.runEmbeddedAgent.mockImplementationOnce(async (params) => {
         prepared = params.preparedRunAdmission;
         admitted = await prepared!.admit("embedded");
-        const write = captureAgentRunTerminalWriteContext(params.runId);
+        const write = captureAgentRunTerminalPersistence(params.runId).writeContext;
         if (!write) {
           throw new Error("Actual native terminal write custody was not available");
         }
@@ -248,7 +257,7 @@ describe("Talk original-source admission", () => {
       });
       const run = createTalkClientAgentRuntime({
         config: {},
-        captureOperatorAuthority: source.capture,
+        runAuthority: createTestTalkRunAuthority(source.capture),
       }).runEmbeddedAgent(runParams(controller.signal));
       try {
         await awaitGateBeforeSettlement(
@@ -280,7 +289,7 @@ describe("Talk original-source admission", () => {
     await expect(
       createTalkClientAgentRuntime({
         config: {},
-        captureOperatorAuthority: source.capture,
+        runAuthority: createTestTalkRunAuthority(source.capture),
       }).runEmbeddedAgent(runParams()),
     ).rejects.toThrow("Backend failed");
     expect(source.releaseAdmissionHold).toHaveBeenCalledOnce();

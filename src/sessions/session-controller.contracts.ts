@@ -306,37 +306,12 @@ export type ReplyOperation = {
 
 export const REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS = 15_000;
 
-export class ReplyRunAlreadyActiveError extends Error {
-  constructor(sessionKey: string) {
-    super(`Reply run already active for ${sessionKey}`);
-    this.name = "ReplyRunAlreadyActiveError";
-  }
-}
-
-/** A mutation or finishing owner fences admission without owning an active run. */
-export class ReplyRunLifecycleAdmissionBlockedError extends Error {
-  constructor(
-    sessionKey: string,
-    readonly databaseIncarnation?: string,
-  ) {
-    super(`Session "${sessionKey}" changed during turn admission. Retry.`);
-    this.name = "ReplyRunLifecycleAdmissionBlockedError";
-  }
-}
-
-export class ReplyRunFollowupAdmissionBlockedError extends Error {
-  constructor(sessionKey: string) {
-    super(`Reply follow-up admission is blocked for ${sessionKey}`);
-    this.name = "ReplyRunFollowupAdmissionBlockedError";
-  }
-}
-
-export class ReplyRunSuccessorAdmissionBlockedError extends Error {
-  constructor(sessionKey: string) {
-    super(`Reply successor admission is blocked for ${sessionKey}`);
-    this.name = "ReplyRunSuccessorAdmissionBlockedError";
-  }
-}
+export {
+  ReplyRunAlreadyActiveError,
+  ReplyRunLifecycleAdmissionBlockedError,
+  ReplyRunFollowupAdmissionBlockedError,
+  ReplyRunSuccessorAdmissionBlockedError,
+} from "./session-controller.errors.js";
 
 export const sessionControllerOperationState = Symbol.for(
   "openclaw.sessionController.operationState",

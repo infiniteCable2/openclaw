@@ -12,10 +12,8 @@ import {
   conversationKnowledgeContributionId,
 } from "../../config/sessions/conversation-knowledge-packets.js";
 import * as knowledgeStoreReads from "../../config/sessions/conversation-knowledge-store.js";
-import {
-  loadTranscriptEvents,
-  replaceTranscriptEvents,
-} from "../../config/sessions/session-accessor.js";
+import { loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
+import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import { getBackgroundOwnerLane } from "../../process/background-work.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";

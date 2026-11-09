@@ -13,8 +13,6 @@ import { getActiveRuntimeWebToolsMetadataFromState } from "../secrets/runtime-we
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import { hasMultipleSessionSharingIdentitiesNative } from "../state/user-profile-list.native.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
-import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
-import { isDeliverableMessageChannel } from "../utils/message-channel-normalize.js";
 import { hasConfiguredWebSearchProvider } from "../web-search/runtime.js";
 import {
   resolveAgentDir,
@@ -29,7 +27,7 @@ import {
 import { resolveSessionToolListingClientCaps } from "./openclaw-tools.client-caps.js";
 import { finalizeOpenClawTools } from "./openclaw-tools.finalize.js";
 import { resolveCapturedOpenClawToolsFsPolicy } from "./openclaw-tools.fs-policy.js";
-import { createHostedGatewayTools } from "./openclaw-tools.gateway.js";
+import { createHostedCronTool, createHostedGatewayTools } from "./openclaw-tools.gateway.js";
 import {
   isToolExplicitlyAllowedByFactoryPolicy,
   mergeFactoryPolicyList,
@@ -60,7 +58,6 @@ import { createChannelQuestionPromptDelivery } from "./tools/channel-question-pr
 import type { AnyAgentTool } from "./tools/common.js";
 import { createComputerTool } from "./tools/computer-tool.js";
 import { createHostedConversationTools } from "./tools/conversation-tools.js";
-import { createCronTool } from "./tools/cron-tool.js";
 import { createDashboardTool } from "./tools/dashboard-tool.js";
 import { createDecisionTool } from "./tools/decision-tool.js";
 import { createEmbeddedCallGateway } from "./tools/embedded-gateway-stub.js";
@@ -528,24 +525,7 @@ function* createOpenClawToolsSteps(
                 idempotencyScope: options?.runId,
                 contextEpoch: options?.computerContextEpoch,
               }),
-          createCronTool({
-            ...options,
-            // Use the durable runSessionKey; cleanup-retired policy keys leave cron jobs dangling.
-            agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
-            agentId: sessionAgentId,
-            agentAccountId: gatewayCallerAccountId,
-            currentDeliveryContext: deliveryContext,
-            requireExplicitDeliveryTarget:
-              Boolean(options?.agentChannel) &&
-              options?.agentChannel !== INTERNAL_MESSAGE_CHANNEL &&
-              !isDeliverableMessageChannel(options?.agentChannel ?? ""),
-            sandboxContext: options?.cronSandboxContext,
-            creatorToolAllowlist: options?.cronCreatorToolAllowlist,
-            creatorToolAllowlistCaptureRef: options?.cronCreatorToolAllowlistCaptureRef,
-            resolveCreatorToolAuthority: options?.resolveCronCreatorToolAuthority,
-            creatorAuthorityUnavailableReason: options?.cronCreatorAuthorityUnavailableReason,
-            selfRemoveOnlyJobId: options?.cronSelfRemoveOnlyJobId,
-          }),
+          createHostedCronTool(options, sessionAgentId, gatewayCallerAccountId, deliveryContext),
           createSessionsCreateTool(sessionsSpawnToolOptions),
           createSessionsTool({
             ...options,

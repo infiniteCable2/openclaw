@@ -10,11 +10,12 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { ensureAgentConversationRoot } from "../../config/sessions/session-conversation-root.js";
+import { readSessionEntryCohort } from "../../config/sessions/session-entry-cohort.worker.js";
 import type { SessionEntryCohortResult } from "../../config/sessions/session-entry-read.types.js";
+import { readExactSessionEntriesWithLifecycle } from "../../config/sessions/session-entry-read.worker.js";
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
 import { bindConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { loadAgentEntryReadOperations } from "../../state/openclaw-agent-execution-operations.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -55,20 +56,13 @@ async function fixture(agentId = "main") {
     message: { role: "assistant", stopReason: "stop", content: "A completed source answer." },
   });
   const database = openOpenClawAgentDatabase({ agentId, env: state.env });
-  const operations = await loadAgentEntryReadOperations();
-  const cohort: SessionEntryCohortResult = operations["session.entry.read"](
+  const cohort: SessionEntryCohortResult = readSessionEntryCohort(
+    database,
     {
       sessionKeys: [source.sessionKey],
       initialContext: { sessionKey: source.sessionKey, targetSessionId: target.sessionId },
     },
-    {
-      open: () => database,
-      options: { agentId, path: database.path, env: state.env },
-      admit: () => {},
-      writeTransaction: () => {
-        throw new Error("Synthetic context preparation cannot write");
-      },
-    },
+    (request) => readExactSessionEntriesWithLifecycle(request, database),
   );
   if (cohort.initialContext?.status !== "prepared") {
     throw new Error("Synthetic source context was not prepared");
@@ -348,7 +342,7 @@ describe("reply initialization with native copied context", () => {
           profileId: GATEWAY_OWNER_PROFILE_ID,
           scopes: ["operator.admin"],
           assertCurrent: () => {},
-          readCurrentRoleAssignment: () => null,
+          gatewayAccessGrant: null,
         }),
         getRuntimeConfig: () => f.cfg,
         sources: [f.source],

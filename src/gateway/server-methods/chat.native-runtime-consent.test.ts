@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { listSessionEntries, upsertSessionEntry } from "../../plugin-sdk/session-store-runtime.js";
 import { readVisibleSessionTranscriptMessageEntries } from "../../plugin-sdk/session-transcript-runtime.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -27,21 +28,25 @@ vi.mock("./chat-send-admission.js", () => ({
 }));
 useNativeProcessFixture();
 
+function nativeConfig(workspace: string): OpenClawConfig {
+  return {
+    tools: { profile: "full", deny: ["browser"] },
+    agents: {
+      defaults: {
+        workspace,
+        model: { primary: "acp-opencode/selected" },
+        models: { "acp-opencode/selected": { agentRuntime: { id: "acp-opencode" } } },
+      },
+    },
+  };
+}
+
 async function withNative(
   run: (config: OpenClawConfig, client: GatewayClient) => Promise<void>,
   prepare?: (config: OpenClawConfig) => GatewayClient,
 ) {
   await withOpenClawTestState({ label: "chat-native-consent" }, async (state) => {
-    const config: OpenClawConfig = {
-      tools: { profile: "full", deny: ["browser"] },
-      agents: {
-        defaults: {
-          workspace: state.workspaceDir,
-          model: { primary: "acp-opencode/selected" },
-          models: { "acp-opencode/selected": { agentRuntime: { id: "acp-opencode" } } },
-        },
-      },
-    };
+    const config = nativeConfig(state.workspaceDir);
     const client = prepare?.(config) ?? nativeClient();
     using _ = prepare
       ? { [Symbol.dispose]: (await prepareUserProfileCatalog()).release }
@@ -226,6 +231,7 @@ it("keeps private branch identity when first-send native consent precreates the 
       getConfig: () => config,
     });
     const profile = ensureProfileForEmail("private-native-creator@example.test");
+    using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
     const client = nativeClient(undefined, profile.id);
     const native = await registerNative(state, config, "owner-agent.mjs");
     const respond = vi.fn<RespondFn>();
@@ -292,7 +298,7 @@ it("keeps private branch identity when first-send native consent precreates the 
           sessionId: persisted.sessionId,
         }),
       ).toEqual([]);
-      expect(context.chatAbortControllers.size).toBe(0);
+      expect(rpcSourceTesting.size).toBe(0);
     } finally {
       await native.service.stop?.(native.context);
     }

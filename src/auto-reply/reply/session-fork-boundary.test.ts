@@ -1,26 +1,21 @@
 import path from "node:path";
-import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, it } from "vitest";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
   replaceSessionEntry,
-  replaceTranscriptEvents,
 } from "../../config/sessions/session-accessor.js";
 import {
   buildForkedChildTranscriptEvents,
   resolveParentForkSourceTranscript,
 } from "../../config/sessions/session-accessor.sqlite-parent-fork.js";
+import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import type { TranscriptEvent } from "../../config/sessions/session-accessor.types.js";
 import { readCodexSessionContext } from "../../plugin-sdk/codex-session-transcript-runtime.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { forkSessionEntryFromParent } from "./session-fork.js";
-
-vi.mock("../../plugins/text-transforms.runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../plugins/text-transforms.runtime.js")>()),
-  resolveRuntimeTextTransforms: () => [],
-}));
 
 const dirs = useSessionStoreTempDirs(afterAll, "openclaw-fork-completed-boundary-");
 beforeEach(() =>

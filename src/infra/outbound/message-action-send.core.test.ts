@@ -475,17 +475,16 @@ describe("runMessageAction core send routing", () => {
       expect(Value.Check(MessageToolSchema, { action: "send", ...params })).toBe(true);
       await runMessageAction({
         cfg: { channels: { testchat: { enabled: true } }, tts: { auto: "off" } } as OpenClawConfig,
-        action: "send",
         params,
         sessionKey: "agent:main:testchat:channel:abc",
         dryRun: false,
       });
-      expect(firstMockArg(sendText, "plain send").text).toBe("Visible answer.");
+      expect(mockFirstRecordArg(sendText, "plain send").text).toBe("Visible answer.");
       if (!voiceText) {
         expect(ttsMocks.maybeApplyTtsToPayload).not.toHaveBeenCalled();
         return;
       }
-      const call = firstMockArg(ttsMocks.maybeApplyTtsToPayload, "plain speech send");
+      const call = mockFirstRecordArg(ttsMocks.maybeApplyTtsToPayload, "plain speech send");
       const payload = call.payload;
       if (!payload || typeof payload !== "object") {
         throw new Error("Expected a message payload");
@@ -555,7 +554,6 @@ describe("runMessageAction core send routing", () => {
         channels: { testchat: { enabled: true } },
         tts: { auto: "inbound" },
       } as OpenClawConfig,
-      action: "send",
       params: {
         channel: "testchat",
         target: "channel:example",

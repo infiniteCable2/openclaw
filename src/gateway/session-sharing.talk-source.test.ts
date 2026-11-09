@@ -43,6 +43,7 @@ import {
 } from "./session-sharing-preparation.js";
 import { createGatewayTalkConversationInputSource } from "./talk/conversation-input-source.js";
 import { createTalkOperatorRunSource } from "./talk/operator-run-source.js";
+import { prepareTalkSessionTarget } from "./talk/session-target.js";
 
 const { getSessionEntryPatchDelivery } =
   await import("../config/sessions/session-entry-patch-delivery.test-support.js");
@@ -218,7 +219,7 @@ it("retains the real Talk principal after normal input release and still observe
     context.getRuntimeConfig = () => cfg;
     const client = createOperatorClient({ profileId: profile.id, scopes });
     const source = createGatewayTalkConversationInputSource({
-      target: { ...target, canonicalKey: target.sessionKey },
+      target: await prepareTalkSessionTarget(cfg, target.sessionKey, "settlement"),
       conversationId: "original-connection",
       getRuntimeConfig: () => cfg,
       // The actual Talk adapter calls the real native operator-capture owner;
@@ -304,7 +305,7 @@ it.for(["continuous", "reset"] as const)(
       const gateway = createDirectChatContext({ getRuntimeConfig: () => cfg });
       let sourceReleased = false;
       const source = createGatewayTalkConversationInputSource({
-        target: { ...target, canonicalKey: target.sessionKey },
+        target: await prepareTalkSessionTarget(cfg, target.sessionKey, "settlement"),
         conversationId: "connected-audio",
         getRuntimeConfig: () => cfg,
         // Only the original operator issuer is controlled here. Native session

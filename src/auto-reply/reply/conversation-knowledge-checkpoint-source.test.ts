@@ -167,6 +167,10 @@ async function sources(
     storePaths: [branch.storePath],
     sessionKey: branch.sessionKey,
     assertCurrent: options?.authority?.assertCurrent ?? assertCurrent,
+    async readEntry(check) {
+      check();
+      return { entry: { ...branch, updatedAt: 1 }, source: nativeSource };
+    },
     async withRead(request, check, consume) {
       options?.onReadRequest?.(request);
       check();

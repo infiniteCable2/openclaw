@@ -26,7 +26,6 @@ import type { SandboxContext } from "../../sandbox/types.js";
 import type { AgentSession, SessionManager, SettingsManager } from "../../sessions/index.js";
 import { withSessionManagerAppend } from "../../sessions/session-manager-append-admission.js";
 import { withPreparedSessionCapabilityRead } from "../../subagents/spawn/subagent-session-store.js";
-import { isToolExecutionAllowed } from "../../tool-policy-shared.js";
 import { hasNonzeroUsage, normalizeUsage } from "../../usage.js";
 import { isRunnerAbortError } from "../abort.js";
 import { isCacheTtlEligibleProvider, readLastCacheTtlTimestamp } from "../cache-ttl.js";
@@ -65,6 +64,7 @@ import {
 import type { AttemptNestedToolActivityState } from "./attempt-nested-tool-activity.js";
 import { appendAttemptCacheTtlIfNeeded } from "./attempt-thread-helpers.js";
 import { normalizeCompactionRecoveryTranscriptTail } from "./attempt-transcript-helpers.js";
+import { resolveAttemptNativeWebSearchPolicy } from "./attempt-web-search-policy.js";
 import {
   hasActiveCompactionRetryWork,
   waitForCompactionRetryWithAggregateTimeout,
@@ -615,28 +615,11 @@ export async function prepareEmbeddedAttemptTransport(input: {
       transformSystemPrompt: false,
     });
   }
-  const nativeWebSearchPolicyContext = {
-    // Provider-hosted search bypasses local execute hooks, so its request must
-    // honor the same execution cap without changing foreground function schemas.
-    webSearchEnabled:
-      attempt.disableTools !== true &&
-      attempt.toolOverrides?.webSearch !== false &&
-      (!attempt.toolExecutionAllow ||
-        isToolExecutionAllowed(attempt.toolExecutionAllow, "web_search")),
-    runtimeToolAllowlist: attempt.toolsAllow,
-    sessionKey: input.sandboxSessionKey,
-    sandboxToolPolicy: input.sandbox?.tools,
-    messageProvider: attempt.messageProvider ?? attempt.messageChannel,
-    agentAccountId: attempt.agentAccountId,
-    groupId: attempt.groupId,
-    groupChannel: attempt.groupChannel,
-    groupSpace: attempt.groupSpace,
-    spawnedBy: attempt.spawnedBy,
-    senderId: attempt.senderId,
-    senderName: attempt.senderName,
-    senderUsername: attempt.senderUsername,
-    senderE164: attempt.senderE164,
-  };
+  const nativeWebSearchPolicyContext = resolveAttemptNativeWebSearchPolicy(
+    attempt,
+    input.sandboxSessionKey,
+    input.sandbox,
+  );
 
   const { nativeWebSearchAllowedByToolPolicy } = await withPreparedSessionCapabilityRead(() =>
     applyExtraParamsToAgent(

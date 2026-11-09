@@ -216,14 +216,14 @@ export function createMatrixRtcConversationInputSource(
       signal?.throwIfAborted();
       throw new Error("MatrixRTC conversation input is closed");
     }
-    const selected = selectCurrent(prepared.inspect);
+    const selected = selectCurrent(() => prepared.inspect());
     if (!selected.route) {
       throw new Error("MatrixRTC conversation input has no prepared route");
     }
     const route = selected.route;
     const assertCurrent = () => {
       signal?.throwIfAborted();
-      if (selectCurrent(prepared.inspect).policyKey !== selected.policyKey) {
+      if (selectCurrent(() => prepared.inspect()).policyKey !== selected.policyKey) {
         throw new Error("MatrixRTC conversation input policy changed");
       }
     };

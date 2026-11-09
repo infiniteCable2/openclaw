@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createConversationContextCapacity } from "../../agents/embedded-agent-runner/run/prepared-conversation-context.js";
+import {
+  capturePreparedConversationContextBudget,
+  createConversationContextCapacity,
+} from "../../agents/embedded-agent-runner/run/prepared-conversation-context.js";
 import { captureRuntimeConfigWithSource } from "../../config/runtime-config-capture-state.js";
 
 const preparation = vi.hoisted(() => ({
@@ -225,6 +228,50 @@ describe("recipient preparation scheduling", () => {
       expect(preparation.projection).toHaveBeenCalledOnce();
     } finally {
       scheduled.clear();
+    }
+  });
+
+  it("retains an idle native budget across source reprepare and retires it on config change", async () => {
+    const f = sourcePreparationOpening();
+    const signal = new AbortController().signal;
+    const capacity = createConversationContextCapacity({
+      messages: [],
+      contextWindow: 8192,
+      reserveTokens: 256,
+      modelIdentity: { provider: "example", model: "test" },
+    });
+    preparation.idle.mockImplementationOnce(
+      async (
+        params: Parameters<
+          typeof import("./conversation-knowledge-idle.js").admitPreparedConversationKnowledgeWhileIdle
+        >[0],
+      ) => {
+        expect(params.budget).toBeUndefined();
+        params.retainContextBudget?.(capacity, {
+          provider: "example",
+          model: "test",
+          config: f.f.config(),
+        });
+        // A source commit retires packet custody after the native budget probe.
+        f.cache.invalidationRevision++;
+        return false;
+      },
+    );
+    try {
+      expect(await f.scheduled.prepare(signal)).toBe(true);
+      await f.scheduled.prepare(signal, false);
+      expect(preparation.idle.mock.calls[1]![0].budget).toEqual({
+        value: capturePreparedConversationContextBudget(capacity),
+        provider: "example",
+        model: "test",
+        config: f.f.config(),
+      });
+      expect(preparation.projection).toHaveBeenCalledTimes(2);
+      f.f.reload();
+      await f.scheduled.prepare(signal, false);
+      expect(preparation.idle.mock.calls[2]![0].budget).toBeUndefined();
+    } finally {
+      f.scheduled.clear();
     }
   });
 

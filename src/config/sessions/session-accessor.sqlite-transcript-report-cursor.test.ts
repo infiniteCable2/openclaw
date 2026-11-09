@@ -11,6 +11,7 @@ import {
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";
 import type { ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
@@ -54,7 +55,7 @@ function prepared(id: string): PreparedTranscriptReportBatchEntry {
 
 function measure<T>(database: OpenClawAgentDatabase, run: () => T) {
   const counter = trackSqliteStatementExecutions(
-    database.db,
+    requireNativeSqliteDatabase(database.db),
     ["header", "window", "generation", "mutation"],
     (sql) => {
       if (/^select "seq" from "transcript_events".*\blimit\b/i.test(sql)) {

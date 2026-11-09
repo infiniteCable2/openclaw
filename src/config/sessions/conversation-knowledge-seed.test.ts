@@ -122,6 +122,15 @@ const reader: SessionEntryCohortReader = {
   logicalAgentId: branch.agentId,
   storePaths: [branch.storePath],
   assertCurrent: () => {},
+  async readEntry(check) {
+    return this.withRead({ sessionKeys: [this.sessionKey] }, check, (facts) => {
+      const entry = facts.entries.find((row) => row.sessionKey === this.sessionKey)?.entry;
+      if (!entry) {
+        throw new Error("Synthetic session entry is unavailable");
+      }
+      return { entry, source: facts.source };
+    });
+  },
   async withRead(request, assertSource, consume) {
     assertSource();
     const facts = {

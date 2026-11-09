@@ -66,7 +66,13 @@ it("does not give a new task or transcript fork its source's conversation member
     updatedAt: 1,
     conversationTopology: { version: 1, role: "root" },
   };
-  const inherited = inheritSessionCreateParentFields({ parent, overrides: {} });
+  const inherited = inheritSessionCreateParentFields({
+    parent,
+    overrides: {},
+    newExplicitChild: true,
+    newDashboardRoot: false,
+    newOperatorRoot: false,
+  });
   expect(inherited).not.toHaveProperty("conversationTopology");
   const child = buildForkedGatewaySessionEntry(
     { ...inherited, sessionId: "child-provisional", updatedAt: 2 },

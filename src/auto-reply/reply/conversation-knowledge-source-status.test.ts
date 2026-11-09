@@ -83,7 +83,7 @@ vi.mock("../../config/sessions/conversation-knowledge-seed.js", () => ({
   },
 }));
 // mock-isolation: The direct preparation boundary does not consult a live reply registry.
-vi.mock("./reply-run-registry.state.js", () => ({
+vi.mock("../../sessions/session-controller.state.js", () => ({
   getReplyOperationSessionReader: () => {
     throw new Error("Direct source preparation must not acquire a reply operation");
   },
@@ -425,6 +425,9 @@ describe("related-history source custody without model status", () => {
       sessionKey: branch.sessionKey,
       storePaths: [branch.storePath],
       assertCurrent() {},
+      async readEntry() {
+        throw new Error("A source gap must never write a packet");
+      },
       async withRead() {
         throw new Error("A source gap must never write a packet");
       },

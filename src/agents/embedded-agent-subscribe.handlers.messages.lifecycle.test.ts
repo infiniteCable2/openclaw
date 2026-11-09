@@ -158,17 +158,17 @@ describe("handleMessageEnd", () => {
       },
     },
   ])("delivers completed $phase commentary only when opted in", async ({ message }) => {
-    const onBlockReply = vi.fn();
+    const onCommentaryReply = vi.fn();
     const finalizeAssistantTexts = vi.fn();
     const ctx = createMessageEndContext({
-      onBlockReply,
+      onBlockReply: onCommentaryReply,
       finalizeAssistantTexts,
       deliverCommentaryBlocks: true,
     });
 
     await endMessage(ctx, { message: { role: "assistant", ...message } });
 
-    expect(onBlockReply).toHaveBeenCalledExactlyOnceWith({
+    expect(onCommentaryReply).toHaveBeenCalledExactlyOnceWith({
       text: "Checking.",
       isCommentary: true,
     });
@@ -177,9 +177,9 @@ describe("handleMessageEnd", () => {
   });
 
   it("delivers signed commentary before a final answer in the same Responses message", async () => {
-    const onBlockReply = vi.fn();
+    const onCommentaryReply = vi.fn();
     const ctx = createMessageEndContext({
-      onBlockReply,
+      onBlockReply: onCommentaryReply,
       deliverCommentaryBlocks: true,
     });
 
@@ -207,7 +207,7 @@ describe("handleMessageEnd", () => {
       },
     });
 
-    expect(onBlockReply).toHaveBeenCalledWith({ text: "Checking now.", isCommentary: true });
+    expect(onCommentaryReply).toHaveBeenCalledWith({ text: "Checking now.", isCommentary: true });
     expect(ctx.finalizeAssistantTexts).toHaveBeenCalledWith(
       expect.objectContaining({ text: "Done." }),
     );

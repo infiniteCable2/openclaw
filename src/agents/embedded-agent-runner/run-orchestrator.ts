@@ -12,10 +12,7 @@ import {
   withAgentRunLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { captureExecRequestOwners, withExecRequestTurn } from "../../infra/exec-request-context.js";
-import {
-  buildHandledBeforeAgentReplyPayloads,
-  runBeforeAgentReplyForTurn,
-} from "../../plugins/before-agent-reply.js";
+import { runBeforeAgentReplyForTurn } from "../../plugins/before-agent-reply.js";
 import {
   buildAgentHookContextChannelFields,
   buildAgentHookContextIdentityFields,
@@ -36,7 +33,6 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { createStageTimingTracker } from "../../shared/stage-timing.js";
 import { resolveUserPath } from "../../utils.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
-import { sanitizeAgentRunTerminalReply } from "../agent-run-terminal-reply.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agent-scope.js";
 import { createAssistantErrorTranscript } from "../assistant-error-transcript.js";
 import {
@@ -74,6 +70,7 @@ import { log } from "./logger.js";
 import { createEmbeddedAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import { runPreparedEmbeddedLoop } from "./run-loop.js";
 import { createEmbeddedRunStageSummaryEmitter } from "./run/attempt-stage-timing.js";
+import { buildBeforeAgentReplyResult } from "./run/before-agent-reply-result.js";
 import { withExecutionPhaseDiagnostics } from "./run/execution-phase-diagnostics.js";
 import type {
   RunEmbeddedAgentInternalParams,
@@ -502,17 +499,7 @@ async function runEmbeddedAgentForSession(
                   notifyExecutionPhase("runtime_plugins", { provider, model: modelId }),
               });
               if (hookResult?.handled) {
-                return {
-                  payloads: buildHandledBeforeAgentReplyPayloads(hookResult.reply),
-                  meta: {
-                    durationMs: Date.now() - started,
-                    agentMeta: { sessionId: params.sessionId, provider, model: modelId },
-                    terminalReply: hookResult.reply
-                      ? sanitizeAgentRunTerminalReply(hookResult.reply.text ?? "")
-                      : { disposition: "silent" },
-                    providerStarted: false,
-                  },
-                } satisfies EmbeddedAgentRunResult;
+                return buildBeforeAgentReplyResult(hookResult.reply, started, hookCtx);
               }
 
               assistantErrorTranscript ??=

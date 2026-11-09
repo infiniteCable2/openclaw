@@ -53,7 +53,6 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { runPluginHostCleanup } from "../plugins/host-hook-cleanup.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
-import { assertExternalConversationTarget } from "../routing/conversation-mode.js";
 import { isIncognitoSessionKey, isSubagentSessionKey } from "../routing/session-key.js";
 import { resolveMissingAgentHarnessSessionError } from "../sessions/agent-harness-session-key.js";
 import {
@@ -103,7 +102,10 @@ import {
 import { deleteIncognitoSessionForReset } from "./session-reset-incognito.js";
 import { notifyGatewaySessionReset } from "./session-reset-notifications.js";
 import { ensureSessionRuntimeCleanup } from "./session-reset-runtime-cleanup.js";
-import { resolveSessionResetTarget } from "./session-reset-target.js";
+import {
+  createSessionResetConversationInputGuard,
+  resolveSessionResetTarget,
+} from "./session-reset-target.js";
 import { readGatewayBeforeResetPluginHookMessages } from "./session-reset-transcript.js";
 import { buildResetWorkspaceFields } from "./session-reset-workspace.js";
 import { withGatewaySessionEntryReadOnly } from "./session-utils-read-lifetime.js";
@@ -272,16 +274,11 @@ async function performPreparedGatewaySessionReset({
       return errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error));
     }
   };
-  const assertConversationInputTarget = (entry: SessionEntry | undefined, sessionKey: string) => {
-    if (params.conversationInput)
-      assertExternalConversationTarget({
-        cfg: resetTarget.cfg,
-        agentId: resetTarget.target.agentId,
-        sessionKey,
-        entry,
-        isSystemEvent: false,
-      });
-  };
+  const assertConversationInputTarget = createSessionResetConversationInputGuard(
+    resetTarget.cfg,
+    resetTarget.target.agentId,
+    params,
+  );
   const resolveResetEntryAccessError = (entry: SessionEntry | undefined, canonicalKey: string) => {
     assertConversationInputTarget(entry, canonicalKey);
     return (

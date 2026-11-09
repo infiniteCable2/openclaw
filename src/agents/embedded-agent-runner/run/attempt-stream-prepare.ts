@@ -54,7 +54,10 @@ import {
   withEmbeddedAttemptSteeringAdmission,
   type EmbeddedAttemptSteeringAdmission,
 } from "./attempt-steering-admission.js";
-import type { PrepareEmbeddedAttemptStreamInput } from "./attempt-stream-prepare.types.js";
+import type {
+  AttemptStreamQueueHandle,
+  PrepareEmbeddedAttemptStreamInput,
+} from "./attempt-stream-prepare.types.js";
 import { createSubscribedToolSearchExecutor } from "./attempt-tool-search-executor.js";
 import {
   createEmbeddedAttemptDeferredLifecycleOwner,
@@ -66,11 +69,6 @@ import {
   resolveReportedModelRef,
 } from "./helpers.js";
 import { resolveProviderRefusal } from "./provider-refusal.js";
-
-type AttemptStreamQueueHandle = EmbeddedAgentQueueHandle & {
-  kind: "embedded";
-  cancel: (reason?: "user_abort" | "restart" | "superseded") => void;
-};
 
 export function prepareEmbeddedAttemptStream(input: PrepareEmbeddedAttemptStreamInput) {
   return withEmbeddedAttemptSteeringAdmission(

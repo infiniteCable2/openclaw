@@ -59,6 +59,9 @@ function fixture(provider = "anthropic", model = "claude") {
     logicalAgentId: "main",
     storePaths: ["/synthetic/agent.sqlite"],
     assertCurrent() {},
+    async readEntry() {
+      throw new Error("The mocked knowledge adapter must own consumption");
+    },
     async withRead() {
       throw new Error("The mocked knowledge adapter must own consumption");
     },

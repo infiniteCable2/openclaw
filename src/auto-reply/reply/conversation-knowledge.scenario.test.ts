@@ -274,7 +274,9 @@ describe("ordered native branch Knowledge scenario", () => {
               });
               await fixture.append(recipient, "old-image-reply");
               const owner = await fixture.claim(recipient);
-              const contextLimits = resolveEmbeddedSessionContextLimits(1_000_000);
+              const contextLimits = resolveEmbeddedSessionContextLimits({
+                contextTokenBudget: 1_000_000,
+              });
               for (let index = 0; index < 7; index += 1) {
                 const donor = await fixture.branch(`donor-${index}`);
                 const sourceOwner = await fixture.claim(donor);

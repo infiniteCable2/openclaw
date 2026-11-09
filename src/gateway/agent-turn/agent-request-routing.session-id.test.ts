@@ -196,7 +196,12 @@ it("refuses direct root input before content, reset, or execution despite intern
         idempotencyKey: id,
         ...patch,
       };
-      const preflight = prepareAgentRequestPreflight({ request, context, client: principal, io });
+      const preflight = await prepareAgentRequestPreflight({
+        request,
+        context,
+        client: principal,
+        io,
+      });
       if (!preflight) {
         throw new Error("Fixture must reach conversation routing through native preflight");
       }
@@ -219,7 +224,7 @@ it("refuses direct root input before content, reset, or execution despite intern
         );
         expect(io.emitFinal).not.toHaveBeenCalled();
       }
-      await sessionAccessor.replaceSessionEntry(
+      await replaceSessionEntry(
         { agentId: "main", storePath, sessionKey: "agent:main:consolidation" },
         {
           sessionId: "persisted-conversation-root",
@@ -300,7 +305,7 @@ it("keeps normal branches, native conversations, and host-owned task input routa
         await state.writeConfig(cfg);
         setRuntimeConfigSnapshot(cfg);
         if (entry.principal === internal) {
-          await sessionAccessor.replaceSessionEntry(
+          await replaceSessionEntry(
             {
               agentId: "main",
               storePath: state.statePath("sessions.json"),
@@ -324,7 +329,7 @@ it("keeps normal branches, native conversations, and host-owned task input routa
           idempotencyKey: `conversation-origin-${index}`,
           sessionKey: entry.sessionKey,
         };
-        const preflight = prepareAgentRequestPreflight({
+        const preflight = await prepareAgentRequestPreflight({
           request,
           context,
           client: entry.principal,

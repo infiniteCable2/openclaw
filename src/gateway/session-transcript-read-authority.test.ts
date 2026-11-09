@@ -2,6 +2,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import { loadTranscriptEvents } from "../config/sessions/session-accessor.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import {
   buildForkedChildTranscriptEvents,
@@ -13,7 +14,6 @@ import { appendTranscriptMessage } from "../config/sessions/session-accessor.sql
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import type { PreparedInitialSessionContext } from "../config/sessions/session-initial-context.js";
 import { prepareSessionSourceAuthority } from "../config/sessions/session-source-authority.js";
-import { loadTranscriptEvents } from "../config/sessions/session-transcript-events.js";
 import { prepareSessionTranscriptHydration } from "../config/sessions/session-transcript-hydration.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -33,7 +33,7 @@ function operator(profileId: string, options: { scopes?: string[]; signal?: Abor
     scopes: options.scopes ?? ["operator.read"],
     signal: options.signal,
     assertCurrent: () => {},
-    readCurrentRoleAssignment: () => null,
+    readCurrentRoleFacts: () => ({ assignedRole: null, githubLogin: null }),
     retain,
   });
   return { authority, retain, release };

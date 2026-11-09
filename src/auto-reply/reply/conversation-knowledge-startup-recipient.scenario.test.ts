@@ -1,5 +1,5 @@
-import "../../test-utils/prepare-compiled-subprocesses.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import "../../test-utils/prepare-compiled-subprocesses.js";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { withinTest } from "../../../test/helpers/promise.js";
@@ -18,13 +18,14 @@ import { recordConversationKnowledgeTurn } from "../../config/sessions/conversat
 import {
   loadSessionEntry,
   loadTranscriptEvents,
-  replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import * as contextReads from "../../config/sessions/session-transcript-context-read.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { lifecycleAdmissionByOperation } from "../../sessions/session-controller.state.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { openConversationKnowledgeRoot } from "./conversation-knowledge-open.js";
@@ -34,7 +35,6 @@ import {
   createConversationKnowledgeScenario,
   person,
 } from "./conversation-knowledge.scenario.test-support.js";
-import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const model = vi.hoisted(() => ({ summarize: vi.fn(), compact: vi.fn() }));
@@ -218,7 +218,7 @@ it("prepares an existing recipient through cold root startup before its first na
         run: { ...nativeTarget, config: fixture.cfg, provider: "synthetic", model: "cold-model" },
       });
       const knowledge = createReplyConversationKnowledgeTurn({
-        turn: { isHeartbeat: false, followupRun, replyOperation },
+        turn: { followupRun, replyOperation },
         originalSource: owner.assertCurrent,
         getRuntimeConfig: () => fixture.cfg,
       });

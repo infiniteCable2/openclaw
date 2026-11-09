@@ -276,7 +276,7 @@ it("commits aliased worker membership and participant facts before publishing, a
       incognito: undefined,
     };
     const sharing = retainPreparedSessionSharingFacts({
-      databaseIdentity: `file:${String(readOpenClawAgentDatabaseIdentity(database).identity)}`,
+      databaseIdentity: `file:${readOpenClawAgentDatabaseIdentity(database).identity}`,
       sessionKey: scope.sessionKey,
       entry,
       membership: new Set(),

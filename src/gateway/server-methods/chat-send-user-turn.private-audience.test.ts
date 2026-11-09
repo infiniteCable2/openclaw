@@ -67,7 +67,6 @@ function privateBrowserTurnFixture() {
     admission: {
       operatorAuthority,
       assertWorkAdmissionCurrent: assertCurrent,
-      assertSessionTargetCurrent: assertCurrent,
       originatingRoute: {
         originatingChannel: "webchat",
         originatingTo: "agent:main:browser",
@@ -292,7 +291,6 @@ describe("prepareChatSendUserTurn private browser audience", () => {
           browser.params.userTurn = { ...input.controller, recorder };
           browser.params.admission.originatingRoute.originatingTo = chat.sessionKey;
           browser.params.admission.assertWorkAdmissionCurrent = owner.assertCurrent;
-          browser.params.admission.assertSessionTargetCurrent = owner.assertCurrent;
           const prepared = prepareChatSendUserTurn(browser.params);
           expect(readConversationPrivateAudience(prepared.ctx)).toBeDefined();
 
@@ -386,7 +384,6 @@ describe("prepareChatSendUserTurn private browser audience", () => {
           };
           browser.params.admission.originatingRoute.originatingTo = chat.sessionKey;
           browser.params.admission.assertWorkAdmissionCurrent = chatOwner.assertCurrent;
-          browser.params.admission.assertSessionTargetCurrent = chatOwner.assertCurrent;
           const preparedInput = prepareChatSendUserTurn(browser.params);
           const audience = readConversationPrivateAudience(preparedInput.ctx);
           expect(audience).toBeDefined();

@@ -54,7 +54,6 @@ function completed(
     resolved: { provider: "example-provider", model: "example-model" },
     fallback: { exhausted: false, attempts: [] },
     autoCompactionCount: 0,
-    didLogHeartbeatStrip: false,
   } satisfies AgentTurnInternalResult;
 }
 

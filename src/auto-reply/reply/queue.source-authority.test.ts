@@ -4,20 +4,20 @@ import { readPreparedRunOperatorAuthority } from "../../agents/admitted-run-cont
 import { prepareChannelRunAdmission } from "./channel-run-admission.js";
 import { prepareInternalGetReplyOptions, type InternalGetReplyOptions } from "./get-reply.types.js";
 import { createQueueCase } from "./queue.case.test-support.js";
-import { clearFollowupQueueForTest, createQueueTestRun } from "./queue.test-helpers.js";
+import { createQueueTestRun } from "./queue.test-helpers.js";
 import {
   createOverflowSummaryRetrySource,
   prepareNextDeliveryGroup,
 } from "./queue/delivery-context.js";
 import { admitFollowupRunLifecycle } from "./queue/lifecycle.js";
-import { getExistingFollowupQueue } from "./queue/state.js";
+import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
 import { isFollowupRunAborted } from "./queue/types.js";
 import type { ReplySpeechPresentationSource } from "./reply-speech-presentation.js";
 
 const queueKeys = new Set<string>();
 afterEach(() => {
   for (const key of queueKeys) {
-    clearFollowupQueueForTest(key);
+    clearFollowupQueue(key);
   }
   queueKeys.clear();
 });

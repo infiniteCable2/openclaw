@@ -112,16 +112,16 @@ describe("structured prompt media replay", () => {
   it.each(["recording", "relay"] as const)(
     "does not rediscover a %s attachment from its projected path in prompt text",
     async (purpose) => {
-      const workspaceDir = tempDirs.make("openclaw-raw-purpose-");
-      const rawPath = path.join(workspaceDir, "raw.png");
-      const otherPath = path.join(workspaceDir, "other.png");
+      const rawWorkspaceDir = tempDirs.make("openclaw-raw-purpose-");
+      const rawPath = path.join(rawWorkspaceDir, "raw.png");
+      const otherPath = path.join(rawWorkspaceDir, "other.png");
       const otherImage = createSolidPngBuffer(1, 1, { r: 0, g: 255, b: 0 });
       await fs.writeFile(rawPath, Buffer.from(TINY_PNG_BASE64, "base64"));
       await fs.writeFile(otherPath, otherImage);
       const result = await detectAndLoadPromptImages({
         prompt: `Source ${rawPath}; independent image ${otherPath}`,
         media: [{ path: rawPath, contentType: "image/png", purpose }],
-        workspaceDir,
+        workspaceDir: rawWorkspaceDir,
         model: { input: ["text", "image"] },
         workspaceOnly: true,
       });
@@ -207,7 +207,7 @@ describe("structured prompt media replay", () => {
 
     const result = await materializeProviderContext({
       context: { messages: [message] },
-      workspaceDir,
+      ...options(),
     });
 
     expect(result.messages[0]).toMatchObject({

@@ -82,15 +82,15 @@ export function createMockReplyOperation(
     get speechOutputOwner() {
       return speechOutputOwner;
     },
-    bindSpeechOutputOwner: vi.fn((owner) => {
+    bindSpeechOutputOwner: vi.fn((outputOwner) => {
       if (
         replyOperation.result ||
         replyOperation.abortSignal.aborted ||
-        (speechOutputOwnerBound && speechOutputOwner !== owner)
+        (speechOutputOwnerBound && speechOutputOwner !== outputOwner)
       ) {
         throw new Error("Reply operation speech output owner is unavailable or changed");
       }
-      speechOutputOwner = owner;
+      speechOutputOwner = outputOwner;
       speechOutputOwnerBound = true;
     }),
     key: overrides.key ?? "main",

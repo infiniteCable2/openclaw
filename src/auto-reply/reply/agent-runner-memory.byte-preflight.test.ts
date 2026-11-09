@@ -127,7 +127,6 @@ it.each(["before-preflight", "during-transcript-read"] as const)(
         sessionKey: "main",
         sessionEntry,
         agentHarnessId: "openclaw",
-        isHeartbeat: false,
       }),
     ).rejects.toThrow("guest source unavailable");
     expect(readSnapshot).toHaveBeenCalledTimes(refusalPoint === "before-preflight" ? 0 : 1);
@@ -155,7 +154,6 @@ it("refuses an unavailable guest before memory-flush preparation", async () => {
       followupRun,
       defaultModel: "gpt-test",
       resolvedVerboseLevel: "off",
-      isHeartbeat: false,
     }),
   ).rejects.toThrow("guest source unavailable");
   expect(readSnapshot).not.toHaveBeenCalled();

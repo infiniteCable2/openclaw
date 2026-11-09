@@ -1,3 +1,4 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { appendSessionTranscriptMessage } from "../../agents/sessions/session-manager-message-runtime.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
@@ -32,6 +33,7 @@ import {
 } from "./session-accessor.js";
 import { captureSessionStoreReadCandidate } from "./session-store-read-candidates.js";
 import { createExactAssistantMessage } from "./transcript-message.test-support.js";
+import { captureSessionTranscriptTargetBinding } from "./transcript-target-binding.js";
 
 const wake = vi.hoisted(() => vi.fn());
 // mock-isolation: Inspect original COMMIT/wakeup ordering before explicitly draining the real journal.
@@ -48,11 +50,15 @@ it.each(["actor", "sdk"] as const)(
           const source = await fixture.branch(`publication-${adapter}`);
           const owner = await fixture.claim(source);
           const branch = await readConversationKnowledgeBranch(owner);
-          if (!branch) throw new Error("Expected an enrolled branch");
+          if (!branch) {
+            throw new Error("Expected an enrolled branch");
+          }
           const admission = await appendTranscriptMessage(source, {
             message: { role: "user", content: "A synthetic question.", timestamp: 1 },
           });
-          if (!admission.anchor) throw new Error("Expected original admission");
+          if (!admission.anchor) {
+            throw new Error("Expected original admission");
+          }
           await upsertSessionEntryCore(source, { activeWriterRunId: "native-publication-writer" });
           const manager =
             adapter === "actor"
@@ -77,7 +83,9 @@ it.each(["actor", "sdk"] as const)(
           let current = true;
           const assertCurrent = () => {
             owner.assertCurrent();
-            if (!current) throw new Error("Synthetic source revoked");
+            if (!current) {
+              throw new Error("Synthetic source revoked");
+            }
           };
           const append = (key: string) =>
             withConversationPublicationContext(
@@ -96,7 +104,7 @@ it.each(["actor", "sdk"] as const)(
                 return manager
                   ? manager.appendMessageAsync(message)
                   : appendSessionTranscriptMessage({
-                      target: source,
+                      target: captureSessionTranscriptTargetBinding(source),
                       message,
                       cwd: state.workspaceDir,
                       assertCurrent,
@@ -111,7 +119,9 @@ it.each(["actor", "sdk"] as const)(
           expect(ready[0]?.anchor.entryId).toEqual(expect.any(String));
           expect(wake.mock.calls.length).toBeGreaterThan(wakesBefore);
           const transcript = await loadTranscriptEvents(source);
-          expect(transcript.some((entry) => entry.id === ready[0]?.anchor.entryId)).toBe(true);
+          expect(
+            transcript.some((entry) => asOptionalRecord(entry)?.id === ready[0]?.anchor.entryId),
+          ).toBe(true);
           const wakesAfterCommit = wake.mock.calls.length;
           current = false;
           await expect(append("native-publication-revoked")).rejects.toThrow("revoked");
@@ -567,7 +577,7 @@ it("publishes original input, steered input and commentary before final completi
             // Native steering changes correlation, not the admitted original input.
             expect(first.getAdmissionReceipt()).toEqual(beforeSteerAdmission);
             expect(steered!.admission.entryId).toBe(savedSecond.anchor!.entryId);
-            expect(steered!.message.__openclaw?.steerTargetRunId).toBe("run-one");
+            expect(steered!.message["__openclaw"]?.steerTargetRunId).toBe("run-one");
             expect(await loadTranscriptEvents(source)).toEqual(
               expect.arrayContaining([
                 expect.objectContaining({

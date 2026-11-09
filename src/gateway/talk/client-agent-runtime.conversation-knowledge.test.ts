@@ -21,6 +21,7 @@ vi.mock("../../sessions/user-turn-transcript.js", () => ({
   createUserTurnTranscriptRecorder: () => undefined,
 }));
 import { createTalkClientAgentRuntime } from "./client-agent-runtime.js";
+import { createTestTalkRunAuthority } from "./client-agent-runtime.test-support.js";
 
 beforeEach(() => {
   mocks.runEmbeddedAgent.mockReset().mockResolvedValue({ payloads: [] });
@@ -56,7 +57,7 @@ describe("Talk personal conversation context through native SQLite", () => {
             config: f.cfg,
             getRuntimeConfig: () => f.cfg,
             participant,
-            captureOperatorAuthority: async () => ({ authority, release }),
+            runAuthority: createTestTalkRunAuthority(async () => ({ authority, release })),
           });
           for (const [index, text] of ["first-live-fact", "second-live-fact"].entries()) {
             await recordConversationKnowledgeTurn({

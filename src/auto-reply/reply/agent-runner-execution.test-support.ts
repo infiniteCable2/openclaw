@@ -365,6 +365,8 @@ export {
 
 export type EmbeddedAgentParams = Pick<
   RunEmbeddedAgentInternalParams,
+  | "deliverCommentaryBlocks"
+  | "extraSystemPrompt"
   | "currentInboundContext"
   | "prepareConversationContext"
   | "refreshConversationContext"

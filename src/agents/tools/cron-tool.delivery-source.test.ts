@@ -1,19 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createCronTool } from "./cron-tool.js";
+import {
+  callGatewayMock as gateway,
+  installCronToolTestFixture,
+  readGatewayCall,
+} from "./cron-tool.test-support.js";
 
 describe("automation creation from a source without durable reply delivery", () => {
-  const gateway = vi.fn();
-  beforeEach(() => {
-    gateway.mockReset();
-    gateway.mockResolvedValue({ ok: true });
-  });
+  installCronToolTestFixture();
   const job = {
     name: "Example reminder",
     schedule: { kind: "every", everyMs: 60_000 },
     payload: { kind: "agentTurn", message: "Report the result" },
   };
-  const tool = () =>
-    createCronTool({ requireExplicitDeliveryTarget: true }, { callGatewayTool: gateway });
+  const tool = () => createCronTool({ requireExplicitDeliveryTarget: true });
 
   it.each([undefined, { mode: "announce" }, { mode: "announce", channel: "matrix" }])(
     "asks for a durable destination before creating a job (delivery=%j)",
@@ -35,7 +35,7 @@ describe("automation creation from a source without durable reply delivery", () 
   ])("keeps explicit native delivery choices (delivery=%j)", async (delivery) => {
     await tool().execute("create-example", { action: "add", job: { ...job, delivery } });
     expect(gateway).toHaveBeenCalledOnce();
-    expect(gateway.mock.calls[0]?.[2]).toMatchObject({ delivery });
+    expect(readGatewayCall().params).toMatchObject({ delivery });
   });
 
   it("does not bypass the destination requirement by choosing a system-event reminder", async () => {

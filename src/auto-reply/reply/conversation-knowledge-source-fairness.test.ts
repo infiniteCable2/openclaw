@@ -83,7 +83,7 @@ vi.mock("../../config/sessions/conversation-knowledge-seed.js", () => ({
   },
 }));
 // mock-isolation: The direct preparation boundary does not consult a live reply registry.
-vi.mock("./reply-run-registry.state.js", () => ({
+vi.mock("../../sessions/session-controller.state.js", () => ({
   getReplyOperationSessionReader: () => {
     throw new Error("Direct source preparation must not acquire a reply operation");
   },
@@ -383,6 +383,9 @@ describe("related-history prepared source fairness", () => {
         sessionKey: branch.sessionKey,
         storePaths: [branch.storePath],
         assertCurrent() {},
+        async readEntry() {
+          throw new Error("Mock packet admission owns this boundary");
+        },
         async withRead() {
           throw new Error("Mock packet admission owns this boundary");
         },

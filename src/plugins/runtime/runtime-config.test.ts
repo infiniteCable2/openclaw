@@ -65,7 +65,7 @@ describe("plugin runtime config", () => {
 
   it("observes installed config publications without session or transcript churn", () => {
     const listener = vi.fn();
-    const unsubscribe = createRuntimeConfig().subscribe(listener);
+    const unsubscribe = createRuntimeBase().config.subscribe(listener);
     try {
       sessionChanges.emit({ sessionKey: "agent:example:main", scope: "runtime" });
       sessionChanges.emit({ all: true, scope: "profiles" });

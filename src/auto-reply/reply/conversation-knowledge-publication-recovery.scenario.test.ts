@@ -184,7 +184,7 @@ it("imports a cached donor group after transient publication without another use
             readyOnly: true,
             retainInHistory: {
               writeTarget: recipient,
-              contextLimits: resolveEmbeddedSessionContextLimits(1_000_000),
+              contextLimits: resolveEmbeddedSessionContextLimits({ contextTokenBudget: 1_000_000 }),
               maintainContext: async (source) => {
                 source();
                 return { compacted: false, complete: true, canAdmitPending: true };

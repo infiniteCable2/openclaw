@@ -153,6 +153,8 @@ export function normalizeGatewayOperatorRecoverySnapshot(
 /** Decode bounded original principal evidence without authorizing a model run. */
 export function decodeGatewayOperatorRecoverySnapshot(value: unknown): OperatorRunRecoverySnapshot {
   const parsed = normalizeGatewayOperatorRecoverySnapshot(value);
-  if (!parsed) throw new Error("Operator source snapshot is invalid or exceeds its storage bound.");
+  if (!parsed) {
+    throw new Error("Operator source snapshot is invalid or exceeds its storage bound.");
+  }
   return parsed;
 }

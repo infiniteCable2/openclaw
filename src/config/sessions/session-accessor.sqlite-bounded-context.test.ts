@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import path from "node:path";
-import { it } from "vitest";
-import { expect, it as baseIt, vi } from "vitest";
+import { expect, vi } from "vitest";
 import { BACKGROUND_RESULT_PLACEMENT_CUSTOM_TYPE } from "../../../packages/agent-core/src/harness/session/background-result-placement.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
-import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { withSqliteReaderOwner } from "../../infra/sqlite-reader-lifecycle.js";
 import { runSqliteReadSnapshotSync } from "../../infra/sqlite-transaction.js";
@@ -16,22 +13,33 @@ import {
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { captureRuntimeConfigAsyncReader } from "../io.runtime.js";
 import {
   appendTranscriptEvent,
   appendTranscriptMessage,
   persistSessionTranscriptTurn,
   loadTranscriptEventsSync,
   readTranscriptStatsSync,
-  upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { readSessionTranscriptBoundedActiveContextCore as boundedContext } from "./session-accessor.sqlite-active-context.js";
+import { readRecentSessionTranscriptActiveEvents as recentEvents } from "./session-accessor.sqlite-active-events.js";
 import {
-  readRecentSessionTranscriptActiveEvents as recentEvents,
-  readSessionTranscriptMessageEventPage as messagePage,
-  readSessionTranscriptBoundedMessageTailPage as tailPage,
-} from "./session-accessor.sqlite-active-events.js";
+  assistant,
+  compaction,
+  eventIds,
+  it,
+  observePayloadAcquisition,
+  persist,
+  readContext,
+  readHistory,
+  readSessionTranscriptMessageEventCount,
+  reset,
+  seedImportedTranscript,
+  serializedBytes,
+  storedMessage,
+  toolResult,
+  user,
+  withBoundedContextScope,
+} from "./session-accessor.sqlite-bounded-context.fixture.js";
 import { countAcquiredTranscriptPayloadBytes } from "./session-accessor.sqlite-bounded-context.test-support.js";
 import {
   clearHistoryNavigation,
@@ -39,109 +47,17 @@ import {
   readSessionTranscriptHistoryEventById as historyEvent,
   withRecentActiveTranscriptEvents as visitRecentEvents,
 } from "./session-accessor.sqlite-history.test-support.js";
-import { seedUnindexedTranscriptForTest } from "./session-accessor.sqlite-import.test-support.js";
 import { readSessionTranscriptModelContext } from "./session-accessor.sqlite-model-context.js";
 import { readActiveTranscriptEntryAnchor } from "./session-accessor.sqlite-transcript-admitted-read.js";
-import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
-import { runWithSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
-import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
-import { waitForSessionTranscriptProjection as waitProjection } from "./session-transcript-reconcile.js";
+import {
+  SessionTranscriptReadFenceError,
+  runWithSessionTranscriptReadFence,
+} from "./session-transcript-read-fence.js";
+import {
+  waitForSessionTranscriptProjection,
+  waitForSessionTranscriptProjection as waitProjection,
+} from "./session-transcript-reconcile.js";
 import { transcriptMessage } from "./transcript-message.test-support.js";
-
-const readSessionTranscriptMessageEventCount = (scope: Parameters<typeof messagePage>[0]): number =>
-  messagePage(scope, { maxMessages: 0, offset: 0 }).totalMessages;
-
-type Scope = { agentId: string; sessionId: string; sessionKey: string; storePath: string };
-function persist(
-  scope: Scope,
-  messages: Parameters<typeof persistSessionTranscriptTurn>[1]["messages"],
-) {
-  return persistSessionTranscriptTurn(scope, { messages, touchSessionEntry: false });
-}
-
-function user(id: string, parent: string | null, content = id) {
-  return transcriptMessage(id, parent, { role: "user", content });
-}
-
-function assistant(id: string, parent: string | null, content = id) {
-  return transcriptMessage(id, parent, { role: "assistant", content });
-}
-
-function toolResult(id: string, parent: string, call: string, text: string, second: number) {
-  return transcriptMessage(id, parent, {
-    role: "toolResult",
-    toolCallId: call,
-    toolName: "read",
-    content: [{ type: "text", text }],
-    isError: false,
-    timestamp: Date.UTC(2026, 7, 15, 0, 0, second),
-  });
-}
-
-function storedMessage(
-  id: string,
-  parentId: string | null,
-  role: "user" | "assistant",
-  content: string,
-) {
-  return { type: "message", id, parentId, message: { role, content } };
-}
-
-function compaction(id: string, parentId: string, firstKeptEntryId: string, summary: string) {
-  return {
-    type: "compaction",
-    id,
-    parentId,
-    firstKeptEntryId,
-    summary,
-    timestamp: "2026-08-30T00:00:00.000Z",
-    tokensBefore: 100,
-  };
-}
-
-function reset(id: string, parentId: string, firstKeptEntryId?: string) {
-  return {
-    type: "reset",
-    id,
-    parentId,
-    firstKeptEntryId,
-    reason: "new",
-    timestamp: "2026-08-30T00:00:00.000Z",
-  };
-}
-
-function eventIds(events: unknown[]) {
-  return events.map((event) => (event as { id: string }).id);
-}
-
-function serializedBytes(events: unknown[]) {
-  return events.reduce<number>(
-    (total, event) => total + Buffer.byteLength(JSON.stringify(event)) + 1,
-    0,
-  );
-}
-
-function readContext(scope: Scope, maxBytes = 1024, maxEvents = 10) {
-  return boundedContext(scope, { maxBytes, maxEvents });
-}
-
-async function withBoundedContextScope(run: (scope: Scope) => Promise<void>): Promise<void> {
-  await withOpenClawTestState({ label: "bounded-transcript-context" }, async (state) => {
-    await captureRuntimeConfigAsyncReader()();
-    const scope = {
-      agentId: "main",
-      sessionId: "bounded-context",
-      sessionKey: "agent:main:bounded-context",
-      storePath: path.join(state.sessionsDir("main"), "sessions.json"),
-    };
-    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-    await run(scope);
-  });
-}
-
-const it = baseIt.extend<{ scope: Scope }>({
-  scope: async ({ task: _task }, use) => withBoundedContextScope(use),
-});
 
 it("keeps bounded hydration identical with complete, partial and absent active facts", async ({
   scope,
@@ -323,88 +239,6 @@ it("reports slow hydration scan shape without formatting fast reads or draining 
     database.close();
   }
 });
-
-async function seedImportedTranscript(scope: Scope, events: unknown[]) {
-  await seedUnindexedTranscriptForTest({
-    ...scope,
-    entry: { sessionId: scope.sessionId, updatedAt: 1 },
-    events: events.map((event, seq) => ({
-      session_id: scope.sessionId,
-      seq,
-      created_at: seq,
-      event_json: JSON.stringify(event),
-    })),
-  });
-}
-
-function readHistory(scope: Scope) {
-  return tailPage(scope, { maxBytes: 1024 * 1024, maxMessages: 100, offset: 0 });
-}
-
-function observePayloadAcquisition(
-  connection: ReturnType<typeof openOpenClawAgentDatabase>["db"],
-  marker: string,
-  read: () => void,
-) {
-  const db = requireNativeSqliteDatabase(connection);
-  clearNodeSqliteKyselyCacheForDatabase(db);
-  const prepare = db.prepare.bind(db);
-  const parse = JSON.parse;
-  const restoreStatements: Array<() => void> = [];
-  const pending = new Map<string, number>();
-  let acquiredBytes = 0;
-  let largestRowBytes = 0;
-  let peakPendingBytes = 0;
-  let decodedRows = 0;
-  const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((query) => {
-    const statement = prepare(query);
-    const iterate = statement.iterate.bind(statement);
-    // Observe SQLite result acquisition, including payloads rejected before JSON.parse.
-    const iterateSpy = vi.spyOn(statement, "iterate").mockImplementation(function* (...params) {
-      for (const row of iterate(...params)) {
-        for (const value of Object.values(row)) {
-          if (typeof value === "string" && value.includes(marker)) {
-            const bytes = Buffer.byteLength(value);
-            acquiredBytes += bytes;
-            pending.set(value, bytes);
-            largestRowBytes = Math.max(largestRowBytes, bytes);
-            peakPendingBytes = Math.max(
-              peakPendingBytes,
-              [...pending.values()].reduce((a, b) => a + b, 0),
-            );
-          }
-        }
-        yield row;
-      }
-      return undefined;
-    });
-    restoreStatements.push(() => iterateSpy.mockRestore());
-    return statement;
-  });
-  const parseSpy = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
-    if (typeof text === "string" && text.includes(marker)) {
-      decodedRows++;
-      pending.delete(text);
-    }
-    return parse(text, reviver);
-  });
-  try {
-    read();
-  } finally {
-    parseSpy.mockRestore();
-    prepareSpy.mockRestore();
-    for (const restore of restoreStatements) {
-      restore();
-    }
-  }
-  return {
-    acquiredBytes,
-    largestRowBytes,
-    peakPendingBytes,
-    decodedRows,
-    pendingRows: pending.size,
-  };
-}
 
 it("does not acquire unrelated excluded history while selecting background dependencies", async ({
   scope,

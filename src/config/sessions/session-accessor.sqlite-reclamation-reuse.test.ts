@@ -4,7 +4,6 @@ import { once } from "node:events";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { Worker, WorkerOptions } from "node:worker_threads";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { resolveChannelPluginRegistration } from "../../channels/plugins/registry.js";
 import {
   conversation,
   queueConversationDeliveryForTest,
@@ -12,9 +11,11 @@ import {
 import { runGatewayConversationList } from "../../gateway/conversation-list.js";
 import { runGatewayConversationSend } from "../../gateway/conversation-send.js";
 import * as databaseProcessRole from "../../infra/database-engine/admission-scope.js";
+import * as outboundChannelResolution from "../../infra/outbound/channel-resolution.js";
 import { completeDurableDelivery } from "../../infra/outbound/delivery-completion.js";
 import type { MessageActionResult } from "../../infra/outbound/message-action-contracts.js";
 import * as messageActionRunner from "../../infra/outbound/message-action-runner.js";
+import * as outboundSession from "../../infra/outbound/outbound-session.js";
 import {
   readSqliteDatabaseIntegrityVerification,
   readSqliteDatabaseCleanClose,
@@ -213,7 +214,7 @@ test.each(["two-leases-missing", "revoked-after-open"] as const)(
 );
 
 test.each(["directory discovery", "Gateway send", "durable completion"] as const)(
-  "admits %s behind a native reclamation commit request",
+  "admits %s behind a native reclamation writer admission request",
   async (operation) => {
     const fixture = createFixture();
     const { database, options, plans, scopes } = fixture;
@@ -237,31 +238,24 @@ test.each(["directory discovery", "Gateway send", "durable completion"] as const
     }
     const runForeground = (): Promise<unknown> => {
       if (operation === "directory discovery") {
-        return runGatewayConversationList(
-          { config, agentId: "main", channel: "reef", limit: 10 },
-          {
-            listConversations,
-            registerConversationAddresses,
-            resolveChannelPluginRegistration,
-            resolveOutboundChannelPlugin: () => ({
-              ...createChannelTestPluginBase({
-                id: "reef",
-                config: { isEnabled: () => true, isConfigured: () => true },
-              }),
-              directory: {
-                listPeers: async () => [{ kind: "user", id: "molty", name: "Synthetic peer" }],
-              },
-            }),
-            resolveOutboundSessionRoute: async () => ({
-              sessionKey: conversation.sessionKey,
-              baseSessionKey: conversation.sessionKey,
-              peer: { kind: "direct", id: "molty" },
-              chatType: "direct",
-              from: "reef:molty",
-              to: conversation.target,
-            }),
+        vi.spyOn(outboundChannelResolution, "resolveOutboundChannelPlugin").mockReturnValue({
+          ...createChannelTestPluginBase({
+            id: "reef",
+            config: { isEnabled: () => true, isConfigured: () => true },
+          }),
+          directory: {
+            listPeers: async () => [{ kind: "user", id: "molty", name: "Synthetic peer" }],
           },
-        );
+        });
+        vi.spyOn(outboundSession, "resolveOutboundSessionRoute").mockResolvedValue({
+          sessionKey: conversation.sessionKey,
+          baseSessionKey: conversation.sessionKey,
+          peer: { kind: "direct", id: "molty" },
+          chatType: "direct",
+          from: "reef:molty",
+          to: conversation.target,
+        });
+        return runGatewayConversationList({ config, agentId: "main", channel: "reef", limit: 10 });
       }
       if (operation === "Gateway send") {
         vi.spyOn(messageActionRunner, "runMessageAction").mockImplementation(
@@ -303,7 +297,6 @@ test.each(["directory discovery", "Gateway send", "durable completion"] as const
     };
     const order: string[] = [];
     let foreground: Promise<unknown> | undefined;
-    let authorization: Promise<void> | undefined;
     let authorizerDelayMs: number | undefined;
     const withWorker = reclamationWorker.withSqliteReclamationWorker;
     vi.spyOn(reclamationWorker, "withSqliteReclamationWorker").mockImplementation(
@@ -316,23 +309,20 @@ test.each(["directory discovery", "Gateway send", "durable completion"] as const
             const spy = vi.spyOn(worker, "run").mockImplementation((params) =>
               execute({
                 ...params,
-                onCommitRequest: () => {
+                withWriteAdmission: async (runAdmitted, diagnostics, transaction) => {
                   const startedAt = performance.now();
-                  order.push("commit-request");
+                  order.push("admission-request");
                   foreground = Promise.resolve()
                     .then(runForeground)
                     .finally(() => {
                       order.push("foreground-settled");
                     });
-                  // Exercise real foreground work before the pending native commit is authorized.
-                  authorization = yieldToEventLoop().then(() => {
-                    authorizerDelayMs = performance.now() - startedAt;
-                    order.push("authorize");
-                    params.onCommitRequest();
-                  });
                   void foreground.catch(() => undefined);
-                  void authorization.catch(() => undefined);
-                  return [];
+                  // Let foreground enqueue before acquiring the native writer gate.
+                  await yieldToEventLoop();
+                  authorizerDelayMs = performance.now() - startedAt;
+                  order.push("authorize");
+                  await params.withWriteAdmission(runAdmitted, diagnostics, transaction);
                 },
               }),
             );
@@ -348,9 +338,12 @@ test.each(["directory discovery", "Gateway send", "durable completion"] as const
     );
     const workers = observeReclamationWorkers();
     try {
-      const result = await reclaim({ forceInProcess: false, plan: plans[0]! });
-      await Promise.all([foreground, authorization]);
-      expect(order).toEqual(["commit-request", "authorize", "foreground-settled"]);
+      const result = await reclaim({ plan: plans[0]! });
+      await foreground;
+      expect(order[0]).toBe("admission-request");
+      expect(order).toHaveLength(3);
+      expect(order).toContain("authorize");
+      expect(order).toContain("foreground-settled");
       expect(authorizerDelayMs).toBeLessThan(500);
       expect(result).toMatchObject({ kind: "lifecycle-artifacts", value: { removedEntries: 1 } });
       expect(loadSessionEntryReadOnly(scopes[0]!)).toBeUndefined();

@@ -204,7 +204,7 @@ describe("session transcript inbound context", () => {
       { role: "user", text: "old text", messageId: "changed" },
       { role: "assistant", text: "answer", isCompletedAnswer: true },
       { role: "user", text: "pending", messageId: "pending" },
-      { role: "assistant", text: "partial", isCompletedAnswer: false },
+      { role: "assistant", text: "partial" },
     ]);
     const ctx = context({
       SessionTranscriptContext: { historyKind: "recent", historyLimit: 3 },

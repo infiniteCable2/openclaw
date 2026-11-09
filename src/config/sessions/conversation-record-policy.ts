@@ -38,7 +38,9 @@ export function selectUniqueConversationRows<Row>(
     if (relation && contextRelations.get(mapped.record.conversationRef) !== "current") {
       contextRelations.set(mapped.record.conversationRef, relation);
     }
-    if (existing?.associationIsCurrent) continue;
+    if (existing?.associationIsCurrent) {
+      continue;
+    }
     if (!existing) {
       unique.set(mapped.record.conversationRef, mapped);
       continue;
@@ -67,9 +69,10 @@ export function selectUniqueConversationRows<Row>(
       });
     }
   }
-  const values = [...unique.values()].map(({ record }) => {
+  const values: ConversationRecord[] = [];
+  for (const { record } of unique.values()) {
     const contextRelation = contextRelations.get(record.conversationRef);
-    return contextRelation ? { ...record, contextRelation } : record;
-  });
+    values.push(contextRelation ? { ...record, contextRelation } : record);
+  }
   return options.limit === undefined ? values : values.slice(0, options.limit);
 }

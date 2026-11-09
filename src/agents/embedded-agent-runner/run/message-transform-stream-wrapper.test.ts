@@ -15,12 +15,21 @@ import { attachRuntimePromptMediaFacts, type MediaFact } from "../../../media/me
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import type { StreamFn } from "../../runtime/index.js";
 import type { SandboxFsBridge } from "../../sandbox/fs-bridge.js";
+import { makeProviderModelFixture } from "../../test-helpers/provider-model-fixture.js";
 import { hydratePromptMediaMessages, materializeProviderContext } from "./images.js";
 import { wrapStreamFnWithMessageTransform } from "./message-transform-stream-wrapper.js";
 
 type ProviderContextMaterializer = NonNullable<
   Parameters<typeof wrapStreamFnWithMessageTransform>[2]
 >;
+
+const videoModel = makeProviderModelFixture({
+  id: "video-model",
+  provider: "test",
+  api: "openai-completions",
+  baseUrl: "https://example.test/v1",
+  input: ["text", "video"],
+});
 
 const PNG = {
   type: "image" as const,
@@ -180,6 +189,7 @@ describe("direct provider context handoff", () => {
     );
     const controller = new AbortController();
     const resolving = sandboxMaterializer(bridge)({
+      model: videoModel,
       context: { systemPrompt: "system", messages: [persistedVideo()], tools: [] },
       signal: controller.signal,
     });
@@ -202,6 +212,7 @@ describe("direct provider context handoff", () => {
       videoFact({ path: "/workspace/second.mp4", sizeBytes: MAX_VIDEO_BYTES }),
     ]);
     const resolved = await sandboxMaterializer(bridge)({
+      model: videoModel,
       context: { systemPrompt: "system", messages: [current], tools: [] },
     });
     expect(resolved.messages[0]?.content).toEqual([

@@ -14,7 +14,7 @@ import { resolveSessionModelOverrideSource } from "../../config/sessions/model-o
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
 import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
-import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
   AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE,
@@ -32,7 +32,6 @@ import { CronSessionLifecycleClaimError } from "../run-authority.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
 import type { CronWorkspaceLease } from "../run-workspace.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
-import { isDetachedCronSessionTarget } from "../session-target.js";
 import { resolveCronRunToolsAllow } from "../tools-allow.js";
 import {
   resolveCronModelSelection,
@@ -54,6 +53,7 @@ import {
   type RunCronAgentTurnParams,
   type WithRunSession,
 } from "./run-prepare-runtime.js";
+import { resolveCronSessionRouting } from "./run-session-routing.js";
 import {
   beginCronPreparationEffect,
   withCronSessionPreparation,
@@ -74,11 +74,9 @@ import {
   resolveAgentWorkspaceDir,
   resolveEffectiveAgentRuntime,
   resolveCronStyleNow,
-  resolveHookExternalContentSource,
   resolveSessionRuntimeOverrideForProvider,
   resolveThinkingSelection,
 } from "./run.runtime.js";
-import { resolveCronAgentSessionKey } from "./session-key.js";
 import { prepareCronSession } from "./session.js";
 
 type CronRunPreparation = Extract<
@@ -188,39 +186,14 @@ async function resolveCronRunPreparation(params: CronRunPreparationParams) {
     config: modelOwner.config,
     agentConfigOverride,
   });
-  const baseSessionKey = (input.sessionKey?.trim() || `cron:${input.job.id}`).trim();
-  // A `current` job is a child run of its creating conversation: it keeps its own
-  // `cron:<jobId>` run key, and the conversation's resources come from the admission.
-  const currentBoundSourceKey =
-    input.job.sessionTarget === "current" ? input.job.sessionKey?.trim() : undefined;
-  const usesDetachedRunSession =
-    isDetachedCronSessionTarget(input.job.sessionTarget) || Boolean(currentBoundSourceKey);
-  const baseSessionKeyIsCron =
-    baseSessionKey.startsWith("cron:") || isCronSessionKey(baseSessionKey);
-  const cronExecutionSessionKey =
-    usesDetachedRunSession && !baseSessionKeyIsCron ? `cron:${input.job.id}` : baseSessionKey;
-  const agentSessionKey = resolveCronAgentSessionKey({
-    sessionKey: cronExecutionSessionKey,
-    agentId,
-    mainKey: runtimeCfg.session?.mainKey,
-    cfg: runtimeCfg,
-  });
-  const resolvedBaseSessionKey = resolveCronAgentSessionKey({
-    sessionKey: currentBoundSourceKey ?? baseSessionKey,
-    agentId,
-    mainKey: runtimeCfg.session?.mainKey,
-    cfg: runtimeCfg,
-  });
-  const sourceSessionKey =
-    currentBoundSourceKey && resolvedBaseSessionKey !== agentSessionKey
-      ? resolvedBaseSessionKey
-      : undefined;
-  const payloadHookExternalContentSource =
-    input.job.payload.kind === "agentTurn" ? input.job.payload.externalContentSource : undefined;
-  const hookExternalContentSource =
-    payloadHookExternalContentSource ?? resolveHookExternalContentSource(baseSessionKey);
-
-  const isGmailHook = hookExternalContentSource === "gmail";
+  const {
+    baseSessionKey,
+    usesDetachedRunSession,
+    agentSessionKey,
+    sourceSessionKey,
+    hookExternalContentSource,
+    isGmailHook,
+  } = resolveCronSessionRouting({ input, runtimeCfg, agentId });
   return {
     ok: true as const,
     resources: runtimeResources.move(),

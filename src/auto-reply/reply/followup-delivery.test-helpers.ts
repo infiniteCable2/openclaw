@@ -1,7 +1,8 @@
+import { vi } from "vitest";
 import { prepareAgentRunTerminalReply } from "../../agents/agent-run-terminal-reply.js";
 import type { ReplyPayload } from "../types.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
-import type { resolveFollowupDeliveryDecision } from "./followup-delivery.js";
+import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
 import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 import { createMockReplyOperation, createMockTypingController } from "./test-helpers.js";
 
@@ -85,3 +86,27 @@ export const createDefaults = (onBlockReply: (payload: ReplyPayload) => Promise<
   typing: createMockTypingController(),
   opts: { onBlockReply },
 });
+
+type DecisionParams = Parameters<typeof resolveFollowupDeliveryDecision>[0];
+export function decideFollowupDelivery(
+  turn = createTurn(),
+  execution: DecisionParams["execution"] = createSettledExecution(),
+  accounting: DecisionParams["accounting"] = createAccounting(),
+  opts?: DecisionParams["opts"],
+) {
+  return resolveFollowupDeliveryDecision({ turn, execution, accounting, opts });
+}
+
+export function deliverTestFollowupDecision({
+  turn = createTurn(),
+  ...params
+}: Pick<Parameters<typeof deliverFollowupDecision>[0], "decision"> &
+  Partial<Parameters<typeof deliverFollowupDecision>[0]>) {
+  return deliverFollowupDecision({
+    defaults: createDefaults(vi.fn(async () => {})),
+    runFollowup: vi.fn(async () => {}),
+    turn,
+    runId: turn.runId,
+    ...params,
+  });
+}

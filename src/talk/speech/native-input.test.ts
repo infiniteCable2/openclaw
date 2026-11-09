@@ -211,7 +211,11 @@ describe("native speech input media ownership", () => {
     await f.calls[0]!.onCompactionNotice?.(notice);
     expect(f.output.enqueueSpeechStatus).toHaveBeenCalledExactlyOnceWith(notice.text, 1, 1);
     expect(f.output.finalizeSpeechUtterance).not.toHaveBeenCalled();
-    f.calls[0]!.onNativeRunBound(f.bound("original"));
+    const onNativeRunBound = f.calls[0]!.onNativeRunBound;
+    if (!onNativeRunBound) {
+      throw new Error("Native input did not provide its run binding callback");
+    }
+    onNativeRunBound(f.bound("original"));
     f.pending[0]!.resolve({ kind: "reply", reply: { text: "The actual answer." } });
     await pending;
     await f.calls[0]!.onCompactionNotice?.(notice);

@@ -106,6 +106,9 @@ async function fixture(options: { warmupFailed?: boolean } = {}) {
     logicalAgentId: "example",
     storePaths: ["/synthetic/agent.sqlite"],
     assertCurrent() {},
+    async readEntry() {
+      throw new Error("Budget handoff must not read source history");
+    },
     async withRead() {
       throw new Error("Budget handoff must not read source history");
     },

@@ -38,6 +38,7 @@ import {
 } from "./user-turn-transcript-updates.js";
 import {
   buildLateResolvedMediaMessage,
+  projectRequesterOrigin,
   resolvePersistedUserTurnMessage,
 } from "./user-turn-transcript.message.js";
 import {
@@ -122,27 +123,6 @@ export function createUserTurnTranscriptRecorder(
     params.pendingInputSources,
   );
   let staging: Promise<boolean> | undefined;
-
-  // Exposed messages are projections. Only producer facts or exact accepted
-  // pending custody can supply identity to a fresh write.
-  const projectRequesterOrigin = <T extends PersistedUserTurnMessage | undefined>(
-    candidate: T,
-    origin: typeof requesterOrigin,
-  ): T => {
-    if (!candidate) {
-      return candidate;
-    }
-    const { requesterOrigin: _previousOrigin, ...metadata } = candidate["__openclaw"] ?? {};
-    if (origin) {
-      metadata.requesterOrigin = origin;
-    }
-    const next = { ...candidate };
-    delete next["__openclaw"];
-    if (Object.keys(metadata).length > 0) {
-      next["__openclaw"] = metadata;
-    }
-    return next;
-  };
 
   const adoptPendingInput = (receipt: NonNullable<typeof pendingInput>) => {
     pendingInput = receipt;

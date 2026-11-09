@@ -1,15 +1,12 @@
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
-import type { AgentToolResult } from "../../agents/runtime/index.js";
 import {
   readStringArrayParam,
   readToolStringParam,
-  jsonResult,
   textResult,
 } from "../../agents/tools/common.js";
 import {
@@ -83,18 +80,7 @@ const loadClawHubRecommendations = createLazyRuntimeModule(
   () => import("./clawhub-recommendations.js"),
 );
 
-export function getToolResult(result: MessageActionResult): AgentToolResult<unknown> | undefined {
-  const toolResult = "toolResult" in result ? result.toolResult : undefined;
-  if (result.kind !== "send" || !result.accountId) {
-    return toolResult;
-  }
-  const response = toolResult ?? jsonResult(result.payload);
-  // Successful-send extraction must see the routed account, including bindings.
-  return {
-    ...response,
-    details: { ...asOptionalRecord(response.details), accountId: result.accountId },
-  };
-}
+export { getToolResult } from "./message-action-tool-result.js";
 
 function withMessageTargetPreparation<T>(
   assertCallerCurrent: (() => void) | undefined,

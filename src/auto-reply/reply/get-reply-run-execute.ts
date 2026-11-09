@@ -17,10 +17,6 @@ import { bindReplyInputChannel } from "../../agents/harness/host-private-capabil
 import { resolveOwnerPromptNumbers } from "../../agents/owner-display.js";
 import { captureRequesterOrigin } from "../../agents/requester-origin.js";
 import { revokeRequesterCronAuthority } from "../../agents/subagents/requester-cron-authority.js";
-import {
-  attachToolAllowlistIntersection,
-  readToolAllowlistIntersection,
-} from "../../agents/tool-policy.js";
 import { readChannelContextAdmissionEvidence } from "../../channels/message-access/admission-evidence.js";
 import { copyChildSessionPublication } from "../../channels/message-access/child-session-publication.js";
 import { getRuntimeConfig, type OpenClawConfig } from "../../config/config.js";
@@ -54,6 +50,7 @@ import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
 import type { PreparedReplyRunAdmission } from "./get-reply-run-admission.js";
 import {
   buildPersistedMediaImageLayout,
+  cloneReplyToolAllowlist,
   suppressUnresolvedPromptMedia,
   updateRoomEventAmbientTranscriptWatermark,
 } from "./get-reply-run-helpers.js";
@@ -388,13 +385,7 @@ export async function executePreparedReplyRun(
   const replyPolicyChannel =
     (replyRoute.channel as OriginatingChannelType | undefined) ??
     (messageProvider as OriginatingChannelType | undefined);
-  const queuedToolsAllow = opts?.toolsAllow ? [...opts.toolsAllow] : opts?.toolsAllow;
-  const queuedToolIntersections = opts?.toolsAllow
-    ? readToolAllowlistIntersection(opts.toolsAllow)
-    : undefined;
-  if (queuedToolsAllow && queuedToolIntersections) {
-    attachToolAllowlistIntersection(queuedToolsAllow, queuedToolIntersections);
-  }
+  const queuedToolsAllow = cloneReplyToolAllowlist(opts?.toolsAllow);
   const admittedSessionSettings =
     opts?.admittedSessionSettings ?? preparedSessionState.sessionEntry;
   const groupTurn = getGroupThreadTurn();

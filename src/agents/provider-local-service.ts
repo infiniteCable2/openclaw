@@ -1,6 +1,5 @@
 /** Manages optional local provider processes; request leases keep shared services alive. */
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   clampPositiveTimerTimeoutMs,
   resolvePositiveTimerTimeoutMs,
@@ -35,6 +34,7 @@ import {
   type LocalServiceDiagnostics,
   type LocalServiceExit,
 } from "./provider-local-service-diagnostics.js";
+import { localServiceKey } from "./provider-local-service-identity.js";
 import { checkLocalServiceIdleStop } from "./provider-local-service-idle-check.js";
 import {
   forceStopLocalServiceProcess,
@@ -363,29 +363,6 @@ export function getManagedProviderLocalServiceDiagnosticsForTest(): LocalService
 
 function resolveHealthUrl(service: ModelProviderLocalServiceConfig, baseUrl: string): string {
   return service.healthUrl?.trim() || `${baseUrl.replace(/\/+$/, "")}/models`;
-}
-
-function localServiceKey(
-  provider: string,
-  service: ModelProviderLocalServiceConfig,
-  healthUrl: string,
-): string {
-  return JSON.stringify({
-    provider,
-    command: service.command,
-    args: service.args ?? [],
-    cwd: service.cwd ?? "",
-    envHash: hashStringRecord(service.env),
-    healthUrl,
-    idleStopCheck: service.idleStopCheck,
-  });
-}
-
-function hashStringRecord(record: Record<string, string> | undefined): string {
-  const sorted = Object.entries(record ?? {}).toSorted(([left], [right]) =>
-    left.localeCompare(right),
-  );
-  return createHash("sha256").update(JSON.stringify(sorted)).digest("hex");
 }
 
 function buildHealthProbeHeaders(...inputs: (HeadersInit | undefined)[]): Headers | undefined {

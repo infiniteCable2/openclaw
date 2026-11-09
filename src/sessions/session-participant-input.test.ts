@@ -131,9 +131,10 @@ it.each(["valid", "stale", "mixed-profile", "observation", "retargeted"] as cons
       displayName: null,
       isCurrent: () => state !== "stale",
     });
-    if (state === "mixed-profile")
+    if (state === "mixed-profile") {
       prepareSessionParticipantInput(ctx, { type: "profile", id: "other-person" });
-    if (state === "observation")
+    }
+    if (state === "observation") {
       prepareSessionParticipantInput(ctx, {
         type: "observation",
         pluginId: "example-chat",
@@ -141,7 +142,10 @@ it.each(["valid", "stale", "mixed-profile", "observation", "retargeted"] as cons
         senderKind: "unknown",
         id: "other-sender",
       });
-    if (state === "retargeted") ctx.SenderId = "other-sender";
+    }
+    if (state === "retargeted") {
+      ctx.SenderId = "other-sender";
+    }
     expect(readSessionConversationParticipant(ctx)).toEqual(
       state === "valid" ? profile : undefined,
     );

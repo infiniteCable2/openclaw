@@ -1,12 +1,10 @@
 import { findNormalizedProviderValue } from "@openclaw/model-catalog-core/provider-id";
-import { ok } from "@openclaw/normalization-core/result";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import type { ActiveMediaModel } from "../../packages/media-understanding-common/src/active-model.js";
-import { isMediaUnderstandingSkipError } from "../../packages/media-understanding-common/src/errors.js";
 import { formatDecisionSummary } from "../../packages/media-understanding-common/src/format.js";
 import {
   normalizeMediaExecutionProviderId,
@@ -19,11 +17,9 @@ import type {
   MediaAttachmentProcessing,
   MediaUnderstandingCapability,
   MediaUnderstandingDecision,
-  MediaUnderstandingModelDecision,
   MediaUnderstandingOutput,
 } from "../../packages/media-understanding-common/src/types.js";
 import { isMinimaxVlmModel, isMinimaxVlmProvider } from "../agents/minimax-vlm.js";
-import { isProviderAuthError } from "../agents/model-auth-runtime-shared.js";
 import { configuredModelSupportsNativeVideo } from "../agents/model-input.js";
 import {
   buildModelAliasIndex,
@@ -71,12 +67,8 @@ import {
   resolveScopeDecision,
   type ResolvedMediaModelEntry,
 } from "./resolve.js";
-import {
-  buildModelDecision,
-  runCliEntry,
-  runProviderEntry,
-  type MediaRequestOverrides,
-} from "./runner.entries.js";
+import { runAttachmentEntries } from "./runner.attachment-entries.js";
+import type { MediaRequestOverrides } from "./runner.entries.js";
 
 export {
   createMediaAttachmentCache,
@@ -464,112 +456,6 @@ async function resolveAutoProviderModelEntry(
     provider: providerId,
     model,
   };
-}
-
-async function runAttachmentEntries(
-  params: Omit<
-    Parameters<typeof runProviderEntry>[0],
-    "entry" | "attachmentIndex" | "secretOwnerId"
-  > & {
-    ctx: MsgContext;
-    attachment: MediaAttachment;
-    entries: Iterable<ResolvedMediaModelEntry> | AsyncIterable<ResolvedMediaModelEntry>;
-    automaticAudio: boolean;
-  },
-): Promise<{
-  output: MediaUnderstandingOutput | null;
-  attempts: MediaUnderstandingModelDecision[];
-  processing: MediaAttachmentProcessing;
-}> {
-  const { entries, capability } = params;
-  const attachmentIndex = params.attachment.index;
-  const attempts: MediaUnderstandingModelDecision[] = [];
-  let processing: MediaAttachmentProcessing = "omitted";
-  for await (const candidate of entries) {
-    const { entry } = candidate;
-    const entryType = entry.type ?? (entry.command ? "cli" : "provider");
-    try {
-      const attempt =
-        entryType === "cli"
-          ? ok(await runCliEntry({ ...params, entry }))
-          : await runProviderEntry({
-              ...params,
-              entry,
-              attachmentIndex,
-              speechInput: params.attachment.speechInput === true,
-              secretOwnerId: candidate.secretOwnerId,
-            });
-      assertMediaExecutionCurrent(params.execution);
-      if (!attempt.ok) {
-        if (
-          !(params.automaticAudio && isProviderAuthError(attempt.error, "missing-provider-auth"))
-        ) {
-          attempts.push(
-            buildModelDecision({
-              entry,
-              entryType,
-              outcome: "failed",
-              reason: String(attempt.error),
-            }),
-          );
-        }
-        continue;
-      }
-      const result = attempt.value;
-      // Successful empty CLI/API output was processed; unavailable auth was not.
-      processing = "completed";
-      if (result?.text) {
-        const decision = buildModelDecision({ entry, entryType, outcome: "success" });
-        if (result.provider) {
-          decision.provider = result.provider;
-        }
-        decision.model = result.model;
-        if (result.requestedBackend) {
-          decision.requestedBackend = result.requestedBackend;
-        }
-        if (result.observedBackend) {
-          decision.observedBackend = result.observedBackend;
-        }
-        attempts.push(decision);
-        return { output: result, attempts, processing };
-      }
-      attempts.push(
-        buildModelDecision({ entry, entryType, outcome: "skipped", reason: "empty output" }),
-      );
-    } catch (err) {
-      assertMediaExecutionCurrent(params.execution);
-      if (isMediaUnderstandingSkipError(err)) {
-        attempts.push(
-          buildModelDecision({
-            entry,
-            entryType,
-            outcome: "skipped",
-            reason: `${err.reason}: ${err.message}`,
-          }),
-        );
-        if (shouldLogVerbose()) {
-          logVerbose(`Skipping ${capability} model due to ${err.reason}: ${err.message}`);
-        }
-      } else {
-        attempts.push(
-          buildModelDecision({
-            entry,
-            entryType,
-            outcome: "failed",
-            reason: String(err),
-          }),
-        );
-        if (shouldLogVerbose()) {
-          logVerbose(`${capability} understanding failed: ${String(err)}`);
-        }
-      }
-    }
-    if (params.automaticAudio && entryType === "provider") {
-      break;
-    }
-  }
-
-  return { output: null, attempts, processing };
 }
 
 export async function runCapability(

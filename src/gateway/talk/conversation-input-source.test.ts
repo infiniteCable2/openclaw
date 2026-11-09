@@ -34,6 +34,7 @@ const target = {
   sessionKey: "agent:researcher:talk:call",
   canonicalKey: "agent:researcher:talk:call",
   storePath: "/tmp/openclaw-test/sessions",
+  assertCurrent: vi.fn(),
 };
 const scope = {
   agentId: target.agentId,

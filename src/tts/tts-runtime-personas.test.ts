@@ -1,4 +1,3 @@
-import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";

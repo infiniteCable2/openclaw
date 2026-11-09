@@ -215,11 +215,13 @@ export function enqueueRelayVoiceTranscript(
     undefined,
     session.voiceSessionSource?.settlementContext,
   );
-  void completion
-    .finally(async () => {
+  void (async () => {
+    try {
+      await completion;
+    } finally {
       (await audiencePreparation)?.release();
-    })
-    .catch(reportFailure);
+    }
+  })().catch(reportFailure);
   if (!accepted) {
     session.transcriptReadiness.fail(
       new Error("Realtime voice transcript queue is closed or full"),

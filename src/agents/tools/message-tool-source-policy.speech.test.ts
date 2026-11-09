@@ -6,8 +6,9 @@ import { enforceSourceReplyOnlyMessageAction } from "./message-tool-source-polic
 describe("native current-source speech schema", () => {
   it("keeps canonical speech fields in the stable schema while guarding per-call grants", () => {
     const schema = MessageToolSchema;
-    expect(schema.properties.voiceText).toEqual(MESSAGE_TOOL_SPEECH_PROPERTIES.voiceText);
-    expect(schema.properties.voiceExpression).toEqual(
+    expect(schema.properties).toHaveProperty("voiceText", MESSAGE_TOOL_SPEECH_PROPERTIES.voiceText);
+    expect(schema.properties).toHaveProperty(
+      "voiceExpression",
       MESSAGE_TOOL_SPEECH_PROPERTIES.voiceExpression,
     );
     expect(schema.properties).toHaveProperty("replyPhase");

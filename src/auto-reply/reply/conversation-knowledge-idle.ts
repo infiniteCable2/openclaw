@@ -65,6 +65,10 @@ type IdleKnowledgeParams = Pick<
     model: string;
     config: OpenClawConfig;
   };
+  retainContextBudget?(
+    capacity: ReturnType<PreparedConversationContextBudget["capacityForMessages"]>,
+    model: { provider: string; model: string; config: OpenClawConfig },
+  ): void;
 };
 
 const IDLE_FIELDS: SessionSourcePredicate["fields"] = [
@@ -559,6 +563,15 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                               check();
                               if (!isDeepStrictEqual(current.version, version)) {
                                 return false;
+                              }
+                              // Source custody can change during compaction. Keep the native
+                              // footprint for the existing owner's reprepare, without replacing
+                              // a foreground budget that also accounts for its tools.
+                              if (!budget) {
+                                params.retainContextBudget?.(nativeBudget.capacityForMessages([]), {
+                                  ...model,
+                                  config: cfg,
+                                });
                               }
                               const consumptionBefore = sourceCache.consumptionRevision;
                               const nativeCapacity = nativeBudget.capacityForMessages(

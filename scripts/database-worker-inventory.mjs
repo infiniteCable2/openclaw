@@ -953,7 +953,7 @@ const reviewedOperations = new Map([
     ],
   ],
   [
-    "src/config/sessions/session-accessor.reset.ts",
+    "src/config/sessions/session-reset-preparation.ts",
     [
       {
         tier: "T3",

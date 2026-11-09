@@ -80,6 +80,14 @@ function fixture() {
     logicalAgentId: branch.agentId,
     storePaths: [branch.storePath],
     assertCurrent: () => {},
+    async readEntry(assertCurrent) {
+      assertCurrent();
+      const entry = facts.entries.find((row) => row.sessionKey === branch.sessionKey)?.entry;
+      if (!entry) {
+        throw new Error("Synthetic recipient entry is unavailable");
+      }
+      return { entry, source: facts.source };
+    },
     async withRead(request, assertCurrent, consume) {
       read(request);
       assertCurrent();

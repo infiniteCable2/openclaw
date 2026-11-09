@@ -2,9 +2,9 @@ import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
-import { isSessionWorkAdmissionActive } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionControllerWorkActive } from "../../sessions/session-controller.lifecycle.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
-import { beginCronSessionWorkAdmission, type MutableCronSession } from "./run-session-state.js";
+import { beginCronPreparationEffect, type MutableCronSession } from "./run-session-state.js";
 import { loadCronSessionEntryLatest } from "./session.js";
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-cron-conversation-admission-");
@@ -53,7 +53,9 @@ describe("cron conversation model admission", () => {
         previousSessionId: undefined,
         resetBoundaryPending: undefined,
       };
-      const run = beginCronSessionWorkAdmission({
+      const run = beginCronPreparationEffect({
+        agentId: "main",
+        usesDetachedRunSession: false,
         cronSession,
         agentSessionKey: sessionKey,
         runSessionKey: `${sessionKey}:run:model`,

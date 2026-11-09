@@ -97,7 +97,7 @@ afterEach(async () => {
 
 it.each(["cold", "warm"] as const)(
   "publishes native participant audience postimages with a %s entry cache",
-  (cache) => {
+  (cacheState) => {
     const stateDir = tempDirs.make("session-participant-publication-");
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     const database = openOpenClawAgentDatabase({ agentId: "main" });
@@ -113,10 +113,12 @@ it.each(["cold", "warm"] as const)(
       updatedAt: 1,
     };
     replaceSessionEntrySync(scope, entry);
-    if (cache === "warm") {
+    if (cacheState === "warm") {
       readSessionEntryCache(database, { cache: true });
     } else {
-      expect(readCommittedSessionEntryCache(database.db)).toBeUndefined();
+      expect(
+        readCommittedSessionEntryCache(requireNativeSqliteDatabase(database.db)),
+      ).toBeUndefined();
     }
     const identity = readOpenClawAgentDatabaseIdentity(database).identity;
     if (typeof identity !== "string") {
@@ -153,8 +155,10 @@ it.each(["cold", "warm"] as const)(
           entry: { ...entry, participantCount: index + 1 },
           membership: new Set(),
         });
-        if (cache === "cold") {
-          expect(readCommittedSessionEntryCache(database.db)).toBeUndefined();
+        if (cacheState === "cold") {
+          expect(
+            readCommittedSessionEntryCache(requireNativeSqliteDatabase(database.db)),
+          ).toBeUndefined();
         }
       }
       expect(sharing.readCurrent()?.entry?.participants).toEqual([

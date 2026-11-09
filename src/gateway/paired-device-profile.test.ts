@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getCommandSenderAuthority } from "../auto-reply/command-sender-authority.js";
-import type { PairedDeviceTokenIdentity } from "../infra/device-pairing-identity.js";
+import type { PairedDeviceTokenIdentity } from "../infra/device-pairing-core.types.js";
 import {
   attachGatewayPairedDeviceProfileBinding,
   prepareGatewayPairedDeviceProfileBinding,

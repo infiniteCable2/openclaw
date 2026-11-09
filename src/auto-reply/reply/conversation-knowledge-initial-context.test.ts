@@ -84,6 +84,10 @@ const rootReader: SessionEntryCohortReader = {
   database: { agentId: branch.agentId, path: branch.storePath, env: {} },
   storePaths: [branch.storePath],
   assertCurrent() {},
+  async readEntry(check) {
+    check();
+    return { entry: rootEntry, source: nativeSource };
+  },
   async withRead(_request, check, consume) {
     check();
     return consume(

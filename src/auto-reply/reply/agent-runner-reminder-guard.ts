@@ -1,6 +1,6 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { loadCronJobsStore } from "../../cron/store.js";
-import { copyReplyPayloadMetadata } from "../reply-payload.js";
+import { copyReplyPayloadMetadata, isReplyPayloadStatusNotice } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 
 const UNSCHEDULED_REMINDER_NOTE =
@@ -12,6 +12,16 @@ const REMINDER_COMMITMENT_PATTERNS: RegExp[] = [
   /\b(?:i\s*['’]?ll|i will)\s+(?:make sure to\s+)?remember\b[^.!?]{0,160}?(?:\s+and(?:\s+then)?|,\s*(?:(?:and\s+)?then)?)\s+(?:(?:i\s*['’]?ll|i will|will)\s+)?(?:make sure to\s+)?(?:remind|ping|follow up|follow-up|check (?:back|on)|circle back|(?:set|create|schedule)\s+(?:a\s+)?reminder)\b/i,
   /\b(?:i\s*['’]?ll|i will)\s+(?:set|create|schedule)\s+(?:a\s+)?reminder\b/i,
 ];
+
+export function hasReplyReminderCommitment(payloads: ReplyPayload[]): boolean {
+  return payloads.some(
+    (payload) =>
+      !payload.isError &&
+      !isReplyPayloadStatusNotice(payload) &&
+      typeof payload.text === "string" &&
+      hasUnbackedReminderCommitment(payload.text),
+  );
+}
 
 /** Returns true when text promises a reminder/follow-up without the guard note. */
 export function hasUnbackedReminderCommitment(text: string): boolean {

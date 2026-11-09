@@ -1,5 +1,41 @@
-import { isSafeFenceBreak, type FenceSpan } from "../../packages/markdown-core/src/fences.js";
+import {
+  findFenceSpanAt,
+  isSafeFenceBreak,
+  type FenceSpan,
+} from "../../packages/markdown-core/src/fences.js";
 import type { BreakSpan } from "./embedded-agent-block-chunker.tables.js";
+
+export function skipLeadingNewlines(value: string, start = 0): number {
+  let i = start;
+  while (i < value.length && value[i] === "\n") {
+    i++;
+  }
+  return i;
+}
+
+export function findNextParagraphBreak(
+  buffer: string,
+  fenceSpans: FenceSpan[],
+  startIndex = 0,
+  minCharsFromStart = 1,
+): number | null {
+  const re = /\n[\t ]*\n+/g;
+  re.lastIndex = startIndex;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(buffer)) !== null) {
+    const index = match.index;
+    if (index - startIndex < minCharsFromStart) {
+      continue;
+    }
+    const fence = findFenceSpanAt(fenceSpans, index);
+    if (fence) {
+      re.lastIndex = fence.end;
+      continue;
+    }
+    return index;
+  }
+  return null;
+}
 
 export function findSafeSentenceBreakIndex(
   text: string,

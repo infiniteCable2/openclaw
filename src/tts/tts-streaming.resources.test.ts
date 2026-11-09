@@ -38,7 +38,7 @@ function createFixture(
     explicitRelease?: boolean;
     ending?: "eof" | "error" | "blocked";
     initialState?: "empty" | "error" | "chunk";
-    projectionFailure?: "result" | "config-model";
+    projectionFailure?: "audioStream" | "release" | "result" | "config-model";
     holdRelease?: boolean;
     invalidMetadata?: boolean;
     releaseFailure?: boolean;
@@ -122,7 +122,7 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
         Object.defineProperty(request.providerConfig, "modelId", { get() { throw new Error("native config projection failure"); } });
       }
       return {
-        audioStream,
+        get audioStream() { if (state.options.projectionFailure === "audioStream") throw new Error("native audio stream projection failure"); return audioStream; },
         get outputFormat() { record("metadata"); if (state.options.projectionFailure === "result") throw new Error("native result projection failure"); return "pcm"; },
         fileExtension: state.options.invalidMetadata ? "" : ".pcm", voiceCompatible: false, sampleRate: 16000,
         get release() { if (state.options.projectionFailure === "release") throw new Error("native release projection failure"); return state.options.explicitRelease === false ? undefined : release; },

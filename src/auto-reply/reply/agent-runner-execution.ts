@@ -26,18 +26,10 @@ import {
   captureAgentRunLifecycleGeneration,
   withAgentRunLifecycleGeneration,
 } from "../../infra/agent-events.js";
-import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
+import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
-import { bindAgentRunTerminalWriteSettlement } from "../../infra/agent-run-terminal-writes.js";
-import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { logSessionTurnCreated } from "../../logging/diagnostic.js";
-import {
-  isCronExecutionInputProvenance,
-  progressCardRefreshRunProjection,
-} from "../../sessions/input-provenance.js";
 import { markReplyOperationExecutionStarted } from "../../sessions/session-controller.js";
-import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { notifyPreparedAgentRunStart } from "../agent-run-start.js";
 import type { PreparedReplyTranscriptStart } from "../get-reply-options.types.js";
 import { prepareReplyTurnExecution } from "./agent-runner-admission.js";
@@ -46,6 +38,7 @@ import {
   resolveRunAfterAutoFallbackPrimaryProbeRecheck,
 } from "./agent-runner-auto-fallback.js";
 import { handleAgentExecutionError } from "./agent-runner-error-handler.js";
+import { registerAgentTurnExecutionContext } from "./agent-runner-execution-context.js";
 import {
   applyMcpAppModelContext,
   type AppContextTurnParams,
@@ -82,7 +75,6 @@ import type { FollowupRun } from "./queue.js";
 import { resolveReplyFailureVisibility, type DirectBlockDelivery } from "./reply-delivery.js";
 import { createReplyMediaContext, type ReplyMediaContext } from "./reply-media-paths.js";
 import { resolveReplyOperationAbortReason } from "./reply-operation-abort.js";
-import { resolveReplySessionEventDelivery } from "./reply-operation-run-state.js";
 import {
   resolveReplySpeechOutputOwner,
   withReplySpeechPresentation,
@@ -149,41 +141,12 @@ async function executeAgentTurnInternalLoop(
   const agentTurnTiming = createAgentTurnTimingTracker({
     profilerEnabled: isReplyProfilerEnabled({ config: runtimeConfig }),
   });
-  const messageProvider =
-    params.followupRun.run.messageProvider ??
-    params.sessionCtx.Surface ??
-    params.sessionCtx.Provider;
-  const shouldSurfaceToControlUi = isInternalMessageChannel(messageProvider);
-  const lifecycleGeneration = captureAgentRunLifecycleGeneration(runId);
-  if (params.sessionKey) {
-    registerAgentRunContext(runId, {
-      sessionKey: params.sessionKey,
-      ...(params.followupRun.run.sessionId ? { sessionId: params.followupRun.run.sessionId } : {}),
-      agentId: params.followupRun.run.agentId,
-      lifecycleGeneration,
-      verboseLevel: params.resolvedVerboseLevel,
-      isControlUiVisible: shouldSurfaceToControlUi,
-      ...progressCardRefreshRunProjection(params.followupRun.run.inputProvenance),
-      // Scheduled checks must not replace foreground status; their authored results still publish.
-      ...(isCronExecutionInputProvenance(params.followupRun.run.inputProvenance)
-        ? { projectSessionActive: false, projectSessionLifecycle: false }
-        : {}),
-      completionSource: params.completionSource,
-      sessionEventDelivery: resolveReplySessionEventDelivery(params.opts, params.followupRun.run),
-    });
-    bindAgentRunTerminalWriteSettlement(preparedRunAdmission.operationalRunInstance);
-  }
-  if (isDiagnosticsEnabled(runtimeConfig)) {
-    const trigger = resolveReplyRunTrigger(params);
-    logSessionTurnCreated({
-      runId,
-      sessionKey: params.sessionKey,
-      sessionId: params.followupRun.run.sessionId,
-      agentId: params.followupRun.run.agentId,
-      channel: messageProvider,
-      trigger: trigger === "cron" ? "event" : trigger,
-    });
-  }
+  const { lifecycleGeneration, shouldSurfaceToControlUi } = registerAgentTurnExecutionContext(
+    params,
+    runId,
+    runtimeConfig,
+    preparedRunAdmission,
+  );
   let replyMediaContext: ReplyMediaContext;
   let currentTurnImages: CurrentTurnImages;
   let modelPatch: Awaited<ReturnType<typeof createAgentPatchedSessionModelRunGuard>>;
@@ -542,9 +505,10 @@ async function executeAgentTurnInternalLoop(
 }
 
 async function executeAgentTurnOutcome(
-  executionParams: AppContextTurnParams,
+  inputParams: AppContextTurnParams,
   runId: string,
 ): Promise<AgentTurnExecutionResult> {
+  let executionParams = inputParams;
   executionParams.followupRun.assertSourceCurrent?.();
   executionParams.replyOperation?.bindSpeechOutputOwner(
     resolveReplySpeechOutputOwner(executionParams.followupRun.speechPresentation),

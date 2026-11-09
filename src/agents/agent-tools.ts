@@ -34,7 +34,10 @@ import {
   projectAgentToolsExecPolicy,
 } from "./agent-tools.execution-policy.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
-import { captureChildToolAllowlist } from "./agent-tools.inheritance.js";
+import {
+  captureChildToolAllowlist,
+  captureSessionEventSourcePolicy,
+} from "./agent-tools.inheritance.js";
 import {
   assertMemoryFlushPersistenceToolAvailable,
   projectMemoryFlushTools,
@@ -664,16 +667,9 @@ function* assembleOpenClawCodingTools(
       accountId: gatewayCaller.accountId,
       capabilityProfile,
       tools: finalizedTools,
-      sessionEventSourcePolicy: options?.sessionEventSourcePolicy ?? {
-        toolsAllow: [
-          ...finalizedTools.filter(turnAuthorized).map((tool) => tool.name),
-          // Provider-hosted search has no function tool; keep this turn's decision for it.
-          ...(!finalizedTools.some((tool) => tool.name === "web_search") &&
-          isConversationToolAllowed(capabilityProfile, "web_search")
-            ? ["web_search"]
-            : []),
-        ],
-      },
+      sessionEventSourcePolicy:
+        options?.sessionEventSourcePolicy ??
+        captureSessionEventSourcePolicy(finalizedTools, turnAuthorized, capabilityProfile),
     }),
   );
 }

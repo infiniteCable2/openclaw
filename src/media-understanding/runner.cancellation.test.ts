@@ -1,9 +1,10 @@
 import { ok } from "@openclaw/normalization-core/result";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import type { MediaUnderstandingProvider } from "./provider-types.js";
 import { runCapability } from "./runner.js";
 import { withAudioFixture } from "./runner.test-utils.js";
-import type { AudioTranscriptionRequest, MediaUnderstandingProvider } from "./types.js";
+import type { AudioTranscriptionRequest } from "./types.js";
 
 describe("native media transcription cancellation", () => {
   it.each(["context", "api-key"] as const)(
@@ -71,7 +72,10 @@ describe("native media transcription cancellation", () => {
             ["fallback", { id: "fallback", transcribeAudio: fallback }],
           ]),
           request: { timeoutMs: 1234 },
-          signal: controller.signal,
+          execution: {
+            signal: controller.signal,
+            assertCurrent: () => controller.signal.throwIfAborted(),
+          },
         }).finally(completed);
         const reason = new Error("The native caller cancelled");
         const rejected = expect(operation).rejects.toBe(reason);

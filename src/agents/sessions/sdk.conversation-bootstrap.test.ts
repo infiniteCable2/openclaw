@@ -74,7 +74,7 @@ describe("native SDK cold checkpoint eligibility", () => {
             modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
             sessionManager: manager,
             settingsManager: SettingsManager.inMemory(),
-            resourceLoader: createResourceLoader(),
+            resourceLoader: await createResourceLoader(),
           });
           try {
             userId ??= await manager.appendMessageAsync(user);

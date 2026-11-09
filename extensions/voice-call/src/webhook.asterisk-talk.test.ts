@@ -237,10 +237,12 @@ describe("VoiceCallWebhookServer realtime transcription provider selection", () 
       if (!callbacks?.onTranscript) {
         throw new Error("Expected the admitted media stream transcription session");
       }
+      // waitFor advances the fake clock while the real WebSocket becomes ready.
+      vi.setSystemTime(new Date("2026-05-05T06:00:01.000Z"));
       callbacks.onTranscript("hello");
       expect(events().filter((event) => event.type === "transcript.done")).toEqual([
         expect.objectContaining({
-          timestamp: "2026-05-05T06:00:00.000Z",
+          timestamp: "2026-05-05T06:00:01.000Z",
           type: "transcript.done",
           sessionId: "voice-call:provider-call-1:MZ-talk",
           turnId: "MZ-talk:turn-1",

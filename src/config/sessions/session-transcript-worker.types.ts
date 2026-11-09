@@ -45,8 +45,10 @@ import type {
   SessionPendingArchivesWorkerInput,
   SessionArchivePruningWorkerInput,
 } from "./session-accessor.sqlite-archive-types.js";
-import type { SessionBranchSummaryReadResult } from "./session-accessor.sqlite-branches.js";
-import type { SessionBranchSummaryReadRequest } from "./session-accessor.sqlite-branches.js";
+import type {
+  SessionBranchSummaryReadRequest,
+  SessionBranchSummaryReadResult,
+} from "./session-accessor.sqlite-branches.js";
 import type {
   LatestTranscriptAssistantText,
   TranscriptEvent,

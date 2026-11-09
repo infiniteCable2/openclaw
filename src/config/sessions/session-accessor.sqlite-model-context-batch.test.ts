@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import {
   appendTranscriptEvent,
   appendTranscriptMessage,
@@ -75,12 +76,15 @@ it("hydrates the original header from shared navigation without repeating a head
       { through, limits: { from: through, maxBytes: 16_384, maxEvents: 10 } },
     ];
     const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
-    const counter = trackSqliteStatementExecutions(db, ["headerSearch"], (sql) =>
-      sql.includes('from "transcript_events"') &&
-      sql.includes("navigation_type") &&
-      sql.includes("limit")
-        ? "headerSearch"
-        : null,
+    const counter = trackSqliteStatementExecutions(
+      requireNativeSqliteDatabase(db),
+      ["headerSearch"],
+      (sql) =>
+        sql.includes('from "transcript_events"') &&
+        sql.includes("navigation_type") &&
+        sql.includes("limit")
+          ? "headerSearch"
+          : null,
     );
     try {
       const expected = ranges.map((range) => individual(scope, range));
@@ -155,8 +159,11 @@ it("reads overlapping long-source navigation once while preserving exact range o
       return { through, limits: { from: through, maxBytes: 2_048, maxEvents: 1 } };
     });
     const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
-    const counter = trackSqliteStatementExecutions(db, ["navigation"], (sql) =>
-      sql.includes('as "navigation_json" from "transcript_events"') ? "navigation" : null,
+    const counter = trackSqliteStatementExecutions(
+      requireNativeSqliteDatabase(db),
+      ["navigation"],
+      (sql) =>
+        sql.includes('as "navigation_json" from "transcript_events"') ? "navigation" : null,
     );
     try {
       const expected = ranges.map((range) => individual(scope, range));

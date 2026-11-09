@@ -20,6 +20,7 @@ import {
   removeSessionMemberInWorker,
 } from "../../config/sessions/session-sharing-store.async.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
+import { lifecycleAdmissionByOperation } from "../../sessions/session-controller.state.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
@@ -27,7 +28,6 @@ import {
   createConversationKnowledgeScenario,
   person,
 } from "./conversation-knowledge.scenario.test-support.js";
-import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const budget = vi.hoisted(() => ({
@@ -111,7 +111,7 @@ describe("native turn packet writer custody", () => {
             },
           });
           const knowledge = createReplyConversationKnowledgeTurn({
-            turn: { isHeartbeat: false, followupRun, replyOperation },
+            turn: { followupRun, replyOperation },
             originalSource: owner.assertCurrent,
             getRuntimeConfig: () => fixture.cfg,
           });

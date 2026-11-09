@@ -11,6 +11,7 @@ import {
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { loadTranscriptEvents, upsertSessionEntryCore } from "./session-accessor.js";
 import {
@@ -224,7 +225,7 @@ it("observes a full receipt batch with one reverse scan and one body read per re
           })),
         ];
         const counter = trackSqliteStatementExecutions(
-          database.db,
+          requireNativeSqliteDatabase(database.db),
           ["branch", "payload", "membership"],
           (sql) =>
             sql.includes('as "report_json"') && sql.includes('from "transcript_events"')
@@ -313,14 +314,17 @@ it("streams one canonical receipt selection for missing and existing batches acr
         const resolved = { ...scope, path: database.path };
         const batch = Array.from({ length: 32 }, (_, index) => prepared(`new-${index}`));
         const observe = () =>
-          trackSqliteStatementExecutions(database.db, ["branch", "payload"], (sql) =>
-            sql.includes('as "report_json"') && sql.includes('from "transcript_events"')
-              ? "branch"
-              : sql.includes('as "event_json"') &&
-                  sql.includes('from "transcript_events"') &&
-                  (sql.includes('"seq" =') || sql.includes('"seq" in'))
-                ? "payload"
-                : null,
+          trackSqliteStatementExecutions(
+            requireNativeSqliteDatabase(database.db),
+            ["branch", "payload"],
+            (sql) =>
+              sql.includes('as "report_json"') && sql.includes('from "transcript_events"')
+                ? "branch"
+                : sql.includes('as "event_json"') &&
+                    sql.includes('from "transcript_events"') &&
+                    (sql.includes('"seq" =') || sql.includes('"seq" in'))
+                  ? "payload"
+                  : null,
           );
         const legacy = observe();
         const legacyStarted = performance.now();

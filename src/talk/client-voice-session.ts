@@ -338,7 +338,7 @@ function appendVoiceTranscript(
     ? resolveAgentConversationMode(normalized.config, normalized.agentId)
     : undefined;
   const audiencePreparation = prepareVoiceTranscriptAudience(normalized.preparePrivateAudience);
-  return withClientVoiceSessionSettlement(
+  const completion = withClientVoiceSessionSettlement(
     async () => {
       const writer = retainedWriter ?? captureClientVoiceSessionWriter(normalized);
       const resources = retainedWriter ? [] : [writer];
@@ -577,9 +577,14 @@ function appendVoiceTranscript(
     },
     undefined,
     retainedWriter?.settlementContext,
-  ).finally(async () => {
-    (await audiencePreparation)?.release();
-  });
+  );
+  return (async () => {
+    try {
+      await completion;
+    } finally {
+      (await audiencePreparation)?.release();
+    }
+  })();
 }
 
 /** Append one finalized client-owned transcript item idempotently. */

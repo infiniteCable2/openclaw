@@ -231,26 +231,27 @@ export function bindSqliteWorkerBackend(
       if (validation && !isRecord(request.facts)) {
         throw new Error("Transcript report admission omitted its database facts");
       }
-      if (ownerProbe && stage === "commit" && isRecord(request.facts)) {
-        request = { ...request, facts: { ...request.facts, publication: ownerProbe.fact } };
-      }
+      const preparedRequest =
+        ownerProbe && stage === "commit" && isRecord(request.facts)
+          ? { ...request, facts: { ...request.facts, publication: ownerProbe.fact } }
+          : request;
       requestSessionEntryCurrentAdmission(
         target.sessionEntryCurrentSource,
         validation
           ? {
-              ...request,
+              ...preparedRequest,
               facts: {
-                ...(isRecord(request.facts) ? request.facts : {}),
+                ...(isRecord(preparedRequest.facts) ? preparedRequest.facts : {}),
                 reportSourceValidation: validation,
               },
             }
-          : request,
+          : preparedRequest,
         { database },
         dispatch,
       );
     });
   };
-  let closed = false;
+  const closed = false;
   const assertOpen = () => {
     if (closed || !database.db.isOpen) {
       throw new Error("Transcript report domain is closed");

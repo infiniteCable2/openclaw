@@ -8,6 +8,7 @@ import {
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { AgentMessage } from "../../packages/agent-core/src/types.js";
+import type { RequesterOrigin } from "../agents/requester-origin.js";
 import {
   isMediaKind,
   readPersistedMediaFacts,
@@ -26,6 +27,27 @@ import type {
 
 const URL_LIKE_MEDIA_PATH_PATTERN = /^[a-z][a-z0-9+.-]*:/i;
 const MIME_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/iu;
+
+// Exposed messages are projections. Only producer facts or exact accepted
+// pending custody can supply identity to a fresh write.
+export function projectRequesterOrigin<T extends PersistedUserTurnMessage | undefined>(
+  candidate: T,
+  origin: RequesterOrigin | undefined,
+): T {
+  if (!candidate) {
+    return candidate;
+  }
+  const { requesterOrigin: _previousOrigin, ...metadata } = candidate["__openclaw"] ?? {};
+  if (origin) {
+    metadata.requesterOrigin = origin;
+  }
+  const next = { ...candidate };
+  delete next["__openclaw"];
+  if (Object.keys(metadata).length > 0) {
+    next["__openclaw"] = metadata;
+  }
+  return next;
+}
 
 function resolveTranscriptMediaPath(pathValue: string, workspaceDir: string | undefined): string {
   // Relative staged media paths are anchored to the media workspace; absolute

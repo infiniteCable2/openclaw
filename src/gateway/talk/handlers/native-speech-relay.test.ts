@@ -48,7 +48,7 @@ it("retained STT/TTS custody survives its create RPC and writer metadata but rej
     createdActor: { type: "human", source: "profile", id: ownerId },
   });
   await addSessionMember(scope, { identityId: callerId, addedBy: ownerId });
-  using _profiles = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
+  using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
   // dispatch has returned through the real WebSocket request authority's finally/release.
   const call = await createSpeechRelayCall({ sessionKey });
   const record = getUnifiedTalkSession(call.sessionId);

@@ -21,7 +21,6 @@ import {
 import {
   loadSessionEntry,
   loadTranscriptEvents,
-  replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import * as reportStorage from "../../config/sessions/session-accessor.sqlite-transcript-reports.js";
@@ -29,6 +28,7 @@ import {
   MAX_TRANSCRIPT_REPORT_BATCH_SIZE,
   type TranscriptReportWorkerOperations,
 } from "../../config/sessions/session-accessor.sqlite-transcript-reports.types.js";
+import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import * as sourceAuthority from "../../config/sessions/session-source-authority.js";
 import * as transcriptAnchors from "../../config/sessions/session-transcript-anchor-read.js";
 import * as reportOperation from "../../config/sessions/session-transcript-report-operation.js";
@@ -36,6 +36,7 @@ import { withSessionTranscriptWriteAssertion } from "../../config/sessions/trans
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import * as personalReadAuthority from "../../gateway/session-transcript-personal-read.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { lifecycleAdmissionByOperation } from "../../sessions/session-controller.state.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as branchAuthority from "./conversation-knowledge-authority.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
@@ -44,7 +45,6 @@ import {
   createConversationKnowledgeScenario,
   person,
 } from "./conversation-knowledge.scenario.test-support.js";
-import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const budget = vi.hoisted(() => ({ compact: vi.fn() }));
@@ -627,7 +627,7 @@ it("prepares long-source observations while idle and consumes them once through 
           },
         });
         const knowledge = createReplyConversationKnowledgeTurn({
-          turn: { isHeartbeat: false, followupRun, replyOperation },
+          turn: { followupRun, replyOperation },
           originalSource: recipientClaim.assertCurrent,
           getRuntimeConfig: () => fixture.cfg,
         });

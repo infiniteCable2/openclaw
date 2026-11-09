@@ -271,6 +271,7 @@ it("refreshes source changes once, isolates clones, and rebuilds changed lockfil
         expect(staged.workspaceDir).toBe(reused);
         expect(await fs.readFile(path.join(reused, staged.path))).toEqual(image);
         const provider = await materializeProviderContext({
+          model: { input: ["text", "image"] },
           context: { messages: [message] },
           workspaceDir: reused,
           workspaceOnly: true,

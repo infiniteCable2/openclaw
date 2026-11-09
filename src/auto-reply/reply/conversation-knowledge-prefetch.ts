@@ -389,6 +389,7 @@ export function prepareConversationKnowledgeRecipient(params: {
               branch,
               budget: contextBudget,
               compaction,
+              retainContextBudget,
             });
           } catch (error) {
             // A failed admission may already have retired source custody. Its

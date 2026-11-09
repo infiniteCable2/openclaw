@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { getCliSessionBinding } from "../../config/sessions/cli-session-binding.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { normalizeLegacySessionEntryDelivery } from "../../infra/state-migrations.legacy-session-store.js";
 import { expectObjectFields } from "../../test-utils/mock-call-assertions.js";
 import type { projectSessionDeliveryFields } from "../../utils/delivery-context.shared.js";

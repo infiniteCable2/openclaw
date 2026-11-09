@@ -44,6 +44,7 @@ import {
   type CreateReplyOperationParams,
 } from "./session-controller.operation-admission.js";
 import { createReplyOperationRecovery } from "./session-controller.operation-recovery.js";
+import { createReplyOperationOutput } from "./session-controller.output.js";
 import {
   clearReplyRunState,
   evictReplyOperationByOperation,
@@ -84,11 +85,6 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
   const completedResult = { kind: "completed" } as const;
   let staleExpiryReason: replyRunSettle.ReplyOperationStaleReason | undefined;
   let terminalRecovery = false;
-  let acceptedSteeredInboundAudio = false;
-  let sourceReplyDelivered = false;
-  let speechOutputOwner: object | undefined;
-  let speechOutputOwnerBound = false;
-  const sourceReplyListeners = new Set<() => void>();
   // A recorded yield ends the turn's work before settlement records it as the result.
   const ended = () => state.result !== null || state.phase === "yielded";
   const settledResult = (): ReplyOperationResult =>
@@ -141,6 +137,14 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
   };
   const startedAtMs = Date.now();
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
+  const output = createReplyOperationOutput(
+    () =>
+      !ended() &&
+      !state.cleared &&
+      !controller.signal.aborted &&
+      owner.active === operation &&
+      getAgentEventLifecycleGeneration() === lifecycleGeneration,
+  );
   let lastActivityAtMs = startedAtMs;
   const upstreamAbortSignal = params.upstreamAbortSignal;
   let upstreamAbortHandler: (() => void) | undefined;
@@ -345,22 +349,9 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
 
   const operation: SessionControllerOperation = {
     get speechOutputOwner() {
-      return speechOutputOwner;
+      return output.speechOutputOwner;
     },
-    bindSpeechOutputOwner(nextOwner) {
-      if (
-        ended() ||
-        state.cleared ||
-        controller.signal.aborted ||
-        owner.active !== operation ||
-        getAgentEventLifecycleGeneration() !== lifecycleGeneration ||
-        (speechOutputOwnerBound && speechOutputOwner !== nextOwner)
-      ) {
-        throw new Error("Reply operation speech output owner is unavailable or changed");
-      }
-      speechOutputOwner = nextOwner;
-      speechOutputOwnerBound = true;
-    },
+    bindSpeechOutputOwner: output.bindSpeechOutputOwner,
     [sessionControllerOperationState]: {
       get phase() {
         return state.phase;
@@ -397,10 +388,10 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       return terminalRecovery;
     },
     get acceptedSteeredInboundAudio() {
-      return acceptedSteeredInboundAudio;
+      return output.acceptedSteeredInboundAudio;
     },
     get sourceReplyDelivered() {
-      return sourceReplyDelivered;
+      return output.sourceReplyDelivered;
     },
     get toolAuthorityFingerprint() {
       return toolAuthority.toolAuthorityFingerprint;
@@ -483,20 +474,9 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     markTerminalRecovery() {
       terminalRecovery = true;
     },
-    markSteeredInputAccepted({ inboundAudio }) {
-      acceptedSteeredInboundAudio ||= inboundAudio;
-      sourceReplyDelivered = false;
-    },
-    markSourceReplyDelivered() {
-      if (!sourceReplyDelivered) {
-        sourceReplyDelivered = true;
-        sourceReplyListeners.forEach((listener) => listener());
-      }
-    },
-    onSourceReplyDelivered(listener) {
-      sourceReplyListeners.add(listener);
-      return () => sourceReplyListeners.delete(listener);
-    },
+    markSteeredInputAccepted: output.markSteeredInputAccepted,
+    markSourceReplyDelivered: output.markSourceReplyDelivered,
+    onSourceReplyDelivered: output.onSourceReplyDelivered,
     bindToolAuthoritySnapshot: toolAuthority.bindToolAuthoritySnapshot,
     bindToolAuthoritySnapshotAsync: toolAuthority.bindToolAuthoritySnapshotAsync,
     projectToolAuthorityFingerprint: toolAuthority.projectToolAuthorityFingerprint,

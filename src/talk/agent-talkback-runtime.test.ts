@@ -84,7 +84,7 @@ describe("realtime voice agent talkback queue", () => {
   it("contains failing observers without changing work or delivery", async () => {
     vi.useFakeTimers();
     const deliver = vi.fn();
-    const queue = createQueue({
+    const { queue } = createQueue({
       consult: async () => ({ text: "Complete." }),
       onActivity() {
         throw new Error("synthetic observer failure");

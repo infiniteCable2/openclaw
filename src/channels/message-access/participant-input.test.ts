@@ -209,7 +209,7 @@ it.each(["shared", "unlinked", "unverified", "observation"] as const)(
 
 it("uses the same current person for conversation metadata and audience without rewriting provenance", () => {
   const { input, revoke, closeOutput } = privateLinkedParticipant();
-  const remote = structuredClone(input.identity);
+  const remoteIdentity = structuredClone(input.identity);
   const context: MsgContext = {
     SenderId: "remote-alpha",
     AccountId: "default",
@@ -229,10 +229,10 @@ it("uses the same current person for conversation metadata and audience without 
     Reflect.get(context, sessionParticipantInput).map(
       (fact: { identity: unknown }) => fact.identity,
     ),
-  ).toEqual([remote, person]);
+  ).toEqual([remoteIdentity, person]);
   const audience = readConversationPrivateAudience(context);
   expect(audience?.participant).toEqual(person);
-  expect(input.identity).toEqual(remote);
+  expect(input.identity).toEqual(remoteIdentity);
   expect(context.SenderId).toBe("remote-alpha");
   expect(context.InputProvenance).toEqual({ kind: "external_user", sourceChannel: "example" });
   closeOutput();
@@ -275,9 +275,15 @@ it.each(["sender", "account", "channel"] as const)(
       AccountId: "default",
       OriginatingChannel: "example",
     };
-    if (field === "sender") context.SenderId = "another-sender";
-    if (field === "account") context.AccountId = "another-account";
-    if (field === "channel") context.OriginatingChannel = "another-channel";
+    if (field === "sender") {
+      context.SenderId = "another-sender";
+    }
+    if (field === "account") {
+      context.AccountId = "another-account";
+    }
+    if (field === "channel") {
+      context.OriginatingChannel = "another-channel";
+    }
     bindPreparedChannelParticipantInputs({
       channelId: "example",
       binding: input.binding,
@@ -335,7 +341,7 @@ it("binds private audience through the native host builder rather than a separat
         privateAudience: { assertCurrent() {} },
       }),
     );
-    const context = await host.buildContext({ ...message, channelIngress: ingress });
+    const context = host.buildContext({ ...message, channelIngress: ingress });
     expect(readConversationPrivateAudience(context)).toMatchObject({
       channelId: "example",
       nativeChannelId: "private-alpha",
