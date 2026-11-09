@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareAgentRunTerminalReply } from "../agents/agent-run-terminal-reply.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { MsgContext } from "../auto-reply/templating.js";
@@ -254,12 +255,14 @@ describe("native detached greeting preparation", () => {
     "does not invent greeting readiness from empty or silent completion",
     async ({ payloads, finalText }) => {
       const fixture = await setup(false);
+      const prepared = prepareAgentRunTerminalReply({ rawText: finalText });
       mocks.run.mockResolvedValue({
         payloads,
         meta: {
           durationMs: 1,
           finalAssistantRawText: finalText,
-          finalAssistantVisibleText: finalText,
+          finalAssistantVisibleText: prepared.text,
+          terminalReply: prepared.terminalReply,
         },
       });
       await expect(prepareConversationGreeting(fixture.params)).rejects.toThrow("no greeting");

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { prepareAgentRunTerminalReply } from "../agents/agent-run-terminal-reply.js";
 import { setReplyPayloadMetadata, type ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { AgentTurnInternalResult } from "../auto-reply/reply/agent-runner-execution.types.js";
 import {
@@ -104,11 +105,13 @@ describe("native turn-owned speech presentation", () => {
     async (finalText) => {
       const fixture = setup();
       const outcome = completed("");
+      const prepared = prepareAgentRunTerminalReply({ rawText: finalText });
       outcome.result.payloads = [];
       outcome.result.meta = {
         durationMs: 1,
         finalAssistantRawText: finalText,
-        finalAssistantVisibleText: finalText,
+        finalAssistantVisibleText: prepared.text,
+        terminalReply: prepared.terminalReply,
       };
       await withReplySpeechPresentation(fixture.source, fixture.binding, async () => outcome);
       const text =
@@ -125,11 +128,13 @@ describe("native turn-owned speech presentation", () => {
       const fixture = setup();
       const text = "The accepted answer.";
       const outcome = completed("");
+      const prepared = prepareAgentRunTerminalReply({ rawText: SILENT_REPLY_TOKEN });
       outcome.result.payloads = [];
       outcome.result.meta = {
         durationMs: 1,
         finalAssistantRawText: SILENT_REPLY_TOKEN,
-        finalAssistantVisibleText: SILENT_REPLY_TOKEN,
+        finalAssistantVisibleText: prepared.text,
+        terminalReply: prepared.terminalReply,
       };
       await withReplySpeechPresentation(fixture.source, fixture.binding, async (run) => {
         if (kind === "streamed") {
@@ -343,12 +348,14 @@ describe("native turn-owned speech presentation", () => {
   it("keeps native yield acknowledgment and work custody separate from final completion", async () => {
     const fixture = setup();
     const outcome = completed("");
+    const prepared = prepareAgentRunTerminalReply({ rawText: SILENT_REPLY_TOKEN });
     outcome.result.meta = {
       durationMs: 1,
       yielded: true,
       yieldAcknowledgment: "  Work started.\nMore later. ",
       finalAssistantRawText: SILENT_REPLY_TOKEN,
-      finalAssistantVisibleText: SILENT_REPLY_TOKEN,
+      finalAssistantVisibleText: prepared.text,
+      terminalReply: prepared.terminalReply,
     };
     await withReplySpeechPresentation(fixture.source, fixture.binding, async () => outcome);
     expect(fixture.onResult).toHaveBeenCalledWith(
