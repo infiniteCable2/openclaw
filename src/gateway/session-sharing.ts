@@ -213,7 +213,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
     return { error: preparedTalk.error };
   }
   const { talkInput, talkSessionTarget } = preparedTalk;
-  const authorizeTalkInput = createConversationTalkInputAuthorizer(preparedTalk);
+  const talkInputAuthorization = createConversationTalkInputAuthorizer(preparedTalk, params.method);
   const talkTargets = talkSessionTarget
     ? [{ sessionKey: talkSessionTarget.canonicalKey, agentId: talkSessionTarget.agentId }]
     : undefined;
@@ -339,7 +339,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         policy,
         "projection" in resolved ? resolved.projection : undefined,
       ) ??
-      authorizeTalkInput(getPolicyConfig(), target?.entry);
+      talkInputAuthorization.authorize(getPolicyConfig(), target?.entry);
     if (error) {
       return { error };
     }
@@ -502,18 +502,18 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
     if (!current) {
       return;
     }
-    const error =
-      authorizeTargetPolicy(
-        targetRef,
-        current,
-        policyConfig,
-        policy,
-        projected?.status === "ready" ? expected?.projection : undefined,
-        prepared?.members,
-      ) ?? authorizeTalkInput(policyConfig, current.entry);
+    const error = authorizeTargetPolicy(
+      targetRef,
+      current,
+      policyConfig,
+      policy,
+      projected?.status === "ready" ? expected?.projection : undefined,
+      prepared?.members,
+    );
     if (error) {
       throw new SessionMutationAuthorizationChangedError(error);
     }
+    talkInputAuthorization.assertAdmittedCurrent(policyConfig, current.entry);
     if (bindSessionIdentity) {
       admittedInput.bindCurrentEffect();
     }

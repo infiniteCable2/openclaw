@@ -16,6 +16,7 @@ import {
 } from "../../config/runtime-snapshot.js";
 import * as runtimeSnapshots from "../../config/runtime-snapshot.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   createFollowupRun,
@@ -46,7 +47,7 @@ beforeEach(() => {
   knowledge.create.mockReset();
 });
 
-function fixture(provider = "anthropic", model = "claude") {
+function fixture(provider = "anthropic", model = "claude", controllerAdmission = false) {
   const order: string[] = [];
   const followupRun = createFollowupRun();
   followupRun.run.provider = provider;
@@ -55,7 +56,17 @@ function fixture(provider = "anthropic", model = "claude") {
   // Match the shared execution fixture's native runtime publication before a
   // direct call; the config-reader cases can still replace this publication.
   setRuntimeConfigSnapshot(followupRun.run.config);
-  const { replyOperation } = createMockReplyOperation();
+  const sessionKey = followupRun.run.sessionKey;
+  if (!sessionKey) {
+    throw new Error("Knowledge execution fixture requires its canonical session key");
+  }
+  const replyOperation = controllerAdmission
+    ? createReplyOperation({
+        sessionKey,
+        sessionId: followupRun.run.sessionId,
+        resetTriggered: false,
+      })
+    : createMockReplyOperation().replyOperation;
   const reader: SessionEntryCohortReader = {
     database: { agentId: "main", path: "/synthetic/agent.sqlite", env: {} },
     sessionKey: "main",
@@ -69,10 +80,16 @@ function fixture(provider = "anthropic", model = "claude") {
       throw new Error("The mocked knowledge adapter must own consumption");
     },
   };
-  lifecycleAdmissionByOperation.set(replyOperation, { reader });
-  onTestFinished(() => {
-    lifecycleAdmissionByOperation.delete(replyOperation);
-  });
+  if (controllerAdmission) {
+    // CLI settlement checks the real controller owner, not merely a reader
+    // entry supplied by this isolated knowledge adapter.
+    onTestFinished(() => replyOperation.complete());
+  } else {
+    lifecycleAdmissionByOperation.set(replyOperation, { reader });
+    onTestFinished(() => {
+      lifecycleAdmissionByOperation.delete(replyOperation);
+    });
+  }
   const fragments = [{ kind: "conversation-data" as const, text: "Quoted related observations." }];
   const assertCurrent = vi.fn();
   const release = vi.fn(() => order.push("release"));
@@ -332,7 +349,7 @@ describe("actual native execution conversation knowledge lifetime", () => {
   it("acquires read-only observations only when a CLI candidate is admitted", async () => {
     const provider = "claude-cli";
     const model = "claude-sonnet-4-6";
-    const f = fixture(provider, model);
+    const f = fixture(provider, model, true);
     // Direct execution fixtures must supply the snapshot normally bound by
     // runReplyAgent before the CLI candidate selects its actual tool route.
     await bindToolAuthority(f);
@@ -402,7 +419,7 @@ describe("actual native execution conversation knowledge lifetime", () => {
       const cli = { provider: "claude-cli", model: "claude-sonnet-4-6" };
       const native = { provider: "anthropic", model: "claude" };
       const [first, second] = direction === "native-to-cli" ? [native, cli] : [cli, native];
-      const f = fixture(first.provider, first.model);
+      const f = fixture(first.provider, first.model, true);
       const base = { kind: "conversation-data" as const, text: "Other retained runtime context." };
       f.params.runtimeContextFragments = [base];
       await bindToolAuthority(f);

@@ -9,6 +9,7 @@ import type { SessionEntryCohortResult } from "../../config/sessions/session-ent
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import * as runRegistry from "../../infra/agent-run-registry.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
+import * as idleCompaction from "./conversation-knowledge-idle-compaction.js";
 import { admitPreparedConversationKnowledgeWhileIdle } from "./conversation-knowledge-idle.js";
 import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 import * as knowledgeStatus from "./conversation-knowledge-status.js";
@@ -94,8 +95,8 @@ function fixture() {
       return consume(facts, assertCurrent);
     },
   };
-  const stage = () =>
-    cache.stage("synthetic-contribution", 0, {
+  const stage = (id = "synthetic-contribution") =>
+    cache.stage(id, 0, {
       part: {
         origin: "synthetic-source",
         text: "Prepared fact.",
@@ -281,6 +282,141 @@ it.each([
         await expect(admitPreparedConversationKnowledgeWhileIdle(preparation)).resolves.toBe(false);
         expect(boundary.prepare).not.toHaveBeenCalled();
       }
+    } finally {
+      f.cache.clear();
+    }
+  },
+);
+
+it.each([undefined, "workspace"] as const)(
+  "resolves fresh maintenance after retaining a native probe budget without placement (%s)",
+  async (permissionMode) => {
+    const f = fixture();
+    const config = f.params.getRuntimeConfig();
+    config.agents = {
+      entries: {
+        example: {
+          workspace: "/virtual/workspace",
+          model: "synthetic-idle-provider/unknown-model",
+        },
+      },
+    };
+    config.models = {
+      providers: {
+        "synthetic-idle-provider": {
+          baseUrl: "https://provider.example.test/v1",
+          api: "openai-completions",
+          models: [
+            {
+              id: "unknown-model",
+              name: "Synthetic idle budget",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 100_000,
+              maxTokens: 10_000,
+            },
+          ],
+        },
+      },
+    };
+    const entry = f.facts.entries[0]!.entry;
+    entry.visibility = "draft";
+    entry.permissionMode = permissionMode;
+    entry.conversationTopology = {
+      version: 1,
+      role: "branch",
+      rootSessionKey: branch.root.sessionKey,
+      rootSessionId: branch.root.sessionId,
+      rootSessionLifecycleRevision: branch.root.lifecycleRevision,
+    };
+    f.facts.entries.push({
+      sessionKey: branch.root.sessionKey,
+      entry: {
+        sessionId: branch.root.sessionId,
+        lifecycleRevision: branch.root.lifecycleRevision,
+        updatedAt: 1,
+        conversationTopology: { version: 1, role: "root" },
+      },
+    });
+    f.facts.members = { [branch.sessionKey]: [] };
+    f.params.originalParticipant = { type: "profile", id: "synthetic-person" };
+    f.params.compaction = {};
+    f.params.budget = undefined;
+    f.params.retainContextBudget = (capacity, model) => {
+      const value = capturePreparedConversationContextBudget(capacity);
+      if (!value) {
+        throw new Error("Expected native probe footprint");
+      }
+      expect(value.compactionPlacement).toBeUndefined();
+      f.params.budget = { value, ...model };
+    };
+    let pressure = true;
+    let pending = "first-probe-contribution";
+    const version = { generation: "recipient-generation", rawSeq: 1, updatedAt: 1 };
+    boundary.context.mockImplementation(async () => ({
+      messages: pressure
+        ? [{ role: "user", content: "History words. ".repeat(120_000), timestamp: 1 }]
+        : [],
+      version,
+    }));
+    boundary.prepare.mockImplementation(async (input) => {
+      input.assertCurrent();
+      if (
+        input.canAdmitPacket?.({
+          role: "custom",
+          customType: "synthetic-idle-probe",
+          content: "A small prepared observation.",
+          display: false,
+          timestamp: 1,
+          details: { packetId: pending },
+        })
+      ) {
+        f.cache.consume(pending, 0);
+      }
+      return undefined;
+    });
+    // Only the native maintenance boundary is substituted. The real idle owner
+    // selects placement, retains the issued footprint and re-enters onReady admission.
+    const maintenance = vi
+      .spyOn(idleCompaction, "compactConversationKnowledgeWhileIdle")
+      .mockImplementation(async (input) => {
+        input.assertCurrent();
+        expect(input.request).toMatchObject({
+          agentId: branch.agentId,
+          sessionTarget: branch,
+          provider: "synthetic-idle-provider",
+          model: "unknown-model",
+          permissionMode,
+          disableTools: true,
+        });
+        const nativeBudget = capturePreparedConversationContextBudget(
+          createConversationContextCapacity({
+            messages: [],
+            contextWindow: 100_000,
+            reserveTokens: 10_000,
+            modelIdentity: { provider: "synthetic-idle-provider", model: "unknown-model" },
+          }),
+        );
+        if (!nativeBudget) {
+          throw new Error("Expected native issued maintenance budget");
+        }
+        pressure = false;
+        return (await input.onReady?.(nativeBudget, version)) === true;
+      });
+    try {
+      f.stage(pending);
+      await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(true);
+      expect(maintenance).toHaveBeenCalledOnce();
+      expect(f.params.budget).toBeDefined();
+      expect(f.cache.consumptionRevision).toBe(1);
+      pressure = true;
+      pending = "next-probe-contribution";
+      f.stage(pending);
+      await expect(admitPreparedConversationKnowledgeWhileIdle(f.params)).resolves.toBe(true);
+      expect(maintenance).toHaveBeenCalledTimes(2);
+      expect(f.cache.consumptionRevision).toBe(2);
+      expect(f.cache.preparedPackets(1)).toEqual([]);
     } finally {
       f.cache.clear();
     }

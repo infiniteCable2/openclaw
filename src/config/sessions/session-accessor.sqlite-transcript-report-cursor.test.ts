@@ -170,7 +170,9 @@ it.each([1, 32])(
             ok: true,
             value: { committed: true, accepted: count, appended: count },
           });
-          expect(optimized.counts).toEqual({ header: 1, window: 0, generation: 0, mutation: 1 });
+          // The batch suppresses per-report mutations, so its first append ensures
+          // the window once; later reports reuse that initialized native cursor.
+          expect(optimized.counts).toEqual({ header: 1, window: 1, generation: 0, mutation: 1 });
           const committed = await loadTranscriptEvents(batch);
           const old = await loadTranscriptEvents(legacy);
           expect(committed).toHaveLength(count + 2);

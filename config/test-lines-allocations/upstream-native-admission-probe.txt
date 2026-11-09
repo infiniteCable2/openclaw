@@ -1,0 +1,4 @@
+163
+# Native controller and private-audience merge fixtures, exact transcript batch
+# counts, and repeated idle maintenance after a retained native probe footprint.
+# Net test-line growth only; the second maintenance regression is initially red.

@@ -206,6 +206,8 @@ describe("branch communication owner pilot", () => {
               subject: { stableId: person.id },
               conversation: scope.conversation,
               contextBinding: scope.binding,
+              // This synthetic adapter owns the private room membership proof.
+              privateAudience: { assertCurrent() {} },
               dmPolicy: "allowlist",
               allowFrom: [person.id],
               event: { kind: "conversation", authMode: "inbound", mayPair: false },
@@ -263,18 +265,20 @@ describe("branch communication owner pilot", () => {
             return admitted;
           };
           const original = await admit("spoken-input");
+          expect(original.privateAudience?.participant).toEqual(participant);
           const chatOwner = await fixture.claim(chat);
           const callOwner = await fixture.claim(call);
           const parallelOwner = await fixture.claim(parallel);
           const owner = {
             ...callOwner,
+            destinationAudience: original.privateAudience,
             assertCurrent: composeSessionSourceAssertion([
               callOwner.assertCurrent,
               original.assertCurrent,
             ]),
           };
           const before = await fixture.append(chat, "chat-before-call");
-          await recordConversationKnowledgeTurn({ ...chatOwner, ...before });
+          expect(await recordConversationKnowledgeTurn({ ...chatOwner, ...before })).toBe(true);
           const inherited = await fixture.read(owner, participant);
           expect(inherited.text).toContain("chat-before-call answer");
           // A concurrent sibling can publish knowledge, not rewrite this captured turn.
@@ -282,9 +286,13 @@ describe("branch communication owner pilot", () => {
           await recordConversationKnowledgeTurn({ ...parallelOwner, ...sibling });
           expect(inherited.text).not.toContain("parallel-result");
           const completed = await fixture.append(call, "call-result");
+          if (!completed.admission) {
+            throw new Error("The actual call input must have a saved transcript anchor");
+          }
           await recordConversationKnowledgeTurn({
             ...owner,
             ...completed,
+            privateAudience: { participant, admission: completed.admission },
             observed: inherited.observed,
           });
           expect((await fixture.read(owner, participant)).text).toContain("parallel-result answer");
