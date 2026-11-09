@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { prepareAgentRunTerminalReply } from "../agents/agent-run-terminal-reply.js";
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -177,11 +178,13 @@ describe("voice context and speech profile", () => {
 
   it("completes deliberate silent legacy consultation without inventing fallback speech", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const prepared = prepareAgentRunTerminalReply({ rawText: SILENT_REPLY_TOKEN });
     runEmbeddedAgent.mockResolvedValueOnce({
       payloads: [],
       meta: {
         finalAssistantRawText: SILENT_REPLY_TOKEN,
-        finalAssistantVisibleText: SILENT_REPLY_TOKEN,
+        finalAssistantVisibleText: prepared.text,
+        terminalReply: prepared.terminalReply,
       },
     });
     const warn = vi.fn();
