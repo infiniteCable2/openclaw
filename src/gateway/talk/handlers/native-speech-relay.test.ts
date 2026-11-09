@@ -1,6 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { withinTest } from "../../../../test/helpers/promise.js";
+import { isActiveEmbeddedRunId } from "../../../agents/embedded-agent-runner/runs.js";
 import {
   loadSessionEntry,
   readSessionTranscriptMessageEvents,
@@ -377,7 +378,7 @@ it("public STT/TTS relay gates media readiness and uses native consultation, voi
   expect(hardware.releaseTts).toHaveBeenCalledOnce();
   expect(hardware.turnTtsReleases[0]).toHaveBeenCalledOnce();
   expect(hardware.releaseStream).toHaveBeenCalledOnce();
-  expect(context.chatAbortControllers.size).toBe(0);
+  expect(isActiveEmbeddedRunId(mocks.runEmbeddedAgent.mock.calls[0]![0].runId)).toBe(false);
   const scope = {
     agentId: target.agentId,
     sessionKey: target.canonicalKey,
