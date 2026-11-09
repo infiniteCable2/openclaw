@@ -233,7 +233,7 @@ describe("isolated full Gateway conversation continuity", () => {
         };
         // Enough original text to cross the model's actual native token budget.
         // No root write, forced publication or synthetic checkpoint is injected.
-        const filler = "Synthetic archived detail for this controlled test. ".repeat(350);
+        const filler = "Synthetic archived detail for this controlled test. ".repeat(350).trimEnd();
         await send(reusable, "REUSABLE_LOCAL_HISTORY_73");
         const reusableDescription = await owner.call<Description>("sessions.describe", {
           key: reusable,

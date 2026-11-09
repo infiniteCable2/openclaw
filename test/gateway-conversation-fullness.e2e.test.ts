@@ -367,11 +367,7 @@ it("compacts a warm recipient across a config reload and imports every pending t
           nextOrdinaryReply = undefined;
           return reply;
         }
-        const lastUser = Array.isArray(request.input)
-          ? request.input.findLast((item: unknown) => asOptionalRecord(item)?.role === "user")
-          : undefined;
-        const lastInput = textLeaves(lastUser).join("\n");
-        return lastInput.includes("PRESSURE_LOCAL_FACT_") ? padding : `PRESSURE_REPLY_${index}`;
+        return `PRESSURE_REPLY_${index}`;
       });
       const scopes = [...BRANCH_GATEWAY_SCOPES, "operator.admin" as const];
       const selected = config(model, scopes);
@@ -505,7 +501,11 @@ it("compacts a warm recipient across a config reload and imports every pending t
       for (let index = 0; index < 8 && renderedChars + padding.length < 84_000; index++) {
         const fact = `PRESSURE_LOCAL_FACT_${index}_281`;
         localFacts.push(fact);
+        // Runtime context can be a later user-role carrier. Select this fixture's
+        // reply at its known input boundary, not by guessing the provider's last user.
+        nextOrdinaryReply = padding;
         const request = await send(recipient, fact);
+        expect(nextOrdinaryReply).toBeUndefined();
         const text = textLeaves([request.instructions, request.input]).join("\n");
         expect(text.split("PRESSURE_FOREIGN_INITIAL_281")).toHaveLength(2);
         renderedChars = text.length;

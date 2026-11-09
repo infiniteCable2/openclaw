@@ -3,7 +3,7 @@ import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { resolveSessionStorePathCore } from "../src/config/sessions/paths.js";
-import { loadTranscriptEvents } from "../src/config/sessions/session-transcript-events.js";
+import { loadSessionTranscriptEvents } from "../src/config/sessions/session-transcript-events.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
 import { workshopPluginConfig } from "../src/skills/test-support/workshop-config.test-support.js";
@@ -196,7 +196,7 @@ it("synchronizes active and idle reusable branches without blocking a third conv
         env: gateway.state.env,
       });
       const retained = (sessionKey: string, sessionId: string) =>
-        loadTranscriptEvents({
+        loadSessionTranscriptEvents({
           agentId: "main",
           storePath,
           sessionKey,

@@ -599,24 +599,20 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           }
           return sequence;
         };
-        const chatRecipient = connectedActivity
-          ? await operator.call<{ session: { sessionId: string } }>("sessions.describe", {
-              key: chatKey,
-            })
-          : undefined;
+        const chatRecipient = await operator.call<{ session: { sessionId: string } }>(
+          "sessions.describe",
+          { key: chatKey },
+        );
         phase = "create-talk";
         const first = await openTalk();
         const firstInput = await speak(first, 1);
         // Observe the logical recipient before a further real speech round.
         // No recipient read may refresh its facts during the idle proof below.
-        const idleRecipient = connectedActivity
-          ? await operator.call<{ session: { sessionId: string } | null }>("sessions.describe", {
-              key: voiceKey,
-            })
-          : undefined;
-        if (connectedActivity) {
-          expect(idleRecipient?.session).not.toBeNull();
-        }
+        const idleRecipient = await operator.call<{ session: { sessionId: string } | null }>(
+          "sessions.describe",
+          { key: voiceKey },
+        );
+        expect(idleRecipient.session).not.toBeNull();
         // Immediate follow-ups exercise genuine admission and asynchronous
         // preparation races, without holding or replacing their native owners.
         await speak(first, 2);
@@ -659,6 +655,27 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           phases.push({
             phase,
             durationMs: performance.now() - idleStartedAt,
+            idleModelRequests: model.requests.length - requestsBeforeSibling - 1,
+          });
+        } else {
+          if (!idleRecipient.session) {
+            throw new Error("Native conversation recipient unavailable");
+          }
+          phase = "chat-to-speech-preparation";
+          const preparationStartedAt = performance.now();
+          // A foreground turn consumes ready packets; it must not wait for source
+          // hydration. Observe that native preparation before verifying its content,
+          // without another capture, a forced catch-up, or a recipient refresh.
+          await waitForConversationTransfer(gateway, signal, {
+            recipientId: idleRecipient.session.sessionId,
+            sourceId: chatRecipient.session.sessionId,
+            sequence: await userSequence(chatKey, secondFact),
+            phase: "prepared",
+          });
+          expect(model.requests).toHaveLength(requestsBeforeSibling + 1);
+          phases.push({
+            phase,
+            durationMs: performance.now() - preparationStartedAt,
             idleModelRequests: model.requests.length - requestsBeforeSibling - 1,
           });
         }
