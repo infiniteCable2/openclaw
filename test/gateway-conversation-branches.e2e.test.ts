@@ -356,6 +356,32 @@ describe("isolated full Gateway conversation continuity", () => {
           },
           { timeout: 60_000, interval: 100 },
         );
+        // Publishing the checkpoint schedules a separate frame-preparation
+        // quantum. Wait for the actual initial frame before foreground activity
+        // can preempt the preparation this cold-seed fixture needs.
+        await vi.waitFor(() => {
+          const lines = gateway!.logs().replaceAll('\\"', '"').split("\n");
+          const projection = lines
+            .filter(
+              (line) =>
+                line.includes("Related-history root projection ready") &&
+                sourceFrontierReached(line, sourceDescription.session.sessionId, lastSequence),
+            )
+            .at(-1);
+          const revision = Number(/"revision"\s*:\s*(\d+)/u.exec(projection ?? "")?.[1]);
+          const rootHash = /"rootHash"\s*:\s*"([^"]+)"/u.exec(projection ?? "")?.[1];
+          expect(revision).toBeGreaterThan(0);
+          expect(rootHash).toBeTruthy();
+          expect(
+            lines.some(
+              (line) =>
+                line.includes("Related-history root initial frame ready") &&
+                line.includes(rootHash!) &&
+                /"hasCheckpoint"\s*:\s*true/u.test(line) &&
+                Number(/"revision"\s*:\s*(\d+)/u.exec(line)?.[1]) >= revision,
+            ),
+          ).toBe(true);
+        }, WAIT);
         await send(destination, "CHECKPOINT_COLD_BRANCH_PROBE_73");
         const requests = model.requests.filter((request) => {
           const serialized = JSON.stringify(request);
