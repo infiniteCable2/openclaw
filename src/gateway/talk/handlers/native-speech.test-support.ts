@@ -99,8 +99,8 @@ vi.mock("../../../talk/provider-registry.js", async (importOriginal) => ({
 }));
 // Only the hardware synthesis boundary is synthetic. Runtime construction,
 // speech orchestration, native admission and durable voice custody remain real.
-vi.mock("../../../plugin-sdk/tts-runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../plugin-sdk/tts-runtime.js")>()),
+vi.mock("../../../tts/tts-telephony.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../tts/tts-telephony.js")>()),
   prepareTextToSpeechTelephony: mocks.prepareSpeech,
   streamTextToSpeechTelephony: mocks.streamSpeech,
 }));

@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
 import { applySessionEntryTargetOperation } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { resolveSqliteSessionKey } from "../config/sessions/session-accessor.sqlite-scope-helpers.js";
 import { acquireSessionActorStorage } from "../config/sessions/session-actor-storage-acquisition.js";
@@ -401,7 +402,15 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
             );
           };
           const cfg = params.cfg;
-          if (cfg && !isSubagentSessionKey(canonicalKey) && !isIncognitoSessionKey(canonicalKey)) {
+          if (
+            cfg &&
+            (resolveAgentConversationMode(cfg, agentId) === "branches" ||
+              params.privateAudience ||
+              params.chatType ||
+              params.onCreatedSessionCommitted) &&
+            !isSubagentSessionKey(canonicalKey) &&
+            !isIncognitoSessionKey(canonicalKey)
+          ) {
             // Lifecycle preparation reads and writes through the worker's own
             // admission. Release this physical-preparation permit before entering
             // that owner; otherwise its reads wait behind this same caller.

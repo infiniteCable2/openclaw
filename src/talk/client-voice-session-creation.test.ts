@@ -6,6 +6,39 @@ import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { ensureClientVoiceAgentSessionEntry } from "./client-voice-session-write.js";
 
+it.each(["native", "opaque"] as const)(
+  "preserves ordinary configured SDK creation with %s source authority",
+  async (kind) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const storePath = state.statePath("sdk-voice.sqlite");
+      const cfg = { agents: { entries: { main: {} } }, session: { store: storePath } };
+      await state.writeConfig(cfg);
+      const target = { agentId: "main", sessionKey: "agent:main:sdk-voice", storePath };
+      let allowed = true;
+      const requester = Object.assign(
+        vi.fn(() => {
+          if (!allowed) {
+            throw new Error("SDK source revoked");
+          }
+        }),
+        { nativeSource: true, ...(kind === "opaque" ? { opaqueCommitGuard: true } : {}) },
+      );
+      const onCommitted = vi.fn();
+      const params = { ...target, cfg, requester, onCommitted };
+      const sessionId = await ensureClientVoiceAgentSessionEntry(params);
+      expect(requester).toHaveBeenCalled();
+      expect(onCommitted).toHaveBeenCalledOnce();
+      expect(await ensureClientVoiceAgentSessionEntry(params)).toBe(sessionId);
+      expect(onCommitted).toHaveBeenCalledOnce();
+      allowed = false;
+      await expect(ensureClientVoiceAgentSessionEntry(params)).rejects.toThrow(
+        "SDK source revoked",
+      );
+      expect((await readSessionEntryReadOnlyInWorker(target))?.sessionId).toBe(sessionId);
+    });
+  },
+);
+
 it.each([false, true])(
   "creates and reuses a Talk row with native transaction authority (warm: %s)",
   async (warm) => {
