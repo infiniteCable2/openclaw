@@ -374,8 +374,16 @@ it.for(["continuous", "reset"] as const)(
           sql.restore();
         }
       };
-      const assertWithoutSql = () =>
-        expect(sourceOutcomeWithoutSql(), JSON.stringify(publications)).toBeUndefined();
+      const assertWithoutSql = () => {
+        const failure = sourceOutcomeWithoutSql();
+        if (failure instanceof Error) {
+          console.error("Synthetic source failure", failure.stack, failure.cause);
+          if (failure instanceof SessionMutationFactsUnavailableError) {
+            console.error("Synthetic source facts", failure.diagnostic);
+          }
+        }
+        expect(failure, JSON.stringify(publications)).toBeUndefined();
+      };
       const committed = createDeferredCore();
       const releaseDelivery = createDeferredCore();
       let held = false;
