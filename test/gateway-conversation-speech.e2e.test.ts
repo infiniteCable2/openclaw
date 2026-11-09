@@ -5,6 +5,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it } from "vitest";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
+import { workshopPluginConfig } from "../src/skills/test-support/workshop-config.test-support.js";
 import {
   BRANCH_GATEWAY_ORIGIN,
   connectConversationOperator,
@@ -23,76 +24,78 @@ const FACT = "CHAT_TO_SPEECH_COBALT_73";
 
 function configuration(baseUrl: string): OpenClawConfig {
   const provider = buildMockOpenAiResponsesProvider(baseUrl, "conversation-speech-proof");
-  return {
-    gateway: {
-      mode: "local",
-      bind: "loopback",
-      trustedProxies: ["127.0.0.1", "::1"],
-      auth: {
-        mode: "trusted-proxy",
-        token: undefined,
-        trustedProxy: {
-          userHeader: "x-forwarded-user",
-          requiredHeaders: ["x-forwarded-proto"],
-          allowLoopback: true,
-          deviceAutoApprove: { enabled: true, scopes: [...SCOPES] },
-        },
-      },
-      controlUi: { enabled: false, allowedOrigins: [BRANCH_GATEWAY_ORIGIN] },
-      roles: {
-        default: "limited",
-        definitions: {
-          limited: { sessions: { others: "view" }, agents: "*", scopes: [...SCOPES] },
-        },
-      },
-    },
-    logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
-    agents: {
-      entries: { main: { conversationMode: "branches", skills: [] } },
-      defaults: {
-        maxConcurrent: 3,
-        model: { primary: provider.modelRef, fallbacks: [] },
-        modelPolicy: { allow: [provider.modelRef] },
-        models: {
-          [provider.modelRef]: {
-            agentRuntime: { id: "openclaw" },
-            params: { transport: "sse", openaiWsWarmup: false },
+  return workshopPluginConfig(
+    { autonomous: { mode: "off" } },
+    {
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        trustedProxies: ["127.0.0.1", "::1"],
+        auth: {
+          mode: "trusted-proxy",
+          token: undefined,
+          trustedProxy: {
+            userHeader: "x-forwarded-user",
+            requiredHeaders: ["x-forwarded-proto"],
+            allowLoopback: true,
+            deviceAutoApprove: { enabled: true, scopes: [...SCOPES] },
           },
         },
-        utilityModel: "",
-        workspace: "~/workspace",
-        skills: [],
-        skipBootstrap: true,
-        sandbox: { mode: "off" },
-      },
-    },
-    session: { scope: "per-sender" },
-    tools: { deny: ["*"] },
-    models: {
-      mode: "replace",
-      providers: {
-        [provider.providerId]: {
-          ...provider.config,
-          request: { allowPrivateNetwork: true },
-          models: provider.config.models.map((entry) =>
-            Object.assign({}, entry, { input: [...entry.input] }),
-          ),
+        controlUi: { enabled: false, allowedOrigins: [BRANCH_GATEWAY_ORIGIN] },
+        roles: {
+          default: "limited",
+          definitions: {
+            limited: { sessions: { others: "view" }, agents: "*", scopes: [...SCOPES] },
+          },
         },
       },
+      logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
+      agents: {
+        entries: { main: { conversationMode: "branches", skills: [] } },
+        defaults: {
+          maxConcurrent: 3,
+          model: { primary: provider.modelRef, fallbacks: [] },
+          modelPolicy: { allow: [provider.modelRef] },
+          models: {
+            [provider.modelRef]: {
+              agentRuntime: { id: "openclaw" },
+              params: { transport: "sse", openaiWsWarmup: false },
+            },
+          },
+          utilityModel: "",
+          workspace: "~/workspace",
+          skills: [],
+          skipBootstrap: true,
+          sandbox: { mode: "off" },
+        },
+      },
+      session: { scope: "per-sender" },
+      tools: { deny: ["*"] },
+      models: {
+        mode: "replace",
+        providers: {
+          [provider.providerId]: {
+            ...provider.config,
+            request: { allowPrivateNetwork: true },
+            models: provider.config.models.map((entry) =>
+              Object.assign({}, entry, { input: [...entry.input] }),
+            ),
+          },
+        },
+      },
+      talk: {
+        agentId: "main",
+        provider: SPEECH,
+        providers: { [SPEECH]: { modelId: "offline-pcm", voiceId: "fixture" } },
+      },
+      plugins: {
+        slots: { memory: "none" },
+        load: { paths: [path.resolve("test/fixtures/conversation-speech")] },
+        entries: { [SPEECH]: { enabled: true } },
+      },
+      messages: { queue: { mode: "steer", debounceMsByChannel: { webchat: 0 } } },
     },
-    talk: {
-      agentId: "main",
-      provider: SPEECH,
-      providers: { [SPEECH]: { modelId: "offline-pcm", voiceId: "fixture" } },
-    },
-    skills: { workshop: { autonomous: { mode: "off" } } },
-    plugins: {
-      slots: { memory: "none" },
-      load: { paths: [path.resolve("test/fixtures/conversation-speech")] },
-      entries: { [SPEECH]: { enabled: true } },
-    },
-    messages: { queue: { mode: "steer", debounceMsByChannel: { webchat: 0 } } },
-  };
+  );
 }
 
 function completeGatewayLogLines(logs: string) {

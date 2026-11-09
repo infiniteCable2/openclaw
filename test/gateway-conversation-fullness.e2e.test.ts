@@ -5,6 +5,7 @@ import { expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import type { OperatorScope } from "../src/gateway/operator-scopes.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
+import { workshopPluginConfig } from "../src/skills/test-support/workshop-config.test-support.js";
 import {
   BRANCH_GATEWAY_ORIGIN,
   BRANCH_GATEWAY_SCOPES,
@@ -26,66 +27,68 @@ type Description = { session: { sessionId: string; visibility: string; sharingRo
 
 function config(model: Model, scopes: OperatorScope[] = BRANCH_GATEWAY_SCOPES): OpenClawConfig {
   const provider = buildMockOpenAiResponsesProvider(model.baseUrl, "bidirectional-proof");
-  return {
-    gateway: {
-      mode: "local",
-      bind: "loopback",
-      trustedProxies: ["127.0.0.1", "::1"],
-      auth: {
-        mode: "trusted-proxy",
-        token: undefined,
-        trustedProxy: {
-          userHeader: "x-forwarded-user",
-          requiredHeaders: ["x-forwarded-proto"],
-          allowLoopback: true,
-          deviceAutoApprove: { enabled: true, scopes },
-        },
-      },
-      controlUi: { enabled: false, allowedOrigins: [BRANCH_GATEWAY_ORIGIN] },
-      roles: {
-        default: "limited",
-        definitions: {
-          limited: { sessions: { others: "view" }, agents: "*", scopes },
-        },
-      },
-    },
-    logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
-    agents: {
-      entries: { main: { conversationMode: "branches", skills: [] } },
-      defaults: {
-        maxConcurrent: 2,
-        model: { primary: provider.modelRef, fallbacks: [] },
-        modelPolicy: { allow: [provider.modelRef] },
-        models: {
-          [provider.modelRef]: {
-            agentRuntime: { id: "openclaw" },
-            params: { transport: "sse", openaiWsWarmup: false },
+  return workshopPluginConfig(
+    { autonomous: { mode: "off" } },
+    {
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        trustedProxies: ["127.0.0.1", "::1"],
+        auth: {
+          mode: "trusted-proxy",
+          token: undefined,
+          trustedProxy: {
+            userHeader: "x-forwarded-user",
+            requiredHeaders: ["x-forwarded-proto"],
+            allowLoopback: true,
+            deviceAutoApprove: { enabled: true, scopes },
           },
         },
-        utilityModel: "",
-        workspace: "~/workspace",
-        skills: [],
-        skipBootstrap: true,
-        sandbox: { mode: "off" },
-      },
-    },
-    tools: { deny: ["*"] },
-    models: {
-      mode: "replace",
-      providers: {
-        [provider.providerId]: {
-          ...provider.config,
-          request: { allowPrivateNetwork: true },
-          models: provider.config.models.map((entry) =>
-            Object.assign({}, entry, { input: [...entry.input] }),
-          ),
+        controlUi: { enabled: false, allowedOrigins: [BRANCH_GATEWAY_ORIGIN] },
+        roles: {
+          default: "limited",
+          definitions: {
+            limited: { sessions: { others: "view" }, agents: "*", scopes },
+          },
         },
       },
+      logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
+      agents: {
+        entries: { main: { conversationMode: "branches", skills: [] } },
+        defaults: {
+          maxConcurrent: 2,
+          model: { primary: provider.modelRef, fallbacks: [] },
+          modelPolicy: { allow: [provider.modelRef] },
+          models: {
+            [provider.modelRef]: {
+              agentRuntime: { id: "openclaw" },
+              params: { transport: "sse", openaiWsWarmup: false },
+            },
+          },
+          utilityModel: "",
+          workspace: "~/workspace",
+          skills: [],
+          skipBootstrap: true,
+          sandbox: { mode: "off" },
+        },
+      },
+      tools: { deny: ["*"] },
+      models: {
+        mode: "replace",
+        providers: {
+          [provider.providerId]: {
+            ...provider.config,
+            request: { allowPrivateNetwork: true },
+            models: provider.config.models.map((entry) =>
+              Object.assign({}, entry, { input: [...entry.input] }),
+            ),
+          },
+        },
+      },
+      plugins: { slots: { memory: "none" } },
+      messages: { queue: { mode: "steer", debounceMsByChannel: { webchat: 0 } } },
     },
-    skills: { workshop: { autonomous: { mode: "off" } } },
-    plugins: { slots: { memory: "none" } },
-    messages: { queue: { mode: "steer", debounceMsByChannel: { webchat: 0 } } },
-  };
+  );
 }
 
 function sourceReady(
