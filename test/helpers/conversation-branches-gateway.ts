@@ -172,7 +172,12 @@ export async function connectConversationOperator(
 ) {
   const scopes = connectionOptions.scopes ?? BRANCH_GATEWAY_SCOPES;
   const identity = loadOrCreateDeviceIdentity({
-    path: gateway.state.statePath("conversation-test-devices", `${email}.sqlite`),
+    path: gateway.state.statePath(
+      "conversation-test-devices",
+      email,
+      "client",
+      "credentials.sqlite",
+    ),
   });
   const socket = new WebSocket(gateway.url, {
     headers: {
