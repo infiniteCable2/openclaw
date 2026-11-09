@@ -76,6 +76,35 @@ const mocks = vi.hoisted(() => ({
   })),
 }));
 
+// mock-isolation: Observe native refusals without replacing their authorization decisions.
+vi.mock("../../session-sharing-authorization.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../session-sharing-authorization.js")>();
+  return {
+    ...actual,
+    sessionMutationTargetChanged(...args: Parameters<typeof actual.sessionMutationTargetChanged>) {
+      const error = actual.sessionMutationTargetChanged(...args);
+      console.error("Synthetic Talk admission refusal", error.stack);
+      return error;
+    },
+  };
+});
+
+// mock-isolation: Observe the existing bounded facts diagnostic; leave its failure unchanged.
+vi.mock("../../session-sharing-facts-diagnostic.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../session-sharing-facts-diagnostic.js")>();
+  return {
+    ...actual,
+    reportSessionFactsFailure(...args: Parameters<typeof actual.reportSessionFactsFailure>) {
+      const error = actual.reportSessionFactsFailure(...args);
+      console.error(
+        "Synthetic Talk facts refusal",
+        actual.sessionFactsFailureDiagnostic(error, args[1]),
+      );
+      return error;
+    },
+  };
+});
+
 // mock-isolation: detached greetings use this native runner entry; keep their admission/presentation real and replace the same controlled model boundary as ordinary replies.
 vi.mock("../../../agents/embedded-agent-runner/run.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../agents/embedded-agent-runner/run.js")>()),
