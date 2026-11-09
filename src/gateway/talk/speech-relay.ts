@@ -24,6 +24,7 @@ import type { TalkEvent } from "../../talk/talk-session-controller.js";
 import { VOICE_TRANSCRIPT_QUEUE_POLICY } from "../../talk/voice-transcript.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
 import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
+import type { TalkClientRunAuthority } from "./client-run-authority.js";
 import type { TalkAgentConsultAuthority } from "./client-tool-authority.js";
 import { createGatewayTalkConversationInputSource } from "./conversation-input-source.js";
 import { decodeTalkRelayAudioBase64 } from "./relay-audio-base64.js";
@@ -74,6 +75,8 @@ export async function createTalkSpeechRelaySession(params: {
     | "input-end"
   )[];
   assertCurrent: () => void;
+  runAuthority: TalkClientRunAuthority;
+  assertStartupCurrent: () => void;
 }) {
   params.assertCurrent();
   if (
@@ -448,6 +451,7 @@ export async function createTalkSpeechRelaySession(params: {
           throw new AggregateError(failures, "Talk speech resources did not close");
         }
         forgetUnifiedTalkSession(id);
+        params.runAuthority.release();
         params.context.broadcastToConnIds(
           "talk.event",
           { sessionId: id, relaySessionId: id, type: "close", reason: closeReason },
@@ -627,6 +631,8 @@ export async function createTalkSpeechRelaySession(params: {
   })();
   try {
     await construction;
+    params.assertStartupCurrent();
+    params.runAuthority.accept();
   } catch (error) {
     await record.close();
     throw error;

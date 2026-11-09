@@ -6,9 +6,16 @@ import {
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
+import {
+  addSessionMember,
+  removeSessionMember,
+} from "../../../config/sessions/session-sharing-store.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
+import { rolePolicyConfig } from "../../session-sharing.test-utils.js";
 import { cleanupTalkConnection } from "../session-registry.js";
+import { prepareTalkSessionTarget } from "../session-target.js";
 import {
   context,
   mocks,
@@ -18,6 +25,60 @@ import {
   createSpeechRelayCall,
   publishNativeSpeechModelRun,
 } from "./native-speech.test-support.js";
+
+it("retained STT/TTS custody survives its create RPC and writer metadata but rejects committed member removal", async () => {
+  testState.config = { ...testState.config, ...rolePolicyConfig() };
+  const hardware = installSyntheticSpeechHardware();
+  const sessionKey = "agent:voice:shared-speech-custody";
+  const target = await prepareTalkSessionTarget(testState.config, sessionKey);
+  const scope = {
+    agentId: target.agentId,
+    sessionKey: target.canonicalKey,
+    storePath: target.storePath,
+  };
+  const callerId = testState.client.authenticatedUserProfile!.profileId;
+  const ownerId = ensureProfileForEmail("speech-owner@example.test").id;
+  expect(callerId).not.toBe(ownerId);
+  await replaceSessionEntry(scope, {
+    sessionId: "shared-speech-custody",
+    updatedAt: 1,
+    visibility: "read-only",
+    createdActor: { type: "human", source: "profile", id: ownerId },
+  });
+  await addSessionMember(scope, { identityId: callerId, addedBy: ownerId });
+  // dispatch has returned through the real WebSocket request authority's finally/release.
+  const call = await createSpeechRelayCall({ sessionKey });
+  const record = getUnifiedTalkSession(call.sessionId);
+  if (record.kind !== "speech-relay") {
+    throw new Error("Expected retained native speech relay");
+  }
+  const audio = Buffer.alloc(640, 3);
+  record.acknowledgeMark(call.readyMark);
+  await expect(record.appendAudio(audio.toString("base64"), false)).resolves.toBeUndefined();
+  expect(hardware.input).toHaveBeenCalledOnce();
+
+  const entry = loadSessionEntry(scope)!;
+  await replaceSessionEntry(scope, {
+    ...entry,
+    updatedAt: entry.updatedAt + 1,
+    lifecycleRunId: "synthetic-next-turn",
+    activeWriterRunId: "synthetic-next-turn",
+  });
+  await expect(record.appendAudio(audio.toString("base64"), false)).resolves.toBeUndefined();
+  expect(hardware.input).toHaveBeenCalledTimes(2);
+
+  await removeSessionMember(scope, callerId);
+  // Call the retained owner directly: a fresh RPC authorization must not mask a
+  // stale lifetime grant. No new turn/model request is needed for revocation.
+  expect(() => record.acknowledgeMark(call.readyMark)).toThrow();
+  await expect(record.appendAudio(audio.toString("base64"), false)).rejects.toThrow();
+  expect(hardware.input).toHaveBeenCalledTimes(2);
+  expect(mocks.runEmbeddedAgent).not.toHaveBeenCalled();
+  await record.close();
+  expect(hardware.close).toHaveBeenCalledOnce();
+  expect(hardware.releaseStt).toHaveBeenCalledOnce();
+  expect(hardware.releaseTts).toHaveBeenCalledOnce();
+});
 
 it("public STT/TTS input boundary finalizes real audio through native consultation without closing the call", async ({
   signal,

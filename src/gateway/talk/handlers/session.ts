@@ -283,22 +283,42 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         assertCurrent();
         const pairedSource = readGatewayPairedDeviceProfileBinding(client);
         pairedSource?.authority.assertCurrent();
-        const session = await createTalkSpeechRelaySession({
+        const runAuthority = await retainTalkClientRunAuthority({
+          client,
           context,
-          connId,
-          cfg: runtimeConfig,
-          sessionTarget: target,
-          authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
-          captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
-          callerId: gatewayClientSenderFields(client).sender?.id ?? undefined,
-          participant: resolveGatewayInputParticipant(client),
-          verifiedSource: pairedSource?.identity,
-          provider: resolution.provider,
-          providerConfig: resolution.providerConfig,
-          capabilities: params.capabilities,
-          assertCurrent,
+          hasCurrentClientAuthority,
+          session: { target, sessionId: ensuredSessionId },
         });
-        return respondOk(respond, session);
+        let transferred = false;
+        try {
+          assertCurrent();
+          const session = await createTalkSpeechRelaySession({
+            context,
+            connId,
+            cfg: runtimeConfig,
+            sessionTarget: target,
+            authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
+            captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
+            callerId: gatewayClientSenderFields(client).sender?.id ?? undefined,
+            participant: resolveGatewayInputParticipant(client),
+            verifiedSource: pairedSource?.identity,
+            provider: resolution.provider,
+            providerConfig: resolution.providerConfig,
+            capabilities: params.capabilities,
+            runAuthority,
+            assertStartupCurrent: assertCurrent,
+            assertCurrent: () => {
+              runAuthority.assertCurrent();
+              assertConnectionCurrent();
+            },
+          });
+          transferred = true;
+          return respondOk(respond, session);
+        } finally {
+          if (!transferred) {
+            runAuthority.release();
+          }
+        }
       }
 
       if (mode === "realtime") {
