@@ -59,6 +59,7 @@ import {
 } from "./talk-websocket.test-support.js";
 
 const mocks = vi.hoisted(() => ({
+  replyDiagnostic: [] as unknown[],
   capabilities: {
     transports: ["webrtc", "gateway-relay"],
     inputAudioFormats: [{ encoding: "pcm16", sampleRateHz: 24000, channels: 1 }],
@@ -75,6 +76,19 @@ const mocks = vi.hoisted(() => ({
     meta: { durationMs: 0 },
   })),
 }));
+
+// Temporary merge diagnostic: observe the real reply owner without replacing its work.
+vi.mock("../../../auto-reply/reply/get-reply.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../auto-reply/reply/get-reply.js")>();
+  return {
+    ...actual,
+    getReplyFromConfig: async (...args: Parameters<typeof actual.getReplyFromConfig>) => {
+      const result = await actual.getReplyFromConfig(...args);
+      mocks.replyDiagnostic.push(result);
+      return result;
+    },
+  };
+});
 
 // mock-isolation: detached greetings use this native runner entry; keep their admission/presentation real and replace the same controlled model boundary as ordinary replies.
 vi.mock("../../../agents/embedded-agent-runner/run.js", async (importOriginal) => ({
@@ -179,6 +193,7 @@ async function dispatch(
 }
 
 beforeEach(async () => {
+  mocks.replyDiagnostic.length = 0;
   state = await createOpenClawTestState({ label: "talk-native-consult" });
   config = resolveNativeConsultConfig({
     agents: {

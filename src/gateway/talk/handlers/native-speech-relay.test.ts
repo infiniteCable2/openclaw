@@ -143,6 +143,7 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
       ? undefined
       : JSON.stringify({
           warnings: vi.mocked(context.logGateway.warn).mock.calls,
+          reply: mocks.replyDiagnostic,
           info: vi.mocked(context.logGateway.info).mock.calls,
           events: vi.mocked(context.broadcastToConnIds).mock.calls.map(([, payload]) => payload),
           spokenText: mocks.streamSpeech.mock.calls.map(([request]) => request.text),
