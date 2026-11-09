@@ -2,12 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  awaitGateBeforeSettlement,
-  createDeferred,
-  nextEventLoopTurn,
-  withinTest,
-} from "../../../test/helpers/promise.js";
+import { nextEventLoopTurn, withinTest } from "../../../test/helpers/promise.js";
 import { repairToolUseResultPairing } from "../../agents/session-transcript-repair.js";
 import { normalizeLegacySessionEntryDelivery } from "../../infra/state-migrations.legacy-session-store.js";
 import { recordDeliveredCommandExchange } from "../../plugin-sdk/session-transcript-runtime.js";

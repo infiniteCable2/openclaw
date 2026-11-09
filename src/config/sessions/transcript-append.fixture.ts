@@ -10,12 +10,12 @@ import {
 } from "./transcript.js";
 import type { InternalSessionEntry } from "./types.js";
 
-export function createTranscriptAppendFixture(params: {
+export function createTranscriptAppendFixture(scope: {
   sessionId: string;
   sessionKey: string;
   fixture: Pick<ReturnType<typeof useTempSessionsFixture>, "storePath">;
 }) {
-  const { sessionId, sessionKey, fixture } = params;
+  const { sessionId, sessionKey, fixture } = scope;
   function transcriptScope() {
     return { agentId: "main", sessionId, sessionKey, storePath: fixture.storePath() };
   }

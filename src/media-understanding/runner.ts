@@ -712,4 +712,3 @@ export async function runCapability(
   }
   return result;
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

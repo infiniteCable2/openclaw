@@ -117,19 +117,26 @@ function preparedSourceReached(
   recipientId: string,
   sourceId: string,
   sequence: number,
+  phase: "prepared" | "admitted" = "prepared",
 ) {
   const recipient = redactIdentifier(recipientId);
   return gateway
     .logs()
     .split("\n")
     .some((line) => {
+      const normalized = line.replaceAll('\\"', '"');
       if (
-        !line.includes("Related-history source preparation settled") ||
-        !line.includes(recipient)
+        !normalized.includes("Conversation knowledge transfer") ||
+        !normalized.includes(recipient) ||
+        !normalized.includes(redactIdentifier(sourceId)) ||
+        !new RegExp(`"phase"\\s*:\\s*"${phase}"`, "u").test(normalized) ||
+        !/"complete"\s*:\s*true/u.test(normalized)
       ) {
         return false;
       }
-      return sourceFrontierReached(line, sourceId, sequence);
+      // Staged-packet maxima omit large originals split across several packets.
+      // Observe the owner's completed original instead, including its final chunk.
+      return Number(/"throughSeq"\s*:\s*(\d+)/u.exec(normalized)?.[1]) === sequence;
     });
 }
 
@@ -323,6 +330,21 @@ describe("isolated full Gateway conversation continuity", () => {
         if (typeof lastSequence !== "number") {
           throw new Error("Native source sequence is missing");
         }
+        const sourceSequences = markers.map((marker) => {
+          const sequence = originalInputs.find((message) =>
+            JSON.stringify(message.content).includes(marker),
+          )?.["__openclaw"]?.transcriptPosition?.rawSeq;
+          if (typeof sequence !== "number") {
+            throw new Error(`Native source sequence is missing for ${marker}`);
+          }
+          return sequence;
+        });
+        console.info("checkpoint fixture source coverage", {
+          source: redactIdentifier(sourceDescription.session.sessionId),
+          recipient: redactIdentifier(reusableDescription.session.sessionId),
+          sourceSequences,
+          lastSequence,
+        });
         await vi.waitFor(
           () => {
             // Cross two native generations. A nearly full quoted tail alone can
@@ -365,10 +387,24 @@ describe("isolated full Gateway conversation continuity", () => {
             ),
           ).toBe(true);
         }, WAIT);
+        await vi.waitFor(() => {
+          expect(
+            sourceSequences.filter(
+              (sequence) =>
+                !preparedSourceReached(
+                  gateway!,
+                  reusableDescription.session.sessionId,
+                  sourceDescription.session.sessionId,
+                  sequence,
+                  "admitted",
+                ),
+            ),
+          ).toEqual([]);
+        }, WAIT);
         const reused = JSON.stringify(await send(reusable, "REUSABLE_AFTER_ROOT_CHECKPOINT_73"));
         expect(reused).toContain("REUSABLE_LOCAL_HISTORY_73");
         expect(reused).not.toContain("Summary of related conversations");
-        for (const marker of markers.slice(0, 2)) {
+        for (const marker of markers) {
           expect(reused.split(marker).length - 1).toBe(1);
         }
 

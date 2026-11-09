@@ -578,6 +578,10 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
       committingFacts = previous;
     }
   };
+  const preparesTalkTransaction =
+    params.method === "talk.client.create" ||
+    params.method === "talk.client.toolCall" ||
+    params.method === "talk.session.create";
   const authorization: SessionMutationAuthorization = {
     ...(params.preparedTargets
       ? {
@@ -587,9 +591,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
       : {}),
     ...(params.method === "sessions.move" ||
     params.method === "sessions.dispatch" ||
-    ((params.method === "talk.client.create" ||
-      params.method === "talk.client.toolCall" ||
-      params.method === "talk.session.create") &&
+    (preparesTalkTransaction &&
       !authorizedTargets.some((target) => isIncognitoSessionKey(target.sessionKey)))
       ? {
           prepareWorkerGrant: (transactionSource) =>
@@ -599,10 +601,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
                 request: params,
                 sourceConfig: getCfg(),
                 authorizesAgentRun,
-                transactionFacts:
-                  params.method === "talk.client.create" ||
-                  params.method === "talk.client.toolCall" ||
-                  params.method === "talk.session.create",
+                transactionFacts: preparesTalkTransaction,
                 transactionSource,
                 consume: (expected, cfg, prepared, profiles) =>
                   consumeSharing(

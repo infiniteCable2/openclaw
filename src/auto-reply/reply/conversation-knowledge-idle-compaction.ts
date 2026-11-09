@@ -143,19 +143,47 @@ export async function compactConversationKnowledgeWhileIdle(params: {
         }
       : undefined);
   const packetId = asOptionalRecord(packet.details)?.packetId;
+  const diagnostic = (reason: string) => {
+    if (log.isEnabled("debug")) {
+      log.debug("Conversation knowledge idle maintenance deferred", {
+        reason,
+        recipientHash: redactIdentifier(target.sessionId),
+        ...(typeof packetId === "string" ? { packetHash: redactIdentifier(packetId) } : {}),
+        contextRawSeq: params.version.rawSeq,
+        consumptionRevision: params.consumptionRevision,
+      });
+    }
+  };
+  if (!request) {
+    diagnostic("missing-placement");
+    return false;
+  }
+  if (params.config.cloudWorkers?.requiredProfile !== undefined) {
+    diagnostic("cloud-worker-required");
+    return false;
+  }
+  if (typeof packetId !== "string" || !packetId) {
+    diagnostic("missing-packet-id");
+    return false;
+  }
   if (
-    !request ||
-    params.config.cloudWorkers?.requiredProfile !== undefined ||
-    typeof packetId !== "string" ||
-    !packetId ||
     request.agentId !== target.agentId ||
     request.sessionId !== target.sessionId ||
     request.sessionKey !== target.sessionKey ||
-    request.sessionTarget?.storePath !== target.storePath ||
-    (budget && !budget.capacityForMessages([])(packet)) ||
-    (state.blocked?.consumptionRevision === params.consumptionRevision &&
-      isDeepStrictEqual(state.blocked.version, params.version))
+    request.sessionTarget?.storePath !== target.storePath
   ) {
+    diagnostic("placement-mismatch");
+    return false;
+  }
+  if (budget && !budget.capacityForMessages([])(packet)) {
+    diagnostic("packet-exceeds-empty-budget");
+    return false;
+  }
+  if (
+    state.blocked?.consumptionRevision === params.consumptionRevision &&
+    isDeepStrictEqual(state.blocked.version, params.version)
+  ) {
+    diagnostic("unchanged-blocked-context");
     return false;
   }
   const check = () => {
@@ -166,6 +194,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
   const fresh = await params.readContext();
   check();
   if (!fresh.version || !isDeepStrictEqual(fresh.version, params.version)) {
+    diagnostic(fresh.version ? "initial-context-changed" : "initial-context-unavailable");
     // Another native commit owns this window. Re-evaluate in the next quantum.
     return fresh.version !== undefined;
   }
@@ -177,11 +206,16 @@ export async function compactConversationKnowledgeWhileIdle(params: {
     { source: params.assertCurrent },
   );
   check();
-  if (
-    !observed.ok ||
-    observed.value[0]?.status !== "missing" ||
-    (budget && budget.capacityForMessages(fresh.messages)(packet))
-  ) {
+  if (!observed.ok) {
+    diagnostic("receipt-read-unavailable");
+    return false;
+  }
+  if (observed.value[0]?.status !== "missing") {
+    diagnostic("receipt-not-missing");
+    return false;
+  }
+  if (budget && budget.capacityForMessages(fresh.messages)(packet)) {
+    diagnostic("packet-already-fits");
     return false;
   }
   state.blocked = {
@@ -223,6 +257,15 @@ export async function compactConversationKnowledgeWhileIdle(params: {
       pressure.fits === undefined ||
       !pressure.budget.capacityForMessages([])(packet)
     ) {
+      diagnostic(
+        !pressure.ok
+          ? "initial-probe-failed"
+          : !pressure.budget
+            ? "initial-probe-budget-unavailable"
+            : pressure.fits === undefined
+              ? "initial-probe-decision-unavailable"
+              : "packet-exceeds-native-empty-budget",
+      );
       return false;
     }
     let compacted = false;
@@ -233,6 +276,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
       !pressure.fits || !(budget ?? pressure.budget).capacityForMessages(fresh.messages)(packet);
     if (needsReduction) {
       if (params.config.agents?.defaults?.compaction?.enabled === false) {
+        diagnostic("compaction-disabled");
         return false;
       }
       const result = await runIdleConversationKnowledgeNativeMaintenance({
@@ -249,6 +293,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
         },
       });
       if (!result.ok || !result.compacted) {
+        diagnostic(result.ok ? "native-compaction-noop" : "native-compaction-failed");
         return false;
       }
       compacted = true;
@@ -259,6 +304,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
       const current = await params.readContext();
       check();
       if (!current.version) {
+        diagnostic("compacted-context-unavailable");
         return true;
       }
       version = current.version;
@@ -267,17 +313,29 @@ export async function compactConversationKnowledgeWhileIdle(params: {
     }
     // Native refusal wins even if the conservative reusable estimate would allow it.
     if (!pressure.ok || pressure.fits !== true || !pressure.budget) {
+      diagnostic(
+        !pressure.ok
+          ? "final-probe-failed"
+          : pressure.fits !== true
+            ? "final-probe-refused"
+            : "final-probe-budget-unavailable",
+      );
       return compacted;
     }
     const current = await params.readContext();
     check();
     if (!current.version || !isDeepStrictEqual(current.version, version)) {
+      diagnostic(current.version ? "final-context-changed" : "final-context-unavailable");
       return true;
     }
     if (budget && !budget.capacityForMessages(current.messages)(packet)) {
+      diagnostic("foreground-budget-refused");
       return compacted;
     }
     const admitted = await params.onReady?.(pressure.budget, version);
+    if (admitted !== true) {
+      diagnostic(params.onReady ? "ready-without-admission" : "ready-handler-unavailable");
+    }
     return compacted || admitted === true;
   } catch (error) {
     if (params.signal.aborted) {

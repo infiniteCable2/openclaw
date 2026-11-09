@@ -71,13 +71,15 @@ describe("cron conversation model admission", () => {
       } else {
         const admission = await run;
         try {
-          expect(isSessionWorkAdmissionActive(storePath, [sessionKey, entry.sessionId])).toBe(true);
+          expect(isSessionControllerWorkActive(storePath, [sessionKey, entry.sessionId])).toBe(
+            true,
+          );
           await expect(admission.run(async () => "admitted")).resolves.toBe("admitted");
         } finally {
           admission.release();
         }
       }
-      expect(isSessionWorkAdmissionActive(storePath, [sessionKey, entry.sessionId])).toBe(false);
+      expect(isSessionControllerWorkActive(storePath, [sessionKey, entry.sessionId])).toBe(false);
     },
   );
 });

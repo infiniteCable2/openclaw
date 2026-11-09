@@ -362,7 +362,7 @@ test.each(["directory discovery", "Gateway send", "durable completion"] as const
       }
       expect(workers).toHaveLength(1);
     } finally {
-      await Promise.allSettled([foreground, authorization]);
+      await Promise.allSettled([foreground]);
       await closeOpenClawAgentDatabaseByPathAsync(database.path);
       vi.unstubAllEnvs();
     }
