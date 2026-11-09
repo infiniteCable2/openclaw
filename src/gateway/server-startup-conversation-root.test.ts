@@ -7,13 +7,49 @@ import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sql
 import { appendTranscriptMessage } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { resolveAgentConversationRootSessionKey } from "../config/sessions/session-conversation-root-key.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
-import { loadTranscriptEvents } from "../config/sessions/session-transcript-events.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "../config/sessions/session-transcript-events.js";
+import * as startupMigration from "../config/sessions/startup-migration-runtime.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayStartupSessions } from "./server-startup-session-migration.js";
 
 describe("Gateway host conversation root startup", () => {
+  it.each([
+    { engine: "postgres" as const },
+    { engine: "sqlite" as const, families: { agent: { engine: "postgres" as const } } },
+  ])("rejects unsupported branch storage before native startup writes: %j", async (database) => {
+    const migrate = vi.spyOn(startupMigration, "runSessionStartupMigration");
+    try {
+      await expect(
+        prepareGatewayStartupSessions({
+          cfg: { database, agents: { entries: { main: { conversationMode: "branches" } } } },
+          log: { info: vi.fn(), warn: vi.fn() },
+        }),
+      ).rejects.toThrow(/branches currently require SQLite agent data/);
+      expect(migrate).not.toHaveBeenCalled();
+    } finally {
+      migrate.mockRestore();
+    }
+  });
+
+  it("leaves native PostgreSQL startup to the existing storage owner", async () => {
+    const reachedOwner = new Error("Synthetic native startup boundary");
+    const migrate = vi
+      .spyOn(startupMigration, "runSessionStartupMigration")
+      .mockRejectedValue(reachedOwner);
+    try {
+      await expect(
+        prepareGatewayStartupSessions({
+          cfg: { database: { engine: "postgres" }, agents: { entries: { main: {} } } },
+          log: { info: vi.fn(), warn: vi.fn() },
+        }),
+      ).rejects.toBe(reachedOwner);
+      expect(migrate).toHaveBeenCalledOnce();
+    } finally {
+      migrate.mockRestore();
+    }
+  });
   it("prepares legacy channel history before the first and next real native reply initialization", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const cfg: OpenClawConfig = {
@@ -78,17 +114,14 @@ describe("Gateway host conversation root startup", () => {
           agents: { entries: { main: { conversationMode: "branches" }, helper: {} } },
           session: { store: storePath },
         };
-        const resolveTargets = vi.fn();
         await expect(
           prepareGatewayStartupSessions({
             cfg,
             env: state.env,
             agentIds: phase === "deferred" ? new Set(["helper"]) : undefined,
             log: { info: vi.fn(), warn: vi.fn() },
-            deps: { resolveAllAgentSessionStoreTargetsSync: resolveTargets },
           }),
         ).rejects.toThrow(/same physical session database.*not supported in branches mode/);
-        expect(resolveTargets).not.toHaveBeenCalled();
         await expect(fs.stat(storePath)).rejects.toMatchObject({ code: "ENOENT" });
       });
     },

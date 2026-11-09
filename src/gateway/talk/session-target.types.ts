@@ -1,3 +1,5 @@
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+
 // Keep shared Talk identity independent of the storage runtime used to prepare it.
 /** Selected by the host's method owner, never by wire parameters. */
 export type TalkSessionTargetPurpose = "conversation-input" | "settlement" | "address-resolution";
@@ -8,4 +10,5 @@ export type PreparedTalkSessionTarget = Readonly<{
   sessionKey: string;
   canonicalKey: string;
   storePath: string;
+  assertCurrent(cfg: OpenClawConfig): void;
 }>;

@@ -8,7 +8,6 @@ import {
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
-import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import { readSqlitePageCacheResidency } from "./sqlite-page-cache-residency.js";
 import type { SqliteReadOnlyOperationContext } from "./sqlite-readonly-operation-types.js";
 
@@ -147,22 +146,16 @@ function* agentHotPages(
         db,
         query
           .selectFrom("transcript_events")
-          .select((eb) => [
-            eb
-              .case()
-              .when(eb.fn<number>("octet_length", ["event_json"]), "<=", MAX_PAYLOAD_BYTES)
-              .then(eb.ref("event_json"))
-              .else(null)
-              .end()
-              .as("json"),
-            eb
-              .case()
-              .when(eb.fn<number>("octet_length", ["event_zstd"]), "<=", MAX_PAYLOAD_BYTES)
-              .then(eb.ref("event_zstd"))
-              .else(null)
-              .end()
-              .as("compressed"),
-          ])
+          .select((eb) => {
+            const bounded = <Column extends "event_json" | "event_zstd">(column: Column) =>
+              eb
+                .case()
+                .when(eb.fn<number>("octet_length", [column]), "<=", MAX_PAYLOAD_BYTES)
+                .then(eb.ref(column))
+                .else(null)
+                .end();
+            return [bounded("event_json").as("json"), bounded("event_zstd").as("compressed")];
+          })
           .where("session_id", "=", row.current_session_id)
           .where("seq", "in", sequences),
       );
@@ -218,12 +211,23 @@ function* warm(
     progress.readBytes = io.readBytes - initial.readBytes;
     progress.diskBytes = io.diskBytes - initial.diskBytes;
     progress.elapsedMs = performance.now() - started;
-    return { ...progress };
+    return progress;
   };
   try {
+    if (
+      input.kind === "state" &&
+      progress.residency &&
+      progress.residency.sizeBytes > input.maxBytes
+    ) {
+      // A partial sequential scan repeats the same prefix without warming the whole store.
+      // Leave that I/O budget for the remaining databases instead.
+      progress.complete = true;
+      progress.limited = true;
+      yield { ...update() };
+      return;
+    }
     if (input.kind === "agent") {
-      db = openNodeSqliteDatabase(pathname, { readOnly: true });
-      setSqliteBusyTimeout(db, 0);
+      db = openNodeSqliteDatabase(pathname, { readOnly: true, timeout: 0 });
       db.exec("PRAGMA cache_size = -1024; PRAGMA mmap_size = 0;"); // sqlite-allow-raw -- Bound the private cache and account for pread bytes.
       const query = getNodeSqliteKysely<DB>(db);
       const hotQuery = sessionEntryProjection(query)
@@ -239,9 +243,10 @@ function* warm(
       };
       progress.queryBeforeMs = measureQuery();
     }
-    yield update();
+    yield { ...update() };
     if ((progress.residency?.residentRatio ?? 1) < 0.8 || (progress.queryBeforeMs ?? 0) > 10) {
       const pages = db ? agentHotPages(db, input.now) : sharedPages(pathname);
+      let reportedBytes = Math.max(progress.readBytes, progress.diskBytes);
       try {
         for (const chunk of pages) {
           if (chunk) {
@@ -249,11 +254,16 @@ function* warm(
             progress.payloadMessages += chunk.payloadMessages;
           }
           update();
-          if (Math.max(progress.readBytes, progress.diskBytes) >= input.maxBytes) {
+          const bytes = Math.max(progress.readBytes, progress.diskBytes);
+          if (bytes >= input.maxBytes) {
             progress.limited = true;
             break;
           }
-          yield update();
+          // Pace bytes, not sessions: small index reads need no individual IPC round trip.
+          if (bytes - reportedBytes >= CHUNK_BYTES) {
+            reportedBytes = bytes;
+            yield { ...progress };
+          }
         }
       } finally {
         pages.return();
@@ -262,7 +272,7 @@ function* warm(
       progress.residencyAfter = readSqlitePageCacheResidency(pathname);
     }
     progress.complete = true;
-    yield update();
+    yield { ...update() };
   } finally {
     db?.close();
   }

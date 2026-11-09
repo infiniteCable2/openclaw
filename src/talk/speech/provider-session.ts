@@ -89,6 +89,7 @@ export async function startSpeechRealtimeSession(params: {
   const outputQueue = createSpeechRealtimeOutputQueue({
     transport: params.transport,
     bytesPerMs: speechOutputBytesPerMs(params.config.audioFormat),
+    onStall: () => handleOutputBackpressure(),
     onFailure: (source, error) => {
       params.logger.warn(
         `${params.surface.logScope} ${realtimeLogScope} ${source} failed: ${formatErrorMessage(error)}`,
@@ -246,7 +247,7 @@ export async function startSpeechRealtimeSession(params: {
     });
   };
 
-  const resolved = resolveSpeechRealtimeProvider({
+  const resolved = await resolveSpeechRealtimeProvider({
     config: params.config,
     fullConfig: params.fullConfig,
     providers: params.providers,

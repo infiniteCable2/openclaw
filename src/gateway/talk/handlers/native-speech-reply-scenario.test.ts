@@ -5,7 +5,6 @@ import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/
 import { makeAgentAssistantMessage } from "../../../agents/test-helpers/agent-message-fixtures.js";
 import type { InternalGetReplyFromConfig } from "../../../auto-reply/reply/get-reply.types.js";
 import * as nativeQueue from "../../../auto-reply/reply/queue.js";
-import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.js";
 import {
   loadSessionEntry,
   readSessionTranscriptMessageEvents,
@@ -19,6 +18,7 @@ import { assertSessionConversationRootEntry } from "../../../config/sessions/ses
 import { ensureAgentConversationRoot } from "../../../config/sessions/session-conversation-root.js";
 import { resolveAgentSpeechConversationRoute } from "../../../routing/conversation-mode.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
+import { getSessionControllerOperation } from "../../../sessions/session-controller.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import * as sessionSharingPreparation from "../../session-sharing-preparation.js";
@@ -30,7 +30,7 @@ import {
   mocks,
   publishNativeSpeechModelRun,
   testState,
-} from "./native-consult-target.test-support.js";
+} from "./native-speech.test-support.js";
 
 const { getReplacementPublicationDelivery } =
   await import("../../../config/sessions/session-accessor.sqlite-replacement-publication.test-support.js");
@@ -298,7 +298,7 @@ it.for([
         expect(params.sessionKey).toBe(target.canonicalKey);
         modelPrompts.push(params.prompt);
         params.onExecutionPhase?.({ phase: "model_call_started" });
-        const operation = replyRunRegistry.get(params.sessionKey!);
+        const operation = getSessionControllerOperation(params.sessionKey!);
         if (!operation?.ownerSettlement) {
           throw new Error("Actual native reply owner is missing");
         }

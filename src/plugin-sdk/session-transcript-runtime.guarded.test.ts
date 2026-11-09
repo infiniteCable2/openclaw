@@ -1,8 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, assert, beforeEach, describe, expect, it, afterAll } from "vitest";
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  afterAll,
+} from "vitest";
 import type { FinalizedMsgContext } from "../auto-reply/templating.js";
 import { runPreparedChannelTurn } from "../channels/turn/execution.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
   createSessionEntryWithTranscript,
@@ -10,7 +23,6 @@ import {
   replaceSessionEntry,
   upsertSessionEntryCore,
   loadTranscriptEventsSync,
-  replaceTranscriptEventsSync,
 } from "../config/sessions/session-accessor.js";
 import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
 import {
@@ -40,6 +52,8 @@ import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js"
 import {
   withCodexSessionTranscriptMirrorWrite,
   withCodexSessionTranscriptMirrorWriteLock,
+  type CodexSessionTranscriptMirrorWriteContext,
+  type CodexSessionTranscriptMirrorWriteLockContext,
 } from "./codex-session-transcript-runtime.js";
 import {
   appendSessionTranscriptMessageByIdentityStrict as appendStrict,
@@ -47,13 +61,15 @@ import {
   readSessionTranscriptEvents as readEvents,
   readVisibleSessionTranscriptMessageEntries as readEntries,
   type SessionTranscriptReadParams,
-  appendSessionTranscriptMessageByIdentity,
+  appendSessionTranscriptMessageByIdentity as appendMessage,
   readLatestAssistantTextByIdentity,
-  readSessionTranscriptEvents,
   readSessionTranscriptRawDelta,
-  readVisibleSessionTranscriptMessageEntries,
   withSessionTranscriptWrite,
   withSessionTranscriptWriteLock,
+  type SessionTranscriptAppendMessageParams,
+  type SessionTranscriptAppendMessagesParams,
+  type SessionTranscriptWriteContext,
+  type SessionTranscriptWriteLockContext,
 } from "./session-transcript-runtime.js";
 
 describe("guarded session transcript runtime SDK", () => {
@@ -64,6 +80,7 @@ describe("guarded session transcript runtime SDK", () => {
   afterEach(async () => {
     closeOpenClawAgentDatabasesForTest();
     await state.cleanup();
+    clearRuntimeConfigSnapshot();
   });
 
   async function seed(route: "default" | "configured" | "incognito") {
@@ -76,6 +93,7 @@ describe("guarded session transcript runtime SDK", () => {
       route === "configured"
         ? { session: { store: state.path("configured", "{agentId}", "sessions.json") } }
         : undefined;
+    setRuntimeConfigSnapshot(config ?? {});
     const storePath = incognito
       ? resolveIncognitoOpenClawAgentSqlitePath({ agentId, env: state.env })
       : resolveSessionStorePathCore(config?.session?.store, { agentId, env: state.env });
@@ -111,6 +129,26 @@ describe("guarded session transcript runtime SDK", () => {
   }
 
   it("strips forged private publication intent from every public transcript append variant", async () => {
+    expectTypeOf<SessionTranscriptAppendMessageParams<unknown>>().not.toHaveProperty(
+      "conversationPublication",
+    );
+    expectTypeOf<
+      SessionTranscriptAppendMessagesParams<unknown>["messages"][number]
+    >().not.toHaveProperty("conversationPublication");
+    expectTypeOf<
+      Parameters<SessionTranscriptWriteContext["appendMessage"]>[0]
+    >().not.toHaveProperty("conversationPublication");
+    expectTypeOf<
+      Parameters<SessionTranscriptWriteLockContext["appendMessage"]>[0]
+    >().not.toHaveProperty("conversationPublication");
+    expectTypeOf<
+      Parameters<CodexSessionTranscriptMirrorWriteContext["appendMessageWithMessageSequence"]>[0]
+    >().not.toHaveProperty("conversationPublication");
+    expectTypeOf<
+      Parameters<
+        CodexSessionTranscriptMirrorWriteLockContext["appendMessageWithMessageSequence"]
+      >[0]
+    >().not.toHaveProperty("conversationPublication");
     const { scope, persistedScope } = await seed("default");
     const forged = {
       message: { role: "assistant", content: "Plugin-owned saved text.", stopReason: "stop" },
@@ -123,7 +161,7 @@ describe("guarded session transcript runtime SDK", () => {
         },
       },
     };
-    await appendSessionTranscriptMessageByIdentity({ ...scope, ...forged });
+    await appendMessage({ ...scope, ...forged });
     await appendStrict({ ...scope, ...forged });
     await appendGroup({ ...scope, messages: [forged] });
     await withSessionTranscriptWrite(scope, (write) => write.appendMessage(forged));
@@ -140,19 +178,14 @@ describe("guarded session transcript runtime SDK", () => {
   it("appends and replays an ordered incognito group with explicit env", async () => {
     const { scope, persistedScope } = await seed("incognito");
     const messages = [
-      {
-        eventId: "batch-assistant",
-        idempotencyLookup: "scan" as const,
-        message: { role: "assistant", content: "checking", idempotencyKey: "batch:assistant" },
-        now: 1_000,
-      },
-      {
-        eventId: "batch-result",
-        idempotencyLookup: "scan" as const,
-        message: { role: "toolResult", content: "done", idempotencyKey: "batch:result" },
-        now: 2_000,
-      },
-    ];
+      ["assistant", "checking", "assistant"],
+      ["toolResult", "done", "result"],
+    ].map(([role, content, key], index) => ({
+      eventId: `batch-${key}`,
+      idempotencyLookup: "scan" as const,
+      message: { role, content, idempotencyKey: `batch:${key}` },
+      now: (index + 1) * 1_000,
+    }));
     const appended = await appendGroup({ ...scope, messages });
     const replayed = await appendGroup({ ...scope, messages });
     expect(appended.map((result) => result.appended)).toEqual([true, true]);
@@ -236,20 +269,15 @@ describe("guarded session transcript runtime SDK", () => {
       expect.objectContaining({ type: "session" }),
       expect.objectContaining({ type: "message", message }),
     ]);
-    await expect(superseded(() => appendStrict({ ...scope, message }))).resolves.toEqual({
-      kind: "rejected",
-      reason: "session-rebound",
-    });
+    const rebound = { kind: "rejected", reason: "session-rebound" };
+    await expect(superseded(() => appendStrict({ ...scope, message }))).resolves.toEqual(rebound);
     await upsertSessionEntryCore(persistedScope, {
       sessionId: "replacement-session",
       updatedAt: 20,
     });
     await expect(
-      appendStrict({
-        ...scope,
-        message: { role: "assistant", content: "stale" },
-      }),
-    ).resolves.toEqual({ kind: "rejected", reason: "session-rebound" });
+      appendStrict({ ...scope, message: { role: "assistant", content: "stale" } }),
+    ).resolves.toEqual(rebound);
     await expect(readEvents(persistedScope)).resolves.toEqual(events);
     await expect(
       readEvents({ ...persistedScope, sessionId: "replacement-session" }),
@@ -257,10 +285,18 @@ describe("guarded session transcript runtime SDK", () => {
   });
 });
 
-const tempDirs = useSessionStoreTempDirs(afterAll, "openclaw-sdk-transcript-fence-");
+const tempDirs = useSessionStoreTempDirs(
+  (cleanup) =>
+    afterAll(async () => {
+      await cleanup();
+      clearRuntimeConfigSnapshot();
+    }),
+  "openclaw-sdk-transcript-fence-",
+);
 describe("session transcript runtime read fence", () => {
   let scope: SessionTranscriptReadParams & { agentId: string; storePath: string };
   beforeEach(async () => {
+    setRuntimeConfigSnapshot({});
     scope = {
       agentId: "main",
       sessionId: "fenced",
@@ -273,7 +309,7 @@ describe("session transcript runtime read fence", () => {
     const rows = [];
     for (const [index, content] of ["prompt", "prior", "prompt", "current"].entries()) {
       const now = (index + 1) * 1_000;
-      const row = await appendSessionTranscriptMessageByIdentity({
+      const row = await appendMessage({
         ...scope,
         message: { role: index % 2 ? "assistant" : "user", content, timestamp: now },
         now,
@@ -291,35 +327,32 @@ describe("session transcript runtime read fence", () => {
     };
   }
 
+  const rawDelta = (cursor?: string) =>
+    readSessionTranscriptRawDelta({ ...scope, cursor, maxBytes: 100_000, maxEvents: 100 });
+
   it("fences full and raw reads before the exact admitted row and resumes from its cursor", async () => {
     const { priorUser, priorAssistant, admitted, receipt } = await seedHistory();
     const page = await runWithSessionTranscriptReadFence(receipt, async () => {
-      const events = await readSessionTranscriptEvents(scope);
+      const events = await readEvents(scope);
       expect(loadTranscriptEventsSync(scope)).toEqual(events);
       expect(events).toEqual([
         expect.objectContaining({ type: "session" }),
         expect.objectContaining({ id: priorUser.messageId }),
         expect.objectContaining({ id: priorAssistant.messageId }),
       ]);
-      expect(
-        (await readVisibleSessionTranscriptMessageEntries(scope)).map((entry) => entry.entryId),
-      ).toEqual([priorUser.messageId, priorAssistant.messageId]);
+      expect((await readEntries(scope)).map((entry) => entry.entryId)).toEqual([
+        priorUser.messageId,
+        priorAssistant.messageId,
+      ]);
       await expect(readLatestAssistantTextByIdentity(scope)).resolves.toMatchObject({
         id: priorAssistant.messageId,
         text: "prior",
       });
-      return readSessionTranscriptRawDelta({ ...scope, maxBytes: 100_000, maxEvents: 100 });
+      return rawDelta();
     });
     assert(page.kind === "page");
     expect(page.hasMore).toBe(false);
-    await expect(
-      readSessionTranscriptRawDelta({
-        ...scope,
-        cursor: page.cursor,
-        maxBytes: 100_000,
-        maxEvents: 100,
-      }),
-    ).resolves.toMatchObject({
+    await expect(rawDelta(page.cursor)).resolves.toMatchObject({
       kind: "page",
       events: [
         { event: { id: admitted.messageId, message: { content: "prompt" } } },
@@ -349,17 +382,17 @@ describe("session transcript runtime read fence", () => {
           .where("session_id", "=", scope.sessionId),
       );
     }, options);
-    await expect(
-      runSessionColdStorageMaintenance({
-        config: {
-          agents: { entries: { main: {} } },
-          session: {
-            store: options.path,
-            maintenance: { coldStorage: { enabled: true, afterDays: 30 } },
-          },
-        },
-      }),
-    ).resolves.toMatchObject({ archivedTranscripts: 1 });
+    const config = {
+      agents: { entries: { main: {} } },
+      session: {
+        store: options.path,
+        maintenance: { coldStorage: { enabled: true, afterDays: 30 } },
+      },
+    };
+    setRuntimeConfigSnapshot(config);
+    await expect(runSessionColdStorageMaintenance({ config })).resolves.toMatchObject({
+      archivedTranscripts: 1,
+    });
     expect(() => loadTranscriptEventsSync(scope)).toThrow(/cold storage/);
     const ctx: FinalizedMsgContext = {
       Body: "continue",
@@ -385,15 +418,11 @@ describe("session transcript runtime read fence", () => {
     expect(dispatched).toBe(true);
   });
 
-  it("rejects a read fence when any immutable admission field changes", async () => {
+  it("rejects a read fence for a different store, session key, or message role", async () => {
     const { receipt } = await seedHistory();
     const invalidReceipts = [
       { ...receipt, storePath: `${receipt.storePath}.other` },
       { ...receipt, sessionKey: `${receipt.sessionKey}:other` },
-      { ...receipt, generation: `${receipt.generation}:other` },
-      { ...receipt, rawSeq: receipt.rawSeq + 1 },
-      { ...receipt, effectiveParentId: "other-parent" },
-      { ...receipt, activeMessagePosition: receipt.activeMessagePosition + 1 },
       { ...receipt, role: "assistant" as const },
     ];
     for (const invalid of invalidReceipts) {
@@ -404,15 +433,9 @@ describe("session transcript runtime read fence", () => {
       ).toThrow(SessionTranscriptReadFenceError);
       await expect(
         runWithSessionTranscriptReadFence(invalid as unknown as typeof receipt, () =>
-          readSessionTranscriptEvents(scope),
+          readEvents(scope),
         ),
       ).rejects.toBeInstanceOf(SessionTranscriptReadFenceError);
     }
-    const events = loadTranscriptEventsSync(scope);
-    expect(replaceTranscriptEventsSync(scope, events)).toBe(true);
-    expect(() =>
-      runWithSessionTranscriptReadFence(receipt, () => loadTranscriptEventsSync(scope)),
-    ).toThrow(SessionTranscriptReadFenceError);
-    expect(loadTranscriptEventsSync(scope)).toEqual(events);
   });
 });

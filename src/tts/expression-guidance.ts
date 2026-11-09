@@ -1,4 +1,5 @@
-import type { SpeechExpressionCapabilities, SpeechSynthesisTarget } from "./provider-types.js";
+import type { SpeechExpressionCapabilities } from "./provider-types.js";
+import type { SpeechSynthesisTarget } from "./tts-runtime-types.js";
 
 /** Render already-admitted provider facts; this helper never discovers or prepares a provider. */
 export function buildSpeechExpressionGuidance(params: {

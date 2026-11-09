@@ -12,8 +12,8 @@ vi.mock("../../config/sessions.js", () => ({
   resolveSessionStorePathCore: () => "fixture-store",
 }));
 // mock-isolation: Foreign routes read fixture session preferences, never an operator database.
-vi.mock("../../config/sessions/session-accessor.js", () => ({
-  loadSessionEntryReadOnly: () => ({ ttsAuto: "inbound" }),
+vi.mock("../../config/sessions/session-entry-read-runtime.js", () => ({
+  readSessionEntryReadOnlyInWorker: async () => ({ ttsAuto: "inbound" }),
 }));
 // mock-isolation: The preference owner stays outside the admitted-worker handoff being tested.
 vi.mock("../../tts/tts-preferences.js", () => ({
@@ -69,6 +69,19 @@ describe("native message speech admission routing", () => {
   beforeEach(() => {
     mocks.apply.mockClear();
     mocks.prefs.mockClear();
+  });
+
+  it("awaits native speech selection and leaves ordinary text untouched when TTS is off", async () => {
+    const payload = { text: "A plain text reply." };
+    await expect(
+      maybeApplyTtsToMessageActionSendPayload({
+        payload,
+        cfg: { tts: { auto: "off" } },
+        channel: "example-channel",
+        dryRun: false,
+      }),
+    ).resolves.toBe(payload);
+    expect(mocks.apply).not.toHaveBeenCalled();
   });
 
   it("carries the same worker admission to native synthesis without serializing it into reply facts", async () => {

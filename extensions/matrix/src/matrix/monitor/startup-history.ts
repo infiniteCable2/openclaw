@@ -19,7 +19,7 @@ import {
 } from "./config.js";
 import type { createDirectRoomTracker } from "./direct.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
-import { resolveMatrixInboundRoute } from "./route.js";
+import { resolveMatrixInboundRouteAsync } from "./route.js";
 
 type RootState = "registered" | "prepared" | "unavailable" | "invalidated";
 type RoomScope = {
@@ -229,7 +229,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
       ) {
         continue;
       }
-      const { route, bindingOwnerAvailable } = resolveMatrixInboundRoute({
+      const { route, bindingOwnerAvailable } = await resolveMatrixInboundRouteAsync({
         cfg,
         accountId: params.accountId,
         roomId,
@@ -238,6 +238,7 @@ export async function prepareMatrixStartupConversationRoots(params: {
         dmSessionScope: account.dm?.sessionScope,
         resolveAgentRoute: params.core.channel.routing.resolveAgentRoute,
       });
+      check();
       if (!bindingOwnerAvailable) {
         continue;
       }

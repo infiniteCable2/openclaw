@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { publishInternalModelContext } from "../../../../packages/agent-core/src/internal-hooks.js";
 import {
   awaitGateBeforeSettlement,
   createDeferred,
@@ -14,7 +15,6 @@ import {
 } from "../../../config/sessions/conversation-knowledge.js";
 import type { Context } from "../../../llm/types.js";
 import { createAssistantMessageEventStream } from "../../../llm/utils/event-stream.js";
-import { publishInternalModelContext } from "../../runtime/internal-hooks.js";
 import {
   createAssistant,
   createAssistantResultStream,

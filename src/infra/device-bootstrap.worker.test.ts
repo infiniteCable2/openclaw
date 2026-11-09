@@ -2,20 +2,14 @@ import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE } from "../shared/device-bootstrap-profile.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
-import {
-  consumeDeviceBootstrapTokenWithSetupCompletion,
-  issueDevicePairSetupBootstrapToken,
-  issueDeviceBootstrapToken,
-  getBoundDeviceBootstrapProfile,
-  readDevicePairSetupCompletion,
-  verifyDeviceBootstrapToken,
-} from "./device-bootstrap.js";
+import * as bootstrap from "./device-bootstrap.js";
 import {
   loadDeviceBootstrapTokenRecords,
   persistDeviceBootstrapTokenRecords,
   persistDevicePairingStoreState,
 } from "./device-pairing-store.js";
 import { rejectDevicePairing, requestDevicePairing } from "./device-pairing.js";
+import type { PairedDevice } from "./device-pairing.types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
@@ -25,16 +19,12 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 
-async function verifyBootstrapToken(baseDir: string, token: string) {
-  return await verifyDeviceBootstrapToken({
-    baseDir,
-    token,
-    deviceId: "device-123",
-    publicKey: "public-key-123",
-    role: "node",
-    scopes: [],
-  });
-}
+const node = { role: "node", scopes: [] };
+const identity = { deviceId: "device-123", publicKey: "public-key-123" };
+const verify = (baseDir: string, token: string, device = identity) =>
+  bootstrap.verifyDeviceBootstrapToken({ baseDir, token, ...node, ...device });
+const readCompletion = (baseDir: string, setupId: string) =>
+  bootstrap.readDevicePairSetupCompletion({ baseDir, setupId });
 
 it("issues and binds an operator-only voice credential within the native write ceiling", async () => {
   const baseDir = tempDirs.make("openclaw-personal-voice-bootstrap-");
@@ -42,9 +32,9 @@ it("issues and binds an operator-only voice credential within the native write c
     roles: ["operator"],
     scopes: ["operator.read", "operator.talk", "operator.write"],
   };
-  const issued = await issueDeviceBootstrapToken({ baseDir, profile });
+  const issued = await bootstrap.issueDeviceBootstrapToken({ baseDir, profile });
   await expect(
-    verifyDeviceBootstrapToken({
+    bootstrap.verifyDeviceBootstrapToken({
       baseDir,
       token: issued.token,
       deviceId: "personal-device",
@@ -54,7 +44,7 @@ it("issues and binds an operator-only voice credential within the native write c
     }),
   ).resolves.toEqual({ ok: true });
   await expect(
-    getBoundDeviceBootstrapProfile({
+    bootstrap.getBoundDeviceBootstrapProfile({
       baseDir,
       token: issued.token,
       deviceId: "personal-device",
@@ -62,7 +52,7 @@ it("issues and binds an operator-only voice credential within the native write c
     }),
   ).resolves.toEqual(profile);
   await expect(
-    verifyDeviceBootstrapToken({
+    bootstrap.verifyDeviceBootstrapToken({
       baseDir,
       token: issued.token,
       deviceId: "personal-device",
@@ -78,27 +68,21 @@ it.each(["replaced identity", "retired authority", "expired credential"] as cons
   async (changed) => {
     const expired = changed === "expired credential";
     if (expired) {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-03-14T12:00:00Z"));
+      vi.useFakeTimers({ now: new Date("2026-03-14T12:00:00Z") });
     }
     const baseDir = tempDirs.make("openclaw-device-bootstrap-worker-");
-    const issued = await issueDevicePairSetupBootstrapToken({
+    const issued = await bootstrap.issueDevicePairSetupBootstrapToken({
       baseDir,
       profile: NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
     });
-    await verifyBootstrapToken(baseDir, issued.token);
+    await verify(baseDir, issued.token);
     const tokenBytes = JSON.stringify(loadDeviceBootstrapTokenRecords(baseDir));
     const persistPaired = (publicKey: string) =>
       persistDevicePairingStoreState(
         {
           pendingById: {},
           pairedByDeviceId: {
-            "device-123": {
-              deviceId: "device-123",
-              publicKey,
-              createdAtMs: 1,
-              approvedAtMs: 1,
-            },
+            "device-123": { ...identity, publicKey, createdAtMs: 1, approvedAtMs: 1 },
           },
         },
         baseDir,
@@ -116,10 +100,14 @@ it.each(["replaced identity", "retired authority", "expired credential"] as cons
       deviceId: "device-123",
       completedAtMs: expired ? Date.now() : 1_000,
     };
-    await expect(
-      consumeDeviceBootstrapTokenWithSetupCompletion({
+    const consume = (pairedDeviceMatches?: (device: PairedDevice | null) => boolean) =>
+      bootstrap.consumeDeviceBootstrapTokenWithSetupCompletion({
         ...completion,
-        pairedDeviceMatches: expired
+        pairedDeviceMatches,
+      });
+    await expect(
+      consume(
+        expired
           ? undefined
           : (device) => {
               const accepted = authorityCurrent && device?.publicKey === "public-key-123";
@@ -130,24 +118,19 @@ it.each(["replaced identity", "retired authority", "expired credential"] as cons
               }
               return accepted;
             },
-      }),
+      ),
     ).resolves.toBeNull();
     if (!expired) {
       expect(JSON.stringify(loadDeviceBootstrapTokenRecords(baseDir))).toBe(tokenBytes);
     }
-    await expect(
-      readDevicePairSetupCompletion({ baseDir, setupId: issued.setupId }),
-    ).resolves.toBeNull();
+    await expect(readCompletion(baseDir, issued.setupId)).resolves.toBeNull();
     if (expired) {
       return;
     }
 
     persistPaired("public-key-123");
     await expect(
-      consumeDeviceBootstrapTokenWithSetupCompletion({
-        ...completion,
-        pairedDeviceMatches: (device) => device?.publicKey === "public-key-123",
-      }),
+      consume((device) => device?.publicKey === "public-key-123"),
     ).resolves.toMatchObject({
       completion: { setupId: issued.setupId, deviceId: "device-123", deliveryState: "uncertain" },
     });
@@ -156,33 +139,17 @@ it.each(["replaced identity", "retired authority", "expired credential"] as cons
 
 it("rejecting a pending request revokes only bootstrap tokens bound to its exact identity", async () => {
   const baseDir = tempDirs.make("openclaw-device-bootstrap-reject-");
-  const issued = await issueDeviceBootstrapToken({ baseDir });
+  const issued = await bootstrap.issueDeviceBootstrapToken({ baseDir });
+  const device = { deviceId: "bootstrap-reject-device", publicKey: "bootstrap-reject-public-key" };
 
-  await expect(
-    verifyDeviceBootstrapToken({
-      token: issued.token,
-      deviceId: "bootstrap-reject-device",
-      publicKey: "bootstrap-reject-public-key",
-      role: "node",
-      scopes: [],
-      baseDir,
-    }),
-  ).resolves.toEqual({ ok: true });
+  await expect(verify(baseDir, issued.token, device)).resolves.toEqual({ ok: true });
 
   const record = loadDeviceBootstrapTokenRecords(baseDir)[issued.token]!;
   const { deviceId: _deviceId, publicKey: _publicKey, ...unbound } = record;
   const retained = {
-    "synthetic-other-device": {
-      ...record,
-      token: "synthetic-other-device",
-      deviceId: "another-device",
-    },
-    "synthetic-other-key": {
-      ...record,
-      token: "synthetic-other-key",
-      publicKey: "another-public-key",
-    },
-    "synthetic-unbound": { ...unbound, token: "synthetic-unbound" },
+    "other-device": { ...record, token: "other-device", deviceId: "another-device" },
+    "other-key": { ...record, token: "other-key", publicKey: "another-public-key" },
+    unbound: { ...unbound, token: "unbound" },
   };
   persistDeviceBootstrapTokenRecords(
     {
@@ -193,30 +160,15 @@ it("rejecting a pending request revokes only bootstrap tokens bound to its exact
     baseDir,
   );
 
-  const pending = await requestDevicePairing(
-    {
-      deviceId: "bootstrap-reject-device",
-      publicKey: "bootstrap-reject-public-key",
-      role: "node",
-      roles: ["node"],
-      scopes: [],
-    },
-    baseDir,
-  );
+  const pending = await requestDevicePairing({ ...device, ...node, roles: ["node"] }, baseDir);
 
   await expect(rejectDevicePairing(pending.request.requestId, baseDir)).resolves.toEqual({
     requestId: pending.request.requestId,
-    deviceId: "bootstrap-reject-device",
+    deviceId: device.deviceId,
   });
-  await expect(
-    verifyDeviceBootstrapToken({
-      token: issued.token,
-      deviceId: "bootstrap-reject-device",
-      publicKey: "bootstrap-reject-public-key",
-      role: "node",
-      scopes: [],
-      baseDir,
-    }),
-  ).resolves.toEqual({ ok: false, reason: "bootstrap_token_invalid" });
+  await expect(verify(baseDir, issued.token, device)).resolves.toEqual({
+    ok: false,
+    reason: "bootstrap_token_invalid",
+  });
   expect(loadDeviceBootstrapTokenRecords(baseDir)).toEqual(retained);
 });

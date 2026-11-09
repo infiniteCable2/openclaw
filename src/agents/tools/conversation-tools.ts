@@ -11,7 +11,9 @@ import {
 } from "../../../packages/gateway-protocol/src/schema/agent.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import type { OpenClawToolsOptions } from "../openclaw-tools.types.js";
 import { optionalPositiveIntegerSchema } from "../schema/typebox.js";
+import { resolveRequesterDeliveryThreadId } from "../spawn-requester-origin.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   jsonResult,
@@ -24,6 +26,7 @@ import {
   callAgentToolGatewayRequest,
   type AgentToolGatewayRequestCaller,
 } from "./in-process-gateway.js";
+import { createSessionsSendTool } from "./sessions-send-tool.js";
 
 const CONVERSATION_REF_PATTERN = /^conv_[a-f0-9]{32}$/u;
 
@@ -124,64 +127,86 @@ function conversationMessageExecutor(
   };
 }
 
-export function createConversationsListTool(options: ConversationToolOptions = {}): AnyAgentTool {
-  return {
-    label: "Conversations",
-    name: "conversations_list",
-    displaySummary: "List chat destinations and authorized active connections.",
-    description:
-      "List durable external chat destinations as stable conversationRef values, with channelLabel and declared channelCapabilities when known, plus authorized activeConnections when their native owner publishes them. Channel capabilities describe formats, not live connectivity or tool grants; omitted capabilities are unknown. Ephemeral connectionRef values identify preparing/ready call, Assistant or browser connections, not chat addresses. Their operations describe existing native behavior: current-turn-reply uses that connection's current response, steer adds agent instructions, and cancel-output stops playback. They do not promise literal-text/file sending or grant cross-connection control. Use only explicitly available native tools; never substitute shell/CLI RPCs. Sessions hold local model context; conversationRef selects an exact external channel destination. contextRelation=current identifies this session's primary destination; parent identifies its exact parent session's current primary destination. Parent ancestry does not identify the caller or prove that a destination belongs to the same person. These snapshot labels grant no delivery permission; never use a session key or connectionRef as a message address.",
-    parameters: ConversationsListSchema,
-    outputSchema: ConversationListResultSchema,
-    execute: async (_toolCallId, args) => {
-      requireOwner(options);
-      const params = args as Record<string, unknown>;
-      const limit = Math.min(readPositiveIntegerParam(params, "limit") ?? 50, 100);
-      const channel = readToolStringParam(params, "channel");
-      const query = readToolStringParam(params, "query");
-      const result = await callAgentToolGatewayRequest<ConversationListResult>({
-        method: "conversations.list",
-        params: {
-          agentId: resolveToolAgentId(options),
-          ...(options.agentSessionKey && options.agentSessionId
-            ? {
-                sourceSessionKey: options.agentSessionKey,
-                sourceSessionId: options.agentSessionId,
-              }
-            : {}),
-          limit,
-          ...(channel ? { channel } : {}),
-          ...(query ? { query } : {}),
-        },
-        ...(options.config ? { config: options.config } : {}),
-      });
-      return jsonResult(result);
+export function createHostedConversationTools(
+  options: OpenClawToolsOptions | undefined,
+  sessionAgentId: string,
+  sessionConfig: OpenClawConfig | undefined,
+): AnyAgentTool[] {
+  const conversationOptions = {
+    ...options,
+    agentId: sessionAgentId,
+    agentSessionId: options?.sessionId,
+  };
+  return [
+    {
+      label: "Conversations",
+      name: "conversations_list",
+      displaySummary: "List chat destinations and authorized active connections.",
+      description:
+        "List durable external chat destinations as stable conversationRef values, with channelLabel and declared channelCapabilities when known, plus authorized activeConnections when their native owner publishes them. Channel capabilities describe formats, not live connectivity or tool grants; omitted capabilities are unknown. Ephemeral connectionRef values identify preparing/ready call, Assistant or browser connections, not chat addresses. Their operations describe existing native behavior: current-turn-reply uses that connection's current response, steer adds agent instructions, and cancel-output stops playback. They do not promise literal-text/file sending or grant cross-connection control. Use only explicitly available native tools; never substitute shell/CLI RPCs. Sessions hold local model context; conversationRef selects an exact external channel destination. contextRelation=current identifies this session's primary destination; parent identifies its exact parent session's current primary destination. Parent ancestry does not identify the caller or prove that a destination belongs to the same person. These snapshot labels grant no delivery permission; never use a session key or connectionRef as a message address.",
+      parameters: ConversationsListSchema,
+      outputSchema: ConversationListResultSchema,
+      execute: async (_toolCallId, args) => {
+        requireOwner(conversationOptions);
+        const params = args as Record<string, unknown>;
+        const limit = Math.min(readPositiveIntegerParam(params, "limit") ?? 50, 100);
+        const channel = readToolStringParam(params, "channel");
+        const query = readToolStringParam(params, "query");
+        const result = await callAgentToolGatewayRequest<ConversationListResult>({
+          method: "conversations.list",
+          params: {
+            agentId: resolveToolAgentId(conversationOptions),
+            ...(conversationOptions.agentSessionKey && conversationOptions.agentSessionId
+              ? {
+                  sourceSessionKey: conversationOptions.agentSessionKey,
+                  sourceSessionId: conversationOptions.agentSessionId,
+                }
+              : {}),
+            limit,
+            ...(channel ? { channel } : {}),
+            ...(query ? { query } : {}),
+          },
+          ...(conversationOptions.config ? { config: conversationOptions.config } : {}),
+        });
+        return jsonResult(result);
+      },
     },
-  };
-}
-
-export function createConversationsSendTool(options: ConversationToolOptions = {}): AnyAgentTool {
-  return {
-    label: "Conversation Send",
-    name: "conversations_send",
-    displaySummary: "Send to an exact external conversation.",
-    description:
-      "Send directly through a conversationRef. This performs channel delivery; it does not run the local agent in the backing session.",
-    parameters: ConversationsSendSchema,
-    outputSchema: ConversationSendResultSchema,
-    execute: conversationMessageExecutor("send", options),
-  };
-}
-
-export function createConversationsTurnTool(options: ConversationToolOptions = {}): AnyAgentTool {
-  return {
-    label: "Conversation Turn",
-    name: "conversations_turn",
-    displaySummary: "Send and wait for the correlated peer reply.",
-    description:
-      "Send through a conversationRef and wait for its correlated inbound reply. The reply returns here instead of starting a second local agent turn; unsolicited messages still start normal turns.",
-    parameters: ConversationsTurnSchema,
-    outputSchema: ConversationTurnResultSchema,
-    execute: conversationMessageExecutor("turn", options),
-  };
+    {
+      label: "Conversation Send",
+      name: "conversations_send",
+      displaySummary: "Send to an exact external conversation.",
+      description:
+        "Send directly through a conversationRef. This performs channel delivery; it does not run the local agent in the backing session.",
+      parameters: ConversationsSendSchema,
+      outputSchema: ConversationSendResultSchema,
+      execute: conversationMessageExecutor("send", conversationOptions),
+    },
+    {
+      label: "Conversation Turn",
+      name: "conversations_turn",
+      displaySummary: "Send and wait for the correlated peer reply.",
+      description:
+        "Send through a conversationRef and wait for its correlated inbound reply. The reply returns here instead of starting a second local agent turn; unsolicited messages still start normal turns.",
+      parameters: ConversationsTurnSchema,
+      outputSchema: ConversationTurnResultSchema,
+      execute: conversationMessageExecutor("turn", conversationOptions),
+    },
+    // Keep the in-process caller so materialized agent roots retain their creation stamp.
+    createSessionsSendTool({
+      ...options,
+      requesterTurnRunId: options?.runId,
+      agentId: sessionAgentId,
+      // Match sessions_spawn: spawned children record the durable run
+      // session as spawnedBy, so the parent check must use the same key.
+      agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
+      agentSessionId: options?.sessionId,
+      requesterOrigin: {
+        channel: options?.agentChannel,
+        accountId: options?.agentAccountId,
+        to: options?.currentMessagingTarget ?? options?.currentChannelId ?? options?.agentTo,
+        threadId: options ? resolveRequesterDeliveryThreadId(options) : undefined,
+      },
+      config: sessionConfig,
+    }),
+  ];
 }

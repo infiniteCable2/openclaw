@@ -17,7 +17,8 @@ import {
   replaceTranscriptEvents,
 } from "../../config/sessions/session-accessor.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
-import { createBackgroundWorkOwner } from "../../process/background-work.js";
+import { getBackgroundOwnerLane } from "../../process/background-work.js";
+import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import * as knowledgePreparation from "./conversation-knowledge.js";
@@ -168,16 +169,13 @@ it("settles idle imports past denied legacy pages and wakes only for a new origi
       );
       // Join the existing root lane before the recipient: no model/input turn
       // or timing poll may be needed to make an already open recipient current.
-      const rootLane = createBackgroundWorkOwner({
-        owner: "conversation-knowledge-checkpoints",
-        maxConcurrent: 1,
-      });
+      const rootLane = getBackgroundOwnerLane("conversation-knowledge-checkpoints");
       const settle = async (label: string) => {
         stage = `${label}:recipient-before-root`;
         await withinTest(prefetch!.owner.wait(), signal);
         stage = `${label}:root-barrier`;
         await withinTest(
-          rootLane.enqueue(async () => {}, { abortSignal: signal }),
+          enqueueCommandInLane(rootLane, async () => {}, { abortSignal: signal }),
           signal,
         );
         stage = `${label}:recipient-after-root`;

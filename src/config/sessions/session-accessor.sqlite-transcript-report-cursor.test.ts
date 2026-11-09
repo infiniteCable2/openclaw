@@ -23,8 +23,8 @@ import {
 import type { PreparedTranscriptReportBatchEntry } from "./session-accessor.sqlite-transcript-reports.types.js";
 import { bindSqliteWorkerBackend } from "./session-accessor.sqlite-transcript-reports.worker.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
-import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
-import { loadTranscriptEvents } from "./session-transcript-events.js";
+import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
 import { CURRENT_SESSION_VERSION } from "./version.js";
 

@@ -17,7 +17,7 @@ import {
   type ConversationKnowledgeReceipt,
 } from "./conversation-knowledge.js";
 import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";
-import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
+import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
 

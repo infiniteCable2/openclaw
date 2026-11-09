@@ -2,8 +2,8 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { withinTest } from "../../../../test/helpers/promise.js";
 import { makeAgentAssistantMessage } from "../../../agents/test-helpers/agent-message-fixtures.js";
-import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.js";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
+import { getSessionControllerOperation } from "../../../sessions/session-controller.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import { attachGatewayPairedDeviceProfileBinding } from "../../paired-device-profile.js";
@@ -16,7 +16,7 @@ import {
   createRelayCall,
   publishNativeSpeechModelRun,
   testState,
-} from "./native-consult-target.test-support.js";
+} from "./native-speech.test-support.js";
 
 const capabilities = ["isolated-input", "output-gate", "activity-v1"];
 
@@ -400,7 +400,9 @@ it("a native silent answer settles activity and leaves the same connection usabl
         throw new Error("Native activity caused an unsolicited model request");
       }
       params.onExecutionPhase?.({ phase: "model_call_started" });
-      const owner = params.sessionKey ? replyRunRegistry.get(params.sessionKey) : undefined;
+      const owner = params.sessionKey
+        ? getSessionControllerOperation(params.sessionKey)
+        : undefined;
       if (!owner?.ownerSettlement) {
         throw new Error("Expected actual native reply owner settlement");
       }

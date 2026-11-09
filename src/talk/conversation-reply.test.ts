@@ -15,7 +15,6 @@ import { clearPendingFinalDeliveryAfterSuccess } from "../auto-reply/reply/dispa
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import { REPLY_OPERATION_RUN_STATE } from "../auto-reply/reply/reply-operation-run-state.js";
 import type { MsgContext } from "../auto-reply/templating.js";
-import { hasMainSessionRecoveryClaim } from "../config/sessions/restart-recovery-state.js";
 import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { settlePendingFinalDelivery } from "../infra/outbound/delivery-completion.js";
 import {
@@ -285,7 +284,7 @@ describe("original conversation input through native reply", () => {
       await Promise.all(fixture.settlements);
       const entry = loadSessionEntry({ storePath, sessionKey });
       expect(entry?.pendingFinalDelivery).toBeUndefined();
-      expect(hasMainSessionRecoveryClaim(entry)).toBe(false);
+      expect(entry?.resumeAfterRestart).toBeUndefined();
       expect(entry?.updatedAt).toBe(1);
       expect(entry?.status).toBe("done");
       expect(mocks.getReplyFromConfig).toHaveBeenCalledOnce();
@@ -395,7 +394,7 @@ describe("original conversation input through native reply", () => {
       };
       await settlePendingFinalDelivery(completion, "delivered", ["prepared"]);
       await clearPendingFinalDeliveryAfterSuccess(completion);
-      expect(hasMainSessionRecoveryClaim(loadSessionEntry({ storePath, sessionKey }))).toBe(false);
+      expect(loadSessionEntry({ storePath, sessionKey })?.resumeAfterRestart).toBeUndefined();
     }
   });
 

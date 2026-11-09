@@ -6,10 +6,6 @@ import { captureGatewayPrivateConversationAudience } from "../../gateway/session
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
 import {
-  clearGenerationPrivateFieldsForRotatedSessionPatch,
-  generationValidPrivateFieldsForSameSession,
-} from "../../plugin-sdk/session-store-runtime-internal.js";
-import {
   collectConversationPrivateAudiences,
   retainConversationPrivateAudience,
 } from "../../sessions/conversation-private-audience.js";
@@ -31,6 +27,7 @@ import {
   projectPublicSessionEntry,
   projectPublicSessionEntryPatch,
 } from "./session-entry-projection.js";
+import { preserveGenerationPrivateFields } from "./session-entry-public-patch.js";
 import type { InternalSessionEntry } from "./types.js";
 
 const snapshot: OperatorRunRecoverySnapshot = {
@@ -189,17 +186,16 @@ describe("durable reusable recipient enrollment", () => {
           "conversationRecipientEnrollment",
         );
         expect(
-          generationValidPrivateFieldsForSameSession(
-            first,
-            f.branch.sessionId,
-            f.branch.lifecycleRevision,
-          ),
+          preserveGenerationPrivateFields(first!, {
+            sessionId: f.branch.sessionId,
+            lifecycleRevision: f.branch.lifecycleRevision,
+          }),
         ).toHaveProperty("conversationRecipientEnrollment", first?.conversationRecipientEnrollment);
         expect(
-          clearGenerationPrivateFieldsForRotatedSessionPatch(first!, { sessionId: "new-session" }),
+          preserveGenerationPrivateFields(first!, { sessionId: "new-session" }),
         ).toHaveProperty("conversationRecipientEnrollment", undefined);
         expect(
-          clearGenerationPrivateFieldsForRotatedSessionPatch(first!, {
+          preserveGenerationPrivateFields(first!, {
             lifecycleRevision: "new-lifecycle",
           }),
         ).toHaveProperty("conversationRecipientEnrollment", undefined);

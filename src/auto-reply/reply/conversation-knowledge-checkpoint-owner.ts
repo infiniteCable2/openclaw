@@ -27,7 +27,6 @@ import { loadSessionEntryForAdmission } from "../../config/sessions/session-acce
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { createBackgroundWorkOwner } from "../../process/background-work.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { createConversationKnowledgeCheckpointFrameSlot } from "./conversation-knowledge-checkpoint-frame.js";
@@ -59,10 +58,6 @@ const owners = resolveGlobalSingleton(
   Symbol.for("openclaw.conversationKnowledgeCheckpointOwners"),
   () => new Map<string, RootOwner>(),
 );
-const workOwner = createBackgroundWorkOwner({
-  owner: "conversation-knowledge-checkpoints",
-  maxConcurrent: 1,
-});
 const log = createSubsystemLogger("conversation-knowledge");
 
 function createRootOwner(initial: Registration, audienceKey: string, dispose: () => void) {
@@ -169,7 +164,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   brokers.add(first);
   const owner = createConversationKnowledgePrefetchOwner({
     target: { ...initial.branch, env: initial.env },
-    workOwner,
+    workLaneOwner: "conversation-knowledge-checkpoints",
     settle,
     assertCurrent,
     watchesSource: (sessionKey) => sourceSessionKeys.has(sessionKey),
@@ -417,6 +412,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             model = await acquireConversationKnowledgeCheckpointModel({
               config,
               agentId: broker.branch.agentId,
+              sessionId: broker.branch.root.sessionId,
               signal,
               assertCurrent: check,
               retainCleanup(release) {

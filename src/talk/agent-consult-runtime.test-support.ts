@@ -89,7 +89,7 @@ export function createAgentRuntime(payloads: unknown[] = [{ text: "Speak this." 
       assertCurrent();
       return consume(
         { ok: true, value: sessionStore[scope.sessionKey] as SessionEntry | undefined },
-        { kind: "native", assertCurrent },
+        { kind: "file", assertCurrent },
       );
     },
   );
@@ -97,7 +97,7 @@ export function createAgentRuntime(payloads: unknown[] = [{ text: "Speak this." 
     async (params: {
       sessionKey: string;
       fallbackEntry?: Record<string, unknown>;
-      update: (
+      prepare: (
         entry: Record<string, unknown>,
       ) => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
     }) => {
@@ -105,7 +105,7 @@ export function createAgentRuntime(payloads: unknown[] = [{ text: "Speak this." 
       if (!existing) {
         return null;
       }
-      const patch = await params.update({ ...existing });
+      const patch = await params.prepare({ ...existing });
       if (!patch) {
         return existing;
       }
@@ -131,7 +131,11 @@ export function createAgentRuntime(payloads: unknown[] = [{ text: "Speak this." 
         saveSessionStore: vi.fn(async () => {}),
         updateSessionStore,
         getSessionEntry,
+        getSessionEntryAsync: vi.fn(
+          async (params: { sessionKey: string }) => sessionStore[params.sessionKey],
+        ),
         patchSessionEntry,
+        prepareSessionEntryPatch: patchSessionEntry,
         upsertSessionEntry,
         resolveSessionFilePath: vi.fn(
           (_sessionId: string, entry?: { sessionFile?: string }) =>

@@ -2,7 +2,7 @@ import type {
   MediaAttachmentDisposition,
   MediaUnderstandingCapability,
   MediaUnderstandingDecision,
-} from "./types.js";
+} from "../../packages/media-understanding-common/src/types.js";
 
 const MAX_SKIPPED_FILE_MARKERS = 5;
 

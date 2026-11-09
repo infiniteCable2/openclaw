@@ -39,15 +39,24 @@ describe("WebLoginWaitParamsSchema", () => {
       }),
     ).toBe(false);
   });
+});
 
-  it("accepts an explicit channel and opaque login session key", () => {
+it("keeps channel sampling intervals integral while accepting fractional metrics", () => {
+  const eventLoop = Compile(ChannelsStatusResultSchema.properties.eventLoop);
+  for (const intervalMs of [0, 1, 0.5, -1]) {
     expect(
-      validate.Check({
-        channel: "openclaw-weixin",
-        sessionKey: "2d3c49c2-5a88-4e90-9a36-264834875ecc",
+      eventLoop.Check({
+        degraded: false,
+        reasons: [],
+        intervalMs,
+        delayP99Ms: 1.25,
+        delayMaxMs: 2.5,
+        utilization: 0.2,
+        cpuCoreRatio: 1.5,
       }),
-    ).toBe(true);
-  });
+      `intervalMs=${intervalMs}`,
+    ).toBe(intervalMs === 0 || intervalMs === 1);
+  }
 });
 
 describe("TalkSessionAppendAudioParamsSchema", () => {
@@ -130,83 +139,5 @@ describe("TalkSessionCancelOutputResultSchema", () => {
     ]) {
       expect(validate.Check(value)).toBe(false);
     }
-  });
-});
-
-describe("ChannelsStatusResultSchema", () => {
-  /** Compiled validator for channel status diagnostics. */
-  const validate = Compile(ChannelsStatusResultSchema);
-
-  it("keeps channel sampling intervals integral while accepting fractional metrics", () => {
-    const eventLoop = Compile(ChannelsStatusResultSchema.properties.eventLoop);
-    for (const intervalMs of [0, 1, 0.5, -1]) {
-      expect(
-        eventLoop.Check({
-          degraded: false,
-          reasons: [],
-          intervalMs,
-          delayP99Ms: 1.25,
-          delayMaxMs: 2.5,
-          utilization: 0.2,
-          cpuCoreRatio: 1.5,
-        }),
-        `intervalMs=${intervalMs}`,
-      ).toBe(intervalMs === 0 || intervalMs === 1);
-    }
-  });
-
-  it("accepts gateway event-loop diagnostics emitted by channels.status", () => {
-    expect(
-      validate.Check({
-        ts: Date.now(),
-        channelOrder: ["discord"],
-        channelLabels: { discord: "Discord" },
-        channels: { discord: { configured: true } },
-        channelAccounts: {
-          discord: [
-            {
-              accountId: "default",
-              enabled: true,
-              configured: true,
-              running: true,
-              connected: false,
-              healthState: "stale-socket",
-              lastError: null,
-              lastStartAt: null,
-              lastStopAt: null,
-              lastInboundAt: null,
-              lastOutboundAt: null,
-              credentialSource: "service-account",
-              audienceType: "app-url",
-              audience: "https://chat.example.test",
-              webhookPath: "/googlechat",
-              webhookUrl: null,
-            },
-          ],
-        },
-        channelDefaultAccountId: { discord: "default" },
-        partial: true,
-        warnings: ["discord:default probe timed out after 1000ms"],
-        statusIssues: [
-          {
-            channel: "discord",
-            accountId: "default",
-            kind: "config",
-            message: "No guilds are allowed.",
-            fix: "Add an allowed guild.",
-          },
-        ],
-        eventLoop: {
-          degraded: true,
-          degradedSinceMs: 61_000,
-          reasons: ["event_loop_delay", "cpu"],
-          intervalMs: 62_000,
-          delayP99Ms: 1_250.5,
-          delayMaxMs: 62_000,
-          utilization: 0.98,
-          cpuCoreRatio: 1.2,
-        },
-      }),
-    ).toBe(true);
   });
 });

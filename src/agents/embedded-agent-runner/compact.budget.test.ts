@@ -192,6 +192,41 @@ describe("native ingestion-budget compaction dispatch", () => {
     expect(hookRunner.runBeforeCompaction).toHaveBeenCalledOnce();
   });
 
+  it("passes prospective packet costs to native retention without persisting the packet", async () => {
+    sessionMessages.splice(0, sessionMessages.length, {
+      role: "user",
+      content: "Prior observations. ".repeat(60_000),
+      timestamp: 1,
+    });
+    const pending = {
+      role: "custom" as const,
+      customType: "synthetic-observation",
+      content: "Still pending observation.",
+      display: false,
+      timestamp: 2,
+    };
+    const result = await compact({
+      ...args(),
+      budgetPreflight: { prompt: "", pendingMessages: [pending] },
+    });
+    expect(result).toMatchObject({ ok: true, compacted: true });
+    expect(sessionAutomaticCompactionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      undefined,
+      expect.objectContaining({
+        requestBudget: expect.objectContaining({
+          contextWindow: expect.any(Number),
+          fixedTokens: expect.any(Number),
+          pendingTokens: expect.any(Number),
+        }),
+      }),
+    );
+    const budget = sessionAutomaticCompactionMock.mock.calls[0]?.[3]?.requestBudget;
+    expect(budget?.pendingTokens).toBeGreaterThan(0);
+    expect(sessionMessages).not.toContainEqual(pending);
+  });
+
   it.each([
     { foregroundWindow: 1_000_000, summaryWindow: 32_000, compacted: false },
     { foregroundWindow: 32_000, summaryWindow: 1_000_000, compacted: true },

@@ -3,8 +3,11 @@ import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { assertSpeechExpressionOverridePolicy } from "./directives.js";
 import { buildSpeechExpressionGuidance } from "./expression-guidance.js";
 import { isSpeechExpressionEnabled } from "./expression.js";
-import type { SpeechSynthesisTarget, TtsDirectiveOverrides } from "./provider-types.js";
-import type { TtsTelephonyPreparationResult } from "./tts-runtime-types.js";
+import type {
+  SpeechSynthesisTarget,
+  TtsDirectiveOverrides,
+  TtsTelephonyPreparationResult,
+} from "./tts-runtime-types.js";
 import { resolveTtsConfig } from "./tts-settings.js";
 
 export type PreparedSpeechExpressionContext = {

@@ -297,6 +297,8 @@ const ModelDefinitionSchema = z.strictObject({
   compat: ModelCompatSchema,
   /** Media input limits used by routing and preflight compression. */
   mediaInput: ModelMediaInputSchema.optional(),
+  /** Custom authored rows may accept endpoint-selected response ids; official policy still wins. */
+  responseModelEquivalent: z.boolean().optional(),
   /** Metadata source marker for models added by CLI/catalog tooling. */
   metadataSource: z.literal("models-add").optional(),
 });
@@ -334,7 +336,30 @@ const ModelProviderLocalServiceSchema = z
   })
   .optional();
 
+const ModelProviderIconSchema = z.discriminatedUnion("source", [
+  z.strictObject({ source: z.literal("file"), path: z.string().trim().min(1).max(4096) }),
+  z.strictObject({
+    source: z.literal("url"),
+    url: z
+      .string()
+      .url()
+      .max(4096)
+      .refine((value) => {
+        try {
+          const url = new URL(value);
+          return url.protocol === "https:" && !url.username && !url.password && !url.hash;
+        } catch {
+          return false;
+        }
+      }, "Provider icon URL must use HTTPS without credentials or a fragment"),
+  }),
+  z.strictObject({ source: z.literal("builtin"), name: z.string().trim().min(1).max(100) }),
+]);
+
 const ModelProviderSchema = z.strictObject({
+  /** Display-only metadata; never changes provider identity or model routing. */
+  name: z.string().trim().min(1).max(100).optional(),
+  icon: ModelProviderIconSchema.optional(),
   // Bundled provider overlays are materialized with an empty-string sentinel.
   // ModelProvidersSchema below still rejects empty baseUrl values for custom providers.
   baseUrl: z.string().optional(),
@@ -342,7 +367,14 @@ const ModelProviderSchema = z.strictObject({
   apiKey: SecretInputSchema.optional().register(sensitive),
   /** Authentication mode used when resolving credentials for this provider. */
   auth: z
-    .union([z.literal("api-key"), z.literal("aws-sdk"), z.literal("oauth"), z.literal("token")])
+    .union([
+      z.literal("api-key"),
+      z.literal("aws-sdk"),
+      z.literal("oauth"),
+      z.literal("token"),
+      z.literal("none"),
+      z.literal("native-command"),
+    ])
     .optional(),
   /** Default API adapter for models under this provider. */
   api: ModelApiSchema.optional(),
@@ -358,6 +390,8 @@ const ModelProviderSchema = z.strictObject({
   agentRuntime: AgentRuntimePolicySchema,
   /** Optional local service to start before calling this provider. */
   localService: ModelProviderLocalServiceSchema,
+  /** Override locality for watchdog timing only, including localService-managed relays. */
+  remote: z.boolean().optional(),
   /** Secret-bearing headers merged into provider requests. */
   headers: z.record(z.string(), SecretInputSchema.register(sensitive)).optional(),
   /** Whether default Authorization header injection is enabled. */
@@ -424,6 +458,7 @@ export const ModelsConfigSchema = z
     mode: z.union([z.literal("merge"), z.literal("replace")]).optional(),
     providers: ModelProvidersSchema.optional(),
     catalogRefresh: ModelCatalogRefreshConfigSchema,
+    usage: z.strictObject({ cacheTtlMs: z.number().int().nonnegative().optional() }).optional(),
   })
   .optional();
 
@@ -646,7 +681,10 @@ const MediaUnderstandingAttachmentsSchema = z
   .optional();
 
 const ProviderOptionsSchema = z
-  .record(z.string(), z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])))
+  .record(
+    z.string(),
+    z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])),
+  )
   .optional();
 
 const MediaUnderstandingRuntimeFields = {

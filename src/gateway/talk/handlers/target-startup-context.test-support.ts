@@ -50,7 +50,7 @@ export function defineTalkTargetStartupContextTests(getFixture: () => TargetStar
         "The private synthetic appointment is at noon.",
       );
       expect(await recordConversationKnowledgeTurn({ ...siblingOwner, ...terminal })).toBe(true);
-      const target = prepareTalkSessionTarget(
+      const target = await prepareTalkSessionTarget(
         f.config,
         undefined,
         "conversation-input",
@@ -90,7 +90,7 @@ export function defineTalkTargetStartupContextTests(getFixture: () => TargetStar
       if (conversationMode === "branches") {
         await ensureAgentConversationRoot({ cfg: f.config, agentId: "voice" });
       }
-      const target = prepareTalkSessionTarget(
+      const target = await prepareTalkSessionTarget(
         f.config,
         undefined,
         "conversation-input",
@@ -134,7 +134,7 @@ export function defineTalkTargetStartupContextTests(getFixture: () => TargetStar
     const f = getFixture();
     f.config.agents!.entries!.voice = { conversationMode: "branches" };
     await ensureAgentConversationRoot({ cfg: f.config, agentId: "voice" });
-    const target = prepareTalkSessionTarget(
+    const target = await prepareTalkSessionTarget(
       f.config,
       undefined,
       "conversation-input",

@@ -1,10 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type {
-  SpeechExpression,
-  SpeechExpressionCapabilities,
-  SpeechSynthesisTarget,
-} from "./provider-types.js";
+import type { SpeechExpression, SpeechExpressionCapabilities } from "./provider-types.js";
+import type { SpeechSynthesisTarget } from "./tts-runtime-types.js";
 
 const MAX_PARTS = 128;
 const MAX_CONTROLS = 64;

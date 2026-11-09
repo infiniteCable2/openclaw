@@ -3,6 +3,11 @@ import { z } from "zod";
 import { ALL_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
 import { AgentModelSchema, DecisionModelSchema } from "./zod-schema.agent-model.js";
 
+export const WorkspaceFileModeSchema = z.enum(["0600", "0620", "0640", "0660"], {
+  error:
+    "Expected an octal string: 0600, 0620, 0640, or 0660 (owner read/write; group access optional)",
+});
+
 export const AgentRuntimePolicySchema = z
   .strictObject({
     id: z.string().optional(),
@@ -85,10 +90,11 @@ export const AgentEntryBaseSchema = z.strictObject({
   /** External conversation routing; omitted preserves native session scoping. */
   conversationMode: z.enum(["native", "branches"]).optional(),
   workspace: z.string().optional(),
+  workspaceFileMode: WorkspaceFileModeSchema.optional(),
   cwd: z.string().optional(),
   agentDir: z.string().optional(),
   model: AgentModelSchema.optional(),
-  utilityModel: z.string().optional(),
+  utilityModel: AgentModelSchema.optional(),
   decisionModel: DecisionModelSchema.optional(),
   models: AgentModelMapSchema.optional(),
   modelPolicy: AgentModelPolicySchema.optional(),
@@ -97,6 +103,7 @@ export const AgentEntryBaseSchema = z.strictObject({
   toolProgressDetail: z.enum(["explain", "raw"]).optional(),
   reasoningDefault: z.enum(["on", "off", "stream"]).optional(),
   fastModeDefault: z.union([z.boolean(), z.literal("auto"), z.literal("ultrafast")]).optional(),
+  newSessionPermissionMode: z.enum(["read-only", "guarded", "workspace", "full"]).optional(),
   contextInjection: z
     .union([z.literal("always"), z.literal("continuation-skip"), z.literal("never")])
     .optional(),
@@ -112,6 +119,7 @@ export const AgentEntryBaseSchema = z.strictObject({
     .strictObject({
       delegationMode: z.enum(["suggest", "prefer"]).optional(),
       allowAgents: z.array(z.string()).optional(),
+      delegateToolsTo: z.array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/)).optional(),
       model: AgentModelSchema.optional(),
       thinking: z.string().optional(),
       requireAgentId: z.boolean().optional(),

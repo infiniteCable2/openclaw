@@ -1,21 +1,25 @@
-import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
+import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { sessionEntryCommitGuardOptions } from "../../config/sessions/session-source-authority.js";
-import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { logVerbose } from "../../globals.js";
 import { isAbortError } from "../../infra/abort-signal.js";
-import type { runMemoryFlushIfNeeded } from "./agent-runner-memory.js";
+import type {
+  MemoryFlushOutcome,
+  MemoryFlushResult,
+  MemoryFlushRunParams,
+} from "./agent-runner-memory.types.js";
 import { truncateMemoryFlushErrorMessage } from "./memory-flush-errors.js";
 
 const MAX_FLUSH_FAILURES = 3;
 
 export async function recordMemoryFlushFailure(
   error: unknown,
-  run: Parameters<typeof runMemoryFlushIfNeeded>[0],
+  run: MemoryFlushRunParams,
   initialSessionEntry?: SessionEntry,
-): Promise<Awaited<ReturnType<typeof runMemoryFlushIfNeeded>>> {
+): Promise<MemoryFlushResult> {
   run.followupRun.assertSourceCurrent?.();
   let sessionEntry = initialSessionEntry;
-  let outcome: "failed" | "exhausted" = "failed";
+  let outcome: MemoryFlushOutcome = "failed";
   // Caller cancellation may use any reason, not only an AbortError instance.
   if ((run.replyOperation?.abortSignal ?? run.abortSignal)?.aborted) {
     logVerbose("memory flush cancelled by its owner");
@@ -25,52 +29,51 @@ export async function recordMemoryFlushFailure(
   const { sessionKey, storePath } = run;
   if (!isAbortError(error) && storePath && sessionKey) {
     try {
-      const adoptEntry = (entry: SessionEntry | null) => {
-        if (entry) {
-          sessionEntry = entry;
-          if (run.sessionStore) {
-            run.sessionStore[sessionKey] = entry;
-          }
-        }
-      };
-      const updateEntry = (update: Parameters<typeof patchSessionEntryCore>[1]) =>
-        patchSessionEntryCore({ storePath, sessionKey }, update, {
+      let failureCount = 0;
+      const updatedEntry = await updateSessionEntry(
+        { storePath, sessionKey },
+        (currentEntry) => {
+          failureCount =
+            (currentEntry.memoryFlush?.kind === "failed"
+              ? currentEntry.memoryFlush.failureCount
+              : 0) + 1;
+          return {
+            memoryFlush:
+              failureCount >= MAX_FLUSH_FAILURES
+                ? { kind: "succeeded", compactionCount: currentEntry.compactionCount ?? 0 }
+                : {
+                    kind: "failed",
+                    ...(currentEntry.memoryFlush?.compactionCount !== undefined
+                      ? { compactionCount: currentEntry.memoryFlush.compactionCount }
+                      : {}),
+                    failureCount,
+                  },
+          };
+        },
+        {
           skipMaintenance: true,
           takeCacheOwnership: true,
           ...(run.followupRun.assertSourceCurrent
             ? sessionEntryCommitGuardOptions(run.followupRun.assertSourceCurrent)
             : {}),
-        });
-      const failedEntry = await updateEntry(async (currentEntry) => ({
-        memoryFlush: {
-          kind: "failed",
-          ...(currentEntry.memoryFlush?.compactionCount !== undefined
-            ? { compactionCount: currentEntry.memoryFlush.compactionCount }
-            : {}),
-          failureCount:
-            (currentEntry.memoryFlush?.kind === "failed"
-              ? currentEntry.memoryFlush.failureCount
-              : 0) + 1,
         },
-      }));
-      adoptEntry(failedEntry);
-      const failureCount =
-        failedEntry?.memoryFlush?.kind === "failed" ? failedEntry.memoryFlush.failureCount : 0;
+      );
+      if (updatedEntry) {
+        sessionEntry = updatedEntry;
+        if (run.sessionStore) {
+          run.sessionStore[sessionKey] = updatedEntry;
+        }
+      } else {
+        failureCount = 0;
+      }
       logVerbose(
         `memory flush failed (attempt ${failureCount}/${MAX_FLUSH_FAILURES}): ${truncatedError}`,
       );
-      if (failedEntry && failureCount >= MAX_FLUSH_FAILURES) {
+      if (updatedEntry && failureCount >= MAX_FLUSH_FAILURES) {
         outcome = "exhausted";
         logVerbose(
           `memory flush exhausted: skipping flush for this compaction cycle after ${failureCount} consecutive failures`,
         );
-        const exhaustedEntry = await updateEntry(async (currentEntry) => ({
-          memoryFlush: {
-            kind: "succeeded",
-            compactionCount: currentEntry.compactionCount ?? 0,
-          },
-        }));
-        adoptEntry(exhaustedEntry);
       }
     } catch (persistError) {
       run.followupRun.assertSourceCurrent?.();

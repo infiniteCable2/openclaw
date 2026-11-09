@@ -6,6 +6,7 @@ import {
 } from "../message-access/admission-evidence.js";
 import type { ChannelIngressHostOwner } from "../message-access/ingress-host-owner.js";
 import { bindChannelParticipantInput } from "../message-access/participant-input.js";
+import type { ChannelIngressContextBinding } from "../message-access/runtime-types.js";
 
 type HostContextParams = {
   channel: string;
@@ -38,19 +39,20 @@ export function createHostChannelInboundEventContextBuilder<
     });
     const result = buildContext(params);
     const bindEvidence = (built: Built) => {
-      if (owner?.channelId === params.channel && owner.isLive()) {
+      if (owner?.channelId === params.channel) {
+        const binding: ChannelIngressContextBinding = {
+          agentId: params.route.agentId,
+          sessionKey: params.route.dispatchSessionKey ?? params.route.routeSessionKey,
+          nativeChannelId: params.reply.nativeChannelId ?? params.conversation.nativeChannelId,
+          messageId: params.messageId,
+          inboundEventKind: params.message.inboundEventKind ?? "user_request",
+        };
         bindChannelParticipantInput({
           context: built,
           channelId: params.channel,
           ingress: params.channelIngress,
           owner,
-          binding: {
-            agentId: params.route.agentId,
-            sessionKey: params.route.dispatchSessionKey ?? params.route.routeSessionKey,
-            nativeChannelId: params.reply.nativeChannelId ?? params.conversation.nativeChannelId,
-            messageId: params.messageId,
-            inboundEventKind: params.message.inboundEventKind ?? "user_request",
-          },
+          binding,
         });
       }
       bindHostChannelContextAdmissionEvidence({

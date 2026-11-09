@@ -1,4 +1,11 @@
+import { normalizeVisibleMessageLimit } from "./session-accessor.sqlite-visible-cursor.js";
+import type { SessionTranscriptRawDeltaLimits } from "./session-accessor.types.js";
+
 export const RAW_TRANSCRIPT_CURSOR_VERSION = 1;
+const DEFAULT_RAW_TRANSCRIPT_MAX_EVENTS = 1_000;
+const DEFAULT_RAW_TRANSCRIPT_MAX_BYTES = 1_000_000;
+const MAX_RAW_TRANSCRIPT_EVENTS = 10_000;
+const MAX_RAW_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
 
 export type RawTranscriptCursor = {
   agentId: string;
@@ -45,4 +52,37 @@ export function parseRawTranscriptCursor(value: string): RawTranscriptCursor | u
   } catch {
     return undefined;
   }
+}
+
+export function bootstrapRawTranscriptCursor(
+  scope: { agentId: string; sessionId: string },
+  generation: string,
+): RawTranscriptCursor {
+  return {
+    agentId: scope.agentId,
+    generation,
+    lastSeq: -1,
+    sessionId: scope.sessionId,
+    version: RAW_TRANSCRIPT_CURSOR_VERSION,
+  };
+}
+
+/** Host adapters validate limits before acquiring a database handle. */
+export function normalizeRawDeltaLimits(limits: SessionTranscriptRawDeltaLimits) {
+  if (limits.customMessageDetailsOnly && limits.customTypes === undefined) {
+    throw new RangeError("Report details reads require explicit custom message types");
+  }
+  const maxEvents = normalizeVisibleMessageLimit(
+    limits.maxEvents,
+    DEFAULT_RAW_TRANSCRIPT_MAX_EVENTS,
+    MAX_RAW_TRANSCRIPT_EVENTS,
+    "maxEvents",
+  );
+  const maxBytes = normalizeVisibleMessageLimit(
+    limits.maxBytes,
+    DEFAULT_RAW_TRANSCRIPT_MAX_BYTES,
+    MAX_RAW_TRANSCRIPT_BYTES,
+    "maxBytes",
+  );
+  return { maxEvents, maxBytes };
 }

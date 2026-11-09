@@ -1,31 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import { testing } from "../../sessions/session-controller.test-support.js";
 import { createReplySpeechPresentation } from "../../talk/reply-speech-presentation.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
+import {
+  attachSteerBackend,
+  createSteerParams,
+} from "./agent-runner-steer-adoption.test-support.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
+import { clearSessionQueues } from "./queue/cleanup.js";
+import { getExistingFollowupQueue } from "./queue/state.js";
 import type { ReplyOperationRunState } from "./reply-operation-run-state.js";
-import { createReplyOperation } from "./reply-run-registry.operation.js";
-import { testing } from "./reply-run-registry.test-support.js";
 import { resolveReplySpeechOutputOwner } from "./reply-speech-presentation.js";
-import { createTypingSignaler } from "./typing-mode.js";
-import { createTypingController } from "./typing.js";
 
-const mocks = vi.hoisted(() => ({
-  parked: { admit: vi.fn(), fallback: vi.fn(), accepted: vi.fn(), consume: vi.fn() },
-  authority: vi.fn(),
-}));
-// mock-isolation: Exercise the actual reply operation and steering admission, not a queue drain.
-vi.mock("./queue.js", async () => ({
-  ...(await import("./queue/types.js")),
-  parkSteerCandidate: () => mocks.parked,
-  scheduleFollowupDrain() {},
-}));
+const mocks = vi.hoisted(() => ({ prepareDelivery: vi.fn() }));
 // mock-isolation: Owner-clear scheduling is outside the synchronous output identity contract.
 vi.mock("./agent-runner-core.js", () => ({ scheduleFollowupDrainAfterReplyOperationClear() {} }));
-// mock-isolation: Stop at the real policy boundary without invoking a provider or worker.
-vi.mock("./agent-runner-fallback-authority.js", () => ({
-  resolveReplySteeringAuthority: mocks.authority,
+// mock-isolation: Keep the real controller/mailbox admission, stopping before delivery preparation.
+vi.mock("./steering-delivery-preparation.js", () => ({
+  prepareSteeringDelivery: mocks.prepareDelivery,
 }));
-
 function source(outputOwner?: object) {
   return createReplySpeechPresentation({
     outputOwner,
@@ -39,10 +33,11 @@ function source(outputOwner?: object) {
 describe("native speech output steering ownership", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.parked.admit.mockResolvedValue("steer");
-    mocks.authority.mockRejectedValue(new Error("Native policy preparation reached"));
+    mocks.prepareDelivery.mockImplementation(() => {
+      throw new Error("Native policy preparation reached");
+    });
   });
-  afterEach(() => testing.resetReplyRunRegistry());
+  afterEach(() => testing.resetSessionControllerForTest());
 
   it("binds the actual operation once and cannot retarget it after close", () => {
     const operation = createReplyOperation({
@@ -84,42 +79,36 @@ describe("native speech output steering ownership", () => {
       operation.bindSpeechOutputOwner(
         variant === "different-output" ? {} : resolveReplySpeechOutputOwner(incoming),
       );
-      operation.attachBackend({
-        kind: "embedded",
+      attachSteerBackend(operation, "test-policy", {
         runId: "example-run",
-        cancel() {},
-        messageInjection: { isAvailable: () => true, queueMessage: async () => {} },
+        queueMessage: async () => {},
       });
-      operation.setPhase("running");
-      const followupRun = createQueueTestRun({ prompt: "A genuine addition." });
+      const followupRun = createQueueTestRun(
+        { prompt: "A genuine addition.", messageId: "new-human-input" },
+        { sessionKey: operation.key, sessionId: operation.sessionId },
+      );
       followupRun.speechPresentation = incoming;
       followupRun.assertSourceCurrent = vi.fn<() => void>();
-      const typing = createTypingController({});
       const runState: ReplyOperationRunState = {};
-      const invocation = runActiveReplySteer({
-        followupRun,
-        opts: {},
-        providedReplyOperation: operation,
-        queueKey: operation.key,
-        releaseAdmissionTicket() {},
-        replyOperationRunState: runState,
-        resolvedQueue: { mode: "steer" },
-        restartRecoverySourceTurnId: undefined,
-        runFollowup: async () => {},
-        sessionCtx: {},
-        sessionKey: operation.key,
-        touchActiveSessionEntry: async () => {},
-        typing,
-        typingSignals: createTypingSignaler({ typing, mode: "never", isHeartbeat: false }),
-      });
-      if (variant === "different-output") {
-        await expect(invocation).resolves.toBe("handled");
-        expect(mocks.parked.fallback).toHaveBeenCalledOnce();
-        expect(mocks.authority).not.toHaveBeenCalled();
-        expect(runState.admission).toEqual({ status: "accepted", mode: "followup" });
-      } else {
-        await expect(invocation).rejects.toThrow("Native policy preparation reached");
-        expect(mocks.authority).toHaveBeenCalledOnce();
+      const invocation = runActiveReplySteer(
+        createSteerParams(operation.key, followupRun, operation, {
+          replyOperationRunState: runState,
+          runFollowup: async () => {},
+        }),
+      );
+      try {
+        if (variant === "different-output") {
+          await expect(invocation).resolves.toBe("handled");
+          expect(getExistingFollowupQueue(operation.key)?.items).toContain(followupRun);
+          expect(mocks.prepareDelivery).not.toHaveBeenCalled();
+          expect(runState.admission).toMatchObject({ status: "accepted", mode: "followup" });
+        } else {
+          await expect(invocation).rejects.toThrow("Native policy preparation reached");
+          expect(mocks.prepareDelivery).toHaveBeenCalledOnce();
+        }
+      } finally {
+        clearSessionQueues([operation.key]);
+        operation.complete();
       }
       expect(followupRun.assertSourceCurrent).toHaveBeenCalled();
     },

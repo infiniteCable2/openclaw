@@ -1,15 +1,16 @@
-import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildInboundUserContextPrefix } from "../../auto-reply/reply/inbound-meta.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
-import { readRecentUserAssistantTextForSession } from "../../config/sessions/transcript.js";
-import { runPreparedChannelTurn } from "../turn/execution.js";
+import {
+  readRecentUserAssistantTextForSession,
+  readRecentUserAssistantTurnsForSession,
+} from "../../config/sessions/transcript.js";
 import { mergeSessionTranscriptContext } from "./session-transcript-context.runtime.js";
 
 // mock-isolation: This channel fixture keeps native database state outside its dispatch boundary.
 vi.mock("../../config/sessions/transcript.js", () => ({
   readRecentUserAssistantTextForSession: vi.fn(),
+  readRecentUserAssistantTurnsForSession: vi.fn(),
 }));
 
 const readRecent = vi.mocked(readRecentUserAssistantTextForSession);
@@ -40,10 +41,9 @@ async function merge(ctx: FinalizedMsgContext) {
 }
 
 describe("session transcript inbound context", () => {
-  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
   beforeEach(() => {
     readRecent.mockReset();
+    vi.mocked(readRecentUserAssistantTurnsForSession).mockReset().mockResolvedValue([]);
   });
 
   it("leaves ambient pending messages intact without copying native model history", async () => {
@@ -51,16 +51,7 @@ describe("session transcript inbound context", () => {
       { sender: "Alice", body: "unaddressed discussion", timestamp: 1_000, messageId: "ambient" },
     ];
     const ctx = context({ InboundHistory: history });
-    const dispatch = vi.fn(async () => ({ queuedFinal: false }));
-    await runPreparedChannelTurn({
-      channel: "slack",
-      routeSessionKey: ctx.SessionKey!,
-      storePath: path.join(tempDirs.make("openclaw-session-transcript-context-"), "sessions.json"),
-      ctxPayload: ctx,
-      recordInboundSession: vi.fn(async () => undefined),
-      runDispatch: dispatch,
-    });
-    expect(dispatch).toHaveBeenCalledOnce();
+    await merge(ctx);
     expect(ctx.InboundHistory).toBe(history);
     expect(readRecent).not.toHaveBeenCalled();
     expect(buildInboundUserContextPrefix(ctx)).toContain("unaddressed discussion");
@@ -205,5 +196,26 @@ describe("session transcript inbound context", () => {
     await merge(ctx);
     expect(ctx.ChannelStructuredContext).toBeUndefined();
     expect(ctx.InboundHistory).toBeUndefined();
+  });
+  it("omits only already answered exact recent user rows, preserving changed and incomplete input", async () => {
+    vi.mocked(readRecentUserAssistantTurnsForSession).mockResolvedValue([
+      { role: "user", text: "answered", messageId: "first" },
+      { role: "assistant", text: "answer", isCompletedAnswer: true },
+      { role: "user", text: "old text", messageId: "changed" },
+      { role: "assistant", text: "answer", isCompletedAnswer: true },
+      { role: "user", text: "pending", messageId: "pending" },
+      { role: "assistant", text: "partial", isCompletedAnswer: false },
+    ]);
+    const ctx = context({
+      SessionTranscriptContext: { historyKind: "recent", historyLimit: 3 },
+      InboundHistory: [
+        { messageId: "first", sender: "User", body: "answered" },
+        { messageId: "changed", sender: "User", body: "changed text" },
+        { messageId: "pending", sender: "User", body: "pending" },
+      ],
+    });
+    await merge(ctx);
+    expect(ctx.InboundHistory?.map((entry) => entry.messageId)).toEqual(["changed", "pending"]);
+    expect(readRecent).not.toHaveBeenCalled();
   });
 });

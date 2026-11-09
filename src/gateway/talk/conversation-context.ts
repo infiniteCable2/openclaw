@@ -1,5 +1,5 @@
 import { projectRuntimeContextFragments } from "../../agents/internal-runtime-context.js";
-import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
+import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import {
   composeSessionSourceAssertion,
@@ -8,7 +8,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../../talk/agent-consult-tool.js";
-import { resolveClientVoiceAgentSessionId } from "../../talk/client-voice-session.js";
+import { resolveClientVoiceAgentSessionId } from "../../talk/client-voice-session-read.js";
 import {
   prepareVoiceConversationKnowledge,
   type PreparedVoiceConversationKnowledge,
@@ -82,9 +82,11 @@ export async function prepareTalkProviderConversationContext(params: {
       sessionKey: params.target.canonicalKey,
       storePath: params.target.storePath,
     };
-    const sessionId = resolveClientVoiceAgentSessionId(target);
+    const sessionId = await resolveClientVoiceAgentSessionId(target);
+    assertCurrent();
     if (sessionId) {
-      const entry = loadSessionEntry(target);
+      const entry = await readSessionEntryReadOnlyInWorker(target);
+      assertCurrent();
       if (entry?.sessionId !== sessionId) {
         throw new Error("Talk provider context target changed before its recipient read");
       }

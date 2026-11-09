@@ -46,12 +46,12 @@ import {
   type ConversationKnowledgeReference,
 } from "./conversation-knowledge.js";
 import {
-  appendTranscriptEventSync,
   appendTranscriptMessageSync,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { loadSessionEntryForAdmission } from "./session-accessor.sqlite-entry-admission.js";
+import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import type { SessionSourceAssertion } from "./session-source-authority.js";
 import { withSessionTranscriptDeltaReader } from "./session-transcript-delta-read.js";
 import { prepareSessionTranscriptHydration } from "./session-transcript-hydration.js";

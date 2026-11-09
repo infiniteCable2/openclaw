@@ -7,7 +7,7 @@ import { appendTranscriptMessage } from "./session-accessor.sqlite-transcript-wr
 import { ensureAgentConversationRoot } from "./session-conversation-root.js";
 import { createSessionEntryWithTranscriptIfAbsent } from "./session-entry-creation.js";
 import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
-import { loadTranscriptEvents } from "./session-transcript-events.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 import type { InternalSessionEntry } from "./types.js";
 
 function rootFixture(overrides: Partial<InternalSessionEntry> = {}): InternalSessionEntry {

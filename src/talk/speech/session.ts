@@ -77,7 +77,7 @@ export async function startSpeechSession(
   let responseQuestion: string | undefined;
   const inputOnset = createSpeechInputOnset<SpeechInputOnsetSnapshot>();
   const agentLogScope = params.logPrefix ? `${params.logPrefix} agent` : "agent";
-  const resolved = resolveSpeechTranscriptionProvider({
+  const resolved = await resolveSpeechTranscriptionProvider({
     config: params.config,
     fullConfig: params.fullConfig,
     providers: params.providers,

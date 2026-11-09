@@ -194,7 +194,7 @@ async function initializeRealtimeVoiceAgentConsultSession(
     }
   }
 
-  patched ??= await params.agentRuntime.session.patchSessionEntry({
+  patched ??= await params.agentRuntime.session.prepareSessionEntryPatch({
     agentId: params.agentId,
     storePath: params.storePath,
     sessionKey: params.sessionKey,
@@ -203,11 +203,14 @@ async function initializeRealtimeVoiceAgentConsultSession(
       sessionId: "",
       updatedAt: now,
     },
-    assertCommitAllowed: () => {
-      params.assertCurrent();
-      assertSourcesCurrent?.();
+    authority: {
+      kind: "host",
+      assertCurrent: () => {
+        params.assertCurrent();
+        assertSourcesCurrent?.();
+      },
     },
-    update: async (entry) => {
+    prepare: (entry) => {
       if (entry.sessionId?.trim()) {
         return { ...deliveryFields, updatedAt: now };
       }

@@ -1,30 +1,27 @@
+import { releaseSessionSourceAuthorities } from "../../../config/sessions/session-source-authority.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
-import { createDeferredCore } from "../../../shared/deferred.js";
+import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
+import { captureClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import {
-  captureClientVoiceSessionSettlement,
-  withClientVoiceSessionSettlement,
-} from "../../../talk/client-voice-session-lifecycle.js";
-import {
-  captureClientVoiceSessionSource,
-  type ClientVoiceSessionSource,
-} from "../../../talk/client-voice-session-source.js";
+  captureClientVoiceSessionWriter,
+  type ClientVoiceSessionWriter,
+} from "../../../talk/client-voice-session-write.js";
 import {
   appendRelayVoiceTranscript,
   closeRelayVoiceSessionRecord,
   createOrResumeClientVoiceSession,
 } from "../../../talk/client-voice-session.js";
-import type { PreparedVoiceTranscriptAudience } from "../../../talk/voice-transcript-audience.types.js";
+import { prepareVoiceTranscriptAudience } from "../../../talk/voice-transcript-audience.js";
 import {
   normalizeVoiceTranscriptText,
   VOICE_TRANSCRIPT_QUEUE_POLICY,
 } from "../../../talk/voice-transcript.js";
 import { sleep } from "../../../utils/sleep.js";
+import { appendTalkClientTranscript } from "../client-transcript.js";
 import type { RelaySession } from "./state.js";
 
-// Both provider-native and server STT/TTS relays use the same durable voice
-// record, confirmation barrier and transcript queue. Media orchestration is not
-// part of that custody contract.
+/** Shared durable voice custody for provider-native and server speech relays. */
 export type RelayVoiceSessionOwner = Pick<
   RelaySession,
   | "id"
@@ -34,15 +31,43 @@ export type RelayVoiceSessionOwner = Pick<
   | "participant"
   | "preparePrivateAudience"
   | "context"
+  | "voiceSessionSource"
   | "voiceSessionCreated"
+  | "voiceSessionCreation"
   | "voiceTranscriptSeq"
   | "voiceTranscriptQueue"
-  | "confirmationReadiness"
+  | "transcriptReadiness"
   | "voiceSessionClose"
   | "failSession"
-> & { closing?: unknown };
+> &
+  Partial<Pick<RelaySession, "capabilities" | "unspokenAnswers">> & {
+    closing?: unknown;
+    trackVoiceDrain?: (completion: Promise<void>) => void;
+  };
 
 const RELAY_TRANSCRIPT_RETRY_DELAYS_MS = [0, 500, 2_000] as const;
+
+async function withRelayTranscriptRetries(
+  run: () => Promise<unknown>,
+  reconcileUnknown = false,
+): Promise<void> {
+  let lastError: unknown;
+  for (const delayMs of RELAY_TRANSCRIPT_RETRY_DELAYS_MS) {
+    if (delayMs > 0) {
+      await sleep(delayMs);
+    }
+    try {
+      await run();
+      return;
+    } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error) && !reconcileUnknown) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
 
 function logRelayVoiceFailure(
   session: RelayVoiceSessionOwner,
@@ -52,37 +77,71 @@ function logRelayVoiceFailure(
   session.context.logGateway?.warn(`${message}: ${formatErrorMessage(error)}`);
 }
 
-function createRequiredRelayVoiceSession(
-  session: RelayVoiceSessionOwner,
-  source?: ClientVoiceSessionSource,
-): void {
-  if (session.voiceSessionCreated) {
-    return;
-  }
-  const { agentId, sessionKey } = session.sessionTarget;
-  createOrResumeClientVoiceSession(
-    {
-      agentId,
-      sessionKey,
-      provider: session.provider,
-      origin: "relay",
-      voiceSessionId: session.id,
-    },
-    source,
-  );
-  session.voiceSessionCreated = true;
+export function captureRelayVoiceSessionSource(session: RelayVoiceSessionOwner) {
+  return (session.voiceSessionSource ??= captureClientVoiceSessionSource(
+    session.sessionTarget.agentId,
+  ));
 }
 
-export function ensureRelayVoiceSession(
-  session: RelayVoiceSessionOwner,
-  source?: ClientVoiceSessionSource,
-): boolean {
-  try {
-    createRequiredRelayVoiceSession(session, source);
-    return true;
-  } catch (error) {
+export function ensureRelayVoiceSession(session: RelayVoiceSessionOwner): Promise<boolean> {
+  const fail = (error: unknown) => {
+    if (!hasSqliteWorkerOutcomeUnknown(error)) {
+      session.voiceSessionCreation = undefined;
+    }
     logRelayVoiceFailure(session, "realtime relay voice session create failed", error);
     return false;
+  };
+  try {
+    const source = captureRelayVoiceSessionSource(session);
+    if (session.voiceSessionCreated) {
+      source.assertCurrent();
+      return Promise.resolve(true);
+    }
+    const { agentId, sessionKey } = session.sessionTarget;
+    session.voiceSessionCreation ??= withClientVoiceSessionSettlement(
+      async () => {
+        let writer: ClientVoiceSessionWriter | undefined;
+        const errors: unknown[] = [];
+        try {
+          writer = captureClientVoiceSessionWriter({ agentId, physicalSource: source });
+          await createOrResumeClientVoiceSession(
+            {
+              agentId,
+              sessionKey,
+              provider: session.provider,
+              origin: "relay",
+              voiceSessionId: session.id,
+            },
+            writer,
+          );
+          const committed = writer.source;
+          committed.assertCurrent();
+          session.voiceSessionSource = committed;
+          session.voiceSessionCreated = true;
+          return true;
+        } catch (error) {
+          errors.push(error);
+          if (writer && !hasSqliteWorkerOutcomeUnknown(error)) {
+            try {
+              // Admission may have created the file before the voice write was refused.
+              const admitted = writer.source;
+              admitted.assertCurrent();
+              session.voiceSessionSource = admitted;
+            } catch {
+              // Keep the original descriptor fenced when its creator cannot certify the file.
+            }
+          }
+          throw error;
+        } finally {
+          await releaseSessionSourceAuthorities(writer ? [writer] : [], errors);
+        }
+      },
+      undefined,
+      source.settlementContext,
+    ).catch(fail);
+    return session.voiceSessionCreation;
+  } catch (error) {
+    return Promise.resolve(fail(error));
   }
 }
 
@@ -90,54 +149,37 @@ export function enqueueRelayVoiceTranscript(
   session: RelayVoiceSessionOwner,
   role: "user" | "assistant",
   text: string,
-  retainedSource?: ClientVoiceSessionSource,
 ): boolean {
-  const observed =
-    role === "user" && !session.closing
-      ? session.confirmationReadiness.observeUserTranscript(text, true)
-      : undefined;
   const normalizedText = normalizeVoiceTranscriptText(text);
   if (!normalizedText) {
-    return true;
-  }
-  if (!ensureRelayVoiceSession(session, retainedSource)) {
-    session.confirmationReadiness.fail(new Error("Realtime voice session could not be recorded"));
     return true;
   }
   const transcriptSeq = session.voiceTranscriptSeq + 1;
   const entryId = String(transcriptSeq);
   const { agentId, sessionKey, canonicalKey, storePath } = session.sessionTarget;
-  const source = retainedSource ?? captureClientVoiceSessionSource(agentId);
-  const settlement = captureClientVoiceSessionSettlement(source.settlementContext);
-  const audienceGate = session.preparePrivateAudience
-    ? createDeferredCore<PreparedVoiceTranscriptAudience | undefined>()
-    : undefined;
-  const audiencePreparation = audienceGate?.promise;
-  const releaseCustody = (): Promise<void> => {
-    if (!audiencePreparation) {
-      settlement.release();
-      return Promise.resolve();
-    }
-    return audiencePreparation
-      .then((prepared) => prepared?.release())
-      .catch((error: unknown) => {
-        logRelayVoiceFailure(session, "voice transcript recipient release failed", error);
-      })
-      .finally(() => settlement.release());
+  let accepted = false;
+  let rejection: string | undefined;
+  const reportFailure = (error: unknown) => {
+    session.transcriptReadiness.fail(error);
+    logRelayVoiceFailure(session, "realtime relay transcript append failed", error);
   };
-  let admission: ReturnType<typeof session.voiceTranscriptQueue.enqueue<void>>;
-  try {
-    admission = settlement.run(() =>
-      session.voiceTranscriptQueue.enqueue(
+  const audiencePreparation = prepareVoiceTranscriptAudience(session.preparePrivateAudience);
+  const completion = withClientVoiceSessionSettlement(
+    async () => {
+      captureRelayVoiceSessionSource(session);
+      const admission = session.voiceTranscriptQueue.enqueue(
         async () => {
           const audience = audiencePreparation ? await audiencePreparation : undefined;
-          let lastError: unknown;
-          for (const delayMs of RELAY_TRANSCRIPT_RETRY_DELAYS_MS) {
-            if (delayMs > 0) {
-              await sleep(delayMs);
-            }
-            try {
-              await appendRelayVoiceTranscript(
+          if (!(await ensureRelayVoiceSession(session))) {
+            throw new Error("Realtime voice session could not be recorded");
+          }
+          const writer = captureClientVoiceSessionWriter({
+            agentId,
+            physicalSource: captureRelayVoiceSessionSource(session),
+          });
+          try {
+            await withRelayTranscriptRetries(() =>
+              appendTalkClientTranscript(
                 {
                   agentId,
                   sessionKey,
@@ -147,125 +189,116 @@ export function enqueueRelayVoiceTranscript(
                   role,
                   text: normalizedText,
                   participant: role === "user" ? session.participant : undefined,
-                  ...(audience ? { destinationAudience: audience.audience } : {}),
-                  confirmation: observed?.confirmation ?? null,
-                  ...(session.voiceConfig ? { config: session.voiceConfig } : {}),
+                  destinationAudience: audience?.audience,
+                  ...(session.capabilities?.handlesAgentConsult ? { providerOwned: true } : {}),
+                  config: session.voiceConfig ?? session.context.getRuntimeConfig(),
                 },
-                source,
-              );
-              return;
-            } catch (error) {
-              if (hasSqliteWorkerOutcomeUnknown(error)) {
-                throw error;
-              }
-              lastError = error;
-            }
+                session.context,
+                writer,
+                appendRelayVoiceTranscript,
+              ),
+            );
+          } finally {
+            await writer.release();
           }
-          throw lastError;
         },
         { weight: normalizedText.length },
-      ),
-    );
-  } catch (error) {
-    audienceGate?.resolve(undefined);
-    void releaseCustody();
-    throw error;
-  }
-  if (!admission.accepted) {
-    audienceGate?.resolve(undefined);
-    void releaseCustody();
-    session.confirmationReadiness.fail(
+      );
+      accepted = admission.accepted;
+      if (!admission.accepted) {
+        rejection = admission.reason;
+        return;
+      }
+      session.voiceTranscriptSeq = transcriptSeq;
+      await admission.completion.then(undefined, reportFailure);
+    },
+    undefined,
+    session.voiceSessionSource?.settlementContext,
+  );
+  void completion
+    .finally(async () => {
+      (await audiencePreparation)?.release();
+    })
+    .catch(reportFailure);
+  if (!accepted) {
+    session.transcriptReadiness.fail(
       new Error("Realtime voice transcript queue is closed or full"),
     );
-    if (admission.reason === "overflow") {
+    if (rejection === "overflow") {
       session.failSession(VOICE_TRANSCRIPT_QUEUE_POLICY.overflowMessage);
     }
     return false;
   }
-  if (audienceGate) {
-    // Start in the same synchronous admission frame, but only after native queue
-    // acceptance. Rejected/overflow traffic must not acquire unbounded sources.
-    try {
-      void settlement.run(async () => {
-        try {
-          audienceGate.resolve(await session.preparePrivateAudience?.());
-        } catch (error) {
-          logRelayVoiceFailure(
-            session,
-            "voice transcript retained without private recipient receipt",
-            error,
-          );
-          audienceGate.resolve(undefined);
-        }
-      });
-    } catch (error) {
-      logRelayVoiceFailure(session, "voice transcript recipient preparation refused", error);
-      audienceGate.resolve(undefined);
-    }
-  }
-  session.voiceTranscriptSeq = transcriptSeq;
-  void admission.completion.then(releaseCustody, releaseCustody).catch(() => {});
-  void admission.completion.then(observed?.persisted, (error: unknown) => {
-    session.confirmationReadiness.fail(error);
-    logRelayVoiceFailure(session, "realtime relay transcript append failed", error);
-  });
   return true;
 }
 
 export function closeRelayVoiceSession(
   session: RelayVoiceSessionOwner,
-  retainedSource?: ClientVoiceSessionSource,
+  disposition: "abort" | "detach" = "abort",
 ): Promise<void> {
   if (session.voiceSessionClose) {
     return session.voiceSessionClose;
   }
   session.voiceTranscriptQueue.seal();
   const { agentId, sessionKey } = session.sessionTarget;
-  const source = retainedSource ?? captureClientVoiceSessionSource(agentId);
-  const closing = withClientVoiceSessionSettlement(
+  session.voiceSessionClose = withClientVoiceSessionSettlement(
     async () => {
-      // Creation belongs to the same admitted close owner. A failed or unknown
-      // record creation cannot manufacture a successful close receipt.
-      createRequiredRelayVoiceSession(session, source);
-      await session.voiceTranscriptQueue.flush({ requireSuccess: true });
-      const config = session.voiceConfig ?? session.context.getRuntimeConfig();
-      await closeRelayVoiceSessionRecord(
-        {
-          agentId,
-          sessionKey,
-          voiceSessionId: session.id,
-          config,
-        },
-        source,
-      );
+      try {
+        captureRelayVoiceSessionSource(session);
+        await ensureRelayVoiceSession(session);
+      } catch (error) {
+        await session.voiceTranscriptQueue.flush();
+        throw error;
+      }
+      await session.voiceTranscriptQueue.flush();
+      if (!session.voiceSessionCreated) {
+        return;
+      }
+      const writer = captureClientVoiceSessionWriter({
+        agentId,
+        physicalSource: captureRelayVoiceSessionSource(session),
+      });
+      const errors: unknown[] = [];
+      try {
+        if (disposition === "detach") {
+          for (const append of session.unspokenAnswers?.values() ?? []) {
+            try {
+              // The stable-key transcript turn reconciles any earlier commit before inserting.
+              await withRelayTranscriptRetries(() => append(writer), true);
+            } catch (error) {
+              errors.push(error);
+            }
+          }
+        }
+        try {
+          const config = session.voiceConfig ?? session.context.getRuntimeConfig();
+          await closeRelayVoiceSessionRecord(
+            {
+              agentId,
+              sessionKey,
+              voiceSessionId: session.id,
+              config,
+            },
+            writer,
+          );
+        } catch (error) {
+          errors.push(error);
+        }
+      } finally {
+        await releaseSessionSourceAuthorities([writer], errors);
+      }
     },
     async (error) => {
-      try {
-        await session.voiceTranscriptQueue.flush({ requireSuccess: true });
-      } catch (prefixError) {
-        throw new AggregateError(
-          [error, prefixError],
-          "Relay voice close lost transcript custody",
-          {
-            cause: prefixError,
-          },
-        );
-      }
+      await session.voiceTranscriptQueue.flush();
       throw error;
     },
-    source.settlementContext,
+    session.voiceSessionSource?.settlementContext,
   ).catch((error: unknown) => {
-    // A definite refusal can be retried against the same sealed transcript
-    // prefix. An unknown write outcome retains custody and must not be replayed.
-    if (session.voiceSessionClose === closing && !hasSqliteWorkerOutcomeUnknown(error)) {
-      session.voiceSessionClose = undefined;
-    }
     logRelayVoiceFailure(session, "realtime relay voice session close failed", error);
-    throw error;
+    if (disposition === "detach") {
+      throw error;
+    }
   });
-  session.voiceSessionClose = closing;
-  // Relay transport owners retain draining sessions; this shared record writer
-  // cannot take ownership of a provider-specific bridge or drop its capacity hold.
-  void closing.catch(() => {});
-  return closing;
+  session.trackVoiceDrain?.(session.voiceSessionClose);
+  return session.voiceSessionClose;
 }

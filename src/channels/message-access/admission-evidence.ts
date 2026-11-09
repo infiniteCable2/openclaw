@@ -21,9 +21,8 @@ export {
   takeChannelParticipantInput,
 } from "./admission-handoff.js";
 
-export type ChannelAdmissionEvidence = Readonly<{
-  kind: "channel-admission-evidence";
-}>;
+import type { ChannelAdmissionEvidence } from "./admission-evidence.types.js";
+export type { ChannelAdmissionEvidence } from "./admission-evidence.types.js";
 
 type ChannelAdmissionContribution = Readonly<{
   participant:
@@ -180,7 +179,7 @@ class ContextAdmission {
   #value: Readonly<ContextAdmissionValue>;
   constructor(context: object, value: ContextAdmissionValue) {
     this.#context = context;
-    this.#value = Object.freeze(value);
+    this.#value = value;
     Object.setPrototypeOf(this, null);
     Object.freeze(this);
   }
@@ -212,19 +211,19 @@ function mintChannelAdmissionEvidence(
   if (!audit?.enabled) {
     return undefined;
   }
-  return new AdmissionEvidence(Object.freeze({ ...payload, createdAt: Date.now() }), audit);
+  return new AdmissionEvidence({ ...payload, createdAt: Date.now() }, audit);
 }
 function unsupportedChannelAdmissionEvidence(
   audit: ChannelAdmissionAudit | undefined,
 ): ChannelAdmissionEvidence | undefined {
   const payload = {
     kind: "leaf" as const,
-    contribution: Object.freeze({ participant: { state: "unsupported" as const } }),
+    contribution: { participant: { state: "unsupported" as const } },
   };
   // A capability-absence marker carries no participant facts and needs no ambient collector.
   return audit
     ? mintChannelAdmissionEvidence(audit, payload)
-    : new AdmissionEvidence(Object.freeze({ ...payload, createdAt: Date.now() }), undefined);
+    : new AdmissionEvidence({ ...payload, createdAt: Date.now() }, undefined);
 }
 
 function participantContribution(params: {
@@ -233,11 +232,9 @@ function participantContribution(params: {
   rawPrincipalRef: string | number | null | undefined;
 }): ChannelAdmissionContribution {
   const rawPrincipalRef = scopedParticipantRef(params);
-  return Object.freeze(
-    rawPrincipalRef
-      ? { participant: Object.freeze({ state: "present" as const, rawPrincipalRef }) }
-      : { participant: Object.freeze({ state: "unknown" as const }) },
-  );
+  return rawPrincipalRef
+    ? { participant: { state: "present", rawPrincipalRef } }
+    : { participant: { state: "unknown" } };
 }
 
 function unknownChannelAdmissionEvidence(
@@ -245,7 +242,7 @@ function unknownChannelAdmissionEvidence(
 ): ChannelAdmissionEvidence | undefined {
   return mintChannelAdmissionEvidence(audit, {
     kind: "leaf",
-    contribution: Object.freeze({ participant: { state: "unknown" as const } }),
+    contribution: { participant: { state: "unknown" } },
   });
 }
 
@@ -478,11 +475,8 @@ function activePayload(
   if (!stored || stored.consumed) {
     return undefined;
   }
-  const { payload, audit } = stored;
-  return (!audit || audit.enabled) &&
-    now - payload.createdAt <= CHANNEL_ADMISSION_EVIDENCE_MAX_AGE_MS
-    ? payload
-    : undefined;
+  const { payload } = stored;
+  return now - payload.createdAt <= CHANNEL_ADMISSION_EVIDENCE_MAX_AGE_MS ? payload : undefined;
 }
 
 /** Preserve one source exactly; collected sources get one new bounded opaque aggregate. */
@@ -506,7 +500,7 @@ export function combineChannelAdmissionEvidence(
   }
   return mintChannelAdmissionEvidence(audit, {
     kind: "aggregate",
-    sources: Object.freeze([...evidence]),
+    sources: [...evidence],
   });
 }
 

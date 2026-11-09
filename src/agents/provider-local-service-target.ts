@@ -11,7 +11,7 @@ export type ProviderLocalServiceTarget = {
   baseUrl: string;
   headers?: HeadersInit;
   service?: ModelProviderLocalServiceConfig;
-  reconcile?: ProviderLocalServiceReconciler;
+  reconcile?: ProviderLocalServiceReconciler | undefined;
   /** Reports readiness waits only; reconciliation and request work stay outside. */
   onReadinessWait?: (waiting: boolean) => void;
 };

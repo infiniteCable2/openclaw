@@ -9,8 +9,8 @@ import {
 } from "../../agents/embedded-agent-runner/run/prepared-conversation-context.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { lifecycleAdmissionByOperation } from "../../sessions/session-controller.state.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
-import { lifecycleAdmissionByOperation } from "./reply-run-registry.state.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const preparation = vi.hoisted(() => ({ recipient: vi.fn(), seed: vi.fn(), branch: vi.fn() }));
@@ -123,7 +123,7 @@ async function fixture(options: { warmupFailed?: boolean } = {}) {
     },
   });
   const turn = createReplyConversationKnowledgeTurn({
-    turn: { isHeartbeat: false, followupRun, replyOperation },
+    turn: { followupRun, replyOperation },
     originalSource: source,
     getRuntimeConfig: () => cfg,
   });

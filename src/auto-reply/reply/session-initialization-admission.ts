@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { captureAgentWorkspaceReadiness } from "../../agents/workspace-readiness.js";
 import { readConversationBindingRouteFacts } from "../../channels/conversation-binding-route-facts.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
@@ -11,33 +12,36 @@ import {
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
+import { resolveSessionWorkStartBlock } from "../../config/sessions/session-work-start.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
 import { isPluginOwnedSessionBindingRecord } from "../../plugins/conversation-binding-metadata.js";
 import { assertExternalConversationTarget } from "../../routing/conversation-mode.js";
 import { isAcpSessionKey, normalizeMainKey } from "../../routing/session-key.js";
+import { resolveAgentHarnessSessionContextError } from "../../sessions/agent-harness-session-key.js";
 import {
   capturePrivateConversationCreationAudience,
   readConversationPrivateAudience,
 } from "../../sessions/conversation-private-audience.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
+import { getReplyOperationSessionReader } from "../../sessions/session-controller.state.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
 import type { FinalizedRuntimeMsgContext } from "../templating.js";
 import { shouldBypassAcpDispatchForCommand } from "./dispatch-acp-command-bypass.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
-import { getReplyOperationSessionReader } from "./reply-run-registry.state.js";
-import {
-  resolveSessionConversationBinding,
-  type resolveSessionConversationBindingContext,
-} from "./session-conversation-binding.js";
+import { resolveSessionConversationBinding } from "./session-conversation-binding.js";
+import type { resolveSessionConversationBindingContext } from "./session-conversation-binding.js";
+import { resolveSessionInputDeliveryKey } from "./session-delivery.js";
 import type { SessionEventExecution } from "./session-event-contract.js";
+import type { ReplySessionPreprocessingState } from "./session-init.types.js";
 import {
   resolveReplyInitialSessionContext,
   type ReplyInitialSessionContext,
 } from "./session-initial-context.js";
 
 export type InitSessionStateParams = {
+  operatorAuthority?: InternalGetReplyOptions["operatorAuthority"];
   assertSourceCurrent?: SessionSourceAssertion;
   assertConversationTarget?: InternalGetReplyOptions["assertConversationTarget"];
   initialSessionContext?: ReplyInitialSessionContext;
@@ -47,12 +51,14 @@ export type InitSessionStateParams = {
   commandAuthorized: boolean;
   ctx: FinalizedRuntimeMsgContext;
   expectedExistingSessionId?: string;
+  recordedSessionActivity?: InternalGetReplyOptions["recordedSessionActivity"];
   pinExpectedExistingSession?: boolean;
   newlyCreatedSessionId?: string;
   requestedSessionId?: string;
   resumeRequestedSession?: boolean;
   signal?: AbortSignal;
   bindSessionCreation?: SessionEventExecution["bindSessionCreation"];
+  onSessionCreated?: InternalGetReplyOptions["onSessionCreated"];
 };
 
 export type InitSessionStateAttemptContext = {
@@ -62,7 +68,7 @@ export type InitSessionStateAttemptContext = {
   isSystemEvent: boolean;
   retargetedSession: boolean;
   sessionKey: string;
-  storeWriterIdentity?: string;
+  inputDeliveryKey?: string;
   sessionCtxForState: FinalizedRuntimeMsgContext;
   storePath: string;
 };
@@ -97,6 +103,22 @@ export function prepareReplySessionCreation(
       }
     },
   };
+}
+
+export function assertReplySessionInitializationAllowed(
+  sessionKey: string,
+  entry: Parameters<typeof resolveSessionWorkStartBlock>[1],
+  options: {
+    providerReviewAcknowledgment: InitSessionStateParams["providerReviewAcknowledgment"];
+  },
+) {
+  const error = resolveSessionWorkStartBlock(sessionKey, entry, {
+    ...options,
+    allowPendingWorkspace: captureAgentWorkspaceReadiness(sessionKey) ? true : undefined,
+  });
+  if (error) {
+    throw error;
+  }
 }
 
 export async function resolveInitSessionStateAttemptContext(
@@ -147,6 +169,7 @@ export async function resolveInitSessionStateAttemptContext(
   params.assertConversationTarget?.({ agentId, sessionKey });
   return {
     agentId,
+    inputDeliveryKey: resolveSessionInputDeliveryKey(ctx),
     conversationBinding,
     conversationBindingContext,
     isSystemEvent,
@@ -254,7 +277,7 @@ export async function prepareReplySessionInitialization(
     }
   }
   assertCurrent();
-  return { snapshot, parentSessionKey };
+  return parentSessionKey;
 }
 
 export function resolveReplySessionInitializationOptions(
@@ -264,16 +287,49 @@ export function resolveReplySessionInitializationOptions(
     assertSourceCurrent: opts?.assertSourceCurrent,
     assertConversationTarget: opts?.assertConversationTarget,
     initialSessionContext: opts?.initialSessionContext,
+    operatorAuthority: opts?.operatorAuthority,
     providerReviewAcknowledgment: opts?.providerReviewAcknowledgment,
     replyOperation: opts?.replyOperation,
+    recordedSessionActivity: opts?.recordedSessionActivity,
     ...(opts?.expectedExistingSessionId
       ? { expectedExistingSessionId: opts.expectedExistingSessionId }
       : {}),
     pinExpectedExistingSession: opts?.pinExpectedExistingSession === true,
     newlyCreatedSessionId: opts?.newlyCreatedSessionId,
-    bindSessionCreation: opts?.internalEventExecution?.bindSessionCreation,
+    bindSessionCreation:
+      opts?.internalEventExecution?.bindSessionCreation ?? opts?.bindSessionCreation,
+    onSessionCreated: opts?.onSessionCreated,
     requestedSessionId: opts?.requestedSessionId,
     resumeRequestedSession: opts?.resumeRequestedSession,
     signal: opts?.abortSignal,
+  };
+}
+
+/** Resolves durable ownership before utility preprocessing can invoke another model. */
+export async function resolveReplySessionPreprocessingState(
+  params: Pick<InitSessionStateParams, "cfg" | "ctx" | "assertConversationTarget">,
+): Promise<ReplySessionPreprocessingState> {
+  const attemptContext = await resolveInitSessionStateAttemptContext(params, "preprocessing");
+  const { sessionKey } = attemptContext;
+  const { currentEntry: sessionEntry } = await loadReplySessionInitializationSnapshot({
+    agentId: attemptContext.agentId,
+    storePath: attemptContext.storePath,
+    sessionKey,
+  });
+  assertExternalConversationTarget({
+    cfg: params.cfg,
+    agentId: attemptContext.agentId,
+    sessionKey,
+    isSystemEvent: attemptContext.isSystemEvent,
+    entry: sessionEntry,
+  });
+  const contextError = resolveAgentHarnessSessionContextError(sessionKey, sessionEntry);
+  if (contextError) {
+    throw new Error(contextError);
+  }
+  return {
+    sessionEntry,
+    sessionKey,
+    storePath: attemptContext.storePath,
   };
 }

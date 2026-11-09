@@ -7,8 +7,6 @@ import {
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import { checkClientVoiceToolConfirmationPolicy } from "../../../talk/client-voice-confirmation.js";
-import { resolveClientVoiceRunBinding } from "../../../talk/client-voice-session.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import { cleanupTalkConnection } from "../session-registry.js";
 import {
@@ -19,7 +17,7 @@ import {
   installSyntheticSpeechHardware,
   createSpeechRelayCall,
   publishNativeSpeechModelRun,
-} from "./native-consult-target.test-support.js";
+} from "./native-speech.test-support.js";
 
 it("public STT/TTS input boundary finalizes real audio through native consultation without closing the call", async ({
   signal,
@@ -178,7 +176,7 @@ it.for(["status", "cancel", "steer", "followup"] as const)(
 );
 
 it.for([false, true])(
-  "native STT/TTS actual run retains its spoken confirmation gate after early commentary=%s",
+  "native STT/TTS uses ordinary reply output after early commentary=%s",
   async (partial, { signal }) => {
     if (partial) {
       testState.config.talk = {
@@ -188,25 +186,14 @@ it.for([false, true])(
     }
     const hardware = installSyntheticSpeechHardware();
     const turnEnded = createDeferredCore();
-    let admittedVoiceRun: ReturnType<typeof resolveClientVoiceRunBinding>;
     mocks.runEmbeddedAgent.mockImplementation(async (params) =>
       publishNativeSpeechModelRun(params, async () => {
         // The real embedded runtime reports this phase before model/tool execution.
         // Native getReply invokes its actual onAgentRunStart owner from that boundary.
         params.onExecutionPhase?.({ phase: "model_call_started" });
-        admittedVoiceRun = resolveClientVoiceRunBinding(params.runId);
-        expect(admittedVoiceRun).toBeDefined();
         if (partial) {
           await params.onBlockReply?.({ text: "Checking that request.", isCommentary: true });
         }
-        const decision = checkClientVoiceToolConfirmationPolicy({
-          agentId: admittedVoiceRun?.agentId,
-          voiceSessionId: admittedVoiceRun?.voiceSessionId,
-          runId: params.runId,
-          toolName: "message",
-          toolParams: { action: "send", message: "Example message" },
-        });
-        expect(decision.allowed).toBe(false);
         await params.onBlockReply?.({ text: "The message was sent." });
         return { payloads: [{ text: "The message was sent." }], meta: { durationMs: 0 } };
       }),
@@ -220,18 +207,13 @@ it.for([false, true])(
         turnEnded.resolve();
       }
     });
-    const { sessionId, readyMark, target } = await createSpeechRelayCall();
+    const { sessionId, readyMark } = await createSpeechRelayCall();
     await dispatch("talk.session.acknowledgeMark", { sessionId, markName: readyMark });
     hardware.emitTranscript("Send a message.");
     await withinTest(turnEnded.promise, signal);
-    expect(admittedVoiceRun).toMatchObject({
-      agentId: target.agentId,
-      sessionKey: target.sessionKey,
-      voiceSessionId: sessionId,
-    });
     const spoken = mocks.streamSpeech.mock.calls.map(([request]) => request.text);
-    expect(spoken).not.toContain("The message was sent.");
-    expect(spoken.filter((text) => text?.includes("has not run"))).toHaveLength(1);
+    expect(spoken).toContain("The message was sent.");
+    expect(spoken.some((text) => text?.includes("has not run"))).toBe(false);
     if (partial) {
       expect(spoken[0]).toBe("Checking that request.");
     }

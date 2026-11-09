@@ -7,7 +7,9 @@ import { resolveAgentConversationMode } from "../config/agent-conversation-mode.
 import { captureConversationRecipientEnrollment } from "../config/sessions/conversation-recipient-enrollment.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { createBackgroundWorkOwner } from "../process/background-work.js";
+import { getBackgroundOwnerLane } from "../process/background-work.js";
+import { enqueueCommandInLane } from "../process/command-queue.js";
+import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { onOperatorRolePolicyChanged } from "./operator-role-policy.js";
@@ -17,10 +19,6 @@ import { getSessionRowProjection } from "./session-row-projection-access.js";
 import type { EntryRow } from "./session-row-projection-record.js";
 import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
 
-const background = createBackgroundWorkOwner({
-  owner: "conversation-recipient-startup",
-  maxConcurrent: 1,
-});
 const log = createSubsystemLogger("conversation-knowledge");
 
 function reusable(entry: InternalSessionEntry) {
@@ -42,7 +40,11 @@ export function startGatewayConversationRecipients(params: {
 }) {
   const { context } = params;
   const controller = new AbortController();
-  const signal = AbortSignal.any([params.signal, controller.signal]);
+  const signal = AbortSignal.any([
+    params.signal,
+    controller.signal,
+    getGatewayRestartDrainSignal(),
+  ]);
   const projection = getSessionRowProjection(context);
   if (!projection || signal.aborted) {
     return undefined;
@@ -201,8 +203,10 @@ export function startGatewayConversationRecipients(params: {
       return;
     }
     pending = runInDetachedAsyncContext(() =>
-      background.enqueue(
-        async (workSignal) => {
+      enqueueCommandInLane(
+        getBackgroundOwnerLane("conversation-recipient-startup"),
+        async () => {
+          const workSignal = signal;
           await projection.ensureMaterialized();
           workSignal.throwIfAborted();
           if (foreground) {
@@ -241,7 +245,7 @@ export function startGatewayConversationRecipients(params: {
             }
           }
         },
-        { abortSignal: signal },
+        { abortSignal: signal, priority: "background" },
       ),
     )
       .catch(() => {

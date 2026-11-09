@@ -1,6 +1,9 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { AssistantDeliveryTtsFacts, AssistantMessage } from "../../llm/types.js";
-import { extractAssistantPhaseText } from "../../shared/chat-message-content.js";
+import {
+  extractAssistantPhaseText,
+  prepareAssistantTranscriptText,
+} from "../../shared/chat-message-content.js";
 import { parseSpeechExpression } from "../../tts/expression.js";
 import type { LatestTranscriptAssistantText } from "./session-accessor.types.js";
 
@@ -27,9 +30,6 @@ export function readAssistantDeliveryFacts(value: unknown): AssistantDeliveryFac
     if (mediaUrls.length) {
       facts.mediaUrls = mediaUrls;
     }
-  }
-  if (value.textPhaseRequiresTerminal === true) {
-    facts.textPhaseRequiresTerminal = true;
   }
   if (isRecord(value.tts) && value.tts.tagged === true) {
     const tts: AssistantDeliveryTtsFacts = { tagged: true };
@@ -67,6 +67,23 @@ export function readAssistantDeliveryFacts(value: unknown): AssistantDeliveryFac
   return Object.keys(facts).length ? facts : undefined;
 }
 
+/** Mirror identity retains media references independently of filename-only display text. */
+export function projectAssistantTranscriptMirrorIdentity(message: unknown) {
+  if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) {
+    return undefined;
+  }
+  const text = message.content
+    .flatMap((part) =>
+      isRecord(part) && part.type === "text" && typeof part.text === "string" && part.text.trim()
+        ? [part.text.trim()]
+        : [],
+    )
+    .join("\n");
+  return text
+    ? { text, mediaUrls: readAssistantDeliveryFacts(message.openclawDelivery)?.mediaUrls ?? [] }
+    : undefined;
+}
+
 /** SQLite and retained JSONL readers expose the same authored text and delivery facts. */
 export function projectAssistantTranscriptText(
   message: unknown,
@@ -75,7 +92,7 @@ export function projectAssistantTranscriptText(
   if (!isRecord(message) || message.role !== "assistant") {
     return undefined;
   }
-  const text = extractAssistantPhaseText(message);
+  const text = prepareAssistantTranscriptText(message, extractAssistantPhaseText(message));
   if (!text?.trim()) {
     return undefined;
   }

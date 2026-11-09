@@ -1,19 +1,25 @@
-import { listAgentIds, tryResolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
-import {
-  resolveSessionStoreCompatibilityAgentId,
-  tryResolveLegacyCompatibilityAgentId,
-} from "../config/legacy.default-agent-owner.js";
+import { isDeepStrictEqual } from "node:util";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
+import { readSessionRoutingFacts, type SessionRoutingTarget } from "./session-store-key.js";
 
-/** The same logical-routing snapshot for prepared sharing readers and mutations. */
-export function readSessionSharingRoutingFacts(cfg: OpenClawConfig) {
-  return {
-    agents: listAgentIds(cfg),
-    storeOwner: resolveSessionStoreCompatibilityAgentId(cfg),
-    compatibilityOwner: tryResolveLegacyCompatibilityAgentId(cfg),
-    systemOwner: tryResolveAmbientOwnerAgentId(cfg),
-    store: cfg.session?.store,
-    mainKey: cfg.session?.mainKey,
-    scope: cfg.session?.scope,
+export function captureSessionMutationRouting(
+  cfg: OpenClawConfig,
+  changed: () => Error = () =>
+    new SessionMutationFactsUnavailableError({ diagnostic: { reason: "routing-changed" } }),
+  targets?: readonly SessionRoutingTarget[],
+) {
+  const capturedTargets = targets?.length
+    ? targets.map(({ sessionKey, agentId, preserveQualifiedAddress }) => ({
+        sessionKey,
+        agentId,
+        preserveQualifiedAddress,
+      }))
+    : undefined;
+  const route = readSessionRoutingFacts(cfg, capturedTargets);
+  return (current: OpenClawConfig) => {
+    if (!isDeepStrictEqual(readSessionRoutingFacts(current, capturedTargets), route)) {
+      throw changed();
+    }
   };
 }

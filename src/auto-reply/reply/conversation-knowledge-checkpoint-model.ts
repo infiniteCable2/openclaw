@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream } from "@openclaw/llm-core";
+import { createAssistantMessageEventStream, omitNullRequestHeaders } from "@openclaw/llm-core";
 import { createPreparedEmbeddedAgentSettingsManager } from "../../agents/agent-project-settings.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope-config.js";
 import {
@@ -21,6 +21,7 @@ import {
 export async function acquireConversationKnowledgeCheckpointModel(params: {
   config: OpenClawConfig;
   agentId: string;
+  sessionId: string;
   signal: AbortSignal;
   assertCurrent(): void;
   retainCleanup?(release: () => Promise<void>): void;
@@ -77,6 +78,7 @@ export async function acquireConversationKnowledgeCheckpointModel(params: {
       model: primary.model,
     });
     const settings = createPreparedEmbeddedAgentSettingsManager({
+      sessionId: params.sessionId,
       cwd: resolveAgentWorkspaceDir(config, agentId),
       agentDir: primary.selection.agentDir,
       cfg: config,
@@ -105,6 +107,7 @@ export async function acquireConversationKnowledgeCheckpointModel(params: {
       model: summaryModel.model,
     });
     const summarySettings = createPreparedEmbeddedAgentSettingsManager({
+      sessionId: params.sessionId,
       cwd: resolveAgentWorkspaceDir(config, agentId),
       agentDir: summaryModel.selection.agentDir,
       cfg: config,
@@ -166,11 +169,10 @@ export async function acquireConversationKnowledgeCheckpointModel(params: {
           budget,
           provider,
           native: {
-            model: summaryModel.model,
+            model: { ...summaryModel.model, contextWindow },
             // The native prepared completion owns credentials; this adapter never copies them.
             apiKey: "",
             signal: input.signal,
-            contextWindow,
             reserveTokens: summarySettings.reserveTokens,
             summarizationInstructions: {
               identifierPolicy: config.agents?.defaults?.compaction?.identifierPolicy,
@@ -189,7 +191,7 @@ export async function acquireConversationKnowledgeCheckpointModel(params: {
                     : input.signal,
                   maxTokens: options?.maxTokens,
                   temperature: options?.temperature,
-                  headers: options?.headers,
+                  headers: omitNullRequestHeaders(options?.headers),
                   reasoning: thinkingLevel,
                 },
               });

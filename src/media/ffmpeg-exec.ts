@@ -80,14 +80,6 @@ export async function runFfmpeg(args: string[], options?: MediaExecOptions): Pro
   return stdout;
 }
 
-function parseFfprobeSampleRateHz(value: string | undefined): number | null {
-  if (!value || !/^\d+$/.test(value)) {
-    return null;
-  }
-  const sampleRate = Number(value);
-  return Number.isSafeInteger(sampleRate) && sampleRate > 0 ? sampleRate : null;
-}
-
 /** Parses codec and positive sample rate from compact ffprobe stream output. */
 export function parseFfprobeCodecAndSampleRate(stdout: string): {
   codec: string | null;
@@ -97,8 +89,9 @@ export function parseFfprobeCodecAndSampleRate(stdout: string): {
     .trim()
     .split(/[,\r\n]+/, 2)
     .map((field) => normalizeLowercaseStringOrEmpty(field));
+  const sampleRateHz = sampleRate && /^\d+$/.test(sampleRate) ? Number(sampleRate) : 0;
   return {
     codec: codec || null,
-    sampleRateHz: parseFfprobeSampleRateHz(sampleRate),
+    sampleRateHz: Number.isSafeInteger(sampleRateHz) && sampleRateHz > 0 ? sampleRateHz : null,
   };
 }

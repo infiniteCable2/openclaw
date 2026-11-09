@@ -10,18 +10,7 @@ import {
 
 const summary = vi.hoisted(() => vi.fn());
 // mock-isolation: Only replace the provider-bound summarizer; native budget and complete-summary scope remain real.
-vi.mock("../../agents/compaction.js", () => ({ summarizeInStages: summary }));
-// mock-isolation: Use the identical pure planner without starting compiled workers in this focused adapter test.
-vi.mock("../../agents/compaction-planning-worker.js", async () => {
-  const { computeAdaptiveChunkRatio } = await import("../../agents/compaction-planning.js");
-  return {
-    computeAdaptiveChunkRatioWithWorker: async (
-      params: Parameters<
-        typeof import("../../agents/compaction-planning-worker.js").computeAdaptiveChunkRatioWithWorker
-      >[0],
-    ) => computeAdaptiveChunkRatio(params.messages, params.contextWindow),
-  };
-});
+vi.mock("../../agents/compaction.js", () => ({ summarizeCompactionHistory: summary }));
 
 function fixture() {
   return {
@@ -54,7 +43,6 @@ function fixture() {
       apiKey: "",
       signal: new AbortController().signal,
       reserveTokens: 2_000,
-      contextWindow: 128_000,
       customInstructions: "Preserve decisions and unresolved questions.",
       streamFn: vi.fn<StreamFn>(),
       usageSink: vi.fn<SessionModelUsageSink>(),
@@ -158,15 +146,21 @@ describe("native root checkpoint summary adapter", () => {
     expect(summary).not.toHaveBeenCalled();
   });
 
-  it("defers an indivisible oversized contribution without dropping text", async () => {
+  it("delegates large contributions to native bounded summarization without changing their history", async () => {
     const params = fixture();
     params.contributions[0]!.text = "x".repeat(600_000);
-    expect(await prepareConversationKnowledgeCheckpointSummary(params)).toEqual({
-      kind: "deferred",
-      reason: "oversized-contribution",
+    expect(await prepareConversationKnowledgeCheckpointSummary(params)).toMatchObject({
+      kind: "candidate",
+      coveredContributionIds: ["oldest", "middle"],
     });
     expect(params.contributions[0]!.text).toHaveLength(600_000);
-    expect(summary).not.toHaveBeenCalled();
+    expect(summary).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({ content: params.contributions[0]!.text }),
+        ]),
+      }),
+    );
   });
 
   it("uses the configured native provider first and passes its whole prefix and prior summary", async () => {
@@ -196,26 +190,34 @@ describe("native root checkpoint summary adapter", () => {
     expect(summary).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    "",
-    "No prior history.",
-    "Earlier text. [Partial summary: later chunks unavailable]",
-    "Text\n\n[Compaction summary truncated to fit budget]",
-  ])("refuses an incomplete summary %j", async (text) => {
+  it.each(["", "No prior history.", "Earlier text. [Partial summary: later chunks unavailable]"])(
+    "refuses an incomplete summary %j",
+    async (text) => {
+      summary.mockResolvedValueOnce(text);
+      const params = fixture();
+      expect(await prepareConversationKnowledgeCheckpointSummary(params)).toEqual({
+        kind: "deferred",
+        reason: "summary-unavailable",
+      });
+      expect(params.previousSummary).toBe("An earlier retained decision.");
+    },
+  );
+
+  it("accepts a native fitted summary and retains summarized rather than verbatim coverage", async () => {
+    const text = "Retained decisions.\n\n[Compaction summary truncated to fit budget]";
     summary.mockResolvedValueOnce(text);
-    const params = fixture();
-    expect(await prepareConversationKnowledgeCheckpointSummary(params)).toEqual({
-      kind: "deferred",
-      reason: "summary-unavailable",
+    expect(await prepareConversationKnowledgeCheckpointSummary(fixture())).toMatchObject({
+      kind: "candidate",
+      summary: text,
+      coveredContributionIds: ["oldest", "middle"],
     });
-    expect(params.previousSummary).toBe("An earlier retained decision.");
   });
 
   it("preserves the old checkpoint on a failure, cancellation or summary that does not fit", async () => {
     const params = fixture();
-    summary.mockRejectedValueOnce(new Error("Second chunk unavailable"));
+    summary.mockRejectedValueOnce(new Error("Summary unavailable"));
     await expect(prepareConversationKnowledgeCheckpointSummary(params)).rejects.toThrow(
-      "Second chunk unavailable",
+      "Summary unavailable",
     );
     summary.mockResolvedValueOnce("x".repeat(10_000));
     expect(await prepareConversationKnowledgeCheckpointSummary(params)).toEqual({

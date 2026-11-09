@@ -33,7 +33,7 @@ export function selectContributionModelContextEntries<T extends SessionTreeEntry
     [messages, originalOwners],
     [selectedMessages, selectedOwners],
   ] as const) {
-    for (const frame of classifyToolUseResultPairing(view).frames) {
+    for (const frame of classifyToolUseResultPairing(view)) {
       for (const { sourceResult } of frame.occurrences) {
         if (sourceResult) {
           owners.set(sourceResult, frame.assistant);

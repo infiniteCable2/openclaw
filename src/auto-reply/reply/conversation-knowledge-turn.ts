@@ -20,6 +20,7 @@ import {
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { getReplyOperationSessionReader } from "../../sessions/session-controller.state.js";
 import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-execution.types.js";
 import type { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { logConversationKnowledgeDiagnostic } from "./conversation-knowledge-status.js";
@@ -32,12 +33,11 @@ import {
   captureReplyConversationPublication,
   recordReplyConversationPublication,
 } from "./conversation-publication.js";
-import { getReplyOperationSessionReader } from "./reply-run-registry.state.js";
 import { resolveReplyRunTrigger } from "./reply-turn-kind.js";
 
 /** One actual native turn retains its knowledge and publishes original committed dialogue. */
 export function createReplyConversationKnowledgeTurn(params: {
-  turn: Pick<AgentTurnParams, "followupRun" | "isHeartbeat" | "replyOperation">;
+  turn: Pick<AgentTurnParams, "followupRun" | "replyOperation">;
   originalSource: SessionSourceAssertion;
   getRuntimeConfig(): OpenClawConfig;
 }) {

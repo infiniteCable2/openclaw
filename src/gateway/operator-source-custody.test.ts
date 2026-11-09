@@ -1,4 +1,3 @@
-import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
 import { changeCanonicalUserChannelIdentity } from "../state/user-channel-identity-operations.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -43,7 +42,7 @@ async function createSource(stateDir: string) {
   return {
     fixture,
     profile,
-    snapshot: expectDefined(fixture.entry.restartRecoveryOperatorSource, "native source").snapshot,
+    snapshot: fixture.snapshot,
   };
 }
 

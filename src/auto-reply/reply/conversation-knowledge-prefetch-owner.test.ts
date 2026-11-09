@@ -32,6 +32,7 @@ const boundary = vi.hoisted(() => ({
       ) => Promise<void>
     >(),
   warn: vi.fn(),
+  restart: new AbortController(),
 }));
 
 // mock-isolation: Native publication tests prove the hint producer; this suite controls scheduling only.
@@ -49,7 +50,20 @@ vi.mock("../../state/openclaw-agent-execution.js", () => ({
 }));
 // mock-isolation: Exercise the leaf admission contract without starting global command queues.
 vi.mock("../../process/background-work.js", () => ({
-  createBackgroundWorkOwner: () => ({ enqueue: boundary.enqueue }),
+  getBackgroundOwnerLane: (owner: string) => `background:${owner}`,
+}));
+// mock-isolation: Preserve queue admission while controlling scheduling.
+vi.mock("../../process/command-queue.js", () => ({
+  enqueueCommandInLane: (
+    _lane: string,
+    task: () => Promise<void>,
+    options: { abortSignal: AbortSignal },
+  ) => boundary.enqueue(task, options),
+}));
+// mock-isolation: Drive only this owner's gateway-drain lifetime.
+vi.mock("../../process/gateway-work-admission.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../process/gateway-work-admission.js")>()),
+  getGatewayRestartDrainSignal: () => boundary.restart.signal,
 }));
 // mock-isolation: Capture content-free diagnostics without creating application log files.
 vi.mock("../../logging/subsystem.js", () => ({
@@ -101,6 +115,7 @@ function fixture() {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  boundary.restart = new AbortController();
   boundary.capture.mockImplementation(() => ({
     assertCurrent() {},
     release: async () => {},
@@ -758,4 +773,34 @@ describe("conversation knowledge prefetch lifecycle", () => {
     expect(resources.size).toBe(0);
     expect(boundary.enqueue).not.toHaveBeenCalled();
   });
+});
+
+it("aborts active preparation at gateway drain without retrying a successor quantum", async () => {
+  const entered = gate();
+  const finish = gate();
+  let received: AbortSignal | undefined;
+  const prepare = vi.fn(async (signal: AbortSignal) => {
+    received = signal;
+    entered.resolve();
+    await finish.promise;
+    signal.throwIfAborted();
+    return true;
+  });
+  const owner = createConversationKnowledgePrefetchOwner({
+    target,
+    prepare,
+    clear() {},
+    assertCurrent() {},
+  });
+  owner.request();
+  await entered.promise;
+  boundary.restart.abort(new Error("Synthetic gateway drain"));
+  expect(received?.aborted).toBe(true);
+  finish.resolve();
+  await owner.wait();
+  owner.request();
+  await owner.wait();
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(boundary.warn).not.toHaveBeenCalled();
+  await owner.close();
 });

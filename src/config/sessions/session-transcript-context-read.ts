@@ -1,41 +1,44 @@
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
-import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
-import { readSessionTranscriptModelContext } from "./session-accessor.sqlite-model-context.js";
+import { isSameOpenClawAgentDatabasePath } from "../../state/openclaw-agent-db.paths.js";
 import type {
   SessionTranscriptModelContextRange,
   SessionTranscriptModelContextRangeResult,
 } from "./session-accessor.sqlite-model-context.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
+import { captureSessionActorTranscriptRead } from "./session-actor-transcript-read.js";
 import type {
   SessionModelContextLimits,
   SessionTranscriptModelContext,
 } from "./session-history-read.types.js";
-import { captureIncognitoSessionHistoryBinding } from "./session-incognito-binding.js";
-import {
-  prepareIncognitoSessionHistoryRead,
-  type IncognitoSessionHistoryBinding,
-} from "./session-incognito-history-read.js";
 import { assertSessionModelContextBatchBudget } from "./session-model-context-batch-limits.js";
 import {
   readSessionTranscriptAnchorsAsync,
   readSessionTranscriptAnchorsFromSource,
 } from "./session-transcript-anchor-read.js";
-import { retainSessionTranscriptContextGeneration } from "./session-transcript-authority.js";
+import type { SessionTranscriptAnchorFacts } from "./session-transcript-anchor-read.types.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
+import { readSessionTranscriptCohort } from "./session-transcript-read-cohort.js";
 import {
   resolveSessionTranscriptReadFence,
-  withSessionContextAdmission,
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
-import { withSessionTranscriptReadSource } from "./session-transcript-read-source.js";
+import {
+  withSessionTranscriptReadSource,
+  type SessionTranscriptWorkerReadSource,
+} from "./session-transcript-read-source.js";
 import {
   readSessionTranscriptModelContextInWorker,
   readSessionTranscriptModelContextsInWorker,
 } from "./session-transcript-read-worker-runtime.js";
 import { targetDiscoveryLane } from "./session-transcript-worker-resources.js";
-import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
+import {
+  sameTranscriptEntryAnchor,
+  snapshotTranscriptEntryAnchor,
+  snapshotTranscriptTurnAdmission,
+  type TranscriptEntryAnchor,
+} from "./transcript-entry-anchor.js";
 import { getOwnedSessionTranscriptReader } from "./transcript-write-context.js";
 
 export type SessionTranscriptContextProjectionSource = {
@@ -45,7 +48,7 @@ export type SessionTranscriptContextProjectionSource = {
   physicalSource?: { expectedIdentity: DatabaseFileIdentity | undefined };
 };
 
-/** Retain exact source generations until every bounded historical range is accepted. */
+/** Read bounded historical ranges through one retained native storage owner. */
 export async function readSessionTranscriptModelContextsAsync<T>(
   target: SessionTranscriptRuntimeTarget,
   ranges: readonly SessionTranscriptModelContextRange[],
@@ -57,25 +60,59 @@ export async function readSessionTranscriptModelContextsAsync<T>(
   const requests = structuredClone([...ranges]);
   const currentAdmission = resolveSessionTranscriptReadFence(captured);
   const admission = currentAdmission && structuredClone(currentAdmission);
-  const accept = async (
-    scope: SessionTranscriptRuntimeTarget,
-    contexts: SessionTranscriptModelContextRangeResult[],
-    assertCurrent: () => void,
-    databaseIdentity?: string,
-  ): Promise<T> => {
-    if (contexts.length !== requests.length) {
-      throw new Error("Session context batch omitted a requested range");
-    }
-    const generations: Array<
-      ReturnType<typeof retainSessionTranscriptContextGeneration> | undefined
-    > = [];
-    const validate = async () => {
-      for (const [index, result] of contexts.entries()) {
-        if (!result.ok) {
-          continue;
+  const memory = captureSessionActorTranscriptRead(captured, signal);
+  if (memory) {
+    const contexts: SessionTranscriptModelContextRangeResult[] = [];
+    for (const range of requests) {
+      try {
+        contexts.push({
+          ok: true,
+          context: await readSessionTranscriptModelContextAsync(
+            captured,
+            (value) => value,
+            admission,
+            signal,
+            range.through,
+            range.limits,
+          ),
+        });
+      } catch (error) {
+        if (!(error instanceof SessionTranscriptReadFenceError) && !(error instanceof RangeError)) {
+          throw error;
         }
-        await readSessionTranscriptAnchorsAsync(
-          scope,
+        contexts.push({
+          ok: false,
+          reason:
+            error instanceof RangeError ? "source-range-over-capacity" : "source-range-unverified",
+        });
+      }
+    }
+    memory.assertCurrent();
+    const result = await consume(contexts);
+    memory.assertCurrent();
+    return result;
+  }
+  return withSessionTranscriptReadSource(
+    captured,
+    async (source) => {
+      const selected = { ...source.scope, sessionKey: captured.sessionKey };
+      const contexts = await readSessionTranscriptModelContextsInWorker(
+        {
+          target: selected,
+          ranges: requests,
+          admission,
+          expectedIdentity: source.expectedIdentity,
+        },
+        signal,
+      );
+      source.assertCurrent();
+      if (contexts.length !== requests.length) {
+        throw new Error("Session context batch omitted a requested range");
+      }
+      for (const [index, result] of contexts.entries()) {
+        if (!result.ok) continue;
+        await readSessionTranscriptAnchorsFromSource(
+          { ...source, scope: selected },
           {
             entryIds: [],
             contextValidation: {
@@ -87,8 +124,7 @@ export async function readSessionTranscriptModelContextsAsync<T>(
           },
           signal,
           (facts) => {
-            assertCurrent();
-            generations[index]!.assertCurrent();
+            source.assertCurrent();
             if (!facts.contextValidated) {
               throw new SessionTranscriptReadFenceError(
                 "Session transcript changed during context batch read",
@@ -97,90 +133,27 @@ export async function readSessionTranscriptModelContextsAsync<T>(
           },
         );
       }
-      for (const generation of generations) {
-        generation?.assertCurrent();
-      }
-      assertCurrent();
-      signal?.throwIfAborted();
-    };
-    try {
-      for (const result of contexts) {
-        generations.push(
-          result.ok
-            ? retainSessionTranscriptContextGeneration(
-                scope,
-                result.context.version,
-                databaseIdentity,
-              )
-            : undefined,
-        );
-      }
-      await validate();
-      const consumed = consume(contexts);
-      if (isPromiseLike(consumed)) {
-        const value = await consumed;
-        await validate();
-        return value;
-      }
-      return consumed;
-    } finally {
-      for (const generation of generations) {
-        generation?.release();
-      }
-    }
-  };
-  return withSessionTranscriptReadSource(
-    captured,
-    async () => {
-      // Process-held histories keep their native single-read authority owner.
-      const contexts: SessionTranscriptModelContextRangeResult[] = [];
-      for (const range of requests) {
-        try {
-          contexts.push({
-            ok: true,
-            context: await readSessionTranscriptModelContextAsync(
-              captured,
-              (value) => value,
-              admission,
-              signal,
-              range.through,
-              range.limits,
-            ),
-          });
-        } catch (error) {
-          if (
-            !(error instanceof SessionTranscriptReadFenceError) &&
-            !(error instanceof RangeError)
-          ) {
-            throw error;
-          }
-          contexts.push({
-            ok: false,
-            reason:
-              error instanceof RangeError
-                ? "source-range-over-capacity"
-                : "source-range-unverified",
-          });
-        }
-      }
-      return accept(captured, contexts, () => signal?.throwIfAborted());
-    },
-    async ({ scope, expectedIdentity, assertCurrent }) => {
-      const selected = { ...scope, sessionKey: captured.sessionKey };
-      const contexts = await readSessionTranscriptModelContextsInWorker(
-        { target: selected, ranges: requests, admission, expectedIdentity },
-        signal,
-      );
-      assertCurrent();
-      return accept(
-        selected,
-        contexts,
-        assertCurrent,
-        expectedIdentity?.key.startsWith("file:") ? expectedIdentity.key.slice(5) : undefined,
-      );
+      source.assertCurrent();
+      // As in the native single-range reader, the consumer owns its effects after acceptance.
+      return await consume(contexts);
     },
     signal,
   );
+}
+function assertCurrentInputAnchor(
+  admission: UserTurnTranscriptAdmissionReceipt,
+  current: TranscriptEntryAnchor | undefined,
+): void {
+  // The retained reader may use an alias of the admission owner's physical store.
+  const admittedCurrent =
+    current &&
+    current.storePath !== admission.storePath &&
+    isSameOpenClawAgentDatabasePath(admission.storePath, current.storePath)
+      ? { ...current, storePath: admission.storePath }
+      : current;
+  if (!sameTranscriptEntryAnchor(admission, admittedCurrent)) {
+    throw new SessionTranscriptReadFenceError("Current-turn transcript admission changed");
+  }
 }
 
 /** Keep a worker's bounded projection attached to its physical source until final acceptance. */
@@ -193,31 +166,15 @@ export async function readSessionTranscriptContextProjectionAsync<T>(
 ): Promise<T> {
   const captured = { ...target };
   const admission = resolveSessionTranscriptReadFence(captured);
-  const capturedAdmission = admission && structuredClone(admission);
+  const capturedAdmission = admission && snapshotTranscriptTurnAdmission(admission);
+  const memory = captureSessionActorTranscriptRead(captured, signal);
+  if (memory) {
+    const result = await project({ target: memory.target, admission: capturedAdmission });
+    memory.assertCurrent();
+    return result.value;
+  }
   return withSessionTranscriptReadSource(
     captured,
-    async (scope) => {
-      const result = await project({
-        target: { ...captured, ...scope },
-        admission: capturedAdmission,
-      });
-      let accepted = false;
-      await readSessionTranscriptAnchorsAsync(
-        { ...scope, sessionKey: captured.sessionKey },
-        {
-          entryIds: [],
-          contextValidation: { version: result.version, admission: capturedAdmission },
-        },
-        signal,
-        (facts) => {
-          accepted = facts.contextValidated === true || (!result.version && !capturedAdmission);
-        },
-      );
-      if (!accepted) {
-        throw new SessionTranscriptReadFenceError("Session transcript changed during context read");
-      }
-      return result.value;
-    },
     async (source) => {
       const scope = { ...source.scope, sessionKey: captured.sessionKey };
       const result = await project({
@@ -230,12 +187,15 @@ export async function readSessionTranscriptContextProjectionAsync<T>(
       await readSessionTranscriptAnchorsFromSource(
         { ...source, scope },
         {
-          entryIds: [],
+          entryIds: capturedAdmission ? [capturedAdmission.entryId] : [],
           contextValidation: { version: result.version, admission: capturedAdmission },
         },
         signal,
         (facts) => {
           source.assertCurrent();
+          if (capturedAdmission) {
+            assertCurrentInputAnchor(capturedAdmission, facts.anchors[0]);
+          }
           accepted = facts.contextValidated === true || (!result.version && !capturedAdmission);
         },
       );
@@ -257,165 +217,145 @@ export function readSessionTranscriptModelContextAsync<T>(
   signal?: AbortSignal,
   through?: TranscriptEntryAnchor,
   limits?: SessionModelContextLimits,
-  suppliedIncognito?: IncognitoSessionHistoryBinding,
   consumeSynchronously = false,
 ): Promise<T> {
   const capturedTarget = { ...target };
-  const capturedAdmission = admission ? structuredClone(admission) : undefined;
-  const capturedThrough = through ? structuredClone(through) : undefined;
-  const capturedLimits = limits ? structuredClone(limits) : undefined;
+  const capturedAdmission = admission ? snapshotTranscriptTurnAdmission(admission) : undefined;
+  const capturedThrough = through ? snapshotTranscriptEntryAnchor(through) : undefined;
+  const capturedLimits = limits
+    ? { ...limits, ...(limits.from ? { from: snapshotTranscriptEntryAnchor(limits.from) } : {}) }
+    : undefined;
   const accept = async (
     scope: SessionTranscriptRuntimeTarget,
     context: SessionTranscriptModelContext,
     assertCurrent: () => void,
-    binding?: IncognitoSessionHistoryBinding,
     contextAdmission = capturedAdmission,
-    databaseIdentity?: string,
+    source?: SessionTranscriptWorkerReadSource,
   ): Promise<T> => {
-    const generation = retainSessionTranscriptContextGeneration(
-      scope,
-      context.version,
-      databaseIdentity,
-    );
-    const contextValidation = structuredClone({
-      version: context.version,
+    const version = context.version;
+    const contextValidation = {
+      version: version
+        ? { generation: version.generation, rawSeq: version.rawSeq, updatedAt: version.updatedAt }
+        : undefined,
       admission: contextAdmission,
       through: capturedThrough,
       from: capturedLimits?.from,
-    });
-    const validate = async <Value>(publish: () => Value): Promise<{ value: Value }> => {
-      let accepted: { value: Value } | undefined;
-      await readSessionTranscriptAnchorsAsync(
-        scope,
-        { entryIds: [], contextValidation },
-        signal,
-        (facts) => {
-          assertCurrent();
-          generation.assertCurrent();
-          if (
-            !facts.contextValidated &&
-            (contextValidation.version || contextAdmission || capturedThrough)
-          ) {
-            throw new SessionTranscriptReadFenceError(
-              "Session transcript changed during context read",
-            );
-          }
-          accepted = { value: publish() };
-        },
-        binding,
-      );
-      if (!accepted) {
-        throw new SessionTranscriptReadFenceError("Session transcript changed during context read");
-      }
-      return accepted;
     };
-    let consumerSettlement: Promise<Awaited<T>> | undefined;
-    let joined = false;
-    try {
-      const accepted = await validate(() => {
-        const value = consume(context);
-        if (isPromiseLike(value)) {
-          consumerSettlement = Promise.resolve(value);
-          void consumerSettlement.catch(() => undefined);
-        }
-        return value;
-      });
-      if (!consumerSettlement) {
-        return accepted.value;
-      }
-      const value = await consumerSettlement;
-      joined = true;
-      return (await validate(() => value)).value;
-    } finally {
-      generation.release();
-      // Initial acceptance can fail after starting a consumer; its owner still joins that work.
-      if (consumerSettlement && !joined) {
-        await consumerSettlement.catch(() => undefined);
-      }
+    const admissionAnchor = source ? contextAdmission : undefined;
+    const sharesThroughAnchor =
+      admissionAnchor && capturedThrough?.entryId === admissionAnchor.entryId;
+    if (sharesThroughAnchor) {
+      assertCurrentInputAnchor(admissionAnchor, capturedThrough);
     }
-  };
-  const incognito = suppliedIncognito ?? captureIncognitoSessionHistoryBinding(target);
-  if (incognito) {
-    const prepared = prepareIncognitoSessionHistoryRead(incognito, target, signal);
-    const contextAdmission = capturedAdmission ?? prepared.target.admission;
-    return prepared.actor.sessions
-      .withSharedState(async () => {
-        const context = await prepared.actor.sessions.history(
-          prepared.authority,
-          {
-            type: "session.history.context",
-            input: {
-              ...prepared.target,
-              admission: contextAdmission,
-              through: capturedThrough,
-              limits: capturedLimits,
-            },
-          },
+    const selection = {
+      entryIds: admissionAnchor && !sharesThroughAnchor ? [admissionAnchor.entryId] : [],
+      contextValidation,
+    };
+    let consumed: { value: Promise<Awaited<T>> } | undefined;
+    try {
+      const onRead = (facts: SessionTranscriptAnchorFacts) => {
+        assertCurrent();
+        if (
+          !facts.contextValidated &&
+          (contextValidation.version || contextAdmission || capturedThrough)
+        ) {
+          throw new SessionTranscriptReadFenceError(
+            "Session transcript changed during context read",
+          );
+        }
+        if (admissionAnchor && !sharesThroughAnchor) {
+          assertCurrentInputAnchor(
+            admissionAnchor,
+            facts.anchors.find((anchor) => anchor.entryId === admissionAnchor.entryId),
+          );
+        }
+        const value = Promise.resolve(consume(context));
+        void value.catch(() => undefined);
+        consumed = { value };
+      };
+      if (source) {
+        await readSessionTranscriptAnchorsFromSource(
+          { ...source, scope: { ...source.scope, sessionKey: scope.sessionKey } },
+          selection,
           signal,
+          onRead,
         );
-        return accept(
-          capturedTarget,
-          context,
-          prepared.authority.assertCurrent,
-          prepared,
-          contextAdmission,
-        );
-      })
-      .then((result) => {
-        prepared.authority.assertCurrent();
-        return result;
-      });
+      } else {
+        await readSessionTranscriptAnchorsAsync(scope, selection, signal, onRead);
+      }
+    } catch (error) {
+      // Reader cleanup still joins any write-capable consumer it already started.
+      if (consumed) {
+        await consumed.value.catch(() => undefined);
+      }
+      throw error;
+    }
+    if (!consumed) {
+      throw new SessionTranscriptReadFenceError("Session transcript changed during context read");
+    }
+    // The consumer owns its effects. Transcript changes after this snapshot are best effort.
+    return await consumed.value;
+  };
+  const memory = captureSessionActorTranscriptRead(target, signal);
+  if (memory) {
+    if (memory.missing && (capturedAdmission || capturedThrough)) {
+      return Promise.reject(
+        new SessionTranscriptReadFenceError("Session transcript is unavailable"),
+      );
+    }
+    const context = memory.missing
+      ? Promise.resolve({ events: [] } satisfies SessionTranscriptModelContext)
+      : memory.read("session.history.context", {
+          ...(capturedAdmission ? { admission: capturedAdmission } : {}),
+          through: capturedThrough,
+          limits: capturedLimits,
+        });
+    return context.then(async (value) => {
+      memory.assertCurrent();
+      const result = consume(value);
+      if (consumeSynchronously && isPromiseLike(result)) {
+        void Promise.resolve(result).catch(() => {});
+        throw new Error("Prepared model-context consumers must remain synchronous");
+      }
+      const consumed = await result;
+      memory.assertCurrent();
+      return consumed;
+    });
   }
   return withSessionTranscriptReadSource(
     capturedTarget,
-    async (scope) => {
-      // Capture incognito synchronously, then revalidate after the public async boundary.
-      const context = await Promise.resolve(
-        withSessionContextAdmission(capturedTarget, capturedAdmission, () =>
-          readSessionTranscriptModelContext(scope, capturedThrough, capturedLimits),
-        ),
-      );
-      return accept(capturedTarget, context, () => signal?.throwIfAborted());
-    },
-    async ({ scope, expectedIdentity, assertCurrent }) => {
+    async (readSource) => {
+      const { scope, expectedIdentity, assertCurrent } = readSource;
       const captured = { ...scope, sessionKey: capturedTarget.sessionKey };
       const selected =
-        consumeSynchronously && capturedLimits && getOwnedSessionTranscriptReader(captured);
+        !capturedAdmission &&
+        consumeSynchronously &&
+        capturedLimits &&
+        getOwnedSessionTranscriptReader(captured);
       if (selected) {
-        const { captureSessionEntryNativeMutationWitness } =
-          await import("./session-entry-read-ordered.js");
-        assertCurrent();
-        const database = selected.database;
-        return runOpenClawAgentWriteAdmission(
-          database,
-          async (_identity, assertOwner) => {
-            assertCurrent();
-            const assertNative = captureSessionEntryNativeMutationWitness([database]);
-            const context = await readSessionTranscriptModelContextInWorker(
+        return readSessionTranscriptCohort(
+          selected.database,
+          () =>
+            readSessionTranscriptModelContextInWorker(
               captured,
               capturedAdmission,
               signal,
               capturedThrough,
               capturedLimits,
               expectedIdentity,
-            );
-            signal?.throwIfAborted();
-            assertOwner();
-            assertCurrent();
-            assertNative();
+            ),
+          (context) => {
             const value = consume(context);
             if (isPromiseLike(value)) {
               void Promise.resolve(value).catch(() => {});
               throw new Error("Prepared model-context consumers must remain synchronous");
             }
-            assertOwner();
             assertCurrent();
-            assertNative();
             return value;
           },
-          true,
-          undefined,
+          assertCurrent,
           signal,
+          "history.model-context",
         );
       }
       const context = await readSessionTranscriptModelContextInWorker(
@@ -431,11 +371,12 @@ export function readSessionTranscriptModelContextAsync<T>(
         captured,
         context,
         assertCurrent,
-        undefined,
         capturedAdmission,
-        expectedIdentity?.key.startsWith("file:") ? expectedIdentity.key.slice(5) : undefined,
+        capturedAdmission || capturedThrough ? readSource : undefined,
       );
     },
     signal,
+    undefined,
+    capturedThrough?.storePath,
   );
 }

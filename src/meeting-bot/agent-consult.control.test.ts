@@ -1,0 +1,439 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RealtimeVoiceBridgeSession } from "../talk/session-runtime.js";
+
+const {
+  consultRealtimeVoiceAgent,
+  buildRealtimeVoiceAgentToolAuthorityOverlay,
+  getSessionEntryAsync,
+  controlRealtimeVoiceAgentRun,
+} = vi.hoisted(() => ({
+  consultRealtimeVoiceAgent: vi.fn<
+    typeof import("../talk/agent-consult-runtime.js").consultRealtimeVoiceAgent
+  >(async () => ({ text: "done" })),
+  buildRealtimeVoiceAgentToolAuthorityOverlay: vi.fn(),
+  getSessionEntryAsync: vi.fn(),
+  controlRealtimeVoiceAgentRun:
+    vi.fn<typeof import("../talk/agent-run-control.js").controlRealtimeVoiceAgentRun>(),
+}));
+
+vi.mock("../talk/agent-consult-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../talk/agent-consult-runtime.js")>()),
+  consultRealtimeVoiceAgent,
+  buildRealtimeVoiceAgentToolAuthorityOverlay,
+}));
+
+vi.mock("../talk/agent-run-control.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../talk/agent-run-control.js")>()),
+  controlRealtimeVoiceAgentRun,
+}));
+
+import { createMeetingRealtimeEngineBindings } from "./agent-consult.js";
+import type {
+  MeetingAgentConsultSurface,
+  MeetingPlatformRuntimeMetadata,
+} from "./platform-adapter-contract.js";
+import type { MeetingAgentConsultParams } from "./realtime-engine.js";
+
+const surface: MeetingAgentConsultSurface = {
+  id: "test-meeting",
+  provider: "test-meeting",
+  lane: "test-meeting",
+  surface: "a test meeting",
+  userLabel: "Participant",
+  assistantLabel: "Agent",
+  questionSourceLabel: "participant",
+  workingResponseLabel: "participant",
+  extraSystemPrompt: "Answer briefly.",
+};
+
+const platform: MeetingPlatformRuntimeMetadata = {
+  id: "test-meeting",
+  displayName: "Test Meeting",
+  logScope: "[test-meeting]",
+  agentConsult: {
+    surface: surface.surface,
+    userLabel: surface.userLabel,
+    assistantLabel: surface.assistantLabel,
+    questionSourceLabel: surface.questionSourceLabel,
+    workingResponseLabel: surface.workingResponseLabel,
+    extraSystemPrompt: surface.extraSystemPrompt,
+  },
+  session: {
+    idPrefix: "test_meeting",
+    participantIdentity: () => "Test participant",
+  },
+};
+
+function createBindings(agentId: string | undefined, senderId?: string) {
+  return createMeetingRealtimeEngineBindings({
+    platform,
+    senderId,
+    config: {
+      realtime: { ...(agentId ? { agentId } : {}), toolPolicy: "safe-read-only" },
+    },
+    fullConfig: {
+      agents: {
+        defaults: { thinkingDefault: "low" },
+        entries: { operator: {} },
+      },
+    },
+    runtime: {
+      agent: { session: { getSessionEntryAsync, resolveStorePath: () => "synthetic-store" } },
+    } as never,
+    logger: {} as never,
+  });
+}
+
+function makeSession(
+  submitToolResult: RealtimeVoiceBridgeSession["submitToolResult"],
+  supportsToolResultContinuation = false,
+): RealtimeVoiceBridgeSession {
+  return {
+    bridge: { supportsToolResultContinuation },
+    submitToolResult,
+  } as unknown as RealtimeVoiceBridgeSession;
+}
+
+describe("createMeetingRealtimeEngineBindings", () => {
+  beforeEach(() => {
+    consultRealtimeVoiceAgent.mockClear();
+    buildRealtimeVoiceAgentToolAuthorityOverlay.mockReset();
+    getSessionEntryAsync.mockReset();
+    controlRealtimeVoiceAgentRun.mockReset();
+  });
+  it("binds follow-up steering to the exact run and refreshes its unchanged caller authority", async () => {
+    const published = vi.fn<NonNullable<MeetingAgentConsultParams["onRunControl"]>>();
+    const waitForPendingInput = vi.fn();
+    const onQueueAccepted = vi.fn();
+    let retainedControl: Parameters<NonNullable<MeetingAgentConsultParams["onRunControl"]>>[0];
+    const overlay = { toolsAllow: ["read"], messageProvider: "matrix", senderIsOwner: false };
+    getSessionEntryAsync.mockResolvedValue({ sessionId: "session-1" });
+    buildRealtimeVoiceAgentToolAuthorityOverlay.mockReturnValue(overlay);
+    const outcome = {
+      ok: false,
+      mode: "followup" as const,
+      sessionKey: "agent:support:subagent:test-meeting:meeting-control",
+      active: true,
+      queued: true,
+      reason: "delivery_unconfirmed",
+      message: "Input adopted but transcript commit unconfirmed; do not replay.",
+      speak: true,
+      show: true,
+      suppress: false,
+    };
+    controlRealtimeVoiceAgentRun.mockImplementation(async (control) => {
+      expect(control.runTarget?.runId).toBe("run-1");
+      expect(control.runTarget?.isCurrent("session-1")).toBe(true);
+      expect(control.runTarget?.isCurrent("other-session")).toBe(false);
+      expect(control.mode).toBe("followup");
+      expect(control.waitForTranscriptCommit).toBe(true);
+      control.onQueueAccepted?.(true);
+      expect(control.getSteeringContext?.()).toContain("Respect corrections or cancellations");
+      expect(control.getToolAuthorityOverlay?.()).toBe(overlay);
+      return outcome;
+    });
+    consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
+      expect(consult.senderId).toBe("@caller:example.test");
+      expect(consult).not.toHaveProperty("senderIsOwner");
+      expect(consult.waitForPendingInput).toBe(waitForPendingInput);
+      const registration = consult.onRunStarted?.({
+        runId: "run-1",
+        sessionId: "session-1",
+        timeoutMs: 1000,
+      });
+      retainedControl = published.mock.calls[0]?.[0];
+      expect(retainedControl).toBeTypeOf("function");
+      expect(await retainedControl!("Bitte zusätzlich B beachten", onQueueAccepted)).toBe(outcome);
+      expect(onQueueAccepted).toHaveBeenCalledExactlyOnceWith(true);
+      expect(await retainedControl!("Und C")).toBe(outcome);
+      expect(buildRealtimeVoiceAgentToolAuthorityOverlay).toHaveBeenCalledTimes(2);
+      expect(buildRealtimeVoiceAgentToolAuthorityOverlay).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          sessionEntry: { sessionId: "session-1" },
+          senderId: "@caller:example.test",
+          spawnedBy: "agent:support:matrix:dm:caller",
+          messageProvider: "test-meeting",
+          toolsAllow: expect.arrayContaining(["read"]),
+        }),
+      );
+      expect(buildRealtimeVoiceAgentToolAuthorityOverlay.mock.calls[0]?.[0]).not.toHaveProperty(
+        "senderIsOwner",
+      );
+      registration?.cleanup?.();
+      expect(controlRealtimeVoiceAgentRun.mock.calls[0]?.[0].runTarget?.isCurrent()).toBe(false);
+      return { text: "A and B done" };
+    });
+    await createBindings("Support", "@caller:example.test").consultAgent({
+      meetingSessionId: "meeting-control",
+      requesterSessionKey: "agent:support:matrix:dm:caller",
+      args: { question: "A" },
+      transcript: [],
+      onRunControl: published,
+      waitForPendingInput,
+    });
+    expect(published.mock.calls.map(([control]) => typeof control)).toEqual([
+      "function",
+      "undefined",
+    ]);
+    expect(controlRealtimeVoiceAgentRun).toHaveBeenCalledTimes(2);
+    expect(consultRealtimeVoiceAgent).toHaveBeenCalledTimes(1);
+  });
+  it("revokes the exact run control immediately on abort and does not revive a retained callback", async () => {
+    const abort = new AbortController();
+    const published = vi.fn<NonNullable<MeetingAgentConsultParams["onRunControl"]>>();
+    controlRealtimeVoiceAgentRun.mockImplementation(async (control) => {
+      expect(control.runTarget?.signal.aborted).toBe(true);
+      expect(control.runTarget?.isCurrent()).toBe(false);
+      return {
+        ok: false,
+        active: false,
+        mode: "followup",
+        sessionKey: control.sessionKey,
+        reason: "no_active_run",
+        message: "No active run",
+        speak: true,
+        show: true,
+        suppress: false,
+      };
+    });
+    consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
+      const registration = consult.onRunStarted?.({
+        runId: "run-abort",
+        sessionId: "session-abort",
+        timeoutMs: 1000,
+      });
+      const retainedControl = published.mock.calls[0]?.[0];
+      abort.abort();
+      expect(published).toHaveBeenLastCalledWith(undefined);
+      expect(registration?.abortSignal?.aborted).toBe(true);
+      await expect(retainedControl!("B")).rejects.toThrow("no longer current");
+      registration?.cleanup?.();
+      return { text: "" };
+    });
+    await createBindings("Support").consultAgent({
+      meetingSessionId: "abort",
+      args: { question: "A" },
+      transcript: [],
+      abortSignal: abort.signal,
+      onRunControl: published,
+    });
+    expect(published).toHaveBeenCalledTimes(2);
+    expect(buildRealtimeVoiceAgentToolAuthorityOverlay).not.toHaveBeenCalled();
+  });
+  it("rejects changed session authority rather than redirecting a follow-up to a replacement run", async () => {
+    const published = vi.fn<NonNullable<MeetingAgentConsultParams["onRunControl"]>>();
+    getSessionEntryAsync.mockResolvedValue({ sessionId: "replacement" });
+    controlRealtimeVoiceAgentRun.mockImplementation(async (control) => {
+      control.getToolAuthorityOverlay?.();
+      throw new Error("must not reach injection");
+    });
+    consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
+      consult.onRunStarted?.({ runId: "original", sessionId: "session-original", timeoutMs: 1000 });
+      const control = published.mock.calls[0]?.[0];
+      await expect(control!("B")).rejects.toThrow("session has changed");
+      throw new Error("consult failed");
+    });
+    await expect(
+      createBindings("Support").consultAgent({
+        meetingSessionId: "changed",
+        args: { question: "A" },
+        transcript: [],
+        onRunControl: published,
+      }),
+    ).rejects.toThrow("consult failed");
+    expect(published.mock.calls.map(([control]) => typeof control)).toEqual([
+      "function",
+      "undefined",
+    ]);
+    expect(controlRealtimeVoiceAgentRun).not.toHaveBeenCalled();
+  });
+  it("does not install a control registration for callers that did not request one", async () => {
+    await createBindings("Support").consultAgent({
+      meetingSessionId: "no-control",
+      args: { question: "A" },
+      transcript: [],
+    });
+    expect(consultRealtimeVoiceAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ onRunStarted: undefined }),
+    );
+    expect(controlRealtimeVoiceAgentRun).not.toHaveBeenCalled();
+  });
+  it("retains exact speech readiness and releases it even when control cleanup throws", async () => {
+    const release = vi.fn(async () => undefined);
+    const prepareTextToSpeech = vi.fn(async () => ({
+      success: true,
+      provider: "test-tts",
+      expressionCapabilities: {
+        emotions: ["joyful"],
+        vocalEvents: ["sigh"],
+        emphasis: true,
+        whisper: false,
+      },
+      release,
+    }));
+    const bindings = createMeetingRealtimeEngineBindings({
+      platform,
+      ttsContext: { agentId: "operator", channelId: "matrix", accountId: "test-account" },
+      config: { realtime: { agentId: "operator", toolPolicy: "owner" } },
+      fullConfig: {
+        agents: { entries: { operator: {} } },
+        talk: {
+          speech: {
+            agentProfiles: {
+              operator: {
+                expression: { channels: { matrix: { targets: ["telephony"] } } },
+              },
+            },
+          },
+        },
+      },
+      runtime: { agent: {}, tts: { prepareTextToSpeech } } as never,
+      logger: {} as never,
+    });
+    consultRealtimeVoiceAgent.mockImplementationOnce(async (consult) => {
+      expect(consult.speechExpressionContext?.guidance).toContain(
+        'Emotion identifiers: ["joyful"]',
+      );
+      expect(consult.speechChannelId).toBe("matrix");
+      expect(consult.toolsAllow).toBeUndefined();
+      consult.onRunStarted?.({
+        runId: "control-cleanup",
+        sessionId: "session-cleanup",
+        timeoutMs: 1000,
+      });
+      return { text: "Done" };
+    });
+    await expect(
+      bindings.consultAgent({
+        meetingSessionId: "control-cleanup",
+        args: { question: "Check the fixture" },
+        transcript: [],
+        onRunControl(control) {
+          if (control === undefined) {
+            throw new Error("Synthetic control cleanup failure");
+          }
+        },
+      }),
+    ).rejects.toThrow("Synthetic control cleanup failure");
+    expect(prepareTextToSpeech).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "operator",
+        channelId: "matrix",
+        accountId: "test-account",
+        target: "telephony",
+      }),
+    );
+    expect(release).toHaveBeenCalledOnce();
+  });
+  it("keeps an explicit agentId ahead of the configured default", async () => {
+    await createBindings("Support").consultAgent({
+      meetingSessionId: "meeting-2",
+      args: { question: "What should I say?" },
+      transcript: [],
+    });
+
+    expect(consultRealtimeVoiceAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "support",
+        sessionKey: "agent:support:subagent:test-meeting:meeting-2",
+        spawnedBy: "agent:support:main",
+      }),
+    );
+  });
+  it("uses a call-scoped thinking override without changing the agent default", async () => {
+    const bindings = createMeetingRealtimeEngineBindings({
+      platform,
+      config: {
+        realtime: {
+          agentId: "operator",
+          toolPolicy: "owner",
+          agentThinkingLevel: "off",
+          speakCommentary: true,
+        },
+      },
+      fullConfig: {
+        agents: {
+          defaults: { thinkingDefault: "low" },
+          entries: { operator: {} },
+        },
+      },
+      runtime: { agent: {} } as never,
+      logger: {} as never,
+    });
+    await bindings.consultAgent({
+      meetingSessionId: "meeting-override",
+      args: { question: "Read the fixture" },
+      transcript: [],
+    });
+    expect(consultRealtimeVoiceAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "operator",
+        thinkLevel: "off",
+        speakCommentary: true,
+        toolsAllow: undefined,
+      }),
+    );
+  });
+  it("adds only the adapter's explicit device tool to safe-read-only consults", async () => {
+    const bindings = createMeetingRealtimeEngineBindings({
+      platform,
+      config: {
+        realtime: {
+          agentId: "operator",
+          toolPolicy: "safe-read-only",
+          additionalToolsAllow: ["voiceassistant_device"],
+        },
+      },
+      fullConfig: { agents: { entries: { operator: {} } } },
+      runtime: { agent: {} } as never,
+      logger: {} as never,
+    });
+    await bindings.consultAgent({
+      meetingSessionId: "meeting-device",
+      args: { question: "Check the Pi" },
+      transcript: [],
+    });
+    expect(consultRealtimeVoiceAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolsAllow: [
+          "read",
+          "web_search",
+          "web_fetch",
+          "x_search",
+          "memory_search",
+          "memory_get",
+          "voiceassistant_device",
+        ],
+      }),
+    );
+  });
+  it("keeps native speech and worker admission out of provider tool results", async () => {
+    const submitToolResult = vi.fn(async () => undefined);
+    consultRealtimeVoiceAgent.mockResolvedValueOnce({
+      text: "Done",
+      utterances: [
+        {
+          text: "Done",
+          localServiceAdmission: {
+            generation: "synthetic-private-generation",
+            signal: new AbortController().signal,
+          },
+        },
+      ],
+    });
+    await createBindings("Support").handleToolCall({
+      strategy: "bidi",
+      session: makeSession(submitToolResult),
+      event: {
+        itemId: "item-host-facts",
+        callId: "call-host-facts",
+        name: "openclaw_agent_consult",
+        args: { question: "Check the fixture" },
+      },
+      meetingSessionId: "meeting-host-facts",
+      transcript: [],
+      onTalkEvent: () => {},
+    });
+    expect(submitToolResult).toHaveBeenCalledExactlyOnceWith("call-host-facts", { text: "Done" });
+  });
+});

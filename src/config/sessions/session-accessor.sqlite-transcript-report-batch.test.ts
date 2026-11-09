@@ -12,11 +12,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import {
-  loadTranscriptEvents,
-  replaceTranscriptEvents,
-  upsertSessionEntryCore,
-} from "./session-accessor.js";
+import { loadTranscriptEvents, upsertSessionEntryCore } from "./session-accessor.js";
 import {
   appendSessionTranscriptReportBatch,
   readSessionTranscriptReportReceipts,
@@ -34,6 +30,7 @@ import {
   observeTranscriptReportReceipts,
 } from "./session-accessor.sqlite-transcript-reports.worker.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
+import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
 import { readActiveTranscriptEntryAnchorAsync } from "./session-transcript-anchor-read.js";

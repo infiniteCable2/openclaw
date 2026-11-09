@@ -3,3 +3,8 @@ import type { inspectSessionBindingByConversation } from "../infra/outbound/sess
 // Retain the public v2026.8.1 inspection contract over the canonical read-only owner.
 export { inspectSessionBindingByConversation as inspectConversationBinding } from "../infra/outbound/session-binding-service.js";
 export type ConversationBindingInspection = ReturnType<typeof inspectSessionBindingByConversation>;
+
+export { inspectSessionBindingByConversationAsync as inspectConversationBindingAsync } from "../infra/outbound/session-binding-service.js";
+
+// Retained conversation ingress prepares binding facts once and rechecks native invalidation.
+export { prepareSessionBindingInspections } from "../infra/outbound/session-binding-service.js";

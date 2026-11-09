@@ -131,12 +131,12 @@ export function createConversationKnowledgeSourceCustody(
       sourceAssertion: held.sourceAssertion,
       grant: {
         ...held.grant,
-        assertCurrent: () => {
+        assertCurrent: composeSessionSourceAssertion([held.grant.assertCurrent], (assertSource) => {
           if (released) {
             throw new SessionTranscriptReadFenceError("Selected contribution read was released");
           }
-          held.grant.assertCurrent();
-        },
+          assertSource();
+        }),
         release: () => {
           if (!released) {
             released = true;

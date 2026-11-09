@@ -6,7 +6,9 @@ import type { SessionSourceAssertion } from "../../config/sessions/session-sourc
 import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
 import { createPreparedEmbeddedAgentSettingsManager } from "../agent-project-settings.js";
 import { sanitizeToolUseResultPairingForModel } from "../session-transcript-repair.js";
+import { createCompactionRequestBudget } from "../sessions/compaction/request-budget.js";
 import type { AgentSession, SessionManager } from "../sessions/index.js";
+import { convertToLlm } from "../sessions/messages.js";
 import type { SettingsManager } from "../sessions/settings-manager.js";
 import type { TranscriptPolicy } from "../transcript-policy.types.js";
 import { prepareCompactionBudgetPreflight } from "./compaction-budget-preflight.js";
@@ -87,6 +89,7 @@ export async function prepareCompactionPromptContext(input: {
     foreground.contextTokenBudget === runtime.contextTokenBudget
       ? input.settingsManager
       : createPreparedEmbeddedAgentSettingsManager({
+          sessionId: params.sessionId,
           cwd: runtime.effectiveCwd,
           agentDir: runtime.agentDir,
           cfg: params.config,
@@ -141,8 +144,23 @@ export async function prepareCompactionPromptContext(input: {
   }
   // Prospective admission may choose a smaller ordered prefix before asking the
   // native owner to rewrite durable history. The pressure decision stays exact.
+  const skipCompaction = foreground.checkOnly === true || !pressure.shouldCompact;
   return {
     originalMessages,
-    skipCompaction: foreground.checkOnly === true || !pressure.shouldCompact,
+    skipCompaction,
+    // Let native retention and the final commit guard account for the very
+    // packet that caused idle maintenance. Prospective packets stay ephemeral.
+    requestBudget: skipCompaction
+      ? undefined
+      : createCompactionRequestBudget({
+          contextWindow: foreground.contextTokenBudget,
+          reserveTokens: foregroundSettings.getCompactionReserveTokens(),
+          systemPrompt: input.systemPrompt,
+          tools: session.agent.state.tools,
+          pendingPrompt: foreground.prompt,
+          pendingContextMessages: foreground.pendingMessages?.length
+            ? convertToLlm([...foreground.pendingMessages])
+            : undefined,
+        }),
   };
 }

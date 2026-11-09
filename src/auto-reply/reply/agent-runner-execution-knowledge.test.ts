@@ -14,6 +14,7 @@ import {
   getRuntimeConfigSourceSnapshot,
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
+import * as runtimeSnapshots from "../../config/runtime-snapshot.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -24,7 +25,6 @@ import {
   setupAgentRunnerExecutionTestState,
   type FallbackRunnerParams,
 } from "./agent-runner-execution.test-support.js";
-import * as runnerUtils from "./agent-runner-utils.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 
 type KnowledgeTurnInput = Parameters<
@@ -38,7 +38,8 @@ vi.mock("./conversation-knowledge-turn.js", () => ({
 }));
 
 const state = await setupAgentRunnerExecutionTestState();
-const { lifecycleAdmissionByOperation } = await import("./reply-run-registry.state.js");
+const { lifecycleAdmissionByOperation } =
+  await import("../../sessions/session-controller.state.js");
 const { executeAgentTurn } = await import("./agent-runner-execution.js");
 
 beforeEach(() => {
@@ -163,7 +164,7 @@ describe("actual native execution conversation knowledge lifetime", () => {
     setRuntimeConfigSnapshot(runtime, runtime);
     f.params.followupRun.run.config = structuredClone(runtime);
     const compares = vi.spyOn(configMatch, "configSnapshotsMatch");
-    const selects = vi.spyOn(runnerUtils, "resolveQueuedReplyRuntimeConfig");
+    const selects = vi.spyOn(runtimeSnapshots, "selectLiveRuntimeConfig");
     onTestFinished(() => {
       compares.mockRestore();
       selects.mockRestore();

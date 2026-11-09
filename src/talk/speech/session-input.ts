@@ -9,7 +9,7 @@ export function createSpeechTranscriptionInput(params: {
   inputAudioFormat: SpeechInputAudioFormat;
   inputEndMode?: "server" | "client";
   transcription: Pick<
-    ReturnType<typeof resolveSpeechTranscriptionProvider>,
+    Awaited<ReturnType<typeof resolveSpeechTranscriptionProvider>>,
     "provider" | "providerConfig"
   >;
   getSession(): RealtimeTranscriptionSession | null;

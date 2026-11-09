@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { resolveUserMessages } from "../../shared/user-messages.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import {
@@ -10,7 +11,6 @@ import {
   shouldNotifyUserAboutCompaction,
   type CompactionNoticeTurn,
 } from "./compaction-notice.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 
 const cfg: OpenClawConfig = { agents: { defaults: { compaction: { notifyUser: true } } } };
 const userTurn: CompactionNoticeTurn = { followupRun: { run: {} }, isHeartbeat: false };
@@ -183,6 +183,18 @@ describe("native compaction copy", () => {
     expect(createCompactionNoticePayload({ phase: "start", language }).text).toBe(
       resolveUserMessages("en").compactionNotice.start,
     );
+  });
+
+  it.each([false, true])("localizes degraded summaries (refused=%s)", (summaryRefused) => {
+    const payload = createCompactionNoticePayload({
+      phase: "degraded",
+      summaryRefused,
+      language: "de-DE",
+    });
+    expect(payload.text).toBe(
+      resolveUserMessages("de").compactionNotice[summaryRefused ? "summaryRefused" : "degraded"],
+    );
+    expect(getReplyPayloadMetadata(payload)?.nativeCompactionNotice).toBe(true);
   });
 
   it("does not mark arbitrary hook/override text as a native translated template", () => {

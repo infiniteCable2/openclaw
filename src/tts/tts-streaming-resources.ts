@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Result } from "@openclaw/normalization-core/result";
 import { formatErrorMessage } from "../infra/errors.js";
 import { finishCapabilityOperation } from "../plugins/capability-provider-acquisition.js";
-import type { SpeechSynthesisStreamResult } from "./provider-types.js";
+import type { SpeechSynthesisStreamResult } from "./tts-runtime-types.js";
 import { throwTtsProjectionError } from "./tts-synthesis-support.js";
 
 type SpeechWorkOwner = {

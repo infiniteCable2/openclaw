@@ -2,7 +2,7 @@
 // to send payloads without loading TTS providers for ordinary sends.
 import { getReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
-import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
+import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
 import { normalizeAccountId } from "../../routing/account-id.js";
@@ -91,11 +91,13 @@ export async function maybeApplyTtsToMessageActionSendPayload(params: {
       const storePath = resolveSessionStorePathCore(params.cfg.session?.store, {
         agentId: params.agentId,
       });
-      ttsAuto = loadSessionEntryReadOnly({
-        agentId: params.agentId,
-        sessionKey,
-        storePath,
-      })?.ttsAuto;
+      ttsAuto = (
+        await readSessionEntryReadOnlyInWorker({
+          agentId: params.agentId,
+          sessionKey,
+          storePath,
+        })
+      )?.ttsAuto;
     } catch {
       // Missing or unreadable session stores should not block message delivery.
     }
@@ -107,14 +109,14 @@ export async function maybeApplyTtsToMessageActionSendPayload(params: {
   speechAdmission?.assertCurrent();
   if (
     !explicitTts &&
-    !shouldAttemptTtsPayload({
+    !(await shouldAttemptTtsPayload({
       cfg: params.cfg,
       preparedTtsPreferences,
       ttsAuto,
       agentId: params.agentId,
       channelId: params.channel,
       accountId: params.accountId ?? undefined,
-    })
+    }))
   ) {
     return params.payload;
   }

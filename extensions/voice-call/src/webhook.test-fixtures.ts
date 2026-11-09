@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { expect, onTestFinished, vi } from "vitest";
-import { VoiceCallConfigSchema, resolveVoiceCallConfig, type VoiceCallConfig } from "./config.js";
+import { normalizeVoiceCallConfig, type VoiceCallConfig } from "./config.js";
 import type { CallManager } from "./manager.js";
 import { AsteriskProvider } from "./providers/asterisk.js";
 import type { VoiceCallProvider } from "./providers/base.js";
@@ -46,10 +46,10 @@ export type TwilioProviderTestDouble = VoiceCallProvider &
     | "clearTtsQueue"
   >;
 
-type VoiceCallConfigInput = Parameters<typeof resolveVoiceCallConfig>[0];
+type VoiceCallConfigInput = Record<string, unknown> & { serve?: Partial<VoiceCallConfig["serve"]> };
 
 export const createConfig = (overrides: VoiceCallConfigInput = {}): VoiceCallConfig => {
-  const config = VoiceCallConfigSchema.parse({
+  const config = normalizeVoiceCallConfig({
     ...overrides,
     serve: { ...overrides.serve, port: overrides.serve?.port || 1 },
   });

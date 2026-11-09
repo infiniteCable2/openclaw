@@ -12,7 +12,7 @@ import {
 } from "./session-accessor.sqlite-maintenance-store.js";
 import { ensureAgentConversationRoot } from "./session-conversation-root.js";
 import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
-import { loadTranscriptEvents } from "./session-transcript-events.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 import { resolveMaintenanceConfigFromInput } from "./store-maintenance.js";
 
 const preservation = () => ({ providerKeys: [], workIdentities: [], lifecycleIdentities: [] });
@@ -114,15 +114,15 @@ describe("native conversation root maintenance protection", () => {
       replaceSessionEntrySync(scope, { ...root.entry, updatedAt: 1 });
       const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
       const before = await readSessionEntryReadOnlyInWorker(scope);
-      const readProjection = candidates.readSessionMaintenanceKeyProjection;
+      const readProjection = candidates.readSessionMaintenanceAgeCandidates;
       // Exercise final writer protection independently of planner correctness:
       // the real row remains a root while this one planning projection omits it.
       const projection = vi
-        .spyOn(candidates, "readSessionMaintenanceKeyProjection")
+        .spyOn(candidates, "readSessionMaintenanceAgeCandidates")
         .mockImplementationOnce((...args) => {
-          const store = readProjection(...args);
-          delete store[root.sessionKey]?.conversationTopology;
-          return store;
+          const selected = readProjection(...args);
+          delete selected.store[root.sessionKey]?.conversationTopology;
+          return selected;
         });
       let prepared: ReturnType<typeof prepareSessionEntryMaintenanceInDatabase>;
       try {

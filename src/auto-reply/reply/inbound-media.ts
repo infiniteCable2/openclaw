@@ -1,4 +1,3 @@
-/** Detects inbound media and audio facts in channel message context. */
 import { normalizeMimeType } from "@openclaw/media-core/mime";
 import { isMeaningfulMediaFact, normalizeMediaFacts } from "../../media/media-facts.js";
 import { resolveMediaProcessingIntent } from "../../media/media-processing.js";

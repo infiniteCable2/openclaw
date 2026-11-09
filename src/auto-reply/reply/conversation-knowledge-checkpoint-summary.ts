@@ -1,16 +1,11 @@
 import {
   shouldCompact,
-  SUMMARY_TRUNCATED_MARKER,
+  capCompactionSummary,
   type CompactionSettings,
 } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
-import { computeAdaptiveChunkRatioWithWorker } from "../../agents/compaction-planning-worker.js";
-import {
-  estimateMessagesTokens,
-  SAFETY_MARGIN,
-  SUMMARIZATION_OVERHEAD_TOKENS,
-} from "../../agents/compaction-planning.js";
+import { estimateMessagesTokens } from "../../agents/compaction-planning.js";
 import { withCompleteCompactionSummary } from "../../agents/compaction-summary-coverage.js";
-import { summarizeInStages } from "../../agents/compaction.js";
+import { summarizeCompactionHistory } from "../../agents/compaction.js";
 import { prepareCompactionBudgetPreflight } from "../../agents/embedded-agent-runner/compaction-budget-preflight.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { renderConversationKnowledgeCheckpointSummary } from "../../config/sessions/conversation-knowledge-checkpoint-context.js";
@@ -35,11 +30,7 @@ type CheckpointSummaryPlanInput = {
 
 type Deferred = {
   kind: "deferred";
-  reason:
-    | "no-whole-prefix"
-    | "oversized-contribution"
-    | "summary-unavailable"
-    | "summary-still-over-budget";
+  reason: "no-whole-prefix" | "summary-unavailable" | "summary-still-over-budget";
 };
 type ReadyPlan = {
   kind: "ready";
@@ -141,18 +132,14 @@ function completeSummary(summary: unknown): summary is string {
     typeof summary === "string" &&
     Boolean(summary.trim()) &&
     summary.trim() !== "No prior history." &&
-    !summary.includes("[Partial summary:") &&
-    !summary.includes(SUMMARY_TRUNCATED_MARKER)
+    !summary.includes("[Partial summary:")
   );
 }
 
 /** Produce a candidate only. The owner revalidates source grants and commits coverage separately. */
 export async function prepareConversationKnowledgeCheckpointSummary(
   params: CheckpointSummaryPlanInput & {
-    native: Omit<
-      Parameters<typeof summarizeInStages>[0],
-      "messages" | "previousSummary" | "maxChunkTokens"
-    >;
+    native: Omit<Parameters<typeof summarizeCompactionHistory>[0], "messages" | "previousSummary">;
     /** Already resolved configured native provider, if any; no registry/auth discovery here. */
     provider?: CompactionProvider;
   },
@@ -174,8 +161,9 @@ export async function prepareConversationKnowledgeCheckpointSummary(
     return plan;
   }
   if (
-    !Number.isFinite(native.contextWindow) ||
-    native.contextWindow <= 0 ||
+    typeof native.model.contextWindow !== "number" ||
+    !Number.isFinite(native.model.contextWindow) ||
+    native.model.contextWindow <= 0 ||
     !Number.isFinite(native.reserveTokens) ||
     native.reserveTokens <= 0
   ) {
@@ -201,39 +189,13 @@ export async function prepareConversationKnowledgeCheckpointSummary(
   }
   native.signal.throwIfAborted();
   if (summary === undefined || !completeSummary(summary)) {
-    const previousTokens = params.previousSummary
-      ? estimateMessagesTokens([summaryMessage(params.previousSummary)])
-      : 0;
-    const available =
-      native.contextWindow -
-      native.reserveTokens -
-      SUMMARIZATION_OVERHEAD_TOKENS -
-      Math.ceil(previousTokens * SAFETY_MARGIN);
-    // Native chunking preserves whole messages. An indivisible oversized contribution
-    // must remain pending instead of invoking its lossy oversized-message fallback.
-    if (
-      available <= 0 ||
-      plan.messages.some(
-        (message) => Math.ceil(estimateMessagesTokens([message]) * SAFETY_MARGIN) > available,
-      )
-    ) {
-      return { kind: "deferred", reason: "oversized-contribution" };
-    }
-    const ratio = await computeAdaptiveChunkRatioWithWorker({
-      messages: plan.messages,
-      contextWindow: native.contextWindow,
-      signal: native.signal,
-    });
-    const maxChunkTokens = Math.max(
-      1,
-      Math.min(available, Math.floor(native.contextWindow * ratio) - SUMMARIZATION_OVERHEAD_TOKENS),
-    );
+    // Native input sampling bounds even a large prefix. Coverage means summarized,
+    // not verbatim; original contributions remain available in their source histories.
     summary = await withCompleteCompactionSummary(() =>
-      summarizeInStages({
+      summarizeCompactionHistory({
         ...native,
         messages: plan.messages,
         previousSummary: params.previousSummary,
-        maxChunkTokens,
       }),
     );
   }
@@ -241,6 +203,7 @@ export async function prepareConversationKnowledgeCheckpointSummary(
   if (!completeSummary(summary)) {
     return { kind: "deferred", reason: "summary-unavailable" };
   }
+  summary = capCompactionSummary(summary);
   const after = requiresCompaction(params, [summaryMessage(summary), ...plan.retainedMessages]);
   if (after.required || after.decision.estimatedPromptTokens >= plan.estimatedTokensBefore) {
     return { kind: "deferred", reason: "summary-still-over-budget" };

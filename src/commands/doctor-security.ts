@@ -1,7 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { listAgentEntriesWithSource } from "../agents/agent-scope-config.js";
-import { listReadOnlyChannelPluginsForConfig } from "../channels/plugins/read-only.js";
+import { listReadOnlyChannelPluginsForConfigAsync } from "../channels/plugins/read-only.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig, GatewayBindMode } from "../config/config.js";
 import { hasConfiguredSecretInput, resolveSecretInputRef } from "../config/types.secrets.js";
@@ -329,7 +329,7 @@ export async function collectSecurityWarnings(
         title: "WARNING",
         detail: [
           `Gateway bound to ${bindDescriptor} (network-accessible).`,
-          "Ensure your auth credentials are strong and not exposed.",
+          "Use strong authentication credentials and keep them private.",
         ].join("\n"),
         remediation: saferRemoteAccessLines.join("\n"),
       });
@@ -350,7 +350,7 @@ export async function collectSecurityWarnings(
   const channelFindings = await collectChannelSecurityFindingsCore({
     cfg,
     mode: "doctor",
-    plugins: listReadOnlyChannelPluginsForConfig(cfg, {
+    plugins: await listReadOnlyChannelPluginsForConfigAsync(cfg, {
       includePersistedAuthState: true,
       includeSetupFallbackPlugins: true,
     }),

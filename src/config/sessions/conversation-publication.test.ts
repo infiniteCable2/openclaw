@@ -1,4 +1,6 @@
 import { expect, it, vi } from "vitest";
+import { appendSessionTranscriptMessage } from "../../agents/sessions/session-manager-message-runtime.js";
+import { SessionManager } from "../../agents/sessions/session-manager.js";
 import {
   createConversationKnowledgeScenario,
   person,
@@ -28,10 +30,101 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
+import { captureSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import { createExactAssistantMessage } from "./transcript-message.test-support.js";
 
 const wake = vi.hoisted(() => vi.fn());
 // mock-isolation: Inspect original COMMIT/wakeup ordering before explicitly draining the real journal.
 vi.mock("./conversation-publication-wakeup.js", () => ({ wakeConversationPublication: wake }));
+
+it.each(["actor", "sdk"] as const)(
+  "journals the native %s append only with current source custody and a committed anchor",
+  async (adapter) => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: `publication-${adapter}` },
+      async (state) => {
+        const fixture = await createConversationKnowledgeScenario(state);
+        try {
+          const source = await fixture.branch(`publication-${adapter}`);
+          const owner = await fixture.claim(source);
+          const branch = await readConversationKnowledgeBranch(owner);
+          if (!branch) throw new Error("Expected an enrolled branch");
+          const admission = await appendTranscriptMessage(source, {
+            message: { role: "user", content: "A synthetic question.", timestamp: 1 },
+          });
+          if (!admission.anchor) throw new Error("Expected original admission");
+          await upsertSessionEntryCore(source, { activeWriterRunId: "native-publication-writer" });
+          const manager =
+            adapter === "actor"
+              ? await SessionManager.openAsync(source, state.workspaceDir)
+              : undefined;
+          const journal = openConversationPublicationStore({
+            agentId: source.agentId,
+            path: source.storePath,
+            env: source.env,
+            assertCurrent: owner.assertCurrent,
+          });
+          const intent: ConversationPublicationIntent = {
+            version: 1,
+            kind: "utterance-observation",
+            role: "assistant",
+            runId: "publication-run",
+            sourceMode: "branches",
+            source,
+            root: branch.root,
+            privateAudience: { participant: person, admission: admission.anchor },
+          };
+          let current = true;
+          const assertCurrent = () => {
+            owner.assertCurrent();
+            if (!current) throw new Error("Synthetic source revoked");
+          };
+          const append = (key: string) =>
+            withConversationPublicationContext(
+              {
+                source,
+                storePath: source.storePath,
+                runId: "publication-run",
+                capture: () => ({ intent, assertCurrent }),
+              },
+              () => {
+                const message = {
+                  ...createExactAssistantMessage({ text: "A committed synthetic answer." }),
+                  idempotencyKey: key,
+                  __openclaw: { runId: "publication-run" },
+                };
+                return manager
+                  ? manager.appendMessageAsync(message)
+                  : appendSessionTranscriptMessage({
+                      target: source,
+                      message,
+                      cwd: state.workspaceDir,
+                      assertCurrent,
+                      candidate: captureSessionStoreReadCandidate(source.storePath),
+                    });
+              },
+            );
+          const wakesBefore = wake.mock.calls.length;
+          await append("native-publication-once");
+          const ready = await journal.readReadyHeads({ now: Date.now(), limit: 4 });
+          expect(ready).toHaveLength(1);
+          expect(ready[0]?.anchor.entryId).toEqual(expect.any(String));
+          expect(wake.mock.calls.length).toBeGreaterThan(wakesBefore);
+          const transcript = await loadTranscriptEvents(source);
+          expect(transcript.some((entry) => entry.id === ready[0]?.anchor.entryId)).toBe(true);
+          const wakesAfterCommit = wake.mock.calls.length;
+          current = false;
+          await expect(append("native-publication-revoked")).rejects.toThrow("revoked");
+          expect(await loadTranscriptEvents(source)).toEqual(transcript);
+          expect(await journal.stats()).toEqual([{ state: "ready", count: 1 }]);
+          expect(wake).toHaveBeenCalledTimes(wakesAfterCommit);
+        } finally {
+          await fixture.close();
+        }
+      },
+    );
+  },
+);
 
 // Real native append and worker transactions prove atomic provenance, exact acceptance,
 // recovery, and FIFO. No model/provider execution or transcript task replay is involved.

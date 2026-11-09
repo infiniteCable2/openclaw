@@ -1,10 +1,9 @@
 import { expectDefined } from "@openclaw/normalization-core";
 /** Tests for talk gateway methods that coordinate speech and audio providers. */
-import { afterEach, beforeEach, vi } from "vitest";
+import { beforeEach, vi } from "vitest";
 import type { OpenClawConfig } from "../../../config/config.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import { setActiveDegradedSecretOwners } from "../../../secrets/runtime-degraded-state.js";
-import { resetClientVoiceConfirmationStateForTest } from "../../../talk/client-voice-confirmation.test-support.js";
 import type {
   GatewayClient,
   GatewayRequestContext,
@@ -375,8 +374,6 @@ beforeEach(() => {
     );
   });
 });
-
-afterEach(() => resetClientVoiceConfirmationStateForTest());
 
 function markTalkOwnerCold(ownerId: string): void {
   setActiveDegradedSecretOwners([

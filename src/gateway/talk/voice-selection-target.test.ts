@@ -12,6 +12,7 @@ const target = Object.freeze({
   sessionKey: "main",
   canonicalKey: "agent:primary:talk:gateway:direct:speech:original-connection",
   storePath: "/synthetic/sessions.sqlite",
+  assertCurrent() {},
 });
 const connId = "original-connection";
 const voiceSessionId = "original-voice";

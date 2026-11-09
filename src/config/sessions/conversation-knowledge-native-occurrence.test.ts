@@ -27,7 +27,7 @@ import {
   buildForkedChildTranscriptEvents,
   resolveParentForkSourceTranscript,
 } from "./session-accessor.sqlite-parent-fork.js";
-import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
+import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import type { PreparedInitialSessionContext } from "./session-initial-context.js";

@@ -10,7 +10,7 @@ import type { RealtimeTranscriptionProviderConfig } from "../../realtime-transcr
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { UserChannelIdentity } from "../../state/user-profiles.types.js";
 import { resolveRealtimeVoiceAgentControlIntent } from "../../talk/agent-run-control-shared.js";
-import { createClientVoiceConfirmationReadiness } from "../../talk/client-voice-confirmation-readiness.js";
+import { createClientVoiceTranscriptReadiness } from "../../talk/client-voice-transcript-readiness.js";
 import { releaseConversationInputAdmission } from "../../talk/conversation-input-admission.js";
 import { forgetUnifiedTalkSession, getUnifiedTalkSession } from "../../talk/session-registry.js";
 import { prepareSpeechGreeting } from "../../talk/speech/greeting.js";
@@ -24,7 +24,7 @@ import type { TalkEvent } from "../../talk/talk-session-controller.js";
 import { VOICE_TRANSCRIPT_QUEUE_POLICY } from "../../talk/voice-transcript.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
 import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
-import type { TalkAgentConsultAuthority } from "./client-gateway-control.js";
+import type { TalkAgentConsultAuthority } from "./client-tool-authority.js";
 import { createGatewayTalkConversationInputSource } from "./conversation-input-source.js";
 import { decodeTalkRelayAudioBase64 } from "./relay-audio-base64.js";
 import {
@@ -35,7 +35,6 @@ import {
 import { rememberTalkSpeechRelaySession } from "./session-registry.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 import { buildTalkTtsConfig } from "./speech-config.js";
-import { createNativeSpeechConfirmation } from "./speech-confirmation.js";
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const PLAYBACK_READY_TIMEOUT_MS = 30_000;
@@ -150,9 +149,7 @@ export async function createTalkSpeechRelaySession(params: {
     voiceSessionCreated: false,
     voiceTranscriptSeq: 0,
     voiceTranscriptQueue: VOICE_TRANSCRIPT_QUEUE_POLICY.createQueue(),
-    confirmationReadiness: createClientVoiceConfirmationReadiness({
-      agentId: params.sessionTarget.agentId,
-      voiceSessionId: id,
+    transcriptReadiness: createClientVoiceTranscriptReadiness({
       flushTranscript: async () => {
         await voice.voiceTranscriptQueue.flush({ requireSuccess: true });
       },
@@ -202,7 +199,7 @@ export async function createTalkSpeechRelaySession(params: {
     } catch {
       // Harness observers are best-effort, but durable input and requested
       // delivery are not. Revoke this adapter before any further consultation.
-      voice.confirmationReadiness.fail(new Error("Talk speech delivery failed"));
+      voice.transcriptReadiness.fail(new Error("Talk speech delivery failed"));
       closeReason = "error";
       lifetime.abort(new Error("Talk speech delivery failed"));
       params.context.logGateway.warn("Talk speech delivery failed; closing the session");
@@ -417,7 +414,7 @@ export async function createTalkSpeechRelaySession(params: {
         clearTimeout(expiryTimer);
       }
       voice.closing = true;
-      voice.confirmationReadiness.close();
+      voice.transcriptReadiness.close();
       // Stop capture and provider connection setup before joining construction.
       // A disconnected client must not retain a pending connect or readiness lease.
       fatal?.();
@@ -537,16 +534,6 @@ export async function createTalkSpeechRelaySession(params: {
     inputEndMode: profile.inputEndMode,
     ...(profile.waitingAudio ? { waitingAudio: profile.waitingAudio } : {}),
   };
-  const nativeInput = createNativeSpeechConfirmation({
-    agentId: params.sessionTarget.agentId,
-    sessionKey: params.sessionTarget.sessionKey,
-    canonicalSessionKey: params.sessionTarget.canonicalKey,
-    voiceSessionId: id,
-    config: params.cfg,
-    dispatch: bindings.nativeInput,
-    onOutputFailure: (error) =>
-      params.context.logGateway.warn(`Talk speech confirmation output failed: ${String(error)}`),
-  });
   construction = (async () => {
     const runtime = createPluginRuntime();
     assertActive();
@@ -564,7 +551,7 @@ export async function createTalkSpeechRelaySession(params: {
     assertActive();
     let initialGreeting;
     if (profile.greeting) {
-      if (!ensureRelayVoiceSession(voice)) {
+      if (!(await ensureRelayVoiceSession(voice))) {
         throw new Error("Talk speech greeting requires a recorded voice session");
       }
       const greeting = profile.greeting;
@@ -627,10 +614,10 @@ export async function createTalkSpeechRelaySession(params: {
       },
       nativeInput: async (consult) => {
         assertActive();
-        if (!ensureRelayVoiceSession(voice)) {
+        if (!(await ensureRelayVoiceSession(voice))) {
           throw new Error("Talk speech input requires its recorded voice session");
         }
-        return nativeInput(consult);
+        return bindings.nativeInput(consult);
       },
       connectionPresentation: bindings.connectionPresentation,
       connectionPreparation: bindings.connectionPreparation,

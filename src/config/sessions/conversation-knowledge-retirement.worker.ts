@@ -97,7 +97,7 @@ export function retirePrunedConversationKnowledgeInTransaction(
       .where(
         (eb) =>
           eb.fn<string>("json_extract", [
-            transcriptEventNavigationSql("event"),
+            transcriptEventNavigationSql(database.db, "event"),
             eb.val("$.customType"),
           ]),
         "in",

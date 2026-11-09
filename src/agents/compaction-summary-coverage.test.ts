@@ -1,25 +1,21 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  reportCompactionSummaryLosses,
+  assertGeneratedCompactionSummary,
   requiresCompleteCompactionSummary,
   withCompleteCompactionSummary,
 } from "./compaction-summary-coverage.js";
 
 describe("native compaction summary coverage", () => {
-  it("refuses known loss only inside its scoped complete catch-up and releases on failure", async () => {
-    const warn = vi.fn();
+  it("refuses no-summary fallbacks only during branch maintenance and releases on failure", async () => {
     expect(requiresCompleteCompactionSummary()).toBe(false);
     await expect(
       withCompleteCompactionSummary(async () => {
         await Promise.resolve();
         expect(requiresCompleteCompactionSummary()).toBe(true);
-        reportCompactionSummaryLosses(new Set(), warn);
-        reportCompactionSummaryLosses(new Set(["summary-tail"]), warn);
+        assertGeneratedCompactionSummary();
       }),
-    ).rejects.toThrow("exceeds the finalized artifact budget");
-    expect(warn).not.toHaveBeenCalled();
+    ).rejects.toThrow("requires a generated summary");
     expect(requiresCompleteCompactionSummary()).toBe(false);
-    reportCompactionSummaryLosses(new Set(["summary-tail"]), warn);
-    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("loss=summary-tail"));
+    expect(() => assertGeneratedCompactionSummary()).not.toThrow();
   });
 });

@@ -1,20 +1,9 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-
 // Public contracts for realtime transcription provider plugins and sessions.
 // Providers own config resolution; core owns session lifecycle shape.
 export type RealtimeTranscriptionProviderId = string;
 
 export type RealtimeTranscriptionProviderConfig = Record<string, unknown>;
-
-export type RealtimeTranscriptionProviderResolveConfigContext = {
-  cfg: OpenClawConfig;
-  rawConfig: RealtimeTranscriptionProviderConfig;
-};
-
-export type RealtimeTranscriptionProviderConfiguredContext = {
-  cfg?: OpenClawConfig;
-  providerConfig: RealtimeTranscriptionProviderConfig;
-};
 
 /** Inputs used to make a realtime transcription provider ready before media starts. */
 export type RealtimeTranscriptionProviderPrepareRequest = {
@@ -30,6 +19,8 @@ export type RealtimeTranscriptionProviderPreparation = {
 
 /** Callback hooks emitted by realtime transcription sessions. */
 export type RealtimeTranscriptionSessionCallbacks = {
+  /** Synchronous live-authority check; failure requires aborting without finalization. */
+  assertCurrent?: () => void;
   onPartial?: (partial: string) => void;
   onTranscript?: (transcript: string, context?: { utteranceId: string }) => void;
   onSpeechStart?: () => void;
@@ -55,16 +46,11 @@ export type RealtimeTranscriptionSessionCallbacks = {
   onError?: (error: Error) => void;
 };
 
-/** Inputs passed to a provider when creating a transcription session. */
-export type RealtimeTranscriptionSessionCreateRequest = RealtimeTranscriptionSessionCallbacks & {
-  cfg?: OpenClawConfig;
-  providerConfig: RealtimeTranscriptionProviderConfig;
-  /** Host-selected wire format; absent means the legacy 8 kHz mu-law stream. */
-  inputAudioFormat?: "g711-ulaw-8khz" | "pcm16-16khz";
-  /** Client mode admits a final transcript only at finishInput, never at silence. */
-  inputEndMode?: "server" | "client";
-};
-
+export type {
+  RealtimeTranscriptionSessionCreateRequest,
+  RealtimeTranscriptionProviderResolveConfigContext,
+  RealtimeTranscriptionProviderConfiguredContext,
+} from "./provider-contexts.js";
 /** Runtime control surface for a realtime transcription session. */
 export type RealtimeTranscriptionSession = {
   connect(): Promise<void>;

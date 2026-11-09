@@ -1,8 +1,6 @@
-import type { SessionEntry } from "../config/sessions/types.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
-import { isIncognitoSessionKey } from "../routing/session-key.js";
-import { isSessionCreatorProfile, prepareSessionCreatorProfile } from "./session-creator.js";
-import { resolveSessionVisibility } from "./session-sharing-policy.js";
+import type { prepareSessionCreatorProfile } from "./session-creator.js";
+import { createProfileSessionEntryFilter } from "./session-sharing-read.js";
 
 /** Caller identity and role facts must be current in the synchronous consuming frame. */
 export function createSessionReadEntryFilter(
@@ -25,23 +23,4 @@ export function createSessionReadEntryFilter(
     { profileId: params.profileId, sessionCap: params.sessionCap },
     isCreator,
   );
-}
-
-export function createProfileSessionEntryFilter(
-  params: {
-    profileId: string;
-    sessionCap?: GatewayOperatorRoleDefinition["sessions"]["others"];
-  },
-  isCreator?: ReturnType<typeof prepareSessionCreatorProfile>,
-) {
-  // Unprepared filters may survive yields and must read current aliases.
-  const creatorMatches = isCreator ?? ((actor) => isSessionCreatorProfile(actor, params.profileId));
-  return (
-    sessionKey: string | undefined,
-    entry: Pick<SessionEntry, "createdActor" | "visibility" | "incognito">,
-  ) =>
-    entry.incognito !== true &&
-    !isIncognitoSessionKey(sessionKey) &&
-    (creatorMatches(entry.createdActor) ||
-      (params.sessionCap !== "none" && resolveSessionVisibility(entry) !== "draft"));
 }

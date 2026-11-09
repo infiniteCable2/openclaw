@@ -6,11 +6,11 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   appendSessionTranscriptReport,
   loadTranscriptEvents,
-  replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "./session-accessor.sqlite-active-context.js";
 import type { CustomMessageReport } from "./session-accessor.sqlite-transcript-reports.types.js";
+import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { readSessionTranscriptModelContextAsync } from "./session-transcript-context-read.js";
 import { CURRENT_SESSION_VERSION } from "./version.js";
 

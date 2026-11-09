@@ -5,23 +5,28 @@ import type {
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import type { InternalSessionEntry } from "./types.js";
 
+export type SessionTranscriptAnchorEntry = Pick<
+  InternalSessionEntry,
+  | "sessionId"
+  | "updatedAt"
+  | "lifecycleRevision"
+  | "activeWriterRunId"
+  | "cliHistoryBoundary"
+  | "permissionMode"
+>;
+
 export type SessionTranscriptAnchorFacts = {
   anchors: TranscriptEntryAnchor[];
+  activePathRelation?: "exact" | "ancestor" | "off-path";
   session?: { sessionId: string; lifecycleRevision?: string };
   header?: unknown;
   watermark?: SessionTranscriptWatermark;
   messagePresence?: boolean;
+  metadata?: { present: boolean; observedAt: number | null; updatedAt: number | null };
   contextValidated?: true;
   contextVersion?: SessionTranscriptContextVersion;
   contextAuthority?: {
-    entry?: Pick<
-      InternalSessionEntry,
-      | "sessionId"
-      | "lifecycleRevision"
-      | "activeWriterRunId"
-      | "cliHistoryBoundary"
-      | "permissionMode"
-    >;
+    entry?: SessionTranscriptAnchorEntry;
     watermark: SessionTranscriptWatermark;
   };
   replayValidated?: "current" | "initial";

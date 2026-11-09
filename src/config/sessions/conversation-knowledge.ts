@@ -406,11 +406,17 @@ function completedConversationKnowledgeStart(
     messages.push(message);
     if (record.id === receipt.through.entryId) {
       const pairing = classifyToolUseResultPairing(messages);
+      const ownedResults = new Set(
+        pairing.flatMap((frame) =>
+          frame.occurrences.flatMap((occurrence) =>
+            occurrence.sourceResult ? [occurrence.sourceResult] : [],
+          ),
+        ),
+      );
       const complete =
         sawUser &&
-        pairing.droppedOrphanCount === 0 &&
-        pairing.droppedDuplicateCount === 0 &&
-        pairing.frames.every(
+        messages.every((message) => message.role !== "toolResult" || ownedResults.has(message)) &&
+        pairing.every(
           (frame) =>
             !frame.failed &&
             frame.occurrences.every(

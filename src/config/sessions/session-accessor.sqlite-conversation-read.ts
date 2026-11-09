@@ -7,24 +7,14 @@ import {
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  normalizeStoredConversationRef,
+  selectUniqueConversationRows,
+  type MappedConversationRow,
+} from "./conversation-record-policy.js";
 import type { ConversationReadQuery, ConversationRecord } from "./conversation-registry.types.js";
 import { parseStoredConversationRouteContext } from "./conversation-route-context.js";
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
-
-const CONVERSATION_REF_PATTERN = /^conv_[a-f0-9]{32}$/u;
-
-function normalizeConversationRef(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  if (!CONVERSATION_REF_PATTERN.test(normalized)) {
-    throw new Error(`Invalid conversationRef: ${value}`);
-  }
-  return normalized;
-}
-
-type MappedConversationRow = {
-  associationIsCurrent: boolean;
-  record: ConversationRecord;
-};
 
 export function selectConversationRowsFromDatabase(
   database: Pick<OpenClawAgentDatabase, "db">,
@@ -88,19 +78,27 @@ export function selectConversationRowsFromDatabase(
   if (channel) {
     query = query.where("c.channel", "=", channel);
   }
+  if (options.deliveryAddress) {
+    query = query
+      .where("c.account_id", "=", options.deliveryAddress.accountId)
+      .where("c.delivery_target", "=", options.deliveryAddress.target);
+    query = options.deliveryAddress.threadId
+      ? query.where("c.thread_id", "=", options.deliveryAddress.threadId)
+      : query.where("c.thread_id", "is", null);
+  }
   // A supplied reference must validate; an empty one fails instead of widening the lookup.
   if (options.conversationRef !== undefined) {
     query = query.where(
       "c.conversation_id",
       "=",
-      normalizeConversationRef(options.conversationRef),
+      normalizeStoredConversationRef(options.conversationRef),
     );
   }
   if (options.conversationRefs !== undefined) {
     query = query.where(
       "c.conversation_id",
       "in",
-      sqliteStringSet(options.conversationRefs.map(normalizeConversationRef)),
+      sqliteStringSet(options.conversationRefs.map(normalizeStoredConversationRef)),
     );
   }
   if (options.currentSession) {
@@ -231,63 +229,18 @@ export function selectConversationRowsFromDatabase(
       },
     };
   };
-  const unique = new Map<string, MappedConversationRow>();
-  const contextRelations = new Map<string, NonNullable<ConversationRecord["contextRelation"]>>();
-  for (const row of rows) {
-    const existing = unique.get(row.conversation_id);
-    if (existing?.associationIsCurrent && !hasSource) {
-      continue;
-    }
-    const mapped = mapConversationRow(row);
-    if (!mapped) {
-      continue;
-    }
-    // Address recency/representative bindings must not hide another exact source association.
-    const relation = mapped.record.contextRelation;
-    if (relation && contextRelations.get(row.conversation_id) !== "current") {
-      contextRelations.set(row.conversation_id, relation);
-    }
-    if (existing?.associationIsCurrent) {
-      continue;
-    }
-    if (!existing) {
-      unique.set(mapped.record.conversationRef, mapped);
-      continue;
-    }
-    if (
-      mapped.associationIsCurrent &&
-      mapped.record.sessionId &&
-      mapped.record.sessionKey &&
-      mapped.record.role
-    ) {
-      // Keep the newest address activity while carrying forward the live binding
-      // when a newer historical association has no current session entry.
-      const {
-        routeContext: _staleRouteContext,
-        routeContextObserved: _staleRouteContextObserved,
-        ...existingRecord
-      } = existing.record;
-      unique.set(mapped.record.conversationRef, {
-        associationIsCurrent: true,
-        record: {
-          ...existingRecord,
-          sessionId: mapped.record.sessionId,
-          sessionKey: mapped.record.sessionKey,
-          role: mapped.record.role,
-          ...(mapped.record.routeContextObserved ? { routeContextObserved: true as const } : {}),
-          ...(mapped.record.routeContext ? { routeContext: mapped.record.routeContext } : {}),
-        },
-      });
-    }
+  if (options.deliveryAddress) {
+    return rows.flatMap((row) => {
+      const mapped = mapConversationRow(row);
+      return mapped?.associationIsCurrent ? [mapped.record] : [];
+    });
   }
-  const values = [...unique.values()].map(({ record }) => {
-    const contextRelation = contextRelations.get(record.conversationRef);
-    if (contextRelation) {
-      record.contextRelation = contextRelation;
-    }
-    return record;
+  return selectUniqueConversationRows(rows, {
+    conversationRef: (row) => row.conversation_id,
+    map: mapConversationRow,
+    limit: options.limit,
+    collectContextRelations: hasSource,
   });
-  return options.limit === undefined ? values : values.slice(0, options.limit);
 }
 
 export function resolveConversationInDatabase(

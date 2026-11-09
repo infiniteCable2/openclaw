@@ -1,12 +1,9 @@
-import { isMainThread } from "node:worker_threads";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { captureMemoryExactSessionReader } from "./session-accessor.memory-exact-read.js";
 import { createSessionEntryWithTranscriptInScope } from "./session-accessor.sqlite-creation.js";
 import {
   captureLifecycleDatabaseScope,
-  resolveSqliteScope,
-  prepareSqliteScope,
-  resolveSqliteWriteAdmissionScope,
-  runExclusiveSqliteSessionWrite,
+  withPreparedSqliteScope,
 } from "./session-accessor.sqlite-scope.js";
 import type {
   SessionAccessScope,
@@ -15,7 +12,7 @@ import type {
   SessionEntryCreateWithTranscriptPrepareResult,
   SessionEntryCreateWithTranscriptOptions,
 } from "./session-accessor.types.js";
-import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
+import { createSessionActorEntryWithTranscriptInScope } from "./session-actor-entry-adapter.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
@@ -32,6 +29,13 @@ async function createEntryWithTranscript<TError>(
   options: SessionEntryCreateWithTranscriptOptions,
   requireAbsent: boolean,
 ): Promise<SessionEntryCreateWithTranscriptResult<TError>> {
+  if (requireAbsent && captureMemoryExactSessionReader(scope, () => {})) {
+    throw new Error("Absent-only session creation requires its durable worker owner");
+  }
+  const memory = await createSessionActorEntryWithTranscriptInScope(scope, createEntry, options);
+  if (memory) {
+    return memory;
+  }
   const captured = {
     ...scope,
     env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
@@ -39,30 +43,14 @@ async function createEntryWithTranscript<TError>(
   const storePath = resolveSessionStorePathForScope(captured);
   const agentId = captured.agentId ?? resolveAgentIdFromSessionKey(captured.sessionKey);
   const target = { ...captured, agentId, storePath };
-  const incognito = captureIncognitoSessionBinding(target);
-  // A sibling's cold registration must not invalidate discovery of this same store.
-  // Release admission before creation callbacks acquire their own commit custody.
-  const admission =
-    isMainThread && !incognito ? resolveSqliteWriteAdmissionScope(target) : undefined;
-  const prepare = async () => {
-    const resolved = await prepareSqliteScope(target);
-    if (admission && resolved.path !== admission.path) {
-      throw new Error("Session creation preparation changed its reserved database path");
-    }
-    return resolved;
-  };
-  const resolved = captureLifecycleDatabaseScope(
-    isMainThread && !incognito
-      ? admission
-        ? await runExclusiveSqliteSessionWrite(
-            admission,
-            prepare,
-            "session.entry.create-with-transcript",
-          )
-        : await prepare()
-      : resolveSqliteScope(target),
+  return withPreparedSqliteScope(target, (prepared) =>
+    createSessionEntryWithTranscriptInScope(
+      captureLifecycleDatabaseScope(prepared),
+      createEntry,
+      options,
+      requireAbsent,
+    ),
   );
-  return createSessionEntryWithTranscriptInScope(resolved, createEntry, options, requireAbsent);
 }
 
 /** Creates or updates one entry and its transcript through the native lifecycle owner. */

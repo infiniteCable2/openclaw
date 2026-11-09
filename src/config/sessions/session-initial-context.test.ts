@@ -21,7 +21,6 @@ import {
   loadSessionEntry,
   loadTranscriptEvents,
   upsertSessionEntryCore,
-  replaceTranscriptEvents,
 } from "./session-accessor.js";
 import {
   commitReplySessionInitialization,
@@ -31,6 +30,7 @@ import {
   buildForkedChildTranscriptEvents,
   resolveParentForkSourceTranscript,
 } from "./session-accessor.sqlite-parent-fork.js";
+import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import {
   createProjectedInitialSessionContextEvents,

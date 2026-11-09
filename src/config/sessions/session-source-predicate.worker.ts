@@ -1,11 +1,18 @@
 import { isDeepStrictEqual } from "node:util";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
+import type { OpenClawAgentReadOnlyDatabase } from "../../state/openclaw-agent-db-readonly.js";
+import { SessionMetadataUnavailableError } from "../../state/session-metadata-unavailable-error.js";
 import type { SessionTranscriptContextVersion } from "./session-accessor.sqlite-contract.js";
 import { selectConversationRowsFromDatabase } from "./session-accessor.sqlite-conversation-read.js";
 import { readExactSessionEntryRowValidated } from "./session-accessor.sqlite-entry-read.js";
 import { validateSessionTranscriptContextInDatabase } from "./session-accessor.sqlite-model-context.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
+import { createSessionEntryReadScope } from "./session-entry-cohort.worker.js";
 import type { SessionEntryPatchCommit } from "./session-entry-patch.types.js";
+import type {
+  SessionExactEntriesWorkerInput,
+  SessionExactEntriesWorkerResult,
+} from "./session-entry-read.types.js";
 import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
 import type {
   SessionSourcePredicate,
@@ -53,6 +60,39 @@ export function createSessionSourceValidationScope(database: SourceDatabase) {
     },
     clear() {
       proofs.clear();
+    },
+  };
+}
+
+/** Currentness reads use the same admitted database and snapshot as entry reads. */
+export function readSessionSourceChecks(
+  request: SessionExactEntriesWorkerInput,
+  capturedDatabase?: OpenClawAgentReadOnlyDatabase,
+): SessionExactEntriesWorkerResult {
+  const { readDatabase, snapshot } = createSessionEntryReadScope(capturedDatabase);
+  const result = readDatabase(
+    (database) =>
+      snapshot(database, () => ({
+        kind: "session-exact-entries" as const,
+        entries: [],
+        lifecycleTimestamps: {},
+        sourceValidation: readSessionSourceValidation(database, request.sourceChecks),
+      })),
+    { ...request.database, env: request.env },
+  );
+  if (result.found) {
+    return result.value;
+  }
+  if (result.reason !== "database-missing") {
+    throw new SessionMetadataUnavailableError(result.reason);
+  }
+  return {
+    kind: "session-exact-entries",
+    entries: [],
+    lifecycleTimestamps: {},
+    sourceValidation: {
+      conversationMatches: [],
+      refusedSource: { index: 0, facts: { entry: undefined } },
     },
   };
 }

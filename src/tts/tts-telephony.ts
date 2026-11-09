@@ -3,13 +3,11 @@ import type { OpenClawConfig } from "../config/types.js";
 import { finishCapabilityOperation } from "../plugins/capability-provider-acquisition.js";
 import type { PreparedSpeechExpressionContext } from "./expression-preparation.js";
 import { isSpeechExpressionEnabled } from "./expression.js";
+import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
 import type {
   SpeechTelephonySynthesisResult,
   SpeechSynthesisTarget,
   TtsDirectiveOverrides,
-} from "./provider-types.js";
-import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
-import type {
   TtsTelephonyPreparationResult,
   TtsTelephonyResult,
   TtsTelephonyStreamResult,

@@ -17,7 +17,7 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import { cloneRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import type { MatrixRuntimeLifecycle } from "../runtime.js";
 import type { MatrixConfig } from "../types.js";
-import { resolveMatrixInboundRoute } from "./monitor/route.js";
+import { resolveMatrixInboundRouteAsync } from "./monitor/route.js";
 import {
   assertMatrixRtcCallAdmission,
   assertMatrixRtcEncryptionCompatibility,
@@ -226,15 +226,18 @@ export function registerMatrixRtcController(params: {
           }
           assertMatrixRtcEncryptionCompatibility(session.getRtcSlot()?.encryption?.type);
         };
-        const route = resolveMatrixInboundRoute({
-          cfg,
-          accountId: params.accountId,
-          roomId,
-          senderId: admission.userId,
-          isDirectMessage: true,
-          dmSessionScope: params.accountConfig.dm?.sessionScope,
-          resolveAgentRoute: params.runtime.channel.routing.resolveAgentRoute,
-        }).route;
+        const route = (
+          await resolveMatrixInboundRouteAsync({
+            cfg,
+            accountId: params.accountId,
+            roomId,
+            senderId: admission.userId,
+            isDirectMessage: true,
+            dmSessionScope: params.accountConfig.dm?.sessionScope,
+            resolveAgentRoute: params.runtime.channel.routing.resolveAgentRoute,
+          })
+        ).route;
+        assertCurrentSession();
         // Every beginCall edge is already membership-ready: either the initial
         // calculation resolved, or the SDK emitted MembershipsChanged / SessionStarted
         // after a fresh calculation. Re-awaiting the constructor-time promise can

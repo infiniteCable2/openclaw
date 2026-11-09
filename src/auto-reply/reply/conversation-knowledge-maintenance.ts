@@ -30,8 +30,9 @@ const KNOWLEDGE_COMPACTION_INSTRUCTIONS = [
 ].join(" ");
 
 export function resolveConversationKnowledgeContextLimits(run: RunEmbeddedAgentParams) {
-  return resolveEmbeddedSessionContextLimits(
-    run.contextTokenBudget ??
+  return resolveEmbeddedSessionContextLimits({
+    contextTokenBudget:
+      run.contextTokenBudget ??
       resolveContextTokensForModelFromCache({
         cfg: run.config,
         provider: run.provider,
@@ -40,7 +41,7 @@ export function resolveConversationKnowledgeContextLimits(run: RunEmbeddedAgentP
         allowUnscopedModelLookup: false,
       }) ??
       DEFAULT_CONTEXT_TOKENS,
-  );
+  });
 }
 
 /** Bind pre-hydration writes to the actual claim admitted by the native lane. */

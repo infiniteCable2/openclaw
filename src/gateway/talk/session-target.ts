@@ -7,8 +7,9 @@ import {
   resolveAgentSpeechConversationRoute,
 } from "../../routing/conversation-mode.js";
 import { resolveTalkSessionAgentId } from "../../talk/agent-target.js";
+import { captureSessionMutationRouting } from "../session-sharing-preparation.js";
 import { resolveSessionStoreIdentity } from "../session-store-key.js";
-import { resolveGatewaySessionStoreTargetWithStore } from "../session-utils-store-lookup.js";
+import { resolveGatewaySessionStoreTargetInWorker } from "../session-utils-store-worker.js";
 import type {
   PreparedTalkSessionTarget,
   TalkSessionTargetPurpose,
@@ -23,13 +24,13 @@ export function requirePreparedTalkSessionTarget(
   return target;
 }
 
-/** Resolve Talk ownership before aliases collapse, then retain the exact storage target. */
-export function prepareTalkSessionTarget(
+/** Resolve storage once through the native worker; retain the routing guard across awaits. */
+export async function prepareTalkSessionTarget(
   cfg: OpenClawConfig,
   requestedSessionKey?: string,
   purpose: TalkSessionTargetPurpose = "conversation-input",
   connectionId?: string,
-): PreparedTalkSessionTarget {
+): Promise<PreparedTalkSessionTarget> {
   const requestedKey = normalizeOptionalString(requestedSessionKey);
   const owner = resolveTalkSessionAgentId(cfg, requestedKey ?? "main");
   const sessionKey = requestedKey ?? resolveAgentMainSessionKey({ cfg, agentId: owner });
@@ -37,13 +38,47 @@ export function prepareTalkSessionTarget(
     connectionId && purpose !== "settlement"
       ? selectTalkConversationKey(cfg, sessionKey, owner, connectionId)
       : sessionKey;
-  const { agentId, canonicalKey, storePath } = resolveTalkSessionStorageTarget(
+  const assertCurrent = captureSessionMutationRouting(
     cfg,
-    selectedKey,
-    owner,
-    purpose,
+    () => new Error("Talk session storage target changed; retry the request"),
+    [{ sessionKey: selectedKey, agentId: owner }],
   );
-  return Object.freeze({ agentId, sessionKey, canonicalKey, storePath });
+  const { agentId, canonicalKey } = resolveSessionStoreIdentity({
+    cfg,
+    sessionKey: selectedKey,
+    agentId: resolveConfiguredAgentId(cfg, owner),
+  });
+  const target = await resolveGatewaySessionStoreTargetInWorker({
+    cfg,
+    key: canonicalKey,
+    agentId,
+  });
+  assertCurrent(cfg);
+  if (purpose === "conversation-input") {
+    assertExternalConversationTarget({
+      cfg,
+      agentId,
+      sessionKey: target.canonicalKey,
+      isSystemEvent: false,
+      entry: target.store[target.canonicalKey],
+    });
+  }
+  return Object.freeze({
+    agentId,
+    sessionKey,
+    canonicalKey,
+    storePath: target.storePath,
+    assertCurrent,
+  });
+}
+
+/** Retained targets use the native routing guard; do not synchronously reread their store. */
+export function assertTalkSessionStorageTarget(
+  cfg: OpenClawConfig,
+  target: PreparedTalkSessionTarget,
+  _purpose: TalkSessionTargetPurpose = "conversation-input",
+): void {
+  target.assertCurrent(cfg);
 }
 
 /** Default browser input branches by the actual Gateway connection, never by a model-supplied ID. */
@@ -67,55 +102,4 @@ function selectTalkConversationKey(
     sourceSessionKey: sessionKey,
     conversationId: connectionId,
   }).sessionKey;
-}
-
-/** Revalidate a retained owner without consulting the current ambient Talk default. */
-export function assertTalkSessionStorageTarget(
-  cfg: OpenClawConfig,
-  target: PreparedTalkSessionTarget,
-  purpose: TalkSessionTargetPurpose = "conversation-input",
-): void {
-  const current = resolveTalkSessionStorageTarget(
-    cfg,
-    target.canonicalKey,
-    target.agentId,
-    purpose,
-  );
-  if (
-    current.agentId !== target.agentId ||
-    current.canonicalKey !== target.canonicalKey ||
-    current.storePath !== target.storePath
-  ) {
-    throw new Error("Talk session storage target changed; retry the request");
-  }
-}
-
-function resolveTalkSessionStorageTarget(
-  cfg: OpenClawConfig,
-  sessionKey: string,
-  owner: string,
-  purpose: TalkSessionTargetPurpose,
-) {
-  const { agentId, canonicalKey } = resolveSessionStoreIdentity({
-    cfg,
-    sessionKey,
-    agentId: resolveConfiguredAgentId(cfg, owner),
-  });
-  const target = resolveGatewaySessionStoreTargetWithStore({
-    cfg,
-    key: canonicalKey,
-    agentId,
-    readOnly: true,
-    exactRead: true,
-  });
-  if (purpose === "conversation-input") {
-    assertExternalConversationTarget({
-      cfg,
-      agentId,
-      sessionKey: target.canonicalKey,
-      isSystemEvent: false,
-      entry: target.store[target.canonicalKey],
-    });
-  }
-  return { agentId, canonicalKey, storePath: target.storePath };
 }

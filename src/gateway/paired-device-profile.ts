@@ -1,6 +1,6 @@
 import { withCommandSenderAuthority } from "../auto-reply/command-sender-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { PairedDeviceTokenIdentity } from "../infra/device-pairing-identity.js";
+import type { PairedDeviceTokenIdentity } from "../infra/device-pairing-core.types.js";
 import { capturePublishedOperatorDeviceSource } from "../infra/device-pairing-publication.js";
 import {
   resolveUserChannelAuthorizationPolicy,

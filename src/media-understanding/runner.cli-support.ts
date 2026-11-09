@@ -13,6 +13,7 @@ export async function resolveCliMediaPath(params: {
   mediaPath: string;
   outputDir: string;
   signal?: AbortSignal;
+  assertCurrent?: () => void;
   timeoutMs: number;
 }): Promise<string> {
   params.signal?.throwIfAborted();
@@ -32,6 +33,7 @@ export async function resolveCliMediaPath(params: {
     rootDir: params.outputDir,
     path: path.basename(wavPath),
     write: async (outputPath) => {
+      params.assertCurrent?.();
       await withCommandProcessScope(async () => {
         await runFfmpeg(
           [

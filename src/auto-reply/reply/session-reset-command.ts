@@ -224,7 +224,7 @@ export function resolveSessionResetCommand(
   if (
     !params.resetAuthorized ||
     softResetMatched ||
-    (typeof params.ctx.Transcript === "string" &&
+    (params.ctx.Transcript !== undefined &&
       params.commandText === params.ctx.Transcript.replace(/\\n/g, " ").trim())
   ) {
     return result;
@@ -262,10 +262,10 @@ export function resolveSessionResetCommand(
   return result;
 }
 
-export function resolveAuthorizedSessionResetCommand(
+export async function resolveAuthorizedSessionResetCommand(
   params: SessionResetCommandContext & { commandAuthorized: boolean },
-): { resetAuthorized: boolean; resetCommand: ResolvedSessionResetCommand } {
-  const resetAuthorized = isResetAuthorizedForContext(params);
+): Promise<{ resetAuthorized: boolean; resetCommand: ResolvedSessionResetCommand }> {
+  const resetAuthorized = await isResetAuthorizedForContext(params);
   return {
     resetAuthorized,
     resetCommand: resolveSessionResetCommand({
@@ -289,7 +289,7 @@ export async function resolveSessionResetRouting(
     bindingContext: ReturnType<typeof resolveSessionConversationBindingContext>;
   },
 ) {
-  const { resetAuthorized, resetCommand } = resolveAuthorizedSessionResetCommand(params);
+  const { resetAuthorized, resetCommand } = await resolveAuthorizedSessionResetCommand(params);
   const { resolveBoundAcpSessionForCommandReset } =
     await import("./session-conversation-binding.js");
   const boundAcpSessionForCommandReset = await resolveBoundAcpSessionForCommandReset({

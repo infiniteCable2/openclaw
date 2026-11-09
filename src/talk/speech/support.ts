@@ -14,7 +14,7 @@ import { resolveUserMessageLocale } from "../../shared/language.js";
 import { resolveUserMessages } from "../../shared/user-messages.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import {
-  resolveConfiguredRealtimeVoiceProvider,
+  resolveConfiguredRealtimeVoiceProviderAsync,
   type ResolvedRealtimeVoiceProvider,
 } from "../provider-resolver.js";
 import type { RealtimeVoiceProviderConfig } from "../provider-types.js";
@@ -58,13 +58,13 @@ export function speechOutputBytesPerMs(audioFormat: SpeechAudioFormat): number {
   return audioFormat === "g711-ulaw-8khz" ? 8 : 48;
 }
 
-export function resolveSpeechRealtimeProvider(params: {
+export async function resolveSpeechRealtimeProvider(params: {
   config: SpeechProviderSelectionConfig;
   fullConfig: OpenClawConfig;
   providers?: RealtimeVoiceProviderPlugin[];
-}): ResolvedRealtimeVoiceProvider {
+}): Promise<ResolvedRealtimeVoiceProvider> {
   const providerId = params.config.voiceProvider ?? params.config.provider;
-  return resolveConfiguredRealtimeVoiceProvider({
+  return resolveConfiguredRealtimeVoiceProviderAsync({
     configuredProviderId: providerId,
     providerConfigs: params.config.providers,
     cfg: params.fullConfig,
@@ -77,11 +77,11 @@ export function resolveSpeechRealtimeProvider(params: {
   });
 }
 
-export function resolveSpeechTranscriptionProvider(params: {
+export async function resolveSpeechTranscriptionProvider(params: {
   config: SpeechProviderSelectionConfig;
   fullConfig: OpenClawConfig;
   providers?: RealtimeTranscriptionProviderPlugin[];
-}): ResolvedRealtimeTranscriptionProvider {
+}): Promise<ResolvedRealtimeTranscriptionProvider> {
   const providerId = params.config.transcriptionProvider ?? params.config.provider;
   const configuredProvider = providerId
     ? params.providers
@@ -107,7 +107,11 @@ export function resolveSpeechTranscriptionProvider(params: {
   const providerConfig = provider.resolveConfig
     ? provider.resolveConfig({ cfg: params.fullConfig, rawConfig })
     : rawConfig;
-  if (!provider.isConfigured({ cfg: params.fullConfig, providerConfig })) {
+  if (
+    !(provider.isConfiguredAsync
+      ? await provider.isConfiguredAsync({ cfg: params.fullConfig, providerConfig })
+      : (provider.isConfigured?.({ cfg: params.fullConfig, providerConfig }) ?? false))
+  ) {
     throw new Error(`Realtime transcription provider "${provider.id}" is not configured`);
   }
   if (params.config.inputEndMode === "client" && provider.supportsClientInputEnd !== true) {

@@ -1,6 +1,7 @@
-import { prepareCommandOwnerAssertion } from "../../auto-reply/command-owner-authority.js";
+import { captureCommandOwnerAssertion } from "../../auto-reply/command-owner-authority.js";
+import { getRequesterProfile } from "../../auto-reply/requester-profile.js";
+import type { MsgContext } from "../../auto-reply/templating.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
-import { captureChannelOperatorRunAuthority } from "../../gateway/operator-run-authority.js";
 import { DEFAULT_ACCOUNT_ID } from "../../routing/account-id.js";
 import {
   createConversationInputAdmission,
@@ -15,6 +16,7 @@ import {
 import type { AdmitChannelConversationInputV1 } from "./conversation-input.types.js";
 import type { ChannelIngressHostOwner } from "./ingress-host-owner.js";
 import {
+  bindPreparedChannelParticipantInputs,
   selectBoundChannelParticipantInputs,
   selectChannelConversationParticipant,
   prepareBoundChannelPrivateAudience,
@@ -71,25 +73,28 @@ export function admitChannelConversationInput(
       assertSources();
     },
   );
-  const authority = input.commandOwnerAuthority;
-  const assertOwnerCurrent = authority?.source
-    ? prepareCommandOwnerAssertion({
-        recoveryReference: authority.recoveryReference,
-        isCurrent: () => {
-          assertCurrent();
-          return authority.isCurrent(gateway.getRuntimeConfig());
-        },
-      })
-    : undefined;
-  const operatorAuthority =
-    authority?.operatorProfile && assertOwnerCurrent
-      ? captureChannelOperatorRunAuthority({
-          ...authority.operatorProfile,
-          getRuntimeConfig: () => gateway.getRuntimeConfig(),
-          assertCurrent: assertOwnerCurrent,
-          signal: authority.signal,
-        })
-      : undefined;
+  // The same native binding owner qualifies text-free input and later STT materialization.
+  // This carrier holds identity facts only; it is never a synthetic chat message.
+  const authorityContext: MsgContext = {
+    SenderId: facts.sender.id,
+    AccountId: facts.route.accountId ?? facts.accountId,
+    Provider: facts.provider ?? facts.channel,
+    Surface: facts.surface ?? facts.channel,
+    OriginatingChannel: facts.channel,
+  };
+  bindPreparedChannelParticipantInputs({
+    channelId: scope.channelId,
+    owner,
+    binding: scope.binding,
+    context: authorityContext,
+    inputs: [input],
+  });
+  const preparedRequester = getRequesterProfile(authorityContext);
+  if (requester && !preparedRequester) {
+    throw new ConversationInputAdmissionError();
+  }
+  const assertOwnerCurrent = captureCommandOwnerAssertion(authorityContext);
+  const operatorAuthority = preparedRequester?.operatorAuthority;
   return createConversationInputAdmission({
     scope: params.input,
     source: {
@@ -110,7 +115,7 @@ export function admitChannelConversationInput(
       inputs: [input],
     }),
     principal: input.verifiedPrincipal,
-    requesterProfile: requester,
+    requesterProfile: preparedRequester,
     operatorAuthority,
     assertOwnerCurrent,
     assertCurrent,

@@ -19,13 +19,13 @@ import {
   type ConversationKnowledgeReceipt,
 } from "./conversation-knowledge.js";
 import {
-  appendTranscriptEventSync,
   appendTranscriptMessageSync,
   loadSessionEntry,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { loadSessionEntryForAdmission } from "./session-accessor.sqlite-entry-admission.js";
+import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
 import * as sourceAuthority from "./session-source-authority.js";
 import { readSessionSourceValidation } from "./session-source-predicate.worker.js";

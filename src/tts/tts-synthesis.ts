@@ -1,14 +1,14 @@
 import { resolveChannelTtsVoiceDelivery } from "../channels/plugins/tts-capabilities.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { logVerbose } from "../globals.js";
-import { transcodeAudioBuffer } from "../media/media-services.js";
+import { transcodeAudioBuffer } from "../media/audio-transcode.js";
 import { assertSecretOwnerAvailable } from "../secrets/runtime-degraded-state.js";
 import { isSpeechExpressionEnabled } from "./expression.js";
 import type { MessageSpeechAdmission } from "./message-speech-admission.js";
-import type { SpeechSynthesisRequest, TtsDirectiveOverrides } from "./provider-types.js";
+import type { SpeechSynthesisRequest } from "./provider-types.js";
 import { assertSpeechRuntimeAvailable } from "./runtime-availability.js";
 import { normalizeSpeechText } from "./speech-text.js";
-import type { TtsResult, TtsSynthesisResult } from "./tts-runtime-types.js";
+import type { TtsDirectiveOverrides, TtsResult, TtsSynthesisResult } from "./tts-runtime-types.js";
 import {
   executeTtsProviderAttempts,
   sanitizeTtsErrorForLog,
@@ -38,23 +38,6 @@ export function resolveTtsSynthesisTarget(
   return resolveChannelTtsVoiceDelivery(channel)?.synthesisTarget ?? "audio-file";
 }
 
-function supportsAudioFileVoiceMemoOutput(params: {
-  fileExtension?: string;
-  outputFormat?: string;
-  audioFileFormats?: readonly string[];
-}): boolean {
-  const formats = new Set(params.audioFileFormats?.map((format) => format.trim().toLowerCase()));
-  if (formats.size === 0) {
-    return false;
-  }
-  const extension = params.fileExtension?.trim().toLowerCase();
-  if (extension && formats.has(extension.replace(/^\./, ""))) {
-    return true;
-  }
-  const outputFormat = params.outputFormat?.trim().toLowerCase();
-  return outputFormat ? formats.has(outputFormat) : false;
-}
-
 export function shouldDeliverTtsAsVoice(params: {
   channel: string | undefined;
   target: "audio-file" | "voice-note" | undefined;
@@ -67,14 +50,22 @@ export function shouldDeliverTtsAsVoice(params: {
     return false;
   }
   if (delivery.synthesisTarget === "audio-file") {
-    return (
-      params.target === "audio-file" &&
-      supportsAudioFileVoiceMemoOutput({
-        fileExtension: params.fileExtension,
-        outputFormat: params.outputFormat,
-        audioFileFormats: delivery.audioFileFormats,
-      })
+    if (params.target !== "audio-file") {
+      return false;
+    }
+    const { fileExtension, outputFormat } = params;
+    const formats = new Set(
+      delivery.audioFileFormats?.map((format) => format.trim().toLowerCase()),
     );
+    if (formats.size === 0) {
+      return false;
+    }
+    const extension = fileExtension?.trim().toLowerCase();
+    if (extension && formats.has(extension.replace(/^\./, ""))) {
+      return true;
+    }
+    const normalizedOutputFormat = outputFormat?.trim().toLowerCase();
+    return normalizedOutputFormat ? formats.has(normalizedOutputFormat) : false;
   }
   if (params.target !== "voice-note") {
     return false;

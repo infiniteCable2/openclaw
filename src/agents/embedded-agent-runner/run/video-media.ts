@@ -4,7 +4,7 @@ import type { MediaToolsConfig } from "../../../config/types.tools.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import type { ImageContent, TextContent } from "../../../llm/types.js";
 import { redactSensitiveText } from "../../../logging/redact.js";
-import { resolveMediaUnderstandingScope } from "../../../media-understanding/scope.js";
+import { resolveScopeDecision } from "../../../media-understanding/resolve.js";
 import { planCommunicationMediaRoute } from "../../../media/communication-route.js";
 import { isImageMediaFact, isVideoMediaFact, type MediaFact } from "../../../media/media-facts.js";
 import { resolveMediaProcessingIntent } from "../../../media/media-processing.js";
@@ -47,11 +47,13 @@ function automaticVideoAllowed(fact: MediaFact, options: VideoMediaOptions): boo
     fact.hydrationSuppressed !== true &&
     resolveMediaProcessingIntent(fact).automaticUnderstanding &&
     options.mediaConfig?.video?.enabled !== false &&
-    resolveMediaUnderstandingScope({
+    resolveScopeDecision({
       scope: options.mediaConfig?.video?.scope,
-      sessionKey: options.sessionKey,
-      channel: options.channelId,
-      chatType: options.chatType,
+      ctx: {
+        SessionKey: options.sessionKey,
+        Surface: options.channelId,
+        ChatType: options.chatType,
+      },
     }) !== "deny"
   );
 }

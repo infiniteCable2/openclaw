@@ -1,7 +1,5 @@
-/**
- * Public SDK subpath for realtime transcription provider types and session helpers.
- */
 export type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
+export type { RealtimeTranscriptionSessionCreateRequest } from "../realtime-transcription/provider-contexts.js";
 export type {
   RealtimeTranscriptionProviderConfig,
   RealtimeTranscriptionProviderConfiguredContext,
@@ -10,7 +8,6 @@ export type {
   RealtimeTranscriptionProviderPrepareRequest,
   RealtimeTranscriptionProviderResolveConfigContext,
   RealtimeTranscriptionSession,
-  RealtimeTranscriptionSessionCreateRequest,
 } from "../realtime-transcription/provider-types.js";
 export {
   getRealtimeTranscriptionProvider,

@@ -32,6 +32,12 @@ const OPENAI_DATED_MODEL_SUFFIX = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/;
 
 export const GEMINI_THOUGHT_SIGNATURE_VALIDATOR_SKIP = "skip_thought_signature_validator";
 export const log = {
+  isEnabled(level: "debug" | "info" | "warn") {
+    return getAiTransportHost().isLogEnabled?.("openai-transport", level) !== false;
+  },
+  debugLazy(build: () => string) {
+    getAiTransportHost().logDebug("openai-transport", () => ({ message: build() }));
+  },
   debug(message: string, data?: Record<string, unknown>) {
     getAiTransportHost().logDebug("openai-transport", () => ({ message, data }));
   },
@@ -237,15 +243,16 @@ export function readOpenAICompletionsReasoningBatch(
       if (!isRecord(detail)) {
         continue;
       }
-      if (typeof detail.text !== "string" || !detail.text) {
+      const detailText = detail.type === "reasoning.summary" ? detail.summary : detail.text;
+      if (typeof detailText !== "string" || !detailText) {
         continue;
       }
-      if (detail.type === "reasoning.text") {
+      if (detail.type === "reasoning.text" || detail.type === "reasoning.summary") {
         deltas ??= [];
         appendOpenAICompletionsReasoningDelta(deltas, mirroredThinking, {
           kind: "thinking",
           signature: "reasoning_details",
-          text: detail.text,
+          text: detailText,
         });
         continue;
       }
@@ -255,7 +262,7 @@ export function readOpenAICompletionsReasoningBatch(
         deltas ??= [];
         appendOpenAICompletionsReasoningDelta(deltas, mirroredThinking, {
           kind: "text",
-          text: detail.text,
+          text: detailText,
           source: "reasoning_detail",
         });
       }
@@ -299,32 +306,70 @@ export type OpenAIModeModel = Omit<Model, "compat"> & {
   compat?: OpenAIModeCompatInput | null;
 };
 
-type MutableToolCall = ToolCall & { partialArgs?: string };
-
 export type MutableAssistantOutput = Omit<AssistantMessage, "content" | "usage"> & {
-  content: Array<TextContent | ThinkingContent | MutableToolCall>;
+  content: Array<TextContent | ThinkingContent | ToolCall>;
   usage: Usage & {
     reasoningTokens?: number;
   };
 };
 
+// Boundary events carry `partial` so consumers can replace their state
+// wholesale; text-delta events omit it (per-token snapshots would be
+// retained) and rely on append semantics instead. The partial must therefore
+// be detached from the transport's live AssistantMessage: both OpenAI
+// transports mutate blocks in place (e.g. appends happen before the delta
+// event is pushed), so an aliased snapshot lets a consumer double-apply the
+// very delta event that follows — text doubles until the next partial heals
+// it. Boundary events are not per-token, so copying here is bounded.
+// The event unions are heterogeneous (not every member carries `partial`),
+// so presence is checked at runtime instead of via a constrained signature.
+export function detachPartialSnapshot<TEvent>(event: TEvent): TEvent {
+  // SAFETY: event unions are heterogeneous; runtime presence check verifies `partial`.
+  const source = event as { partial?: AssistantMessage };
+  if (!source.partial) {
+    return event;
+  }
+  const partial = source.partial;
+  return {
+    ...event,
+    partial: {
+      ...partial,
+      // Copy text blocks only. The double-apply hazard is text_delta-specific
+      // (agent-core appends only text_delta; every other delta kind carries
+      // its own partial and is replaced wholesale). The other block kinds are
+      // identity-owned by their consumers and must stay referenced:
+      // thinking blocks record append facts in a WeakMap keyed by the
+      // original object (#123120 — copying would force quadratic prefix
+      // rescans), and tool blocks are normalized in place by consumers
+      // against the transport-owned output (#170751).
+      content: partial.content.map((block) =>
+        block.type === "text" ? Object.assign({}, block) : block,
+      ),
+    },
+  } as TEvent; // SAFETY: TEvent survives the spread; only `partial` is rebuilt.
+}
+
 export function parseOpenAICompletionsUsage(
   rawUsage: NonNullable<ChatCompletionChunk["usage"]> & {
     cost?: unknown;
     cache_creation_input_tokens?: number;
+    cached_tokens?: number;
     prompt_cache_hit_tokens?: number;
     prompt_tokens_details?: { cache_creation_input_tokens?: number };
   },
   model: Model,
   options?: { includeReasoningTokens?: boolean },
 ): MutableAssistantOutput["usage"] {
-  const cacheRead =
-    rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
-  const cacheWrite =
+  const reportedCacheRead =
+    rawUsage.prompt_tokens_details?.cached_tokens ??
+    rawUsage.prompt_cache_hit_tokens ??
+    rawUsage.cached_tokens;
+  const reportedCacheWrite =
     rawUsage.prompt_tokens_details?.cache_write_tokens ??
     rawUsage.prompt_tokens_details?.cache_creation_input_tokens ??
-    rawUsage.cache_creation_input_tokens ??
-    0;
+    rawUsage.cache_creation_input_tokens;
+  const cacheRead = reportedCacheRead ?? 0;
+  const cacheWrite = reportedCacheWrite ?? 0;
   const input = Math.max(0, (rawUsage.prompt_tokens || 0) - cacheRead - cacheWrite);
   const output = rawUsage.completion_tokens || 0;
   const reasoningTokens = asFiniteNumber(rawUsage.completion_tokens_details?.reasoning_tokens);
@@ -343,6 +388,12 @@ export function parseOpenAICompletionsUsage(
     output,
     cacheRead,
     cacheWrite,
+    cacheTelemetry: {
+      state:
+        reportedCacheRead !== undefined || reportedCacheWrite !== undefined
+          ? "available"
+          : "unavailable",
+    },
     // Managed transport exposes reasoning telemetry; the shipped package Usage shape does not.
     ...(options?.includeReasoningTokens !== false && reasoningTokens !== undefined
       ? { reasoningTokens }
@@ -379,6 +430,26 @@ export function createOpenAIProviderAcceptanceHook(
   model: Model,
 ): () => Promise<void> {
   return () => notifyProviderHttpResponse({ options, response, model });
+}
+
+export function withOpenAIErrorResponseHook(
+  fetch: typeof globalThis.fetch,
+  onResponse: BaseOpenAIStreamOptions["onResponse"],
+  model: Model,
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    const response = await fetch(input, init);
+    // The SDK consumes rejected bodies before exposing its response promise.
+    if (!response.ok) {
+      await notifyProviderHttpResponse({
+        options: { onResponse },
+        response,
+        model,
+        signal: init?.signal ?? (input instanceof Request ? input.signal : undefined),
+      });
+    }
+    return response;
+  };
 }
 
 /** Measure one UTF-8 append without double-counting a surrogate pair split across chunks. */

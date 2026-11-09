@@ -1,6 +1,7 @@
 import path from "node:path";
 import { vi } from "vitest";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync.js";
+import { isPostgresSqlConnection } from "../../infra/sql-connection.js";
 import type { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { upsertSessionEntryCore } from "./session-accessor.js";
@@ -31,6 +32,9 @@ export function countAcquiredTranscriptPayloadBytes(
   marker: string,
   read: () => void,
 ): number {
+  if (isPostgresSqlConnection(db)) {
+    throw new Error("This payload-acquisition probe requires the native SQLite test backend");
+  }
   clearNodeSqliteKyselyCacheForDatabase(db);
   const prepare = db.prepare.bind(db);
   const restoreStatements: Array<() => void> = [];

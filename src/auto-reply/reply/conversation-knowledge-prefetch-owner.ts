@@ -4,7 +4,9 @@ import { onForegroundSessionMaintenanceChange } from "../../agents/session-maint
 import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
 import { readPreparedSessionTranscriptChange } from "../../config/sessions/session-transcript-authority.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { createBackgroundWorkOwner } from "../../process/background-work.js";
+import { getBackgroundOwnerLane } from "../../process/background-work.js";
+import { enqueueCommandInLane } from "../../process/command-queue.js";
+import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { runInDetachedAsyncContext } from "../../shared/detached-async-context.js";
@@ -13,7 +15,6 @@ import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 
 const log = createSubsystemLogger("conversation-knowledge");
-const background = createBackgroundWorkOwner({ owner: "conversation-knowledge", maxConcurrent: 1 });
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 
@@ -37,7 +38,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
   /** The hint avoids repeating source reads for recipient-only availability changes. */
   prepare(signal: AbortSignal, prepareSources?: boolean): Promise<void | boolean>;
   /** Native background capacity owner; slow summarization must not occupy source read-ahead. */
-  workOwner?: Pick<ReturnType<typeof createBackgroundWorkOwner>, "enqueue">;
+  workLaneOwner?: string;
   /** Join retained asynchronous cleanup before releasing native database custody. */
   settle?(): Promise<void>;
   clear(): void;
@@ -49,6 +50,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
   };
   const root = { ...target.root };
   const controller = new AbortController();
+  const lifetimeSignal = AbortSignal.any([controller.signal, getGatewayRestartDrainSignal()]);
   let execution: OpenClawAgentDatabaseExecution | undefined;
   let unregister = () => {};
   let unsubscribe = () => {};
@@ -67,7 +69,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
   const reportedFailures = new Set<string>();
 
   const check = () => {
-    controller.signal.throwIfAborted();
+    lifetimeSignal.throwIfAborted();
     params.assertCurrent();
     execution?.assertCurrent();
   };
@@ -187,7 +189,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
     }
   };
   const retry = () => {
-    if (retryTimer !== undefined || controller.signal.aborted) {
+    if (retryTimer !== undefined || lifetimeSignal.aborted) {
       return;
     }
     if (preparationPauses > 0) {
@@ -205,12 +207,12 @@ export function createConversationKnowledgePrefetchOwner(params: {
     retryDelayMs = Math.min(RETRY_MAX_MS, retryDelayMs * 2);
   };
   const schedule = () => {
-    if (completion || preparationPauses > 0 || controller.signal.aborted) {
+    if (completion || preparationPauses > 0 || lifetimeSignal.aborted) {
       return;
     }
     const pending = runInDetachedAsyncContext(() =>
       Promise.resolve().then(async () => {
-        while (requested && !controller.signal.aborted) {
+        while (requested && !lifetimeSignal.aborted) {
           if (preparationPauses !== 0) {
             break;
           }
@@ -220,8 +222,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
           try {
             check();
             // Each batch releases shared capacity before a coalesced successor is queued.
-            await (params.workOwner ?? background).enqueue(
-              async (signal) => {
+            await enqueueCommandInLane(
+              getBackgroundOwnerLane(params.workLaneOwner ?? "conversation-knowledge"),
+              async () => {
+                const signal = lifetimeSignal;
                 // A foreground drain may start after this quantum was queued.
                 if (preparationPauses > 0) {
                   requested = true;
@@ -256,10 +260,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
                 retryDelayMs = RETRY_MIN_MS;
                 requested ||= more === true;
               },
-              { abortSignal: controller.signal },
+              { abortSignal: lifetimeSignal, priority: "background" },
             );
           } catch (error) {
-            if (controller.signal.aborted) {
+            if (lifetimeSignal.aborted) {
               return;
             }
             // A failed quantum cannot consume its source notification. Keep it
@@ -291,7 +295,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
         completion = undefined;
       }
       // Preserve a wakeup delivered between the final loop check and settlement.
-      if (requested && !controller.signal.aborted) {
+      if (requested && !lifetimeSignal.aborted) {
         schedule();
       }
     });
@@ -302,7 +306,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
     });
   };
   const request = (kind: "source" | "recipient" = "source") => {
-    if (controller.signal.aborted) {
+    if (lifetimeSignal.aborted) {
       return;
     }
     // Committed-root publishers only mark work; even authority checks run off their stack.
@@ -312,7 +316,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
     schedule();
   };
   const pausePreparation = () => {
-    if (controller.signal.aborted) {
+    if (lifetimeSignal.aborted) {
       return () => {};
     }
     preparationPauses++;

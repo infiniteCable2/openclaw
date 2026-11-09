@@ -5,21 +5,22 @@ import {
   type PreparedAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
-import {
-  createDeferredEmbeddedRunLifecycleManager,
-  type DeferredEmbeddedRunLifecycleManager,
-} from "../../agents/embedded-agent-runner/run/deferred-lifecycle-owner.js";
+import { resolveRunStartupPhase } from "../../agents/embedded-agent-runner/execution-phase.js";
+import type { DeferredEmbeddedRunLifecycleManager } from "../../agents/embedded-agent-runner/run/deferred-lifecycle-owner.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { resolveAgentLanguage } from "../../agents/identity.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { leaseMcpAppModelContextForSessionTurn } from "../../agents/mcp-ui-resource.js";
-import { resolveReplyExpectation } from "../../agents/reply-completion.js";
 import { createAgentPatchedSessionModelRunGuard } from "../../agents/session-model-auto-revert.js";
-import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
-import { createRuntimeConfigReader } from "../../config/runtime-snapshot.js";
+import { captureAgentWorkspaceReadiness } from "../../agents/workspace-readiness.js";
+import {
+  createRuntimeConfigReader,
+  selectLiveRuntimeConfig,
+} from "../../config/runtime-snapshot.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
-import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import { prepareCronRunInference, type CronRunInference } from "../../cron/run-inference.js";
+import type { CronWorkspaceLease } from "../../cron/run-workspace.js";
 import { logVerbose } from "../../globals.js";
 import {
   captureAgentRunLifecycleGeneration,
@@ -27,19 +28,19 @@ import {
 } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
-import { drainAgentRunTerminalWrites } from "../../infra/agent-run-terminal-writes.js";
+import { bindAgentRunTerminalWriteSettlement } from "../../infra/agent-run-terminal-writes.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { logSessionTurnCreated } from "../../logging/diagnostic.js";
 import {
-  bindGatewayContextResolver,
-  getPluginRuntimeGatewayRequestScope,
-} from "../../plugins/runtime/gateway-request-scope.js";
-import { progressCardRefreshRunProjection } from "../../sessions/input-provenance.js";
+  isCronExecutionInputProvenance,
+  progressCardRefreshRunProjection,
+} from "../../sessions/input-provenance.js";
+import { markReplyOperationExecutionStarted } from "../../sessions/session-controller.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
-import { captureCommandOwnerAssertion } from "../command-owner-authority.js";
+import { notifyPreparedAgentRunStart } from "../agent-run-start.js";
 import type { PreparedReplyTranscriptStart } from "../get-reply-options.types.js";
-import type { ReplyPayload } from "../types.js";
+import { prepareReplyTurnExecution } from "./agent-runner-admission.js";
 import {
   clearRecoveredAutoFallbackPrimaryProbeSelection,
   resolveRunAfterAutoFallbackPrimaryProbeRecheck,
@@ -51,7 +52,6 @@ import {
 } from "./agent-runner-execution-mcp-context.js";
 import {
   buildAbortedAgentTurnExecutionResult,
-  buildAgentTurnExecutionResult,
   runAgentTurnWithOutcome,
 } from "./agent-runner-execution-outcome.js";
 import type {
@@ -59,11 +59,10 @@ import type {
   AgentTurnExecutionResult,
   AgentTurnInternalResult,
   AgentTurnParams,
-  InternalFollowupRun,
 } from "./agent-runner-execution.types.js";
 import {
-  buildTerminalAgentRunFailureReplyPayload,
   normalizeAgentRunFailurePayloads,
+  resolveTerminalAgentRunFailurePayload,
 } from "./agent-runner-failure-reply.js";
 import { runAgentFallbackCandidates } from "./agent-runner-fallback-candidate.js";
 import type {
@@ -72,26 +71,18 @@ import type {
   AgentFallbackCycleState,
 } from "./agent-runner-fallback-cycle.types.js";
 import { settleAgentFallbackCycle } from "./agent-runner-fallback-settlement.js";
+import { buildReplyMediaContextParams } from "./agent-runner-media-context.js";
 import { createAgentTurnPresentation } from "./agent-runner-presentation.js";
-import { buildReplyMediaContextParams } from "./agent-runner-run-params.js";
-import {
-  createAgentTurnTimingTracker,
-  resolveRunStartupPhase,
-} from "./agent-runner-turn-timing.js";
-import { resolveQueuedReplyRuntimeConfig } from "./agent-runner-utils.js";
-import { prepareChannelRunAdmission } from "./channel-run-admission.js";
+import { prepareReplySubagentContinuation } from "./agent-runner-subagent.js";
+import { createAgentTurnTimingTracker } from "./agent-runner-turn-timing.js";
 import { shouldNotifyUserAboutCompaction } from "./compaction-notice.js";
+import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
 import { type CurrentTurnImages, resolveCurrentTurnImages } from "./current-turn-images.js";
 import type { FollowupRun } from "./queue.js";
-import { resolveFollowupAbortSignal } from "./queue/types.js";
 import { resolveReplyFailureVisibility, type DirectBlockDelivery } from "./reply-delivery.js";
 import { createReplyMediaContext, type ReplyMediaContext } from "./reply-media-paths.js";
 import { resolveReplyOperationAbortReason } from "./reply-operation-abort.js";
 import { resolveReplySessionEventDelivery } from "./reply-operation-run-state.js";
-import {
-  markReplyOperationExecutionStarted,
-  retainReplyOperationUntilComplete,
-} from "./reply-run-registry.js";
 import {
   resolveReplySpeechOutputOwner,
   withReplySpeechPresentation,
@@ -108,21 +99,27 @@ async function executeAgentTurnInternalLoop(
   admittedRunContext: { current?: AdmittedRunContext },
   deferredLifecycle: DeferredEmbeddedRunLifecycleManager,
   compaction: AgentTurnCompaction,
+  scheduledMessageActionTurnCapability?: string,
+  scheduledInference?: CronRunInference,
 ): Promise<AgentTurnInternalResult> {
   let params = inputParams;
-  const heartbeatState = { didLogStrip: false };
   // Direct delivery receipts retain settlement facts across fallback candidates.
   const directBlockDeliveries: DirectBlockDelivery[] = [];
-  const runnableRun = resolveRunAfterAutoFallbackPrimaryProbeRecheck({
-    run: params.followupRun.run,
-    entry: params.activeSessionStore?.[params.sessionKey ?? ""] ?? params.getActiveSessionEntry(),
-    sessionKey: params.sessionKey,
-  });
+  // Queued turns reconciled their probe at admission. Rechecking it against
+  // current preferences here would replace their already-owned model/auth route.
+  const runnableRun =
+    params.replyOperation?.turnKind === "queued_followup"
+      ? params.followupRun.run
+      : resolveRunAfterAutoFallbackPrimaryProbeRecheck({
+          run: params.followupRun.run,
+          entry:
+            params.activeSessionStore?.[params.sessionKey ?? ""] ?? params.getActiveSessionEntry(),
+          sessionKey: params.sessionKey,
+        });
   if (runnableRun !== params.followupRun.run) {
     params.followupRun.run = runnableRun;
   }
-  const runtimeConfig = resolveQueuedReplyRuntimeConfig(runnableRun.config);
-  const language = resolveAgentLanguage(runtimeConfig, runnableRun.agentId ?? "");
+  const runtimeConfig = selectLiveRuntimeConfig(runnableRun.config);
   const effectiveRun =
     runtimeConfig === runnableRun.config
       ? runnableRun
@@ -165,21 +162,26 @@ async function executeAgentTurnInternalLoop(
       agentId: params.followupRun.run.agentId,
       lifecycleGeneration,
       verboseLevel: params.resolvedVerboseLevel,
-      isHeartbeat: params.isHeartbeat,
       isControlUiVisible: shouldSurfaceToControlUi,
       ...progressCardRefreshRunProjection(params.followupRun.run.inputProvenance),
+      // Scheduled checks must not replace foreground status; their authored results still publish.
+      ...(isCronExecutionInputProvenance(params.followupRun.run.inputProvenance)
+        ? { projectSessionActive: false, projectSessionLifecycle: false }
+        : {}),
       completionSource: params.completionSource,
       sessionEventDelivery: resolveReplySessionEventDelivery(params.opts, params.followupRun.run),
     });
+    bindAgentRunTerminalWriteSettlement(preparedRunAdmission.operationalRunInstance);
   }
   if (isDiagnosticsEnabled(runtimeConfig)) {
+    const trigger = resolveReplyRunTrigger(params);
     logSessionTurnCreated({
       runId,
       sessionKey: params.sessionKey,
       sessionId: params.followupRun.run.sessionId,
       agentId: params.followupRun.run.agentId,
       channel: messageProvider,
-      trigger: resolveReplyRunTrigger(params),
+      trigger: trigger === "cron" ? "event" : trigger,
     });
   }
   let replyMediaContext: ReplyMediaContext;
@@ -193,9 +195,8 @@ async function executeAgentTurnInternalLoop(
           buildReplyMediaContextParams(params.followupRun, params.sessionKey, runtimeConfig),
         ),
       );
-    const internalFollowupRun = params.followupRun as InternalFollowupRun;
     const hasQueuedCurrentTurnImages =
-      internalFollowupRun.currentTurnImagesPrepared === true ||
+      params.followupRun.currentTurnImagesPrepared === true ||
       Object.hasOwn(params.followupRun, "images") ||
       Object.hasOwn(params.followupRun, "imageOrder");
     // Queue admission owns current-turn materialization, including empty results.
@@ -204,7 +205,7 @@ async function executeAgentTurnInternalLoop(
       ? {
           images: params.followupRun.images,
           imageOrder: params.followupRun.imageOrder,
-          mediaImageLayout: internalFollowupRun.mediaImageLayout,
+          mediaImageLayout: params.followupRun.mediaImageLayout,
         }
       : await agentTurnTiming.measure("current_turn_images", () =>
           resolveCurrentTurnImages({
@@ -242,7 +243,9 @@ async function executeAgentTurnInternalLoop(
   const createAgentRunStartCallbacks = () => {
     let active = true;
     let preparedTranscriptStart: PreparedReplyTranscriptStart | null | undefined =
-      params.opts?.onAgentRunStart && params.sessionKey ? undefined : null;
+      (params.opts?.onPreparedAgentRunStart || params.opts?.onAgentRunStart) && params.sessionKey
+        ? undefined
+        : null;
     let transcriptStartPreparation: Promise<void> | undefined;
     const prepareAgentRunStart = () => {
       if (
@@ -289,12 +292,11 @@ async function executeAgentTurnInternalLoop(
         markReplyOperationExecutionStarted(params.replyOperation);
       }
       params.followupRun.run.internalEventExecution?.onStarted(runId);
-      params.opts?.onAgentRunStart?.(
+      notifyPreparedAgentRunStart(params.opts, {
         runId,
-        admittedRunContext.current?.executionIdentityToken,
-        undefined,
-        prepared,
-      );
+        executionIdentityToken: admittedRunContext.current?.executionIdentityToken,
+        transcriptStart: prepared,
+      });
     };
     const signalExecutionPhaseForTyping = (
       info: Parameters<NonNullable<RunEmbeddedAgentParams["onExecutionPhase"]>>[0],
@@ -320,25 +322,38 @@ async function executeAgentTurnInternalLoop(
       ) {
         params.mcpAppContextLease?.commit();
       }
+      if (info.phase === "before_agent_reply") {
+        // A dispatched hook can accept external work even when it declines the reply.
+        params.followupRun.run.internalEventExecution?.onStarted(runId);
+      }
       const isUserVisibleExecutionActivity =
         info.phase === "turn_accepted" ||
         info.phase === "process_spawned" ||
         info.phase === "model_call_started" ||
         info.phase === "tool_execution_started" ||
         info.phase === "assistant_output_started";
-      if (!isUserVisibleExecutionActivity) {
-        return;
+      if (isUserVisibleExecutionActivity) {
+        notifyAgentRunStart();
+        void (
+          params.typingSignals.signalExecutionActivity?.() ?? params.typingSignals.signalRunStart()
+        ).catch((err: unknown) => {
+          logVerbose(`execution phase typing signal failed: ${String(err)}`);
+        });
       }
-      notifyAgentRunStart();
-      void (
-        params.typingSignals.signalExecutionActivity?.() ?? params.typingSignals.signalRunStart()
-      ).catch((err: unknown) => {
-        logVerbose(`execution phase typing signal failed: ${String(err)}`);
+      const automation = params.followupRun.run.scheduledAutomation;
+      automation?.onExecutionPhase?.({
+        ...info,
+        jobId: automation.job.id,
+        agentId: effectiveRun.agentId,
+        sessionId: params.followupRun.run.sessionId,
+        sessionKey: params.sessionKey,
+        runId,
       });
     };
     return {
       prepareAgentRunStart,
       notifyAgentRunStart,
+      hasAgentRunStarted: () => didNotifyAgentRunStart,
       signalExecutionPhaseForTyping,
       close: () => {
         active = false;
@@ -347,7 +362,7 @@ async function executeAgentTurnInternalLoop(
   };
   const notifyUserAboutCompaction = shouldNotifyUserAboutCompaction(runtimeConfig, {
     followupRun: params.followupRun,
-    isHeartbeat: params.isHeartbeat,
+
     opts: params.opts,
   });
   let cycle: AgentFallbackCycleResult;
@@ -377,16 +392,22 @@ async function executeAgentTurnInternalLoop(
       storePath: params.storePath,
     });
 
+  let subagentContinuationPrepared = false;
   while (true) {
     try {
+      if (!subagentContinuationPrepared) {
+        await prepareReplySubagentContinuation(params, runId, runtimeConfig, preparedRunAdmission);
+        subagentContinuationPrepared = true;
+      }
       const presentation = createAgentTurnPresentation({
         turn: params,
         replyMediaContext,
         directBlockDeliveries,
-        heartbeatState,
       });
       const cycleParams: AgentFallbackCycleParams = {
         preparedRunAdmission,
+        scheduledMessageActionTurnCapability,
+        scheduledInference,
         turn: params,
         effectiveRun,
         runtimeConfig,
@@ -405,7 +426,14 @@ async function executeAgentTurnInternalLoop(
         commitTerminalOutcome,
         clearRecoveredAutoFallbackPrimaryProbe,
       };
-      const fallbackResult = await runAgentFallbackCandidates(cycleParams);
+      let fallbackResult: Awaited<ReturnType<typeof runAgentFallbackCandidates>>;
+      try {
+        fallbackResult = await runAgentFallbackCandidates(cycleParams);
+      } finally {
+        // Completion belongs to the turn, including text-only native runtimes
+        // whose tool or hook surfaces are disabled.
+        await captureAgentWorkspaceReadiness(params.sessionKey)?.waitUntilReady();
+      }
       cycleParams.timing.logIfSlow({
         runId: cycleParams.runId,
         sessionId: cycleParams.turn.followupRun.run.sessionId,
@@ -442,11 +470,12 @@ async function executeAgentTurnInternalLoop(
       }
     }
     if (cycle.kind === "aborted") {
-      return cycle;
+      return { ...cycle, sessionWriter: fallbackCycleState.sessionWriter };
     }
     if (cycle.kind === "final") {
       return {
         ...cycle,
+        sessionWriter: fallbackCycleState.sessionWriter,
         resolved: {
           provider: fallbackCycleState.attemptedRuntimeProvider,
           model: fallbackCycleState.attemptedRuntimeModel,
@@ -464,43 +493,43 @@ async function executeAgentTurnInternalLoop(
     terminalRunFailed,
   } = cycle;
 
-  normalizeAgentRunFailurePayloads(runResult, language);
+  normalizeAgentRunFailurePayloads(
+    runResult,
+    resolveAgentLanguage(runtimeConfig, effectiveRun.agentId),
+  );
   const patchedModelNeedsRevert = terminalRunFailed
     ? false
     : (modelPatch.captureFallbackFailure(fallbackAttempts) ?? false);
   await modelPatch.finish(!terminalRunFailed && !patchedModelNeedsRevert);
-  let terminalFailurePayload: ReplyPayload | undefined;
-  if (terminalRunFailed) {
-    const replyExpectation = resolveReplyExpectation(params.followupRun.run);
-    terminalFailurePayload = buildTerminalAgentRunFailureReplyPayload({
-      language,
-      isHeartbeat: params.isHeartbeat,
-      useHeartbeatFailureCopy: params.opts?.useHeartbeatFailureCopy,
-      replyExpectation,
-      visibleReplyDelivered:
-        replyExpectation === "optional"
-          ? await resolveReplyFailureVisibility(
-              params.resolveVisibleReplyDelivery,
-              directBlockDeliveries,
-            )
-          : false,
-    });
-  }
+  const terminalFailurePayload = terminalRunFailed
+    ? await resolveTerminalAgentRunFailurePayload({
+        language: resolveAgentLanguage(runtimeConfig, effectiveRun.agentId),
+        result: runResult,
+        run: {
+          ...params.followupRun.run,
+          scheduledAutomation: params.followupRun.run.scheduledAutomation !== undefined,
+          trigger: resolveReplyRunTrigger(params),
+          currentInboundEventKind: params.followupRun.currentInboundEventKind,
+        },
+        visibleReplyDelivered: () =>
+          resolveReplyFailureVisibility(params.resolveVisibleReplyDelivery, directBlockDeliveries),
+      })
+    : undefined;
 
   return {
     kind: "settled",
+    sessionWriter: fallbackCycleState.sessionWriter,
     maintenanceAuthProfile: fallbackCycleState.maintenanceAuthProfile,
     compactionRequestBudget: fallbackCycleState.compactionRequestBudget,
     result: runResult,
     resolved: { provider: fallbackProvider, model: fallbackModel },
     fallback: { exhausted: fallbackExhausted, attempts: fallbackAttempts },
-    didLogHeartbeatStrip: heartbeatState.didLogStrip,
     autoCompactionCount: compaction.count,
     hasDirectlySentBlockReply:
       directBlockDeliveries.some((delivery) => delivery.terminalDeliveryConfirmed === true) ||
       undefined,
     directBlockDeliveries,
-    ...(terminalFailurePayload
+    ...(terminalRunFailed
       ? {
           status: "failed" as const,
           terminalFailurePayload,
@@ -529,20 +558,22 @@ async function executeAgentTurnOutcome(
   const prepareMcpAppModelContext = async () => {
     executionParams.followupRun.assertSourceCurrent?.();
     requester?.assertCurrent();
-    modelContextLease = executionParams.isHeartbeat
-      ? undefined
-      : await leaseMcpAppModelContextForSessionTurn({
-          agentId: executionParams.followupRun.run.agentId,
-          sessionId: executionParams.followupRun.run.sessionId,
-          sessionKey: executionParams.sessionKey ?? executionParams.followupRun.run.sessionKey,
-          requesterId: requester?.profileId,
-        });
+    modelContextLease = await leaseMcpAppModelContextForSessionTurn({
+      agentId: executionParams.followupRun.run.agentId,
+      sessionId: executionParams.followupRun.run.sessionId,
+      sessionKey: executionParams.sessionKey ?? executionParams.followupRun.run.sessionKey,
+      requesterId: requester?.profileId,
+    });
     requester?.assertCurrent();
     executionParams.followupRun.assertSourceCurrent?.();
     return modelContextLease;
   };
   // Keep committed facts outside cleanup so a restart cannot erase them.
   const compaction: AgentTurnCompaction = { count: 0, durable: [] };
+  const completedCompaction = () =>
+    compaction.count > 0 || compaction.durable.length > 0
+      ? { compaction: { count: compaction.count, durable: [...compaction.durable] } }
+      : {};
   let terminalOutcomeCommitted = false;
   // Settlement freezes cancellation once, including failure exits through finally.
   const commitTerminalOutcome = () => {
@@ -556,114 +587,115 @@ async function executeAgentTurnOutcome(
   try {
     const internal = await withAgentRunLifecycleGeneration(lifecycleGeneration, async () => {
       try {
-        const admittedRunContext: { current?: AdmittedRunContext } = {};
-        const gatewayContextResolver =
-          readChannelContextGatewayContextResolver(executionParams.sessionCtx) ??
-          getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
-        const originalSource = composeSessionSourceAssertion([
-          executionParams.followupRun.assertSourceCurrent,
-          executionParams.followupRun.run.senderIsOwner === true
-            ? captureCommandOwnerAssertion(executionParams.followupRun.run)
-            : undefined,
-          executionParams.followupRun.run.internalEventExecution?.assertCurrent,
-        ]);
-        const knowledgeModule =
-          resolveReplyRunTrigger(executionParams) === "user"
-            ? await import("./conversation-knowledge-turn.js")
-            : undefined;
+        const originalSource = executionParams.followupRun.assertSourceCurrent ?? (() => {});
         let knowledgeConfig = executionParams.followupRun.run.config;
-        let readKnowledgeConfig: ReturnType<typeof createRuntimeConfigReader> | undefined;
-        const conversationKnowledge = knowledgeModule?.createReplyConversationKnowledgeTurn({
+        let readKnowledgeConfig = createRuntimeConfigReader(knowledgeConfig, { capture: true });
+        const conversationKnowledge = createReplyConversationKnowledgeTurn({
           turn: executionParams,
           originalSource,
           getRuntimeConfig: () => {
             const current = executionParams.followupRun.run.config;
-            if (!readKnowledgeConfig || current !== knowledgeConfig) {
+            if (current !== knowledgeConfig) {
               knowledgeConfig = current;
               readKnowledgeConfig = createRuntimeConfigReader(current, { capture: true });
             }
             return readKnowledgeConfig();
           },
         });
-        const preparedRunAdmission = prepareChannelRunAdmission({
-          sourceContext: executionParams.followupRun.run,
-          cfg: resolveQueuedReplyRuntimeConfig(executionParams.followupRun.run.config),
-          runId,
-          agentId: executionParams.followupRun.run.agentId,
-          ingressKind: "channel",
-          boundary: "auto-reply.agent-runner",
-          operatorAuthority: executionParams.followupRun.operatorAuthority,
-          evidence: executionParams.followupRun.channelAdmissionEvidence,
-          gatewayLocalUserIngress: executionParams.followupRun.gatewayLocalUserIngress,
-          assertSourceCurrent: conversationKnowledge?.assertCurrent ?? originalSource,
-          onAdmitted: (context) => {
-            bindGatewayContextResolver(context, gatewayContextResolver);
-            admittedRunContext.current = context;
-            executionParams.followupRun.run.skillLibraryAuthoring?.bind(context);
+        executionParams = {
+          ...executionParams,
+          followupRun: {
+            ...executionParams.followupRun,
+            assertSourceCurrent: conversationKnowledge?.assertCurrent ?? originalSource,
           },
-        });
-        const deferredLifecycle = createDeferredEmbeddedRunLifecycleManager({
-          runId,
-          agentId: executionParams.followupRun.run.agentId,
-          sessionId: executionParams.followupRun.run.sessionId,
-          sessionKey: executionParams.sessionKey,
-          sessionFile: executionParams.followupRun.run.sessionFile,
-          abortSignal: resolveFollowupAbortSignal({
-            abortSignal:
-              executionParams.replyOperation?.abortSignal ?? executionParams.opts?.abortSignal,
-            operatorAuthority: executionParams.followupRun.operatorAuthority,
-          }),
-        });
+        };
+        let execution: ReturnType<typeof prepareReplyTurnExecution>;
         try {
-          await conversationKnowledge?.prepare(preparedRunAdmission, deferredLifecycle.signal);
-          preparedRunAdmission.assertSourceCurrent();
-          const result = await withReplySpeechPresentation(
-            executionParams.followupRun.speechPresentation,
-            {
-              runId,
-              sessionId: executionParams.followupRun.run.sessionId,
-              abortSignal: deferredLifecycle.signal,
-              assertCurrent: preparedRunAdmission.assertSourceCurrent,
-            },
-            async (speechPresentationRun) => {
-              const execute = () =>
+          execution = prepareReplyTurnExecution(executionParams, runId);
+        } catch (error) {
+          conversationKnowledge?.release();
+          throw error;
+        }
+        let scheduledInference: CronRunInference | undefined;
+        let workspaceLease: CronWorkspaceLease | undefined;
+        try {
+          execution.preparedRunAdmission.assertSourceCurrent();
+          const run = executionParams.followupRun.run;
+          if (run.scheduledAutomation) {
+            const { prepareCronSessionWorktree } = await import("../../cron/run-workspace.js");
+            execution.preparedRunAdmission.assertSourceCurrent();
+            const workspace = await prepareCronSessionWorktree({
+              sessionKey: executionParams.sessionKey ?? run.sessionKey ?? run.sessionId,
+              entry: executionParams.getActiveSessionEntry(),
+              workspaceDir: run.workspaceDir,
+              cwd: run.cwd,
+              assertCurrent: () => {
+                execution.deferredLifecycle.signal?.throwIfAborted();
+                execution.preparedRunAdmission.assertSourceCurrent();
+              },
+            });
+            workspaceLease = workspace.lease;
+            run.workspaceDir = workspace.workspaceDir;
+            run.cwd = workspace.cwd;
+          }
+          const binding = run.scheduledAutomation?.job.inferenceBinding;
+          if (binding) {
+            scheduledInference = await prepareCronRunInference({
+              binding,
+              cfg: selectLiveRuntimeConfig(executionParams.followupRun.run.config),
+              agentDir: executionParams.followupRun.run.agentDir,
+            });
+          }
+          execution.preparedRunAdmission.assertSourceCurrent();
+          await conversationKnowledge?.prepare(
+            execution.preparedRunAdmission,
+            execution.deferredLifecycle.signal,
+          );
+          const runWithSpeech = () =>
+            withReplySpeechPresentation(
+              executionParams.followupRun.speechPresentation,
+              {
+                runId,
+                sessionId: executionParams.followupRun.run.sessionId,
+                abortSignal: execution.deferredLifecycle.signal,
+                assertCurrent: execution.preparedRunAdmission.assertSourceCurrent,
+              },
+              (speechPresentationRun) =>
                 executeAgentTurnInternalLoop(
                   {
                     ...executionParams,
+                    speechPresentationRun,
                     prepareConversationContext: conversationKnowledge?.prepareHistory,
                     refreshConversationContext: conversationKnowledge?.refreshPrepared,
                     prepareConversationSnapshot: conversationKnowledge?.prepareSnapshot,
-                    speechPresentationRun,
                   },
                   runId,
                   commitTerminalOutcome,
                   prepareMcpAppModelContext,
-                  preparedRunAdmission,
-                  admittedRunContext,
-                  deferredLifecycle,
+                  execution.preparedRunAdmission,
+                  execution.admittedRunContext,
+                  execution.deferredLifecycle,
                   compaction,
-                );
-              return conversationKnowledge
-                ? conversationKnowledge.withPublication(execute)
-                : execute();
-            },
-          );
+                  execution.scheduledMessageActionTurnCapability,
+                  scheduledInference,
+                ),
+            );
+          const result = await (conversationKnowledge
+            ? conversationKnowledge.withPublication(runWithSpeech)
+            : runWithSpeech());
           // Finish audio before durable acceptance; the independent journal owns publication.
           await conversationKnowledge?.record(result);
           return result;
         } finally {
           try {
-            await deferredLifecycle.complete();
+            await execution.close();
           } finally {
-            await drainAgentRunTerminalWrites(preparedRunAdmission.operationalRunInstance).finally(
-              () => {
-                try {
-                  conversationKnowledge?.release();
-                } finally {
-                  preparedRunAdmission.close();
-                }
-              },
-            );
+            conversationKnowledge?.release();
+            try {
+              scheduledInference?.dispose();
+            } finally {
+              await workspaceLease?.release();
+            }
           }
         }
       } finally {
@@ -675,9 +707,32 @@ async function executeAgentTurnOutcome(
       internal.kind !== "aborted" &&
       resolveReplyOperationAbortReason(executionParams.replyOperation);
     if (abortReason) {
-      return buildAbortedAgentTurnExecutionResult(runId, abortReason, compaction);
+      return {
+        runId,
+        outcome: {
+          kind: "aborted",
+          reason: abortReason,
+          sessionWriter: internal.sessionWriter,
+          ...completedCompaction(),
+        },
+      };
     }
-    return buildAgentTurnExecutionResult(runId, internal, compaction);
+    const outcome: AgentTurnExecutionResult["outcome"] =
+      internal.kind === "final"
+        ? {
+            kind: "rejected",
+            sessionWriter: internal.sessionWriter,
+            payload: internal.payload,
+            resolved: internal.resolved,
+            ...(internal.postCompactionModelFailure
+              ? { postCompactionModelFailure: internal.postCompactionModelFailure }
+              : {}),
+          }
+        : internal;
+    return {
+      runId,
+      outcome: { ...outcome, ...completedCompaction() },
+    };
   } catch (error) {
     const abortReason = resolveReplyOperationAbortReason(executionParams.replyOperation, error);
     if (abortReason) {
@@ -692,10 +747,6 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<AgentTu
     verboseLevelOverride: params.followupRun.run.verboseLevelOverride,
     resolvedVerboseLevel: params.resolvedVerboseLevel,
   });
-  if (params.replyOperation) {
-    // Cancellation stops execution, but the exact owner must finish committed accounting first.
-    retainReplyOperationUntilComplete(params.replyOperation);
-  }
   const runId = params.opts?.runId ?? crypto.randomUUID();
   const executionParams =
     params.opts?.runId === runId ? params : { ...params, opts: { ...params.opts, runId } };

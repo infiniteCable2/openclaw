@@ -148,7 +148,8 @@ async function prepareOperatorTranscriptRead(params: OperatorTranscriptReadParam
       try {
         const { cfg, filter } = readPolicy();
         for (const [index, read] of reads.entries()) {
-          const target = read.readCurrent(cfg).target;
+          const facts = read.readCurrent(cfg);
+          const target = facts.target;
           const expected = sources[index];
           if (
             !expected ||
@@ -162,7 +163,11 @@ async function prepareOperatorTranscriptRead(params: OperatorTranscriptReadParam
             target.readSource.path !== expected.readSource.path ||
             target.readSource.databaseIdentity !== expected.readSource.databaseIdentity ||
             target.readSource.databaseBirthtime !== expected.readSource.databaseBirthtime ||
-            filter?.(target.canonicalKey, target.entry) === false
+            filter?.(
+              target.canonicalKey,
+              target.entry,
+              Boolean(profileId && facts.membership.has(profileId)),
+            ) === false
           ) {
             throw new Error("Transcript source is no longer readable");
           }
@@ -205,7 +210,7 @@ async function prepareOperatorTranscriptRead(params: OperatorTranscriptReadParam
       assertCurrent();
       const cfg = params.getRuntimeConfig();
       const checks: PreparedSessionSourceAuthority["checks"] = [];
-      const expectedEntries = reads.map((read) => read.readCurrent(cfg).target.entry);
+      const expectedFacts = reads.map((read) => read.readCurrent(cfg));
       for (const [index, read] of reads.entries()) {
         const source = sources[index]!;
         const facts = read.readCurrent(cfg);
@@ -227,8 +232,14 @@ async function prepareOperatorTranscriptRead(params: OperatorTranscriptReadParam
         assertPreparedCurrent: () => {
           try {
             const { filter } = readPolicy();
-            for (const [index, entry] of expectedEntries.entries()) {
-              if (filter?.(sources[index]!.canonicalKey, entry) === false) {
+            for (const [index, facts] of expectedFacts.entries()) {
+              if (
+                filter?.(
+                  sources[index]!.canonicalKey,
+                  facts.target.entry,
+                  Boolean(profileId && facts.membership.has(profileId)),
+                ) === false
+              ) {
                 throw new Error("Transcript source is no longer readable");
               }
             }

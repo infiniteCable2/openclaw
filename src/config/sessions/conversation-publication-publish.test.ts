@@ -8,11 +8,8 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { readConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import { publishConversationPublication } from "./conversation-publication-publish.js";
 import type { ConversationPublicationRow } from "./conversation-publication.types.js";
-import {
-  appendTranscriptEventSync,
-  loadTranscriptEvents,
-  upsertSessionEntryCore,
-} from "./session-accessor.js";
+import { loadTranscriptEvents, upsertSessionEntryCore } from "./session-accessor.js";
+import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { readActiveTranscriptEntryAnchorAsync } from "./session-transcript-anchor-read.js";
 
 it("publishes recovered exact endpoints out of order once, and refuses replacement sources", async () => {

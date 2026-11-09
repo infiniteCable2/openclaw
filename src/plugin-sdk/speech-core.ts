@@ -1,35 +1,35 @@
-// Shared speech-provider implementation helpers for bundled and third-party plugins.
-
 export type { SpeechProviderPlugin } from "../plugins/types.js";
 export type { ResolvedTtsConfig, ResolvedTtsModelOverrides } from "../tts/tts-types.js";
 export type {
   SpeechDirectiveTokenParseContext,
-  SpeechDirectiveTokenParseResult,
   SpeechExpression,
   SpeechExpressionCapabilities,
   SpeechSegmentationProfile,
   SpeechSynthesisSegment,
   SpeechListVoicesRequest,
   SpeechModelOverridePolicy,
-  SpeechProviderConfig,
   SpeechProviderConfiguredContext,
-  SpeechProviderPreparedSynthesis,
   SpeechProviderPrepareSynthesisContext,
   SpeechProviderResolveConfigContext,
   SpeechProviderResolveTalkConfigContext,
   SpeechProviderResolveTalkOverridesContext,
-  SpeechProviderOverrides,
   SpeechSynthesisRequest,
   SpeechSynthesisStreamRequest,
-  SpeechSynthesisStreamResult,
-  SpeechSynthesisTarget,
   SpeechTelephonySynthesisRequest,
   SpeechTelephonySynthesisStreamRequest,
+} from "../tts/provider-types.js";
+export type {
+  SpeechDirectiveTokenParseResult,
+  SpeechProviderConfig,
+  SpeechProviderPreparedSynthesis,
+  SpeechProviderOverrides,
+  SpeechSynthesisTarget,
   SpeechTelephonySynthesisStreamResult,
   SpeechVoiceOption,
   TtsDirectiveOverrides,
   TtsDirectiveParseResult,
-} from "../tts/provider-types.js";
+  SpeechSynthesisStreamResult,
+} from "../tts/tts-runtime-types.js";
 
 export {
   scheduleCleanup,

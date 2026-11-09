@@ -11,6 +11,30 @@ import { startWebLoginWithQr, waitForWebLogin } from "../login-qr-api.js";
 
 const QR_DATA_URL_MAX_LENGTH = 16_384;
 
+const WhatsAppLoginParameters = Type.Object({
+  action: Type.Enum(["start", "wait"], { type: "string" }),
+  timeoutMs: optionalPositiveIntegerSchema(),
+  force: Type.Optional(Type.Boolean()),
+  accountId: Type.Optional(Type.String()),
+  currentQrDataUrl: Type.Optional(
+    Type.String({
+      maxLength: QR_DATA_URL_MAX_LENGTH,
+      // llama.cpp rejects a whole tool catalog when a model-facing pattern
+      // lacks either anchor; real QR images also require a nonempty payload.
+      pattern: "^data:image/png;base64,.+$",
+    }),
+  ),
+});
+
+class WhatsAppToolInputError extends Error {
+  readonly status = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolInputError";
+  }
+}
+
 export function createWhatsAppLoginTool(
   context: OpenClawPluginToolContext,
 ): ChannelAgentTool | null {
@@ -21,20 +45,7 @@ export function createWhatsAppLoginTool(
     label: "WhatsApp Login",
     name: "whatsapp_login",
     description: "Generate a WhatsApp QR code for linking, or wait for the scan to complete.",
-    parameters: Type.Object({
-      action: Type.Enum(["start", "wait"], { type: "string" }),
-      timeoutMs: optionalPositiveIntegerSchema(),
-      force: Type.Optional(Type.Boolean()),
-      accountId: Type.Optional(Type.String()),
-      currentQrDataUrl: Type.Optional(
-        Type.String({
-          maxLength: QR_DATA_URL_MAX_LENGTH,
-          // llama.cpp rejects a whole tool catalog when a model-facing pattern
-          // lacks either anchor; real QR images also require a nonempty payload.
-          pattern: "^data:image/png;base64,.+$",
-        }),
-      ),
-    }),
+    parameters: WhatsAppLoginParameters,
     execute: async (_toolCallId, args, signal) => {
       const beforeCredentialPersistence = async () => {
         context.assertInvocationCurrent?.();
@@ -62,7 +73,13 @@ export function createWhatsAppLoginTool(
         });
       };
 
-      const action = (args as { action?: string })?.action ?? "start";
+      const rawAction = (args as { action?: unknown })?.action;
+      const action = rawAction === undefined ? "start" : rawAction;
+      if (action !== "start" && action !== "wait") {
+        throw new WhatsAppToolInputError(
+          'Unknown WhatsApp login action. Expected "start" or "wait".',
+        );
+      }
       const accountId = readNonBlankString((args as { accountId?: unknown }).accountId);
       const timeoutMs = readPositiveIntegerParam(args as Record<string, unknown>, "timeoutMs");
       if (action === "wait") {

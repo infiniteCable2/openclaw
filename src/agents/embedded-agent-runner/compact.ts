@@ -1,5 +1,5 @@
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
-import { projectPublicSessionEntry } from "../../config/sessions/session-entry-projection.js";
+import { projectExecutionSessionEntry } from "../../config/sessions/session-entry-projection.js";
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -9,6 +9,9 @@ import {
   withPluginRuntimeGenerationScope,
 } from "../../plugins/runtime/generation-scope.js";
 import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
+import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
+import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
+import { resolveSessionControllerOperationForSignal } from "../../sessions/session-controller.state.js";
 import { getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { resolveUserPath } from "../../utils.js";
 import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
@@ -20,6 +23,11 @@ import {
   resolveSessionAgentIds,
 } from "../agent-scope.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
+import {
+  CliExecutionAuthProfileError,
+  cliBackendAcceptsAuthProfileForwarding,
+  resolveCliExecutionAuthProfileId,
+} from "../cli-execution-auth.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
 import { coerceToFailoverError } from "../failover-error.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
@@ -29,10 +37,12 @@ import { runWithModelFallback } from "../model-fallback-runner.js";
 import { acquireAgentRunPreparedModelRuntime } from "../prepared-model-runtime.js";
 import { prepareAgentPromptProjects } from "../prompt-projects.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
+import { buildProviderAuthRecoveryHint } from "../provider-auth-recovery-hint.js";
 import {
   applyAgentRunSessionTargetIdentity,
   resolveAgentRunSessionTarget,
 } from "../run-session-target.js";
+import type { CompactionAppendPersistenceAsync } from "../sessions/session-compaction-persistence.js";
 import { buildCompactionFailureResult } from "./compact-reasons.js";
 import { runForegroundCompactionWork } from "./compact.foreground-work.js";
 import type {
@@ -41,21 +51,18 @@ import type {
 } from "./compact.types.js";
 import { prepareCompactionForegroundBudget } from "./compaction-foreground-budget.js";
 import { resolveEmbeddedCompactionTarget } from "./compaction-runtime-context.js";
-import {
-  projectCodexHostTranscriptBytePreflightConfig,
-  resolveCompactionRuntimeSelection,
-} from "./compaction-runtime-preparation.js";
+import { resolveCompactionRuntimeSelection } from "./compaction-runtime-preparation.js";
 import { resolveCompactionTimeoutMs } from "./compaction-safety-timeout.js";
 import type { PreparedCompactEmbeddedAgentSessionParams } from "./direct-compaction-preparation.js";
 import { compactEmbeddedAgentSessionDirectOnce } from "./direct-compaction.js";
 import { readCompactionAccountingRecorder } from "./run/compaction-accounting-bridge.js";
 import { resolveSharedPluginRuntimeWorkspace } from "./run/prepared-runtime-context.js";
-import { consumeTranscriptBytePreflightClaim } from "./transcript-byte-preflight-authority.js";
 import type { EmbeddedAgentCompactResult } from "./types.js";
 
 export type { CompactEmbeddedAgentSessionParams } from "./compact.types.js";
 
 export async function compactNativeCliSession(params: {
+  replyOperation?: ReplyOperation;
   runtime: string | undefined;
   compactParams: CompactEmbeddedAgentSessionParams;
   runControlOperation?: (run: () => Promise<void>) => Promise<void>;
@@ -90,6 +97,49 @@ export async function compactNativeCliSession(params: {
     config: params.compactParams.config,
     agentId: params.compactParams.agentId,
   }).sessionAgentId;
+  // The session pin names the model provider's credential (for example the auto-selected
+  // "anthropic:default" API key). Reply turns convert it for the CLI child; compaction must too,
+  // or the native session is compacted on the metered key instead of the backend's own login.
+  let forwardedAuthProfileId = cliSessionBinding?.authProfileId;
+  if (!forwardedAuthProfileId && params.compactParams.authProfileId) {
+    const config = params.compactParams.config ?? {};
+    if (
+      cliBackendAcceptsAuthProfileForwarding({
+        provider: runtime,
+        config,
+        agentId: params.compactParams.agentId,
+      })
+    ) {
+      try {
+        forwardedAuthProfileId = await resolveCliExecutionAuthProfileId({
+          cliExecutionProvider: runtime,
+          authProfileProvider: params.compactParams.provider ?? DEFAULT_PROVIDER,
+          config,
+          agentDir: params.compactParams.agentDir ?? resolveAgentDir(config, sessionAgentId),
+          selected: {
+            authProfileId: params.compactParams.authProfileId,
+            authProfileIdSource: params.compactParams.authProfileIdSource,
+          },
+          sessionBinding: cliSessionBinding,
+        });
+      } catch (err) {
+        if (err instanceof CliExecutionAuthProfileError) {
+          // Never substitute another account; tell the user how to restore or switch it.
+          const recovery = buildProviderAuthRecoveryHint({
+            provider: params.compactParams.provider ?? DEFAULT_PROVIDER,
+            config,
+            workspaceDir: params.compactParams.workspaceDir,
+          });
+          return buildCompactionFailureResult(
+            `CLI backend "${runtime}" cannot compact with the selected account: ${err.message} ${recovery} Or select an available account with /model, then run /compact again.`,
+          );
+        }
+        throw err;
+      }
+    } else {
+      forwardedAuthProfileId = params.compactParams.authProfileId;
+    }
+  }
   const preparedRunAdmission = prepareSystemAgentRunAdmission(
     params.compactParams.config ?? {},
     runId,
@@ -99,6 +149,7 @@ export async function compactNativeCliSession(params: {
   try {
     const runControlOperation = async () => {
       await runCliAgent({
+        replyOperation: params.replyOperation,
         preparedRunAdmission,
         sessionId: params.compactParams.sessionId,
         sessionKey: params.compactParams.sessionKey,
@@ -117,11 +168,7 @@ export async function compactNativeCliSession(params: {
         runId,
         cliSessionId,
         ...(cliSessionBinding ? { cliSessionBinding } : {}),
-        ...(cliSessionBinding?.authProfileId
-          ? { authProfileId: cliSessionBinding.authProfileId }
-          : params.compactParams.authProfileId
-            ? { authProfileId: params.compactParams.authProfileId }
-            : {}),
+        ...(forwardedAuthProfileId ? { authProfileId: forwardedAuthProfileId } : {}),
         ...(params.compactParams.sessionEntry
           ? { sessionEntry: params.compactParams.sessionEntry }
           : {}),
@@ -129,8 +176,8 @@ export async function compactNativeCliSession(params: {
         trigger: "manual",
         controlOperation: "compact",
         disableCliLiveSession: true,
-        // Compaction rewrites the persisted session behind any idle SDK query. Retire that query
-        // after the control turn so the next user turn reloads the compacted conversation.
+        // Queued execution retires the warm process before this control turn rewrites history.
+        // Also join any resources retained by the control turn before reporting completion.
         cleanupCliLiveSessionOnRunEnd: true,
         allowEmptyAssistantReplyAsSilent: true,
         abortSignal: params.compactParams.abortSignal,
@@ -178,15 +225,19 @@ function resolveCompactionFallbacksOverride(
  */
 export async function compactEmbeddedAgentSessionDirect(
   paramsInput: CompactEmbeddedAgentSessionRuntimeParams,
+  seedCompaction?: CompactionAppendPersistenceAsync,
 ): Promise<EmbeddedAgentCompactResult> {
   const paramsBase = applyAgentRunSessionTargetIdentity(paramsInput);
   const parentSignal = getAsyncWorkSignal();
-  const memoryTranscript = readCompactionAccountingRecorder(
+  const accountingRecorder = readCompactionAccountingRecorder(
     paramsBase.contextEngineRuntimeContext,
-  )?.memoryTranscript;
+  );
+  const memoryTranscript = accountingRecorder?.memoryTranscript;
+  const preparedSession = accountingRecorder?.preparedSession;
   memoryTranscript?.assertActive();
   const runSessionTarget =
     memoryTranscript?.sessionTarget ??
+    preparedSession?.sessionTarget ??
     (await resolveAgentRunSessionTarget({
       ...paramsBase,
       missingSessionKey: "resolve-existing",
@@ -196,25 +247,17 @@ export async function compactEmbeddedAgentSessionDirect(
     paramsBase.abortSignal?.throwIfAborted();
     memoryTranscript?.assertActive();
   };
-  const entry = await readSessionEntryReadOnlyInWorker(
-    { ...runSessionTarget, readConsistency: "latest" },
-    assertReadCurrent,
-  );
+  const entry =
+    preparedSession?.entry ??
+    (await readSessionEntryReadOnlyInWorker(
+      { ...runSessionTarget, readConsistency: "latest" },
+      assertReadCurrent,
+    ));
   assertReadCurrent();
   const lockedHarnessRuntime = resolveSessionPinnedHarnessId(entry);
-  const transcriptBytePreflightClaim = consumeTranscriptBytePreflightClaim(
-    paramsBase,
-    runSessionTarget,
-    lockedHarnessRuntime,
-  );
-  const transcriptBytePreflightAuthority = transcriptBytePreflightClaim?.authority;
   const requestedParams: CompactEmbeddedAgentSessionParams = {
     ...paramsBase,
-    config: projectCodexHostTranscriptBytePreflightConfig(
-      paramsBase.config,
-      Boolean(transcriptBytePreflightAuthority),
-    ),
-    sessionEntry: entry ? projectPublicSessionEntry(entry) : undefined,
+    sessionEntry: entry ? projectExecutionSessionEntry(entry) : undefined,
     agentHarnessId: lockedHarnessRuntime ?? paramsBase.agentHarnessId,
     modelSelectionLocked: entry?.modelSelectionLocked ?? paramsBase.modelSelectionLocked,
     agentId: runSessionTarget.agentId,
@@ -254,6 +297,9 @@ export async function compactEmbeddedAgentSessionDirect(
   // Run them before generic model preparation so subscription-only CLI sessions do
   // not incorrectly require an OpenClaw model API credential.
   const nativeCliResult = await compactNativeCliSession({
+    replyOperation:
+      resolveSessionControllerOperationForSignal(paramsInput.abortSignal) ??
+      getCurrentSessionControllerOwner(),
     runtime: runtimeSelection.selectedHarnessRuntime,
     compactParams: {
       ...requestedParams,
@@ -264,11 +310,7 @@ export async function compactEmbeddedAgentSessionDirect(
   if (nativeCliResult) {
     return nativeCliResult;
   }
-  if (
-    lockedHarnessRuntime &&
-    lockedHarnessRuntime !== "openclaw" &&
-    !transcriptBytePreflightAuthority
-  ) {
+  if (lockedHarnessRuntime && lockedHarnessRuntime !== "openclaw" && !seedCompaction) {
     return buildCompactionFailureResult(
       `Model selection is locked to native agent harness "${lockedHarnessRuntime}"; generic compaction is unavailable.`,
       { reason: "model_selection_locked" },
@@ -306,11 +348,7 @@ export async function compactEmbeddedAgentSessionDirect(
         },
         {
           abortSignal: requestedParams.abortSignal,
-          deriveRuntimePluginSelections: ({ config: admittedConfig, metadataSnapshot }) => {
-            const config = projectCodexHostTranscriptBytePreflightConfig(
-              admittedConfig,
-              Boolean(transcriptBytePreflightAuthority),
-            );
+          deriveRuntimePluginSelections: ({ config, metadataSnapshot }) => {
             const selected = resolveCompactionRuntimeSelection({
               ...requestedParams,
               config,
@@ -328,7 +366,7 @@ export async function compactEmbeddedAgentSessionDirect(
               provider: selected.provider,
               model: selected.modelId,
               requestedRouteResolution: "resolved",
-              fallbacksOverride: transcriptBytePreflightAuthority
+              fallbacksOverride: seedCompaction
                 ? []
                 : resolveCompactionFallbacksOverride({ ...requestedParams, config }),
             });
@@ -365,7 +403,6 @@ export async function compactEmbeddedAgentSessionDirect(
                 .map((candidate) => ({
                   provider: candidate.provider,
                   modelId: candidate.model,
-                  runtime: selected.boundHarnessRuntime,
                   agentId: requestedAgentIds.sessionAgentId,
                 })),
             ];
@@ -376,11 +413,7 @@ export async function compactEmbeddedAgentSessionDirect(
     owner.adoptLease(preparedModelRuntimeLease);
     try {
       const preparedModelRuntimeOwnerSnapshot = preparedModelRuntimeLease.snapshot;
-      const preparedConfig =
-        projectCodexHostTranscriptBytePreflightConfig(
-          preparedModelRuntimeOwnerSnapshot.config,
-          Boolean(transcriptBytePreflightAuthority),
-        ) ?? preparedModelRuntimeOwnerSnapshot.config;
+      const preparedConfig = preparedModelRuntimeOwnerSnapshot.config;
       const preparedWorkspaceDir = sharedRuntimeWorkspace
         ? requestedWorkspaceDir
         : (preparedModelRuntimeOwnerSnapshot.workspaceDir ?? requestedWorkspaceDir);
@@ -409,27 +442,11 @@ export async function compactEmbeddedAgentSessionDirect(
         agentDir: preparedModelRuntime.agentDir,
         workspaceDir: preparedWorkspaceDir,
         preparedModelRuntime,
-        ...(transcriptBytePreflightClaim
-          ? {
-              transcriptBytePreflightAuthority: true as const,
-              ...(transcriptBytePreflightClaim.withCompactionPersistenceAsync
-                ? {
-                    transcriptByteCompactionPersistenceAsync:
-                      transcriptBytePreflightClaim.withCompactionPersistenceAsync,
-                  }
-                : {}),
-              ...(transcriptBytePreflightClaim.withCompactionPersistence
-                ? {
-                    transcriptByteCompactionPersistence:
-                      transcriptBytePreflightClaim.withCompactionPersistence,
-                  }
-                : {}),
-            }
-          : {}),
+        seedCompaction,
       };
       const compactPrepared = async () => {
         if (
-          transcriptBytePreflightAuthority ||
+          seedCompaction ||
           params.config?.agents?.defaults?.compaction?.model?.trim() ||
           (
             resolveCompactionFallbacksOverride(params) ??
@@ -520,11 +537,12 @@ export async function compactEmbeddedAgentSessionDirect(
               ...params,
               provider,
               model,
+              agentHarnessId: isPrimaryCandidate ? params.agentHarnessId : undefined,
               requestedRouteResolution: isPrimaryCandidate ? undefined : "resolved",
               authProfileId,
               authProfileIdSource: preservesPrimaryAuth ? params.authProfileIdSource : undefined,
               // The primary attempt retains its already prepared atomic plan. An
-              // actual fallback may change route/auth class and must rebuild it.
+              // actual fallback may change runtime/auth class and must rebuild it.
               runtimeAuthPlan: isPrimaryCandidate ? params.runtimeAuthPlan : undefined,
               runtimePlan: isPrimaryCandidate ? params.runtimePlan : undefined,
             });
@@ -532,10 +550,12 @@ export async function compactEmbeddedAgentSessionDirect(
         });
         return fallbackResult.result;
       };
-      return await withPluginRuntimeGenerationScope(preparedModelRuntime, () => {
-        owner.captureContext();
-        return compactPrepared();
-      });
+      return await preparedModelRuntimeLease.run(() =>
+        withPluginRuntimeGenerationScope(preparedModelRuntime, () => {
+          owner.captureContext();
+          return compactPrepared();
+        }),
+      );
     } catch (err) {
       return buildCompactionFailureResult(
         isFallbackSummaryError(err) ? err.message : formatErrorMessage(err),

@@ -1,5 +1,3 @@
-import { Type, type TObject } from "typebox";
-import { resolveActiveReplyOperationForSessionId } from "../../auto-reply/reply/reply-run-registry.js";
 import type {
   CurrentSourceReplyTarget,
   MessageActionInput,
@@ -9,45 +7,14 @@ import {
   getToolResult,
   type runMessageAction,
 } from "../../infra/outbound/message-action-runner.js";
-import type { MessageSpeechAdmission } from "../../tts/message-speech-admission.js";
 import * as embeddedMessageDelivery from "../embedded-agent-message-delivery.js";
 import { jsonResult } from "./common.js";
 import type { createMessageToolDecisionRecorder } from "./message-tool-decision.js";
-import { MessageToolSchema } from "./message-tool-schema.js";
 import {
-  addSourceReplyFinalControl,
-  buildSourceReplyOnlyMessageSchema,
   enforceSourceReplyOnlyMessageAction,
   enforceSourceReplyOnlyTextDirectives,
 } from "./message-tool-source-policy.js";
 import { sanitizeMessageToolVisiblePayload } from "./message-tool-visible-content.js";
-
-export function buildMessageToolSourceReplySchema(params: {
-  sourceReplyOnly?: boolean;
-  currentSourceReplyTarget?: CurrentSourceReplyTarget;
-  messageSpeechAdmission?: MessageSpeechAdmission;
-  discoverySchema?: TObject;
-}): TObject {
-  const baseSchema = params.sourceReplyOnly
-    ? buildSourceReplyOnlyMessageSchema(
-        params.currentSourceReplyTarget?.speechUtteranceOnly === true ||
-          Boolean(params.messageSpeechAdmission),
-        Boolean(params.currentSourceReplyTarget),
-      )
-    : (params.discoverySchema ?? MessageToolSchema);
-  return addSourceReplyFinalControl(
-    params.currentSourceReplyTarget
-      ? Type.Object({
-          ...baseSchema.properties,
-          replyPhase: Type.Optional(
-            Type.Union([Type.Literal("commentary"), Type.Literal("final_answer")], {
-              description: "Current-source utterance lane; commentary requires final=false.",
-            }),
-          ),
-        })
-      : baseSchema,
-  );
-}
 
 export function prepareMessageToolSourceReply(
   params: Parameters<typeof enforceSourceReplyOnlyMessageAction>[0] & {
@@ -101,9 +68,6 @@ export async function deliverMessageToolCurrentSource(params: {
   const fact = embeddedMessageDelivery.projectEmbeddedMessageDeliveryFact(result, true);
   if (fact?.status === "settled" && !result.dryRun && input.sourceReplyFinal !== false) {
     fact.sourceReplyDelivered = true;
-    if (input.sessionId) {
-      resolveActiveReplyOperationForSessionId(input.sessionId)?.markSourceReplyDelivered();
-    }
   }
   return embeddedMessageDelivery.attachEmbeddedMessageDeliveryFact(
     getToolResult(result) ?? jsonResult(result.payload),

@@ -42,7 +42,7 @@ import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "./session-source-authority.js";
-import { loadTranscriptEvents } from "./session-transcript-events.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 import type { InternalSessionEntry } from "./types.js";
 
 // Real SQLite, admission, seeding, report selection and personal-difference authority.

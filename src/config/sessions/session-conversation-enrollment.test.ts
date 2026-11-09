@@ -20,7 +20,7 @@ import {
 import { resolveAgentConversationRootSessionKey } from "./session-conversation-root-key.js";
 import { ensureAgentConversationRoot } from "./session-conversation-root.js";
 import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
-import { loadTranscriptEvents } from "./session-transcript-events.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 import type { InternalSessionEntry } from "./types.js";
 
 let state: OpenClawTestState;

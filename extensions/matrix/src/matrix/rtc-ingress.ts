@@ -3,6 +3,7 @@ import {
   defineStableChannelIngressIdentity,
   type ConversationInputSourceV1,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
+import { prepareSessionBindingInspections } from "openclaw/plugin-sdk/conversation-binding-inspection-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { resolveAgentSpeechConversationRoute } from "openclaw/plugin-sdk/routing";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
@@ -18,7 +19,7 @@ import {
   type MatrixResolvedAllowlistEntry,
 } from "./monitor/config.js";
 import type { createDirectRoomTracker } from "./monitor/direct.js";
-import { resolveMatrixInboundRoute } from "./monitor/route.js";
+import { projectMatrixInboundRoute, resolveMatrixBindingRef } from "./monitor/route.js";
 import { findMatrixRtcAdmission, resolveMatrixRtcConfig } from "./rtc-config.js";
 import { resolveMatrixSenderParticipant } from "./sender-identity.js";
 import { isMatrixQualifiedUserId } from "./target-ids.js";
@@ -93,7 +94,45 @@ export function createMatrixRtcConversationInputSource(
     callSignal?.throwIfAborted();
     assertCallCurrent();
   };
-  const selectCurrent = () => {
+  let closed = false;
+  let retained: Awaited<ReturnType<typeof prepareSessionBindingInspections>> | undefined;
+  let preparing: ReturnType<typeof prepareSessionBindingInspections> | undefined;
+  const prepareBindings = async (
+    ref: Parameters<typeof prepareSessionBindingInspections>[0][number],
+  ) => {
+    if (retained) {
+      try {
+        retained.inspect();
+        return retained;
+      } catch {
+        retained.dispose();
+        retained = undefined;
+      }
+    }
+    if (!preparing) {
+      preparing = prepareSessionBindingInspections([ref])
+        .then((value) => {
+          if (closed) {
+            value.dispose();
+            throw new Error("MatrixRTC conversation input is closed");
+          }
+          retained = value;
+          return value;
+        })
+        .finally(() => {
+          preparing = undefined;
+        });
+    }
+    return preparing;
+  };
+  const selectCurrent = (
+    inspect?: () => ReturnType<
+      Awaited<ReturnType<typeof prepareSessionBindingInspections>>["inspect"]
+    >,
+  ) => {
+    if (closed) {
+      throw new Error("MatrixRTC conversation input is closed");
+    }
     assertTransportCurrent();
     // Existing account/routing consumers require an owned mutable projection.
     // Read and copy the exact live source each time, including in-place updates.
@@ -117,7 +156,7 @@ export function createMatrixRtcConversationInputSource(
     ) {
       throw new Error("MatrixRTC conversation input admission is no longer current");
     }
-    const route = resolveMatrixInboundRoute({
+    const routeParams = {
       cfg,
       accountId,
       roomId,
@@ -125,13 +164,14 @@ export function createMatrixRtcConversationInputSource(
       isDirectMessage: true,
       dmSessionScope: account.dm?.sessionScope,
       resolveAgentRoute: runtime.channel.routing.resolveAgentRoute,
-    });
+    };
+    const route = inspect ? projectMatrixInboundRoute(routeParams, inspect()[0]!) : undefined;
     // A normal runtime conversation binding is allowed. Other dispatch owners
     // cannot silently become an embedded speech agent through this V2 adapter.
-    if (!route.bindingOwnerAvailable || route.configuredBinding || route.pluginId) {
+    if (route && (!route.bindingOwnerAvailable || route.configuredBinding || route.pluginId)) {
       throw new Error("MatrixRTC conversation input uses an unsupported route owner");
     }
-    if (route.route.agentId !== agentId || route.route.sessionKey !== sourceSessionKey) {
+    if (route && (route.route.agentId !== agentId || route.route.sessionKey !== sourceSessionKey)) {
       throw new Error("MatrixRTC conversation input route changed");
     }
     const dispatch = resolveAgentSpeechConversationRoute({
@@ -155,10 +195,10 @@ export function createMatrixRtcConversationInputSource(
       dangerouslyAllowNameMatching: account.dangerouslyAllowNameMatching,
       accessGroups: cfg.accessGroups,
     });
-    return { cfg, allowlists, dmPolicy, policyKey, route: route.route };
+    return { cfg, allowlists, dmPolicy, policyKey, route: route?.route, routeParams };
   };
-  // Reject an unavailable account or incompatible dispatch owner before the
-  // controller acquires speech providers. This does not admit a synthetic input.
+  // Validate the account immediately; connection preparation then checks the
+  // native dispatch owner before acquiring providers, without a synthetic input.
   selectCurrent();
   const resolveAdmission = async (messageId?: string, inputSignal?: AbortSignal) => {
     const conversation = runtime.channel.inbound.ingress.conversation;
@@ -170,10 +210,16 @@ export function createMatrixRtcConversationInputSource(
         ? AbortSignal.any([callSignal, inputSignal])
         : (inputSignal ?? callSignal);
     signal?.throwIfAborted();
-    const selected = selectCurrent();
+    const initial = selectCurrent();
+    const prepared = await prepareBindings(resolveMatrixBindingRef(initial.routeParams));
+    if (closed || signal?.aborted) {
+      signal?.throwIfAborted();
+      throw new Error("MatrixRTC conversation input is closed");
+    }
+    const selected = selectCurrent(prepared.inspect);
     const assertCurrent = () => {
       signal?.throwIfAborted();
-      if (selectCurrent().policyKey !== selected.policyKey) {
+      if (selectCurrent(prepared.inspect).policyKey !== selected.policyKey) {
         throw new Error("MatrixRTC conversation input policy changed");
       }
     };
@@ -228,6 +274,12 @@ export function createMatrixRtcConversationInputSource(
   };
   return Object.freeze({
     version: 1 as const,
+    async closeConnection() {
+      closed = true;
+      retained?.dispose();
+      retained = undefined;
+      await preparing?.catch(() => undefined);
+    },
     async prepareConnection(options?: { signal?: AbortSignal }) {
       const prepare = runtime.channel.inbound.ingress.conversation?.prepareConnection;
       if (!prepare) {
@@ -266,7 +318,7 @@ export function createMatrixRtcConversationInputSource(
           },
           route: {
             ...selected.route,
-            routeSessionKey: selected.route.sessionKey,
+            routeSessionKey: selected.route!.sessionKey,
             dispatchSessionKey,
           },
           reply: { to: roomId, nativeChannelId: roomId },

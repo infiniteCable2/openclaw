@@ -1,4 +1,3 @@
-/** Extracts message delivery evidence from embedded-agent tool calls and results. */
 import { asNonNegativeFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import {
@@ -42,7 +41,7 @@ export function extractMessagingToolSourceReplyPayload(
     return undefined;
   }
   const source = readRecord(details.sourceReply) ?? details;
-  const payload = readSourceReplyPayload(details, source);
+  const payload = readSourceReplyPayload(source, details);
   if (payload) {
     copyReplyPayloadMetadata(source, payload);
     if (details.sourceReplySink === "current-source") {
@@ -67,7 +66,7 @@ export function extractToolAuthoredSourceReplyPayload(
   if (!details || !sourceReply || sourceReply.final === false) {
     return undefined;
   }
-  const payload = readSourceReplyPayload(details, sourceReply);
+  const payload = readSourceReplyPayload(sourceReply);
   if (!payload) {
     return undefined;
   }
@@ -94,12 +93,13 @@ export function resolveSourceReplyMediaUrls(
 }
 
 function readSourceReplyPayload(
-  details: Record<string, unknown>,
   sourceReply: Record<string, unknown>,
+  // Only already-sent message mirrors support top-level legacy delivery fields.
+  legacyDetails?: Record<string, unknown>,
 ): MessagingToolSourceReplyPayload | undefined {
   const payload: MessagingToolSourceReplyPayload = {};
   const copyText = (key: "text" | "mediaUrl" | "idempotencyKey", fallback: string = key) => {
-    const value = readStringValue(sourceReply[key]) ?? readStringValue(details[fallback]);
+    const value = readStringValue(sourceReply[key]) ?? readStringValue(legacyDetails?.[fallback]);
     if (value) {
       payload[key] = value;
     }
@@ -108,8 +108,8 @@ function readSourceReplyPayload(
   copyText("mediaUrl");
   const rawMediaUrls = Array.isArray(sourceReply.mediaUrls)
     ? sourceReply.mediaUrls
-    : Array.isArray(details.mediaUrls)
-      ? details.mediaUrls
+    : Array.isArray(legacyDetails?.mediaUrls)
+      ? legacyDetails.mediaUrls
       : [];
   const mediaUrls = rawMediaUrls.filter((value): value is string => typeof value === "string");
   if (mediaUrls.length > 0) {
@@ -146,7 +146,7 @@ function readSourceReplyPayload(
   if (typeof sourceReply.trustedLocalMedia === "boolean") {
     payload.trustedLocalMedia = sourceReply.trustedLocalMedia;
   }
-  if (sourceReply.audioAsVoice === true || details.audioAsVoice === true) {
+  if (sourceReply.audioAsVoice === true || legacyDetails?.audioAsVoice === true) {
     payload.audioAsVoice = true;
   }
   const presentation = normalizeMessagePresentation(sourceReply.presentation);
@@ -162,76 +162,10 @@ function readSourceReplyPayload(
     payload.channelData = { ...channelData };
   }
   copyText("idempotencyKey");
-  if (details.sourceReplyTranscriptOwner === true) {
+  if (legacyDetails?.sourceReplyTranscriptOwner === true) {
     payload.transcriptOwner = true;
   }
   return Object.keys(payload).length > 0 ? payload : undefined;
-}
-
-function resolveMessagingToolThreadEvidence(params: {
-  providerId: string;
-  to: string;
-  accountId?: string;
-  threadId?: string;
-  replyToId?: string;
-  allowImplicitThread: boolean;
-  threadSuppressed: boolean;
-  options?: Parameters<typeof extractMessagingToolSend>[2];
-}): Pick<MessagingToolSend, "threadId" | "threadImplicit" | "threadSuppressed"> {
-  const threading = getChannelPlugin(params.providerId)?.threading;
-  const autoThreadResolver = params.allowImplicitThread
-    ? threading?.resolveAutoThreadId
-    : undefined;
-  const replyTransport = params.replyToId
-    ? threading?.resolveReplyTransport?.({
-        cfg: params.options?.config ?? {},
-        accountId: params.accountId,
-        threadId: params.threadId,
-        replyToId: params.replyToId,
-      })
-    : undefined;
-  const transportThreadId = normalizeOptionalStringifiedId(replyTransport?.threadId);
-  const replyToThreadId =
-    replyTransport?.threadId === null
-      ? normalizeOptionalString(replyTransport.replyToId)
-      : undefined;
-  const explicitThreadId = transportThreadId ?? replyToThreadId ?? params.threadId;
-  const currentChannelId = normalizeOptionalString(params.options?.currentChannelId);
-  const currentMessagingTarget = normalizeOptionalString(params.options?.currentMessagingTarget);
-  const currentThreadId = normalizeOptionalString(params.options?.currentThreadId);
-  const replyToMode = params.options?.replyToMode ?? (currentThreadId ? "all" : undefined);
-  const canResolveCurrentThread = Boolean(
-    (currentChannelId || currentMessagingTarget) && currentThreadId,
-  );
-  const resolvedCurrentThreadId =
-    !explicitThreadId && !params.threadSuppressed && autoThreadResolver && canResolveCurrentThread
-      ? autoThreadResolver({
-          cfg: params.options?.config ?? {},
-          accountId: params.accountId,
-          to: params.to,
-          replyToId: params.replyToId,
-          toolContext: {
-            currentChannelId,
-            currentMessagingTarget,
-            currentThreadTs: currentThreadId,
-            currentMessageId: params.options?.currentMessageId,
-            replyToMode,
-            hasRepliedRef: params.options?.hasRepliedRef,
-          },
-        })
-      : undefined;
-  const threadImplicit =
-    !explicitThreadId &&
-    !params.threadSuppressed &&
-    Boolean(autoThreadResolver) &&
-    (!canResolveCurrentThread || Boolean(resolvedCurrentThreadId));
-  return {
-    ...((explicitThreadId ?? resolvedCurrentThreadId)
-      ? { threadId: explicitThreadId ?? resolvedCurrentThreadId }
-      : {}),
-    ...(threadImplicit ? { threadImplicit: true } : {}),
-    ...(params.threadSuppressed ? { threadSuppressed: true } : {}),
-  };
 }
 
 export function extractMessagingToolSend(
@@ -339,29 +273,76 @@ export function extractMessagingToolSend(
       nativeReplyToMode !== undefined &&
       (!nativeSingleUseMode || options?.hasRepliedRef !== undefined);
   }
-  return to
-    ? {
-        tool: toolName,
-        provider,
-        accountId: resolvedAccountId,
-        to,
-        ...(providerId
-          ? resolveMessagingToolThreadEvidence({
-              providerId,
-              to,
-              accountId: resolvedAccountId,
-              threadId,
-              replyToId: outboundReplyToId,
-              allowImplicitThread,
-              threadSuppressed,
-              options,
-            })
-          : {
-              ...(threadId ? { threadId } : {}),
-              ...(threadSuppressed ? { threadSuppressed: true } : {}),
-            }),
-      }
-    : undefined;
+  if (!to) {
+    return undefined;
+  }
+  let threadEvidence: Pick<MessagingToolSend, "threadId" | "threadImplicit" | "threadSuppressed">;
+  if (providerId) {
+    const threading = getChannelPlugin(providerId)?.threading;
+    const autoThreadResolver = allowImplicitThread ? threading?.resolveAutoThreadId : undefined;
+    const replyTransport = outboundReplyToId
+      ? threading?.resolveReplyTransport?.({
+          cfg: options?.config ?? {},
+          accountId: resolvedAccountId,
+          threadId,
+          replyToId: outboundReplyToId,
+        })
+      : undefined;
+    const transportThreadId = normalizeOptionalStringifiedId(replyTransport?.threadId);
+    const replyToThreadId =
+      replyTransport?.threadId === null
+        ? normalizeOptionalString(replyTransport.replyToId)
+        : undefined;
+    const explicitThreadId = transportThreadId ?? replyToThreadId ?? threadId;
+    const currentChannelId = normalizeOptionalString(options?.currentChannelId);
+    const currentMessagingTarget = normalizeOptionalString(options?.currentMessagingTarget);
+    const currentThreadId = normalizeOptionalString(options?.currentThreadId);
+    const replyToMode = options?.replyToMode ?? (currentThreadId ? "all" : undefined);
+    const canResolveCurrentThread = Boolean(
+      (currentChannelId || currentMessagingTarget) && currentThreadId,
+    );
+    const resolvedCurrentThreadId =
+      !explicitThreadId && !threadSuppressed && autoThreadResolver && canResolveCurrentThread
+        ? autoThreadResolver({
+            cfg: options?.config ?? {},
+            accountId: resolvedAccountId,
+            to,
+            replyToId: outboundReplyToId,
+            toolContext: {
+              currentChannelId,
+              currentMessagingTarget,
+              currentThreadTs: currentThreadId,
+              currentMessageId: options?.currentMessageId,
+              replyToMode,
+              hasRepliedRef: options?.hasRepliedRef,
+            },
+          })
+        : undefined;
+    const threadImplicit =
+      !explicitThreadId &&
+      !threadSuppressed &&
+      Boolean(autoThreadResolver) &&
+      (!canResolveCurrentThread || Boolean(resolvedCurrentThreadId));
+    threadEvidence = {
+      ...((explicitThreadId ?? resolvedCurrentThreadId)
+        ? { threadId: explicitThreadId ?? resolvedCurrentThreadId }
+        : {}),
+      ...(threadImplicit ? { threadImplicit: true } : {}),
+      ...(threadSuppressed ? { threadSuppressed: true } : {}),
+    };
+  } else {
+    threadEvidence = {
+      ...(threadId ? { threadId } : {}),
+      ...(threadSuppressed ? { threadSuppressed: true } : {}),
+    };
+  }
+  return {
+    tool: toolName,
+    provider,
+    accountId: resolvedAccountId,
+    to,
+    ...threadEvidence,
+  };
 }
 
 /** Reconciles pending send evidence with the provider's successful action result. */
@@ -369,21 +350,26 @@ export function extractMessagingToolSendResult(
   pending: MessagingToolSend,
   result: unknown,
 ): MessagingToolSend {
-  const providerId = normalizeChannelId(pending.provider);
+  const routedAccountId =
+    pending.tool === "message"
+      ? normalizeOptionalString(readToolResultDetails(result)?.accountId)
+      : undefined;
+  const confirmed = routedAccountId ? { ...pending, accountId: routedAccountId } : pending;
+  const providerId = normalizeChannelId(confirmed.provider);
   const extracted = providerId
     ? getChannelPlugin(providerId)?.actions?.extractToolSendResult?.({
         result,
         send: {
-          to: pending.to ?? "",
-          accountId: pending.accountId,
-          threadId: pending.threadId,
-          threadImplicit: pending.threadImplicit,
-          threadSuppressed: pending.threadSuppressed,
+          to: confirmed.to ?? "",
+          accountId: confirmed.accountId,
+          threadId: confirmed.threadId,
+          threadImplicit: confirmed.threadImplicit,
+          threadSuppressed: confirmed.threadSuppressed,
         },
       })
     : null;
   if (!extracted?.to) {
-    return pending;
+    return confirmed;
   }
   const extractedThreadId = normalizeOptionalString(extracted.threadId);
   const providerReportedThread =
@@ -392,12 +378,12 @@ export function extractMessagingToolSendResult(
     extracted.threadSuppressed === true;
   // Thread route fields are one state. Mixing provider and pending values can
   // create contradictory implicit and suppressed evidence.
-  const threadEvidence = providerReportedThread ? extracted : pending;
+  const threadEvidence = providerReportedThread ? extracted : confirmed;
   return {
-    ...pending,
+    ...confirmed,
     ...extracted,
-    accountId: normalizeOptionalString(extracted.accountId) ?? pending.accountId,
-    to: normalizeTargetForProvider(providerId ?? pending.provider, extracted.to),
+    accountId: normalizeOptionalString(extracted.accountId) ?? confirmed.accountId,
+    to: normalizeTargetForProvider(providerId ?? confirmed.provider, extracted.to),
     threadId: normalizeOptionalString(threadEvidence.threadId),
     threadImplicit: threadEvidence.threadImplicit === true ? true : undefined,
     threadSuppressed: threadEvidence.threadSuppressed === true ? true : undefined,

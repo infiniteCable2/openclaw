@@ -1,27 +1,33 @@
 import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
-import { MESSAGE_TOOL_SPEECH_PROPERTIES } from "./message-tool-schema.js";
-import {
-  buildSourceReplyOnlyMessageSchema,
-  enforceSourceReplyOnlyMessageAction,
-} from "./message-tool-source-policy.js";
+import { MESSAGE_TOOL_SPEECH_PROPERTIES, MessageToolSchema } from "./message-tool-schema.js";
+import { enforceSourceReplyOnlyMessageAction } from "./message-tool-source-policy.js";
 
 describe("native current-source speech schema", () => {
-  it("takes exactly the canonical named speech fields without provider/voice grants", () => {
-    const schema = buildSourceReplyOnlyMessageSchema(true, true);
+  it("keeps canonical speech fields in the stable schema while guarding per-call grants", () => {
+    const schema = MessageToolSchema;
     expect(schema.properties.voiceText).toEqual(MESSAGE_TOOL_SPEECH_PROPERTIES.voiceText);
     expect(schema.properties.voiceExpression).toEqual(
       MESSAGE_TOOL_SPEECH_PROPERTIES.voiceExpression,
     );
-    expect(schema.properties).not.toHaveProperty("voiceProvider");
-    expect(schema.properties).not.toHaveProperty("voiceId");
     expect(schema.properties).toHaveProperty("replyPhase");
+    expect(() =>
+      enforceSourceReplyOnlyMessageAction({
+        action: "send",
+        args: { action: "send", voiceProvider: "other" },
+        currentSourceReplyTarget: {
+          runId: "run-example",
+          sessionId: "session-example",
+          speechUtteranceOnly: true,
+          assertCurrent() {},
+          async deliver() {},
+        },
+      }),
+    ).toThrow('cannot use the "voiceProvider" argument');
   });
 
   it("tolerates but discards optional disabled controls without granting speech text", () => {
-    const schema = buildSourceReplyOnlyMessageSchema(false, false);
-    expect(schema.properties).not.toHaveProperty("voiceText");
-    expect(schema.properties).not.toHaveProperty("replyPhase");
+    const schema = MessageToolSchema;
     const args = {
       action: "send",
       message: "Plain current-source answer.",

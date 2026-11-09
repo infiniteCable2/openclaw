@@ -3,7 +3,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
 const mocks = vi.hoisted(() => ({ load: vi.fn() }));
 // mock-isolation: Supply exact persisted row facts without opening the Gateway session database.
-vi.mock("../session-utils.js", () => ({ loadGatewaySessionEntryReadOnly: mocks.load }));
+vi.mock("../session-utils.js", () => ({ loadGatewaySessionEntryReadOnlyInWorker: mocks.load }));
 
 import { assertCronDoesNotTargetAgentHarness } from "./cron-input-validation.js";
 
@@ -15,9 +15,9 @@ describe("cron creation conversation target validation", () => {
     { sessionTarget: "isolated", sessionKey: "agent:example:main" },
     { sessionTarget: "session:agent:example:main" },
     { sessionTarget: "main" },
-  ])("rejects persisted headless roots even after mode opt-out (%j)", (target) => {
+  ])("rejects persisted headless roots even after mode opt-out (%j)", async (target) => {
     const cfg: OpenClawConfig = {};
-    mocks.load.mockReturnValue({
+    mocks.load.mockResolvedValue({
       cfg,
       agentId: "example",
       canonicalKey: "agent:example:main",
@@ -27,49 +27,49 @@ describe("cron creation conversation target validation", () => {
         conversationTopology: { version: 1, role: "root" },
       },
     });
-    expect(() =>
+    await expect(
       assertCronDoesNotTargetAgentHarness({ agentId: "example", ...target }, cfg),
-    ).toThrow("consolidating conversation root");
+    ).rejects.toThrow("consolidating conversation root");
   });
 
-  it("does not materialize a missing branch-mode root as a scheduled target", () => {
+  it("does not materialize a missing branch-mode root as a scheduled target", async () => {
     const cfg: OpenClawConfig = {
       agents: { entries: { example: { conversationMode: "branches" } } },
     };
     const sessionKey = "agent:example:internal:conversation-root";
-    mocks.load.mockReturnValue({ cfg, agentId: "example", canonicalKey: sessionKey });
-    expect(() =>
+    mocks.load.mockResolvedValue({ cfg, agentId: "example", canonicalKey: sessionKey });
+    await expect(
       assertCronDoesNotTargetAgentHarness(
         { agentId: "example", sessionTarget: `session:${sessionKey}` },
         cfg,
       ),
-    ).toThrow("reserves its internal root for consolidation");
-    mocks.load.mockReturnValue({ cfg, agentId: "example", canonicalKey: "agent:example:main" });
-    expect(() =>
+    ).rejects.toThrow("reserves its internal root for consolidation");
+    mocks.load.mockResolvedValue({ cfg, agentId: "example", canonicalKey: "agent:example:main" });
+    await expect(
       assertCronDoesNotTargetAgentHarness({ agentId: "example", sessionTarget: "main" }, cfg),
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
   });
 
-  it("does not apply a source harness lock to an independent isolated task", () => {
+  it("does not apply a source harness lock to an independent isolated task", async () => {
     const cfg: OpenClawConfig = {};
     const sessionKey = "agent:example:conversation";
-    mocks.load.mockReturnValue({
+    mocks.load.mockResolvedValue({
       cfg,
       agentId: "example",
       canonicalKey: sessionKey,
       entry: { sessionId: "source-session", updatedAt: 1, modelSelectionLocked: true },
     });
-    expect(() =>
+    await expect(
       assertCronDoesNotTargetAgentHarness(
         { agentId: "example", sessionTarget: "isolated", sessionKey },
         cfg,
       ),
-    ).not.toThrow();
-    expect(() =>
+    ).resolves.toBeUndefined();
+    await expect(
       assertCronDoesNotTargetAgentHarness(
         { agentId: "example", sessionTarget: `session:${sessionKey}` },
         cfg,
       ),
-    ).toThrow("session identity is locked");
+    ).rejects.toThrow("session identity is locked");
   });
 });

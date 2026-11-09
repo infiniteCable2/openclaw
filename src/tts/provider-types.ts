@@ -1,25 +1,14 @@
 import type { TalkProviderConfig } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.js";
-import type {
-  ResolvedTtsPersona,
-  TtsModelOverrideConfig,
-  TtsProviderConfig,
-} from "../config/types.tts.js";
+import type { ResolvedTtsPersona, TtsModelOverrideConfig } from "../config/types.tts.js";
 import type { SpeechExpression } from "../llm/types.js";
-
+import type {
+  SpeechProviderConfig,
+  SpeechProviderId,
+  SpeechProviderOverrides,
+  SpeechSynthesisTarget,
+} from "./tts-runtime-types.js";
 export type { SpeechExpression } from "../llm/types.js";
-
-/** Canonical speech provider identifier after provider registry normalization. */
-export type SpeechProviderId = string;
-
-/** Output context requested from a speech provider. */
-export type SpeechSynthesisTarget = "audio-file" | "voice-note" | "telephony";
-
-/** Provider-owned normalized config map. */
-export type SpeechProviderConfig = TtsProviderConfig;
-
-/** Provider-owned per-request directive/persona overrides. */
-export type SpeechProviderOverrides = Record<string, unknown>;
 
 /** Admitted, provider/model-specific presentation vocabulary, not a markup dialect. */
 export type SpeechExpressionCapabilities = {
@@ -46,23 +35,6 @@ export type SpeechModelOverridePolicy = {
   [Key in keyof TtsModelOverrideConfig]-?: Exclude<TtsModelOverrideConfig[Key], undefined>;
 };
 
-/** Parsed directive overrides grouped by provider. */
-export type TtsDirectiveOverrides = {
-  ttsText?: string;
-  expression?: SpeechExpression;
-  provider?: SpeechProviderId;
-  providerOverrides?: Record<string, SpeechProviderOverrides>;
-};
-
-/** Result of parsing TTS directives from message text. */
-export type TtsDirectiveParseResult = {
-  cleanedText: string;
-  ttsText?: string;
-  hasDirective: boolean;
-  overrides: TtsDirectiveOverrides;
-  warnings: string[];
-};
-
 /** Context for checking whether a provider has enough config to synthesize. */
 export type SpeechProviderConfiguredContext = {
   cfg?: OpenClawConfig;
@@ -85,67 +57,20 @@ export type SpeechSynthesisRequest = {
   localServiceAdmission?: import("../agents/provider-local-service-target.js").ProviderLocalServiceLease["admission"];
 };
 
-/** Buffered speech synthesis result plus file/voice-note compatibility metadata. */
-export type SpeechSynthesisResult = {
-  audioBuffer: Buffer;
-  outputFormat: string;
-  fileExtension: string;
-  voiceCompatible: boolean;
-};
-
 export type SpeechSynthesisStreamRequest = SpeechSynthesisRequest;
-
-/** Streaming speech synthesis result; release frees provider transport resources. */
-export type SpeechSynthesisStreamResult = Omit<SpeechSynthesisResult, "audioBuffer"> & {
-  audioStream: ReadableStream<Uint8Array>;
-  release?: () => Promise<void>;
-};
 
 /** Telephony synthesis request for provider output that needs a fixed sample rate. */
 export type SpeechTelephonySynthesisRequest = Omit<SpeechSynthesisRequest, "target">;
-
-/** Telephony synthesis result with sample-rate metadata for call transports. */
-export type SpeechTelephonySynthesisResult = {
-  audioBuffer: Buffer;
-  outputFormat: string;
-  sampleRate: number;
-};
 
 /** Streaming telephony synthesis request with caller-owned cancellation. */
 export type SpeechTelephonySynthesisStreamRequest = SpeechTelephonySynthesisRequest & {
   signal?: AbortSignal;
 };
 
-/** Ordered telephony audio stream plus sample-rate metadata. */
-export type SpeechTelephonySynthesisStreamResult = {
-  audioStream: ReadableStream<Uint8Array>;
-  outputFormat: string;
-  sampleRate: number;
-  release?: () => Promise<void>;
-};
-
 /** Provider hook input for applying persona/config before synthesis. */
 export type SpeechProviderPrepareSynthesisContext = SpeechSynthesisRequest & {
   persona?: ResolvedTtsPersona;
   personaProviderConfig?: SpeechProviderConfig;
-};
-
-/** Optional provider-prepared synthesis overrides. */
-export type SpeechProviderPreparedSynthesis = {
-  text?: string;
-  providerConfig?: SpeechProviderConfig;
-  providerOverrides?: SpeechProviderOverrides;
-};
-
-/** Voice metadata returned by provider list-voices hooks. */
-export type SpeechVoiceOption = {
-  id: string;
-  name?: string;
-  category?: string;
-  description?: string;
-  locale?: string;
-  gender?: string;
-  personalities?: string[];
 };
 
 /** Provider voice-listing request with optional direct auth/URL overrides. */
@@ -173,13 +98,6 @@ export type SpeechDirectiveTokenParseContext = {
   selectedProvider?: SpeechProviderId;
   providerConfig?: SpeechProviderConfig;
   currentOverrides?: SpeechProviderOverrides;
-};
-
-/** Provider directive parser result. */
-export type SpeechDirectiveTokenParseResult = {
-  handled: boolean;
-  overrides?: SpeechProviderOverrides;
-  warnings?: string[];
 };
 
 /** Provider hook input for resolving talk-command speech config. */

@@ -1,6 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   hasOutboundReplyContent,
   resolveSendableOutboundReplyParts,
@@ -31,6 +30,9 @@ export function buildNoVisibleReplyFallbackText(runId?: string, language?: strin
 }
 
 export const QUEUE_CAP_REJECTION_TEXT = resolveUserMessages().replyQueueFull;
+
+export const COLLABORATIVE_STEERING_DISABLED_TEXT =
+  "Someone else’s turn is still running, and collaborative steering is disabled. Your message wasn’t queued. Resend it as /followup <message> to run it afterward.\n\nAdmins can enable collaborative steering with messages.queue.allowCollaborativeSteering: true.";
 
 type SourceReplySuppressionState = {
   ctx: { InboundEventKind?: InboundEventKind };
@@ -114,29 +116,6 @@ export function createFinalDispatchPayloadDedupeKey(payload: ReplyPayload): stri
   });
 }
 
-export function formatSuppressedReplyPayloadForLog(reply: ReplyPayload): string {
-  const metadata = getReplyPayloadMetadata(reply);
-  const text = normalizeOptionalString(reply.text);
-  const textPreview = text ? truncateUtf16Safe(text.replace(/\s+/g, " "), 160) : undefined;
-  const sendableParts = resolveSendableOutboundReplyParts(reply);
-  const richParts = [
-    reply.presentation ? "presentation" : undefined,
-    reply.interactive ? "interactive" : undefined,
-    reply.channelData ? "channelData" : undefined,
-  ].filter(Boolean);
-  return [
-    `textChars=${text?.length ?? 0}`,
-    `media=${sendableParts.mediaCount}`,
-    `rich=${richParts.length ? richParts.join("|") : "none"}`,
-    `error=${reply.isError === true}`,
-    `beforeAgentRunBlocked=${metadata?.beforeAgentRunBlocked === true}`,
-    `deliverDespiteSuppression=${metadata?.deliverDespiteSourceReplySuppression === true}`,
-    textPreview ? `textPreview=${JSON.stringify(textPreview)}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
 export async function maybeApplyTtsToReplyPayload(
   params: Parameters<
     Awaited<ReturnType<typeof ttsRuntimeLoader.load>>["maybeApplyTtsToPayload"]
@@ -152,14 +131,14 @@ export async function maybeApplyTtsToReplyPayload(
     return params.payload;
   }
   if (
-    !shouldAttemptTtsPayload({
+    !(await shouldAttemptTtsPayload({
       cfg: params.cfg,
       preparedTtsPreferences: params.preparedTtsPreferences,
       ttsAuto: params.ttsAuto,
       agentId: params.agentId,
       channelId: params.channel,
       accountId: params.accountId,
-    })
+    }))
   ) {
     return params.payload;
   }

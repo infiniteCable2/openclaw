@@ -1,11 +1,18 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
+  releaseSessionSourceAuthorities,
+  type PreparedSessionSourceAuthority,
+} from "../config/sessions/session-source-authority.js";
+import { GATEWAY_SHUTDOWN_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
+import { runBestEffortCleanup } from "../infra/non-fatal-cleanup.js";
+import {
   captureSqliteWorkerStateContext,
   runWithSqliteWorkerStateContext,
 } from "../infra/sqlite-worker-state-context.js";
-import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { getProcessCleanupBudget } from "../process/supervisor/cleanup-budget.js";
+import { GatewayRetainedWorkScope, type AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { registerOpenClawStateDatabaseAsyncResource } from "../state/openclaw-state-db-cache.js";
+import { registerOpenClawStatePathAsyncResource } from "../state/openclaw-state-db-cache.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 
@@ -17,18 +24,18 @@ const current = new AsyncLocalStorage<{
 const lifetimes = new Map<string, ReturnType<typeof createLifetime>>();
 
 function createLifetime({ admission }: OpenClawStateWorkerContext) {
-  let work = new AsyncWorkScope();
-  const scopes = new Set([work]);
-  let gateways = 0;
-  let closing = false;
-  const drain = (scope: AsyncWorkScope) =>
-    AsyncWorkScope.runWhenAllIdle(
-      () => [scope],
-      async () => {
-        await scope.drain();
-        scopes.delete(scope);
-      },
-    );
+  const work = new GatewayRetainedWorkScope(undefined, {
+    abortPendingAfterMs: () => {
+      const budget = getProcessCleanupBudget();
+      const remainingMs = budget
+        ? Math.max(0, budget.deadline - performance.now())
+        : GATEWAY_SHUTDOWN_TIMEOUT_MS;
+      // Embedded close and store retirement use this grace plus abort settlement;
+      // process exit applies its shorter outer prelude deadline.
+      return Math.min(30_000, Math.floor(remainingMs / 4));
+    },
+    reason: "[talk] voice session persistence shutdown grace expired; abort requested",
+  });
   const owner = {
     matchesDatabase(context: OpenClawStateWorkerContext) {
       const identity = context.admission.identity;
@@ -37,63 +44,27 @@ function createLifetime({ admission }: OpenClawStateWorkerContext) {
         admission.identity.birthtime === identity.birthtime
       );
     },
-    retainGateway() {
-      if (closing) {
-        work = new AsyncWorkScope();
-        scopes.add(work);
-        closing = false;
-      }
-      gateways += 1;
-      let released = false;
-      let pending: Promise<void> | undefined;
-      const beginClose = () => {
-        if (!released) {
-          released = true;
-          if (--gateways === 0) {
-            closing = true;
-            pending = drain(work);
-          }
-        }
-      };
-      return {
-        beginClose,
-        drain: () => {
-          beginClose();
-          return pending ?? Promise.resolve();
-        },
-      };
-    },
+    retainGateway: () => work.retainGateway(),
     assertOpen(inherited: boolean) {
-      if (closing && !inherited) {
+      if (work.isClosing && !inherited) {
         throw new Error("Voice session persistence admission is closed");
       }
     },
-    scope: () => work,
+    scope: () => work.scope,
   };
-  const unregister = registerOpenClawStateDatabaseAsyncResource({
-    async close(identity) {
-      if (
-        !identity ||
-        identity.key === admission.identity.key ||
-        identity.canonicalPath === admission.identity.canonicalPath
-      ) {
-        closing = true;
-        await Promise.all([...scopes].map(drain));
-        if (gateways > 0) {
-          // A store reopen retires admitted work, not the Gateways that still own cleanup.
-          work = new AsyncWorkScope();
-          scopes.add(work);
-          closing = false;
-        } else {
-          for (const [key, candidate] of lifetimes) {
-            if (candidate === owner) {
-              lifetimes.delete(key);
-            }
-          }
-          unregister();
+  const unregister = registerOpenClawStatePathAsyncResource(admission, async () => {
+    await work.beginDrainAll();
+    if (work.hasGateways) {
+      // A store reopen retires admitted work, not the Gateways that still own cleanup.
+      work.reopen();
+    } else {
+      for (const [key, candidate] of lifetimes) {
+        if (candidate === owner) {
+          lifetimes.delete(key);
         }
       }
-    },
+      unregister();
+    }
   });
   return owner;
 }
@@ -183,11 +154,6 @@ export async function withClientVoiceSessionSettlement<T>(
   }
 }
 
-export function assertClientVoiceSessionAdmission(source?: OpenClawStateWorkerContext): void {
-  const accepted = captureClientVoiceSessionSettlement(source);
-  accepted.release();
-}
-
 function matchesSettlementContext(
   left: OpenClawStateWorkerContext,
   right: OpenClawStateWorkerContext,
@@ -213,4 +179,35 @@ export function assertClientVoiceSessionSettlementCurrent(
 
 export function prepareClientVoiceSessionClose() {
   return lifetime(captureOpenClawStateWorkerContext()).retainGateway();
+}
+
+/** Await all cleanup without making an acknowledged operation appear replayable. */
+export async function withClientVoiceSessionResources<T>(
+  resources:
+    | readonly Pick<PreparedSessionSourceAuthority, "release">[]
+    | (() => readonly Pick<PreparedSessionSourceAuthority, "release">[]),
+  operation: () => Promise<T>,
+): Promise<T> {
+  const errors: unknown[] = [];
+  const release = () =>
+    releaseSessionSourceAuthorities(
+      typeof resources === "function" ? resources() : resources,
+      errors,
+    );
+  try {
+    return await operation();
+  } catch (error) {
+    errors.push(error);
+    throw error;
+  } finally {
+    if (errors.length > 0) {
+      await release();
+    } else {
+      await runBestEffortCleanup({
+        cleanup: release,
+        onError: (error) =>
+          console.warn("[talk] voice session operation completed before cleanup failed", error),
+      });
+    }
+  }
 }

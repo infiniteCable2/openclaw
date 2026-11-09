@@ -1,20 +1,16 @@
-import { isDeepStrictEqual } from "node:util";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ConnectErrorDetailCodes } from "../../../../packages/gateway-protocol/src/connect-error-details.js";
 import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
-import { getRuntimeConfig } from "../../../config/io.js";
-import type { PairedDeviceTokenIdentity } from "../../../infra/device-pairing-identity.js";
+import type { PairedDeviceTokenIdentity } from "../../../infra/device-pairing-core.types.js";
 import { resolveHostAccountName } from "../../../infra/host-account-name.js";
 import { prepareUserProfileRoleAuthority } from "../../../state/user-channel-identity-operations.js";
-import { prepareUserProfileCatalog } from "../../../state/user-profile-list.js";
 import {
   ensureCanonicalGatewayOwnerProfile,
   ensureCanonicalUserProfileForEmail,
+  ensureCanonicalUserProfileForOpenClawIdIdentity,
   ensureCanonicalUserProfileForTailscaleIdentity,
 } from "../../../state/user-profile-writes.js";
-import { classifyTailscaleLogin } from "../../../state/user-profiles-tailscale-login.js";
+import { adoptTailscaleProfileAvatar } from "../../../state/user-profiles.js";
 import { prepareGatewayRecipientProfile } from "../../expected-profile.js";
-import { shouldUseGatewayOwnerProfile } from "../../gateway-owner-profile.js";
 import { createAuthenticatedGitHubIdentitySync } from "../../github-user-identity.js";
 import {
   attachGatewayLocalUserIngress,
@@ -32,6 +28,10 @@ import {
   rejectUnavailableProfileConnect,
   resolveGatewayConnectPolicyFailure,
 } from "./connect-admission.js";
+import {
+  bindGatewayConnectOperatorAccess,
+  prepareGatewayConnectOperatorAccess,
+} from "./connect-operator-access.js";
 import type {
   DeviceAuthorizedGatewayConnect,
   GatewayConnectPhaseContext,
@@ -41,59 +41,60 @@ type PreparedConnectProfile = Awaited<ReturnType<typeof resolveAuthenticatedProf
   deviceBinding?: GatewayPairedDeviceProfileBinding;
 };
 
-/** The profile owner prepares identity, admission and its one retained connection lifecycle. */
-export async function prepareGatewayConnectProfile(params: {
+export function scheduleGatewayConnectProfileSync(params: {
   context: GatewayConnectPhaseContext;
   state: DeviceAuthorizedGatewayConnect;
-  deviceSource: PairedDeviceTokenIdentity | null;
-  shouldTrackPresence: boolean;
-}) {
-  const { context, state, deviceSource, shouldTrackPresence } = params;
-  const { authResult, role, authMethod, scopes: deviceScopes } = state;
-  const authenticatedUserId = normalizeOptionalString(authResult.user);
-  const tailscaleLogin = authResult.tailscaleIdentity
-    ? classifyTailscaleLogin(authResult.tailscaleIdentity.login)
-    : undefined;
-  const authenticatedUserIsTailscaleProvider = tailscaleLogin?.kind === "provider";
-  const profileLifecycle = createGatewayConnectProfileLifecycle(context, state);
-  const resolveAuthenticatedGitHubIdentity = createAuthenticatedGitHubIdentitySync({
-    authResult,
-    authConfig: context.configSnapshot.gateway?.auth,
-    requestHeaders: context.handler.upgradeReq.headers,
-    assertCurrent: profileLifecycle.assertCurrent,
-  });
-  const rolesConfigured = Boolean(context.configSnapshot.gateway?.roles);
-  const sharedSecretOperatorOwner =
-    role === "operator" && (authMethod === "token" || authMethod === "password");
-  // Synthetic callers bypass WS admission; ephemeral control-plane clients stay unprofiled.
-  const ownerProfileExpected =
-    shouldTrackPresence &&
-    shouldUseGatewayOwnerProfile({ role, authenticatedUserId, authMethod, rolesConfigured });
-  const profileAdmission = await resolveGatewayConnectProfileAdmission({
-    context,
-    state,
-    ownerProfileExpected,
-    authenticatedUserId,
-    deviceSource,
-    deviceScopes,
-    resolveAuthenticatedGitHubIdentity,
-    assertCurrent: profileLifecycle.assertCurrent,
-  });
-  if (!profileAdmission.ok) {
-    return { ok: false as const };
-  }
-  const preparedProfile = profileAdmission.prepared;
-  return {
-    ok: true as const,
-    authenticatedUserId,
-    authenticatedUserIsTailscaleProvider,
-    profileLifecycle,
-    resolveAuthenticatedGitHubIdentity,
-    sharedSecretOperatorOwner,
-    ownerProfileExpected,
-    preparedProfile,
-    authenticatedUserProfile: preparedProfile?.profile,
+  client: GatewayWsClient;
+  lifecycle: ReturnType<typeof createGatewayConnectProfileLifecycle>;
+  prepareIngress: (
+    profile: PreparedConnectProfile["profile"],
+  ) => ReturnType<typeof prepareGatewayLocalUserIngress>;
+}): void {
+  const { context, state, client, lifecycle, prepareIngress } = params;
+  const { connId, logGateway } = context.handler;
+  const { runDetachedConnectWork } = context;
+  const { authResult } = state;
+  const adoptProfileAvatar = async (profileId: string, profilePic: string) => {
+    const updated = await adoptTailscaleProfileAvatar(profileId, profilePic);
+    if (updated.avatarMime) {
+      await lifecycle.attach(updated.id, updated.updatedAt, prepareIngress);
+    }
   };
+  if (client.authenticatedGitHubIdentitySync) {
+    runDetachedConnectWork(
+      async () => {
+        const result = await client.authenticatedGitHubIdentitySync!();
+        const profile = client.authenticatedUserProfile;
+        const profilePic = authResult.tailscaleIdentity?.profilePic;
+        if (!profile?.hasAvatar && profilePic) {
+          try {
+            await adoptProfileAvatar(result.profileId, profilePic);
+          } catch (error) {
+            logGateway.warn(
+              `Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`,
+            );
+          }
+        }
+      },
+      (error) => {
+        logGateway.warn(`GitHub identity sync failed conn=${connId}: ${formatForLog(error)}`);
+      },
+    );
+  }
+  const tailscaleProfilePic = authResult.tailscaleIdentity?.profilePic;
+  const tailscaleProfileId = client.authenticatedUserProfile?.profileId;
+  if (
+    !client.authenticatedGitHubIdentitySync &&
+    tailscaleProfileId &&
+    !client.authenticatedUserProfile?.hasAvatar &&
+    tailscaleProfilePic
+  ) {
+    runDetachedConnectWork(
+      () => adoptProfileAvatar(tailscaleProfileId, tailscaleProfilePic),
+      (error) =>
+        logGateway.warn(`Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`),
+    );
+  }
 }
 
 /** One connection retains its profile authority through admission and later identity refreshes. */
@@ -103,15 +104,13 @@ export function createGatewayConnectProfileLifecycle(
 ) {
   const { handler } = context;
   let client: GatewayWsClient | undefined;
-  const rolesCurrent = () =>
-    isDeepStrictEqual(context.configSnapshot.gateway?.roles, getRuntimeConfig().gateway?.roles);
   const clientCurrent = () =>
     !handler.isClosed() &&
     handler.socket.readyState === WEBSOCKET_OPEN_READY_STATE &&
     (!client || (handler.getClient() === client && !client.invalidated));
   const assertCurrent = () => {
     handler.connectionWork.signal.throwIfAborted();
-    if (!clientCurrent() || resolveGatewayConnectPolicyFailure(context, state) || !rolesCurrent()) {
+    if (!clientCurrent() || resolveGatewayConnectPolicyFailure(context, state)) {
       throw new Error("Gateway profile acquisition authority expired");
     }
   };
@@ -120,7 +119,7 @@ export function createGatewayConnectProfileLifecycle(
     isCurrent: (prepared: PreparedConnectProfile | undefined) =>
       (!prepared ||
         (prepared.authority.isCurrent() && prepared.deviceBinding?.isCurrent() !== false)) &&
-      rolesCurrent(),
+      !resolveGatewayConnectPolicyFailure(context, state),
     bind: (registered: GatewayWsClient) => {
       client = registered;
     },
@@ -148,6 +147,13 @@ export function createGatewayConnectProfileLifecycle(
       } else {
         registered.authenticatedUserProfile = profile;
       }
+      // Deferred attachment must prepare access without replacing an admitted grant.
+      if (registered.internal?.operatorAccessAuthority === undefined) {
+        prepareGatewayConnectOperatorAccess(registered);
+        if (!bindGatewayConnectOperatorAccess(context, registered)) {
+          return;
+        }
+      }
       prepareGatewayRecipientProfile(registered, { identity: prepared.recipient });
       attachGatewayLocalUserIngress(registered, prepareIngress(profile));
       const { profileId: id, ...display } = profile;
@@ -160,19 +166,19 @@ async function resolveAuthenticatedProfile(
   profileId: string,
   updatedAt: number,
   assertCurrent?: () => void,
+  recordTiming?: GatewayConnectPhaseContext["recordAttachTiming"],
 ) {
   assertCurrent?.();
-  if (hasGatewayOperatorAccessPolicies(getRuntimeConfig())) {
-    (await prepareUserProfileCatalog()).release();
-    assertCurrent?.();
-  }
+  const authorityStartedAt = performance.now();
   const authority = await prepareUserProfileRoleAuthority(profileId);
+  recordTiming?.("profileAuthorityMs", authorityStartedAt);
   assertCurrent?.();
   if (!authority?.isCurrent()) {
     throw new Error("Gateway profile changed during acquisition");
   }
+  const projectionStartedAt = performance.now();
   const { id, displayName, avatarRevision, hasAvatar } = authority.display;
-  return {
+  const prepared = {
     profile: { profileId: id, displayName, avatarRevision, hasAvatar, updatedAt },
     authority,
     recipient: {
@@ -182,11 +188,16 @@ async function resolveAuthenticatedProfile(
       aliases: new Set(authority.aliases),
     },
   };
+  recordTiming?.("profileProjectionMs", projectionStartedAt);
+  return prepared;
 }
 
 /** Role and access policies need verified identity before admission; attribution alone may defer it. */
 export async function resolveGatewayConnectProfileAdmission(params: {
-  context: Pick<GatewayConnectPhaseContext, "configSnapshot"> &
+  context: Pick<
+    GatewayConnectPhaseContext,
+    "configSnapshot" | "recordAttachTiming" | "setConnectPhase"
+  > &
     Parameters<typeof rejectUnavailableProfileConnect>[0] & {
       handler: Pick<GatewayConnectPhaseContext["handler"], "connId" | "logWsControl">;
     };
@@ -251,23 +262,35 @@ export async function resolveGatewayConnectProfileAdmission(params: {
       return { ok: true };
     }
     const options = { assertCurrent: params.assertCurrent };
-    const ownerDisplayName = ownerProfileExpected ? await resolveHostAccountName() : undefined;
-    params.assertCurrent?.();
+    const ensureStartedAt = performance.now();
+    context.setConnectPhase?.("profile-ensure");
+    const member =
+      state.authMethod === "trusted-proxy" && state.authResult.openclawId?.kind === "member"
+        ? state.authResult.openclawId
+        : undefined;
     const profile = ownerProfileExpected
-      ? await ensureCanonicalGatewayOwnerProfile(ownerDisplayName ?? null, options)
-      : params.resolveAuthenticatedGitHubIdentity
-        ? await params.resolveAuthenticatedGitHubIdentity()
-        : state.authResult.tailscaleIdentity
-          ? await ensureCanonicalUserProfileForTailscaleIdentity(
-              state.authResult.tailscaleIdentity,
-              options,
-            )
-          : await ensureCanonicalUserProfileForEmail(authenticatedUserId!, options);
+      ? await ensureCanonicalGatewayOwnerProfile(resolveHostAccountName, options)
+      : member
+        ? await ensureCanonicalUserProfileForOpenClawIdIdentity(
+            { accountId: member.accountId },
+            options,
+          )
+        : params.resolveAuthenticatedGitHubIdentity
+          ? await params.resolveAuthenticatedGitHubIdentity()
+          : state.authResult.tailscaleIdentity
+            ? await ensureCanonicalUserProfileForTailscaleIdentity(
+                state.authResult.tailscaleIdentity,
+                options,
+              )
+            : await ensureCanonicalUserProfileForEmail(authenticatedUserId!, options);
     params.assertCurrent?.();
+    params.context.recordAttachTiming?.("profileEnsureMs", ensureStartedAt);
+    context.setConnectPhase?.("profile-authority");
     const prepared = await resolveAuthenticatedProfile(
       "profileId" in profile ? profile.profileId : profile.id,
       profile.updatedAt,
       params.assertCurrent,
+      context.recordAttachTiming,
     );
     params.assertCurrent?.();
     if (!prepared.authority.isCurrent()) {

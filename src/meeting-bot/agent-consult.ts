@@ -6,7 +6,7 @@ import type { PluginRuntime, RuntimeLogger } from "../plugins/runtime/types.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import {
   consultRealtimeVoiceAgent,
-  prepareRealtimeVoiceAgentExecutionContext,
+  buildRealtimeVoiceAgentToolAuthorityOverlay,
   type RealtimeVoiceAgentConsultResult,
 } from "../talk/agent-consult-runtime.js";
 import {
@@ -18,6 +18,7 @@ import { controlRealtimeVoiceAgentRun } from "../talk/agent-run-control.js";
 import type { RealtimeVoiceTool } from "../talk/provider-types.js";
 import { readSpeechRealtimeToolAbortSignal } from "../talk/speech/provider-continuity.js";
 import { prepareSpeechExpressionContext } from "../tts/expression-preparation.js";
+import { deliveryContextFromSession } from "../utils/delivery-context.read.js";
 import type {
   MeetingAgentConsultSurface,
   MeetingPlatformRuntimeMetadata,
@@ -241,6 +242,38 @@ async function consultMeetingAgent(
             params.onRunControl?.(async (text, onQueueAccepted, options) => {
               options?.signal?.throwIfAborted();
               options?.assertCurrent?.();
+              const readCurrentEntry = async () => {
+                options?.signal?.throwIfAborted();
+                options?.assertCurrent?.();
+                if (!isCurrent(sessionId)) {
+                  throw new Error("The active meeting consult is no longer current");
+                }
+                const entry = await params.runtime.agent.session.getSessionEntryAsync({
+                  agentId,
+                  storePath: params.runtime.agent.session.resolveStorePath(
+                    params.config.session?.store,
+                    { agentId },
+                  ),
+                  sessionKey,
+                  readConsistency: "latest",
+                });
+                options?.signal?.throwIfAborted();
+                options?.assertCurrent?.();
+                if (!isCurrent(sessionId) || entry?.sessionId !== sessionId) {
+                  throw new Error("The active meeting consult session has changed");
+                }
+                return entry;
+              };
+              let entry = await readCurrentEntry();
+              const buildOverlay = () =>
+                buildRealtimeVoiceAgentToolAuthorityOverlay({
+                  sessionEntry: entry,
+                  deliveryContext: deliveryContextFromSession(entry),
+                  messageProvider: params.surface.provider,
+                  senderId: params.senderId,
+                  spawnedBy: requesterSessionKey,
+                  toolsAllow: admittedToolsAllow,
+                });
               return controlRealtimeVoiceAgentRun({
                 language,
                 sessionKey,
@@ -266,20 +299,11 @@ async function consultMeetingAgent(
                   if (!isCurrent(sessionId)) {
                     throw new Error("The active meeting consult is no longer current");
                   }
-                  const prepared = prepareRealtimeVoiceAgentExecutionContext({
-                    cfg: params.config,
-                    agentRuntime: params.runtime.agent,
-                    agentId,
-                    senderId: params.senderId,
-                    sessionKey,
-                    spawnedBy: requesterSessionKey,
-                    messageProvider: params.surface.provider,
-                    toolsAllow: admittedToolsAllow,
-                  });
-                  if (!isCurrent(sessionId) || prepared.sessionEntry?.sessionId !== sessionId) {
-                    throw new Error("The active meeting consult session has changed");
-                  }
-                  return prepared.toolAuthorityOverlay;
+                  return buildOverlay();
+                },
+                prepareToolAuthorityOverlay: async (overlay) => {
+                  entry = await readCurrentEntry();
+                  Object.assign(overlay, buildOverlay());
                 },
               });
             });

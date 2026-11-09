@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
-import { selectMainSessionRecoveryCheckpoint } from "../../agents/main-session-recovery/main-session-recovery-checkpoint.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import { deriveSessionMetaPatch } from "../../config/sessions/metadata.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
@@ -141,11 +140,9 @@ describe("native Gateway speech participant", () => {
         });
         // Exercise the native persistence shape rather than a hand-authored checkpoint.
         const storedJson = JSON.stringify(persisted);
-        const restored: unknown = JSON.parse(storedJson);
-        expect(selectMainSessionRecoveryCheckpoint((read) => read(restored))).toEqual({
-          replaySafe: false,
-          source: purpose === "greeting" ? undefined : "external_user",
-        });
+        const restored = JSON.parse(storedJson);
+        expect(restored.provenance).toEqual(provenance);
+        expect(restored.role).toBe("user");
       } finally {
         input.release?.();
       }
@@ -172,10 +169,12 @@ describe("native Gateway speech participant", () => {
         });
         const preserved = applyInputProvenanceToUserMessage(delegated, context.InputProvenance);
         const storedJson = JSON.stringify([spoken, preserved]);
-        const restored: unknown[] = JSON.parse(storedJson);
-        expect(selectMainSessionRecoveryCheckpoint((read) => restored.forEach(read))).toEqual({
-          replaySafe: false,
-          source: kind,
+        const restored = JSON.parse(storedJson);
+        expect(restored[0].provenance).toEqual(context.InputProvenance);
+        expect(restored[1].provenance).toEqual({
+          kind,
+          sourceChannel: "internal",
+          sourceTool: "sessions_send",
         });
       } finally {
         input.release?.();

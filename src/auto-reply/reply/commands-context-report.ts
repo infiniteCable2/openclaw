@@ -7,14 +7,21 @@ import {
   buildBootstrapInjectionStats,
 } from "../../agents/bootstrap-budget.js";
 import { createRealConversationClassifier } from "../../agents/compaction-real-conversation.js";
+import { resolveModelContextTokenProjection } from "../../agents/context.js";
 import {
   resolveBootstrapMaxChars,
   resolveBootstrapTotalMaxChars,
 } from "../../agents/embedded-agent-helpers/bootstrap.js";
 import { estimateMessageChars } from "../../agents/embedded-agent-runner/tool-result-char-estimator.js";
+import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
+import { selectModelCatalogRuntimeEntry } from "../../agents/model-catalog-view.js";
+import { resolveModelContextWindowProfile } from "../../agents/model-context-window.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { buildSystemPromptReport } from "../../agents/system-prompt-report.js";
+import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
+import { resolveProjectedSessionContextTokens } from "../../config/sessions/context-token-provenance.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
+import { formatInjectedWorkspaceFileLabel } from "../../config/sessions/session-system-prompt-report.js";
 import {
   resolveFreshSessionTotalTokens,
   type SessionEntry,
@@ -170,12 +177,67 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
   }
 
   const cachedContextUsageTokens = resolveFreshSessionTotalTokens(targetSessionEntry);
+  const agentId = resolveContextReportAgentId(params);
+  const runtime = resolveEffectiveAgentRuntime({
+    cfg: params.cfg,
+    agentId,
+    sessionKey: params.sessionKey,
+    sessionEntry: targetSessionEntry,
+    provider: params.provider,
+    modelId: params.model,
+  });
+  const { getPreparedModelCatalogSnapshot } =
+    await import("../../agents/prepared-model-catalog.js");
+  const catalog = getPreparedModelCatalogSnapshot({
+    config: params.cfg,
+    agentId,
+    agentDir: params.agentDir,
+    workspaceDir: params.workspaceDir,
+  });
+  const entry = findModelInCatalog(catalog?.entries ?? [], params.provider, params.model);
+  const modelEntry = entry
+    ? selectModelCatalogRuntimeEntry({
+        entry,
+        routeVariants: catalog?.routeVariants ?? [],
+        runtimeId: runtime,
+        allowApiFallback: false,
+      }).entry
+    : catalog
+      ? undefined
+      : findModelInCatalog(
+          (params.thinkingCatalog ?? []).filter((candidate) =>
+            candidate.nativeRuntime
+              ? candidate.nativeRuntime === runtime
+              : ["openclaw", "auto", candidate.provider].includes(runtime),
+          ),
+          params.provider,
+          params.model,
+        );
+  const modelContext = resolveModelContextTokenProjection({
+    cfg: params.cfg,
+    provider: params.provider,
+    model: params.model,
+    modelContextTokens: modelEntry?.contextTokens,
+    modelContextWindow: resolveModelContextWindowProfile({
+      catalogEntry: modelEntry,
+      selected: targetSessionEntry?.contextWindow,
+    }).contextTokens,
+    allowCacheLookup: false,
+  });
   const session = {
     totalTokens: cachedContextUsageTokens ?? null,
     totalTokensFresh: targetSessionEntry ? cachedContextUsageTokens !== undefined : null,
     inputTokens: targetSessionEntry?.inputTokens ?? null,
     outputTokens: targetSessionEntry?.outputTokens ?? null,
-    contextTokens: params.contextTokens ?? null,
+    contextTokens:
+      resolveProjectedSessionContextTokens({
+        entry: targetSessionEntry,
+        provider: params.provider,
+        model: params.model,
+        agentHarnessId: runtime,
+        resolvedContextTokens: modelContext.contextTokens,
+        authoredContextTokens: modelContext.authoredContextTokens,
+      }) ?? null,
   } as const;
 
   if (sub === "map") {
@@ -253,6 +315,7 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
   }
 
   const fileLines = report.injectedWorkspaceFiles.map((f) => {
+    const label = formatInjectedWorkspaceFileLabel(f, report.injectedWorkspaceFiles);
     const nativeUnverified = f.injectionStatus === "native_unverified";
     const status = nativeUnverified
       ? "NATIVE/UNVERIFIED"
@@ -267,7 +330,7 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
       : f.missing
         ? "0"
         : formatCharsAndTokens(f.injectedChars);
-    return `- ${f.name}: ${status} | raw${nativeUnverified ? "(local)" : ""} ${raw} | injected ${injected}`;
+    return `- ${label}: ${status} | raw${nativeUnverified ? "(local)" : ""} ${raw} | injected ${injected}`;
   });
 
   const sandboxLine = `Sandbox: mode=${report.sandbox?.mode ?? "unknown"} sandboxed=${report.sandbox?.sandboxed ?? false}`;
@@ -284,7 +347,8 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
   const skillsLine = `Skills list (system prompt text): ${formatCharsAndTokens(report.skills.promptChars)} (${skillNames.length} skills)`;
   const skillsNamesLine = `Skills: ${formatNameList(skillNames, 20)}`;
   const toolsNamesLine = `Tools: ${formatNameList(toolNames, 30)}`;
-  const systemPromptLine = `System prompt (${report.source}): ${formatCharsAndTokens(report.systemPrompt.chars)} (Project Context ${formatCharsAndTokens(report.systemPrompt.projectContextChars)})`;
+  const estimatedChars = report.systemPrompt.estimatedChars;
+  const systemPromptLine = `System prompt (${report.source}): ${formatCharsAndTokens(report.systemPrompt.chars)} (Project Context ${formatCharsAndTokens(report.systemPrompt.projectContextChars)}${estimatedChars ? `; estimated ${formatCharsAndTokens(estimatedChars)}` : ""})`;
   const workspaceLabel = report.workspaceDir ?? params.workspaceDir;
   const sessionAgentId = resolveContextReportAgentId(params);
   const bootstrapMaxChars =

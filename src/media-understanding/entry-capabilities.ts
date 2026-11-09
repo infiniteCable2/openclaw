@@ -38,16 +38,20 @@ export function resolveEffectiveMediaEntryCapabilities(params: {
   if (!providerId) {
     return undefined;
   }
-  return params.providerRegistry.get(providerId)?.capabilities;
+  const provider = params.providerRegistry.get(providerId);
+  return provider?.sharedEntryCapabilities === undefined
+    ? provider?.capabilities
+    : provider.sharedEntryCapabilities.filter((capability) =>
+        provider.capabilities?.includes(capability),
+      );
 }
 
-export function matchesMediaEntryCapability(params: {
+export function matchesImageEntryCapability(params: {
   entry: MediaUnderstandingModelConfig;
-  capability: MediaUnderstandingCapability;
   providerRegistry: MediaUnderstandingCapabilityRegistry;
 }): boolean {
   const capabilities = resolveEffectiveMediaEntryCapabilities(params);
-  return capabilities?.includes(params.capability) ?? false;
+  return capabilities?.includes("image") ?? false;
 }
 
 /** Explicit image opt-in must not eagerly discover providers for native vision turns. */
@@ -62,9 +66,8 @@ export function hasExplicitImageUnderstandingConfig(params: {
     if (configured) {
       return configured.includes("image");
     }
-    return matchesMediaEntryCapability({
+    return matchesImageEntryCapability({
       entry,
-      capability: "image",
       providerRegistry:
         typeof params.providerRegistry === "function"
           ? params.providerRegistry()

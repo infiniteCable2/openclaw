@@ -2,7 +2,7 @@ import { normalizeMimeType } from "@openclaw/media-core/mime";
 import { Type } from "typebox";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { captureAmbientGatewayOperatorAuthority } from "../../gateway/operator-invocation-authority.js";
-import { resolveMediaUnderstandingScope } from "../../media-understanding/scope.js";
+import { resolveScopeDecision } from "../../media-understanding/resolve.js";
 import {
   classifyMediaReferenceSource,
   normalizeMediaReferenceSource,
@@ -66,11 +66,13 @@ export function createVideoInspectTool(options: VideoInspectOptions): AnyAgentTo
     options.modelHasVision !== true ||
     config?.enabled === false ||
     (!frameSource && config?.frames?.enabled !== true) ||
-    resolveMediaUnderstandingScope({
+    resolveScopeDecision({
       scope: config?.scope,
-      channel: options.agentChannel ?? options.currentChannelId ?? undefined,
-      chatType: options.currentChatType,
-      sessionKey: options.runSessionKey ?? options.agentSessionKey,
+      ctx: {
+        Surface: options.agentChannel ?? options.currentChannelId ?? undefined,
+        ChatType: options.currentChatType,
+        SessionKey: options.runSessionKey ?? options.agentSessionKey,
+      },
     }) === "deny"
   ) {
     return null;

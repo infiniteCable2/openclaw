@@ -4,7 +4,7 @@ import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { parseSpeechExpression } from "../../tts/expression.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import type { MessageActionInput, MessageActionResult } from "./message-action-contracts.js";
-import { assertMessageDeliveryCurrent } from "./message-action-execution.js";
+import { captureMessageDeliveryAuthority } from "./message-action-execution.js";
 import { buildMessagePayload } from "./message-action-send.js";
 
 /** An explicit destination always retains the native external routing path. */
@@ -28,8 +28,9 @@ export async function deliverToCurrentSourceReplyTarget(
   if (!target || target.runId !== input.runId || target.sessionId !== input.sessionId) {
     throw new Error("Current-source reply target does not belong to this run");
   }
+  const assertDeliveryCurrent = captureMessageDeliveryAuthority(input);
   const assertCurrent = () => {
-    assertMessageDeliveryCurrent(input);
+    assertDeliveryCurrent();
     target.assertCurrent();
   };
   assertCurrent();

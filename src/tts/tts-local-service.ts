@@ -2,7 +2,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ensureProviderLocalService } from "../agents/provider-local-service.js";
 import type { ProviderLocalServiceConfig } from "../config/types.provider-local-service.js";
-import type { SpeechProviderConfig } from "./provider-types.js";
+import type { SpeechProviderConfig } from "./tts-runtime-types.js";
 
 export async function acquireSpeechProviderLocalService(params: {
   providerId: string;

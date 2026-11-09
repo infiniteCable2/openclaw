@@ -21,8 +21,9 @@ const boundary = vi.hoisted(() => ({
 }));
 // The Gateway scenarios cover real settled/queued runtime and worker admission.
 // mock-isolation: Probe native ownership decisions without creating model backends.
-vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
-  isEmbeddedAgentRunActive: boundary.busy,
+vi.mock("../../sessions/session-controller.lifecycle.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/session-controller.lifecycle.js")>()),
+  isCompetingSessionControllerWorkActive: boundary.busy,
 }));
 // mock-isolation: Admission guards must defer before any source discovery or database write.
 vi.mock("./conversation-knowledge.js", () => ({

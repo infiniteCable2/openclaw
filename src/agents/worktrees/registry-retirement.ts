@@ -1,9 +1,8 @@
 import { GitCommandTimeoutError } from "../../infra/git-exec.js";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
-import { createSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
-import type { SqliteWorkerOperationSettlement } from "../../infra/sqlite-worker-operation-settlement.js";
 import type { WorktreeWorkerOperations } from "./dispatch.worker.js";
 import { readRegistryWorktreeForMutation } from "./registry-read.js";
+import { runWorktreeRegistryCommand } from "./registry-run-end.js";
 import { createWorktreeRemovalClaimsGuard } from "./registry.js";
 import {
   captureWorktreeRunEndContext,
@@ -13,13 +12,13 @@ import {
 } from "./run-end-lifecycle.js";
 import type { WorktreeRemovalDeferral } from "./types.js";
 
-export function isWorktreeRemovalTimeout(error: unknown): boolean {
+export function removalDeferralReason(error: unknown): string | undefined {
   for (let cause = error; cause instanceof Error; cause = cause.cause) {
     if (cause instanceof GitCommandTimeoutError) {
-      return true;
+      return "Git removal timed out; cleanup deferred";
     }
   }
-  return false;
+  return undefined;
 }
 
 /** Keep a failed attempt with the registry revision that still owns its checkout. */
@@ -106,53 +105,32 @@ async function mutateCleanupRecord<Key extends keyof WorktreeRetirementOperation
   assertCurrent?: () => void,
 ) {
   const context = captureWorktreeRunEndContext(env);
-  const captured = structuredClone(command);
   const mutation = captureWorktreeRegistryMutation(context, [
     {
-      id: captured.input.observed.id,
-      fields: [captured.type === "worktrees.retireMissing" ? "removal" : "cleanup"],
+      id: command.input.observed.id,
+      fields: [command.type === "worktrees.retireMissing" ? "removal" : "cleanup"],
     },
   ]);
   return await withWorktreeRunEnd(env, async () => {
-    let settled: Promise<SqliteWorkerOperationSettlement> | undefined;
-    const execute = async () => {
-      const { runOpenClawStateWorkerOperation } =
-        await import("../../state/openclaw-state-worker-store.js");
-      return await runOpenClawStateWorkerOperation(context, (scope) => scope.execute(captured), {
-        createAdmission: (operation) => {
-          settled = operation.settled;
-          return {
-            nativeLocations: [context.admission.databasePath],
-            admission: createSqliteWorkerOperationAdmission((request, grant) => {
-              if (request.stage === "transaction") {
-                mutation.observeTransaction();
-              }
-              context.admission.assertCurrent();
-              mutation.assertAuthority(() => assertCurrent?.());
-              grant();
-            }),
-          };
+    try {
+      return await runWorktreeRegistryCommand(context, (scope) => scope.execute(command), {
+        assertCurrent: () => mutation.assertAuthority(() => assertCurrent?.()),
+        mutation,
+        unknownMessage: "Worktree retirement outcome is unknown",
+        recover: (committed) => {
+          if (committed.result.kind === "unknown") {
+            throw new SqliteWorkerError(
+              "Worktree retirement committed but its result is unavailable; reread the registry",
+              "unavailable",
+            );
+          }
+          // SAFETY: The retained admission owns this typed command and its worker's captured result.
+          return { value: committed.result.value as WorktreeRetirementOperations[Key]["output"] };
         },
       });
-    };
-    const result = await execute().then(
-      (value) => ({ ok: true as const, value }),
-      (error: unknown) => ({ ok: false as const, error }),
-    );
-    const outcome = await settled;
-    mutation.settle(outcome?.kind === "unknown");
-    if (outcome?.kind === "unknown") {
-      const error = new SqliteWorkerError(
-        "Worktree retirement outcome is unknown",
-        "outcome-unknown",
-      );
+    } catch (error) {
       retainWorktreeRunEndFailure(error);
       throw error;
     }
-    if (!result.ok) {
-      retainWorktreeRunEndFailure(result.error);
-      throw result.error;
-    }
-    return result.value;
   });
 }

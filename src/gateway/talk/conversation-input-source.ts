@@ -13,7 +13,7 @@ import type { GatewayContextResolver } from "../server-methods/types.js";
 import { captureGatewayPrivateConversationAudience } from "../session-input-participant.js";
 import { prepareSessionMutationFacts } from "../session-sharing-preparation.js";
 import type { TalkOperatorRunSource } from "./client-agent-runtime.js";
-import type { TalkAgentConsultAuthority } from "./client-gateway-control.js";
+import type { TalkAgentConsultAuthority } from "./client-tool-authority.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 const log = createSubsystemLogger("gateway/talk");

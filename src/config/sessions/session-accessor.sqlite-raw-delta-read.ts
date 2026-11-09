@@ -1,21 +1,27 @@
 import { sql } from "kysely";
-import { getNodeSqliteKysely, executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import {
+  getNodeSqliteKysely,
+  executeSqliteQuerySync,
+  iterateSqliteQuerySync,
+} from "../../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import type {
   SessionTranscriptRawDeltaLimits,
   SessionTranscriptRawDeltaResult,
 } from "./session-accessor.sqlite-contract.js";
-import type { CurrentTranscriptProjection } from "./session-accessor.sqlite-projection-read.js";
+import {
+  readProjectionTranscriptPayload,
+  type CurrentTranscriptProjection,
+} from "./session-accessor.sqlite-projection-read.js";
 import { resolveTranscriptBoundaryWindow } from "./session-accessor.sqlite-reset-window.js";
 import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import { readSessionTranscriptHotWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
-import { normalizeVisibleMessageLimit } from "./session-accessor.sqlite-visible-cursor.js";
 import {
-  RAW_TRANSCRIPT_CURSOR_VERSION,
+  bootstrapRawTranscriptCursor,
   encodeRawTranscriptCursor,
+  normalizeRawDeltaLimits,
   parseRawTranscriptCursor,
-  type RawTranscriptCursor,
 } from "./session-transcript-raw-cursor.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import {
@@ -23,46 +29,7 @@ import {
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
 import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
-
 export { createTranscriptRawDeltaCursor } from "./session-transcript-raw-cursor.js";
-
-const DEFAULT_RAW_TRANSCRIPT_MAX_EVENTS = 1_000;
-const DEFAULT_RAW_TRANSCRIPT_MAX_BYTES = 1_000_000;
-const MAX_RAW_TRANSCRIPT_EVENTS = 10_000;
-const MAX_RAW_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
-
-function bootstrapCursor(
-  scope: ResolvedTranscriptReadScope,
-  generation: string,
-): RawTranscriptCursor {
-  return {
-    agentId: scope.agentId,
-    generation,
-    lastSeq: -1,
-    sessionId: scope.sessionId,
-    version: RAW_TRANSCRIPT_CURSOR_VERSION,
-  };
-}
-
-/** Host adapters validate limits before acquiring a database handle. */
-export function normalizeRawDeltaLimits(limits: SessionTranscriptRawDeltaLimits) {
-  if (limits.customMessageDetailsOnly && limits.customTypes === undefined) {
-    throw new RangeError("Report details reads require explicit custom message types");
-  }
-  const maxEvents = normalizeVisibleMessageLimit(
-    limits.maxEvents,
-    DEFAULT_RAW_TRANSCRIPT_MAX_EVENTS,
-    MAX_RAW_TRANSCRIPT_EVENTS,
-    "maxEvents",
-  );
-  const maxBytes = normalizeVisibleMessageLimit(
-    limits.maxBytes,
-    DEFAULT_RAW_TRANSCRIPT_MAX_BYTES,
-    MAX_RAW_TRANSCRIPT_BYTES,
-    "maxBytes",
-  );
-  return { maxEvents, maxBytes };
-}
 
 /** Read inside the caller's validated projection snapshot on its exact connection. */
 export function readTranscriptRawDeltaFromProjection(
@@ -84,7 +51,11 @@ export function readTranscriptRawDeltaFromProjection(
     maxEvents,
     maxBytes,
     beforeEventSeq,
-    { generation: projection.generation, indexedSeq: projection.state.indexedSeq },
+    {
+      generation: projection.generation,
+      indexedSeq: projection.state.indexedSeq,
+      readColdPayload: projection.readColdPayload,
+    },
     limits.customTypes,
     limits.activePathOnly || limits.modelContextOnly,
     limits.modelContextOnly
@@ -99,13 +70,17 @@ export function readTranscriptRawDeltaFromProjection(
 
 /** The caller owns this synchronous snapshot and any already-captured frontier. */
 export function readRawDeltaInTransaction(
-  database: import("node:sqlite").DatabaseSync,
+  database: import("../../infra/sql-connection.js").EngineConnection,
   scope: ResolvedTranscriptReadScope,
   encodedCursor: string | undefined,
   maxEvents: number,
   maxBytes: number,
   beforeEventSeq: number | undefined,
-  snapshot?: { generation: string | undefined; indexedSeq: number },
+  snapshot?: {
+    generation: string | undefined;
+    indexedSeq: number;
+    readColdPayload?: (seq: number) => string;
+  },
   customTypes?: readonly string[],
   activePathOnly = false,
   modelWindow?: { keptActivePositions: readonly number[]; boundaryActivePosition?: number },
@@ -119,7 +94,7 @@ export function readRawDeltaInTransaction(
     return { kind: "missing" };
   }
 
-  const initialCursor = bootstrapCursor(scope, generation);
+  const initialCursor = bootstrapRawTranscriptCursor(scope, generation);
   const reset = (
     reason: Extract<SessionTranscriptRawDeltaResult, { kind: "reset" }>["reason"],
   ) => ({
@@ -205,12 +180,12 @@ export function readRawDeltaInTransaction(
     .$if(customTypes !== undefined, (query) =>
       query
         .where(
-          /* kysely-allow-raw: Fixed navigation field narrows reports without loading bodies. */ sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`,
+          /* kysely-allow-raw: Fixed navigation field narrows reports without loading bodies. */ sql<string>`json_extract(${transcriptEventNavigationSql(database)}, '$.type')`,
           "=",
           "custom_message",
         )
         .where(
-          /* kysely-allow-raw: Fixed navigation field; selected types remain bound values. */ sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.customType')`,
+          /* kysely-allow-raw: Fixed navigation field; selected types remain bound values. */ sql<string>`json_extract(${transcriptEventNavigationSql(database)}, '$.customType')`,
           "in",
           [...(customTypes ?? [])],
         ),
@@ -234,6 +209,8 @@ export function readRawDeltaInTransaction(
   let lastSeq = cursor.lastSeq;
   let hasMore = false;
   let requiredBytes: number | undefined;
+  const coldDetails = customMessageDetailsOnly && snapshot?.readColdPayload !== undefined;
+  const selectedDetails = new Map<number, Record<string, unknown>>();
   // Return and charge only report metadata. Compressed rows still decode inside
   // SQLite; quoted bodies never cross the reader boundary into catch-up again.
   const eventJson = customMessageDetailsOnly
@@ -252,6 +229,7 @@ export function readRawDeltaInTransaction(
           : /* kysely-allow-raw: Canonical native bytes plus the existing record delimiter. */ sql<number>`${transcriptEventReadBytesSql()} + 1`
         ).as("serialized_bytes"),
       ])
+      .$if(coldDetails, (query) => query.select(["event_json", "event_zstd", "event_utf8_bytes"]))
       .$if(beforeEventSeq !== undefined, (query) => query.where("seq", "<", beforeEventSeq!))
       .orderBy("seq", "asc");
     // Grow bulk reads to preserve full-page throughput while bounding an early byte rejection.
@@ -262,7 +240,28 @@ export function readRawDeltaInTransaction(
         metadataQuery.where("seq", ">", lastSeq).limit(limit),
       ).rows;
       for (const row of metadata) {
-        const rowBytes = sqliteNumber(row.serialized_bytes);
+        let rowBytes = sqliteNumber(row.serialized_bytes);
+        let details: Record<string, unknown> | undefined;
+        if (coldDetails) {
+          const event = JSON.parse(
+            readProjectionTranscriptPayload(
+              snapshot!,
+              {
+                event_json: row.event_json ?? null,
+                event_zstd: row.event_zstd ?? null,
+                event_utf8_bytes: row.event_utf8_bytes ?? null,
+              },
+              row.seq,
+            ),
+          );
+          details = {
+            type: event.type ?? null,
+            id: event.id ?? null,
+            customType: event.customType ?? null,
+            details: event.details ?? null,
+          };
+          rowBytes = Buffer.byteLength(JSON.stringify(details)) + 1;
+        }
         if (selectedCount >= maxEvents || serializedBytes + rowBytes > maxBytes) {
           hasMore = true;
           if (selectedCount === 0) {
@@ -273,26 +272,47 @@ export function readRawDeltaInTransaction(
         serializedBytes += rowBytes;
         selectedCount += 1;
         lastSeq = sqliteNumber(row.seq);
+        if (details) {
+          selectedDetails.set(lastSeq, details);
+        }
       }
       if (hasMore || metadata.length < limit) {
         break;
       }
     }
   }
+  const payloadSource = snapshot ?? {};
   const rows =
     selectedCount === 0
       ? []
-      : executeSqliteQuerySync(
-          database,
-          transcript
-            .select([eventJson.as("event_json"), "seq"])
-            .where("seq", ">", cursor.lastSeq)
-            .where("seq", "<=", lastSeq)
-            .orderBy("seq", "asc"),
-        ).rows.map((row) => ({
-          event: JSON.parse(row.event_json),
-          seq: sqliteNumber(row.seq),
-        }));
+      : coldDetails
+        ? [...selectedDetails].map(([seq, event]) => ({ seq, event }))
+        : customMessageDetailsOnly && !snapshot?.readColdPayload
+          ? executeSqliteQuerySync(
+              database,
+              transcript
+                .select([eventJson.as("event_json"), "seq"])
+                .where("seq", ">", cursor.lastSeq)
+                .where("seq", "<=", lastSeq)
+                .orderBy("seq", "asc"),
+            ).rows.map((row) => ({
+              event: JSON.parse(row.event_json),
+              seq: sqliteNumber(row.seq),
+            }))
+          : Array.from(
+              iterateSqliteQuerySync(
+                database,
+                transcript
+                  .select(["event_json", "event_zstd", "event_utf8_bytes", "seq"])
+                  .where("seq", ">", cursor.lastSeq)
+                  .where("seq", "<=", lastSeq)
+                  .orderBy("seq", "asc"),
+              ),
+              (row) => ({
+                event: JSON.parse(readProjectionTranscriptPayload(payloadSource, row, row.seq)),
+                seq: sqliteNumber(row.seq),
+              }),
+            );
   const nextCursor = encodeRawTranscriptCursor({ ...cursor, lastSeq });
   return {
     kind: "page",

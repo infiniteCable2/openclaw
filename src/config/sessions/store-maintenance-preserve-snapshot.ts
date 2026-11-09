@@ -1,8 +1,10 @@
-import type { SessionEntryMaintenancePlan } from "./session-accessor.sqlite-lifecycle-types.js";
-import { SessionMaintenancePreservationConflictError } from "./session-mutation-conflict-error.js";
+import { SqliteSessionMutationConflictError } from "./session-mutation-conflict-error.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
-import type { SessionMaintenancePreservationSnapshot } from "./store-maintenance-preserve-snapshot.types.js";
-import type { InternalSessionEntry as SessionEntry } from "./types.js";
+import type {
+  SessionMaintenancePreservationPlan,
+  SessionMaintenancePreservationSnapshot,
+} from "./store-maintenance-preserve-snapshot.types.js";
+import type { InternalSessionEntry, SessionEntry } from "./types.js";
 
 export function addSessionMaintenancePreserveKeys(
   keys: Set<string>,
@@ -39,7 +41,7 @@ export function collectSessionWorkAdmissionKeysFromSnapshot(
 /** Resolve parent-owned protection against the worker's current row projection. */
 export function resolveSessionMaintenancePreserveKeys(params: {
   snapshot: SessionMaintenancePreservationSnapshot;
-  store: Record<string, SessionEntry>;
+  store: Record<string, InternalSessionEntry>;
   baseKeys?: Iterable<string | undefined>;
 }): Set<string> {
   const keys = new Set(params.snapshot.providerKeys);
@@ -77,7 +79,7 @@ export function resolveSessionMaintenancePreserveKeys(params: {
 export function assertMaintenancePreservationCompatible(
   sent: SessionMaintenancePreservationSnapshot,
   current: SessionMaintenancePreservationSnapshot,
-  plans?: readonly SessionEntryMaintenancePlan[],
+  plans?: readonly SessionMaintenancePreservationPlan[],
 ): void {
   const added = new Set(
     (["providerKeys", "workIdentities", "lifecycleIdentities"] as const).flatMap((kind) => {
@@ -107,6 +109,6 @@ export function assertMaintenancePreservationCompatible(
         plan.stateDeletePlans.some((row) => protectsRow("", row.sessionId)),
     )
   ) {
-    throw new SessionMaintenancePreservationConflictError();
+    throw new SqliteSessionMutationConflictError("session maintenance");
   }
 }

@@ -54,7 +54,7 @@ export function selectBoundedModelRequests(
   const owners = new Map<AgentMessage, AgentMessage>();
   // Occurrence ownership, including displaced results, forbids cuts through a tool frame.
   // Frames are ordered by their assistant, so advancing the cut needs only one pass.
-  for (const frame of original.frames) {
+  for (const frame of original) {
     const start = positions.get(frame.assistant)!;
     for (const occurrence of frame.occurrences) {
       if (occurrence.sourceResult) {
@@ -76,7 +76,7 @@ export function selectBoundedModelRequests(
     if (start < 0) {
       start = candidates.length - 1;
     }
-    for (const frame of original.frames.toReversed()) {
+    for (const frame of original.toReversed()) {
       if (
         frame.occurrences.some(
           ({ sourceResult }) => sourceResult && positions.get(sourceResult)! >= start,
@@ -134,7 +134,7 @@ export function selectBoundedModelRequests(
   );
   // Removing an older repeated ID must not turn an ambiguous result into a different call's result.
   const selectedOwners = new Map<AgentMessage, AgentMessage>();
-  for (const frame of classifyToolUseResultPairing(selectedMessages).frames) {
+  for (const frame of classifyToolUseResultPairing(selectedMessages)) {
     for (const occurrence of frame.occurrences) {
       if (occurrence.sourceResult) {
         selectedOwners.set(occurrence.sourceResult, frame.assistant);

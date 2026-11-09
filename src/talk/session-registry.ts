@@ -8,6 +8,7 @@ type TalkSessionStorageTarget = Readonly<{
   sessionKey: string;
   canonicalKey: string;
   storePath: string;
+  assertCurrent(cfg: import("../config/types.openclaw.js").OpenClawConfig): void;
 }>;
 
 export type TalkConnectionPresentation = Readonly<{
@@ -43,7 +44,12 @@ export type UnifiedTalkSessionRecord = (
       relaySessionId: string;
       sessionTarget: TalkSessionStorageTarget;
     }
-  | { kind: "transcription-relay"; connId: string; transcriptionSessionId: string }
+  | {
+      kind: "transcription-relay";
+      connId: string;
+      transcriptionSessionId: string;
+      sessionTarget?: TalkSessionStorageTarget;
+    }
   | { kind: "managed-room"; handoffId: string; roomId: string }
   | { kind: "external-speech" }
   | TalkSpeechRelayRecord
@@ -60,7 +66,7 @@ export function rememberUnifiedTalkSession(sessionId: string, session: UnifiedTa
 }
 
 export function getUnifiedTalkSession(sessionId: string): UnifiedTalkSessionRecord {
-  const session = unifiedTalkSessions.get(sessionId);
+  const session = unifiedTalkSessions.get(sessionId.trim());
   if (!session) {
     throw new Error("Unknown Talk session");
   }
@@ -68,11 +74,11 @@ export function getUnifiedTalkSession(sessionId: string): UnifiedTalkSessionReco
 }
 
 export function findUnifiedTalkSession(sessionId: string): UnifiedTalkSessionRecord | undefined {
-  return unifiedTalkSessions.get(sessionId);
+  return unifiedTalkSessions.get(sessionId.trim());
 }
 
 export function forgetUnifiedTalkSession(sessionId: string): void {
-  unifiedTalkSessions.delete(sessionId);
+  unifiedTalkSessions.delete(sessionId.trim());
 }
 
 /** Connection cleanup consumes this owner's records, not a shadow session inventory. */
@@ -86,7 +92,7 @@ export function publishTalkConnectionPresentation(
   presentation: TalkConnectionPresentation,
 ): () => void {
   presentation.assertCurrent();
-  const current = unifiedTalkSessions.get(sessionId);
+  const current = unifiedTalkSessions.get(sessionId.trim());
   if (current?.presentation) {
     throw new Error("Talk session presentation already has an owner");
   }
@@ -95,7 +101,10 @@ export function publishTalkConnectionPresentation(
   session.presentationRef = `talk_${randomUUID().replaceAll("-", "")}`;
   unifiedTalkSessions.set(sessionId, session);
   return () => {
-    if (unifiedTalkSessions.get(sessionId) !== session || session.presentation !== presentation) {
+    if (
+      unifiedTalkSessions.get(sessionId.trim()) !== session ||
+      session.presentation !== presentation
+    ) {
       return;
     }
     delete session.presentation;
@@ -116,7 +125,7 @@ export function selectTalkConnectionPresentations() {
     }
     const assertCurrent = () => {
       if (
-        unifiedTalkSessions.get(sessionId) !== session ||
+        unifiedTalkSessions.get(sessionId.trim()) !== session ||
         session.presentation !== presentation ||
         session.presentationRef !== connectionRef
       ) {

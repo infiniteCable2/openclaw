@@ -26,7 +26,18 @@ import {
   type ConversationPrivateAudience,
 } from "../sessions/conversation-private-audience.js";
 
-type VoiceSessionInitializationParams = {
+export type VoiceSessionInitializationParams = {
+  requester?: SessionSourceAssertion;
+  source?: SessionSourceAssertion;
+  assertCurrent?: () => void;
+  prepareWorkerGrant?: () => Promise<
+    import("../config/sessions/session-source-authority.js").SessionSourceWriteGrant
+  >;
+  onCommitted?: (entry: import("../config/sessions/types.js").InternalSessionEntry) => void;
+  onCommittedSource?: (
+    source: import("../config/sessions/session-entry-read-source.types.js").CapturedSessionEntryReadSource,
+    entry: import("../config/sessions/types.js").InternalSessionEntry,
+  ) => void;
   agentId: string;
   sessionKey: string;
   storePath?: string;
@@ -142,6 +153,10 @@ async function ensureConversationSession(
             },
           }
         : {}),
+      onCreated: (created) => {
+        params.onCommitted?.(created.entry);
+        params.onCommittedSource?.(created.readSource, created.entry);
+      },
       commitGuard: () => {
         assertCurrent();
         privateAudience?.assertCurrent();
@@ -175,8 +190,30 @@ async function ensureConversationSession(
 
 /** Ensure Talk has the same canonical agent-session row that chat turns append to. */
 export async function ensureClientVoiceAgentSessionEntry(
-  params: VoiceSessionInitializationParams,
+  input: VoiceSessionInitializationParams,
 ): Promise<string> {
+  // This generic creation path copies root context atomically through the native
+  // session initializer. Retain the caller's full read grant across preparation.
+  const grant = await input.prepareWorkerGrant?.();
+  const params: VoiceSessionInitializationParams = {
+    ...input,
+    assertCommitAllowed: composeSessionSourceAssertion(
+      [input.assertCommitAllowed, input.requester, input.source],
+      (check) => {
+        input.assertCurrent?.();
+        grant?.assertCurrent();
+        check();
+      },
+    ),
+  };
+  try {
+    return await ensureConversationEntry(params);
+  } finally {
+    await grant?.release();
+  }
+}
+
+async function ensureConversationEntry(params: VoiceSessionInitializationParams): Promise<string> {
   if (
     params.cfg &&
     !isSubagentSessionKey(params.sessionKey) &&

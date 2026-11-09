@@ -1,5 +1,7 @@
+import { getRequesterProfile } from "../auto-reply/requester-profile.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
+import { isCronSessionKey } from "./session-key-utils.js";
 
 // Core and SDK chunks share one private key; context spreads retain the same consumed fact.
 export const sessionParticipantInput = Symbol.for("openclaw.sessionParticipantInput");
@@ -76,15 +78,34 @@ export function readSessionConversationParticipant(
   ) {
     return undefined;
   }
-  return captureConsistentConversationParticipant(
-    ctx[sessionParticipantInput]?.map((input) => input.identity) ?? [],
-  );
+  const identities = ctx[sessionParticipantInput]?.map((input) => input.identity) ?? [];
+  const requester = getRequesterProfile(ctx);
+  const profiles = identities.filter((identity) => identity.type === "profile");
+  // Native channel input records both transport provenance and its attested person.
+  // Only that live, context-bound requester may unify these different identity kinds.
+  if (
+    requester &&
+    profiles.length > 0 &&
+    profiles.every((identity) => identity.id === requester.id) &&
+    identities.every((identity) => identity.type === "profile" || identity.type === "remote")
+  ) {
+    return captureConsistentConversationParticipant(profiles);
+  }
+  return captureConsistentConversationParticipant(identities);
 }
 
 /** Only external turns may load the session's personal preferences; sender identity does not select them. */
 export function isSessionPersonalBootstrapTurn(ctx: SessionParticipantInputContext): boolean {
+  if (
+    ctx.InternalTurnSource !== undefined ||
+    ctx.InputProvenance?.kind === "inter_session" ||
+    ctx.InputProvenance?.kind === "internal_system"
+  ) {
+    // Isolated cron sessions keep shared defaults; wakes in other sessions keep their selection.
+    return !isCronSessionKey(ctx.SessionKey);
+  }
+  // Unqualified external turns must still omit the overlay and restart the prompt series.
   return (
-    ctx.InternalTurnSource === undefined &&
     (!ctx.InputProvenance || ctx.InputProvenance.kind === "external_user") &&
     Boolean(ctx[sessionParticipantInput]?.length)
   );

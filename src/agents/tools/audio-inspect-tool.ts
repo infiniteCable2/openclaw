@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { captureAmbientGatewayOperatorAuthority } from "../../gateway/operator-invocation-authority.js";
-import { resolveMediaUnderstandingScope } from "../../media-understanding/scope.js";
+import { resolveScopeDecision } from "../../media-understanding/resolve.js";
 import {
   classifyMediaReferenceSource,
   normalizeMediaReferenceSource,
@@ -70,13 +70,13 @@ function numberParam(
 export function createAudioInspectTool(options: AudioInspectOptions): AnyAgentTool | null {
   const config = options.config?.tools?.media?.audio;
   const scopeContext = {
-    channel: options.agentChannel ?? options.currentChannelId ?? undefined,
-    chatType: options.currentChatType,
-    sessionKey: options.runSessionKey ?? options.agentSessionKey,
+    Surface: options.agentChannel ?? options.currentChannelId ?? undefined,
+    ChatType: options.currentChatType,
+    SessionKey: options.runSessionKey ?? options.agentSessionKey,
   };
   if (
     config?.enabled === false ||
-    resolveMediaUnderstandingScope({ scope: config?.scope, ...scopeContext }) === "deny"
+    resolveScopeDecision({ scope: config?.scope, ctx: scopeContext }) === "deny"
   ) {
     return null;
   }
@@ -233,7 +233,11 @@ export function createAudioInspectTool(options: AudioInspectOptions): AnyAgentTo
               agentId: options.agentId,
               agentDir: options.agentDir,
               workspaceDir: options.workspaceDir,
-              scopeContext,
+              scopeContext: {
+                channel: scopeContext.Surface,
+                chatType: scopeContext.ChatType,
+                sessionKey: scopeContext.SessionKey,
+              },
               language,
               prompt,
               signal: audio.signal,

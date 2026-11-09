@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveReplySessionRolloverState } from "../../auto-reply/reply/session-rollover-state.js";
 import {
-  clearGenerationPrivateFieldsForRotatedSessionPatch,
-  generationValidPrivateFieldsForSameSession,
-} from "../../plugin-sdk/session-store-runtime-internal.js";
-import {
   captureSessionConversationTopology,
   mergeSessionConversationTopology,
   preserveSessionConversationTopology,
@@ -16,6 +12,7 @@ import {
   projectPublicSessionEntryPatch,
   SESSION_ENTRY_PRIVATE_CLEAR_PATCH,
 } from "./session-entry-projection.js";
+import { preserveGenerationPrivateFields } from "./session-entry-public-patch.js";
 import { mergeSessionEntry, type InternalSessionEntry } from "./types.js";
 
 const topology: SessionConversationTopology = {
@@ -98,24 +95,29 @@ describe("internal conversation topology", () => {
   it("strips public copies and honors public rotation clear instead of global preservation", () => {
     expect(projectPublicSessionEntry(entry)).not.toHaveProperty("conversationTopology");
     expect(projectPublicSessionEntryPatch(entry)).not.toHaveProperty("conversationTopology");
-    const rotated = clearGenerationPrivateFieldsForRotatedSessionPatch(entry, {
+    const rotated = preserveGenerationPrivateFields(entry, {
       sessionId: "different-session",
     });
     const replacement: InternalSessionEntry = mergeSessionEntry(entry, rotated);
     expect(replacement.conversationTopology).toBeUndefined();
     expect(
-      generationValidPrivateFieldsForSameSession(entry, entry.sessionId, entry.lifecycleRevision),
+      preserveGenerationPrivateFields(entry, {
+        sessionId: entry.sessionId,
+        lifecycleRevision: entry.lifecycleRevision,
+      }),
     ).toMatchObject({ conversationTopology: topology });
     expect(
-      generationValidPrivateFieldsForSameSession(
-        entry,
-        "different-session",
-        entry.lifecycleRevision,
-      ),
-    ).toBeUndefined();
+      preserveGenerationPrivateFields(entry, {
+        sessionId: "different-session",
+        lifecycleRevision: entry.lifecycleRevision,
+      }),
+    ).toHaveProperty("conversationTopology", undefined);
     expect(
-      generationValidPrivateFieldsForSameSession(entry, entry.sessionId, "different-lifecycle"),
-    ).toBeUndefined();
+      preserveGenerationPrivateFields(entry, {
+        sessionId: entry.sessionId,
+        lifecycleRevision: "different-lifecycle",
+      }),
+    ).toHaveProperty("conversationTopology", undefined);
     const recreated: InternalSessionEntry = mergeSessionEntry(undefined, {
       ...entry,
       ...SESSION_ENTRY_PRIVATE_CLEAR_PATCH,

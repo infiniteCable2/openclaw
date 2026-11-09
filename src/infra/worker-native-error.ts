@@ -1,4 +1,8 @@
-type NativeErrorValue = NativeWorkerError | { kind: "value"; value: unknown };
+import { stringifyNonErrorCause } from "@openclaw/normalization-core/error-coercion";
+
+type NativeErrorValue =
+  | NativeWorkerError
+  | { kind: "value"; value: string | number | boolean | bigint | null | undefined };
 
 type NativeWorkerError = {
   kind: "error";
@@ -28,7 +32,19 @@ export function encodeNativeWorkerFailure(value: unknown): NativeWorkerFailure {
   const seen = new Map<Error, NativeWorkerError>();
   const encode = (current: unknown): NativeErrorValue => {
     if (!(current instanceof Error)) {
-      return { kind: "value", value: current };
+      // Native host objects need not be cloneable; only their diagnostic text crosses the port.
+      return {
+        kind: "value",
+        value:
+          current === null ||
+          current === undefined ||
+          typeof current === "string" ||
+          typeof current === "number" ||
+          typeof current === "boolean" ||
+          typeof current === "bigint"
+            ? current
+            : stringifyNonErrorCause(current),
+      };
     }
     const prior = seen.get(current);
     if (prior) {
@@ -102,15 +118,12 @@ export function decodeNativeWorkerFailure(value: NativeWorkerFailure): unknown {
     error.name = current.name;
     error.stack = current.stack;
     const defineField = (key: string, fieldValue: unknown, enumerable = false) => {
-      const descriptor: PropertyDescriptor = {
+      Object.defineProperty(error, key, {
         value: fieldValue,
         writable: true,
         configurable: true,
-      };
-      if (enumerable) {
-        descriptor.enumerable = true;
-      }
-      Object.defineProperty(error, key, descriptor);
+        enumerable,
+      });
     };
     for (const key of ["code", "errcode", "errno"] as const) {
       if (current[key] !== undefined) {

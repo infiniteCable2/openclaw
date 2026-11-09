@@ -58,7 +58,6 @@ export function resetSessionEntryInWorker(
             }
           },
           beforeWrite: () => source.assertCurrent(),
-          release: async () => {},
         })
       : undefined,
     async run(worker, commit) {
@@ -86,6 +85,7 @@ export function resetSessionEntryInWorker(
             target: params.target,
             prepared,
             nextEntry,
+            creationOperation: params.creationOperation,
             resetBoundary: params.resetBoundary,
           },
         }),

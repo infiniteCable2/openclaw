@@ -14,7 +14,7 @@ import {
   withTranscriptWriteLock,
 } from "./session-accessor.sqlite-transcript-write.js";
 import type { SessionSourceAssertion } from "./session-source-authority.js";
-import { loadTranscriptEvents } from "./session-transcript-events.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 
 // One real native fixture covers worker and retained synchronous compatibility routes.
 it("captures both locked append variants before preparation and retains original commit authority", async () => {

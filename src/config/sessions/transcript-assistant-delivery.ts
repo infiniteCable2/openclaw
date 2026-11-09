@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { stripMixedSilentReplyTokens } from "../../auto-reply/reply/mixed-silent-reply-tokens.js";
 import type { AssistantDeliveryTtsFacts, AssistantMessage } from "../../llm/types.js";
 import { readAssistantTextBlocksForPhase } from "../../shared/chat-message-content.js";
 import { createTextPartCodeRegionResolver } from "../../shared/text/code-regions.js";
@@ -15,6 +16,7 @@ export { projectAssistantTranscriptText } from "./transcript-assistant-delivery-
 
 type AssistantDirectiveMessage = {
   content?: unknown;
+  display?: boolean;
   openclawDelivery?: unknown;
   role?: unknown;
 };
@@ -98,6 +100,7 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
     }
   }
   let facts: AssistantDeliveryFacts | undefined;
+  let textChanged = false;
   for (const [index, block] of blocks.entries()) {
     const reply = expectDefined(parsed[index], "parsed assistant part");
     const speech = expectDefined(tts[index], "prepared assistant speech part");
@@ -106,6 +109,7 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
       continue;
     }
     block.text = expectDefined(normalizedTexts[index], "normalized assistant text part");
+    textChanged ||= block.text !== original[index];
     if (!hasDeliveryFacts) {
       continue;
     }
@@ -121,6 +125,13 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
   if (nativeSpeech) {
     facts ??= {};
     facts.tts ??= nativeSpeech;
+  }
+  if (
+    textChanged &&
+    message.display === undefined &&
+    stripMixedSilentReplyTokens(original.join("")) === null
+  ) {
+    Object.assign(message, { display: true });
   }
   if (facts) {
     const currentFacts = isRecord(message.openclawDelivery) ? message.openclawDelivery : undefined;

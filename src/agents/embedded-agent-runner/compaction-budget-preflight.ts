@@ -1,5 +1,4 @@
 import { convertToLlm, type CustomMessage } from "../sessions/messages.js";
-import { pruneProcessedHistoryImages } from "./run/history-image-prune.js";
 import { shouldPreemptivelyCompactBeforePrompt } from "./run/preemptive-compaction.js";
 
 /**
@@ -13,13 +12,12 @@ export function prepareCompactionBudgetPreflight(
   },
 ) {
   const { pendingMessages, ...budget } = params;
-  const history = pruneProcessedHistoryImages(params.messages) ?? params.messages;
   return shouldPreemptivelyCompactBeforePrompt({
     ...budget,
-    // Native live-boundary additions use the same custom-to-LLM projection.
-    // Pending media is unprocessed; prune only the already durable history.
+    // Preserve the native replay prefix, including images until its compaction
+    // boundary. Pending knowledge uses the same custom-to-LLM projection.
     messages: pendingMessages?.length
-      ? [...history, ...convertToLlm([...pendingMessages])]
-      : history,
+      ? [...params.messages, ...convertToLlm([...pendingMessages])]
+      : params.messages,
   });
 }

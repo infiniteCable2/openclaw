@@ -27,7 +27,7 @@ import type {
 } from "./conversation-publication.types.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import type { ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
-import { readTranscriptMessageByScopedIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
+import { readTranscriptMessageByScopedIdempotencyKey } from "./session-accessor.sqlite-transcript-identity.js";
 import { assertSessionConversationRootEntry } from "./session-conversation-admission.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";

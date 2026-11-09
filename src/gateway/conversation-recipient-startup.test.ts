@@ -37,10 +37,10 @@ vi.mock("../agents/session-maintenance/coordinator.js", () => ({
 }));
 // mock-isolation: Exercise the coalescing owner without process-global command queue admission.
 vi.mock("../process/background-work.js", () => ({
-  createBackgroundWorkOwner: () => ({
-    enqueue: (run: (signal: AbortSignal) => Promise<void>, options: { abortSignal: AbortSignal }) =>
-      Promise.resolve().then(() => run(options.abortSignal)),
-  }),
+  getBackgroundOwnerLane: (owner: string) => `background:${owner}`,
+}));
+vi.mock("../process/command-queue.js", () => ({
+  enqueueCommandInLane: (_lane: string, run: () => Promise<void>) => Promise.resolve().then(run),
 }));
 
 function row(name: string, enrolled = true) {

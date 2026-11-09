@@ -6,7 +6,8 @@ import {
   readConversationKnowledgeReports,
   readConversationKnowledgeRootReports,
 } from "./conversation-knowledge-history.js";
-import { appendTranscriptEventSync, upsertSessionEntryCore } from "./session-accessor.js";
+import { upsertSessionEntryCore } from "./session-accessor.js";
+import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
 import { withSessionTranscriptDeltaReader } from "./session-transcript-delta-read.js";
 import * as nativeDelta from "./session-transcript-delta-read.js";

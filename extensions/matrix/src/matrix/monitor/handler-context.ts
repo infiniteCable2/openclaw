@@ -1,10 +1,13 @@
-import { toInboundMediaFactsWithMetadata } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  createChannelInboundEnvelopeBuilderAsync,
+  toInboundMediaFactsWithMetadata,
+} from "openclaw/plugin-sdk/channel-inbound";
 import {
   evaluateSupplementalContextVisibility,
   resolveChannelContextVisibilityMode,
 } from "openclaw/plugin-sdk/context-visibility-runtime";
+import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { resolveMatrixReplyToEventId } from "../relations.js";
 import { resolveMatrixAckReactionConfig } from "./ack-config.js";
 import { resolveMatrixAllowListMatch } from "./allowlist.js";
@@ -50,9 +53,6 @@ export async function resolveMatrixInboundContext(config: {
     getRoomInfo,
     historyLimit,
     dmSessionScope,
-    resolveStorePath: resolveStorePathImpl,
-    createChannelInboundEnvelopeBuilderAsync: createChannelInboundEnvelopeBuilderImpl,
-    finalizeInboundContext,
   } = handler;
   const {
     cfg,
@@ -77,6 +77,7 @@ export async function resolveMatrixInboundContext(config: {
     canDetectMention,
     shouldRequireMention,
     commandAuthorized,
+    isControlCommand,
     locationPayload,
     media,
     preflightAudioTranscript,
@@ -108,22 +109,16 @@ export async function resolveMatrixInboundContext(config: {
     }
     return true;
   };
-  const shouldIncludeRoomContextSender = (
-    kind: "thread" | "quote" | "history",
-    contextSenderId?: string,
-  ): boolean =>
+  const shouldIncludeRoomContextSender = (contextSenderId?: string): boolean =>
     evaluateSupplementalContextVisibility({
       mode: contextVisibilityMode,
-      kind,
+      kind: "thread",
       senderAllowed: isRoomContextSenderAllowed(contextSenderId),
     }).include;
   let threadContext =
     ingress.threadContext ??
     (threadRootId ? await resolveThreadContext({ roomId, eventId: threadRootId }) : undefined);
-  if (
-    threadContext?.senderId &&
-    !shouldIncludeRoomContextSender("thread", threadContext.senderId)
-  ) {
+  if (threadContext?.senderId && !shouldIncludeRoomContextSender(threadContext.senderId)) {
     logVerboseMessage(`matrix: drop thread root context (mode=${contextVisibilityMode})`);
     threadContext = undefined;
   }
@@ -141,21 +136,21 @@ export async function resolveMatrixInboundContext(config: {
   }
   const replySenderAllowed =
     !replyContext?.senderId || isRoomContextSenderAllowed(replyContext.senderId);
-  const roomInfo = isRoom ? await getRoomInfo(roomId) : undefined;
+  const roomInfo = isRoom ? await getRoomInfo(roomId, { currentName: true }) : undefined;
   const roomName = roomInfo?.name;
   const envelopeFrom = isDirectMessage ? senderName : (roomName ?? roomId);
   const textWithId = `${bodyText}\n[matrix event id: ${messageId} room: ${roomId}]`;
-  const storePath = resolveStorePathImpl(cfg.session?.store, {
+  const storePath = resolveStorePath(cfg.session?.store, {
     agentId: _route.agentId,
   });
-  const buildEnvelope = await createChannelInboundEnvelopeBuilderImpl({ cfg, route: _route });
+  const buildEnvelope = await createChannelInboundEnvelopeBuilderAsync({ cfg, route: _route });
   const sharedDmNoticeSessionKey = threadTarget
     ? _route.mainSessionKey || _route.sessionKey
     : _route.sessionKey;
   const sharedDmContextNotice = isDirectMessage
     ? hasExplicitSessionBinding
       ? null
-      : resolveMatrixSharedDmContextNotice({
+      : await resolveMatrixSharedDmContextNotice({
           storePath,
           sessionKey: sharedDmNoticeSessionKey,
           roomId,
@@ -204,7 +199,6 @@ export async function resolveMatrixInboundContext(config: {
     channelIngress,
     channel: "matrix",
     contextVisibility: contextVisibilityMode,
-    finalize: finalizeInboundContext,
     supplemental: {
       quote: replyContext
         ? {
@@ -249,10 +243,12 @@ export async function resolveMatrixInboundContext(config: {
       nativeChannelId: roomId,
       threadId: threadTarget,
     },
+    // Preserve model ancestry without requesting a room-transcript fork.
     route: {
       ..._route,
       routeSessionKey: _route.sessionKey,
-      parentSessionKey:
+      parentSessionKey: undefined,
+      modelParentSessionKey:
         threadTarget && _route.matchedBy !== "binding.channel" ? _route.mainSessionKey : undefined,
     },
     reply: {
@@ -270,6 +266,7 @@ export async function resolveMatrixInboundContext(config: {
     },
     sessionTranscript: { historyLimit: isRoom ? historyLimit : 0 },
     access: {
+      toolPolicy: isRoom ? (roomConfig?.tools ?? {}) : undefined,
       ...(isRoom
         ? {
             mentions: {
@@ -285,9 +282,10 @@ export async function resolveMatrixInboundContext(config: {
     },
     extra: {
       GroupSubject: isRoom ? (roomName ?? roomId) : undefined,
+      GroupChannel: isRoom ? roomId : undefined,
       GroupId: isRoom ? roomId : undefined,
       ...locationPayload?.context,
-      CommandSource: "text" as const,
+      CommandSource: isControlCommand ? ("text" as const) : undefined,
       NativeDirectUserId: isDirectMessage ? senderId : undefined,
     },
   });
@@ -295,8 +293,7 @@ export async function resolveMatrixInboundContext(config: {
     logVerboseMessage(`matrix: drop reply context (mode=${contextVisibilityMode})`);
   }
 
-  const preview = truncateUtf16Safe(bodyText, 200).replace(/\n/g, "\\n");
-  logVerboseMessage(`matrix inbound: room=${roomId} from=${senderId} preview="${preview}"`);
+  logVerboseMessage(`matrix inbound: room=${roomId} from=${senderId} chars=${bodyText.length}`);
 
   const replyTarget = ctxPayload.To;
   if (!replyTarget) {

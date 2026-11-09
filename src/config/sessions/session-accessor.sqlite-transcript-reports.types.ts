@@ -13,6 +13,7 @@ export type TranscriptReportContextAdmission = {
   limits: Pick<SessionModelContextLimits, "maxBytes" | "maxEvents">;
   onDeferred(): void;
 };
+import type { InternalSessionEntry } from "./types.js";
 
 export type AbortedSessionTranscriptPartial = {
   runId: string;
@@ -35,6 +36,7 @@ export type CustomMessageReportAppend = {
   customType: string;
   content: string;
   display: boolean;
+  excludeFromContext?: boolean;
   details?: unknown;
 };
 /** Exact producer-owned receipt metadata; this selector grants no source access. */
@@ -132,6 +134,8 @@ export type TranscriptReportCommit = {
     target: NonNullable<InternalSessionTranscriptUpdate["target"]>;
     lifecycleRevision?: string;
   };
+  entry?: InternalSessionEntry;
+  fullEntry?: InternalSessionEntry;
 };
 
 export type TranscriptReportBatchCommit = TranscriptReportCommit &

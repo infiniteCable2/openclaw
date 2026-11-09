@@ -3,6 +3,7 @@ import {
   errorShape,
   validateTalkSessionCloseParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
+import { operatorScopeSatisfied } from "../../../shared/operator-scope-compat.js";
 import { forgetUnifiedTalkSession, getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import type { GatewayRequestHandlers } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
@@ -19,12 +20,28 @@ export const talkSessionLifecycleHandlers: GatewayRequestHandlers = {
     validateTalkSessionCloseParams,
     async ({ params, respond, client }) => {
       const session = getUnifiedTalkSession(params.sessionId);
+      if (
+        !operatorScopeSatisfied("operator.talk", client?.connect.scopes ?? []) &&
+        (session.kind !== "transcription-relay" || !session.sessionTarget)
+      ) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "Session dictation cannot control a Talk session"),
+        );
+        return;
+      }
       if (session.kind === "realtime-relay") {
         const connId = requireUnifiedTalkSessionConn(session, client?.connId);
-        await stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId });
+        await stopTalkRealtimeRelaySession({
+          relaySessionId: session.relaySessionId,
+          connId,
+          disposition: params.disposition,
+        });
       } else if (session.kind === "transcription-relay") {
         const connId = requireUnifiedTalkSessionConn(session, client?.connId);
-        stopTalkTranscriptionRelaySession({
+        await stopTalkTranscriptionRelaySession({
+          discard: params.discard,
           transcriptionSessionId: session.transcriptionSessionId,
           connId,
         });
@@ -45,7 +62,9 @@ export const talkSessionLifecycleHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      forgetUnifiedTalkSession(params.sessionId);
+      if (session.kind !== "transcription-relay") {
+        forgetUnifiedTalkSession(params.sessionId);
+      }
       respond(true, { ok: true }, undefined);
     },
     (error) => talkRequestError(error, "session"),

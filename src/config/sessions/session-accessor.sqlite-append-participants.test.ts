@@ -6,6 +6,7 @@ import {
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { setRuntimeConfigSnapshot } from "../runtime-snapshot.js";
 import { listSessionEntriesCore } from "./session-accessor.entry.js";
 import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";
 import { recordSessionParticipant } from "./session-accessor.sqlite-participants.native.js";
@@ -45,6 +46,7 @@ it.each(["session-id", "lifecycle-revision"] as const)(
 
 it("reuses current participants across transcript appends and publishes new actors", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    setRuntimeConfigSnapshot({});
     const scope = {
       agentId: "main",
       env: state.env,
@@ -79,7 +81,7 @@ it("reuses current participants across transcript appends and publishes new acto
       for (let index = 0; index < 100; index++) {
         const result = await append(index);
         expect(result).toMatchObject({
-          appendedCount: 1,
+          messages: [{ appended: true }],
           sessionEntry: {
             participants: [{ identity: { type: "agent", id: "existing" } }],
             participantCount: 1,
@@ -97,7 +99,7 @@ it("reuses current participants across transcript appends and publishes new acto
         promptedAt: 2,
       });
       expect(await append(100)).toMatchObject({
-        appendedCount: 1,
+        messages: [{ appended: true }],
         sessionEntry: {
           participants: ["existing", "new"].map((id) => ({ identity: { type: "agent", id } })),
           participantCount: 2,

@@ -63,7 +63,7 @@ describe("prepared compaction budget preflight", () => {
     expect({ history, pending }).toEqual(before);
   });
 
-  it("keeps prospective images unprocessed while pruning only durable old images", () => {
+  it("counts retained and prospective images exactly as the native replay boundary", () => {
     const history = completedHistory(3_100_000);
     const pending: CustomMessage[] = [
       {
@@ -78,8 +78,8 @@ describe("prepared compaction budget preflight", () => {
         timestamp: 10,
       },
     ];
-    expect(prepareCompactionBudgetPreflight({ ...budget, messages: history }).shouldCompact).toBe(
-      false,
+    expect(prepareCompactionBudgetPreflight({ ...budget, messages: history })).toEqual(
+      shouldPreemptivelyCompactBeforePrompt({ ...budget, messages: history }),
     );
     expect(
       prepareCompactionBudgetPreflight({ ...budget, messages: history, pendingMessages: pending })
@@ -92,8 +92,13 @@ describe("prepared compaction budget preflight", () => {
     const messages = completedHistory(3_100_000);
     const originalImage = messages[0];
     const result = prepareCompactionBudgetPreflight({ ...budget, messages });
-    expect(result.route).toBe("fits");
-    expect(result.shouldCompact).toBe(false);
+    const shortPayloads = completedHistory(64);
+    expect(result).toEqual(
+      prepareCompactionBudgetPreflight({ ...budget, messages: shortPayloads }),
+    );
+    // Images remain replayable until native truncation/compaction. Their token
+    // cost counts even when their earlier answer was already persisted.
+    expect(result.shouldCompact).toBe(true);
     expect(messages[0]).toBe(originalImage);
     if (originalImage?.role !== "user" || !Array.isArray(originalImage.content)) {
       throw new Error("Expected the original image turn");

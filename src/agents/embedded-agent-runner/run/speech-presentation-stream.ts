@@ -1,8 +1,9 @@
 import type { AssistantMessage, AssistantMessageEvent, TextContent } from "../../../llm/types.js";
+import { mapAssistantMessageStream } from "../../../llm/utils/stream-wrapper.js";
 import { parseSpeechPresentation } from "../../../tts/speech-presentation.js";
 import type { StreamFn } from "../../runtime/index.js";
 import { createStreamIteratorWrapper } from "../../stream-iterator-wrapper.js";
-import { mapAssistantMessageStream, wrapStreamObjectEvents } from "./stream-wrapper.js";
+import { wrapStreamObjectEvents } from "./stream-wrapper.js";
 
 function projectText(block: TextContent, final: boolean, expressionEnabled: boolean): TextContent {
   // A projected block can cross several native stream/result consumers. Its

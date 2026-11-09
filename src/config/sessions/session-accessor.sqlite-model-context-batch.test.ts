@@ -13,7 +13,7 @@ import {
   type SessionTranscriptModelContextRange,
   type SessionTranscriptModelContextRangeResult,
 } from "./session-accessor.sqlite-model-context.js";
-import { readActiveTranscriptEntryAnchor } from "./session-accessor.sqlite-transcript-anchor.js";
+import { readActiveTranscriptEntryAnchor } from "./session-accessor.sqlite-transcript-admitted-read.js";
 import { readSessionTranscriptModelContextsAsync } from "./session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
 import * as transcriptReadSource from "./session-transcript-read-source.js";

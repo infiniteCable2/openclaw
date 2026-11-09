@@ -1,6 +1,4 @@
 /**
- * Realtime voice tool definition and helpers for delegating work to OpenClaw.
- *
  * Voice providers call this function tool when a spoken request needs normal
  * agent tools, memory, workspace context, or current information before reply.
  */
@@ -26,7 +24,6 @@ export type RealtimeVoiceAgentConsultArgs = {
   question: string;
   context?: string;
   responseStyle?: string;
-  confirmationId?: string;
 };
 export type RealtimeVoiceAgentConsultTranscriptEntry = {
   role: "user" | "assistant";
@@ -54,11 +51,6 @@ export const REALTIME_VOICE_AGENT_CONSULT_TOOL: RealtimeVoiceTool = {
       responseStyle: {
         type: "string",
         description: "Optional style hint for the spoken answer.",
-      },
-      confirmationId: {
-        type: "string",
-        description:
-          "Server-issued confirmation id from a prior VOICE_CONFIRMATION_REQUIRED result, supplied only after the user explicitly confirms aloud.",
       },
     },
     required: ["question"],
@@ -205,12 +197,10 @@ export function parseRealtimeVoiceAgentConsultArgs(args: unknown): RealtimeVoice
   }
   const context = normalizeOptionalString(record.context);
   const responseStyle = normalizeOptionalString(record.responseStyle);
-  const confirmationId = normalizeOptionalString(record.confirmationId);
   return {
     question,
     context,
     responseStyle,
-    ...(confirmationId ? { confirmationId } : {}),
   };
 }
 

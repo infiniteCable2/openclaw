@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
@@ -6,8 +7,9 @@ import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/sess
 import {
   runSessionStartupMigration,
   type SessionStartupMigrationLogger,
-} from "../config/sessions/startup-migration.js";
+} from "../config/sessions/startup-migration-runtime.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveDatabaseFamilyEngines } from "../infra/database-engine/registry.js";
 import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
@@ -17,7 +19,6 @@ import {
   readAgentDatabaseAdmissionRefusal,
 } from "../state/agent-database-admission.js";
 import { readAgentDeletionJournalStatusInWorker } from "../state/agent-deletion-journal.read.js";
-import { AGENT_DATABASE_PREFLIGHT_CONCURRENCY } from "../state/openclaw-agent-db-contract.js";
 import type { OpenClawAgentDatabaseOptions } from "../state/openclaw-agent-db-contract.js";
 import {
   createOpenClawAgentDatabasePathMatcher,
@@ -26,10 +27,9 @@ import {
 } from "../state/openclaw-agent-db.paths.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateReadContext } from "../state/openclaw-state-worker-context.js";
-import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 import { measureStartup, type GatewayStartupTrace } from "./server-startup-trace.js";
 
-type SessionMigrationDeps = Parameters<typeof runSessionStartupMigration>[0]["deps"] & {
+type SessionMigrationDeps = {
   reconcileSessionTranscriptIndexes?: typeof import("../config/sessions/session-transcript-reconcile.js").reconcileSessionTranscriptIndexes;
   startConversationKnowledgePublication?: typeof import("../config/sessions/conversation-publication-reconcile.js").startConversationKnowledgePublication;
 };
@@ -52,6 +52,11 @@ async function assertConversationBranchStoresSupported(params: {
   );
   if (branchAgentIds.length === 0) {
     return;
+  }
+  if (resolveDatabaseFamilyEngines(params.cfg).agent === "postgres") {
+    throw new Error(
+      'Conversation branches currently require SQLite agent data. Set database.families.agent.engine to "sqlite", or set conversationMode to "native" for all agents before starting PostgreSQL agent storage. Existing session data has not been moved or changed.',
+    );
   }
   if (params.cfg.session?.scope === "global") {
     throw new Error("Conversation branches require per-agent session scope, not global scope");
@@ -106,7 +111,6 @@ export async function prepareGatewayStartupSessions(params: {
   assertCurrent?: () => void;
   signal?: AbortSignal;
   log: SessionStartupMigrationLogger;
-  deps?: SessionMigrationDeps;
 }): Promise<PreparedStartupSessionDatabase[]> {
   await assertConversationBranchStoresSupported(params);
   const databases: PreparedStartupSessionDatabase[] = [];
@@ -230,45 +234,38 @@ export async function runGatewaySessionStartupMaintenance(params: {
   >;
   startupTrace?: GatewayStartupTrace;
 }): Promise<void> {
-  let reconcile = params.deps?.reconcileSessionTranscriptIndexes;
+  let reconcile:
+    | typeof import("../config/sessions/session-transcript-reconcile.js").reconcileSessionTranscriptIndexes
+    | undefined;
+  reconcile = params.deps?.reconcileSessionTranscriptIndexes;
   let startPublication = params.deps?.startConversationKnowledgePublication;
   let reconciledSessions = 0;
-  const outcome = await runTasksWithConcurrency({
-    limit: AGENT_DATABASE_PREFLIGHT_CONCURRENCY,
-    errorMode: "stop",
-    tasks: params.databases.map(
-      ({ database, assertCurrent: assertDatabaseCurrent }) =>
-        async () => {
-          const assertCurrent = () => {
-            params.signal?.throwIfAborted();
-            params.assertCurrent?.();
-            assertDatabaseCurrent();
-          };
-          assertCurrent();
-          const result = await measureStartup(
-            params.startupTrace,
-            "startup.maintenance.session-transcripts",
-            async () => {
-              reconcile ??= (await import("../config/sessions/session-transcript-reconcile.js"))
-                .reconcileSessionTranscriptIndexes;
-              assertCurrent();
-              return reconcile({ ...database, assertCurrent, signal: params.signal });
-            },
-          );
-          assertCurrent();
-          reconciledSessions += result.reconciledSessions;
-          // Restart recovery belongs to the admitted store, not to a live call
-          // or the next user message. Its native lifecycle owns background work.
-          startPublication ??= (
-            await import("../config/sessions/conversation-publication-reconcile.js")
-          ).startConversationKnowledgePublication;
-          assertCurrent();
-          startPublication({ ...database, reportPending: true });
-        },
-    ),
-  });
-  if (outcome.hasError) {
-    throw outcome.firstError;
+  // One worker-backed repair at a time leaves admission and foreground writers capacity.
+  for (const { database, assertCurrent: assertDatabaseCurrent } of params.databases) {
+    await nextTurn();
+    const assertCurrent = () => {
+      params.signal?.throwIfAborted();
+      params.assertCurrent?.();
+      assertDatabaseCurrent();
+    };
+    assertCurrent();
+    const result = await measureStartup(
+      params.startupTrace,
+      "startup.maintenance.session-transcripts",
+      async () => {
+        reconcile ??= (await import("../config/sessions/session-transcript-reconcile.js"))
+          .reconcileSessionTranscriptIndexes;
+        assertCurrent();
+        return reconcile({ ...database, assertCurrent, signal: params.signal });
+      },
+    );
+    assertCurrent();
+    reconciledSessions += result.reconciledSessions;
+
+    startPublication ??= (await import("../config/sessions/conversation-publication-reconcile.js"))
+      .startConversationKnowledgePublication;
+    assertCurrent();
+    startPublication({ ...database, reportPending: true });
   }
   if (reconciledSessions > 0) {
     params.log.info(`session: rebuilt ${reconciledSessions} transcript projection(s)`);

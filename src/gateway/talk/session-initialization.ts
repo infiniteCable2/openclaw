@@ -2,6 +2,8 @@ import type { SessionSourceAssertion } from "../../config/sessions/session-sourc
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ensureClientVoiceAgentSessionEntry } from "../../talk/client-voice-session.js";
 import { resolveSandboxedSessionCreation } from "../operator-session-run.js";
+import { readGatewayRequestMutationAuthority } from "../server-methods/session-mutation-guards.js";
+import type { GatewayRequestHandlerOptions } from "../server-methods/types.js";
 import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
 import {
   captureGatewayPrivateConversationAudience,
@@ -14,6 +16,7 @@ import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 export async function ensureGatewayTalkSessionEntry(
   params: Parameters<typeof createTalkOperatorRunSource>[0] & {
     cfg: OpenClawConfig;
+    request?: GatewayRequestHandlerOptions;
     target: PreparedTalkSessionTarget;
     assertCurrent: SessionSourceAssertion;
     onCreatedSessionCommitted?: Parameters<
@@ -45,6 +48,23 @@ export async function ensureGatewayTalkSessionEntry(
       creation:
         resolveSandboxedSessionCreation(client, cfg) ?? resolveOperatorSessionCreation(client),
       assertCommitAllowed: assertCurrent,
+      ...(params.request
+        ? {
+            requester: readGatewayRequestMutationAuthority(params.request).assertCurrent,
+            source: params.request.sessionMutationAuthorization?.assertCurrent,
+            prepareWorkerGrant: params.request.sessionMutationAuthorization?.prepareWorkerGrant,
+            onCommittedSource: (readSource, entry) =>
+              params.request!.sessionMutationAuthorization?.recordCreatedSession?.({
+                agentId: target.agentId,
+                sessionKey: target.canonicalKey,
+                storePath: target.storePath,
+                sessionId: entry.sessionId,
+                lifecycleRevision: entry.lifecycleRevision,
+                entry,
+                readSource,
+              }),
+          }
+        : {}),
       onCreatedSessionCommitted: params.onCreatedSessionCommitted,
     });
   } finally {

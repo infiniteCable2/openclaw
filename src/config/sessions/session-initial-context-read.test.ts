@@ -5,7 +5,7 @@ import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { loadAgentEntryReadOperations } from "../../state/openclaw-agent-execution-operations.js";
+import { createAgentWorkerTestLoaders } from "../../state/openclaw-agent-execution-operations.test-support.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import {
@@ -15,20 +15,21 @@ import {
 import * as entryCache from "./session-accessor.sqlite-entry-cache.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
-import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcript-write.js";
+import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import type { SessionEntryCohortRequest } from "./session-entry-read.types.js";
 
 let state: OpenClawTestState;
 let database: OpenClawAgentDatabase;
-let operations: Awaited<ReturnType<typeof loadAgentEntryReadOperations>>;
+let operations: Awaited<
+  ReturnType<ReturnType<typeof createAgentWorkerTestLoaders>["session.entry.read"]>
+>;
 let context: AgentWorkerOperationContext;
 let nextId = 0;
 
 beforeAll(async () => {
   state = await createOpenClawTestState({ scenario: "minimal", label: "initial-context-read" });
   database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
-  operations = await loadAgentEntryReadOperations();
   context = {
     open: () => database,
     options: { agentId: "main", path: database.path, env: state.env },
@@ -37,6 +38,7 @@ beforeAll(async () => {
       throw new Error("An initial context read must not write");
     },
   };
+  operations = await createAgentWorkerTestLoaders(context)["session.entry.read"]();
 });
 
 afterAll(async () => {

@@ -126,14 +126,16 @@ async function withSource(
             },
           },
         };
-        const sourceSessionKey = routes.resolveMatrixInboundRoute({
-          cfg,
-          accountId: "default",
-          roomId,
-          senderId,
-          isDirectMessage: true,
-          resolveAgentRoute: runtime.channel.routing.resolveAgentRoute,
-        }).route.sessionKey;
+        const sourceSessionKey = (
+          await routes.resolveMatrixInboundRouteAsync({
+            cfg,
+            accountId: "default",
+            roomId,
+            senderId,
+            isDirectMessage: true,
+            resolveAgentRoute: runtime.channel.routing.resolveAgentRoute,
+          })
+        ).route.sessionKey;
         const dispatchSessionKey = resolveAgentSpeechConversationRoute({
           cfg,
           agentId: "main",
@@ -144,10 +146,11 @@ async function withSource(
         }).sessionKey;
         let live = true;
         let privateAudienceLive = true;
+        const sources: ReturnType<typeof createMatrixRtcConversationInputSource>[] = [];
         const createSource = (
           overrides: Partial<Parameters<typeof createMatrixRtcConversationInputSource>[0]> = {},
-        ) =>
-          createMatrixRtcConversationInputSource({
+        ) => {
+          const source = createMatrixRtcConversationInputSource({
             runtime,
             runtimeEnv: { log() {}, error() {}, exit: vi.fn() },
             accountId: "default",
@@ -178,26 +181,33 @@ async function withSource(
             },
             ...overrides,
           });
-        await run({
-          cfg,
-          matrix,
-          runtime,
-          source: createSource(),
-          createSource,
-          resolve,
-          nativeResolve,
-          dispatchSessionKey,
-          admit,
-          prepareConnection,
-          readStore,
-          endCall: () => {
-            live = false;
-          },
-          retire,
-          revokeAudience: () => {
-            privateAudienceLive = false;
-          },
-        });
+          sources.push(source);
+          return source;
+        };
+        try {
+          await run({
+            cfg,
+            matrix,
+            runtime,
+            source: createSource(),
+            createSource,
+            resolve,
+            nativeResolve,
+            dispatchSessionKey,
+            admit,
+            prepareConnection,
+            readStore,
+            endCall: () => {
+              live = false;
+            },
+            retire,
+            revokeAudience: () => {
+              privateAudienceLive = false;
+            },
+          });
+        } finally {
+          await Promise.all(sources.map((source) => source.closeConnection?.()));
+        }
       },
     );
   });
@@ -327,14 +337,16 @@ describe("MatrixRTC text-free conversation admission", () => {
         }),
       });
       runtime.config.current = () => snapshot;
-      const original = routes.resolveMatrixInboundRoute;
-      const route = vi.spyOn(routes, "resolveMatrixInboundRoute").mockImplementation((params) => {
-        expect(params.cfg).not.toBe(snapshot);
-        expect(params.cfg).toEqual(snapshot);
-        expect(Object.isFrozen(params.cfg)).toBe(false);
-        expect(params.cfg.channels?.matrix?.dm?.allowFrom).not.toBe(allowFrom);
-        return original(params);
-      });
+      const original = routes.projectMatrixInboundRoute;
+      const route = vi
+        .spyOn(routes, "projectMatrixInboundRoute")
+        .mockImplementation((params, inspection) => {
+          expect(params.cfg).not.toBe(snapshot);
+          expect(params.cfg).toEqual(snapshot);
+          expect(Object.isFrozen(params.cfg)).toBe(false);
+          expect(params.cfg.channels?.matrix?.dm?.allowFrom).not.toBe(allowFrom);
+          return original(params, inspection);
+        });
       await expect(source.admitInput(input)).resolves.toMatchObject({ version: 1 });
       expect(route).toHaveBeenCalled();
       expect(snapshot.channels.matrix.dm.allowFrom).toEqual([senderId]);
@@ -441,9 +453,9 @@ describe("MatrixRTC text-free conversation admission", () => {
 
   it("allows ordinary runtime conversation binding routes", async () => {
     await withSource(async ({ source }) => {
-      const original = routes.resolveMatrixInboundRoute;
-      vi.spyOn(routes, "resolveMatrixInboundRoute").mockImplementation((params) => ({
-        ...original(params),
+      const original = routes.projectMatrixInboundRoute;
+      vi.spyOn(routes, "projectMatrixInboundRoute").mockImplementation((params, inspection) => ({
+        ...original(params, inspection),
         runtimeBindingId: "ordinary-bound-conversation",
       }));
       await expect(source.admitInput(input)).resolves.toMatchObject({ version: 1 });
@@ -452,14 +464,14 @@ describe("MatrixRTC text-free conversation admission", () => {
 
   it.each(["unavailable", "plugin"] as const)("refuses a %s route owner", async (owner) => {
     await withSource(async ({ source, createSource, resolve, admit }) => {
-      const original = routes.resolveMatrixInboundRoute;
-      vi.spyOn(routes, "resolveMatrixInboundRoute").mockImplementation((params) => ({
-        ...original(params),
+      const original = routes.projectMatrixInboundRoute;
+      vi.spyOn(routes, "projectMatrixInboundRoute").mockImplementation((params, inspection) => ({
+        ...original(params, inspection),
         ...(owner === "unavailable"
           ? { bindingOwnerAvailable: false }
           : { pluginId: "test-owner" }),
       }));
-      expect(() => createSource()).toThrow("unsupported route owner");
+      await expect(createSource().prepareConnection?.()).rejects.toThrow("unsupported route owner");
       await expect(source.admitInput(input)).rejects.toThrow("unsupported route owner");
       expect(resolve).not.toHaveBeenCalled();
       expect(admit).not.toHaveBeenCalled();
@@ -476,7 +488,7 @@ describe("MatrixRTC text-free conversation admission", () => {
           match: { channel: "matrix", accountId: "default", peer: { kind: "channel", id: roomId } },
         },
       ];
-      expect(() => createSource()).toThrow("unsupported route owner");
+      await expect(createSource().prepareConnection?.()).rejects.toThrow("unsupported route owner");
       await expect(source.admitInput(input)).rejects.toThrow("unsupported route owner");
       expect(resolve).not.toHaveBeenCalled();
       expect(admit).not.toHaveBeenCalled();

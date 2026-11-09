@@ -1,12 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  isPendingBackgroundResultMessage,
+  projectPlacedBackgroundResultMessage,
+  readBackgroundResultPlacement,
+} from "../../../packages/agent-core/src/harness/session/background-result-placement.js";
 import { iterateSessionContextEntries } from "../../../packages/agent-core/src/harness/session/session.js";
 import { stripCompactionReplayCheckpoint } from "../../../packages/ai/src/transports/provider-compaction-checkpoint.js";
 import { derivePromptTokens, normalizeUsage } from "../../agents/usage.js";
 import { resolveAssistantMessagePhase } from "../../shared/chat-message-content.js";
 import { projectModelContextMessages } from "../../shared/model-context-message.js";
+import { OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER } from "../../shared/transcript-only-openclaw-assistant.js";
 import type {
   SessionParentForkDecision,
+  ForkSessionFromParentTranscriptParams,
   TranscriptEvent,
 } from "./session-accessor.sqlite-contract.js";
 import { findSessionTranscriptHeader, isIndexedSessionEntry } from "./session-entry-codec.js";
@@ -75,7 +82,9 @@ export function estimateParentForkPromptTokens(
   let byteEstimate = 0;
   let latestUsageEstimate: number | undefined;
   let trailingBytes = 0;
-  for (const { event, context } of selectParentForkTokenEstimateEvents(source.branchEntries)) {
+  for (const { event, context, placed } of selectParentForkTokenEstimateEvents(
+    source.branchEntries,
+  )) {
     if (
       context !== "reset-retained" &&
       isRecord(event) &&
@@ -98,7 +107,7 @@ export function estimateParentForkPromptTokens(
     const serializedBytes = Buffer.byteLength(JSON.stringify(contextEvent)) + 1;
     byteEstimate += serializedBytes;
     // Retained messages carry usage from before the latest compaction or reset.
-    if (context !== "current" || !isRecord(event)) {
+    if (placed || context !== "current" || !isRecord(event)) {
       if (latestUsageEstimate !== undefined) {
         trailingBytes += serializedBytes;
       }
@@ -157,7 +166,27 @@ export function estimateParentForkPromptTokens(
 function* selectParentForkTokenEstimateEvents(branch: readonly TranscriptEvent[]): Generator<{
   event: TranscriptEvent;
   context: "current" | "retained" | "reset-retained" | "opaque";
+  placed?: boolean;
 }> {
+  if (branch.some((entry) => readBackgroundResultPlacement(entry))) {
+    for (const { entry, placement, context } of iterateSessionContextEntries(
+      branch.filter(isIndexedSessionEntry),
+    )) {
+      yield {
+        event:
+          placement && entry.type === "message"
+            ? {
+                ...placement,
+                type: "message",
+                message: projectPlacedBackgroundResultMessage(entry.message),
+              }
+            : entry,
+        context,
+        placed: placement !== undefined,
+      };
+    }
+    return;
+  }
   if (
     !branch.some(
       (event) => isRecord(event) && (event.type === "compaction" || event.type === "reset"),
@@ -244,17 +273,19 @@ export function resolveParentForkSourceTranscript(
     }),
     tree.nodes,
   );
-  const lastCompleted = findLastCompletedAssistantIndex(visibleBranchEntries);
+  const lastCompleted = findLastCompletedForkIndex(visibleBranchEntries);
   const lastWindowBoundary = visibleBranchEntries.findLastIndex(
     (entry) => isRecord(entry) && (entry.type === "reset" || entry.type === "compaction"),
   );
-  // A reset/compaction may include an unfinished split turn. Never drop its privacy/window
-  // boundary to recover an older final, or treat its retained pending work as completed.
   const completedEnd = lastCompleted >= lastWindowBoundary ? lastCompleted + 1 : 0;
-  const branchEntries =
+  let branchEntries =
     forkFrom === "last-completed"
       ? visibleBranchEntries.slice(0, completedEnd)
       : visibleBranchEntries;
+  if (forkFrom === "last-completed" && !hasAssistantHistory(branchEntries)) {
+    // The child writer keeps no history without an assistant; size the same empty prefix.
+    branchEntries = [];
+  }
   const pathEntryIds = new Set(
     branchEntries.flatMap((entry) =>
       isRecord(entry) && typeof entry.id === "string" ? [entry.id] : [],
@@ -293,13 +324,23 @@ export function resolveParentForkSourceTranscript(
   };
 }
 
-function findLastCompletedAssistantIndex(entries: readonly TranscriptEvent[]): number {
+function findLastCompletedForkIndex(entries: readonly TranscriptEvent[]): number {
   return entries.findLastIndex((entry) => {
-    const message = isRecord(entry) && isRecord(entry.message) ? entry.message : undefined;
-    // Progress, interrupted/error output, and tool calls do not settle the parent turn.
-    // Legacy assistant rows without a reason remain valid completed boundaries.
+    if (!isRecord(entry)) {
+      return false;
+    }
+    // A reset is stable even before the next assistant response completes.
+    if (entry.type === "reset" || readBackgroundResultPlacement(entry)) {
+      return true;
+    }
+    const message = isRecord(entry.message) ? entry.message : undefined;
+    // Commands and delivery notices can commit while a model turn is still
+    // running; they must not make its unfinished tail a completed fork prefix.
+    // Legacy model responses without a reason remain stable boundaries.
     return (
       message?.role === "assistant" &&
+      message.provider !== OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER &&
+      !isPendingBackgroundResultMessage(message) &&
       resolveAssistantMessagePhase(message) !== "commentary" &&
       (message.stopReason === undefined ||
         message.stopReason === "stop" ||
@@ -310,6 +351,16 @@ function findLastCompletedAssistantIndex(entries: readonly TranscriptEvent[]): n
       )
     );
   });
+}
+
+function hasAssistantHistory(entries: readonly TranscriptEvent[]): boolean {
+  return entries.some(
+    (entry) =>
+      isRecord(entry) &&
+      entry.type === "message" &&
+      isRecord(entry.message) &&
+      entry.message.role === "assistant",
+  );
 }
 
 function generateEntryId(existingIds: Set<string>): string {
@@ -331,14 +382,7 @@ export function buildForkedChildTranscriptEvents(params: {
   targetSessionId: string;
 }): TranscriptEvent[] {
   const keepHistory =
-    params.source.preserveLeafControl ||
-    params.source.branchEntries.some(
-      (entry) =>
-        isRecord(entry) &&
-        entry.type === "message" &&
-        isRecord(entry.message) &&
-        entry.message.role === "assistant",
-    );
+    params.source.preserveLeafControl || hasAssistantHistory(params.source.branchEntries);
   const header = {
     ...createSessionTranscriptHeader({
       cwd: params.source.cwd,
@@ -384,9 +428,31 @@ export function buildForkedChildTranscriptEvents(params: {
       }
     : null;
   return [
-    header,
+    // The parent transcript keeps counting the copied branch.
+    { ...header, ...(lastPathEntryId ? { inheritedThrough: [lastPathEntryId] } : {}) },
     ...params.source.branchEntries,
     ...labelEntries,
     ...(leafEntry ? [leafEntry] : []),
   ];
+}
+
+export function resolveParentForkLimitDecision(
+  params: Pick<
+    ForkSessionFromParentTranscriptParams,
+    "enforceTokenLimit" | "forkFrom" | "maxTokens" | "parentEntry"
+  >,
+  source: ParentForkSourceTranscript,
+): Extract<SessionParentForkDecision, { status: "skip" }> | undefined {
+  if (!params.enforceTokenLimit) {
+    return undefined;
+  }
+  const decision = planParentForkDecision(
+    params.parentEntry,
+    estimateParentForkPromptTokens(source),
+    {
+      maxTokens: params.maxTokens,
+      preferTranscriptEstimate: params.forkFrom === "last-completed",
+    },
+  );
+  return decision.status === "skip" ? decision : undefined;
 }

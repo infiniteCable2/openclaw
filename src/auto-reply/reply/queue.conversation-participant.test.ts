@@ -6,8 +6,8 @@ import {
   readSessionConversationParticipant,
   type SessionParticipantInputContext,
 } from "../../sessions/session-participant-input.js";
+import { createQueueCase } from "./queue.case.test-support.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
-import { runSyntheticOverflowSummary } from "./queue/aggregate-run.js";
 import {
   collectRuntimeMetadata,
   createOverflowSummaryRetrySource,
@@ -15,23 +15,6 @@ import {
   resolveFollowupDeliveryStorageKey,
 } from "./queue/delivery-context.js";
 import type { FollowupRun } from "./queue/types.js";
-
-// mock-isolation: The fixture constructor does not schedule or drain queue work.
-vi.mock("./queue.js", () => ({ scheduleFollowupDrain: vi.fn() }));
-// mock-isolation: The shared constructor's cleanup helper is unused in this source test.
-vi.mock("./queue/drain.js", () => ({ clearFollowupDrainCallback: vi.fn() }));
-// mock-isolation: The producer retains a lazy transcript target; this test never reads rows.
-vi.mock("../../config/sessions.js", () => ({ resolveSessionStorePathCore: vi.fn() }));
-// mock-isolation: No transcript persistence is performed; assert the actual aggregate carrier.
-vi.mock("../../config/sessions/session-accessor.js", () => ({ loadSessionEntryReadOnly: vi.fn() }));
-// mock-isolation: Keep the native producer, but not its unused transcript writer/worker graph.
-vi.mock("../../sessions/user-turn-transcript.js", () => ({
-  createUserTurnTranscriptRecorder: vi.fn(() => ({})),
-}));
-// mock-isolation: Hooks are passed to the unused recorder, never invoked in this carrier test.
-vi.mock("../../agents/harness/hook-helpers.js", () => ({
-  runAgentHarnessBeforeMessageWriteHook: vi.fn(),
-}));
 
 const person: SessionParticipantIdentity = { type: "profile", id: "example-person" };
 function run(identity: SessionParticipantIdentity = person): FollowupRun {
@@ -119,17 +102,15 @@ describe("original participant in native queued conversation work", () => {
     expect(retry.operatorAuthority).toBeUndefined();
   });
 
-  it("carries the conservative original participant into the actual synthetic overflow producer", async () => {
-    const source = run();
-    const runFollowup = vi.fn<(next: FollowupRun) => Promise<void>>().mockResolvedValue();
-    await runSyntheticOverflowSummary({
-      source,
-      sources: [source, run()],
-      prompt: "Summarized original requests",
-      runFollowup,
-    });
-    expect(runFollowup).toHaveBeenCalledOnce();
-    expect(runFollowup.mock.calls[0]?.[0].conversationParticipant).toEqual(person);
-    expect(runFollowup.mock.calls[0]?.[0].operatorAuthority).toBeUndefined();
+  it("carries the conservative original participant through the native overflow owner", async () => {
+    const queue = createQueueCase({ mode: "followup", cap: 1 }, 2);
+    for (const prompt of ["first request", "second request", "pending tail"]) {
+      queue.add({ ...run(), prompt });
+    }
+    await queue.drain();
+    const summary = queue.calls.find((item) => item.prompt.startsWith("[Queue overflow]"));
+    expect(summary).toBeDefined();
+    expect(summary?.conversationParticipant).toEqual(person);
+    expect(summary?.operatorAuthority).toBeUndefined();
   });
 });

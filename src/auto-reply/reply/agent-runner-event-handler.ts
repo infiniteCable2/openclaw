@@ -1,10 +1,10 @@
+import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { isMessagingToolSendAction } from "../../agents/embedded-agent-messaging.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { resolveAgentLanguage } from "../../agents/identity.js";
 import { normalizeAgentPlanSteps } from "../../channels/streaming.js";
-import { logVerbose } from "../../globals.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PreparedReplyTranscriptStart } from "../get-reply-options.types.js";
 import type { ReplyPayload } from "../types.js";
@@ -17,6 +17,7 @@ import {
   deliverSpeechSourceCompactionNotice,
   formatCompactionModelRef,
   isUserCompactionNoticeTurn,
+  deliverCompactionNoticePayload as deliverNotice,
 } from "./compaction-notice.js";
 
 const agentCompactionLog = createSubsystemLogger("auto-reply/compaction");
@@ -45,6 +46,7 @@ export function createAgentRunEventHandler(params: {
     params.messageToolDeliveryState.completed &&
     params.turn.opts?.allowProgressCallbacksWhenSourceDeliverySuppressed !== true;
 
+  let modelWaitActive = false;
   const currentMessageId =
     params.turn.sessionCtx.MessageSidFull ?? params.turn.sessionCtx.MessageSid;
   const deliverCompactionNoticePayload = async (noticePayload: ReplyPayload, label: string) => {
@@ -66,11 +68,7 @@ export function createAgentRunEventHandler(params: {
     if (!deliver) {
       return;
     }
-    try {
-      await deliver(noticePayload);
-    } catch (err) {
-      logVerbose(`compaction ${label} notice delivery failed (non-fatal): ${String(err)}`);
-    }
+    await deliverNotice(noticePayload, deliver, label);
   };
 
   return async (evt) => {
@@ -85,14 +83,31 @@ export function createAgentRunEventHandler(params: {
       }
       params.notifyAgentRunStart(evt.transcriptStart);
     }
+    if (evt.stream === "run_status" && !shouldSuppressProgressAfterMessageToolDelivery()) {
+      const waiting = evt.data.phase === "waiting_for_model";
+      if (waiting || (modelWaitActive && evt.data.phase === "starting_model")) {
+        modelWaitActive = waiting;
+        await params.turn.opts?.onItemEvent?.({
+          itemId: "model-wait",
+          kind: "model-wait",
+          suppressDurableProgress: true,
+          phase: waiting ? "update" : "end",
+          ...(waiting
+            ? {
+                progressText:
+                  evt.data.reason === "slot"
+                    ? "Waiting for a free model slot"
+                    : "Waiting for the local model to respond",
+              }
+            : {}),
+        });
+      }
+    }
     if (evt.stream === "tool" && evt.data.hideFromChannelProgress !== true) {
       const phase = readStringValue(evt.data.phase) ?? "";
       const name = readStringValue(evt.data.name);
       const toolCallId = readStringValue(evt.data.toolCallId) ?? "";
-      const args =
-        evt.data.args && typeof evt.data.args === "object"
-          ? (evt.data.args as Record<string, unknown>)
-          : undefined;
+      const args = asOptionalObjectRecord(evt.data.args);
       if (
         params.sourceRepliesAreToolOnly &&
         toolCallId &&
@@ -238,18 +253,25 @@ export function createAgentRunEventHandler(params: {
     const phase = readStringValue(evt.data.phase) ?? "";
     const backend = readStringValue(evt.data.backend);
     const hookMessages = normalizeTrimmedStringList(evt.data.messages);
-    const sendCompactionUserNotices = async (noticePhase: "start" | "end" | "incomplete") => {
-      if (hookMessages.length > 0) {
-        const noticePayload = createCompactionHookNoticePayload({
-          messages: hookMessages,
-          currentMessageId,
-          applyReplyToMode: params.turn.applyReplyToMode,
-        });
-        if (noticePayload) {
-          await deliverCompactionNoticePayload(noticePayload, "hook");
-        }
+    const sendCompactionUserNotices = async (
+      noticePhase?: "start" | "end" | "incomplete" | "degraded" | "context_bounded",
+    ) => {
+      const noticePayload = createCompactionHookNoticePayload({
+        messages: hookMessages,
+        currentMessageId,
+        applyReplyToMode: params.turn.applyReplyToMode,
+      });
+      if (noticePayload) {
+        await deliverCompactionNoticePayload(noticePayload, "hook");
       }
-      if (params.notifyUserAboutCompaction) {
+      if (!noticePhase) {
+        return;
+      }
+      if (
+        noticePhase === "degraded" ||
+        noticePhase === "context_bounded" ||
+        params.notifyUserAboutCompaction
+      ) {
         await deliverCompactionNoticePayload(
           createCompactionNoticePayload({
             phase: noticePhase,
@@ -257,6 +279,7 @@ export function createAgentRunEventHandler(params: {
               params.turn.followupRun.run.config,
               params.turn.followupRun.run.agentId,
             ),
+            summaryRefused: evt.data.summaryRefused === true,
             currentMessageId,
             applyReplyToMode: params.turn.applyReplyToMode,
           }),
@@ -264,6 +287,14 @@ export function createAgentRunEventHandler(params: {
         );
       }
     };
+    if (phase === "notice") {
+      await sendCompactionUserNotices();
+      return;
+    }
+    if (phase === "context_bounded") {
+      await sendCompactionUserNotices("context_bounded");
+      return;
+    }
     if (phase === "start") {
       await params.turn.opts?.onCompactionStart?.();
       await sendCompactionUserNotices("start");
@@ -299,6 +330,6 @@ export function createAgentRunEventHandler(params: {
       });
     }
     await params.turn.opts?.onCompactionEnd?.({ completed: true });
-    await sendCompactionUserNotices("end");
+    await sendCompactionUserNotices(evt.data.qualityDegraded === true ? "degraded" : "end");
   };
 }

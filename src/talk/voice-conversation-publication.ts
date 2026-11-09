@@ -12,7 +12,6 @@ import {
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
-import type { ClientVoiceConfirmationUtteranceContext } from "./client-voice-confirmation.js";
 import type { ClientVoiceSessionSource } from "./client-voice-session-source.js";
 
 /** Keep the captured intent paired with its original live source at the append boundary. */
@@ -42,25 +41,15 @@ export async function publishVoiceConversationCommit(params: {
   };
   source: Pick<ClientVoiceSessionSource, "options" | "assertCurrent">;
   publication: ReturnType<typeof prepareVoiceConversationPublication>;
-  confirmation?: ClientVoiceConfirmationUtteranceContext | null;
   timestamp: number;
   effects: {
-    recordClientVoiceConfirmationTranscriptAppend: typeof import("./client-voice-confirmation.js").recordClientVoiceConfirmationTranscriptAppend;
     publishTranscriptUpdate: typeof import("../config/sessions/session-accessor.js").publishTranscriptUpdate;
     startConversationKnowledgePublication: typeof import("../config/sessions/conversation-publication-reconcile.js").startConversationKnowledgePublication;
     recordVoiceConversationParticipant: typeof import("./voice-conversation-knowledge.js").recordVoiceConversationParticipant;
   };
 }): Promise<void> {
-  const { appended, sessionTarget, sessionEntry, input, source, confirmation, effects } = params;
+  const { appended, sessionTarget, sessionEntry, input, source, effects } = params;
   // Publish the committed row before fallible bookkeeping; a retry can deduplicate it.
-  if (confirmation) {
-    effects.recordClientVoiceConfirmationTranscriptAppend({
-      confirmation,
-      entryId: input.entryId,
-      text: input.text,
-      appended: appended.appended,
-    });
-  }
   if (appended.appended) {
     await effects.publishTranscriptUpdate(
       { ...sessionTarget, sessionId: sessionEntry.sessionId },

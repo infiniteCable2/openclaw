@@ -1,6 +1,6 @@
 import type { FailoverReason } from "../agents/failover/signal.js";
 import type { GatewayStorageFailure } from "../infra/sqlite-error-diagnostics.js";
-import type { WorkshopChangeAction } from "../skills/workshop/skill-versions.js";
+import type { WorkshopChangeAction } from "../skills/workshop-changes/changes.kernel.js";
 import { resolveUserMessageLocale, type UserMessageLocale } from "./language.js";
 
 /** Native user-facing copy. Protocol codes, tool names and diagnostics stay separate. */
@@ -13,6 +13,8 @@ type UserMessages = {
     queued: string;
     memory_flush_degraded: string;
     context_bounded: string;
+    degraded: string;
+    summaryRefused: string;
   }>;
   voiceActionNotExecuted(toolName: string): string;
   voiceConfirmationRequest: string;
@@ -48,8 +50,14 @@ type UserMessages = {
   replyEmpty: string;
   replyWorkerTimeout: string;
   replyQueueFull: string;
+  replyQueueFullNoRetry: string;
+  replyMissing: string;
+  replyMissingSideEffect: string;
   replyShuttingDown: string;
+  replyWriterFenceBlocked: string;
   replyStalled: string;
+  replyRateLimited: string;
+  replyMediaContinuing: string;
   replyNoVisible: string;
   replyReference(reference: string): string;
   replyDetailsHint: string;
@@ -77,6 +85,10 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
       start: "🧹 Compacting context...",
       end: "🧹 Compaction complete",
       incomplete: "🧹 Compaction incomplete",
+      degraded:
+        "⚠️ Context was summarized with reduced detail. Older details or pending requests may be missing; resend essential information if needed. Full history remains saved.",
+      summaryRefused:
+        "⚠️ The summarizer declined. Recent turns were kept; older messages remain saved but are outside active context. Resend essential older details if needed.",
       skipped: "🧹 Compaction not needed",
       queued:
         "🧹 Compacting context. Your message has been received and will be handled afterward.",
@@ -119,6 +131,7 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
       billing:
         "The AI service reported a billing problem. Check your account's credit balance and usage limits before trying again.",
       server_error: "The AI service is having trouble. Please try again in a moment.",
+      route_unavailable: "The provider cannot serve this model right now. Choose another model.",
       timeout:
         "The request took too long. Check the conversation for any completed work before trying again.",
       tls_certificate:
@@ -135,6 +148,14 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
       unknown: "",
     },
     storageFailure: {
+      "storage-worker-memory":
+        "OpenClaw's storage worker ran out of memory. Ask the operator to check memory pressure and the logs. Restarting this session alone will not fix it.",
+      unavailable:
+        "The database connection was lost. This operation was rolled back; nothing from it was saved. Please retry.",
+      session_actor_reconciliation:
+        "OpenClaw could not confirm the last conversation update. Some work may have been saved. Wait for current work to finish, then check the history before retrying. If this persists, restart OpenClaw.",
+      "57014":
+        "PostgreSQL canceled a database operation or it timed out. Check for completed work before retrying. If it recurs, ask the operator to check database timeouts and activity.",
       SQLITE_BUSY:
         "OpenClaw is busy saving your conversation. Wait a moment, then check the conversation before trying again.",
       SQLITE_LOCKED:
@@ -149,6 +170,8 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
         "This conversation changed while OpenClaw was working. Check its latest messages before continuing.",
     },
     runtimeCoordinationFailure: {
+      child_completion_delivery_failed:
+        "The child result could not be delivered here. Your conversation is preserved. Check the child sessions for saved work, then retry or resend your request.",
       codex_node_disconnected: "Codex execution node disconnected. Start a fresh attempt.",
       node_runner_update_required:
         "The device worker requires an update before it can host sessions. Run `openclaw update`, reconnect it, then run `openclaw node restart` on a headless node before trying again.",
@@ -202,7 +225,16 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
     replyWorkerTimeout: "A local worker task timed out. Please try again.",
     replyQueueFull:
       "This message was not queued because the session queue is full. Please try again after the current response finishes.",
+    replyQueueFullNoRetry: "This message was not queued because the session queue is full.",
+    replyMissing: "No answer was returned. Ask again if you still need one.",
+    replyMissingSideEffect:
+      "No answer was returned. Ask again if you still need one. Note: some tool actions may have already been executed — please verify before retrying.",
+    replyRateLimited:
+      "⚠️ This turn was stopped while the model provider was rate-limiting requests. Please try again in a few minutes.",
+    replyMediaContinuing: "I’m continuing this work and will send the result when it is ready.",
     replyShuttingDown: "⚠️ Previous run is still shutting down. Please try again in a moment.",
+    replyWriterFenceBlocked:
+      "⚠️ Previous run could not be safely retired because its writer is still active. Start a separate session or restart the Gateway before retrying this session.",
     replyStalled:
       "⚠️ This turn was interrupted because it stopped making progress. Please try again.",
     replyNoVisible:
@@ -227,6 +259,10 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
       start: "🧹 Ich fasse den Kontext zusammen...",
       end: "🧹 Der Kontext ist zusammengefasst.",
       incomplete: "🧹 Die Kontextzusammenfassung ist noch nicht abgeschlossen.",
+      degraded:
+        "⚠️ Der Kontext wurde mit weniger Details zusammengefasst. Ältere Angaben oder offene Anfragen können fehlen; sende wichtige Informationen bei Bedarf erneut. Der vollständige Verlauf bleibt gespeichert.",
+      summaryRefused:
+        "⚠️ Das Modell hat die Zusammenfassung abgelehnt. Neuere Beiträge bleiben im Kontext; ältere Nachrichten bleiben gespeichert. Sende benötigte ältere Details bitte erneut.",
       skipped: "🧹 Eine Kontextzusammenfassung ist nicht nötig.",
       queued:
         "🧹 Ich fasse den Kontext zusammen. Deine Nachricht ist angekommen und wird danach bearbeitet.",
@@ -273,6 +309,8 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
       billing:
         "Der KI-Dienst hat ein Abrechnungsproblem gemeldet. Prüfe dein Guthaben und die Nutzungslimits, bevor du es erneut versuchst.",
       server_error: "Beim KI-Dienst ist ein Fehler aufgetreten. Bitte versuche es gleich erneut.",
+      route_unavailable:
+        "Der Anbieter kann dieses Modell gerade nicht bereitstellen. Wähle ein anderes Modell.",
       timeout:
         "Die Anfrage hat zu lange gedauert. Prüfe die Unterhaltung auf bereits abgeschlossene Arbeiten, bevor du es erneut versuchst.",
       tls_certificate:
@@ -290,6 +328,14 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
       unknown: "",
     },
     storageFailure: {
+      "storage-worker-memory":
+        "Dem Speicher-Worker von OpenClaw fehlt Arbeitsspeicher. Bitte den Betreiber, Speicherauslastung und Protokolle zu prüfen. Ein Neustart dieser Sitzung allein behebt das nicht.",
+      unavailable:
+        "Die Datenbankverbindung wurde getrennt. Dieser Vorgang wurde zurückgerollt und nichts daraus gespeichert. Bitte versuche es erneut.",
+      session_actor_reconciliation:
+        "OpenClaw konnte die letzte Änderung der Unterhaltung nicht bestätigen. Einige Arbeiten können gespeichert sein. Warte auf laufende Arbeiten und prüfe den Verlauf vor einem neuen Versuch. Falls es weiter scheitert, starte OpenClaw neu.",
+      "57014":
+        "PostgreSQL hat einen Datenbankvorgang abgebrochen oder dessen Zeitlimit erreicht. Prüfe vor einem neuen Versuch, welche Arbeiten abgeschlossen sind. Bei Wiederholung sollte der Betreiber Zeitlimits und Datenbankaktivität prüfen.",
       SQLITE_BUSY:
         "OpenClaw speichert gerade deine Unterhaltung. Warte einen Moment und prüfe dann die Unterhaltung, bevor du es erneut versuchst.",
       SQLITE_LOCKED:
@@ -304,6 +350,8 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
         "Diese Unterhaltung hat sich geändert, während OpenClaw gearbeitet hat. Prüfe die neuesten Nachrichten, bevor du fortfährst.",
     },
     runtimeCoordinationFailure: {
+      child_completion_delivery_failed:
+        "Das Ergebnis der untergeordneten Sitzung konnte hier nicht zugestellt werden. Deine Unterhaltung bleibt erhalten. Prüfe dort gespeicherte Arbeiten und versuche es danach erneut.",
       codex_node_disconnected:
         "Die Verbindung zum Codex-Ausführungsknoten wurde getrennt. Starte einen neuen Versuch.",
       node_runner_update_required:
@@ -366,6 +414,18 @@ const catalogs: Record<UserMessageLocale, UserMessages> = {
       "Ein lokaler Arbeitsauftrag hat das Zeitlimit überschritten. Bitte versuche es erneut.",
     replyQueueFull:
       "Diese Nachricht wurde nicht vorgemerkt, weil die Warteschlange der Sitzung voll ist. Bitte warte, bis die aktuelle Antwort abgeschlossen ist, und versuche es dann erneut.",
+    replyWriterFenceBlocked:
+      "⚠️ Der vorherige Lauf konnte nicht sicher beendet werden, weil sein Schreibzugriff noch aktiv ist. Starte eine separate Sitzung oder starte das Gateway neu, bevor du es in dieser Sitzung erneut versuchst.",
+    replyQueueFullNoRetry:
+      "Diese Nachricht wurde nicht eingereiht, weil die Warteschlange der Sitzung voll ist.",
+    replyMissing:
+      "Es wurde keine Antwort zurückgegeben. Frage erneut, wenn du noch eine Antwort benötigst.",
+    replyMissingSideEffect:
+      "Es wurde keine Antwort zurückgegeben. Frage erneut, wenn du noch eine Antwort benötigst. Hinweis: Einige Werkzeugaktionen können bereits ausgeführt worden sein. Bitte prüfe das vor einem erneuten Versuch.",
+    replyRateLimited:
+      "⚠️ Dieser Lauf wurde wegen der Anfragelimits des Modellanbieters angehalten. Bitte versuche es in wenigen Minuten erneut.",
+    replyMediaContinuing:
+      "Ich arbeite weiter daran und schicke dir das Ergebnis, sobald es fertig ist.",
     replyShuttingDown:
       "⚠️ Der vorherige Auftrag wird noch beendet. Bitte versuche es gleich erneut.",
     replyStalled:

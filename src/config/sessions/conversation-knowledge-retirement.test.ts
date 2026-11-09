@@ -26,7 +26,7 @@ import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-tr
 import type { TranscriptEvent } from "./session-accessor.types.js";
 import { ensureAgentConversationRoot } from "./session-conversation-root.js";
 import type { PublishedSessionTranscriptArchive } from "./session-history-archive-pruning.types.js";
-import { loadTranscriptEvents } from "./session-transcript-events.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 
 afterEach(() => vi.restoreAllMocks());
 

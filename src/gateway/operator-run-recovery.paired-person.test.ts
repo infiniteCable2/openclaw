@@ -36,7 +36,7 @@ describe("restart recovery paired person authority", () => {
             approvedAtMs: 1,
           },
         });
-        expect(fixture.entry.restartRecoveryOperatorSource?.snapshot.devicePerson).toEqual({
+        expect(fixture.snapshot.devicePerson).toEqual({
           version: 1,
           id: expect.any(String),
         });

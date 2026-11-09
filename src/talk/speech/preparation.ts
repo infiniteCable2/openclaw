@@ -21,7 +21,7 @@ export async function prepareSpeechSession(params: {
   /** Retain cleanup ownership even when readiness or the first release fails. */
   onPreparation?: (preparation: SpeechSessionPreparation) => void;
 }): Promise<SpeechSessionPreparation> {
-  const resolved = resolveSpeechTranscriptionProvider({
+  const resolved = await resolveSpeechTranscriptionProvider({
     config: params.config,
     fullConfig: params.fullConfig,
     providers: params.providers,
