@@ -123,10 +123,13 @@ or moved. The root cannot accept external input, run a model, or serve as a repl
 address. The mode cannot use `session.scope: "global"`; choosing the reserved
 internal root as the native main key is rejected.
 
-Branches currently require a dedicated physical session database owned by the
-corresponding agent. Before startup maintenance or root creation, the Gateway
-rejects a branch whose database belongs to another agent or resolves to the same
-physical file as another configured agent, including a native-mode agent or a
+Branches currently require SQLite agent storage
+(`database.families.agent.engine: "sqlite"`) and a dedicated physical session
+database owned by the corresponding agent. PostgreSQL agent storage is supported
+in `native` mode; branch mode rejects it before startup maintenance or root
+creation, without changing stored data.
+The Gateway also rejects a branch whose database belongs to another agent or
+resolves to the same physical file as another configured agent, including a native-mode agent or a
 directory alias. Omit `session.store` to use the default per-agent layout, or
 configure dedicated agent-owned stores. A fixed selector that natively partitions
 agents into different database files remains supported. This check does not move
