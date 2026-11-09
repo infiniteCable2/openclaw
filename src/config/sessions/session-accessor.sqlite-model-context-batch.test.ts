@@ -19,7 +19,7 @@ import { readSessionTranscriptModelContextsAsync } from "./session-transcript-co
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
 import * as transcriptReadSource from "./session-transcript-read-source.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
-import { transcriptMessage } from "./transcript-message.test-support.js";
+import { messageEvent, transcriptMessage } from "./transcript-message.test-support.js";
 
 function individual(
   scope: Parameters<typeof readSessionTranscriptModelContext>[0],
@@ -54,12 +54,12 @@ it("hydrates the original header from shared navigation without repeating a head
     };
     await replaceTranscriptEvents(scope, [
       header,
-      transcriptMessage("question", null, {
+      messageEvent("question", null, {
         role: "user",
         content: "Synthetic question.",
         timestamp: 1,
       }),
-      transcriptMessage("answer", "question", {
+      messageEvent("answer", "question", {
         role: "assistant",
         content: "Synthetic answer.",
         timestamp: 2,
