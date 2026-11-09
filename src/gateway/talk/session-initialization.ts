@@ -53,6 +53,14 @@ export async function ensureGatewayTalkSessionEntry(
             requester: readGatewayRequestMutationAuthority(params.request).assertCurrent,
             source: params.request.sessionMutationAuthorization?.assertCurrent,
             prepareWorkerGrant: params.request.sessionMutationAuthorization?.prepareWorkerGrant,
+            followRegistration: (change) =>
+              params.request!.sessionMutationAuthorization?.followRegistration?.(
+                {
+                  agentId: target.agentId,
+                  sessionKey: target.canonicalKey,
+                },
+                change,
+              ),
             onCommittedSource: (readSource, entry) =>
               params.request!.sessionMutationAuthorization?.recordCreatedSession?.({
                 agentId: target.agentId,

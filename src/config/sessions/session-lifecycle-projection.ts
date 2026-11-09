@@ -23,10 +23,12 @@ import type {
   SessionLifecycleProjectionCommitted,
 } from "./session-lifecycle-projection.types.js";
 import type { SessionLifecyclePlanningOperations } from "./session-lifecycle-projection.worker.js";
+import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-authority.js";
 import {
   acceptSessionSourceValidation,
   type PreparedSessionSourceAuthority,
   type SessionSourceValidation,
+  type SessionSourceTransactionGrant,
 } from "./session-source-authority.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 import { collectSessionEntryLookupKeys } from "./store-entry.js";
@@ -151,6 +153,7 @@ export function commitSessionLifecycleProjectionInWorker(params: {
   input: SessionLifecycleProjectionCommit;
   execution: OpenClawAgentDatabaseExecution;
   preparedSource?: PreparedSessionSourceAuthority;
+  creationSource?: SessionSourceTransactionGrant;
   assertCurrent: () => void;
   assertPrepared: () => void;
   assertCandidate: (
@@ -160,6 +163,7 @@ export function commitSessionLifecycleProjectionInWorker(params: {
   onLifecycleCommitted?: () => void;
   afterCommitted?: (context: SessionEntryCommitContext) => Promise<void>;
 }) {
+  let creationFacts: SessionPendingInputAuthorityFacts | undefined;
   return runSessionEntryWorkerOperation<
     SessionLifecycleProjectionCommitted,
     SessionLifecycleProjectionCommitted["result"]
@@ -172,6 +176,15 @@ export function commitSessionLifecycleProjectionInWorker(params: {
       (params.preparedSource?.assertPreparedCurrent ?? params.preparedSource?.assertCurrent)?.();
     },
     onTransactionFacts(facts) {
+      if (isRecord(facts) && facts.kind === "session-lifecycle-creation-validated") {
+        if (!params.creationSource || !isRecord(facts.authority)) {
+          throw new Error("Lifecycle creation omitted its transaction authority");
+        }
+        // SAFETY: The paired lifecycle worker supplies its locked pre-mutation facts.
+        creationFacts = facts.authority as SessionPendingInputAuthorityFacts;
+        params.creationSource.assertCurrent(creationFacts);
+        return true;
+      }
       if (!isRecord(facts) || facts.kind !== "session-lifecycle-source-validated") {
         return false;
       }
@@ -187,6 +200,12 @@ export function commitSessionLifecycleProjectionInWorker(params: {
       return true;
     },
     assertCandidate: (candidate, operation) => {
+      if (params.creationSource) {
+        if (!creationFacts) {
+          throw new Error("Lifecycle creation omitted its transaction authority facts");
+        }
+        params.creationSource.assertCurrent(creationFacts);
+      }
       if (params.preparedSource) {
         if (!candidate.sourceValidation) {
           throw new Error("Lifecycle commit omitted its prepared source validation");
@@ -204,6 +223,15 @@ export function commitSessionLifecycleProjectionInWorker(params: {
           type: "session.lifecycle.project",
           input: {
             ...params.input,
+            ...(params.creationSource
+              ? {
+                  creationSource: {
+                    source: params.creationSource.source,
+                    agentId: params.creationSource.agentId,
+                    sessionKey: params.creationSource.sessionKey,
+                  },
+                }
+              : {}),
             sources: params.preparedSource?.checks.map((check) => check.predicate),
           },
         }),

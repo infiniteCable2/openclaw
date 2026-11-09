@@ -37,7 +37,10 @@ import type {
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import type { SessionCreationOperation } from "./session-creation-operation.js";
 import type { SessionOwnerAssignment } from "./session-entry-provenance.js";
-import type { SessionSourceAssertion } from "./session-source-authority.js";
+import type {
+  SessionSourceAssertion,
+  SessionSourceTransactionGrant,
+} from "./session-source-authority.js";
 import type { SessionMaintenancePreservationSnapshot } from "./store-maintenance-preserve-snapshot.types.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
@@ -145,6 +148,8 @@ type SessionLifecycleCreation = {
 };
 
 export type SessionEntryLifecycleMutationParams = {
+  /** Exact transaction authority for one first creation, never reset or replacement. */
+  creationSource?: SessionSourceTransactionGrant;
   /** Original worker-preparable source authority; ordinary callback guards cannot replace it. */
   source?: SessionSourceAssertion;
   /** Internal durable comparison paired with the caller's live descendant guard. */

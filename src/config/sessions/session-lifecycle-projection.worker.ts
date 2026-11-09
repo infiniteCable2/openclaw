@@ -30,6 +30,7 @@ import type {
   SessionLifecycleProjectionCommit,
   SessionLifecycleProjectionCommitted,
 } from "./session-lifecycle-projection.types.js";
+import { readSessionPendingInputAuthorityFactsInTransaction } from "./session-pending-input-authority.kernel.js";
 import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 import type { SessionEntry } from "./types.js";
 
@@ -38,6 +39,34 @@ export function commitSessionLifecycleProjection(
   { writeTransaction, admit, options }: AgentWorkerOperationContext,
 ) {
   return writeTransaction("session.lifecycle.project", "Session lifecycle", (database) => {
+    if (input.creationSource) {
+      const source = input.creationSource;
+      const target = input.projected.upsertedEntries[0];
+      if (
+        input.projected.upsertedEntries.length !== 1 ||
+        input.projected.removals.length !== 0 ||
+        input.removalPlans.length !== 0 ||
+        input.allowCanonicalRepair ||
+        input.maintenance ||
+        !target ||
+        target.expectedEntry ||
+        target.resetBoundary ||
+        target.sessionKey !== source.sessionKey ||
+        source.agentId !== input.agentId
+      ) {
+        throw new Error("Transaction-local lifecycle authority requires one absent target");
+      }
+      assertCapturedSessionEntryReadSource(source.source, database);
+      const authority = readSessionPendingInputAuthorityFactsInTransaction(
+        database,
+        source.sessionKey,
+        source.agentId,
+      );
+      if (authority.entry) {
+        throw new Error("Lifecycle creation target is no longer absent");
+      }
+      admit("transaction", { kind: "session-lifecycle-creation-validated", authority });
+    }
     for (const upsert of input.projected.upsertedEntries) {
       if (upsert.initialContext) {
         assertInitialSessionContextReadSource(upsert.initialContext, input.sources);

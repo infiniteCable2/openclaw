@@ -46,12 +46,16 @@ import {
   SessionEntryLifecycleUpsertConflictError,
   SqliteSessionMutationConflictError,
 } from "./session-mutation-conflict-error.js";
-import { resolveReplySessionInitializationUpserts } from "./session-reset-entry.js";
+import {
+  createStaleReplySessionInitializationResult,
+  resolveReplySessionInitializationUpserts,
+} from "./session-reset-entry.js";
 import type { ReplySessionInitializationUpsertDescriptor } from "./session-reset.types.js";
 import {
   composeSessionSourceAssertion,
   releaseSessionSourceAuthorities,
   type SessionSourceAssertion,
+  type SessionSourceTransactionGrant,
 } from "./session-source-authority.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
@@ -290,19 +294,9 @@ export async function loadReplySessionInitializationSnapshot(
   };
 }
 
-function createStaleReplySessionInitializationResult(
-  currentEntry: SessionEntry | undefined,
-): ReplySessionInitializationCommitResult {
-  return {
-    ok: false,
-    ...(currentEntry ? { currentEntry } : {}),
-    reason: "stale-snapshot",
-    revision: createReplySessionInitializationRevision(currentEntry),
-  };
-}
-
 /** Persists one reply-session initialization result with its in-place reset boundary. */
 export async function commitReplySessionInitialization(params: {
+  creationSource?: SessionSourceTransactionGrant;
   /** Keep an authorized creation bound to the database read by its snapshot. */
   databaseSource?: DatabasePathIdentity;
   bindCreation?: (operation: SessionEntryCreationOperation) => () => void;
@@ -534,6 +528,7 @@ export async function commitReplySessionInitialization(params: {
     }
     try {
       const mutation = {
+        creationSource: params.creationSource,
         activeSessionKey: params.activeSessionKey,
         agentId: params.agentId,
         skipMaintenance: true,

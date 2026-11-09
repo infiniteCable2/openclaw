@@ -82,6 +82,17 @@ export async function applySessionEntryLifecycleMutation(
 ): Promise<SessionEntryLifecycleMutationResult> {
   const removals = [...(params.removals ?? [])];
   const upserts = [...(params.upserts ?? [])];
+  if (
+    params.creationSource &&
+    (upserts.length !== 1 ||
+      removals.length !== 0 ||
+      upserts[0]?.resetBoundary ||
+      upserts[0]?.sessionKey !== params.creationSource.sessionKey ||
+      params.creationSource.agentId !== resolved.agentId ||
+      params.allowCanonicalRepair)
+  ) {
+    throw new Error("Transaction-local lifecycle authority requires one exact creation");
+  }
   const memory = applyMemorySessionEntryCleanup({ ...params, removals, upserts }, resolved);
   if (memory) {
     return memory;
@@ -99,7 +110,7 @@ export async function applySessionEntryLifecycleMutation(
     !params.allowCanonicalRepair &&
     supportsOpenClawAgentDatabaseExecution(databaseOptions);
   if (
-    (params.source || hasConversationAdmission) &&
+    (params.source || params.creationSource || hasConversationAdmission) &&
     (!useWorker || upserts.length === 0 || removals.length > 0)
   ) {
     throw new Error("Composed lifecycle sources require a durable worker upsert");
@@ -257,6 +268,7 @@ export async function applySessionEntryLifecycleMutation(
                       database: reclamationOptions,
                       execution,
                       preparedSource,
+                      creationSource: params.creationSource,
                       assertCurrent,
                       assertPrepared: () => {
                         preparedPreservation?.capture();
@@ -279,7 +291,7 @@ export async function applySessionEntryLifecycleMutation(
                     }),
                   );
                 }
-                if (preparedSource || hasConversationAdmission) {
+                if (preparedSource || params.creationSource || hasConversationAdmission) {
                   throw new Error("Composed lifecycle sources require a durable worker upsert");
                 }
                 const result = await runSqliteSessionReclamation({
@@ -320,7 +332,7 @@ export async function applySessionEntryLifecycleMutation(
                 }
                 return withArchivePublication(result.value);
               }
-              if (preparedSource || hasConversationAdmission) {
+              if (preparedSource || params.creationSource || hasConversationAdmission) {
                 throw new Error("Composed lifecycle sources require a durable worker upsert");
               }
               return await withSqliteSessionDatabase(toDatabaseOptions(resolved), (database) =>

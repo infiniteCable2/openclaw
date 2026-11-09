@@ -2,8 +2,20 @@ import {
   createReplySessionInitializationRevision,
   mergeConcurrentReplySessionMetadata,
 } from "./session-accessor.entry-mutation.js";
+import type { ReplySessionInitializationCommitResult } from "./session-accessor.types.js";
 import type { ReplySessionInitializationUpsertDescriptor } from "./session-reset.types.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
+
+export function createStaleReplySessionInitializationResult(
+  currentEntry: SessionEntry | undefined,
+): ReplySessionInitializationCommitResult {
+  return {
+    ok: false,
+    ...(currentEntry ? { currentEntry } : {}),
+    reason: "stale-snapshot",
+    revision: createReplySessionInitializationRevision(currentEntry),
+  };
+}
 
 /** The typed reply descriptor serves today's builder and the later compound projection kernel. */
 export function resolveReplySessionInitializationUpserts(

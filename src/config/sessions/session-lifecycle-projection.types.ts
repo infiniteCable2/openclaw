@@ -7,9 +7,11 @@ import type {
 import type {
   SessionSourcePredicate,
   SessionSourceValidation,
+  SessionSourceTransactionGrant,
 } from "./session-source-authority.js";
 
 export type SessionLifecycleProjectionCommit = ProjectedLifecycleCommitInput & {
+  creationSource?: Omit<SessionSourceTransactionGrant, "assertCurrent">;
   sources?: SessionSourcePredicate[];
   agentId: string;
   removalPlans: MaterializedSessionStateDeletePlan[];

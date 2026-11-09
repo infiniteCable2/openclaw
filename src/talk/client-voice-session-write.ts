@@ -246,15 +246,6 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: InternalSessionEntry) => void;
   creation?: Pick<Parameters<typeof buildSessionCreationStamp>[0], "actor" | "sandbox">;
 }): Promise<string> {
-  if (
-    params.cfg &&
-    !isSubagentSessionKey(params.sessionKey) &&
-    !isIncognitoSessionKey(params.sessionKey)
-  ) {
-    const { ensureClientVoiceAgentSessionEntry: initializeConversation } =
-      await import("./client-voice-session-initialization.js");
-    return initializeConversation(params);
-  }
   const assertLifetimeCurrent = () => {
     params.assertCurrent?.();
     params.assertCommitAllowed?.();
@@ -381,6 +372,31 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
           }
           assertPreparationCurrent();
           grant?.assertLifetimeCurrent();
+          if (
+            params.cfg &&
+            !isSubagentSessionKey(canonicalKey) &&
+            !isIncognitoSessionKey(canonicalKey)
+          ) {
+            const { initializePreparedVoiceConversation } =
+              await import("./client-voice-session-initialization.js");
+            const created = await initializePreparedVoiceConversation({
+              ...params,
+              cfg: params.cfg,
+              agentId,
+              sessionKey: canonicalKey,
+              storePath: selected.storePath,
+              creationSource: grant?.transaction,
+              source: grant?.transaction ? borrowedRequester : source,
+              assertCurrent: () => {
+                assertPreparationCurrent();
+                grant?.assertLifetimeCurrent();
+                params.assertCurrent?.();
+              },
+            });
+            if (created !== undefined) {
+              return created;
+            }
+          }
           const { operation, fallbackEntry } = reduction();
           return complete(
             await applySessionEntryTargetOperation(

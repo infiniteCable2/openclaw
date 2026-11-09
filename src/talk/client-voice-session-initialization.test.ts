@@ -7,7 +7,7 @@ import type { SessionSourceAssertion } from "../config/sessions/session-source-a
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
-import { ensureClientVoiceAgentSessionEntry } from "./client-voice-session-initialization.js";
+import { initializePreparedVoiceConversation as ensureClientVoiceAgentSessionEntry } from "./client-voice-session-initialization.js";
 
 // Isolation boundary: the real native initialization owner has separate durable
 // worker tests. These source-only tests verify Talk selects that owner and retains
@@ -310,9 +310,8 @@ describe("native Talk startup conversation membership", () => {
         rootEntry: f.state.root,
       }),
     };
-    await expect(ensureClientVoiceAgentSessionEntry(f.target)).resolves.toBe(
-      "existing-conversation",
-    );
+    // Existing rows return to the native ensure-identity owner for authorization.
+    await expect(ensureClientVoiceAgentSessionEntry(f.target)).resolves.toBeUndefined();
     expect(mocks.commit).not.toHaveBeenCalled();
     expect(mocks.patch).not.toHaveBeenCalled();
   });
@@ -341,7 +340,7 @@ describe("native Talk startup conversation membership", () => {
     };
     await expect(
       ensureClientVoiceAgentSessionEntry({ ...f.target, chatType: "direct" }),
-    ).resolves.toBe("existing-group");
+    ).resolves.toBeUndefined();
     expect(f.state.current.chatType).toBe("group");
     expect(mocks.commit).not.toHaveBeenCalled();
     expect(mocks.patch).not.toHaveBeenCalled();
@@ -456,10 +455,8 @@ describe("native Talk startup conversation membership", () => {
         }),
       };
     });
-    await expect(ensureClientVoiceAgentSessionEntry(f.target)).resolves.toBe(
-      "existing-native-conversation",
-    );
-    expect(mocks.activate).toHaveBeenCalledTimes(2);
+    await expect(ensureClientVoiceAgentSessionEntry(f.target)).resolves.toBeUndefined();
+    expect(mocks.activate).toHaveBeenCalledOnce();
     for (const [params] of mocks.activate.mock.calls) {
       expect(params).toEqual(
         expect.objectContaining({
@@ -537,7 +534,7 @@ describe("native Talk startup conversation membership", () => {
     const source: SessionSourceAssertion = Object.assign(vi.fn(), {
       prepareSessionSource: vi.fn(),
     });
-    await ensureClientVoiceAgentSessionEntry({ ...f.target, assertCommitAllowed: source });
+    await ensureClientVoiceAgentSessionEntry({ ...f.target, source });
     expect(mocks.commit.mock.calls[0]![0].contextSourceAuthority).toBe(source);
     expect(source).toHaveBeenCalled();
   });
