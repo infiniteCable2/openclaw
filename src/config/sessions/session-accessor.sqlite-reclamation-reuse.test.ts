@@ -101,11 +101,9 @@ vi.mock("node:diagnostics_channel", async (importOriginal) => {
     pressureSubscriptions.add(listener);
   };
   const unsubscribe = (listener: Parameters<Channel["unsubscribe"]>[0]) => {
-    const removed = pressure.unsubscribe(listener);
-    if (removed) {
-      pressureSubscriptions.delete(listener);
-    }
-    return removed;
+    const result = pressure.unsubscribe(listener);
+    pressureSubscriptions.delete(listener);
+    return result;
   };
   const observedPressure = new Proxy(pressure, {
     get(target, property) {

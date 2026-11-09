@@ -95,6 +95,9 @@ it("records native check-only preparation metadata after a compaction boundary",
     content: "Retained request",
     timestamp: 2,
   });
+  if (!retainedId) {
+    throw new Error("Expected a persisted retained user anchor");
+  }
   await manager.appendMessageAsync(
     createAssistant(model, [{ type: "text", text: "Retained reply" }]),
   );
