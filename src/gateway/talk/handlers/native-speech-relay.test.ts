@@ -11,6 +11,7 @@ import {
   removeSessionMember,
 } from "../../../config/sessions/session-sharing-store.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { prepareUserProfileCatalog } from "../../../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { getUnifiedTalkSession } from "../../../talk/session-registry.js";
 import { rolePolicyConfig } from "../../session-sharing.test-utils.js";
@@ -46,6 +47,7 @@ it("retained STT/TTS custody survives its create RPC and writer metadata but rej
     createdActor: { type: "human", source: "profile", id: ownerId },
   });
   await addSessionMember(scope, { identityId: callerId, addedBy: ownerId });
+  using _profiles = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
   // dispatch has returned through the real WebSocket request authority's finally/release.
   const call = await createSpeechRelayCall({ sessionKey });
   const record = getUnifiedTalkSession(call.sessionId);
@@ -135,7 +137,15 @@ it("public STT/TTS input boundary finalizes real audio through native consultati
   ).toHaveBeenCalledWith(true, { ok: true }, undefined);
   expect(finishInput).toHaveBeenCalledOnce();
   await withinTest(turnEnded.promise, signal);
-  expect(mocks.runEmbeddedAgent).toHaveBeenCalledOnce();
+  expect(
+    mocks.runEmbeddedAgent,
+    mocks.runEmbeddedAgent.mock.calls.length === 1
+      ? undefined
+      : JSON.stringify({
+          warnings: vi.mocked(context.logGateway.warn).mock.calls,
+          spokenText: mocks.streamSpeech.mock.calls.map(([request]) => request.text),
+        }),
+  ).toHaveBeenCalledOnce();
   expect(hardware.close).not.toHaveBeenCalled();
   expect(getUnifiedTalkSession(call.sessionId).kind).toBe("speech-relay");
   await dispatch("talk.session.close", { sessionId: call.sessionId });
