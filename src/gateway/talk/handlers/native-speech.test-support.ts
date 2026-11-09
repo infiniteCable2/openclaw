@@ -83,9 +83,15 @@ vi.mock("../../../auto-reply/reply/get-reply.js", async (importOriginal) => {
   return {
     ...actual,
     getReplyFromConfig: async (...args: Parameters<typeof actual.getReplyFromConfig>) => {
-      const result = await actual.getReplyFromConfig(...args);
-      mocks.replyDiagnostic.push(result);
-      return result;
+      mocks.replyDiagnostic.push({ phase: "entered" });
+      try {
+        const result = await actual.getReplyFromConfig(...args);
+        mocks.replyDiagnostic.push({ phase: "returned", result });
+        return result;
+      } catch (error) {
+        mocks.replyDiagnostic.push({ phase: "failed", error: String(error) });
+        throw error;
+      }
     },
   };
 });
