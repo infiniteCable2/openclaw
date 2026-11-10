@@ -716,7 +716,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             throw new Error("Original personal recipient unavailable before restart");
           }
           const ids = [originalRecipient.sessionId];
-          for (let index = 0; index < 2; index++) {
+          for (let index = 0; index < 8; index++) {
             const key = `agent:main:voice:dormant-${index}-${randomUUID()}`;
             dormantKeys.push(key);
             const dormant = await create(key);
