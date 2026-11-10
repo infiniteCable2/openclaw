@@ -28,6 +28,7 @@ describe("MatrixRTC sticky membership encryption", () => {
     client.store.storeRoom(room);
 
     await client["_unstable_sendStickyEvent"](roomId, 60_000, null, EventType.RTCMembership, {
+      slot_id: "m.call#ROOM",
       msc4354_sticky_key: "member",
     });
 

@@ -105,8 +105,11 @@ function createTracker(...limits: Parameters<typeof createRoomHistoryTracker>) {
         tracker
           .prepareTrigger(AGENT, roomId, 100, entry(body, messageId), thread, slot)
           .history.map(({ body: entryBody }) => entryBody),
-      consume: (snapshot: { snapshotIdx: number }, messageId?: string, thread?: string) =>
-        tracker.consumeHistory(AGENT, roomId, snapshot, messageId, thread),
+      consume: (
+        snapshot: Parameters<typeof tracker.consumeHistory>[2],
+        messageId?: string,
+        thread?: string,
+      ) => tracker.consumeHistory(AGENT, roomId, snapshot, messageId, thread),
       finalize: (slot: ReservedHistorySlot, body: string, messageId?: string) =>
         tracker.finalizePending(roomId, slot, entry(body, messageId)),
       discard: (slot: ReservedHistorySlot) => tracker.discardPending(roomId, slot),

@@ -162,11 +162,12 @@ describe("createDirectRoomTracker", () => {
     await expect(checkDefaultRoom(tracker)).resolves.toBe(true);
     client.setMembersForTest(["@alice:example.org", "@bot:example.org", "@extra:example.org"]);
     await expect(
-      tracker.preparePrivateAudience({
+      tracker.isDirectMessage({
         ...DEFAULT_DIRECT_CHECK,
         joinedMembers: ["@alice:example.org", "@bot:example.org"],
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
+    await expect(tracker.preparePrivateAudience(DEFAULT_DIRECT_CHECK)).resolves.toBeUndefined();
     expect(client.getJoinedRoomMembers).toHaveBeenCalledTimes(1);
     expect(client.doRequest).toHaveBeenCalledTimes(1);
   });

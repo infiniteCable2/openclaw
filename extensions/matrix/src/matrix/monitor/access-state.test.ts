@@ -131,7 +131,6 @@ describe("resolveMatrixMonitorAccessState", () => {
         }
         expect(
           await resolveMatrixMonitorCommandAccess(state, {
-            useAccessGroups: true,
             allowTextCommands: true,
             hasControlCommand: true,
           }),

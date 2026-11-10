@@ -4,6 +4,7 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { resolveAgentSpeechConversationRoute } from "openclaw/plugin-sdk/routing";
+import { cloneRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matrixPlugin } from "../channel.js";
@@ -336,7 +337,12 @@ describe("MatrixRTC text-free conversation admission", () => {
           matrix: Object.freeze({ ...matrix, dm: Object.freeze({ ...matrix.dm, allowFrom }) }),
         }),
       });
-      runtime.config.current = () => snapshot;
+      function current(options: { clone: true }): OpenClawConfig;
+      function current(): typeof snapshot;
+      function current(options?: { clone: true }) {
+        return options?.clone ? cloneRuntimeConfigSnapshot(snapshot) : snapshot;
+      }
+      runtime.config.current = current;
       const original = routes.projectMatrixInboundRoute;
       const route = vi
         .spyOn(routes, "projectMatrixInboundRoute")

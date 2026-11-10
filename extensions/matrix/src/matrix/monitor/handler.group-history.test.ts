@@ -4,6 +4,7 @@ import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import type { MatrixMonitorHandlerParams } from "./handler-types.js";
 import {
   createMatrixHandlerTestHarness,
+  createMatrixIngressLifecycle,
   createMatrixTextMessageEvent,
 } from "./handler.test-helpers.js";
 import { createPollStartEvent } from "./test-events.js";
@@ -49,12 +50,17 @@ beforeEach(() => installMatrixMonitorTestRuntime());
 
 describe("matrix group chat history", () => {
   it.for([false, true])(
-    "does not re-quote an admitted input while dispatch is settling (replay claim=%s)",
-    async (withReplayClaim, { signal }) => {
+    "does not re-quote an admitted input while dispatch is settling (async adoption=%s)",
+    async (asyncAdoption, { signal }) => {
       const adopted = createDeferred<void>();
       const settle = createDeferred<void>();
       const observedHistory: string[][] = [];
-      const claim = { commit: vi.fn(async () => true), release: vi.fn() };
+      // Ingress owns replay claims; the handler must await its adoption lifecycle
+      // before consuming the trigger, independently of dispatch settlement.
+      const lifecycle = {
+        ...createMatrixIngressLifecycle(),
+        onAdopted: vi.fn(() => (asyncAdoption ? Promise.resolve() : undefined)),
+      };
       type InboundRun = MatrixMonitorHandlerParams["core"]["channel"]["inbound"]["run"];
       const run = (async (params: Parameters<InboundRun>[0]) => {
         const input = await params.adapter.ingest(params.raw);
@@ -86,17 +92,18 @@ describe("matrix group chat history", () => {
       }) as InboundRun;
       const f = setup({
         runChannelInboundEvent: run,
-        inboundDeduper: withReplayClaim
-          ? {
-              claim: vi.fn(async ({ eventId }) => ({
-                kind: "claimed" as const,
-                handle: { keys: [eventId] as const, ...claim },
-              })),
-            }
-          : undefined,
       });
       await f.text("$before", "ambient before", 1_000);
-      const first = f.trigger("$first", "first input", 2_000);
+      const first = f.handler(
+        roomId,
+        createMatrixTextMessageEvent({
+          eventId: "$first",
+          body: "@room first input",
+          originServerTs: 2_000,
+          mentions: { room: true },
+        }),
+        lifecycle,
+      );
       const release = () => settle.resolve();
       signal.addEventListener("abort", release, { once: true });
       try {
@@ -108,10 +115,8 @@ describe("matrix group chat history", () => {
         await f.text("$after", "ambient after", 3_000);
         await f.trigger("$second", "second input", 4_000);
         expect(observedHistory).toEqual([["ambient before"], ["ambient before", "ambient after"]]);
-        if (withReplayClaim) {
-          expect(claim.commit).toHaveBeenCalled();
-          expect(claim.release).not.toHaveBeenCalled();
-        }
+        expect(lifecycle.onAdopted).toHaveBeenCalledOnce();
+        expect(lifecycle.onAbandoned).not.toHaveBeenCalled();
       } finally {
         signal.removeEventListener("abort", release);
         release();

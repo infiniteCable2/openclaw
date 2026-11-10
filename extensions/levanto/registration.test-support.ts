@@ -9,6 +9,7 @@ export function registerLevantoTestProvider(
   const registerDecisionProvider = vi.fn<OpenClawPluginApi["registerDecisionProvider"]>();
   const api = createTestPluginApi({ id: "levanto", registerDecisionProvider });
   api.runtime.media = {
+    ...api.runtime.media,
     getImageMetadata,
     loadWebMedia: vi.fn(),
     detectMime: vi.fn(),

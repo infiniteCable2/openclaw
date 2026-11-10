@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -22,7 +23,8 @@ export function registerGoogleMeetRealtimeAudioTests() {
   it("uses realtime transcription plus regular TTS in Chrome agent mode", async () => {
     vi.useFakeTimers();
     const { provider, requireRequest, sendAudio } = createTestMeetTranscriptionProvider();
-    const { transport, deliverInput, writeOutput } = createTestMeetRealtimeAudioTransport();
+    const { transport } = createTestMeetRealtimeAudioTransport();
+    const writeOutput = vi.mocked(transport.writeOutput);
     const runtime = createTestPluginApi().runtime;
     runtime.tts = {
       ...runtime.tts,
@@ -69,6 +71,8 @@ export function registerGoogleMeetRealtimeAudioTests() {
     expect(noopLogger.info).toHaveBeenCalledWith(
       "[google-meet] agent audio bridge starting: transcriptionProvider=openai transcriptionModel=gpt-4o-transcribe tts=telephony audioFormat=pcm16-24khz",
     );
+    const deliverInput = vi.mocked(transport.startInput).mock.calls[0]?.[0];
+    assert(deliverInput, "agent engine did not start the meeting audio input");
     deliverInput(Buffer.from([1, 0, 2, 0, 3, 0, 4, 0]));
     const timersBeforeTranscript = vi.getTimerCount();
     callbacks.onTranscript?.("Please summarize the launch.");
@@ -132,7 +136,8 @@ export function registerGoogleMeetRealtimeAudioTests() {
   it("closes output and turn lifecycle when agent audio delivery fails", async () => {
     vi.useFakeTimers();
     const { provider, requireRequest } = createTestMeetTranscriptionProvider();
-    const { transport, writeOutput } = createTestMeetRealtimeAudioTransport();
+    const { transport } = createTestMeetRealtimeAudioTransport();
+    const writeOutput = vi.mocked(transport.writeOutput);
     writeOutput.mockRejectedValueOnce(new Error("audio sink failed"));
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const runtime = createTestPluginApi().runtime;

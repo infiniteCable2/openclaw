@@ -23,16 +23,18 @@ describe("MatrixRTC initial key distribution", () => {
     const onEncryptionKeysChanged = vi.fn();
     const manager = new RTCEncryptionManager(
       {
-        userId: "@nova:example.test",
-        deviceId: "NOVADEVICE",
-        memberId: "@nova:example.test:NOVADEVICE",
+        userId: "@assistant:example.test",
+        deviceId: "ASSISTANTDEVICE",
+        memberId: "@assistant:example.test:ASSISTANTDEVICE",
       },
       () => [remoteMembership as never],
       transport as never,
       onEncryptionKeysChanged,
     );
 
-    manager.join({ manageMediaKeys: true, unstableSendStickyEvents: false });
+    manager.join({ manageMediaKeys: true, unstableSendStickyEvents: false }, [
+      { type: "livekit", livekit_service_url: "https://rtc.example.test", livekit_alias: "room" },
+    ]);
 
     await vi.waitFor(() => expect(sendKey).toHaveBeenCalledOnce());
     expect(sendKey).toHaveBeenCalledWith(expect.any(String), 0, [
@@ -44,8 +46,8 @@ describe("MatrixRTC initial key distribution", () => {
     expect(onEncryptionKeysChanged).toHaveBeenCalledWith(
       expect.any(Uint8Array),
       0,
-      expect.objectContaining({ userId: "@nova:example.test", deviceId: "NOVADEVICE" }),
-      "@nova:example.test:NOVADEVICE",
+      expect.objectContaining({ userId: "@assistant:example.test", deviceId: "ASSISTANTDEVICE" }),
+      "@assistant:example.test:ASSISTANTDEVICE",
     );
 
     manager.leave();

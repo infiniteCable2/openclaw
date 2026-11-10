@@ -55,6 +55,7 @@ const DEFAULT_ROUTE = {
 type MatrixHandlerTestHarnessOptions = {
   system?: Pick<MatrixMonitorHandlerParams["core"]["system"], "enqueueSystemEvent">;
   accountId?: string;
+  agentId?: string;
   accountConfig?: MatrixConfig;
   cfg?: unknown;
   liveCfg?: unknown;
@@ -148,7 +149,15 @@ export function createMatrixHandlerTestHarness(
   const readAllowFromStore = options.readAllowFromStore ?? vi.fn(async () => [] as string[]);
   const upsertPairingRequest =
     options.upsertPairingRequest ?? vi.fn(async () => ({ code: "ABCDEFGH", created: false }));
-  const resolveAgentRoute = options.resolveAgentRoute ?? vi.fn(() => DEFAULT_ROUTE);
+  const agentId = options.agentId ?? DEFAULT_ROUTE.agentId;
+  const resolveAgentRoute =
+    options.resolveAgentRoute ??
+    vi.fn(() => ({
+      ...DEFAULT_ROUTE,
+      agentId,
+      sessionKey: `agent:${agentId}:main`,
+      mainSessionKey: `agent:${agentId}:main`,
+    }));
   const recordInboundSession = options.recordInboundSession ?? vi.fn(async () => {});
   const finalizeInboundContext = vi.fn(finalizeCoreInboundContext);
   const dispatchInboundMessage =

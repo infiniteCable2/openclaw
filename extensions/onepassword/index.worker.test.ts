@@ -49,6 +49,7 @@ it("hands approvals to competing tool executions without main-thread SQL", async
   const on = vi.fn<OpenClawPluginApi["on"]>();
   const api = createTestPluginApi({ id: "onepassword", pluginConfig, registerTool, on });
   api.runtime.config = {
+    ...api.runtime.config,
     current: () => ({ plugins: { entries: { onepassword: { config: pluginConfig } } } }),
     mutateConfigFile: vi.fn(),
     replaceConfigFile: vi.fn(),
