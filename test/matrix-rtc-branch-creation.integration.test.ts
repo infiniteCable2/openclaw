@@ -22,6 +22,7 @@ import { recordConversationKnowledgeTurn } from "../src/config/sessions/conversa
 import { loadSessionEntry, loadTranscriptEvents } from "../src/config/sessions/session-accessor.js";
 import * as initialFrames from "../src/config/sessions/session-initial-context-frame.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
+import * as personalReads from "../src/gateway/session-transcript-personal-read.js";
 import { withRegisteredChannelIngress } from "../src/plugin-sdk/test-helpers/registered-channel-ingress.js";
 import type { PluginRuntime } from "../src/plugins/runtime/types.js";
 import { resolveAgentSpeechConversationRoute } from "../src/routing/conversation-mode.js";
@@ -73,6 +74,7 @@ it(
           frame: 0,
         };
         const measurements: Array<Record<string, number | string>> = [];
+        const readFailures: string[] = [];
         const spies: { mockRestore(): void }[] = [];
         let registration:
           | ReturnType<typeof registerConversationKnowledgeCheckpointOwner>
@@ -122,10 +124,23 @@ it(
             ).toBe(true);
           }
           const nativeClone = configCloning.cloneRuntimeConfigSnapshot;
+          const nativePersonalRead = personalReads.preparePersonalConversationRead;
           const nativeSources = checkpointSources.prepareConversationKnowledgeCheckpointSources;
           const nativeBorrow = initialFrames.borrowPreparedConversationKnowledgeInitialFrame;
           const nativeRoute = matrixRtcRouting.projectMatrixInboundRoute;
           spies.push(
+            vi
+              .spyOn(personalReads, "preparePersonalConversationRead")
+              .mockImplementation(async (input) => {
+                try {
+                  return await nativePersonalRead(input);
+                } catch (error) {
+                  readFailures.push(
+                    error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+                  );
+                  throw error;
+                }
+              }),
             vi
               .spyOn(matrixRtcRouting, "projectMatrixInboundRoute")
               .mockImplementation((input, inspection) => {
@@ -250,6 +265,7 @@ it(
                   packets,
                   JSON.stringify({
                     phase,
+                    readFailures: [...new Set(readFailures)],
                     counts,
                     visibility: entry.visibility,
                     topology: entry.conversationTopology,
