@@ -699,6 +699,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           [];
         let priorGatewayLines = new Set<string>();
         const dormantKeys: string[] = [];
+        const dormantRecipientCount = 8;
         const restartFact = "RESTART_SIBLING_FACT_SILVER_52";
         const coldFact = "COLD_IDLE_DELIVERY_INDIGO_83";
         const unrelatedFact = "OTHER_PERSON_PRIVATE_FACT_MAUVE_16";
@@ -709,7 +710,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             throw new Error("Original personal recipient unavailable before restart");
           }
           const ids = [originalRecipient.sessionId];
-          for (let index = 0; index < 2; index++) {
+          for (let index = 0; index < dormantRecipientCount; index++) {
             const key = `agent:main:voice:dormant-${index}-${randomUUID()}`;
             dormantKeys.push(key);
             const dormant = await create(key);
@@ -776,7 +777,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           await waitForRestartPreparations(gateway, signal, restartRecipients, {
             excludedLines: priorGatewayLines,
           });
-          expect(restartRecipients).toHaveLength(3);
+          expect(restartRecipients).toHaveLength(dormantRecipientCount + 1);
           // No new login, Talk creation or model input has re-enrolled these recipients.
           expect(model.requests).toHaveLength(requestsBeforeRestart);
         }
@@ -785,7 +786,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
           if (!chatRecipient) {
             throw new Error("Expected the original chat donor");
           }
-          // New donor data rules out a pre-restart receipt. All three recipients
+          // New donor data rules out a pre-restart receipt. All recipients
           // are still disconnected and have no post-restart foreground budget.
           phase = "cold-idle-recipient-admission";
           await sendChat(coldFact);
