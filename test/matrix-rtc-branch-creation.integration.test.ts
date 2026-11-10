@@ -17,14 +17,11 @@ import {
 import type { ChannelPlugin } from "../src/channels/plugins/types.plugin.js";
 import * as configCloning from "../src/config/resolution-facts.js";
 import { captureRuntimeConfigWithSource } from "../src/config/runtime-config-capture-state.js";
-import { consumeConversationBranchCreation } from "../src/config/sessions/conversation-branch-creation.js";
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../src/config/sessions/conversation-knowledge-packets.js";
 import { recordConversationKnowledgeTurn } from "../src/config/sessions/conversation-knowledge-store.js";
 import { loadSessionEntry, loadTranscriptEvents } from "../src/config/sessions/session-accessor.js";
 import * as initialFrames from "../src/config/sessions/session-initial-context-frame.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
-import { prepareSessionMutationFacts } from "../src/gateway/session-sharing-preparation.js";
-import * as personalReads from "../src/gateway/session-transcript-personal-read.js";
 import { withRegisteredChannelIngress } from "../src/plugin-sdk/test-helpers/registered-channel-ingress.js";
 import type { PluginRuntime } from "../src/plugins/runtime/types.js";
 import { resolveAgentSpeechConversationRoute } from "../src/routing/conversation-mode.js";
@@ -76,7 +73,6 @@ it(
           frame: 0,
         };
         const measurements: Array<Record<string, number | string>> = [];
-        const readFailures: string[] = [];
         const spies: { mockRestore(): void }[] = [];
         let registration:
           | ReturnType<typeof registerConversationKnowledgeCheckpointOwner>
@@ -126,46 +122,10 @@ it(
             ).toBe(true);
           }
           const nativeClone = configCloning.cloneRuntimeConfigSnapshot;
-          const nativePersonalRead = personalReads.preparePersonalConversationRead;
           const nativeSources = checkpointSources.prepareConversationKnowledgeCheckpointSources;
           const nativeBorrow = initialFrames.borrowPreparedConversationKnowledgeInitialFrame;
           const nativeRoute = matrixRtcRouting.projectMatrixInboundRoute;
           spies.push(
-            vi
-              .spyOn(personalReads, "preparePersonalConversationRead")
-              .mockImplementation(async (input) => {
-                try {
-                  return await nativePersonalRead(input);
-                } catch (error) {
-                  if (input.personal.targetCreation && !readFailures.length) {
-                    const creation = consumeConversationBranchCreation({
-                      creation: input.personal.targetCreation,
-                      branch: input.personal.target,
-                      participant: input.personal.originalParticipant,
-                      audience: input.personal.targetAudience,
-                    });
-                    const held = await prepareSessionMutationFacts({
-                      cfg: input.getRuntimeConfig(),
-                      agentId: input.personal.target.agentId,
-                      sessionKey: input.personal.target.root.sessionKey,
-                    });
-                    try {
-                      readFailures.push(
-                        JSON.stringify({
-                          creation,
-                          root: held.readCurrent(input.getRuntimeConfig()).target.readSource,
-                        }),
-                      );
-                    } finally {
-                      held.release();
-                    }
-                  }
-                  readFailures.push(
-                    error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-                  );
-                  throw error;
-                }
-              }),
             vi
               .spyOn(matrixRtcRouting, "projectMatrixInboundRoute")
               .mockImplementation((input, inspection) => {
@@ -286,26 +246,7 @@ it(
                 const packets = events.filter(
                   (event) => isRecord(event) && event.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
                 );
-                expect(
-                  packets,
-                  JSON.stringify({
-                    phase,
-                    readFailures: [...new Set(readFailures)],
-                    counts,
-                    visibility: entry.visibility,
-                    topology: entry.conversationTopology,
-                    actor: entry.createdActor,
-                    events: events.map((event) =>
-                      isRecord(event)
-                        ? {
-                            type: event.type,
-                            customType: event.customType,
-                            role: isRecord(event.message) ? event.message.role : undefined,
-                          }
-                        : null,
-                    ),
-                  }),
-                ).toHaveLength(requested);
+                expect(packets).toHaveLength(requested);
                 measurements.push({
                   phase,
                   elapsedMs: Math.round(performance.now() - start),

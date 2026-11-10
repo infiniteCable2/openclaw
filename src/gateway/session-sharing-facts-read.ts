@@ -13,7 +13,7 @@ export async function readSessionSharingFactsInWorker(
 ) {
   let physicalSource: { agentId: string; path: string } | undefined;
   const captureSource: SessionEntryReadSourcePreparation = (source, identity) => {
-    physicalSource = source;
+    physicalSource = { agentId: source.agentId, path: source.path };
     prepareSource(source, identity);
   };
   const request = {
