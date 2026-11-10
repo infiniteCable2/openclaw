@@ -28,7 +28,7 @@ import type { ChannelMeta } from "../channels/plugins/types.public.js";
 import type { ReplyToMode } from "../config/types.base.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { buildOutboundBaseSessionKey } from "../infra/outbound/base-session-key.js";
-import { normalizeOutboundThreadId } from "../infra/outbound/thread-id.js";
+import { resolveThreadAwareOutboundCandidate } from "../infra/outbound/thread-id.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { OpenClawPluginApi } from "../plugins/types.js";
 import { resolveThreadSessionKeys } from "../routing/session-key.js";
@@ -38,7 +38,17 @@ import {
 } from "../sessions/session-key-utils.js";
 import { createAttachedChannelResultAdapter } from "./channel-send-result.js";
 import { createCachedLazyValueGetter } from "./lazy-value.js";
-export type * from "./core-service.types.js";
+export type {
+  OpenClawPluginService,
+  OpenClawPluginServiceContext,
+  OpenClawPluginServiceContextV2,
+  OpenClawPluginServiceV2,
+  OpenClawPluginServiceV3,
+  OpenClawPluginServiceContextV3,
+  PluginServiceSessionWorkV1,
+  PluginServiceSessionWorkContextV1,
+  PluginServiceSchedulerV1,
+} from "./core-service.types.js";
 export type {
   AgentPromptGuidance,
   AgentPromptGuidanceEntry,
@@ -425,19 +435,6 @@ export function buildThreadAwareOutboundSessionRoute(params: {
     ...params.route,
     sessionKey: threadKeys.sessionKey,
     ...(candidate !== undefined ? { threadId: candidate.routeThreadId } : {}),
-  };
-}
-
-function resolveThreadAwareOutboundCandidate(
-  threadId?: string | number | null,
-): { routeThreadId: string | number; sessionThreadId: string } | undefined {
-  const sessionThreadId = normalizeOutboundThreadId(threadId);
-  if (sessionThreadId === undefined) {
-    return undefined;
-  }
-  return {
-    routeThreadId: typeof threadId === "number" ? threadId : sessionThreadId,
-    sessionThreadId,
   };
 }
 

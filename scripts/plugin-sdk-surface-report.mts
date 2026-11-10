@@ -315,6 +315,12 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: channel display-mention and mention-adapter types (#192473).
       // +1: shared plugin-owned Control UI message translation.
       // +1: GatewayIngressPrincipalRecovery on gateway-ingress (#193098).
+      // +8: OpenClawPluginServiceV3, OpenClawPluginServiceContextV3,
+      // PluginServiceSessionWorkV1, and PluginServiceSessionWorkContextV1
+      // on both core and plugin-entry (#176886).
+      // +1: ControlUiRecoveryStorageV1 on control-ui.
+      // +2: buildAgentHarnessBasePrompt and isSessionAccessRefreshingError
+      // on agent-harness-runtime and gateway-runtime respectively.
       // +5: fork-maintainer-approved meeting-runtime readiness/greeting contract (2026-10-10):
       // prepareMeetingAgentRealtimeEngine, prepareMeetingAgentGreeting,
       // MeetingAgentRealtimePreparation, PreparedMeetingAgentGreeting, MeetingOutputGate.
@@ -327,8 +333,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // cloneRuntimeConfigSnapshot preserves the supplied snapshot's resolution facts.
       // +1: reuse the native config snapshot matcher for startup admission across no-op publications.
       // +1: retained native binding preparation for RTC ingress; avoids synchronous reads.
-      // +1: reuse the core localized user-message catalog in native Skill Workshop.
-      3882,
+      // Private skill-workshop-host-runtime exports do not count toward this public budget.
+      3892,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -382,14 +388,15 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: the same plugin-command continuation classifier.
       // +2: the same settled execution lifecycle classifiers (#192413).
       // +1: the same Control UI message translator.
+      // +2: buildAgentHarnessBasePrompt and isSessionAccessRefreshingError;
+      // service V3/session-work and ControlUiRecoveryStorageV1 additions are types.
       // +2: fork-maintainer-approved meeting-runtime preparation functions (2026-10-10).
       // +2: fork-maintainer-approved async PNG encoding and speech-profile resolution (2026-10-15).
       // +2: fork-maintainer-approved V2 meeting bindings and speech route resolver (2026-10-18).
       // +1: fork-maintainer-approved native readonly-config copy (2026-10-18).
       // +1: existing native config snapshot matcher; no duplicate plugin-side provenance comparison.
       // +1: retained native binding preparation on the existing inspection facade.
-      // +1: the same localized user-message resolver on skill-workshop-host-runtime.
-      2245,
+      2246,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

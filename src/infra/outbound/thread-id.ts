@@ -6,3 +6,17 @@ import { normalizeOptionalStringifiedId } from "@openclaw/normalization-core/str
 export function normalizeOutboundThreadId(value?: string | number | null): string | undefined {
   return normalizeOptionalStringifiedId(value);
 }
+
+/** Keeps the delivery id's native type alongside the normalized session-key id. */
+export function resolveThreadAwareOutboundCandidate(
+  threadId?: string | number | null,
+): { routeThreadId: string | number; sessionThreadId: string } | undefined {
+  const sessionThreadId = normalizeOutboundThreadId(threadId);
+  if (sessionThreadId === undefined) {
+    return undefined;
+  }
+  return {
+    routeThreadId: typeof threadId === "number" ? threadId : sessionThreadId,
+    sessionThreadId,
+  };
+}
