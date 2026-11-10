@@ -1,12 +1,41 @@
 // Only hardware leaves are synthetic. Public Talk RPCs, the model HTTP transport,
 // native turns, transcript workers and background knowledge owners remain real.
+import { isDeepStrictEqual } from "node:util";
+
 // Temporary diagnostic: keep the native formatter and report code locations only.
 const formatStack = Error.prepareStackTrace;
 if (formatStack) {
   Error.prepareStackTrace = (error, frames) => {
     if (error.name === "SessionMutationFactsUnavailableError") {
+      const pending = globalThis[Symbol.for("openclaw.pendingSessionEntryPublications")];
+      const reads = globalThis[Symbol.for("openclaw.preparedSessionSharingReads")];
+      const publications = [];
+      for (const [key, entries] of pending ?? []) {
+        const sessionKey = key.slice(key.indexOf("\0") + 1);
+        for (const entry of entries) {
+          const postimage = entry.entryPostimages?.get(sessionKey);
+          const fields = new Set();
+          for (const read of reads?.get(key) ?? []) {
+            for (const field of Object.keys(read.facts?.entry ?? {})) {
+              if (!isDeepStrictEqual(read.facts.entry[field], postimage?.[field])) {
+                fields.add(field);
+              }
+            }
+          }
+          publications.push({
+            postimage: Boolean(postimage),
+            changedFields: [...fields],
+            participants: entry.participantProjections?.has(sessionKey) ?? false,
+            sharingUnchanged: entry.sharingUnchanged.has(sessionKey),
+            generationUnchanged: entry.generationUnchanged.has(sessionKey),
+            membership: entry.membershipInvalidated.has(sessionKey),
+            settled: entry.settled,
+          });
+        }
+      }
       process.stderr.write(
         `${JSON.stringify({
+          publications,
           sessionFactsCallers: frames.map(
             (frame) =>
               `${frame.getFileName()?.split(/[\\/]/u).at(-1)}:${frame.getLineNumber()}:${frame.getColumnNumber()}`,
