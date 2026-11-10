@@ -124,15 +124,15 @@ it(
           const nativeClone = configCloning.cloneRuntimeConfigSnapshot;
           const nativeSources = checkpointSources.prepareConversationKnowledgeCheckpointSources;
           const nativeBorrow = initialFrames.borrowPreparedConversationKnowledgeInitialFrame;
-          const nativeRoute = matrixRtcRouting.resolveMatrixInboundRouteAsync;
+          const nativeRoute = matrixRtcRouting.projectMatrixInboundRoute;
           spies.push(
             vi
-              .spyOn(matrixRtcRouting, "resolveMatrixInboundRouteAsync")
-              .mockImplementation(async (input) => {
+              .spyOn(matrixRtcRouting, "projectMatrixInboundRoute")
+              .mockImplementation((input, inspection) => {
                 counts.routeSelection++;
                 const start = performance.now();
                 try {
-                  return await nativeRoute(input);
+                  return nativeRoute(input, inspection);
                 } finally {
                   counts.routeInclusiveMs += performance.now() - start;
                 }
@@ -246,7 +246,25 @@ it(
                 const packets = events.filter(
                   (event) => isRecord(event) && event.customType === CONVERSATION_KNOWLEDGE_CONTEXT,
                 );
-                expect(packets).toHaveLength(requested);
+                expect(
+                  packets,
+                  JSON.stringify({
+                    phase,
+                    counts,
+                    visibility: entry.visibility,
+                    topology: entry.conversationTopology,
+                    actor: entry.createdActor,
+                    events: events.map((event) =>
+                      isRecord(event)
+                        ? {
+                            type: event.type,
+                            customType: event.customType,
+                            role: isRecord(event.message) ? event.message.role : undefined,
+                          }
+                        : null,
+                    ),
+                  }),
+                ).toHaveLength(requested);
                 measurements.push({
                   phase,
                   elapsedMs: Math.round(performance.now() - start),
