@@ -19,6 +19,10 @@ import {
   startTestNodeRealtimeAudioBridge,
 } from "./realtime-engine.test-helpers.js";
 
+type MeetingTalkEvent = Parameters<
+  NonNullable<Parameters<typeof startMeetingAgentRealtimeEngine>[0]["onTalkEvent"]>
+>[0];
+
 export function registerGoogleMeetRealtimeAudioTests() {
   it("uses realtime transcription plus regular TTS in Chrome agent mode", async () => {
     vi.useFakeTimers();
@@ -45,6 +49,7 @@ export function registerGoogleMeetRealtimeAudioTests() {
     };
     const consultAgent = vi.fn(async () => ({ text: "Use the Portugal launch data." }));
     const turnEnded = createDeferred<void>();
+    const talkEvents: MeetingTalkEvent[] = [];
     const engineParams = {
       config: resolveGoogleMeetConfig({
         realtime: { provider: "openai", agentId: "jay", introMessage: "" },
@@ -61,6 +66,7 @@ export function registerGoogleMeetRealtimeAudioTests() {
       transport,
       providers: [provider],
       onTalkEvent: (event) => {
+        talkEvents.push(event);
         if (event.type === "turn.ended") {
           turnEnded.resolve();
         }
@@ -113,7 +119,10 @@ export function registerGoogleMeetRealtimeAudioTests() {
     expect(health.lastOutputBytes).toBe(4);
     expect(health.realtimeTranscriptLines).toBe(2);
     expect(health.lastRealtimeTranscriptRole).toBe("assistant");
-    const talkEventTypes = health.recentTalkEvents?.map((event) => event.type) ?? [];
+    expect(talkEvents.some((event) => event.type === "session.activity")).toBe(true);
+    const talkEventTypes = talkEvents
+      .map((event) => event.type)
+      .filter((type) => type !== "session.activity");
     expect(talkEventTypes).toEqual([
       "session.started",
       "session.ready",
@@ -140,6 +149,8 @@ export function registerGoogleMeetRealtimeAudioTests() {
     const writeOutput = transport.writeOutput;
     writeOutput.mockRejectedValueOnce(new Error("audio sink failed"));
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const talkEvents: MeetingTalkEvent[] = [];
+    const turnEnded = createDeferred<void>();
     const runtime = createTestPluginApi().runtime;
     runtime.tts = {
       ...runtime.tts,
@@ -172,6 +183,12 @@ export function registerGoogleMeetRealtimeAudioTests() {
       logger,
       providers: [provider],
       consultAgent: async () => ({ text: "Answer from the agent." }),
+      onTalkEvent: (event) => {
+        talkEvents.push(event);
+        if (event.type === "turn.ended") {
+          turnEnded.resolve();
+        }
+      },
     });
     const callbacks = requireRequest();
 
@@ -180,8 +197,13 @@ export function registerGoogleMeetRealtimeAudioTests() {
     await vi.waitFor(() => {
       expect(logger.warn).toHaveBeenCalledWith("[google-meet] agent TTS failed: audio sink failed");
     });
+    await turnEnded.promise;
 
-    expect(handle.getHealth().recentTalkEvents?.map((event) => event.type)).toEqual([
+    expect(talkEvents.some((event) => event.type === "session.activity")).toBe(true);
+    const talkEventTypes = talkEvents
+      .map((event) => event.type)
+      .filter((type) => type !== "session.activity");
+    expect(talkEventTypes).toEqual([
       "session.started",
       "session.ready",
       "turn.started",
