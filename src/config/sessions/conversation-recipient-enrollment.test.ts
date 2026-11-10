@@ -9,6 +9,7 @@ import {
   collectConversationPrivateAudiences,
   retainConversationPrivateAudience,
 } from "../../sessions/conversation-private-audience.js";
+import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
@@ -17,11 +18,13 @@ import {
   retainConversationRecipientEnrollment,
 } from "./conversation-recipient-enrollment.js";
 import { loadSessionEntryForAdmission } from "./session-accessor.sqlite-entry-admission.js";
+import { retainPreparedSessionSharingFacts } from "./session-accessor.sqlite-entry-cache-publication-state.js";
 import {
   projectSessionSharingEntry,
   sessionSharingEntriesEqual,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
+import { retainSessionEntryWorkerPublication } from "./session-accessor.sqlite-entry-worker-publication.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import {
   projectPublicSessionEntry,
@@ -119,6 +122,67 @@ function fixture() {
 }
 
 describe("durable reusable recipient enrollment", () => {
+  it("keeps live session access during enrollment publication without masking access changes", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const { database, branch, entry } = fixture();
+      const identity = readOpenClawAgentDatabaseIdentity(database).identity;
+      if (typeof identity !== "string") {
+        throw new Error("Expected a durable enrollment source");
+      }
+      const enrolled: InternalSessionEntry = {
+        ...entry,
+        conversationRecipientEnrollment: {
+          version: 1,
+          lifetime: "reusable",
+          branch,
+          source: { kind: "operator", snapshot },
+        },
+      };
+      const changes: Partial<InternalSessionEntry>[] = [
+        {},
+        { visibility: "shared" },
+        { createdActor: { type: "human", source: "profile", id: "another-person" } },
+        { participants: [{ identity: { type: "profile", id: "another-person" } }] },
+        { lifecycleRevision: "another-generation" },
+        { conversationTopology: { version: 1, role: "root" } },
+        { permissionMode: "full" },
+      ];
+      for (const [index, change] of [...changes, {}].entries()) {
+        const membershipChanged = index === changes.length;
+        const retained = retainPreparedSessionSharingFacts({
+          databaseIdentity: `file:${identity}`,
+          sessionKey: branch.sessionKey,
+          entry: projectSessionSharingEntry(entry),
+          membership: new Set(),
+        });
+        const publication = retainSessionEntryWorkerPublication({
+          agentId: branch.agentId,
+          storePath: database.path,
+          databaseIdentity: identity,
+        });
+        try {
+          publication.begin(
+            [branch.sessionKey],
+            membershipChanged ? [branch.sessionKey] : [],
+            [],
+            [branch.sessionKey],
+            undefined,
+            new Map([[branch.sessionKey, { ...enrolled, ...change }]]),
+          );
+          expect(retained.readCurrent("sharing")).toBeUndefined();
+          if (index === 0) {
+            expect(retained.readCurrent("session-access")?.entry?.sessionId).toBe(entry.sessionId);
+          } else {
+            expect(retained.readCurrent("session-access")).toBeUndefined();
+          }
+        } finally {
+          publication.settle(undefined, false);
+          retained.release();
+        }
+      }
+    });
+  });
+
   it("preserves the original native source through retention and rejects source-less backfill", () => {
     const original = audience();
     const collected = collectConversationPrivateAudiences([original, original])!;

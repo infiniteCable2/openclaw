@@ -139,13 +139,19 @@ export function sessionSharingEntriesEqual(
   const { updatedAt: _previousUpdatedAt, ...before } = selectSessionSharingEntry(previous);
   const { updatedAt: _currentUpdatedAt, ...after } = selectSessionSharingEntry(current);
   if (scope === "session-access") {
-    // A person's access does not depend on which run currently owns transcript writes.
+    // Run ownership and restart enrollment do not grant or revoke a person's access.
     const {
       lifecycleRunId: _beforeRun,
       activeWriterRunId: _beforeWriter,
+      conversationRecipientEnrollment: _beforeEnrollment,
       ...beforeAccess
     } = before;
-    const { lifecycleRunId: _afterRun, activeWriterRunId: _afterWriter, ...afterAccess } = after;
+    const {
+      lifecycleRunId: _afterRun,
+      activeWriterRunId: _afterWriter,
+      conversationRecipientEnrollment: _afterEnrollment,
+      ...afterAccess
+    } = after;
     return isDeepStrictEqual(beforeAccess, afterAccess);
   }
   return isDeepStrictEqual(before, after);

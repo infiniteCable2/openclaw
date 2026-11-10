@@ -54,6 +54,10 @@ decoded rows even when a caller retains the inactive handle. Predicate compariso
 baselines last only until release; a late acknowledgement cannot restore them.
 Active authorities retain their existing publication and final-effect checks.
 
+Recipient restart enrollment does not change live session access. A pending
+enrollment-only publication preserves that access while strict sharing readers
+still wait; identity, membership, topology, and permission changes remain gated.
+
 Prepared entry-only session guards consume the retained database admission's
 identity and live publication instead of polling its path. Source preparation
 still validates aliases and physical replacement before a guarded write. Missing

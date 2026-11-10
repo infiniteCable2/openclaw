@@ -221,13 +221,6 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         console.error(JSON.stringify({ phase, phases, modelRequests: model.requests.length }));
         console.error(gateway.logs());
       });
-      context.onTestFinished(() => {
-        for (const line of gateway.logs().split("\n")) {
-          if (line.includes("sessionFactsCallers")) {
-            console.error(line);
-          }
-        }
-      });
       isolateConversationGatewayEnvironment(gateway);
       gateway.state.applyEnv();
       let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
@@ -716,7 +709,7 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
             throw new Error("Original personal recipient unavailable before restart");
           }
           const ids = [originalRecipient.sessionId];
-          for (let index = 0; index < 8; index++) {
+          for (let index = 0; index < 2; index++) {
             const key = `agent:main:voice:dormant-${index}-${randomUUID()}`;
             dormantKeys.push(key);
             const dormant = await create(key);

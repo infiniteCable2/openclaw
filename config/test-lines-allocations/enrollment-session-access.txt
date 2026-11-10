@@ -1,0 +1,2 @@
+64
+# Pending enrollment must preserve live access while actual access and membership changes revoke it.
