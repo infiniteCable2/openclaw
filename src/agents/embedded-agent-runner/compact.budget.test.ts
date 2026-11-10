@@ -27,6 +27,8 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   prepared = await fixture.prepareSession();
+  const { captureRuntimeConfigAsyncReader } = await import("../../config/io.runtime.js");
+  await captureRuntimeConfigAsyncReader()();
   hookRunner.hasHooks.mockReturnValue(true);
 });
 
