@@ -2,7 +2,7 @@
 // native turns, transcript workers and background knowledge owners remain real.
 // Temporary diagnostic: keep the native formatter and report code locations only.
 const formatStack = Error.prepareStackTrace;
-if (process.env.OPENCLAW_TEST_SESSION_FACTS_STACK === "1" && formatStack) {
+if (formatStack) {
   Error.prepareStackTrace = (error, frames) => {
     if (error.name === "SessionMutationFactsUnavailableError") {
       process.stderr.write(
