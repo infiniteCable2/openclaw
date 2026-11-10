@@ -466,7 +466,8 @@ it.each(["call", "assistant-voice"] as const)(
         ),
       ).toEqual(
         [false, true, false].map((captions) => ({
-          ...request,
+          version: request.version,
+          request_id: request.request_id,
           purpose,
           state: "ready",
           captions,
