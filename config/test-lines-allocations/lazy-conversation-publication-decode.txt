@@ -1,0 +1,4 @@
+34
+# Exact-owner publication decode counts for small, medium and media-sized payloads.
+# No decoder mocking; active-owner capture still uses the same provenance checks.
+# Only conversation-publication-context.test.ts grows.

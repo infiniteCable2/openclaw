@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import {
-  captureConversationPublication,
+  captureSerializedConversationPublication,
   publishConversationPublicationCommit,
 } from "../../config/sessions/conversation-publication-context.js";
 import type {
@@ -46,10 +46,7 @@ export async function appendSessionManagerActor(input: {
     input.append.kind === "message" ? input.append.input : input.append.input.message;
   const publication =
     messageControl &&
-    captureConversationPublication(
-      input.append.input.scope,
-      JSON.parse(messageControl.messageJson),
-    );
+    captureSerializedConversationPublication(input.append.input.scope, messageControl.messageJson);
   const assertCurrent = () => {
     input.assertCurrent();
     publication?.assertCurrent();

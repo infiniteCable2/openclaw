@@ -5,7 +5,7 @@ import {
   type CliHistoryWriter,
 } from "../../config/sessions/cli-history-boundary.js";
 import {
-  captureConversationPublication,
+  captureSerializedConversationPublication,
   publishConversationPublicationCommit,
 } from "../../config/sessions/conversation-publication-context.js";
 import type {
@@ -54,7 +54,7 @@ export async function withSessionMetadataWorker<T>(
     return await database.withMetadata(assertCurrent, operation, controls);
   }
   let cliWriter: CliHistoryWriter | undefined;
-  let publication: ReturnType<typeof captureConversationPublication>;
+  let publication: ReturnType<typeof captureSerializedConversationPublication>;
   const assertMetadataCurrent = () => {
     assertCurrent();
     cliWriter?.assertCurrent();
@@ -109,9 +109,9 @@ export async function withSessionMetadataWorker<T>(
               ? command.input.message
               : undefined;
         if (messageControl && typeof messageControl.messageJson === "string") {
-          publication = captureConversationPublication(
+          publication = captureSerializedConversationPublication(
             command.input.scope,
-            JSON.parse(messageControl.messageJson),
+            messageControl.messageJson,
           );
           if (publication) {
             Object.assign(messageControl, { conversationPublication: publication.intent });

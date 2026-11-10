@@ -140,20 +140,43 @@ export function withConversationPublicationContext<T>(owner: PublicationOwner, r
   }
 }
 
+function readPublicationOwner(scope: PublicationScope): PublicationOwner | undefined {
+  const owner = publicationContext.getStore();
+  if (
+    !owner ||
+    scope.agentId !== owner.source.agentId ||
+    scope.sessionKey !== owner.source.sessionKey ||
+    scope.sessionId !== owner.source.sessionId
+  ) {
+    return undefined;
+  }
+  return owner;
+}
+
 /** Capture before handing an append to a worker; the returned assertion stays on the host. */
 export function captureConversationPublication(
   scope: PublicationScope,
   message: unknown,
 ): ReturnType<PublicationOwner["capture"]> {
-  const owner = publicationContext.getStore();
+  const owner = readPublicationOwner(scope);
+  return owner && captureOwnedPublication(owner, message);
+}
+
+/** Native append workers still decode and validate messages; optional publication need not. */
+export function captureSerializedConversationPublication(
+  scope: PublicationScope,
+  messageJson: string,
+): ReturnType<PublicationOwner["capture"]> {
+  const owner = readPublicationOwner(scope);
+  return owner && captureOwnedPublication(owner, JSON.parse(messageJson));
+}
+
+function captureOwnedPublication(
+  owner: PublicationOwner,
+  message: unknown,
+): ReturnType<PublicationOwner["capture"]> {
   const role = readConversationObservationRole(message);
-  if (
-    !owner ||
-    scope.agentId !== owner.source.agentId ||
-    scope.sessionKey !== owner.source.sessionKey ||
-    scope.sessionId !== owner.source.sessionId ||
-    !role
-  ) {
+  if (!role) {
     return undefined;
   }
   if (

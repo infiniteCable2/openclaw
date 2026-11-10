@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   captureConversationPublication,
   captureConversationPublicationAppend,
+  captureSerializedConversationPublication,
   withConversationPublicationContext,
 } from "./conversation-publication-context.js";
 import type { ConversationPublicationIntent } from "./conversation-publication.types.js";
@@ -28,6 +29,41 @@ const message = {
 };
 
 describe("host publication context", () => {
+  it("decodes serialized messages only for their exact live publication owner", () => {
+    const payloads = [512, 32_768, 262_144].map((size) =>
+      JSON.stringify({ ...message, content: "x".repeat(size) }),
+    );
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      for (const payload of payloads) {
+        expect(captureSerializedConversationPublication(source, payload)).toBeUndefined();
+      }
+      expect(parse).not.toHaveBeenCalled();
+      withConversationPublicationContext(
+        { source, runId: "run-a", capture: () => ({ intent, assertCurrent() {} }) },
+        () => {
+          for (const payload of payloads) {
+            for (const foreign of [
+              { ...source, agentId: "other-agent" },
+              { ...source, sessionKey: "agent:example:other" },
+              { ...source, sessionId: "other-incarnation" },
+            ]) {
+              expect(captureSerializedConversationPublication(foreign, payload)).toBeUndefined();
+            }
+            const before = parse.mock.calls.length;
+            expect(captureSerializedConversationPublication(source, payload)?.intent).toEqual(
+              intent,
+            );
+            expect(parse.mock.calls.length - before).toBe(1);
+          }
+        },
+      );
+      expect(parse).toHaveBeenCalledTimes(payloads.length);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
   it("does not recapture a top-level append after its lock admission awaits", async () => {
     const capture = vi.fn(() => ({ intent, assertCurrent() {} }));
     await withConversationPublicationContext({ source, runId: "run-a", capture }, async () => {
