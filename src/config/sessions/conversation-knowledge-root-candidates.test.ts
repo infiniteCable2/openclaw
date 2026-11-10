@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createConversationKnowledgeSourceCache } from "../../auto-reply/reply/conversation-knowledge-source-cache.js";
+import { prepareConversationKnowledgeSourceSelection } from "../../auto-reply/reply/conversation-knowledge-source-reader.js";
 import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
 import { prepareConversationKnowledgeCheckpointSelection } from "./conversation-knowledge-checkpoint-admission.js";
 import {
@@ -191,6 +192,57 @@ function fixture() {
 beforeEach(() => boundary.reports.mockReset());
 
 describe("prepared native knowledge root candidates", () => {
+  it("keeps prepared donor custody while an appended range has not finished preparing", async () => {
+    const f = fixture();
+    const cache = createConversationKnowledgeSourceCache();
+    const original = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+    const publish = (
+      evidence: typeof original.evidence,
+      receipts: ConversationKnowledgeReference[],
+      key: string,
+    ) =>
+      cache.setPreparedRoot(
+        issuePreparedKnowledgeRootCandidates(evidence, receipts, { maxBytes: 8192 }),
+        key,
+        prepareConversationKnowledgeSourceSelection({
+          evidence,
+          branch: f.branch,
+          receipts,
+          audienceIdentity: "profile:example",
+          maxBytes: 8192,
+        }),
+      );
+    const manifest = publish(original.evidence, [f.receipt], "first");
+    const source = { ...f.receipt.source, storePath: f.branch.storePath };
+    const release = vi.fn();
+    const group = { release, byteLength: 64 } as unknown as Parameters<
+      typeof cache.retainContributionGroup
+    >[2];
+    cache.retainContributionGroup(["original"], source, group, manifest);
+    const next = {
+      ...f.receipt,
+      through: { ...f.receipt.through, entryId: "next-answer", rawSeq: 5 },
+    };
+    boundary.reports.mockResolvedValue([
+      ...f.events,
+      { ...f.events[0], id: "next-report", details: next },
+    ]);
+    try {
+      const extended = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+      const ready = publish(extended.evidence, [f.receipt, next], "extended");
+      // A foreground pause may stop here, before any replacement group exists.
+      expect(cache.preparedContributionGroup(source, ready, "original")).toBe(group);
+      expect(cache.preparedContributionGroup(source, ready, "new-range")).toBeUndefined();
+      expect(release).not.toHaveBeenCalled();
+      boundary.reports.mockResolvedValue([{ ...f.events[0], id: "next-report", details: next }]);
+      const removed = await readConversationKnowledgeRoot({ ...f, assertCurrent() {} });
+      const replacement = publish(removed.evidence, [next], "removed");
+      expect(cache.preparedContributionGroup(source, replacement)).toBeUndefined();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      cache.clear();
+    }
+  });
   it("rebinds an unchanged donor subset across an unrelated root append without another native read", async () => {
     const f = fixture();
     let originalCurrent = true;

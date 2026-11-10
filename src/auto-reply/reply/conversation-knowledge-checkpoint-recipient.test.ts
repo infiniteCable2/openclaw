@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
@@ -237,24 +238,29 @@ beforeEach(() => {
   native.publish.mockImplementation(({ evidence, receipts, cache }) => {
     cache.setPreparedRoot(native.issue(evidence, receipts));
   });
-  native.issue.mockReturnValue({ syntheticManifest: true, byteLength: 100, ownedByteLength: 100 });
+  native.issue.mockImplementation((_evidence, references) => ({
+    references: structuredClone(references),
+    byteLength: 100,
+    ownedByteLength: 100,
+  }));
   native.subset.mockImplementation((input) => ({
-    manifest: input.manifest ?? { syntheticSubset: true, byteLength: 100, ownedByteLength: 100 },
+    manifest: input.manifest ?? {
+      references: structuredClone(input.references),
+      byteLength: 100,
+      ownedByteLength: 100,
+    },
     evidence: preparedRootEvidence,
     scopeKey: "synthetic-native-root",
   }));
   native.sourceSelection.mockImplementation((input) => {
-    const grouped = new Map<string, ConversationKnowledgeReference[]>();
-    for (const selected of input.receipts) {
-      const key = JSON.stringify(selected.source);
-      grouped.set(key, [...(grouped.get(key) ?? []), selected]);
-    }
     return {
       scopeKey: JSON.stringify([input.branch, input.audienceIdentity]),
-      sources: [...grouped.values()].map((references) => ({
-        source: { ...references[0]!.source, storePath: references[0]!.through.storePath },
-        selectionKey: JSON.stringify(references),
-      })),
+      contains: (manifest: { references: ConversationKnowledgeReference[] }) =>
+        manifest.references.every((selected) =>
+          input.receipts.some((current: ConversationKnowledgeReference) =>
+            isDeepStrictEqual(current, selected),
+          ),
+        ),
     };
   });
   native.evidence.mockResolvedValue({ syntheticEvidence: true });

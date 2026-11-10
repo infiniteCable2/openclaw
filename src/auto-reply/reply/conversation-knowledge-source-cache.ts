@@ -124,14 +124,13 @@ export function createConversationKnowledgeSourceCache<
   let preparedRoot: PreparedKnowledgeRootCandidates | undefined;
   let preparedRootSelection: string | undefined;
   let preparedSourceScope: string | undefined;
-  let preparedSourceSelections = new Map<string, string>();
-  const retireGroups = (current?: ReadonlyMap<string, string>) => {
+  const retireGroups = (current?: ConversationKnowledgeSourceSelection) => {
     const retired: ReleasableAdmission[] = [];
     for (const [key, entry] of admissions) {
       if (entry.kind !== "group") {
         continue;
       }
-      if (entry.selectionKey !== undefined && entry.selectionKey === current?.get(key)) {
+      if (current?.contains(entry.manifest)) {
         continue;
       }
       admissions.delete(key);
@@ -314,7 +313,6 @@ export function createConversationKnowledgeSourceCache<
         value: group,
         bytes: size,
         manifest: sourceManifest,
-        selectionKey: preparedSourceSelections.get(key),
       });
       admissionBytes += size - (existing?.bytes ?? 0);
       for (const [id, sourceKey] of admissionSources) {
@@ -484,16 +482,12 @@ export function createConversationKnowledgeSourceCache<
       preparedRootSelection = selectionKey;
       const retain = sourceSelection && sourceSelection.scopeKey === preparedSourceScope;
       preparedSourceScope = sourceSelection?.scopeKey;
-      preparedSourceSelections = new Map(
-        sourceSelection?.sources.map((selected) => [
-          admissionKey(selected.source),
-          selected.selectionKey,
-        ]),
-      );
       // A foreground read can observe staged bytes before this proof publishes.
       // Publishing readiness must wake the next boundary even without new text.
       revision++;
-      retireGroups(retain ? preparedSourceSelections : undefined);
+      // New donor entries do not revoke already prepared exact ranges. Keep
+      // those groups until replacement is ready, even if preparation is paused.
+      retireGroups(retain ? sourceSelection : undefined);
       return value;
     },
     clearPreparedRoot(expected?: PreparedKnowledgeRootCandidates) {
@@ -503,7 +497,6 @@ export function createConversationKnowledgeSourceCache<
       preparedRoot = undefined;
       preparedRootSelection = undefined;
       preparedSourceScope = undefined;
-      preparedSourceSelections.clear();
       revision++;
       retireGroups();
     },
@@ -632,7 +625,6 @@ export function createConversationKnowledgeSourceCache<
       preparedRoot = undefined;
       preparedRootSelection = undefined;
       preparedSourceScope = undefined;
-      preparedSourceSelections.clear();
       inputRoot = undefined;
       inputProgress = undefined;
       revision++;

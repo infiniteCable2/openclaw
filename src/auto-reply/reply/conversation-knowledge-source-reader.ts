@@ -346,7 +346,7 @@ export async function readConversationKnowledgeInputs(params: {
   return { events, retained, previous: selectConversationKnowledgeObserved(events, params.branch) };
 }
 
-/** Native scope is separate from the per-donor ordered selection used only for cache invalidation. */
+/** Retain a donor's prepared subset while its exact originals remain in the native root. */
 export function prepareConversationKnowledgeSourceSelection(params: {
   evidence: NativeKnowledgeRootEvidence | undefined;
   branch: ConversationKnowledgeBranch;
@@ -360,32 +360,25 @@ export function prepareConversationKnowledgeSourceSelection(params: {
   const scope = prepareConversationKnowledgeRootSubset({
     evidence: params.evidence,
     branch: params.branch,
-    references: [],
+    references: params.receipts,
     maxBytes: params.maxBytes,
   });
-  const sources = new Map<
-    string,
-    {
-      source: ConversationKnowledgeSourceSelection["sources"][number]["source"];
-      references: ConversationKnowledgeReference[];
-    }
-  >();
-  for (const reference of params.receipts) {
-    const source = { ...reference.source, storePath: reference.through.storePath };
-    const key = JSON.stringify(source);
-    let selected = sources.get(key);
-    if (!selected) {
-      selected = { source, references: [] };
-      sources.set(key, selected);
-    }
-    selected.references.push(reference);
-  }
   return {
     scopeKey: JSON.stringify([scope.scopeKey, params.audienceIdentity]),
-    sources: [...sources.values()].map(({ source, references }) => ({
-      source,
-      selectionKey: sha256Hex(JSON.stringify(references)),
-    })),
+    contains(manifest) {
+      try {
+        prepareConversationKnowledgeRootSubset({
+          evidence: scope.evidence,
+          branch: params.branch,
+          manifest,
+        });
+        return true;
+      } catch {
+        // This only retains disposable preparation; unavailable or changed
+        // provenance still discards it. Disclosure obtains its fresh grant.
+        return false;
+      }
+    },
   };
 }
 

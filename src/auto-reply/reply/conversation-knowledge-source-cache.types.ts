@@ -7,7 +7,6 @@ import type {
   projectConversationKnowledge,
   ConversationKnowledgeReference,
 } from "../../config/sessions/conversation-knowledge.js";
-import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { PreparedPersonalConversationContributionGroup } from "../../gateway/session-transcript-personal-read.js";
@@ -21,10 +20,7 @@ export type PreparedConversationKnowledgePacket = {
 };
 export type ConversationKnowledgeSourceSelection = {
   scopeKey: string;
-  sources: readonly {
-    source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string };
-    selectionKey: string;
-  }[];
+  contains(manifest: PreparedKnowledgeRootCandidates): boolean;
 };
 export type ConversationKnowledgeCachedAdmission<Admission> =
   | { kind: "single"; value: Admission; bytes: number }
@@ -33,7 +29,6 @@ export type ConversationKnowledgeCachedAdmission<Admission> =
       value: PreparedPersonalConversationContributionGroup;
       bytes: number;
       manifest: PreparedKnowledgeRootCandidates;
-      selectionKey?: string;
     };
 export type PreparedRecipientConversationCheckpoint =
   PreparedConversationKnowledgeRootCheckpoint & {

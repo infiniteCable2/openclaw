@@ -75,7 +75,7 @@ function fixture(maxBytes = 4096, groupBytes = 100) {
   const cache = createConversationKnowledgeSourceCache(maxBytes);
   cache.setPreparedRoot(manifest, "root-first", {
     scopeKey: "physical-root-broker-person",
-    sources: [{ source: donor, selectionKey: "donor-first" }],
+    contains: () => true,
   });
   native.subset.mockReturnValue({ manifest: subset, evidence: {} });
   const groups: PreparedPersonalConversationContributionGroup[] = [];
