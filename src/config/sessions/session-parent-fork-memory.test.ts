@@ -213,7 +213,7 @@ it.each(
       { completed: true, forkFrom: undefined },
       { completed: true, forkFrom: "last-completed" as const },
       { completed: false, forkFrom: "last-completed" as const },
-    ].map((selection) => ({ childAgent, ...selection })),
+    ].map(({ completed, forkFrom }) => ({ childAgent, completed, forkFrom })),
   ),
 )(
   "adopts transcript-only forks in $childAgent memory (completed=$completed, forkFrom=$forkFrom)",

@@ -446,7 +446,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
               capabilities?.supportsToolCalls !== false ||
               capabilities?.handlesAgentConsult === true,
             participant: resolveGatewayInputParticipant(client),
-            assertCurrent: runAuthority.assertCurrent,
+            assertCurrent: () => runAuthority.assertCurrent(),
             getRuntimeConfig: context.getRuntimeConfig,
             captureOperatorAuthority: createTalkOperatorRunSource({ client, context }),
           });

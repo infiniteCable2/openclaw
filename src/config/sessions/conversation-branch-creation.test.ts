@@ -97,11 +97,11 @@ function fixture() {
     assertCurrent() {},
     async readEntry(check) {
       return this.withRead({ sessionKeys: [this.sessionKey] }, check, (facts) => {
-        const entry = facts.entries.find((row) => row.sessionKey === this.sessionKey)?.entry;
-        if (!entry) {
+        const selected = facts.entries.find((row) => row.sessionKey === this.sessionKey)?.entry;
+        if (!selected) {
           throw new Error("Synthetic session entry is unavailable");
         }
-        return { entry, source: facts.source };
+        return { entry: selected, source: facts.source };
       });
     },
     async withRead(_request, assertCurrent, consume) {

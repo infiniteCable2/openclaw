@@ -156,10 +156,11 @@ it("records native check-only preparation metadata after a compaction boundary",
     after
       .getEntries()
       .slice(original.length)
-      .map((entry) => ({
-        type: entry.type,
-        ...(entry.type === "custom" ? { customType: entry.customType } : {}),
-      })),
+      .map((entry) =>
+        entry.type === "custom"
+          ? { type: entry.type, customType: entry.customType }
+          : { type: entry.type },
+      ),
   ).toEqual([{ type: "thinking_level_change" }, { type: "custom", customType: "model-snapshot" }]);
   expect(after.getTranscriptSnapshotVersion()).toEqual(decisionVersion);
   expect(decisionVersion).not.toEqual(before);
