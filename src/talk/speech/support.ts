@@ -20,6 +20,24 @@ import {
 import type { RealtimeVoiceProviderConfig } from "../provider-types.js";
 import type { TalkEventInput } from "../talk-session-controller.js";
 import type { SpeechAudioFormat } from "./audio-format.js";
+import type { SpeechSessionStartParams } from "./types.js";
+
+/** Captions observe admitted speech; failures cannot become media failures. */
+export function createSpeechCaptionPublisher(
+  params: Pick<SpeechSessionStartParams, "onSpeechCaption" | "logger">,
+  isStopped: () => boolean,
+): NonNullable<SpeechSessionStartParams["onSpeechCaption"]> {
+  return (caption) => {
+    if (isStopped()) {
+      return;
+    }
+    try {
+      params.onSpeechCaption?.(caption);
+    } catch {
+      params.logger.warn("[talk] speech caption observer failed");
+    }
+  };
+}
 
 type SpeechProviderSelectionConfig = {
   agentId?: string;
@@ -51,6 +69,17 @@ export function buildSpeechTranscriptionFailureEvent(
           ? formatErrorMessage(error)
           : resolveUserMessages(language).voiceTranscriptionFailed,
     },
+  };
+}
+
+export function buildSpeechInputFailureEvent(
+  sessionId: string,
+  language?: string,
+): TalkEventInput<{ sessionId: string; error: string }> {
+  return {
+    type: "session.error",
+    final: true,
+    payload: { sessionId, error: resolveUserMessages(language).voiceInputFailed },
   };
 }
 

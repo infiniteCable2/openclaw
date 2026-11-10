@@ -36,6 +36,7 @@ function createFixture(
   const warn = vi.fn();
   const onOutput = vi.fn<NonNullable<OutputParams["onOutput"]>>();
   const onActivity = vi.fn<NonNullable<OutputParams["onActivity"]>>();
+  const onSpeechCaption = vi.fn<NonNullable<OutputParams["onSpeechCaption"]>>();
   const waitingStop = vi.fn(async (): Promise<void> => undefined);
   const waitingIdle = vi.fn((_turn: number) => undefined);
   let stopping = Promise.resolve();
@@ -62,6 +63,7 @@ function createFixture(
     logger: { info: vi.fn(), warn, error: vi.fn() },
     onOutput,
     onActivity,
+    onSpeechCaption,
     getHarness: () => harness,
     isStopped: () => stopped,
     getOutputGeneration: () => generation,
@@ -98,6 +100,7 @@ function createFixture(
     warn,
     onOutput,
     onActivity,
+    onSpeechCaption,
     transcripts,
     activeTtsAborts,
     activeTtsReaders,
@@ -667,6 +670,10 @@ describe("speech output compute/playout overlap", () => {
       await thirdAudioRead.promise;
       expect(synthesize).toHaveBeenCalledTimes(3);
       expect(write).toHaveBeenCalledOnce();
+      expect(fixture.onSpeechCaption).toHaveBeenCalledExactlyOnceWith({
+        role: "assistant",
+        text: "First block.",
+      });
       expect(fixture.transcripts.map((entry) => entry.audioDelivery)).toEqual([
         "started",
         "unplayed",
@@ -679,6 +686,12 @@ describe("speech output compute/playout overlap", () => {
     }
     expect(synthesize).toHaveBeenCalledTimes(4);
     expect(write).toHaveBeenCalledTimes(4);
+    expect(fixture.onSpeechCaption.mock.calls.map(([caption]) => caption.text)).toEqual([
+      "First block.",
+      "Second block.",
+      "Third block.",
+      "Fourth block.",
+    ]);
     expect(fixture.activeTtsAborts.size).toBe(0);
     expect(fixture.activeTtsReaders.size).toBe(0);
   });
@@ -729,6 +742,10 @@ describe("speech output compute/playout overlap", () => {
     expect(write).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
     expect(fixture.transcripts[0]?.audioDelivery).toBe("interrupted");
+    expect(fixture.onSpeechCaption).toHaveBeenCalledExactlyOnceWith({
+      role: "assistant",
+      text: "An interrupted synthetic block.",
+    });
     expect(fixture.activeTtsAborts.size).toBe(0);
     expect(fixture.activeTtsReaders.size).toBe(0);
   });

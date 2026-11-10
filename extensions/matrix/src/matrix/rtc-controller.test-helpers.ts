@@ -126,6 +126,7 @@ export function createHarness(
     deviceId: "OWNERDEVICE",
     memberId: "owner-member",
     rtcBackendIdentity: "owner-backend",
+    applicationData: {} as Record<string, unknown>,
     createdTs: vi.fn(() => 1),
     getAbsoluteExpiry: vi.fn(() => (mode === "compatibility" ? Date.now() + 60_000 : undefined)),
     getTransport: vi.fn(() => remoteTransport),
@@ -140,42 +141,49 @@ export function createHarness(
     on: emitter.on.bind(emitter),
     off: emitter.off.bind(emitter),
     reemitEncryptionKeys: vi.fn(),
+    updateApplicationData: vi.fn(async (_data: Record<string, unknown>) => {}),
     leave: vi.fn(async () => true),
-    join: vi.fn((ownMembership: Record<string, string>) => {
-      if (options.emitInitialKeys === false) {
-        return;
-      }
-      if (options.emitInitialRemoteKey !== false) {
-        sdkEmitter.emit(ClientEvent.ReceivedToDeviceMessage, {
-          message: {
-            type: EventType.CallEncryptionKeysPrefix,
-            sender: ownerId,
-            content: {
-              room_id: roomId,
-              keys: { index: 0, key: Buffer.alloc(16, 1).toString("base64") },
-              member: {
-                claimed_device_id: remoteMembership.deviceId,
-                id: options.remoteKeyMemberId ?? remoteMembership.memberId,
+    join: vi.fn(
+      (
+        ownMembership: Record<string, string>,
+        _transports?: unknown[],
+        _config?: { applicationData?: Record<string, unknown> },
+      ) => {
+        if (options.emitInitialKeys === false) {
+          return;
+        }
+        if (options.emitInitialRemoteKey !== false) {
+          sdkEmitter.emit(ClientEvent.ReceivedToDeviceMessage, {
+            message: {
+              type: EventType.CallEncryptionKeysPrefix,
+              sender: ownerId,
+              content: {
+                room_id: roomId,
+                keys: { index: 0, key: Buffer.alloc(16, 1).toString("base64") },
+                member: {
+                  claimed_device_id: remoteMembership.deviceId,
+                  id: options.remoteKeyMemberId ?? remoteMembership.memberId,
+                },
+                sent_ts: Date.now(),
               },
-              sent_ts: Date.now(),
             },
-          },
-          encryptionInfo: {
-            sender: ownerId,
-            senderDevice: remoteMembership.deviceId,
-            senderCurve25519KeyBase64: "curve-key",
-            senderVerified: false,
-          },
-        });
-      }
-      emitter.emit(
-        MatrixRTCSessionEvent.EncryptionKeyChanged,
-        Uint8Array.from([2]),
-        0,
-        ownMembership,
-        "nova-backend",
-      );
-    }),
+            encryptionInfo: {
+              sender: ownerId,
+              senderDevice: remoteMembership.deviceId,
+              senderCurve25519KeyBase64: "curve-key",
+              senderVerified: false,
+            },
+          });
+        }
+        emitter.emit(
+          MatrixRTCSessionEvent.EncryptionKeyChanged,
+          Uint8Array.from([2]),
+          0,
+          ownMembership,
+          "nova-backend",
+        );
+      },
+    ),
   };
   let roomKnown = false;
   const room = {
@@ -185,6 +193,13 @@ export function createHarness(
   const managerEmitter = new EventEmitter();
   const getRoomSession = vi.fn(() => session);
   const sdkClient = {
+    encryptAndSendToDevice: vi.fn(
+      async (
+        _eventType: string,
+        _targets: { userId: string; deviceId: string }[],
+        _content: Record<string, unknown>,
+      ) => {},
+    ),
     on: sdkEmitter.on.bind(sdkEmitter),
     off: sdkEmitter.off.bind(sdkEmitter),
     matrixRTC: {
@@ -230,6 +245,7 @@ export function createHarness(
           },
         }),
   };
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const controller = registerMatrixRtcController({
     client: {
       matrixRtc,
@@ -285,11 +301,7 @@ export function createHarness(
           },
         },
       } as never),
-    logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    },
+    logger,
   });
   const stickyMembershipEvent = (candidateRoomId: string) =>
     new MatrixEvent({
@@ -325,6 +337,7 @@ export function createHarness(
     controller,
     emitter,
     getRoomSession,
+    logger,
     managerEmitter,
     remoteMembership,
     remoteTransport,

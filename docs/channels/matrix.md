@@ -336,6 +336,61 @@ at most 8 MiB). `volume` ranges from `0` to `1` and defaults to `0.14`; `startDe
 to `1200`. Keep the file in an OpenClaw-owned data path rather than referencing another
 application's runtime tree.
 
+### Conversation readiness and captions
+
+An admitted MatrixRTC caller can negotiate conversation presentation by publishing
+this application-specific membership data:
+
+```json
+{
+  "io.openclaw.conversation": {
+    "version": 1,
+    "purpose": "assistant-voice",
+    "request_id": "5266d814-83aa-4aec-ae4e-916e24cc49bf",
+    "captions": true
+  }
+}
+```
+
+The Matrix SDK places it inside `application` for `m.rtc.member` and at the
+top level for legacy `m.call.member`. `request_id` is an opaque string of 1–128
+ASCII letters, digits, underscores, or hyphens. Generate a new UUID for each new
+call and retain it across membership renewals. Changing the purpose or request
+during a call ends that call; an invalid explicit marker is rejected.
+
+Use `purpose: "call"` for ordinary calls, retaining their opening greeting, or
+`purpose: "assistant-voice"` for assistant presentation without that greeting.
+Both retain the same Matrix admission, agent, person,
+tool policy, and conversation routing as ordinary calls. The marker grants no
+permissions. Calls without it retain their existing behavior.
+
+OpenClaw echoes the marker in its own membership with `state: "preparing"`, then
+`state: "ready"` after the speech session is ready and startup succeeds. It also
+includes `caller: { user_id, device_id, member_id }`, using the admitted Matrix SDK
+membership identity. Clients must match the expected OpenClaw member, their
+request ID, and caller identity before enabling capture or signaling readiness.
+Legacy `member_id` can be the SDK-derived `user:device` value; it is not necessarily
+the client's transient join UUID. A connected media transport alone is not
+readiness. Membership departure ends the connection; a single input error does
+not necessarily end the speech session. Existing application fields are preserved.
+
+Conversation captions use encrypted to-device events of type
+`io.openclaw.conversation.caption`, sent only to the admitted caller's device.
+The client must offer optional `captions: true`; OpenClaw acknowledges support
+with `captions: true` in its `ready` marker. Missing or false offers are acknowledged
+as `captions: false`. The offer may change during the same call; membership updates
+renegotiate captions without starting an agent turn or changing audio. Text is sent
+only while offered and acknowledged. Removing the offer stops further captions.
+Segments that start before acknowledgement, including an early greeting, are not
+replayed as text; audio never waits for caption negotiation.
+The payload is `{ version: 1, room_id, request_id, seq, role, text }`, with
+`role: "user" | "assistant"` and a monotonically increasing per-call `seq`.
+User captions contain final non-echo transcription. Assistant captions describe
+each speech segment when its server audio handoff starts, not proof of client
+playout or completion. They are not Matrix room messages. The SDK queues encrypted
+delivery; clients must discard other request IDs and duplicate sequence numbers.
+Caption failures are logged without content and do not stop audio.
+
 ## Related
 
 - [Channels Overview](/channels) - all supported channels

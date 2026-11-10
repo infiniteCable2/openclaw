@@ -6,6 +6,7 @@ import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { matrixPlugin } from "../channel.js";
 import type { CoreConfig } from "../types.js";
+import { MATRIX_RTC_CONVERSATION_KEY } from "./rtc-assistant.js";
 import {
   createHarness,
   flushPromises,
@@ -21,9 +22,13 @@ describe("MatrixRTC native conversation input caller", () => {
     vi.clearAllMocks();
   });
 
-  it.each(["native", "branches"] as const)(
-    "wires actual SDK membership to original host admission and %s speech routing",
-    async (conversationMode) => {
+  it.each([
+    { conversationMode: "native", assistantVoice: false },
+    { conversationMode: "branches", assistantVoice: false },
+    { conversationMode: "branches", assistantVoice: true },
+  ] as const)(
+    "wires actual SDK membership to original host admission ($conversationMode, assistant=$assistantVoice)",
+    async ({ conversationMode, assistantVoice }) => {
       await withTempHome(async () => {
         const cfg: CoreConfig = {
           agents: { entries: { example_owner: { conversationMode } } },
@@ -65,6 +70,15 @@ describe("MatrixRTC native conversation input caller", () => {
             };
             const harness = createHarness("matrix_2_0", { cfg, runtime, greeting: true });
             try {
+              if (assistantVoice) {
+                harness.remoteMembership.applicationData = {
+                  [MATRIX_RTC_CONVERSATION_KEY]: {
+                    version: 1,
+                    purpose: "assistant-voice",
+                    request_id: "assistant-input-proof",
+                  },
+                };
+              }
               harness.setRoomKnown(true);
               harness.session.memberships = [harness.remoteMembership];
               harness.managerEmitter.emit("session_started", roomId, harness.session);
@@ -93,16 +107,20 @@ describe("MatrixRTC native conversation input caller", () => {
                 mocks.createMeetingRealtimeEngineBindingsV2.mock.results[0]!.value.nativeInput,
               );
               expect(binding.connectionPresentation).toMatchObject({
-                kind: "call",
+                kind: assistantVoice ? "assistant" : "call",
                 channel: "matrix",
-                label: "Matrix audio call",
+                label: assistantVoice ? "Matrix Assistant Voice" : "Matrix audio call",
                 readTarget: { agentId: "example_owner", sessionKey: dispatch.sessionKey },
                 operations: ["current-turn-reply", "cancel-output"],
               });
               expect(engine.connectionPresentation).toBe(binding.connectionPresentation);
-              expect(mocks.prepareMeetingAgentGreeting.mock.calls[0]![0]).toMatchObject({
-                requesterSessionKey: sourceSessionKey,
-              });
+              if (assistantVoice) {
+                expect(mocks.prepareMeetingAgentGreeting).not.toHaveBeenCalled();
+              } else {
+                expect(mocks.prepareMeetingAgentGreeting.mock.calls[0]![0]).toMatchObject({
+                  requesterSessionKey: sourceSessionKey,
+                });
+              }
               const normal = await binding.inputSource.admitInput({
                 agentId: "example_owner",
                 conversationId: binding.conversationId,

@@ -39,6 +39,11 @@ export type MatrixRtcClientFacade = {
   getOpenIdToken(): Promise<IOpenIDToken>;
   getPreferredLivekitTransport(): Promise<LivekitTransportConfig>;
   getSelfIdentity(): MatrixRtcSelfIdentity;
+  sendEncryptedToDevice(
+    target: MatrixRtcSelfIdentity,
+    eventType: string,
+    content: Record<string, unknown>,
+  ): Promise<void>;
 };
 
 function asLivekitTransport(value: unknown): LivekitTransportConfig | null {
@@ -56,6 +61,9 @@ function asLivekitTransport(value: unknown): LivekitTransportConfig | null {
 
 export function createMatrixRtcClientFacade(client: MatrixJsClient): MatrixRtcClientFacade {
   return {
+    sendEncryptedToDevice(target, eventType, content) {
+      return client.encryptAndSendToDevice(eventType, [target], content);
+    },
     onSessionStarted(listener) {
       client.matrixRTC.on(MatrixRTCSessionManagerEvents.SessionStarted, listener);
       return () => client.matrixRTC.off(MatrixRTCSessionManagerEvents.SessionStarted, listener);

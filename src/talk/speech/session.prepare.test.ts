@@ -185,6 +185,8 @@ async function createControlledStreamingEngine() {
   });
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
   const clearOutput = vi.fn(async () => undefined);
+  const onSpeechCaption = vi.fn<(caption: { role: "user" | "assistant"; text: string }) => void>();
+  const onTalkEvent = vi.fn<NonNullable<Parameters<typeof startSpeechSession>[0]["onTalkEvent"]>>();
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const handle = await startSpeechSession({
     config: { ...config, responseStreaming: "sentence" },
@@ -207,6 +209,8 @@ async function createControlledStreamingEngine() {
     logger,
     providers: [provider],
     consultAgent,
+    onSpeechCaption,
+    onTalkEvent,
   });
   expectDefined(
     callbacks?.onTranscript,
@@ -220,6 +224,8 @@ async function createControlledStreamingEngine() {
     synthesize,
     writeOutput,
     clearOutput,
+    onSpeechCaption,
+    onTalkEvent,
     consultAgent,
     logger,
     streamAt(index: number) {
@@ -238,6 +244,27 @@ async function createControlledStreamingEngine() {
 }
 
 describe("startSpeechSession streaming output", () => {
+  it("does not caption a transcript after its Talk event observer synchronously closes the session", async () => {
+    const fixture = await createControlledStreamingEngine();
+    let stopping: Promise<void> | undefined;
+    fixture.onTalkEvent.mockImplementation((event) => {
+      if (event.type === "transcript.done") {
+        stopping = fixture.handle.stop();
+      }
+    });
+    try {
+      fixture.callbacks?.onTranscript?.("Close before caption delivery.");
+      expect(stopping).toBeDefined();
+      expect(fixture.onSpeechCaption).toHaveBeenCalledExactlyOnceWith({
+        role: "user",
+        text: "Please answer my question.",
+      });
+    } finally {
+      await fixture.stop();
+      await stopping;
+    }
+  });
+
   it("does not resume prepared or later sentences after a transcribed caller turn", async () => {
     const fixture = await createControlledStreamingEngine();
     try {
@@ -251,6 +278,9 @@ describe("startSpeechSession streaming output", () => {
       fixture.callbacks?.onSpeechStart?.();
       fixture.callbacks?.onProcessing?.({ utteranceId: "barge-in", state: "speech-confirmed" });
       expect(fixture.clearOutput).not.toHaveBeenCalled();
+      fixture.onSpeechCaption.mockImplementationOnce(() => {
+        throw new Error("caption observer failed");
+      });
       fixture.callbacks?.onTranscript?.("A new caller request.", { utteranceId: "barge-in" });
       await vi.waitFor(() => {
         expect(fixture.streamAt(0).release).toHaveBeenCalledOnce();
@@ -261,6 +291,12 @@ describe("startSpeechSession streaming output", () => {
       expect(fixture.writeOutput).toHaveBeenCalledOnce();
       expect(fixture.clearOutput).toHaveBeenCalledOnce();
       expect(fixture.streams.every((stream) => stream.signal?.aborted)).toBe(true);
+      expect(fixture.logger.warn).toHaveBeenCalledWith("[talk] speech caption observer failed");
+      expect(fixture.onSpeechCaption.mock.calls.map(([caption]) => caption)).toEqual([
+        { role: "user", text: "Please answer my question." },
+        { role: "assistant", text: "This is the first sentence." },
+        { role: "user", text: "A new caller request." },
+      ]);
     } finally {
       await fixture.stop();
     }
@@ -294,6 +330,9 @@ describe("startSpeechSession streaming output", () => {
     const fixture = await createControlledStreamingEngine();
     const text = "These are the details of your requested answer.";
     try {
+      fixture.onSpeechCaption.mockImplementationOnce(() => {
+        throw new Error("caption observer failed");
+      });
       await fixture.speech({ type: "chunk", text });
       await vi.waitFor(() => expect(fixture.streams).toHaveLength(1));
       const stream = fixture.streamAt(0);
@@ -311,6 +350,11 @@ describe("startSpeechSession streaming output", () => {
       await vi.waitFor(() => expect(stream.release).toHaveBeenCalledOnce());
       expect(fixture.writeOutput).toHaveBeenCalledTimes(2);
       expect(fixture.consultAgent).toHaveBeenCalledOnce();
+      expect(fixture.logger.warn).toHaveBeenCalledWith("[talk] speech caption observer failed");
+      expect(fixture.onSpeechCaption.mock.calls.map(([caption]) => caption)).toEqual([
+        { role: "user", text: "Please answer my question." },
+        { role: "assistant", text },
+      ]);
       expect(
         fixture.handle
           .getHealth()

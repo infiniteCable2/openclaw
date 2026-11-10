@@ -24,6 +24,10 @@ import {
   assertMatrixRtcPinnedTransports,
   matrixRtcMembershipIdentity,
 } from "./rtc-admission.js";
+import {
+  createMatrixRtcConversationPresentation,
+  readMatrixRtcConversationRequest,
+} from "./rtc-assistant.js";
 import { requestMatrixRtcCredentials, type MatrixRtcMembershipIdentity } from "./rtc-auth.js";
 import {
   stopCall,
@@ -263,13 +267,17 @@ export function registerMatrixRtcController(params: {
         remoteIncarnation = membershipIncarnation(remote);
         const remoteIdentity = matrixRtcMembershipIdentity(remote);
         const rtcMode = resolveMatrixRtcMode(remote);
+        const conversationRequest = readMatrixRtcConversationRequest(remote.applicationData);
         const assertCurrentMembership = () => {
           const currentRemote = readCurrentRemote();
+          const currentRequest = readMatrixRtcConversationRequest(currentRemote.applicationData);
           // Renewal events can replace the SDK object and its createdTs without
           // changing the user, device, member, backend identity or protocol mode.
           if (
             matrixRtcMembershipIdentity(currentRemote) !== remoteIdentity ||
-            resolveMatrixRtcMode(currentRemote) !== rtcMode
+            resolveMatrixRtcMode(currentRemote) !== rtcMode ||
+            currentRequest?.purpose !== conversationRequest?.purpose ||
+            currentRequest?.requestId !== conversationRequest?.requestId
           ) {
             throw new Error("MatrixRTC caller membership changed during the call");
           }
@@ -324,30 +332,33 @@ export function registerMatrixRtcController(params: {
             speakCommentary: agentProfile.speakCommentary,
           },
           videoEnabled: speechProfile.video?.enabled === true,
+          assistantVoice: conversationRequest?.purpose === "assistant-voice",
           logger: params.logger,
         });
 
         call.connectionPreparation = bindings.connectionPreparation;
-        call.preparation = await prepareMeetingAgentRealtimeEngine({
-          config: {
-            chrome: { audioFormat: "pcm16-24khz" },
-            realtime: {
-              strategy: "agent",
-              agentId: admission.agentId,
-              transcriptionProvider: params.config.transcriptionProvider,
-              responseStreaming: params.config.responseStreaming,
-              waitingAudio: params.config.waitingAudio,
-              providers: params.config.providers,
-              video: speechProfile.video,
-            },
+        const ttsContext = {
+          agentId: admission.agentId,
+          channelId: "matrix",
+          accountId: params.accountId,
+        };
+        const engineConfig = {
+          chrome: { audioFormat: "pcm16-24khz" },
+          realtime: {
+            strategy: "agent",
+            agentId: admission.agentId,
+            transcriptionProvider: params.config.transcriptionProvider,
+            responseStreaming: params.config.responseStreaming,
+            waitingAudio: params.config.waitingAudio,
+            providers: params.config.providers,
+            video: speechProfile.video,
           },
+        } satisfies Parameters<typeof prepareMeetingAgentRealtimeEngine>[0]["config"];
+        call.preparation = await prepareMeetingAgentRealtimeEngine({
+          config: engineConfig,
           fullConfig: cfg,
           runtime: params.runtime,
-          ttsContext: {
-            agentId: admission.agentId,
-            channelId: "matrix",
-            accountId: params.accountId,
-          },
+          ttsContext,
           signal: abort.signal,
           onPreparation: (preparation) => {
             call.preparation = preparation;
@@ -357,7 +368,7 @@ export function registerMatrixRtcController(params: {
         params.logger.info("matrix rtc: speech providers ready");
 
         let initialGreeting: Awaited<ReturnType<typeof prepareMeetingAgentGreeting>> | undefined;
-        if (agentProfile.greeting) {
+        if (agentProfile.greeting && conversationRequest?.purpose !== "assistant-voice") {
           const greeting = agentProfile.greeting;
           const greetingSignal = AbortSignal.any([
             abort.signal,
@@ -376,11 +387,7 @@ export function registerMatrixRtcController(params: {
                 "Greet the caller warmly and briefly, suitable for the time of day.",
               timeZone: greeting.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
               audioFormat: "pcm16-24khz",
-              ttsContext: {
-                agentId: admission.agentId,
-                channelId: "matrix",
-                accountId: params.accountId,
-              },
+              ttsContext,
               signal: greetingSignal,
               onPreparation: (preparation) => {
                 call.greetingPreparation = preparation;
@@ -408,6 +415,19 @@ export function registerMatrixRtcController(params: {
           ...self,
           memberId: randomUUID(),
         };
+        const assistantReadiness = createMatrixRtcConversationPresentation({
+          session,
+          sessionId: meetingSessionId,
+          request: conversationRequest,
+          caller: remote,
+          self,
+          roomId,
+          client: params.client.matrixRtc,
+          logger: params.logger,
+          assertCurrent: assertCurrentMembership,
+          onEnd: () => endCall(roomId, call),
+          dispose: (close) => disposeCallbacks.push(close),
+        });
         const openIdToken = await params.client.matrixRtc.getOpenIdToken();
         assertCurrentMembership();
         const credentials = await requestMatrixRtcCredentials({
@@ -515,6 +535,7 @@ export function registerMatrixRtcController(params: {
           callIntent: "audio",
           manageMediaKeys: true,
           unstableSendStickyEvents: rtcMode === "matrix_2_0",
+          ...(assistantReadiness ? { applicationData: assistantReadiness.applicationData } : {}),
         });
         call.joined = true;
         params.logger.info("matrix rtc: local membership joined");
@@ -548,34 +569,20 @@ export function registerMatrixRtcController(params: {
           }
         }
         call.engine = await startMeetingAgentRealtimeEngine({
-          config: {
-            chrome: { audioFormat: "pcm16-24khz" },
-            realtime: {
-              strategy: "agent",
-              agentId: admission.agentId,
-              transcriptionProvider: params.config.transcriptionProvider,
-              responseStreaming: params.config.responseStreaming,
-              waitingAudio: params.config.waitingAudio,
-              providers: params.config.providers,
-              video: speechProfile.video,
-            },
-          },
+          config: engineConfig,
           fullConfig: cfg,
           runtime: params.runtime,
           platform: bindings.platform,
           meetingSessionId,
           requesterSessionKey: route.sessionKey,
-          ttsContext: {
-            agentId: admission.agentId,
-            channelId: "matrix",
-            accountId: params.accountId,
-          },
+          ttsContext,
           transport: mediaTransport,
           logger: params.logger,
           consultAgent: bindings.consultAgent,
           nativeInput: bindings.nativeInput,
           connectionPresentation: bindings.connectionPresentation,
           connectionPreparation: bindings.connectionPreparation,
+          ...assistantReadiness?.speechCallbacks,
           onSession: (engine) => {
             call.engine = engine;
             call.transport = undefined;
@@ -584,6 +591,7 @@ export function registerMatrixRtcController(params: {
         });
         call.transport = undefined;
         assertCurrentMembership();
+        assistantReadiness?.started();
         params.logger.info("matrix rtc: admitted encrypted direct audio call");
       } catch (error) {
         if (remoteIncarnation && observedSessions.get(roomId)?.session === session) {

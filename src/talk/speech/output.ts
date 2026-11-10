@@ -21,7 +21,11 @@ import {
   normalizeSpeechPromptText,
 } from "./support.js";
 import type { SpeechAudioTransport } from "./transport.js";
-import type { SpeechSessionConfig, SpeechRuntimeSurface } from "./types.js";
+import type {
+  SpeechSessionConfig,
+  SpeechRuntimeSurface,
+  SpeechSessionStartParams,
+} from "./types.js";
 import type { createSpeechWaitingController } from "./waiting-controller.js";
 
 export type SpeechUtterance = {
@@ -49,6 +53,7 @@ export function createSpeechOutput(params: {
   agentLogScope: string;
   logger: RuntimeLogger;
   onActivity?: (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => void;
+  onSpeechCaption?: SpeechSessionStartParams["onSpeechCaption"];
   onOutput?: (
     generation: number,
     state: "preparing" | "streaming" | "submitted",
@@ -285,6 +290,7 @@ export function createSpeechOutput(params: {
                   !(await writeOutputAudio(output, firstUtteranceChunk, isCurrentPlayback, () => {
                     if (firstSegmentChunk) {
                       params.onOutput?.(utterance.generation, "streaming", "speech");
+                      params.onSpeechCaption?.({ role: "assistant", text: normalized });
                     }
                     // Accepted output may be audible before a paced write drains.
                     if (transcriptEntry.audioDelivery === "unplayed") {

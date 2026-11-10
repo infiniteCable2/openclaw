@@ -57,6 +57,7 @@ async function setup(options?: {
     },
   };
   const writeOutput = vi.fn(async (_audio: Buffer) => undefined);
+  const onSpeechCaption = vi.fn();
   const setOutputGate = vi.fn(async () => undefined);
   const transportStop = vi.fn(async () => undefined);
   const transportDispose = vi.fn(async () => undefined);
@@ -93,6 +94,7 @@ async function setup(options?: {
     providers: [provider],
     consultAgent,
     nativeInput: options?.nativeInput,
+    onSpeechCaption,
   });
   const playback = vi.mocked(createSpeechWaitingAudioPlayback).mock.results.at(-1)!.value;
   return {
@@ -100,6 +102,7 @@ async function setup(options?: {
     handle,
     playback,
     writeOutput,
+    onSpeechCaption,
     setOutputGate,
     transportStop,
     transportDispose,
@@ -303,6 +306,7 @@ describe("speech-confirmed waiting audio", () => {
     try {
       await vi.advanceTimersByTimeAsync(500);
       expect(f.writeOutput).not.toHaveBeenCalled();
+      expect(f.onSpeechCaption).not.toHaveBeenCalled();
       remoteReady.resolve();
       await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(149);
@@ -310,6 +314,10 @@ describe("speech-confirmed waiting audio", () => {
       await vi.advanceTimersByTimeAsync(150);
       expect(f.writeOutput).toHaveBeenCalledOnce();
       expect(f.writeOutput).toHaveBeenCalledWith(Buffer.from([1, 0]));
+      expect(f.onSpeechCaption).toHaveBeenCalledExactlyOnceWith({
+        role: "assistant",
+        text: "Hello, caller.",
+      });
     } finally {
       remoteReady.resolve();
       await f.close();
@@ -327,6 +335,7 @@ describe("speech-confirmed waiting audio", () => {
       remoteReady.resolve();
       await vi.advanceTimersByTimeAsync(200);
       expect(f.writeOutput).not.toHaveBeenCalled();
+      expect(f.onSpeechCaption).not.toHaveBeenCalled();
     } finally {
       remoteReady.resolve();
       await f.close();

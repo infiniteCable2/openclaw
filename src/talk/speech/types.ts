@@ -86,6 +86,8 @@ export type SpeechSessionStartParams = {
   initialGreeting?: PreparedSpeechGreeting;
   /** Optional device presentation hint; never changes turn or media ownership. */
   onTalkEvent?: (event: TalkEvent) => void;
+  /** Presentation only: final non-echo input or a speech segment starting its server audio handoff. */
+  onSpeechCaption?: (caption: { role: "user" | "assistant"; text: string }) => void;
   onActivity?: (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => void;
   /** Retain teardown ownership before provider setup can fail. */
   onSession?: (session: SpeechSessionHandle) => void;

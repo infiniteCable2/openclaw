@@ -28,6 +28,7 @@ export function createMatrixRtcConversationBindings(params: {
   realtime: MeetingRealtimeBindingsV2Params["config"]["realtime"];
   logger: MeetingRealtimeBindingsV2Params["logger"];
   videoEnabled: boolean;
+  assistantVoice?: boolean;
 }) {
   const { source } = params;
   const conversation = resolveAgentSpeechConversationRoute({
@@ -43,15 +44,25 @@ export function createMatrixRtcConversationBindings(params: {
     dispatchSessionKey: conversation.sessionKey,
   });
   const bindings = createMeetingRealtimeEngineBindingsV2({
-    platform: MATRIX_RTC_PLATFORM,
+    platform: params.assistantVoice
+      ? {
+          ...MATRIX_RTC_PLATFORM,
+          displayName: "Matrix Assistant Voice",
+          agentConsult: {
+            ...MATRIX_RTC_PLATFORM.agentConsult,
+            extraSystemPrompt:
+              "You are speaking through a live Matrix voice assistant. Match the user's language and keep spoken replies concise and natural.",
+          },
+        }
+      : MATRIX_RTC_PLATFORM,
     inputSource,
     agentId: source.agentId,
     conversationId: source.conversationId,
     assertOutputCurrent: source.assertCurrent,
     connectionPresentation: {
-      kind: "call",
+      kind: params.assistantVoice ? "assistant" : "call",
       channel: "matrix",
-      label: "Matrix audio call",
+      label: params.assistantVoice ? "Matrix Assistant Voice" : "Matrix audio call",
       readTarget: { agentId: source.agentId, sessionKey: conversation.sessionKey },
       input: { audio: true, video: params.videoEnabled },
       output: { audio: true },

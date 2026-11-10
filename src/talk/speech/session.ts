@@ -3,7 +3,6 @@ import { resolveAgentLanguage } from "../../agents/identity.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { RealtimeTranscriptionSession } from "../../realtime-transcription/provider-types.js";
-import { resolveUserMessages } from "../../shared/user-messages.js";
 import {
   createRealtimeVoiceSessionHarness,
   type RealtimeVoiceSessionHarness,
@@ -29,6 +28,8 @@ import { createSpeechSessionLifecycle } from "./session-lifecycle.js";
 import type { SpeechStreamCancellation } from "./stream-cleanup.js";
 import {
   buildSpeechTranscriptionFailureEvent,
+  buildSpeechInputFailureEvent,
+  createSpeechCaptionPublisher,
   formatSpeechAgentAudioModelLog,
   formatSpeechTranscriptSummaryLog,
   speechOutputBytesPerMs,
@@ -51,8 +52,8 @@ export async function startSpeechSession(
 ): Promise<SpeechSessionHandle> {
   params.signal?.throwIfAborted();
   const language = resolveAgentLanguage(params.fullConfig, params.config.agentId ?? "");
-  const messages = resolveUserMessages(language);
   let stopped = false;
+  const publishSpeechCaption = createSpeechCaptionPublisher(params, () => stopped);
   const video = createSpeechVideoInput(params.config.video);
   const inputs = createSpeechInputMetadata(video, params.sessionId);
   let sttSession: RealtimeTranscriptionSession | null = null;
@@ -221,6 +222,7 @@ export async function startSpeechSession(
     logger: params.logger,
     onActivity: params.onActivity,
     onOutput: activity.output,
+    onSpeechCaption: publishSpeechCaption,
     getHarness: () => harness,
     isStopped: () => stopped,
     getOutputGeneration: () => outputGeneration,
@@ -459,11 +461,7 @@ export async function startSpeechSession(
             `${params.surface.logScope} native speech input failed: ${formatErrorMessage(error)}`,
           );
           if (!stopped) {
-            harness.emit({
-              type: "session.error",
-              final: true,
-              payload: { sessionId: params.sessionId, error: messages.voiceInputFailed },
-            });
+            harness.emit(buildSpeechInputFailureEvent(params.sessionId, language));
           }
         },
       })
@@ -617,6 +615,7 @@ export async function startSpeechSession(
           );
           return;
         }
+        publishSpeechCaption({ role: "user", text: trimmed });
         const metadata = inputs.capture(onset?.startedAtMs, context?.utteranceId);
         if (nativeInput) {
           nativeInput.enqueue({
@@ -720,6 +719,7 @@ export async function startSpeechSession(
       writeOutputAudio: (audio, firstChunk, isCurrent) =>
         speechOutput.writeOutputAudio(audio, firstChunk, isCurrent, () => {
           activity.output(generation, "streaming", "greeting");
+          publishSpeechCaption({ role: "assistant", text: greeting.text });
         }),
     })
       .finally(() => activity.output(generation, "submitted", "greeting"))
