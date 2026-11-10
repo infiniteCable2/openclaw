@@ -124,17 +124,19 @@ it(
           const nativeClone = configCloning.cloneRuntimeConfigSnapshot;
           const nativeSources = checkpointSources.prepareConversationKnowledgeCheckpointSources;
           const nativeBorrow = initialFrames.borrowPreparedConversationKnowledgeInitialFrame;
-          const nativeRoute = matrixRtcRouting.resolveMatrixInboundRoute;
+          const nativeRoute = matrixRtcRouting.resolveMatrixInboundRouteAsync;
           spies.push(
-            vi.spyOn(matrixRtcRouting, "resolveMatrixInboundRoute").mockImplementation((input) => {
-              counts.routeSelection++;
-              const start = performance.now();
-              try {
-                return nativeRoute(input);
-              } finally {
-                counts.routeInclusiveMs += performance.now() - start;
-              }
-            }),
+            vi
+              .spyOn(matrixRtcRouting, "resolveMatrixInboundRouteAsync")
+              .mockImplementation(async (input) => {
+                counts.routeSelection++;
+                const start = performance.now();
+                try {
+                  return await nativeRoute(input);
+                } finally {
+                  counts.routeInclusiveMs += performance.now() - start;
+                }
+              }),
             vi.spyOn(configCloning, "cloneRuntimeConfigSnapshot").mockImplementation((input) => {
               counts.clone++;
               return nativeClone(input);
