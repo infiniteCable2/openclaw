@@ -371,14 +371,14 @@ export function waitForConversationTransfer(
         .map((line) => line.replaceAll('\\"', '"'))
         .some(
           (line) =>
-            line.includes(recipient) &&
+            /"recipientHash"\s*:\s*"([^"]+)"/u.exec(line)?.[1] === recipient &&
             (expected.phase === "prepared"
               ? line.includes("Related-history source preparation settled") &&
                 Array.from(
                   line.matchAll(/"sourceHash"\s*:\s*"([^"]+)"\s*,\s*"throughSeq"\s*:\s*(\d+)/gu),
-                ).some((match) => match[1] === source && Number(match[2]) >= expected.sequence)
+                ).some((match) => match[1] === source && matchesSequence(Number(match[2])))
               : line.includes("Conversation knowledge transfer") &&
-                line.includes(source) &&
+                /"sourceHash"\s*:\s*"([^"]+)"/u.exec(line)?.[1] === source &&
                 /"phase"\s*:\s*"admitted"/u.test(line) &&
                 /"complete"\s*:\s*true/u.test(line) &&
                 matchesSequence(Number(/"throughSeq"\s*:\s*(\d+)/u.exec(line)?.[1] ?? -1))),
