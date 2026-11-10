@@ -82,6 +82,7 @@ export function createReplyConversationKnowledgeTurn(params: {
       if (phase === "released") {
         throw new Error("Conversation knowledge turn has been released");
       }
+      execution?.signal.throwIfAborted();
       if (sourceMode && resolveAgentConversationMode(getRuntimeConfig(), agentId) !== sourceMode) {
         throw new Error("Conversation mode changed during the admitted turn");
       }
@@ -528,10 +529,12 @@ export function createReplyConversationKnowledgeTurn(params: {
                 },
               }),
           );
-          prepared?.release();
-          prepared = next;
           consumedRevision = revision;
           morePreparedPackets = next?.pendingPackets === true;
+          // The native writer has already admitted these packets into recipient
+          // history. Their temporary read custody is not the turn's preview
+          // authority: replacing that source would revoke an enclosing model scope.
+          next?.release();
           // SQL batches share one real request's native token budget. Yield to
           // other work between them; never wait for background source hydration.
           if (

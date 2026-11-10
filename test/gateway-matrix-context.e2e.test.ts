@@ -9,6 +9,7 @@ import {
 } from "../src/auto-reply/envelope.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
+import { RUNTIME_CONTEXT_FOOTER, RUNTIME_CONTEXT_HEADER } from "../src/llm/types.js";
 import { workshopPluginConfig } from "../src/skills/test-support/workshop-config.test-support.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../src/state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../src/state/openclaw-state-db.paths.js";
@@ -611,16 +612,20 @@ it.for(["native", "branches"] as const)(
           }
           const items = Array.isArray(input.input) ? input.input : [];
           const carriers = items.filter((item) => {
-            // This provider projects trusted runtime additions as system items.
-            // Ordinary native user envelopes can also contain Conversation info.
-            const message = item as Record<string, unknown>;
-            if (message.role !== "system") {
+            // Compatible Responses endpoints retain the user-role carrier.
+            // Its owned envelope distinguishes it from ordinary Conversation info.
+            const message = asOptionalRecord(item);
+            if (!message || !["user", "system", "developer"].includes(String(message.role))) {
               return false;
             }
-            const projected = strings(item).join("\n");
+            const projected = (Array.isArray(message.content) ? message.content : [])
+              .map(asOptionalRecord)
+              .filter((block) => block?.type === "input_text" && typeof block.text === "string")
+              .map((block) => block?.text)
+              .join("\n");
             return (
-              projected.includes("Conversation info:") ||
-              projected.includes("OpenClaw runtime context:")
+              projected.startsWith(`${RUNTIME_CONTEXT_HEADER}\n`) &&
+              projected.endsWith(`\n${RUNTIME_CONTEXT_FOOTER}`)
             );
           });
           const runtime = strings(carriers).join("\n");

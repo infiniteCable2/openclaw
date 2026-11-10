@@ -40,6 +40,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import { assertSessionEntryCohortScope } from "../../config/sessions/session-entry-cohort-scope.js";
+import { runWithSessionSourceScope } from "../../config/sessions/session-source-authority.js";
 import { readActiveTranscriptEntryAnchorAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
@@ -899,7 +900,13 @@ describe("native branch prefetch and model-boundary composition", () => {
             expect(prefetch.cache.peek(secondId, 0)?.part.text).toContain(
               "The shape is a triangle.",
             );
-            const second = await refresh(true);
+            // A native provider/tool continuation holds its prepared source scope
+            // while importing more durable history. The copy must not rotate it.
+            const second = await runWithSessionSourceScope(knowledge.assertCurrent, async () => {
+              const updates = await refresh(true);
+              knowledge.assertCurrent();
+              return updates;
+            });
             expect(second).toHaveLength(1);
             expect(second[0]?.content).toContain("The shape is a triangle.");
             expect(second[0]?.content).not.toContain("The color is yellow.");
