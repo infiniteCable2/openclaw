@@ -1,6 +1,7 @@
 import type { Model } from "openclaw/plugin-sdk/llm";
 import type { CliSessionBinding, SessionEntry } from "../../config/sessions.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import type { ContextEngine, ContextEngineRuntimeContext } from "../../context-engine/types.js";
 import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import type { ExecToolDefaults } from "../bash-tools.exec-types.js";
@@ -164,6 +165,7 @@ export type CompactEmbeddedAgentSessionRuntimeParams = Omit<
     onDecision?: (
       fits: boolean,
       capacity?: (message: import("../sessions/messages.js").CustomMessage) => boolean,
+      version?: Readonly<SessionTranscriptContextVersion>,
     ) => void;
   };
 };

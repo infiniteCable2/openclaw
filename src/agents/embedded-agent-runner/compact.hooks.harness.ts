@@ -27,6 +27,7 @@ import {
   getCurrentPluginMetadataSnapshotMock,
   mockCompactHooksContextEngine,
   mockCompactHooksPluginMetadata,
+  mockCompactHooksProviderRuntime,
   resolveCompactHooksApiKeyMock,
   type CompactHooksQueuedCompaction,
   type MockResolvedModel,
@@ -565,17 +566,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     };
   });
 
-  vi.doMock("../../plugins/provider-runtime.js", () => ({
-    prepareProviderRuntimeAuth: vi.fn(async () => ({ resolvedApiKey: undefined })),
-    resolveProviderReasoningOutputModeWithPlugin: vi.fn(() => undefined),
-    resolveProviderSystemPromptContribution: vi.fn(() => undefined),
-    resolveProviderTextTransforms: vi.fn(() => undefined),
-    shouldPreferProviderRuntimeResolvedModel: vi.fn(() => false),
-    transformProviderSystemPrompt: vi.fn(
-      (params: { systemPrompt?: string; context?: { systemPrompt?: string } }) =>
-        params.context?.systemPrompt ?? params.systemPrompt,
-    ),
-  }));
+  mockCompactHooksProviderRuntime();
 
   vi.doMock("../provider-stream.js", () => ({
     registerProviderStreamForModel: registerProviderStreamForModelMock,

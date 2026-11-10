@@ -19,6 +19,22 @@ export type CompactHooksQueuedCompaction = (
 
 const emptyPluginMetadataSnapshot = createEmptyPluginMetadataSnapshot();
 
+export function mockCompactHooksProviderRuntime(): void {
+  vi.doMock("../../plugins/provider-runtime.js", async (importOriginal) => ({
+    // Durable fixtures use the actual replay hooks, including native metadata writes.
+    ...(await importOriginal<typeof import("../../plugins/provider-runtime.js")>()),
+    prepareProviderRuntimeAuth: vi.fn(async () => ({ resolvedApiKey: undefined })),
+    resolveProviderReasoningOutputModeWithPlugin: vi.fn(() => undefined),
+    resolveProviderSystemPromptContribution: vi.fn(() => undefined),
+    resolveProviderTextTransforms: vi.fn(() => undefined),
+    shouldPreferProviderRuntimeResolvedModel: vi.fn(() => false),
+    transformProviderSystemPrompt: vi.fn(
+      (params: { systemPrompt?: string; context?: { systemPrompt?: string } }) =>
+        params.context?.systemPrompt ?? params.systemPrompt,
+    ),
+  }));
+}
+
 export const getCurrentPluginMetadataSnapshotMock: Mock<
   typeof import("../../plugins/current-plugin-metadata-snapshot.js").getCurrentPluginMetadataSnapshot
 > = vi.fn(() => emptyPluginMetadataSnapshot);

@@ -128,11 +128,16 @@ it("records native check-only preparation metadata after a compaction boundary",
     await import("./run/prepared-conversation-context.js");
   let decisionVersion: Readonly<SessionTranscriptContextVersion> | undefined;
   const onDecision = vi.fn(
-    (fits: boolean, capacity?: Parameters<typeof capturePreparedConversationContextBudget>[0]) => {
+    (
+      fits: boolean,
+      capacity?: Parameters<typeof capturePreparedConversationContextBudget>[0],
+      version?: Readonly<SessionTranscriptContextVersion>,
+    ) => {
       expect(fits).toBe(true);
       expect(capacity && capturePreparedConversationContextBudget(capacity)).toBeDefined();
-      decisionVersion = probeManager?.getTranscriptSnapshotVersion();
+      decisionVersion = version;
       expect(decisionVersion).toBeDefined();
+      expect(decisionVersion).toEqual(probeManager?.getTranscriptSnapshotVersion());
     },
   );
   const result = await compact({

@@ -1,0 +1,4 @@
+75
+# Idle-compaction adapter: pass the issued native snapshot version, preserve
+# post-compaction checks, and test own metadata, later writes and missing versions.
+# Only conversation-knowledge-idle-compaction.test.ts; no runtime cap change.

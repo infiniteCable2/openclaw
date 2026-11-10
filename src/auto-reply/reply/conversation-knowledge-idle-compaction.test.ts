@@ -7,6 +7,7 @@ import {
 import type { EmbeddedAgentCompactResult } from "../../agents/embedded-agent-runner/types.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import type { CustomMessage } from "../../agents/sessions/messages.js";
+import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import { captureOwnedTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -110,10 +111,12 @@ function fixture() {
     input: CompactEmbeddedAgentSessionRuntimeParams,
     fits = false,
     contextWindow = 1_000,
+    context: { version?: Readonly<SessionTranscriptContextVersion> } = { version },
   ) => {
     input.budgetPreflight?.onDecision?.(
       fits,
       createConversationContextCapacity({ messages: history, contextWindow, reserveTokens: 100 }),
+      context.version,
     );
   };
   mocks.compact.mockImplementation(async (input) => {
@@ -259,9 +262,10 @@ it("does not admit under a smaller maintenance footprint while the real warmed r
     .mockResolvedValueOnce({ messages: f.history, version: f.version })
     .mockResolvedValue({ messages: f.history, version: after });
   const onReady = vi.fn(async () => true);
+  let probeVersion = f.version;
   mocks.compact.mockImplementation(async (input) => {
     if (input.budgetPreflight?.checkOnly) {
-      f.issue(input, true, 100_000);
+      f.issue(input, true, 100_000, { version: probeVersion });
       return { ok: true, compacted: false };
     }
     expect(input).toMatchObject({
@@ -270,6 +274,7 @@ it("does not admit under a smaller maintenance footprint while the real warmed r
       preflightCompactionTrigger: "tokens",
     });
     expect(input.budgetPreflight).toBeUndefined();
+    probeVersion = after;
     return { ok: true, compacted: true };
   });
   await expect(compactConversationKnowledgeWhileIdle({ ...f.params, onReady })).resolves.toBe(true);
@@ -284,25 +289,100 @@ it("reduces a cold recipient when replay fits but its durable context cannot acc
   f.readContext
     .mockResolvedValueOnce({ messages: f.history, version: f.version })
     .mockResolvedValue({ messages: [], version: after });
+  let probeVersion = f.version;
   mocks.compact.mockImplementation(async (input) => {
     if (input.budgetPreflight?.checkOnly) {
-      f.issue(input, true);
+      f.issue(input, true, 1_000, { version: probeVersion });
       return { ok: true, compacted: false };
     }
     expect(input).toMatchObject({ forcePreflight: true, preflightRequired: true });
+    probeVersion = after;
     return { ok: true, compacted: true };
   });
-  const onReady = vi.fn(async (budget: typeof f.params.budget, version: typeof after) => {
-    expect(version).toEqual(after);
-    expect(budget.capacityForMessages([])(f.packet)).toBe(true);
-    return true;
-  });
+  const onReady = vi.fn(
+    async (budget: typeof f.params.budget, version: SessionTranscriptContextVersion) => {
+      expect(version).toEqual(after);
+      expect(budget.capacityForMessages([])(f.packet)).toBe(true);
+      return true;
+    },
+  );
   await expect(
     compactConversationKnowledgeWhileIdle({ ...f.params, budget: undefined, request, onReady }),
   ).resolves.toBe(true);
   expect(mocks.compact).toHaveBeenCalledTimes(3);
   expect(onReady).toHaveBeenCalledOnce();
 });
+
+it.each([
+  "metadata",
+  "external-write",
+  "missing-initial-version",
+  "missing-final-version",
+] as const)(
+  "binds native probe metadata to the exact decision and keeps later writes fenced: %s",
+  async (scenario) => {
+    const f = fixture();
+    let current = { ...f.version };
+    let reduced = false;
+    let finalDecisionVersion: Readonly<SessionTranscriptContextVersion> | undefined;
+    f.readContext.mockImplementation(async () => ({
+      messages: reduced ? [] : f.history,
+      version: { ...current },
+    }));
+    const onReady = vi.fn(
+      async (_budget: typeof f.params.budget, version: SessionTranscriptContextVersion) => {
+        expect(version).toEqual(finalDecisionVersion);
+        expect(version).toEqual(current);
+        return true;
+      },
+    );
+    mocks.compact.mockImplementation(async (input) => {
+      // This adapter retains the real native write-assertion owner. Its first
+      // reduction must use the probe's post-metadata version, not the pre-probe read.
+      const source = captureOwnedTranscriptWriteAssertion(f.params.target);
+      source();
+      const prepared = await source.prepareSessionSource?.();
+      expect(prepared?.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            predicate: expect.objectContaining({
+              transcript: { sessionId: f.params.target.sessionId, version: current },
+            }),
+          }),
+        ]),
+      );
+      if (input.budgetPreflight?.checkOnly) {
+        // SDK thinking/model metadata can advance both probes without inference.
+        current = { ...current, rawSeq: current.rawSeq + 2, updatedAt: current.updatedAt + 1 };
+        const missing =
+          (!reduced && scenario === "missing-initial-version") ||
+          (reduced && scenario === "missing-final-version");
+        f.issue(input, reduced, 100_000, { version: missing ? undefined : { ...current } });
+        if (reduced) {
+          finalDecisionVersion = { ...current };
+          if (scenario === "external-write") {
+            current = { ...current, rawSeq: current.rawSeq + 1, updatedAt: current.updatedAt + 1 };
+          }
+        }
+        return { ok: true, compacted: false };
+      }
+      reduced = true;
+      current = { ...current, rawSeq: current.rawSeq + 1, updatedAt: current.updatedAt + 1 };
+      return { ok: true, compacted: true };
+    });
+
+    await expect(compactConversationKnowledgeWhileIdle({ ...f.params, onReady })).resolves.toBe(
+      scenario !== "missing-initial-version",
+    );
+    expect(mocks.compact).toHaveBeenCalledTimes(scenario === "missing-initial-version" ? 1 : 3);
+    if (scenario === "metadata") {
+      expect(onReady).toHaveBeenCalledOnce();
+      expect(finalDecisionVersion?.rawSeq).toBe(f.version.rawSeq + 5);
+    } else {
+      expect(onReady).not.toHaveBeenCalled();
+    }
+  },
+);
 
 it("native refusal cannot be overridden by an apparently fitting maintenance capacity", async () => {
   const f = fixture();

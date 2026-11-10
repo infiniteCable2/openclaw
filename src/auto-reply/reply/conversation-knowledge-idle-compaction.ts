@@ -225,6 +225,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
   const probe = async (version: SessionTranscriptContextVersion) => {
     let fits: boolean | undefined;
     let preparedBudget: PreparedConversationContextBudget | undefined;
+    let preparedVersion: Readonly<SessionTranscriptContextVersion> | undefined;
     const result = await runIdleConversationKnowledgeNativeMaintenance({
       ...params,
       version,
@@ -235,25 +236,27 @@ export async function compactConversationKnowledgeWhileIdle(params: {
           pendingMessages: [packet],
           checkOnly: true,
           captureCapacity: true,
-          onDecision: (allowed, capacity) => {
+          onDecision: (allowed, capacity, contextVersion) => {
             check();
             fits = allowed;
             params.onNativeDecision?.(allowed);
             preparedBudget = capacity
               ? capturePreparedConversationContextBudget(capacity)
               : undefined;
+            preparedVersion = contextVersion;
           },
         },
       },
     });
     check();
-    return { ok: result.ok, fits, budget: preparedBudget };
+    return { ok: result.ok, fits, budget: preparedBudget, version: preparedVersion };
   };
   try {
     let pressure = await probe(fresh.version);
     if (
       !pressure.ok ||
       !pressure.budget ||
+      !pressure.version ||
       pressure.fits === undefined ||
       !pressure.budget.capacityForMessages([])(packet)
     ) {
@@ -262,14 +265,15 @@ export async function compactConversationKnowledgeWhileIdle(params: {
           ? "initial-probe-failed"
           : !pressure.budget
             ? "initial-probe-budget-unavailable"
-            : pressure.fits === undefined
-              ? "initial-probe-decision-unavailable"
-              : "packet-exceeds-native-empty-budget",
+            : !pressure.version
+              ? "initial-probe-version-unavailable"
+              : pressure.fits === undefined
+                ? "initial-probe-decision-unavailable"
+                : "packet-exceeds-native-empty-budget",
       );
       return false;
     }
     let compacted = false;
-    let version = fresh.version;
     // Native replay can fit after trimming while the durable recipient window is
     // still full. Compare the same window that the subsequent append will charge.
     const needsReduction =
@@ -281,6 +285,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
       }
       const result = await runIdleConversationKnowledgeNativeMaintenance({
         ...params,
+        version: pressure.version,
         request: {
           ...request,
           ...(pressure.fits
@@ -307,24 +312,28 @@ export async function compactConversationKnowledgeWhileIdle(params: {
         diagnostic("compacted-context-unavailable");
         return true;
       }
-      version = current.version;
-      state.blocked = { version: { ...version }, consumptionRevision: params.consumptionRevision };
-      pressure = await probe(version);
+      state.blocked = {
+        version: { ...current.version },
+        consumptionRevision: params.consumptionRevision,
+      };
+      pressure = await probe(current.version);
     }
     // Native refusal wins even if the conservative reusable estimate would allow it.
-    if (!pressure.ok || pressure.fits !== true || !pressure.budget) {
+    if (!pressure.ok || pressure.fits !== true || !pressure.budget || !pressure.version) {
       diagnostic(
         !pressure.ok
           ? "final-probe-failed"
           : pressure.fits !== true
             ? "final-probe-refused"
-            : "final-probe-budget-unavailable",
+            : !pressure.budget
+              ? "final-probe-budget-unavailable"
+              : "final-probe-version-unavailable",
       );
       return compacted;
     }
     const current = await params.readContext();
     check();
-    if (!current.version || !isDeepStrictEqual(current.version, version)) {
+    if (!current.version || !isDeepStrictEqual(current.version, pressure.version)) {
       diagnostic(current.version ? "final-context-changed" : "final-context-unavailable");
       return true;
     }
@@ -332,7 +341,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
       diagnostic("foreground-budget-refused");
       return compacted;
     }
-    const admitted = await params.onReady?.(pressure.budget, version);
+    const admitted = await params.onReady?.(pressure.budget, pressure.version);
     if (admitted !== true) {
       diagnostic(params.onReady ? "ready-without-admission" : "ready-handler-unavailable");
     }

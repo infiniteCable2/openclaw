@@ -138,6 +138,8 @@ export async function prepareCompactionPromptContext(input: {
         reserveTokens: foregroundSettings.getCompactionReserveTokens(),
         modelIdentity: { provider: foreground.model.provider, model: foreground.model.id },
       }),
+      // SDK and replay preparation may have committed their own metadata.
+      input.sessionManager.getTranscriptSnapshotVersion(),
     );
   } else {
     foreground.onDecision?.(fits);
