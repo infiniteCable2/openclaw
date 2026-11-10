@@ -1,0 +1,4 @@
+56
+# Real SQLite report admission across native compaction: unchanged byte ceiling,
+# retained original history, and refusal of an oversized incoming report.
+# Only session-accessor.sqlite-bounded-context-usage.test.ts grows.

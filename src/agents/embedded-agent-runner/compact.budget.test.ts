@@ -78,16 +78,15 @@ describe("native ingestion-budget compaction dispatch", () => {
   });
   it("does not admit pending packets against a merely prospective tool-result reduction", async () => {
     const { prepareCompactionBudgetPreflight } = await import("./compaction-budget-preflight.js");
+    const buildLog = "Synthetic build output: checked module successfully.\n".repeat(9_000);
     const history = [
       {
         role: "toolResult" as const,
         toolCallId: "large",
         toolName: "synthetic",
-        // Native tool pressure floors text at two chars/token, then adds 20%
-        // safety. At 230k chars its overflow remains comfortably smaller than
-        // the reduction to the native 32k live-result cap. 700k instead needs
-        // compaction as well and cannot exercise the truncate-only route.
-        content: [{ type: "text" as const, text: "x".repeat(230_000) }],
+        // This build log exceeds the native four-chars/token budget with 20%
+        // safety, while truncation can comfortably recover the excess.
+        content: [{ type: "text" as const, text: buildLog }],
         isError: false,
         timestamp: 1,
       },
