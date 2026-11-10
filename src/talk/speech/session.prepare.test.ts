@@ -267,11 +267,19 @@ describe("startSpeechSession streaming output", () => {
 
   it("does not resume prepared or later sentences after a transcribed caller turn", async () => {
     const fixture = await createControlledStreamingEngine();
+    const writeStarted = createDeferred();
+    const allowWrite = createDeferred();
+    fixture.writeOutput.mockImplementationOnce(async () => {
+      writeStarted.resolve();
+      await allowWrite.promise;
+    });
     try {
       await fixture.speech({ type: "chunk", text: "This is the first sentence." });
       await vi.waitFor(() => expect(fixture.streams).toHaveLength(1));
       fixture.streamAt(0).controller.enqueue(Uint8Array.from([1, 0]));
-      await vi.waitFor(() => expect(fixture.writeOutput).toHaveBeenCalledOnce());
+      await writeStarted.promise;
+      // The producer can prepare a successor after EOF while the sink is still playing.
+      fixture.streamAt(0).controller.close();
       await fixture.speech({ type: "chunk", text: "This second sentence is prepared already." });
       await vi.waitFor(() => expect(fixture.streams).toHaveLength(2));
       fixture.streamAt(1).controller.enqueue(Uint8Array.from([2, 0]));
@@ -282,6 +290,7 @@ describe("startSpeechSession streaming output", () => {
         throw new Error("caption observer failed");
       });
       fixture.callbacks?.onTranscript?.("A new caller request.", { utteranceId: "barge-in" });
+      allowWrite.resolve();
       await vi.waitFor(() => {
         expect(fixture.streamAt(0).release).toHaveBeenCalledOnce();
         expect(fixture.streamAt(1).release).toHaveBeenCalledOnce();
@@ -298,20 +307,25 @@ describe("startSpeechSession streaming output", () => {
         { role: "user", text: "A new caller request." },
       ]);
     } finally {
+      allowWrite.resolve();
       await fixture.stop();
     }
   });
 
   it("fences an already fulfilled read when a transcribed caller turn races its continuation", async () => {
     const fixture = await createControlledStreamingEngine();
+    const writeStarted = createDeferred();
+    fixture.writeOutput.mockImplementationOnce(async () => {
+      writeStarted.resolve();
+    });
     try {
       await fixture.speech({ type: "chunk", text: "This sentence is still playing." });
       await vi.waitFor(() => expect(fixture.streams).toHaveLength(1));
       const stream = fixture.streamAt(0);
-      // With no prefetch, each pull admits an actual pending read. Wait before
-      // enqueueing so the first chunk cannot merely enter the stream's queue.
+      // A provider pull is read-ahead, not proof that the sink received audio.
       await stream.firstRead;
       stream.controller.enqueue(Uint8Array.from([1, 0]));
+      await writeStarted.promise;
       await stream.secondRead;
       expect(fixture.writeOutput).toHaveBeenCalledOnce();
       // Enqueue fulfills read(), then cancellation precedes its await continuation.
@@ -381,11 +395,25 @@ describe("startSpeechSession streaming output", () => {
       await vi.waitFor(() =>
         expect(fixture.logger.warn).toHaveBeenCalledWith(expect.stringContaining("sink closed")),
       );
-      const events = fixture.handle.getHealth().recentTalkEvents!.map((event) => event.type);
+      const history = fixture.handle.getHealth().recentTalkEvents!;
+      const events = history.map((event) => event.type);
       expect(events.indexOf("output.text.done")).toBeLessThan(
         events.indexOf("output.audio.started"),
       );
-      expect(events.slice(-2)).toEqual(["output.audio.done", "turn.ended"]);
+      const terminals = history.filter(
+        (event) => event.type === "output.audio.done" || event.type === "turn.ended",
+      );
+      expect(terminals.map((event) => event.type)).toEqual(["output.audio.done", "turn.ended"]);
+      expect(terminals[0]?.turnId).toBe(terminals[1]?.turnId);
+      expect(events.indexOf("output.audio.started")).toBeLessThan(
+        events.indexOf("output.audio.done"),
+      );
+      expect(history.findLast((event) => event.type === "session.activity")?.payload).toMatchObject(
+        {
+          connection: "ready",
+          output: { state: "submitted", purpose: "speech" },
+        },
+      );
     } finally {
       await fixture.stop();
     }
@@ -510,104 +538,60 @@ describe("startSpeechSession streaming output", () => {
     await handle.stop();
   });
 
-  it("prepares exactly one sentence ahead while preserving playback order", async () => {
-    let onTranscript: ((text: string) => void) | undefined;
-    const provider = createProvider(undefined);
-    provider.createSession.mockImplementation((params) => {
-      onTranscript = params.onTranscript;
-      return {
-        connect: vi.fn(async () => undefined),
-        sendAudio: vi.fn(),
-        close: vi.fn(),
-        isConnected: () => true,
-      };
+  it("prepares two successors after provider EOF while the first sink write is paced", async () => {
+    const fixture = await createControlledStreamingEngine();
+    const writeStarted = createDeferred();
+    const allowWrite = createDeferred();
+    fixture.writeOutput.mockImplementationOnce(async () => {
+      writeStarted.resolve();
+      await allowWrite.promise;
     });
-    const streamControllers: ReadableStreamDefaultController<Uint8Array>[] = [];
-    const synthesize = vi.fn(async () => ({
-      success: true,
-      audioStream: new ReadableStream<Uint8Array>({
-        start(controller) {
-          streamControllers.push(controller);
-          controller.enqueue(Uint8Array.from([streamControllers.length, 0]));
-        },
-      }),
-      outputFormat: "pcm" as const,
-      sampleRate: 24_000,
-    }));
-    let consult: SpeechAgentConsultParams | undefined;
-    let finishConsult: ((result: { text: string; delivered: true }) => void) | undefined;
-    const consultAgent = vi.fn(
-      (params: SpeechAgentConsultParams) =>
-        new Promise<{ text: string; delivered: true }>((resolve) => {
-          consult = params;
-          finishConsult = resolve;
-        }),
-    );
-    const writes: Buffer[] = [];
-    const handle = await startSpeechSession({
-      config: {
-        ...config,
-        responseStreaming: "sentence",
-      },
-      fullConfig: {} as never,
-      runtime: { tts: { streamTextToSpeechTelephony: synthesize } } as unknown as PluginRuntime,
-      surface: {
-        displayName: "Test meeting",
-        logScope: "test meeting",
-        sessionIdPrefix: "test-meeting",
-      },
-      sessionId: "meeting-one-ahead",
-      transport: {
-        onFatal: vi.fn(),
-        startInput: vi.fn(),
-        writeOutput: vi.fn(async (audio: Buffer) => {
-          writes.push(Buffer.from(audio));
-        }),
-        clearOutput: vi.fn(async () => undefined),
-        stop: vi.fn(async () => undefined),
-        dispose: vi.fn(async () => undefined),
-      },
-      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      providers: [provider],
-      consultAgent,
-    });
-
-    onTranscript?.("Bitte drei Sätze.");
-    await vi.waitFor(() => expect(consultAgent).toHaveBeenCalledOnce(), { timeout: 2_000 });
-    await consult?.onSpeakableText?.({ type: "chunk", text: "Satz eins." });
-    await vi.waitFor(() => {
-      expect(synthesize).toHaveBeenCalledOnce();
-      expect(writes).toHaveLength(1);
-    });
-
-    await consult?.onSpeakableText?.({ type: "chunk", text: "Satz zwei." });
-    await vi.waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
-    await consult?.onSpeakableText?.({ type: "chunk", text: "Satz drei." });
-    await new Promise((resolve) => {
-      setTimeout(resolve, 20);
-    });
-    expect(synthesize).toHaveBeenCalledTimes(2);
-
-    streamControllers[0]?.close();
-    await vi.waitFor(() => {
-      expect(writes).toHaveLength(2);
-      expect(synthesize).toHaveBeenCalledTimes(3);
-    });
-    streamControllers[1]?.close();
-    await vi.waitFor(() => expect(writes).toHaveLength(3));
-    streamControllers[2]?.close();
-    await consult?.onSpeakableText?.({
-      type: "done",
-      text: "Satz eins. Satz zwei. Satz drei.",
-    });
-    finishConsult?.({ text: "Satz eins. Satz zwei. Satz drei.", delivered: true });
-
-    await vi.waitFor(() => {
-      expect(writes.map((audio) => audio[0])).toEqual([1, 2, 3]);
-    });
-    await handle.stop();
+    const texts = [
+      "First sentence.",
+      "Second sentence.",
+      "Third sentence.",
+      "Fourth sentence.",
+    ] as const;
+    const finishAudio = (index: number) => {
+      const stream = fixture.streamAt(index);
+      stream.controller.enqueue(Uint8Array.from([index + 1, 0]));
+      stream.controller.close();
+    };
+    try {
+      await fixture.speech({ type: "chunk", text: texts[0] });
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(1));
+      finishAudio(0);
+      await writeStarted.promise;
+      for (const text of texts.slice(1)) {
+        await fixture.speech({ type: "chunk", text });
+      }
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(2));
+      finishAudio(1);
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(3));
+      const third = fixture.streamAt(2);
+      await third.firstRead;
+      third.controller.enqueue(Uint8Array.from([3, 0]));
+      third.controller.close();
+      expect(fixture.synthesize).toHaveBeenCalledTimes(3);
+      expect(fixture.writeOutput).toHaveBeenCalledOnce();
+      allowWrite.resolve();
+      await vi.waitFor(() => expect(fixture.streams).toHaveLength(4));
+      finishAudio(3);
+      await fixture.speech({ type: "done", text: texts.join(" ") });
+      await vi.waitFor(() => {
+        expect(fixture.writeOutput.mock.calls.map(([audio]) => audio[0])).toEqual([1, 2, 3, 4]);
+        expect(
+          fixture.handle
+            .getHealth()
+            .recentRealtimeTranscript.filter((entry) => entry.role === "assistant")
+            .map((entry) => entry.text),
+        ).toEqual([texts.join(" ")]);
+      });
+    } finally {
+      allowWrite.resolve();
+      await fixture.stop();
+    }
   });
-
   it("clears configured waiting audio before the first synthesized speech frame", async () => {
     const fixture = await createWaitingAudioFixture();
     let handle: Awaited<ReturnType<typeof startSpeechSession>> | undefined;

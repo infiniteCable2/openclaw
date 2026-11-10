@@ -1,2 +1,2 @@
-587
+571
 # Assistant readiness, Matrix authority parity and encrypted captions at speech handoff.
