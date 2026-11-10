@@ -372,8 +372,10 @@ function readBoundedActiveContext(
     const window = covered
       ? undefined
       : resolveTranscriptBoundaryWindow(projection, "context", fence?.beforeRawSeq);
-    const retained =
-      !limits && window?.boundaryType === "compaction" ? [] : (window?.keptMessagePositions ?? []);
+    // Hydration may acquire older ancestry, but admission charges the summary and
+    // native retained tail; already summarized originals must not fill its budget.
+    const compactedWindow = window?.boundaryType === "compaction" && (!limits || mode === "usage");
+    const retained = compactedWindow ? [] : (window?.keptMessagePositions ?? []);
     const retainedPositions = limits ? retained.slice(-(limits.maxEvents + 1)) : retained;
     // Compaction keeps custom/branch messages in its retained tail too. Reset
     // retention instead uses the owner's paired message selection.
@@ -396,7 +398,7 @@ function readBoundedActiveContext(
             .where((eb) => {
               const eligible = eb.and([
                 eb("active.context_eligible", "=", 1),
-                ...(!limits && startPosition !== undefined
+                ...((!limits || compactedWindow) && startPosition !== undefined
                   ? [eb("active.active_position", ">=", startPosition)]
                   : []),
               ]);
