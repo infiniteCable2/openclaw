@@ -25,7 +25,12 @@ import {
   matrixRtcMembershipIdentity,
 } from "./rtc-admission.js";
 import { requestMatrixRtcCredentials, type MatrixRtcMembershipIdentity } from "./rtc-auth.js";
-import { stopCall, type ActiveCall } from "./rtc-call-lifecycle.js";
+import {
+  stopCall,
+  waitForCallCleanup,
+  type ActiveCall,
+  type MatrixRtcStopOptions,
+} from "./rtc-call-lifecycle.js";
 import {
   findMatrixRtcAdmission,
   resolveMatrixRtcAgentProfile,
@@ -92,7 +97,7 @@ export function registerMatrixRtcController(params: {
     typeof createMatrixRtcConversationBindings
   >[0]["source"]["preparePrivateAudience"];
   abortSignal?: AbortSignal;
-}): { startExisting(): void; stop(): Promise<void> } {
+}): { startExisting(): void; stop(options?: MatrixRtcStopOptions): Promise<void> } {
   const calls = new Map<string, ActiveCall>();
   const failedRemoteMemberships = new Map<string, string>();
   const incomingKeys = new Map<string, MatrixRtcIncomingMediaKey[]>();
@@ -700,7 +705,7 @@ export function registerMatrixRtcController(params: {
   };
   params.abortSignal?.addEventListener("abort", abortListener, { once: true });
 
-  const stop = async () => {
+  const stop = async (options?: MatrixRtcStopOptions) => {
     if (!stopped) {
       stopped = true;
       disposeStarted();
@@ -717,13 +722,11 @@ export function registerMatrixRtcController(params: {
       disposeIncomingMediaKey();
       params.abortSignal?.removeEventListener("abort", abortListener);
     }
-    await Promise.all([...calls.keys()].map((roomId) => endCall(roomId)));
-    if (calls.size > 0) {
-      throw new AggregateError(
-        [...calls.values()].map((call) => call.cleanupError),
-        "MatrixRTC call cleanup failed; retry controller.stop()",
-      );
-    }
+    await waitForCallCleanup(
+      Promise.all([...calls.keys()].map((roomId) => endCall(roomId))),
+      calls,
+      options,
+    );
   };
 
   return {

@@ -220,7 +220,9 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   let clientLease: SharedMatrixClientLease | null = null;
   let monitorLifecycleSignal = opts.abortSignal;
   let threadBindingManager: { accountId: string; stop: () => Promise<void> } | null = null;
-  let rtcController: { startExisting(): void; stop(): Promise<void> } | null = null;
+  let rtcController: ReturnType<
+    typeof import("../rtc-controller.js").registerMatrixRtcController
+  > | null = null;
   const monitorTaskRunner = createMatrixMonitorTaskRunner({
     logger,
     logVerboseMessage,
@@ -243,7 +245,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     directTracker?.dispose();
     cleanupPromise = (async () => {
       try {
-        await rtcController?.stop();
+        await rtcController?.stop({ waitForCleanup: true });
         await clientLease?.release({ mode });
       } finally {
         statusController.markStopped();
@@ -389,7 +391,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       await monitorTaskRunner.waitForIdle();
     },
     cleanup: async () => {
-      await rtcController?.stop();
+      await rtcController?.stop({ waitForCleanup: true });
       await threadBindingManager?.stop();
     },
   };

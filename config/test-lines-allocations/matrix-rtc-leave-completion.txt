@@ -1,0 +1,5 @@
+# MatrixRTC SDK44 membership removal must outlive a bounded controller stop wait.
+# Real SDK session regression (78), controller timeout/drain/replacement coverage
+# (113), and native one-leave failure expectations in existing tests (+4).
+# Exact net test-line growth: 78 + 113 + 4.
+195

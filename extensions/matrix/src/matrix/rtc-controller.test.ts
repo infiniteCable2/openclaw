@@ -664,7 +664,7 @@ describe("registerMatrixRtcController", () => {
     await harness.controller.stop();
   });
 
-  it.each(["unconfirmed-or-timed-out", "rejected"] as const)(
+  it.each(["unconfirmed", "rejected"] as const)(
     "keeps a %s membership leave owned without repeating completed media cleanup",
     async (failureMode) => {
       const release = vi.fn(async () => undefined);
@@ -684,7 +684,7 @@ describe("registerMatrixRtcController", () => {
 
       harness.managerEmitter.emit("session_ended", roomId, harness.session);
       await flushPromises();
-      expect(harness.session.leave).toHaveBeenCalledWith(5_000);
+      expect(harness.session.leave).toHaveBeenCalledWith();
       expect(engine.stop).toHaveBeenCalledOnce();
       expect(release).toHaveBeenCalledOnce();
       // The still-owned membership blocks replacement admission even though its
@@ -693,14 +693,16 @@ describe("registerMatrixRtcController", () => {
       await flushPromises();
       expect(mocks.startMeetingAgentRealtimeEngine).toHaveBeenCalledOnce();
       await expect(harness.controller.stop()).rejects.toThrow("retry controller.stop()");
-      expect(harness.session.leave).toHaveBeenCalledTimes(2);
+      expect(harness.session.leave).toHaveBeenCalledOnce();
       expect(engine.stop).toHaveBeenCalledOnce();
       expect(release).toHaveBeenCalledOnce();
 
-      harness.session.leave.mockResolvedValue(true);
-      await harness.controller.stop();
-      await harness.controller.stop();
-      expect(harness.session.leave).toHaveBeenCalledTimes(3);
+      // SDK leave deactivates the membership; invoking it again cannot prove
+      // completion of the original operation, even if a mock would return true.
+      await expect(harness.controller.stop({ waitForCleanup: true })).rejects.toThrow(
+        "retry controller.stop()",
+      );
+      expect(harness.session.leave).toHaveBeenCalledOnce();
       expect(engine.stop).toHaveBeenCalledOnce();
       expect(release).toHaveBeenCalledOnce();
     },
@@ -724,9 +726,11 @@ describe("registerMatrixRtcController", () => {
       errors: [expect.objectContaining({ errors: [mediaFailure, membershipFailure] })],
     });
     expect(release).not.toHaveBeenCalled();
-    await harness.controller.stop();
+    await expect(harness.controller.stop()).rejects.toMatchObject({
+      errors: [membershipFailure],
+    });
     expect(engine.stop).toHaveBeenCalledTimes(2);
-    expect(harness.session.leave).toHaveBeenCalledTimes(2);
+    expect(harness.session.leave).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
   });
 

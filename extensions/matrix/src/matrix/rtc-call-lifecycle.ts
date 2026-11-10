@@ -4,8 +4,11 @@ import type {
   MeetingRealtimeAudioEngineHandle,
   MeetingRealtimeAudioTransport,
 } from "openclaw/plugin-sdk/meeting-runtime";
+import { raceWithTimeout } from "openclaw/plugin-sdk/time-runtime";
 
-const LEAVE_TIMEOUT_MS = 5_000;
+const CLEANUP_WAIT_TIMEOUT_MS = 5_000;
+
+export type MatrixRtcStopOptions = { waitForCleanup?: boolean };
 
 export type ActiveCall = {
   abort: AbortController;
@@ -19,9 +22,35 @@ export type ActiveCall = {
   startup?: Promise<void>;
   connectionPreparation?: { cancel(): void; close(): Promise<void> };
   stopPromise?: Promise<boolean>;
+  leavePromise?: Promise<boolean>;
   cleanupError?: unknown;
   disposeListeners: () => void;
 };
+
+export async function waitForCallCleanup(
+  cleanup: Promise<unknown>,
+  calls: ReadonlyMap<string, ActiveCall>,
+  options?: MatrixRtcStopOptions,
+): Promise<void> {
+  if (options?.waitForCleanup) {
+    await cleanup;
+  } else {
+    await raceWithTimeout(
+      cleanup,
+      CLEANUP_WAIT_TIMEOUT_MS,
+      () => {
+        throw new Error("MatrixRTC cleanup is still pending; retry controller.stop()");
+      },
+      { ref: false },
+    );
+  }
+  if (calls.size > 0) {
+    throw new AggregateError(
+      [...calls.values()].map((call) => call.cleanupError),
+      "MatrixRTC call cleanup failed; retry controller.stop()",
+    );
+  }
+}
 
 export async function stopCall(call: ActiveCall): Promise<void> {
   call.abort.abort();
@@ -59,9 +88,11 @@ export async function stopCall(call: ActiveCall): Promise<void> {
   await preparationClosed;
   try {
     if (call.joined) {
-      if (!(await call.session.leave(LEAVE_TIMEOUT_MS))) {
-        // The SDK also returns false after a timed-out leave locally disables
-        // participation. Local isJoined=false does not confirm server custody.
+      // SDK leave deactivates participation immediately. Its timeout resolves
+      // false permanently even while removal continues; retain the original
+      // operation and bound only callers waiting for controller cleanup.
+      call.leavePromise ??= call.session.leave();
+      if (!(await call.leavePromise)) {
         throw new Error("MatrixRTC membership leave was not confirmed");
       }
       call.joined = false;
