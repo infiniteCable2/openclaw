@@ -186,14 +186,14 @@ export function meetAudioBridge(stop = vi.fn(async () => {})) {
 }
 
 export function createTestMeetRealtimeAudioTransport() {
-  const transport: MeetingRealtimeAudioTransport = {
+  const transport = {
     onFatal: vi.fn(),
-    startInput: vi.fn(),
+    startInput: vi.fn<MeetingRealtimeAudioTransport["startInput"]>(),
     stop: vi.fn(async () => {}),
-    writeOutput: vi.fn(async () => {}),
+    writeOutput: vi.fn<MeetingRealtimeAudioTransport["writeOutput"]>(async () => {}),
     clearOutput: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),
-  };
+  } satisfies MeetingRealtimeAudioTransport;
   return { transport };
 }
 

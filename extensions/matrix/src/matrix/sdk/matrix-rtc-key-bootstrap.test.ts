@@ -32,7 +32,7 @@ describe("MatrixRTC initial key distribution", () => {
       onEncryptionKeysChanged,
     );
 
-    manager.join({ manageMediaKeys: true, unstableSendStickyEvents: false }, [
+    manager.join({ manageMediaKeys: true }, [
       { type: "livekit", livekit_service_url: "https://rtc.example.test", livekit_alias: "room" },
     ]);
 
