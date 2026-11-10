@@ -17,11 +17,13 @@ import {
 import type { ChannelPlugin } from "../src/channels/plugins/types.plugin.js";
 import * as configCloning from "../src/config/resolution-facts.js";
 import { captureRuntimeConfigWithSource } from "../src/config/runtime-config-capture-state.js";
+import { consumeConversationBranchCreation } from "../src/config/sessions/conversation-branch-creation.js";
 import { CONVERSATION_KNOWLEDGE_CONTEXT } from "../src/config/sessions/conversation-knowledge-packets.js";
 import { recordConversationKnowledgeTurn } from "../src/config/sessions/conversation-knowledge-store.js";
 import { loadSessionEntry, loadTranscriptEvents } from "../src/config/sessions/session-accessor.js";
 import * as initialFrames from "../src/config/sessions/session-initial-context-frame.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
+import { prepareSessionMutationFacts } from "../src/gateway/session-sharing-preparation.js";
 import * as personalReads from "../src/gateway/session-transcript-personal-read.js";
 import { withRegisteredChannelIngress } from "../src/plugin-sdk/test-helpers/registered-channel-ingress.js";
 import type { PluginRuntime } from "../src/plugins/runtime/types.js";
@@ -135,6 +137,29 @@ it(
                 try {
                   return await nativePersonalRead(input);
                 } catch (error) {
+                  if (input.personal.targetCreation && !readFailures.length) {
+                    const creation = consumeConversationBranchCreation({
+                      creation: input.personal.targetCreation,
+                      branch: input.personal.target,
+                      participant: input.personal.originalParticipant,
+                      audience: input.personal.targetAudience,
+                    });
+                    const held = await prepareSessionMutationFacts({
+                      cfg: input.getRuntimeConfig(),
+                      agentId: input.personal.target.agentId,
+                      sessionKey: input.personal.target.root.sessionKey,
+                    });
+                    try {
+                      readFailures.push(
+                        JSON.stringify({
+                          creation,
+                          root: held.readCurrent(input.getRuntimeConfig()).target.readSource,
+                        }),
+                      );
+                    } finally {
+                      held.release();
+                    }
+                  }
                   readFailures.push(
                     error instanceof Error ? `${error.name}: ${error.message}` : String(error),
                   );
