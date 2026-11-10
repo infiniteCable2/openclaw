@@ -221,6 +221,13 @@ it.for(["isolated-duplex", "echo-activity", "echo-connected-activity"] as const)
         console.error(JSON.stringify({ phase, phases, modelRequests: model.requests.length }));
         console.error(gateway.logs());
       });
+      context.onTestFinished(() => {
+        for (const line of gateway.logs().split("\n")) {
+          if (line.includes("sessionFactsCallers")) {
+            console.error(line);
+          }
+        }
+      });
       isolateConversationGatewayEnvironment(gateway);
       gateway.state.applyEnv();
       let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
