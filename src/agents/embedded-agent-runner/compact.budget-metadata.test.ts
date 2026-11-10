@@ -147,7 +147,7 @@ it("records native check-only preparation metadata after a compaction boundary",
     trigger: "budget",
     budgetPreflight: { prompt: "", checkOnly: true, captureCapacity: true, onDecision },
   });
-  expect(result).toMatchObject({ ok: true, compacted: false });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, compacted: false });
   expect(onDecision).toHaveBeenCalledOnce();
   expect(stream).not.toHaveBeenCalled();
   const after = await sessions.SessionManager.openAsync(target);
