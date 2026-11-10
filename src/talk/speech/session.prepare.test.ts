@@ -395,7 +395,7 @@ describe("startSpeechSession streaming output", () => {
       await vi.waitFor(() =>
         expect(fixture.logger.warn).toHaveBeenCalledWith(expect.stringContaining("sink closed")),
       );
-      const history = fixture.handle.getHealth().recentTalkEvents!;
+      const history = fixture.onTalkEvent.mock.calls.map(([event]) => event);
       const events = history.map((event) => event.type);
       expect(events.indexOf("output.text.done")).toBeLessThan(
         events.indexOf("output.audio.started"),
