@@ -1,2 +1,0 @@
-22
-# Observe complete speech lifecycle callbacks rather than the bounded health-event ring, including settled audio failure.

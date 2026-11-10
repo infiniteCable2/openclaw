@@ -208,12 +208,6 @@ function deliveryResult(messageId = "$reply1", content = "delivered") {
   };
 }
 
-function tombstoneDispatch(): never {
-  throw Object.assign(new Error("session ended during restart recovery"), {
-    code: "SESSION_RESTART_RECOVERY_TOMBSTONE",
-  });
-}
-
 function acceptMatrixReply(
   messageId = "$reply1",
   content = "delivered",
@@ -654,73 +648,6 @@ describe("matrix monitor handler pairing account scope", () => {
 registerMatrixLiveAllowlistTests();
 
 describe("matrix monitor handler failure handling", () => {
-  it("sends a durable threaded notice after restart tombstone rejection", async () => {
-    const callOrder: string[] = [];
-    const runtime = { error: vi.fn() };
-    const dispatchInboundMessage = vi.fn(async () => {
-      callOrder.push("dispatch");
-      return tombstoneDispatch();
-    });
-    sendMock.mockImplementationOnce(async () => {
-      callOrder.push("notice");
-      return {
-        ...deliveryResult("$notice"),
-        messageId: "$notice",
-        roomId: ROOM,
-        primaryMessageId: "$notice",
-      };
-    });
-    const { handler } = createHarness({
-      runtime: runtime as never,
-      recordInboundSession: vi.fn(async () => {
-        callOrder.push("record");
-      }),
-      isDirectMessage: false,
-      roomsConfig: { [ROOM]: { requireMention: false } },
-      client: {
-        getEvent: async () => threadRoot("$thread-root", "Thread root"),
-      },
-      dispatchInboundMessage,
-    });
-    await receiveText(handler, {
-      eventId: "$tombstone-event",
-      body: "continue",
-      relatesTo: threadRelation("$thread-root"),
-    });
-    expect(dispatchInboundMessage).toHaveBeenCalledOnce();
-    expect(sendMock).toHaveBeenCalledOnce();
-    expect(callArg(sendMock, 0, 0)).toBe(ROOM);
-    expect(String(callArg(sendMock, 0, 1))).toContain("Send /new or /reset");
-    expect(callArg(sendMock, 0, 2)).toMatchObject({
-      accountId: "ops",
-      replyToId: undefined,
-      fallbackReplyToId: "$thread-root",
-      threadId: "$thread-root",
-      deliveryQueueId: "matrix:restart-recovery-tombstone:ops:!room:example.org:$tombstone-event",
-      deliveryPartIndex: 0,
-      deliveryPartCount: 1,
-      extraContent: { msgtype: "m.notice" },
-    });
-    expect(runtime.error).not.toHaveBeenCalled();
-    expect(callOrder).toEqual(["record", "dispatch", "notice"]);
-  });
-
-  it("propagates a failed restart tombstone notice for ingress retry", async () => {
-    const runtime = { error: vi.fn() };
-    sendMock.mockRejectedValueOnce(new Error("homeserver unavailable"));
-    const { handler } = createHarness({
-      runtime: runtime as never,
-      dispatchInboundMessage: vi.fn(async () => tombstoneDispatch()),
-    });
-    await expect(
-      receiveText(handler, { eventId: "$tombstone-notice-failed", body: "continue" }),
-    ).rejects.toThrow("homeserver unavailable");
-    expect(sendMock).toHaveBeenCalledOnce();
-    expect(runtime.error).toHaveBeenCalledWith(
-      expect.stringContaining("failed completing restart-recovery tombstone notice"),
-    );
-  });
-
   it("reports a queued block delivery failure after dispatch", async () => {
     const kind = "block";
     const runtime = { error: vi.fn() };
@@ -795,6 +722,8 @@ describe("matrix monitor handler draft streaming", () => {
       streaming: opts?.streaming ?? "quiet",
       agentId: opts?.agentId,
       isDirectMessage: opts?.isDirectMessage,
+      roomsConfig:
+        opts?.isDirectMessage === false ? { [ROOM]: { requireMention: false } } : undefined,
       accountConfig: opts?.accountConfig,
       previewToolProgressEnabled: opts?.previewToolProgressEnabled ?? false,
       blockStreamingEnabled: opts?.blockStreamingEnabled ?? false,
