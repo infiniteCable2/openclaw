@@ -403,16 +403,9 @@ describe("isolated full Gateway conversation continuity", () => {
         }
         // This branch already imported originals before the root checkpoint. It
         // must continue its own window, not replace it with the new root summary.
-        await vi.waitFor(() => {
-          expect(
-            preparedSourceReached(
-              gateway!,
-              reusableDescription.session.sessionId,
-              sourceDescription.session.sessionId,
-              lastSequence,
-            ),
-          ).toBe(true);
-        }, WAIT);
+        // Preparation logs only the first usable chunk; completion of a cached
+        // continuation need not emit another preparation event. Observe durable
+        // admission of every original before asking the recipient to respond.
         await vi.waitFor(() => {
           expect(
             sourceSequences.filter(
