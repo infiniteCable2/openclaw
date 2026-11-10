@@ -34,9 +34,8 @@ vi.mock("../../agents/embedded-agent-runner/compact.js", () => ({
 
 registerAgentSessionLoopTestLifecycle();
 const { readConversationKnowledgeBranch, recordConversationKnowledgeTurn } = knowledgeStoreReads;
-it.each([false, true])(
-  "settles idle imports and wakes for a new original (initial neighbors=%s)",
-  async (initialNeighbors, context) => {
+for (const initialNeighbors of [false, true]) {
+  it(`settles idle imports and wakes for a new original (initial neighbors=${initialNeighbors})`, async (context) => {
     const { signal } = context;
     let stage = "setup:state";
     let cleanupStage: string | undefined;
@@ -227,5 +226,5 @@ it.each([false, true])(
         }
       }
     });
-  },
-);
+  });
+}
