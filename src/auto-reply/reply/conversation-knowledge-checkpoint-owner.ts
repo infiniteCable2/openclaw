@@ -402,7 +402,8 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         );
         tail.reconcile(sources.references, reusableCoverage);
         if (!remaining.length) {
-          return retainFrame([]);
+          // Frame preparation still owns source custody across its awaited reads.
+          return await retainFrame([]);
         }
         const acquireModel = async () => {
           if (!model) {

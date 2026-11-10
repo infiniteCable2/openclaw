@@ -1,7 +1,9 @@
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
+import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
+  createConversationKnowledgeCheckpoint,
   prepareConversationKnowledgeCheckpointCoverage,
   type ConversationKnowledgeCheckpoint,
 } from "../../config/sessions/conversation-knowledge-checkpoint.js";
@@ -314,6 +316,56 @@ afterEach(async () => {
 });
 
 describe("shared root projection preparation", () => {
+  it.each([false, true])(
+    "retains source custody through an empty-tail frame (checkpoint=%s)",
+    async (checkpoint) => {
+      const f = register();
+      if (checkpoint) {
+        boundary.latest = createConversationKnowledgeCheckpoint({
+          branch,
+          audienceKey: conversationKnowledgeParticipantIdentity(person)!,
+          summary: "A previously summarized observation.",
+          covered: boundary.refs,
+        });
+        boundary.records = [boundary.latest];
+      } else {
+        boundary.refs = [];
+      }
+      let current = true;
+      boundary.sourceRelease.mockImplementation(() => {
+        current = false;
+      });
+      const entered = createDeferredCore(),
+        finish = createDeferredCore();
+      const frame = nativeFrame();
+      boundary.frame.mockImplementationOnce(async (input: FrameInput) => {
+        expect(input.tail).toEqual([]);
+        entered.resolve();
+        await finish.promise;
+        if (!current) {
+          throw new Error("Checkpoint source custody has ended");
+        }
+        return checkpoint ? frame : undefined;
+      });
+      const preparing = quantum();
+      try {
+        await awaitGateBeforeSettlement(entered.promise, preparing, "Frame was not prepared");
+        finish.resolve();
+        await expect(preparing).resolves.toBe(false);
+        const copy = f.registration.acquireInitialFrame();
+        expect(copy?.frame).toBe(checkpoint ? frame : undefined);
+        expect(boundary.sourceRelease).toHaveBeenCalledTimes(checkpoint ? 0 : 1);
+        await copy?.release();
+      } finally {
+        finish.resolve();
+        await preparing.catch(() => {});
+        await f.registration.close();
+      }
+      expect(boundary.sourceRelease).toHaveBeenCalledOnce();
+      expect(boundary.release).toHaveBeenCalledOnce();
+    },
+  );
+
   it("preserves completed tail entries when foreground cancels a bounded source batch", async () => {
     const f = register();
     boundary.refs = Array.from({ length: 9 }, (_, index) => reference(index + 1));
