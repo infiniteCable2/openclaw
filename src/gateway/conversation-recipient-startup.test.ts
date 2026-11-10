@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { beginForegroundSessionMaintenance } from "../agents/session-maintenance/coordinator.js";
 import type { ConversationRecipientEnrollment } from "../config/sessions/conversation-recipient-enrollment.js";
 import { projectSessionSharingEntry } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
@@ -12,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   open: vi.fn(),
   custody: vi.fn(),
   projection: vi.fn(),
-  foreground: vi.fn(),
   wake: vi.fn(),
 }));
 // mock-isolation: This scheduler test owns signals; native authority and SQLite have separate proofs.
@@ -30,10 +30,6 @@ vi.mock("./operator-source-custody.js", () => ({
 // mock-isolation: Feed native projection publications deterministically, without a second Gateway.
 vi.mock("./session-row-projection-access.js", () => ({
   getSessionRowProjection: mocks.projection,
-}));
-// mock-isolation: Foreground reservations are explicit test events rather than real input turns.
-vi.mock("../agents/session-maintenance/coordinator.js", () => ({
-  onForegroundSessionMaintenanceChange: mocks.foreground,
 }));
 // mock-isolation: Exercise the coalescing owner without process-global command queue admission.
 vi.mock("../process/background-work.js", () => ({
@@ -112,14 +108,8 @@ beforeEach(() => {
   }));
 });
 
-function start(rows: ReturnType<typeof row>[], initiallyBusy = false) {
+function start(rows: ReturnType<typeof row>[]) {
   let onFacts: (change: { kind: "row"; key: string } | { kind: "reset" }) => void = () => {};
-  let onForeground: (active: boolean) => void = () => {};
-  mocks.foreground.mockImplementation((listener: typeof onForeground) => {
-    onForeground = listener;
-    listener(initiallyBusy);
-    return vi.fn();
-  });
   mocks.projection.mockReturnValue({
     ensureMaterialized: async () => {},
     selectEntries: (query?: { key: string }) =>
@@ -143,7 +133,6 @@ function start(rows: ReturnType<typeof row>[], initiallyBusy = false) {
     ...owner,
     log,
     change: (key: string) => onFacts({ kind: "row", key }),
-    foreground: (active: boolean) => onForeground(active),
     configEvent: (replace = false) => {
       if (replace) {
         cfg = structuredClone(cfg);
@@ -182,14 +171,12 @@ it("restores independent reusable paths without connections or turns; excludes o
 });
 
 it.each(["shared", "group"] as const)(
-  "waits for foreground release and retires a %s recipient without reopening it",
+  "restores during foreground activity and retires a %s recipient without reopening it",
   async (change) => {
     const target = row("device");
-    const owner = start([target], true);
+    const release = await beginForegroundSessionMaintenance("agent:main:other");
+    const owner = start([target]);
     try {
-      await owner.settled();
-      expect(mocks.open).not.toHaveBeenCalled();
-      owner.foreground(false);
       await owner.settled();
       expect(mocks.open).toHaveBeenCalledOnce();
       const audience = mocks.open.mock.calls[0]![0].audience as ConversationPrivateAudience;
@@ -203,6 +190,7 @@ it.each(["shared", "group"] as const)(
       await owner.settled();
       expect(mocks.open).toHaveBeenCalledOnce();
     } finally {
+      release();
       await owner.close();
     }
   },
@@ -242,7 +230,7 @@ it("rearms unavailable native facts only after a later publication", async () =>
   }
 });
 
-it("requalifies revoked durable recipients once per committed generation after foreground release", async () => {
+it("requalifies revoked durable recipients once per committed generation during foreground activity", async () => {
   const revoked = new AbortController();
   mocks.custody.mockImplementationOnce(async ({ assertCurrent }) => ({
     signal: revoked.signal,
@@ -251,9 +239,9 @@ it("requalifies revoked durable recipients once per committed generation after f
     release: vi.fn(),
   }));
   const owner = start([row("changed"), row("still-current")]);
+  const release = await beginForegroundSessionMaintenance("agent:main:other");
   try {
     await owner.settled();
-    owner.foreground(true);
     revoked.abort();
     owner.configEvent();
     expect(mocks.wake).not.toHaveBeenCalled();
@@ -261,11 +249,11 @@ it("requalifies revoked durable recipients once per committed generation after f
     owner.configEvent();
     expect(mocks.wake).toHaveBeenCalledOnce();
     expect(mocks.custody).toHaveBeenCalledTimes(2);
-    owner.foreground(false);
     await owner.settled();
     expect(mocks.custody).toHaveBeenCalledTimes(3);
     expect(mocks.open).toHaveBeenCalledTimes(3);
   } finally {
+    release();
     await owner.close();
   }
   owner.configEvent(true);

@@ -447,6 +447,25 @@ describe("automatic recipient preparation scenarios", () => {
     expect(resources.size).toBe(0);
   });
 
+  it("yields between fully cached quanta so transport callbacks can run", async () => {
+    const phases: string[] = [];
+    let count = 0;
+    const owner = createConversationKnowledgePrefetchOwner({
+      target,
+      assertCurrent() {},
+      clear() {},
+      async prepare() {
+        phases.push(`prepare-${++count}`);
+        if (count === 1) {
+          setImmediate(() => phases.push("transport-ready"));
+        }
+        return count < 3;
+      },
+    });
+    await owner.wait();
+    expect(phases).toEqual(["prepare-1", "transport-ready", "prepare-2", "prepare-3"]);
+  });
+
   it("shares real background capacity fairly across twenty reusable recipients", async () => {
     const began = gate();
     const finish = gate();

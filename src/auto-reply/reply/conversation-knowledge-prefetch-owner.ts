@@ -1,6 +1,6 @@
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
-import { onForegroundSessionMaintenanceChange } from "../../agents/session-maintenance/coordinator.js";
 import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
 import { readPreparedSessionTranscriptChange } from "../../config/sessions/session-transcript-authority.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -56,8 +56,6 @@ export function createConversationKnowledgePrefetchOwner(params: {
   let unsubscribe = () => {};
   let unsubscribeRecipient = () => {};
   let unsubscribeSource = () => {};
-  let unsubscribeForeground = () => {};
-  let resumeForeground: (() => void) | undefined;
   let requested = false;
   let sourcesRequested = false;
   let preparationPauses = 0;
@@ -127,8 +125,6 @@ export function createConversationKnowledgePrefetchOwner(params: {
     unsubscribe();
     unsubscribeRecipient();
     unsubscribeSource();
-    unsubscribeForeground();
-    resumeForeground = undefined;
     try {
       params.clear();
     } catch {
@@ -220,6 +216,8 @@ export function createConversationKnowledgePrefetchOwner(params: {
           let preparingSources = false;
           let yielded = false;
           try {
+            // Even fully cached batches must yield to transport I/O between quanta.
+            await setImmediate(undefined, { signal: lifetimeSignal });
             check();
             // Each batch releases shared capacity before a coalesced successor is queued.
             await enqueueCommandInLane(
@@ -352,15 +350,6 @@ export function createConversationKnowledgePrefetchOwner(params: {
         env: target.env,
       }),
     );
-    unsubscribeForeground = onForegroundSessionMaintenanceChange((active) => {
-      if (active) {
-        resumeForeground ??= pausePreparation();
-      } else {
-        const resume = resumeForeground;
-        resumeForeground = undefined;
-        resume?.();
-      }
-    });
     unsubscribe = onInternalSessionTranscriptUpdate((update) => {
       const changed = update.target;
       if (

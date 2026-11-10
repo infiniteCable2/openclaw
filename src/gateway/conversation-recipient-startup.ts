@@ -1,6 +1,6 @@
+import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
-import { onForegroundSessionMaintenanceChange } from "../agents/session-maintenance/coordinator.js";
 import { openConversationKnowledgeRoot } from "../auto-reply/reply/conversation-knowledge-open.js";
 import { wakeConversationRecipientsAfterConfigChange } from "../auto-reply/reply/conversation-knowledge-prefetch.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
@@ -60,7 +60,6 @@ export function startGatewayConversationRecipients(params: {
   const retryable = new Map<string, string>();
   const changed = new Set<string>();
   let all = true;
-  let foreground = false;
   let pending: Promise<void> | undefined;
   let closing = false;
   const warn = () =>
@@ -199,7 +198,7 @@ export function startGatewayConversationRecipients(params: {
   };
 
   const request = () => {
-    if (pending || closing || signal.aborted || foreground || (!all && !changed.size)) {
+    if (pending || closing || signal.aborted || (!all && !changed.size)) {
       return;
     }
     pending = runInDetachedAsyncContext(() =>
@@ -209,9 +208,6 @@ export function startGatewayConversationRecipients(params: {
           const workSignal = signal;
           await projection.ensureMaterialized();
           workSignal.throwIfAborted();
-          if (foreground) {
-            return;
-          }
           const broad = all;
           const keys = [...changed];
           all = false;
@@ -228,10 +224,9 @@ export function startGatewayConversationRecipients(params: {
             }
           }
           for (const row of rows) {
-            if (foreground) {
-              changed.add(row.key);
-              continue;
-            }
+            // Enrollment prepares custody; recipient writers independently yield
+            // to active turns. Do not make unrelated conversations wait for them.
+            await setImmediate(undefined, { signal: workSignal });
             workSignal.throwIfAborted();
             try {
               await enroll(row, workSignal);
@@ -298,12 +293,6 @@ export function startGatewayConversationRecipients(params: {
       request();
     }
   });
-  const unsubscribe = onForegroundSessionMaintenanceChange((active) => {
-    foreground = active;
-    if (!active) {
-      request();
-    }
-  });
   let closed: Promise<void> | undefined;
   const close = () => {
     if (closed) {
@@ -311,7 +300,6 @@ export function startGatewayConversationRecipients(params: {
     }
     closing = true;
     unsubscribeConfig();
-    unsubscribe();
     closed = Promise.resolve(pending).then(async () => {
       const failures: unknown[] = [];
       for (const [key, owner] of owners) {

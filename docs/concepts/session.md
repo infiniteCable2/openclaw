@@ -255,12 +255,12 @@ One coalesced, read-only scheduler prepares bounded source segments fairly acros
 open recipients. Each quantum releases shared background capacity. A transient
 preparation failure receives a cancellable retry with bounded backoff, without
 waiting for another user input. Closing or revoking a recipient cancels that work.
-Native foreground admission pauses optional root and recipient preparation across
-sessions. Completed segments and pending source notifications are retained;
-the last foreground release resumes preparation without polling. Journal
-publication and atomic write settlement continue. Already prepared observations
-remain available at the running turn's safe boundaries. Long foreground work can
-therefore defer preparation of newly published observations.
+Root and recipient preparation continue in bounded background quanta during
+foreground runs, yielding to transport I/O between batches. A running turn pauses
+only its recipient's preparation while consuming prepared context at a safe
+boundary. Native session maintenance prevents idle writes and compaction from
+competing with that recipient's active turn; its settlement wakes pending delivery
+without polling. Journal publication and preparation for other recipients continue.
 Disposable caches are bounded per recipient; cache capacity does not acknowledge
 unread data or remove references from the root.
 Unchanged root references and recipient progress reuse separate background

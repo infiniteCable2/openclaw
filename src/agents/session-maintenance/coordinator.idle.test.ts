@@ -4,41 +4,12 @@ import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleto
 import {
   beginForegroundSessionMaintenance,
   createSessionMaintenanceOwner,
-  onForegroundSessionMaintenanceChange,
   onSessionMaintenanceAvailable,
   tryCreateIdleSessionMaintenanceOwner,
 } from "./coordinator.js";
 
 afterEach(async () => {
   await drainGlobalSingletonLifecycleState("close");
-});
-
-it("publishes only aggregate foreground transitions across sessions, including late subscribers", async () => {
-  const events: boolean[] = [];
-  const late: boolean[] = [];
-  const unsubscribe = onForegroundSessionMaintenanceChange((active) => events.push(active));
-  const releaseFirst = await beginForegroundSessionMaintenance("session:foreground-first");
-  const releaseSecond = await beginForegroundSessionMaintenance("session:foreground-second");
-  const unsubscribeLate = onForegroundSessionMaintenanceChange((active) => late.push(active));
-  try {
-    expect(events).toEqual([false, true]);
-    expect(late).toEqual([true]);
-    releaseFirst();
-    releaseFirst();
-    expect(events).toEqual([false, true]);
-    releaseSecond();
-    expect(events).toEqual([false, true, false]);
-    expect(late).toEqual([true, false]);
-    unsubscribeLate();
-    const releaseLater = await beginForegroundSessionMaintenance("session:foreground-later");
-    releaseLater();
-    expect(late).toEqual([true, false]);
-  } finally {
-    releaseFirst();
-    releaseSecond();
-    unsubscribe();
-    unsubscribeLate();
-  }
 });
 
 it("wakes an idle recipient when the final foreground reservation releases", async () => {

@@ -151,7 +151,7 @@ afterEach(async () => {
 });
 
 describe("conversation knowledge prefetch lifecycle", () => {
-  it("yields root and recipient preparation to another foreground session without joining them", async () => {
+  it("prepares pending and newly opened recipients while unrelated foreground sessions remain active", async () => {
     const owners = [fixture(), fixture()];
     const began = owners.map(() => gate());
     const finish = gate();
@@ -167,18 +167,19 @@ describe("conversation knowledge prefetch lifecycle", () => {
     const releaseSecond = await beginForegroundSessionMaintenance("session:another-foreground");
     const late = fixture();
     try {
-      owners.forEach((f) => expect(f.prepare.mock.calls[0]![0].aborted).toBe(true));
+      owners.forEach((f) => expect(f.prepare.mock.calls[0]![0].aborted).toBe(false));
       rootUpdate();
       finish.resolve();
       await Promise.all([...owners, late].map((f) => f.owner.wait()));
       owners.forEach((f) => {
-        expect(f.prepare).toHaveBeenCalledOnce();
+        expect(f.prepare).toHaveBeenCalledTimes(2);
+        expect(f.prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
         expect(f.clear).not.toHaveBeenCalled();
       });
-      expect(late.prepare).not.toHaveBeenCalled();
+      expect(late.prepare).toHaveBeenCalledOnce();
       releaseFirst();
       await Promise.all(owners.map((f) => f.owner.wait()));
-      owners.forEach((f) => expect(f.prepare).toHaveBeenCalledOnce());
+      owners.forEach((f) => expect(f.prepare).toHaveBeenCalledTimes(2));
       await late.owner.close();
       releaseSecond();
       await Promise.all(owners.map((f) => f.owner.wait()));
@@ -186,7 +187,7 @@ describe("conversation knowledge prefetch lifecycle", () => {
         expect(f.prepare).toHaveBeenCalledTimes(2);
         expect(f.prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
       });
-      expect(late.prepare).not.toHaveBeenCalled();
+      expect(late.prepare).toHaveBeenCalledOnce();
     } finally {
       finish.resolve();
       releaseFirst();
