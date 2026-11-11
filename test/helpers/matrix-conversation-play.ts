@@ -1,3 +1,4 @@
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect } from "vitest";
 import {
@@ -33,11 +34,19 @@ export async function playMatrixConversation(params: {
   const sourceKey = "agent:main:matrix-linked-sibling";
   const intent = "CURRENT_MATRIX_PLAY_INTENT_KEEP_THIS_REQUEST";
   const fact = "SYNTHETIC_MATRIX_LIVE_SIBLING_ORCHID_83";
+  const requestOffset = model.requests.length;
+  let expectedCallId: string | undefined;
+  let transfer: { sequence: number; recipientHash: string; sourceHash: string } | undefined;
   const first = model.holdNext((request) => strings(request.input).join("\n").includes(intent));
   const continuation = model.holdNext(
     (request) =>
+      expectedCallId !== undefined &&
       Array.isArray(request.input) &&
-      request.input.some((item) => asOptionalRecord(item)?.type === "function_call_output"),
+      request.input.some((item) => {
+        const output = asOptionalRecord(item);
+        return output?.type === "function_call_output" && output.call_id === expectedCallId;
+      }) &&
+      strings(request.input).join("\n").includes(intent),
   );
   const phases: Array<{ phase: string; elapsedMs: number }> = [];
   const started = performance.now();
@@ -63,6 +72,7 @@ export async function playMatrixConversation(params: {
     void reply.catch(() => {});
     matrix.push(intent, 5);
     const input = await withinTest(first.entered, signal);
+    expectedCallId = `call_branch_${model.requests.indexOf(input) + 1}`;
     mark("matrix-provider-held");
     expect(input.tools).toContainEqual(
       expect.objectContaining({ type: "function", name: "sessions_list" }),
@@ -109,6 +119,13 @@ export async function playMatrixConversation(params: {
     if (typeof position?.rawSeq !== "number") {
       throw new Error("Native source sequence is unavailable");
     }
+    transfer = {
+      sequence: position.rawSeq,
+      recipientHash: redactIdentifier(recipient.session.sessionId),
+      sourceHash: redactIdentifier(source.session.sessionId),
+    };
+    // Aggregate readiness is only a scheduling witness: a later source packet
+    // does not prove this exact user occurrence. Diagnose its admission separately.
     await waitForConversationTransfer(gateway, signal, {
       recipientId: recipient.session.sessionId,
       sourceId: source.session.sessionId,
@@ -145,7 +162,59 @@ export async function playMatrixConversation(params: {
     mark("original-matrix-reply-complete");
     console.info(JSON.stringify({ fixture: "matrix-active-native-play", phases }));
   } catch (error) {
-    console.error(JSON.stringify({ fixture: "matrix-active-native-play", phases }));
+    const transfers = gateway
+      .logs()
+      .split("\n")
+      .map((line) => line.replaceAll('\\"', '"'))
+      .filter(
+        (line) =>
+          transfer &&
+          line.includes(transfer.recipientHash) &&
+          line.includes(transfer.sourceHash) &&
+          (line.includes("Conversation knowledge transfer") ||
+            line.includes("Related-history source preparation settled")),
+      )
+      .slice(-12)
+      .map((line) => ({
+        event: line.includes("Conversation knowledge transfer") ? "transfer" : "preparation",
+        phase: /"phase"\s*:\s*"([^"]+)"/u.exec(line)?.[1],
+        complete: /"complete"\s*:\s*(true|false)/u.exec(line)?.[1],
+        sourceSequences: line.includes("Conversation knowledge transfer")
+          ? [Number(/"throughSeq"\s*:\s*(\d+)/u.exec(line)?.[1] ?? -1)]
+          : Array.from(
+              line.matchAll(/"sourceHash"\s*:\s*"([^"]+)"\s*,\s*"throughSeq"\s*:\s*(\d+)/gu),
+            )
+              .filter((match) => match[1] === transfer?.sourceHash)
+              .map((match) => Number(match[2])),
+      }));
+    const requests = model.requests
+      .slice(requestOffset, requestOffset + 8)
+      .map((request, index) => {
+        const text = strings(request.input).join("\n");
+        return {
+          index: requestOffset + index + 1,
+          callIds: Array.isArray(request.input)
+            ? request.input.flatMap((item) => {
+                const output = asOptionalRecord(item);
+                return output?.type === "function_call_output" && typeof output.call_id === "string"
+                  ? [output.call_id]
+                  : [];
+              })
+            : [],
+          factCopies: text.split(fact).length - 1,
+          intentCopies: text.split(intent).length - 1,
+        };
+      });
+    console.error(
+      JSON.stringify({
+        fixture: "matrix-active-native-play",
+        expectedCallId,
+        transfer,
+        transfers,
+        requests,
+        phases,
+      }),
+    );
     throw error;
   } finally {
     first.release();

@@ -1,0 +1,2 @@
+69
+# Bind real Gateway continuation proof to its tool call and retain bounded synchronization metadata when its unchanged context assertion fails.
