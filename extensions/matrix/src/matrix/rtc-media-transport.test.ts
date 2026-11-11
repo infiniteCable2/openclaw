@@ -92,7 +92,7 @@ describe("MatrixRTC media output framing", () => {
       const settled = vi.fn();
       const writing = transport.writeOutput(Buffer.alloc(960)).then(
         () => settled("stopped"),
-        (error: Error) => settled(error.message),
+        (error: unknown) => settled(error instanceof Error ? error.message : error),
       );
       await Promise.resolve();
       expect(stdin.write).toHaveBeenCalledOnce();
