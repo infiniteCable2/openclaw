@@ -129,7 +129,7 @@ export function createMatrixRtcClientFacade(client: MatrixJsClient): MatrixRtcCl
             : `${message.sender}:${member.claimed_device_id}`;
         try {
           const key = decodeBase64(keys.key);
-          if (key.byteLength !== 16) {
+          if (key.byteLength !== 16 && key.byteLength !== 32) {
             return;
           }
           listener({

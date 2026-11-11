@@ -13,14 +13,18 @@ function createHarness() {
   return { emitter, facade };
 }
 
-function incomingKeyPayload(params: { encrypted: boolean; senderDevice?: string }) {
+function incomingKeyPayload(params: {
+  encrypted: boolean;
+  senderDevice?: string;
+  keyBytes?: number;
+}) {
   return {
     message: {
       type: EventType.CallEncryptionKeysPrefix,
       sender: "@owner:example.test",
       content: {
         room_id: "!room:example.test",
-        keys: { index: 7, key: Buffer.alloc(16, 3).toString("base64") },
+        keys: { index: 7, key: Buffer.alloc(params.keyBytes ?? 16, 3).toString("base64") },
         member: { claimed_device_id: "OWNERDEVICE", id: "owner-member" },
         sent_ts: 123,
       },
@@ -37,14 +41,14 @@ function incomingKeyPayload(params: { encrypted: boolean; senderDevice?: string 
 }
 
 describe("MatrixRTC incoming key facade", () => {
-  it("emits a validated encrypted media key", () => {
+  it.each([16, 32])("emits a validated encrypted %i-byte media key unchanged", (keyBytes) => {
     const harness = createHarness();
     const listener = vi.fn();
     const dispose = harness.facade.onIncomingMediaKey(listener);
 
     harness.emitter.emit(
       ClientEvent.ReceivedToDeviceMessage,
-      incomingKeyPayload({ encrypted: true }),
+      incomingKeyPayload({ encrypted: true, keyBytes }),
     );
 
     expect(listener).toHaveBeenCalledOnce();
@@ -55,7 +59,7 @@ describe("MatrixRTC incoming key facade", () => {
         deviceId: "OWNERDEVICE",
         memberId: "owner-member",
         index: 7,
-        key: Uint8Array.from({ length: 16 }, () => 3),
+        key: Uint8Array.from({ length: keyBytes }, () => 3),
         sentAt: 123,
       }),
     );
@@ -63,20 +67,31 @@ describe("MatrixRTC incoming key facade", () => {
     expect(harness.emitter.listenerCount(ClientEvent.ReceivedToDeviceMessage)).toBe(0);
   });
 
-  it("rejects clear or device-mismatched media keys", () => {
+  it.each([16, 32])("rejects clear or device-mismatched %i-byte media keys", (keyBytes) => {
     const harness = createHarness();
     const listener = vi.fn();
     harness.facade.onIncomingMediaKey(listener);
 
     harness.emitter.emit(
       ClientEvent.ReceivedToDeviceMessage,
-      incomingKeyPayload({ encrypted: false }),
+      incomingKeyPayload({ encrypted: false, keyBytes }),
     );
     harness.emitter.emit(
       ClientEvent.ReceivedToDeviceMessage,
-      incomingKeyPayload({ encrypted: true, senderDevice: "OTHERDEVICE" }),
+      incomingKeyPayload({ encrypted: true, senderDevice: "OTHERDEVICE", keyBytes }),
     );
 
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 15, 17, 24, 31, 33])("rejects an unsupported %i-byte media key", (keyBytes) => {
+    const harness = createHarness();
+    const listener = vi.fn();
+    harness.facade.onIncomingMediaKey(listener);
+    harness.emitter.emit(
+      ClientEvent.ReceivedToDeviceMessage,
+      incomingKeyPayload({ encrypted: true, keyBytes }),
+    );
     expect(listener).not.toHaveBeenCalled();
   });
 });
