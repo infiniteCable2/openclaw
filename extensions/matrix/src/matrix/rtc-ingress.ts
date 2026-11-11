@@ -7,7 +7,10 @@ import { prepareSessionBindingInspections } from "openclaw/plugin-sdk/conversati
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { resolveAgentSpeechConversationRoute } from "openclaw/plugin-sdk/routing";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
-import { cloneRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import {
+  cloneRuntimeConfigSnapshot,
+  getRuntimeConfigSnapshot,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { findMatrixAccountEntry, hasImplicitMatrixAccountConfig } from "../account-selection.js";
 import {
   resolveMatrixAccountAllowlistConfig,
@@ -97,6 +100,26 @@ export function createMatrixRtcConversationInputSource(
   let closed = false;
   let retained: Awaited<ReturnType<typeof prepareSessionBindingInspections>> | undefined;
   let preparing: ReturnType<typeof prepareSessionBindingInspections> | undefined;
+  let publishedConfig:
+    | {
+        capture: NonNullable<ReturnType<typeof getRuntimeConfigSnapshot>>;
+        cfg: ReturnType<typeof cloneRuntimeConfigSnapshot>;
+      }
+    | undefined;
+  const readConfig = () => {
+    const current = runtime.config.current();
+    // Only the native publication owner guarantees a stable immutable capture.
+    // Scoped getters remain mutable, including when their values match the runtime.
+    const capture =
+      current === getRuntimeConfigSnapshot() ? getRuntimeConfigSnapshot({ capture: true }) : null;
+    if (!capture) {
+      return cloneRuntimeConfigSnapshot(current);
+    }
+    if (publishedConfig?.capture !== capture) {
+      publishedConfig = { capture, cfg: cloneRuntimeConfigSnapshot(capture) };
+    }
+    return publishedConfig.cfg;
+  };
   const prepareBindings = async (
     ref: Parameters<typeof prepareSessionBindingInspections>[0][number],
   ) => {
@@ -134,9 +157,8 @@ export function createMatrixRtcConversationInputSource(
       throw new Error("MatrixRTC conversation input is closed");
     }
     assertTransportCurrent();
-    // Existing account/routing consumers require an owned mutable projection.
-    // Read and copy the exact live source each time, including in-place updates.
-    const cfg = cloneRuntimeConfigSnapshot(runtime.config.current());
+    // Reuse only the mutable projection of the current native publication.
+    const cfg = readConfig();
     if (
       !findMatrixAccountEntry(cfg, accountId) &&
       !hasImplicitMatrixAccountConfig(cfg, accountId)

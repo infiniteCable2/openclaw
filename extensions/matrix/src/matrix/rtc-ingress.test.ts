@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { resolveAgentSpeechConversationRoute } from "openclaw/plugin-sdk/routing";
 import { cloneRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import * as runtimeSnapshots from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matrixPlugin } from "../channel.js";
@@ -217,6 +218,68 @@ async function withSource(
 afterEach(() => vi.restoreAllMocks());
 
 describe("MatrixRTC text-free conversation admission", () => {
+  it("clones once per native publication while retaining current admission checks", async () => {
+    await withSource(async ({ cfg, matrix, createSource, admit }) => {
+      const previous = runtimeSnapshots.getRuntimeConfigSnapshot();
+      try {
+        runtimeSnapshots.setRuntimeConfigSnapshot(cfg);
+        const clone = vi.spyOn(runtimeSnapshots, "cloneRuntimeConfigSnapshot");
+        const source = createSource();
+        expect(clone).toHaveBeenCalledOnce();
+        await source.admitInput(input);
+        const guard = admit.mock.calls.at(-1)![0].assertCurrent;
+        clone.mockClear();
+        for (let index = 0; index < 100; index++) {
+          guard();
+        }
+        expect(clone.mock.calls.length).toBe(0);
+        // The same mutable origin may publish a new revision without changing its identity.
+        runtimeSnapshots.setRuntimeConfigSnapshot(cfg);
+        guard();
+        expect(clone).toHaveBeenCalledOnce();
+        matrix.dm = { ...matrix.dm, allowFrom: [] };
+        runtimeSnapshots.setRuntimeConfigSnapshot(cfg);
+        expect(() => guard()).toThrow("policy changed");
+        expect(clone).toHaveBeenCalledTimes(2);
+      } finally {
+        if (previous) {
+          runtimeSnapshots.setRuntimeConfigSnapshot(previous);
+        } else {
+          runtimeSnapshots.clearRuntimeConfigSnapshot();
+        }
+      }
+    });
+  });
+
+  it("does not reuse the native capture for an equal scoped getter or its in-place edits", async () => {
+    await withSource(async ({ cfg, runtime, createSource, admit }) => {
+      const previous = runtimeSnapshots.getRuntimeConfigSnapshot();
+      try {
+        runtimeSnapshots.setRuntimeConfigSnapshot(cfg);
+        const source = createSource();
+        await source.admitInput(input);
+        const guard = admit.mock.calls.at(-1)![0].assertCurrent;
+        const scoped = cloneRuntimeConfigSnapshot(cfg);
+        runtime.config.current = () => scoped;
+        const clone = vi.spyOn(runtimeSnapshots, "cloneRuntimeConfigSnapshot");
+        for (let index = 0; index < 3; index++) {
+          guard();
+        }
+        expect(clone).toHaveBeenCalledTimes(3);
+        const matrix = scoped.channels!.matrix!;
+        matrix.rtc = { ...matrix.rtc, enabled: false };
+        expect(() => guard()).toThrow("admission is no longer current");
+        expect(clone).toHaveBeenCalledTimes(4);
+      } finally {
+        if (previous) {
+          runtimeSnapshots.setRuntimeConfigSnapshot(previous);
+        } else {
+          runtimeSnapshots.clearRuntimeConfigSnapshot();
+        }
+      }
+    });
+  });
+
   it("opens and reopens through fresh original ingress without manufacturing an utterance", async () => {
     await withSource(async ({ source, resolve, prepareConnection, admit, dispatchSessionKey }) => {
       await source.prepareConnection?.();
