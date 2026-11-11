@@ -66,7 +66,9 @@ describe("MatrixRTC media output framing", () => {
     await transport.writeOutput(Buffer.alloc(480));
     expect(input.writableNeedDrain).toBe(false);
     // Observe the real Writable error without letting a broken owner crash the test runner.
-    const emitted = new Promise<Error>((resolve) => input.once("error", resolve));
+    const emitted = new Promise<Error>((resolve) => {
+      input.once("error", resolve);
+    });
     const error = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
     completeWrite(error);
     expect(await emitted).toBe(error);
