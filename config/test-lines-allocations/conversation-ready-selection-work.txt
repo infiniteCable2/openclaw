@@ -1,0 +1,2 @@
+76
+# Bound strong recipient checks to selected native ready-batch contributions; preserve pre-commit donor revocation and recovery.

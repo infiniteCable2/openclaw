@@ -30,11 +30,13 @@ import { withSessionTranscriptWriteAssertion } from "../../config/sessions/trans
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import * as branchAuthority from "./conversation-knowledge-authority.js";
 import { prepareRecipientConversationProjection } from "./conversation-knowledge-checkpoint-recipient.js";
 import {
   createConversationKnowledgeSourceCache,
   type ConversationKnowledgeSourceCache,
 } from "./conversation-knowledge-source-cache.js";
+import * as knowledgeSource from "./conversation-knowledge-source-reader.js";
 import { prepareReplyConversationKnowledge } from "./conversation-knowledge.js";
 import {
   createConversationKnowledgeScenario,
@@ -50,6 +52,11 @@ it.for([
   { label: "an existing middle carrier", count: 3, race: "existing" },
   { label: "capacity stopping after the first grouped original", count: 2, race: "capacity" },
   { label: "a source rewrite before COMMIT", count: 2, race: "rewrite" },
+  {
+    label: "a selected tail with donor revocation",
+    count: MAX_TRANSCRIPT_REPORT_BATCH_SIZE + 1,
+    race: "tail",
+  },
 ] as const)("guards a ready batch after $label", async ({ count, race }, { signal }) => {
   await withOpenClawTestState(
     { scenario: "minimal", label: "knowledge-ready-batch-revocation" },
@@ -69,7 +76,7 @@ it.for([
       onTestFinished(close);
       try {
         const donors: Array<Awaited<ReturnType<typeof fixture.branch>>> = [];
-        const donorCount = race === "existing" || race === "capacity" || race === "rewrite" ? 1 : 2;
+        const donorCount = race === "donor" || race === "recipient" ? 2 : 1;
         const perDonor = count / donorCount;
         for (let donorIndex = 0; donorIndex < donorCount; donorIndex++) {
           const donor = await fixture.branch(`ready-batch-donor-${donorIndex}`);
@@ -231,6 +238,49 @@ it.for([
           expect(await readPackets()).toHaveLength(1);
           expect(cache.preparedPackets(count + 1)).toHaveLength(count);
         }
+        let selectionChecks = 0;
+        if (race === "tail") {
+          const manifest = cache.preparedRoot;
+          await consume();
+          expect(await readPackets()).toHaveLength(count - 1);
+          expect(cache.preparedPackets(count)).toHaveLength(1);
+          expect(cache.preparedRoot).toBe(manifest);
+          // Count only selection work between real receipt observation and the
+          // first selected packet lookup, retaining all native authority calls.
+          let selecting = false;
+          const facts = branchAuthority.prepareConversationKnowledgeBranchFacts;
+          const observe = knowledgeSource.observePreparedConversationKnowledgePackets;
+          const offset = cache.firstPreparedOffset;
+          const probes = [
+            vi
+              .spyOn(branchAuthority, "prepareConversationKnowledgeBranchFacts")
+              .mockImplementation(async (params) => {
+                const prepared = await facts(params);
+                const check = prepared.assertCurrent;
+                return {
+                  ...prepared,
+                  assertCurrent: Object.assign(() => {
+                    if (selecting) {
+                      selectionChecks++;
+                    }
+                    check();
+                  }, check),
+                };
+              }),
+            vi
+              .spyOn(knowledgeSource, "observePreparedConversationKnowledgePackets")
+              .mockImplementation(async (params) => {
+                const observed = await observe(params);
+                selecting = true;
+                return observed;
+              }),
+            vi.spyOn(cache, "firstPreparedOffset").mockImplementation((id) => {
+              selecting = false;
+              return offset(id);
+            }),
+          ];
+          onTestFinished(() => probes.forEach((probe) => probe.mockRestore()));
+        }
         const nativeAppend = reportStorage.appendSessionTranscriptReportBatch;
         const batchSizes: number[] = [];
         let changed = false;
@@ -254,13 +304,20 @@ it.for([
             const guarded: SessionSourceAssertion = Object.assign(() => source(), {
               async prepareSessionSource() {
                 const prepared = await source.prepareSessionSource!();
-                if (!changed && (race === "donor" || race === "recipient" || race === "rewrite")) {
+                if (
+                  !changed &&
+                  (race === "donor" ||
+                    race === "recipient" ||
+                    race === "rewrite" ||
+                    race === "tail")
+                ) {
                   changed = true;
-                  if (race === "donor") {
-                    const result = await addSessionMemberInWorker(donors[1]!, {
+                  if (race === "donor" || race === "tail") {
+                    const donor = donors[race === "tail" ? 0 : 1]!;
+                    const result = await addSessionMemberInWorker(donor, {
                       identityId: foreignIdentity,
                       addedBy: "synthetic-owner",
-                      expectedSessionId: donors[1]!.sessionId,
+                      expectedSessionId: donor.sessionId,
                     });
                     expect(result.inserted).toBe(true);
                   } else if (race === "recipient") {
@@ -315,6 +372,25 @@ it.for([
           return;
         }
         const first = await consume();
+        if (race === "tail") {
+          expect(selectionChecks).toBe(1);
+          expect(changed).toBe(true);
+          expect(batchSizes).toEqual([1]);
+          expect(await readPackets()).toHaveLength(count - 1);
+          await removeSessionMemberInWorker(
+            donors[0]!,
+            foreignIdentity,
+            undefined,
+            donors[0]!.sessionId,
+          );
+          await prepare();
+          await consume();
+          const retained = await readPackets();
+          expect(retained).toHaveLength(count);
+          expect(new Set(retained).size).toBe(count);
+          expect(batchSizes).toEqual([1, 1]);
+          return;
+        }
         if (race === "existing") {
           expect(first?.pendingPackets).toBe(true);
           expect(batchSizes).toEqual([1]);

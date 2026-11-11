@@ -349,12 +349,12 @@ async function prepareReplyConversationKnowledgeInMode(
     for (let index = startIndex; index < receipts.length; index++) {
       const receipt = receipts[index]!;
       params.signal?.throwIfAborted();
-      params.assertCurrent();
-      targetFacts.assertCurrent();
       const contributionId = conversationKnowledgeContributionId(receipt);
       if (observedPackets && !observedPackets.contributions.has(contributionId)) {
         continue;
       }
+      params.assertCurrent();
+      targetFacts.assertCurrent();
       const prior = previous.find((frontier) => frontier.origin === receipt.origin);
       if (
         !params.retainInHistory &&
