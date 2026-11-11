@@ -143,6 +143,7 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     reject: (error: Error) => void;
   }> = [];
   #fatalHandlers = new Set<() => void>();
+  #outputWaiters = new Set<(error?: Error) => void>();
   #fatal = false;
   #stopping = false;
   #stopped = false;
@@ -170,6 +171,14 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
       }
     });
     this.#child.stderr.on("data", () => {});
+    // A successful write can still report EPIPE asynchronously, including during shutdown.
+    const onOutputClosed = () => {
+      if (!this.#stopping && !this.#stopped) {
+        this.#markFatal();
+      }
+    };
+    this.#child.stdin.on("error", onOutputClosed);
+    this.#child.stdin.once("close", onOutputClosed);
     this.#child.once("error", () => this.#markFatal());
     this.#child.once("exit", () => {
       if (!this.#stopping && !this.#stopped) {
@@ -191,6 +200,9 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     }
     this.#fatal = true;
     const error = new Error("MatrixRTC native media bridge failed");
+    for (const settle of this.#outputWaiters) {
+      settle(error);
+    }
     for (const waiter of this.#eventWaiters.splice(0)) {
       waiter.reject(error);
     }
@@ -320,7 +332,7 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
   }
 
   async writeOutput(audio: Buffer): Promise<void> {
-    if (this.#fatal || this.#stopped || !this.#child.stdin.writable) {
+    if (this.#fatal || this.#stopping || this.#stopped || !this.#child.stdin.writable) {
       throw new Error("MatrixRTC media output is unavailable");
     }
     if (audio.byteLength % 2) {
@@ -329,7 +341,7 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     await this.#clearTail;
     const generation = this.#outputGeneration;
     for (let offset = 0; offset < audio.byteLength; offset += OUTPUT_PCM_FRAME_BYTES) {
-      if (generation !== this.#outputGeneration || this.#fatal || this.#stopped) {
+      if (generation !== this.#outputGeneration || this.#fatal || this.#stopping || this.#stopped) {
         return;
       }
       const payload = audio.subarray(
@@ -339,16 +351,26 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
       const frame = encodeMatrixRtcOutputFrame(generation, payload);
       if (!this.#child.stdin.write(frame)) {
         await new Promise<void>((resolve, reject) => {
-          const onDrain = () => {
-            this.#child.stdin.off("error", onError);
-            resolve();
-          };
-          const onError = (error: Error) => {
+          const settle = (error?: Error) => {
             this.#child.stdin.off("drain", onDrain);
-            reject(error);
+            this.#outputWaiters.delete(settle);
+            if (error) {
+              reject(error);
+            } else {
+              resolve();
+            }
           };
+          const onDrain = () => settle();
+          if (this.#fatal) {
+            settle(new Error("MatrixRTC native media bridge failed"));
+            return;
+          }
+          if (this.#stopping || this.#stopped) {
+            settle();
+            return;
+          }
+          this.#outputWaiters.add(settle);
           this.#child.stdin.once("drain", onDrain);
-          this.#child.stdin.once("error", onError);
         });
       }
     }
@@ -408,6 +430,9 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     }
     this.#stopping = true;
     this.#outputGeneration += 1;
+    for (const settle of this.#outputWaiters) {
+      settle();
+    }
     try {
       if (!this.#fatal && !this.#control.destroyed) {
         this.sendControl({ type: "stop" });

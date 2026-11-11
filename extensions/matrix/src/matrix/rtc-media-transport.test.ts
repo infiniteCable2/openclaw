@@ -1,10 +1,11 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type net from "node:net";
+import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { NativeMatrixRtcAudioTransport } from "./rtc-media-transport.js";
 
-function createTransportFixture(options: { backpressure?: boolean } = {}) {
+function createTransportFixture(options: { backpressure?: boolean; input?: Writable } = {}) {
   const stdin = Object.assign(new EventEmitter(), {
     writable: true,
     write: vi.fn((_chunk: Buffer) => !options.backpressure),
@@ -16,7 +17,7 @@ function createTransportFixture(options: { backpressure?: boolean } = {}) {
   });
   const stderr = new EventEmitter();
   const child = Object.assign(new EventEmitter(), {
-    stdin,
+    stdin: options.input ?? stdin,
     stdout,
     stderr,
     exitCode: null,
@@ -52,6 +53,76 @@ function acknowledgeGate(control: net.Socket, gate: "normal" | "duck" | "paused"
 }
 
 describe("MatrixRTC media output framing", () => {
+  it("owns an asynchronous EPIPE after a successful non-backpressured write", async () => {
+    let completeWrite!: (error?: Error | null) => void;
+    const input = new Writable({
+      write(_chunk, _encoding, callback) {
+        completeWrite = callback;
+      },
+    });
+    const { transport } = createTransportFixture({ input });
+    const fatal = vi.fn();
+    transport.onFatal(fatal);
+    await transport.writeOutput(Buffer.alloc(480));
+    expect(input.writableNeedDrain).toBe(false);
+    // Observe the real Writable error without letting a broken owner crash the test runner.
+    const emitted = new Promise<Error>((resolve) => input.once("error", resolve));
+    const error = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    completeWrite(error);
+    expect(await emitted).toBe(error);
+    expect(fatal).toHaveBeenCalledOnce();
+    await expect(transport.writeOutput(Buffer.alloc(480))).rejects.toThrow("unavailable");
+  });
+
+  it("keeps ownership of late stdin errors after deliberate stop", async () => {
+    const { child, stdin, transport } = createTransportFixture();
+    const fatal = vi.fn();
+    transport.onFatal(fatal);
+    Object.assign(child, { exitCode: 0 });
+    await transport.stop();
+    await Promise.resolve();
+    expect(() => stdin.emit("error", new Error("write EPIPE"))).not.toThrow();
+    expect(fatal).not.toHaveBeenCalled();
+  });
+
+  it.each(["stdin-close", "child-exit", "control-close", "stop"])(
+    "settles backpressure on %s without a drain or stream error",
+    async (ending) => {
+      const { child, control, stdin, transport } = createTransportFixture({ backpressure: true });
+      const settled = vi.fn();
+      const writing = transport.writeOutput(Buffer.alloc(960)).then(
+        () => settled("stopped"),
+        (error: Error) => settled(error.message),
+      );
+      await Promise.resolve();
+      expect(stdin.write).toHaveBeenCalledOnce();
+      if (ending === "stop") {
+        Object.assign(child, { exitCode: 0 });
+        await transport.stop();
+      } else if (ending === "stdin-close") {
+        stdin.emit("close");
+      } else if (ending === "child-exit") {
+        child.emit("exit", 1, null);
+      } else {
+        control.emit("close");
+      }
+      // Flush the transport continuation, without waiting forever on a broken owner.
+      await Promise.resolve();
+      await Promise.resolve();
+      try {
+        expect(settled).toHaveBeenCalledWith(
+          ending === "stop" ? "stopped" : "MatrixRTC native media bridge failed",
+        );
+        expect(stdin.listenerCount("drain")).toBe(0);
+        expect(stdin.write).toHaveBeenCalledOnce();
+      } finally {
+        child.emit("exit", 1, null);
+        stdin.emit("drain");
+        await writing;
+      }
+    },
+  );
+
   it.each([true, false])("preserves the boolean output capability %s", async (outputGate) => {
     const { control, transport } = createTransportFixture();
     const pending = transport.waitForControlEvent("ready");
