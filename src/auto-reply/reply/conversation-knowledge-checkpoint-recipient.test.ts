@@ -25,6 +25,7 @@ import {
   type ConversationKnowledgeSourceCache,
   type PreparedConversationKnowledgePacket,
 } from "./conversation-knowledge-source-cache.js";
+import * as knowledgeStatus from "./conversation-knowledge-status.js";
 import type { ReplyConversationKnowledgeParams } from "./conversation-knowledge.types.js";
 
 const native = vi.hoisted(() => ({
@@ -717,6 +718,27 @@ describe("ready checkpoint recipient", () => {
       expect(native.releaseSource).toHaveBeenCalledTimes(2);
     },
   );
+  it("reports shared readiness only after retaining its native group", async () => {
+    const f = fixture(),
+      cache = createConversationKnowledgeSourceCache();
+    const report = vi.spyOn(knowledgeStatus, "logConversationKnowledgePreparedRanges");
+    const retain = vi.spyOn(cache, "retainContributionGroup").mockReturnValueOnce(false);
+    onTestFinished(() => {
+      report.mockRestore();
+      retain.mockRestore();
+      cache.clear();
+    });
+    const params = preparedParams(f, cache);
+    const tail = [{ reference, packet: rawPacket(reference) }];
+    expect(await prepareRecipientConversationProjection(params, tail)).toBe(false);
+    expect(report).not.toHaveBeenCalled();
+    expect(await prepareRecipientConversationProjection(params, tail)).toBe(true);
+    expect(report).toHaveBeenCalledExactlyOnceWith({
+      recipient: branch.sessionId,
+      ranges: [{ receipt: reference, offset: 0, complete: true }],
+    });
+  });
+
   it("does not turn refused old custody into a grant for a now-foreign source", async () => {
     const f = fixture(),
       cache = createConversationKnowledgeSourceCache();

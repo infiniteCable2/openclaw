@@ -52,6 +52,27 @@ function transferReceipt(sessionId: string, rawSeq = 17) {
 }
 
 describe("operational-only conversation diagnostics", () => {
+  it("reports exact prepared ranges even when aggregate info logging is disabled", () => {
+    log.isEnabled.mockImplementation((level) => level === "debug");
+    const ranges = [8, 9].map((sequence) => ({
+      receipt: transferReceipt("private-exact-source", sequence),
+      offset: 0,
+      complete: true,
+    }));
+    logConversationKnowledgePreparedRanges({ recipient: "private-exact-target", ranges });
+    expect(log.debug.mock.calls.map(([, event]) => event)).toEqual(
+      [8, 9].map((throughSeq) =>
+        expect.objectContaining({ phase: "prepared", throughSeq, offset: 0, complete: true }),
+      ),
+    );
+    expect(log.info).not.toHaveBeenCalled();
+    expect(JSON.stringify(log.debug.mock.calls)).not.toContain("private-");
+    log.debug.mockClear();
+    log.isEnabled.mockReturnValue(false);
+    logConversationKnowledgePreparedRanges({ recipient: "private-exact-target", ranges });
+    expect(log.debug).not.toHaveBeenCalled();
+  });
+
   it("reports acknowledged batch totals and source sessions separately from reused receipts", () => {
     log.isEnabled.mockImplementation((level) => level === "info");
     const receipt = transferReceipt("private-committed-source");

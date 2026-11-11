@@ -61,10 +61,7 @@ import type {
   PreparedConversationKnowledgePacket,
 } from "./conversation-knowledge-source-cache.js";
 import { createConversationKnowledgeSourceCustody } from "./conversation-knowledge-source-custody.js";
-import {
-  logConversationKnowledgePreparedRanges,
-  logConversationKnowledgeTransfer,
-} from "./conversation-knowledge-status.js";
+import { logConversationKnowledgePreparedRanges } from "./conversation-knowledge-status.js";
 
 export type ConversationKnowledgeHeldSource = {
   grant: Awaited<ReturnType<typeof preparePersonalConversationRead>>;
@@ -590,13 +587,6 @@ export function createConversationKnowledgeSourceReader(
         }
         if (!previouslyUsable) {
           preparedRanges.push({
-            receipt,
-            offset: input.offset,
-            complete: preparation === "complete",
-          });
-          logConversationKnowledgeTransfer({
-            phase: "prepared",
-            recipient: branch.sessionId,
             receipt,
             offset: input.offset,
             complete: preparation === "complete",

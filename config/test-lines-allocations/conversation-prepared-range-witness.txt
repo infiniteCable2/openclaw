@@ -1,0 +1,2 @@
+45
+# Exact per-range debug readiness, disabled logging, and native custody-retention gates for direct/shared preparation.

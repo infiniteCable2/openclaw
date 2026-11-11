@@ -49,6 +49,7 @@ export async function playMatrixConversation(params: {
       strings(request.input).join("\n").includes(intent),
   );
   const phases: Array<{ phase: string; elapsedMs: number }> = [];
+  const startedAt = new Date().toISOString();
   const started = performance.now();
   const mark = (phase: string) =>
     phases.push({ phase, elapsedMs: Math.round(performance.now() - started) });
@@ -124,13 +125,13 @@ export async function playMatrixConversation(params: {
       recipientHash: redactIdentifier(recipient.session.sessionId),
       sourceHash: redactIdentifier(source.session.sessionId),
     };
-    // Aggregate readiness is only a scheduling witness: a later source packet
-    // does not prove this exact user occurrence. Diagnose its admission separately.
+    // Observe this exact complete user packet, not a later source maximum.
     await waitForConversationTransfer(gateway, signal, {
       recipientId: recipient.session.sessionId,
       sourceId: source.session.sessionId,
       sequence: position.rawSeq,
       phase: "prepared",
+      exactSequence: true,
     });
     mark("active-recipient-packet-prepared");
     model.respondWithTool(input, "sessions_list", { limit: 2 });
@@ -176,6 +177,7 @@ export async function playMatrixConversation(params: {
       )
       .slice(-12)
       .map((line) => ({
+        time: /"time"\s*:\s*(?:"([^"]+)"|(\d+))/u.exec(line)?.slice(1).find(Boolean),
         event: line.includes("Conversation knowledge transfer") ? "transfer" : "preparation",
         phase: /"phase"\s*:\s*"([^"]+)"/u.exec(line)?.[1],
         complete: /"complete"\s*:\s*(true|false)/u.exec(line)?.[1],
@@ -193,6 +195,7 @@ export async function playMatrixConversation(params: {
         const text = strings(request.input).join("\n");
         return {
           index: requestOffset + index + 1,
+          elapsedMs: Math.round(model.requestTimes[requestOffset + index]! - started),
           callIds: Array.isArray(request.input)
             ? request.input.flatMap((item) => {
                 const output = asOptionalRecord(item);
@@ -208,6 +211,7 @@ export async function playMatrixConversation(params: {
     console.error(
       JSON.stringify({
         fixture: "matrix-active-native-play",
+        startedAt,
         expectedCallId,
         transfer,
         transfers,

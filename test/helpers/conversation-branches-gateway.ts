@@ -372,14 +372,15 @@ export function waitForConversationTransfer(
         .some(
           (line) =>
             /"recipientHash"\s*:\s*"([^"]+)"/u.exec(line)?.[1] === recipient &&
-            (expected.phase === "prepared"
+            (expected.phase === "prepared" && !expected.exactSequence
               ? line.includes("Related-history source preparation settled") &&
                 Array.from(
                   line.matchAll(/"sourceHash"\s*:\s*"([^"]+)"\s*,\s*"throughSeq"\s*:\s*(\d+)/gu),
                 ).some((match) => match[1] === source && matchesSequence(Number(match[2])))
               : line.includes("Conversation knowledge transfer") &&
                 /"sourceHash"\s*:\s*"([^"]+)"/u.exec(line)?.[1] === source &&
-                /"phase"\s*:\s*"admitted"/u.test(line) &&
+                /"phase"\s*:\s*"([^"]+)"/u.exec(line)?.[1] === (expected.phase ?? "admitted") &&
+                (expected.phase !== "prepared" || /"offset"\s*:\s*0\s*[,}]/u.test(line)) &&
                 /"complete"\s*:\s*true/u.test(line) &&
                 matchesSequence(Number(/"throughSeq"\s*:\s*(\d+)/u.exec(line)?.[1] ?? -1))),
         );

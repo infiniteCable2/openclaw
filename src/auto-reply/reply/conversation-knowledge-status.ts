@@ -182,6 +182,15 @@ export function logConversationKnowledgePreparedRanges(params: {
   recipient: string;
   ranges: readonly { receipt: ConversationKnowledgeReference; offset: number; complete: boolean }[];
 }) {
+  if (log.isEnabled("debug")) {
+    for (const range of params.ranges) {
+      logConversationKnowledgeTransfer({
+        phase: "prepared",
+        recipient: params.recipient,
+        ...range,
+      });
+    }
+  }
   if (!params.ranges.length || !log.isEnabled("info")) {
     return;
   }

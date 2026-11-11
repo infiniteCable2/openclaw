@@ -544,19 +544,21 @@ describe("bounded authorized source preparation", () => {
       f.reader.reportPreparation();
       expect(boundary.info).not.toHaveBeenCalled();
       expect(await f.reader.stage(request)).toBe("complete");
+      expect(boundary.debug).not.toHaveBeenCalled();
+      expect(boundary.info).not.toHaveBeenCalled();
+      f.reader.reportPreparation();
       expect(boundary.debug).toHaveBeenCalledExactlyOnceWith(
         "Conversation knowledge transfer",
         expect.objectContaining({ phase: "prepared", complete: true, offset: 0 }),
       );
       expect(JSON.stringify(boundary.debug.mock.calls)).not.toContain(f.branch.sessionKey);
-      expect(boundary.info).not.toHaveBeenCalled();
-      f.reader.reportPreparation();
       expect(boundary.info).toHaveBeenCalledExactlyOnceWith(
         "Conversation knowledge transfer outcome",
         expect.objectContaining({ outcome: "prepared", sourceCount: 1, ranges: 1 }),
       );
       f.reader.reportPreparation();
       expect(boundary.info).toHaveBeenCalledOnce();
+      expect(boundary.debug).toHaveBeenCalledOnce();
     } finally {
       retain.mockRestore();
       f.drop(source.read);
