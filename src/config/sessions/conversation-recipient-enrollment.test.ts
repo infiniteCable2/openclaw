@@ -125,7 +125,11 @@ function fixture() {
 describe("durable reusable recipient enrollment", () => {
   it("keeps live session access during enrollment publication without masking access changes", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const { database, branch, entry } = fixture();
+      const { database, branch } = fixture();
+      const entry = readExactSessionEntryRow(database, branch.sessionKey)?.entry;
+      if (!entry) {
+        throw new Error("Expected the committed recipient entry");
+      }
       const identity = readOpenClawAgentDatabaseIdentity(database).identity;
       if (typeof identity !== "string") {
         throw new Error("Expected a durable enrollment source");
