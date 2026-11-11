@@ -250,7 +250,7 @@ it.for([
           let selecting = false;
           const facts = branchAuthority.prepareConversationKnowledgeBranchFacts;
           const observe = knowledgeSource.observePreparedConversationKnowledgePackets;
-          const offset = cache.firstPreparedOffset;
+          const offset = cache.firstPreparedOffset.bind(cache);
           const probes = [
             vi
               .spyOn(branchAuthority, "prepareConversationKnowledgeBranchFacts")
