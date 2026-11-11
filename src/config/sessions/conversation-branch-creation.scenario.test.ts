@@ -9,6 +9,7 @@ import {
 import * as checkpointSources from "../../auto-reply/reply/conversation-knowledge-checkpoint-source.js";
 import { prepareConversationKnowledgeInitialContext } from "../../auto-reply/reply/conversation-knowledge-initial-context.js";
 import { openConversationKnowledgeRoot } from "../../auto-reply/reply/conversation-knowledge-open.js";
+import * as recipientPrefetch from "../../auto-reply/reply/conversation-knowledge-prefetch.js";
 import {
   createConversationKnowledgeScenario,
   person,
@@ -291,6 +292,12 @@ it("warms an existing startup root before input and reuses its frame across fres
         ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>
       >[] = [];
       const resumes: (() => void)[] = [];
+      const recipientPauses = new Map<
+        NonNullable<
+          ReturnType<typeof recipientPrefetch.prepareConversationKnowledgeRecipient>
+        >["owner"],
+        () => void
+      >();
       const spies: { mockRestore(): void }[] = [];
       const stages: string[] = [];
       try {
@@ -441,6 +448,20 @@ it("warms an existing startup root before input and reuses its frame across fres
             }),
         );
         spies.push(groups);
+        // Measure native creation copies independently of automatic recipient work.
+        // Every new branch must be complete even while its catch-up owner is paused.
+        const prepareRecipient = recipientPrefetch.prepareConversationKnowledgeRecipient;
+        spies.push(
+          vi
+            .spyOn(recipientPrefetch, "prepareConversationKnowledgeRecipient")
+            .mockImplementation((input) => {
+              const recipient = prepareRecipient(input);
+              if (recipient && !recipientPauses.has(recipient.owner)) {
+                recipientPauses.set(recipient.owner, recipient.owner.pausePreparation());
+              }
+              return recipient;
+            }),
+        );
         stages.push("register-root");
         const onReady = () => {
           stages.push(`root-notified:${registration?.projection().tail.length ?? -1}`);
@@ -506,6 +527,7 @@ it("warms an existing startup root before input and reuses its frame across fres
         // asynchronous release returns. Observe that same ready state once.
         onReady();
         await withinTest(ready.promise, signal);
+        await Promise.all([...recipientPauses.keys()].map((owner) => owner.wait()));
         expect(await loadTranscriptEvents(broker)).toEqual(originalBrokerEvents);
         stages.push("initial-frame-ready");
         expect(groups).toHaveBeenCalledTimes(2);
@@ -695,6 +717,13 @@ it("warms an existing startup root before input and reuses its frame across fres
         }
         for (const held of heldFrames.toReversed()) {
           await held.release();
+        }
+        for (const [owner, resume] of recipientPauses) {
+          try {
+            await owner.close();
+          } finally {
+            resume();
+          }
         }
         await registration?.close();
         for (const resume of resumes) {
