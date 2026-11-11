@@ -75,6 +75,7 @@ export async function prepareConversationKnowledgeBranchFacts(params: {
     cfg: params.getRuntimeConfig(),
     agentId: branch.agentId,
     sessionKey: branch.sessionKey,
+    sessionAccessOnly: true,
   });
   let active = true;
   const release = () => {

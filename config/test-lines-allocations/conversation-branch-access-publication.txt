@@ -1,0 +1,2 @@
+14
+# Real branch facts remain usable through enrollment/run bookkeeping; pending identity, visibility, root, permission and membership changes still refuse.

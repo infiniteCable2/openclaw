@@ -1,6 +1,7 @@
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import { describe, expect, it } from "vitest";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
+import { prepareConversationKnowledgeBranchFacts } from "../../auto-reply/reply/conversation-knowledge-authority.js";
 import type { OperatorRunRecoverySnapshot } from "../../gateway/operator-run-recovery-source.js";
 import { captureGatewayPrivateConversationAudience } from "../../gateway/session-input-participant.js";
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
@@ -140,7 +141,11 @@ describe("durable reusable recipient enrollment", () => {
       };
       const changes: Partial<InternalSessionEntry>[] = [
         {},
+        { lifecycleRunId: "next-lifecycle-run" },
+        { activeWriterRunId: "next-writer-run" },
         { visibility: "shared" },
+        { incognito: true },
+        { publicShare: { id: "example-share", sessionId: branch.sessionId, createdAt: 1 } },
         { createdActor: { type: "human", source: "profile", id: "another-person" } },
         { participants: [{ identity: { type: "profile", id: "another-person" } }] },
         { lifecycleRevision: "another-generation" },
@@ -149,6 +154,10 @@ describe("durable reusable recipient enrollment", () => {
       ];
       for (const [index, change] of [...changes, {}].entries()) {
         const membershipChanged = index === changes.length;
+        const facts = await prepareConversationKnowledgeBranchFacts({
+          branch,
+          getRuntimeConfig: () => ({}),
+        });
         const retained = retainPreparedSessionSharingFacts({
           databaseIdentity: `file:${identity}`,
           sessionKey: branch.sessionKey,
@@ -170,13 +179,18 @@ describe("durable reusable recipient enrollment", () => {
             new Map([[branch.sessionKey, { ...enrolled, ...change }]]),
           );
           expect(retained.readCurrent("sharing")).toBeUndefined();
-          if (index === 0) {
+          if (index < 3) {
             expect(retained.readCurrent("session-access")?.entry?.sessionId).toBe(entry.sessionId);
+            expect(() => facts.assertCurrent()).not.toThrow();
+            expect(await facts.assertCurrent.prepareSessionSource?.()).toBeDefined();
           } else {
             expect(retained.readCurrent("session-access")).toBeUndefined();
+            expect(() => facts.assertCurrent()).toThrow();
+            await expect(facts.assertCurrent.prepareSessionSource?.()).rejects.toThrow();
           }
         } finally {
           publication.settle(undefined, false);
+          facts.release();
           retained.release();
         }
       }
