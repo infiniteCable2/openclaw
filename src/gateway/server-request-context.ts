@@ -5,6 +5,7 @@ import {
   type GatewayClientId,
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { getRuntimeConfig } from "../config/io.js";
+import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { getAgentDatabaseStartupAdmission } from "../state/agent-database-startup.js";
 import { getResidentUserProfileDisplay } from "../state/user-profile-list.js";
 import { NODE_DESKTOP_SERVICE_CONTEXT } from "./desktop/node-source-context.js";
@@ -279,7 +280,9 @@ export function createGatewayRequestContext(
     get cronStorePath() {
       return runtimeState.cronState.storePath;
     },
-    getRuntimeConfig,
+    // Source guards consume the publication owner's immutable capture. The raw
+    // mutable view cannot retain a successful comparison across repeated checks.
+    getRuntimeConfig: () => getRuntimeConfigSnapshot({ capture: true }) ?? getRuntimeConfig(),
     ...(agentDatabaseStartup
       ? {
           agentDatabaseStartup: agentDatabaseStartup.observation,

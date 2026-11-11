@@ -1,0 +1,2 @@
+29
+# Native Gateway source guards must reuse immutable publications while reload and missing-publication checks remain live.

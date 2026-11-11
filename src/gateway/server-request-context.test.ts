@@ -9,7 +9,11 @@ import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
 } from "../../packages/gateway-protocol/src/client-info.js";
-import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+import { createRuntimeConfigSnapshotMatcher } from "../config/runtime-config-snapshot-match.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { heartbeatNotifications } from "../infra/heartbeat-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
@@ -58,6 +62,31 @@ function makeDeviceClient(connId: string, deviceId: string, role = "primary") {
 }
 
 describe("createGatewayRequestContext", () => {
+  it("reuses native publication captures across source guards and rejects replacements", () => {
+    onTestFinished(clearRuntimeConfigSnapshot);
+    clearRuntimeConfigSnapshot();
+    const context = createGatewayRequestContext(makeContextParams());
+    expect(() => context.getRuntimeConfig()).toThrow("Runtime config is not prepared");
+    const config = { gateway: { port: 19001 } };
+    setRuntimeConfigSnapshot(config);
+    const matches = createRuntimeConfigSnapshotMatcher(config);
+    expect(matches(context.getRuntimeConfig())).toBe(true);
+    const keys = vi.spyOn(Object, "keys");
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        expect(matches(context.getRuntimeConfig())).toBe(true);
+      }
+      expect(keys).not.toHaveBeenCalled();
+    } finally {
+      keys.mockRestore();
+    }
+    expect(context.getCommittedRuntimeConfig?.()).toBe(config);
+    setRuntimeConfigSnapshot({ gateway: { port: 19002 } });
+    expect(matches(context.getRuntimeConfig())).toBe(false);
+    clearRuntimeConfigSnapshot();
+    expect(() => context.getRuntimeConfig()).toThrow("Runtime config is not prepared");
+  });
+
   it("keeps startup observation bound to copied contexts after transport context loss", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       vi.useFakeTimers();
