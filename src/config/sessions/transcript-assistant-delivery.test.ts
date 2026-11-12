@@ -1,10 +1,34 @@
 import { describe, expect, it } from "vitest";
+import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import {
   applyAssistantDeliveryDirectives,
   projectAssistantTranscriptText,
 } from "./transcript-assistant-delivery.js";
 
 describe("assistant delivery normalization across native parts", () => {
+  it("reuses unchanged speech facts when detached appends revisit a sealed message", () => {
+    const message = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "Hello.",
+          openclawDelivery: { tts: { tagged: true, text: "Hello." } },
+        },
+      ],
+      openclawDelivery: { mediaUrls: ["./kept.png"] },
+    };
+    applyAssistantDeliveryDirectives(message);
+    const facts = message.openclawDelivery;
+    freezeJsonSnapshot(message);
+    expect(applyAssistantDeliveryDirectives(message)).toBe(message);
+    expect(message.openclawDelivery).toBe(facts);
+    expect(projectAssistantTranscriptText(message)?.openclawDelivery).toMatchObject({
+      mediaUrls: ["./kept.png"],
+      tts: { tagged: true, text: "Hello." },
+    });
+  });
+
   it("publishes native speech facts without changing admitted text bytes or block identity", () => {
     const expression = { emotion: "joyful", parts: [{ event: "laugh" }, { text: " Hello. " }] };
     const block = {
@@ -92,6 +116,9 @@ describe("assistant delivery normalization across native parts", () => {
         tts: { tagged: true, text: "Hello.", expression },
       },
     };
+    const sealed = freezeJsonSnapshot(structuredClone(message));
+    expect(() => applyAssistantDeliveryDirectives(sealed)).toThrow(TypeError);
+    expect(sealed.openclawDelivery.tts.expression).toEqual(expression);
     applyAssistantDeliveryDirectives(message);
     expect(message.openclawDelivery).toEqual({
       mediaUrls: ["./kept.png"],

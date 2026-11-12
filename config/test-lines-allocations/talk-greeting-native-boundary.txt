@@ -1,0 +1,6 @@
+# Native detached greetings: real admission, SQLite SessionManager, runner and
+# capture-only speech delivery, with one synthetic loopback HTTP provider. Four
+# fresh/tool-history and plain/structured combinations reproduce the sealed
+# native speech-facts failure and preserve the durable source transcript.
+# Includes the focused sealed-message normalization regression.
+426

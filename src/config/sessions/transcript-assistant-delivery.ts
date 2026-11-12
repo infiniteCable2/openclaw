@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { stripMixedSilentReplyTokens } from "../../auto-reply/reply/mixed-silent-reply-tokens.js";
@@ -153,7 +154,11 @@ export function applyAssistantDeliveryDirectives<T extends AssistantDirectiveMes
     } else if (facts.replyToCurrent) {
       delete mergedFacts.replyToId;
     }
-    Object.assign(message, { openclawDelivery: mergedFacts });
+    // Detached appends revisit normalized, sealed messages. Publish only changed
+    // facts; an equal projection must preserve the immutable source and identity.
+    if (!isDeepStrictEqual(currentFacts, mergedFacts)) {
+      Object.assign(message, { openclawDelivery: mergedFacts });
+    }
   }
   return recordAssistantManagedMediaUrls(message, options?.managedMediaUrls);
 }
