@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { buildApiErrorObservationFields } from "../agents/embedded-agent-error-observation.js";
 import { hasDeliberateSilentTerminalReply } from "../agents/embedded-agent-runner/result-fallback-classifier.js";
 import { runEmbeddedAgent } from "../agents/embedded-agent-runner/run.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { resolveAgentTimeoutMs } from "../agents/timeout.js";
 import { captureCommandOwnerAssertion } from "../auto-reply/command-owner-authority.js";
+import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { prepareChannelRunAdmission } from "../auto-reply/reply/channel-run-admission.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { isSilentReplyText } from "../auto-reply/tokens.js";
@@ -229,8 +231,26 @@ export async function prepareConversationGreeting(params: {
       onBlockReply: delivery.onBlockReply,
     });
     assertTargetCurrent();
-    if (result.meta?.aborted || result.meta?.error) {
-      throw new Error("Native greeting generation did not complete");
+    const providerError = result.payloads
+      ?.map(getReplyPayloadMetadata)
+      .find((metadata) => metadata?.terminalProviderError === true);
+    if (result.meta?.aborted || result.meta?.error || providerError) {
+      const observed = buildApiErrorObservationFields(
+        providerError?.providerFailure?.rawError ?? result.meta?.error?.message,
+      );
+      // Keep native failure facts without exposing provider previews or generated text.
+      const failure = {
+        runId,
+        phase: "greeting-generation",
+        kind: result.meta?.error?.kind ?? (result.meta?.aborted ? "aborted" : "provider_error"),
+        reason: providerError?.providerFailure?.reason,
+        rawErrorHash: observed.rawErrorHash,
+        rawErrorFingerprint: observed.rawErrorFingerprint,
+        httpCode: observed.httpCode,
+        providerRuntimeFailureKind: observed.providerRuntimeFailureKind,
+      };
+      params.speech.logger.warn("[talk] native greeting generation failed", failure);
+      throw new Error("Native greeting generation did not complete", { cause: failure });
     }
     const greeting = await delivery.finish({
       yielded: false,

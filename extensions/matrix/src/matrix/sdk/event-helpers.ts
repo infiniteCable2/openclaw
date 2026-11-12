@@ -8,6 +8,7 @@ const matrixEventProjections = new WeakMap<
   object,
   {
     decryptionFailure: boolean;
+    decryptionFailureReason: MatrixEvent["decryptionFailureReason"];
     originalContent: Record<string, unknown>;
   }
 >();
@@ -44,6 +45,7 @@ export function matrixEventToRaw(
   // replacement, while mutation baselines need this event's original content.
   matrixEventProjections.set(raw, {
     decryptionFailure: event.isDecryptionFailure(),
+    decryptionFailureReason: event.decryptionFailureReason,
     originalContent,
   });
   return raw;

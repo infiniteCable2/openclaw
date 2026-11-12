@@ -56,6 +56,9 @@ export class FakeMatrixEvent extends EventEmitter {
   getStateKey = () => this.data.stateKey;
   getWireStateKey = () => this.data.stateKey;
   isDecryptionFailure = () => this.decryptionFailureReasonValue !== null;
+  isRedacted = () => this.data.unsigned?.redacted_because !== undefined;
+  isState = () => typeof this.data.stateKey === "string";
+  isBeingDecrypted = () => this.decryptionPromise !== null;
   shouldAttemptDecryption = () =>
     this.data.type === "m.room.encrypted" && this.clearEvent === undefined;
   getDecryptionPromise = () => this.decryptionPromise;

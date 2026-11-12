@@ -1,0 +1,5 @@
+# Detached greetings must retain native terminal provider failure metadata even
+# without meta.error, and preserve aborted/meta.error cleanup without speaking
+# or logging provider previews, generated text, or payloads.
+# Existing conversation-greeting.test.ts: exact net regression growth +48 lines.
+48

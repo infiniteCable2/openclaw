@@ -1,3 +1,4 @@
+import { DecryptionFailureCode } from "matrix-js-sdk/lib/crypto-api/index.js";
 import { MatrixEvent } from "matrix-js-sdk/lib/matrix.js";
 import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import type { ChannelIngressMonitorLifecycle } from "openclaw/plugin-sdk/channel-outbound";
@@ -93,6 +94,9 @@ describe("Matrix sync admission", () => {
       content: { msgtype: "m.bad.encrypted", body: "Synthetic missing room key" },
     });
     vi.spyOn(failed, "isDecryptionFailure").mockReturnValue(true);
+    vi.spyOn(failed, "decryptionFailureReason", "get").mockReturnValue(
+      DecryptionFailureCode.MEGOLM_UNKNOWN_INBOUND_SESSION_ID,
+    );
     const hydrate = vi.spyOn(client, "hydrateEvents").mockResolvedValue([matrixEventToRaw(failed)]);
     const dispatch = vi.fn(
       async (_room: string, _event: MatrixRawEvent, lifecycle: ChannelIngressMonitorLifecycle) => {
@@ -110,7 +114,12 @@ describe("Matrix sync admission", () => {
       expect(dispatch).not.toHaveBeenCalled();
       expect(await queue.listClaims()).toEqual([]);
       expect(await queue.listPending()).toMatchObject([
-        { id: event.event_id, payload: { event }, attempts: 1 },
+        {
+          id: event.event_id,
+          payload: { event },
+          attempts: 1,
+          lastError: expect.stringContaining("MEGOLM_UNKNOWN_INBOUND_SESSION_ID"),
+        },
       ]);
     } finally {
       await first.stop();

@@ -266,7 +266,11 @@ export abstract class MatrixClientBase {
     const decryptEventIfNeeded = this.client.decryptEventIfNeeded.bind(this.client);
     this.client.decryptEventIfNeeded = (event, options) => {
       this.captureRequestAuthority()?.();
-      return this.withClientCryptoWork(() => decryptEventIfNeeded(event, options));
+      return this.withClientCryptoWork(
+        () =>
+          (options?.isRetry ? this.decryptBridge?.retryDecryptionIfNeeded(event) : undefined) ??
+          decryptEventIfNeeded(event, options),
+      );
     };
   }
 

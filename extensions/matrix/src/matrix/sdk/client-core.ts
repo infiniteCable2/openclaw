@@ -422,7 +422,7 @@ export abstract class MatrixClientCore extends MatrixClientBase {
 
     const mapper = this.client.getEventMapper();
     const event = mapper(rawEvent);
-    await this.client.decryptEventIfNeeded(event);
+    await this.client.decryptEventIfNeeded(event, { isRetry: true });
     return matrixEventToRaw(event);
   }
 
@@ -441,7 +441,9 @@ export abstract class MatrixClientCore extends MatrixClientBase {
     // Untyped relation queries include ciphertext even without cached room state;
     // the SDK only awaits decryption itself for an explicitly encrypted query.
     const events = result.originalEvent ? [result.originalEvent, ...result.events] : result.events;
-    await Promise.all(events.map((event) => this.client.decryptEventIfNeeded(event)));
+    await Promise.all(
+      events.map((event) => this.client.decryptEventIfNeeded(event, { isRetry: true })),
+    );
     return {
       originalEvent: result.originalEvent ? matrixEventToRaw(result.originalEvent) : null,
       events: result.events.map((event) => matrixEventToRaw(event)),
@@ -482,7 +484,9 @@ export abstract class MatrixClientCore extends MatrixClientBase {
         ...event,
       }),
     );
-    await Promise.all(mappedEvents.map((event) => this.client.decryptEventIfNeeded(event)));
+    await Promise.all(
+      mappedEvents.map((event) => this.client.decryptEventIfNeeded(event, { isRetry: true })),
+    );
     return mappedEvents.map((event) => matrixEventToRaw(event));
   }
 

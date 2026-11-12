@@ -1,3 +1,4 @@
+import { DecryptionFailureCode } from "matrix-js-sdk/lib/crypto-api/index.js";
 import { MatrixEvent } from "matrix-js-sdk/lib/matrix.js";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -65,8 +66,15 @@ describe("event-helpers", () => {
     };
     const event = messageEvent({ content });
     vi.spyOn(event, "isDecryptionFailure").mockReturnValue(true);
+    vi.spyOn(event, "decryptionFailureReason", "get").mockReturnValue(
+      DecryptionFailureCode.MEGOLM_UNKNOWN_INBOUND_SESSION_ID,
+    );
     const raw = matrixEventToRaw(event);
     expect(getMatrixEventProjection(raw)?.decryptionFailure).toBe(true);
+    expect(getMatrixEventProjection(raw)?.decryptionFailureReason).toBe(
+      DecryptionFailureCode.MEGOLM_UNKNOWN_INBOUND_SESSION_ID,
+    );
+    expect(raw).not.toHaveProperty("decryptionFailureReason");
     expect(raw.content).toEqual(content);
     const literal = new MatrixEvent({ type: "m.room.message", content: event.getContent() });
     expect(getMatrixEventProjection(matrixEventToRaw(literal))?.decryptionFailure).toBe(false);

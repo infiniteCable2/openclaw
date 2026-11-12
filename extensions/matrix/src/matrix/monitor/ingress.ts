@@ -89,12 +89,16 @@ export function createMatrixIngressMonitor(params: {
       // Persist ciphertext before the sync cursor, then decrypt from local SDK
       // state on every attempt so a late room key can recover a queued message.
       const [hydrated] = await params.client.hydrateEvents(roomId, [event]);
+      const projection = hydrated && getMatrixEventProjection(hydrated);
       if (
         !hydrated ||
         hydrated.type === EventType.RoomMessageEncrypted ||
-        getMatrixEventProjection(hydrated)?.decryptionFailure
+        projection?.decryptionFailure
       ) {
-        throw new Error("Matrix ingress event is waiting for decryption");
+        const reason = projection?.decryptionFailureReason;
+        throw new Error(
+          `Matrix ingress event is waiting for decryption${reason ? ` (${reason})` : ""}`,
+        );
       }
       return await params.dispatch(roomId, hydrated, lifecycle);
     },

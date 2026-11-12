@@ -6,6 +6,7 @@ import { raceWithTimeout } from "openclaw/plugin-sdk/time-runtime";
 import { LogService, noop } from "./logger.js";
 
 type MatrixDecryptIfNeededClient = {
+  enableEncryptedStateEvents?: boolean;
   decryptEventIfNeeded: (
     event: MatrixEvent,
     opts?: {
@@ -91,6 +92,27 @@ export class MatrixDecryptBridge<TRawEvent extends DecryptBridgeRawEvent> {
       emitFailedDecryption: (roomId: string, event: TRawEvent, error: Error) => void;
     },
   ) {}
+
+  retryDecryptionIfNeeded(event: MatrixEvent): Promise<void> | undefined {
+    if (
+      this.stopped ||
+      event.isRedacted() ||
+      (event.isState() && !this.deps.client.enableEncryptedStateEvents) ||
+      event.isBeingDecrypted() ||
+      !shouldRetryDecryptionFailure(event)
+    ) {
+      return undefined;
+    }
+    const crypto = this.deps.client.getCrypto();
+    if (crypto === undefined || crypto === null) {
+      return undefined;
+    }
+    // The SDK's ordinary read skips failed events with cached m.bad.encrypted
+    // content. Reuse its explicit retry without changing trust requirements.
+    const pending = (event as MatrixDecryptRetryEvent).attemptDecryption(crypto, { isRetry: true });
+    this.trackDecryption(pending);
+    return pending;
+  }
 
   shouldEmitUnencryptedMessage(roomId: string, eventId: string): boolean {
     if (!eventId) {
@@ -336,20 +358,9 @@ export class MatrixDecryptBridge<TRawEvent extends DecryptBridgeRawEvent> {
 
     state.inFlight = true;
     state.timer = null;
-    const retryEvent = state.event as MatrixDecryptRetryEvent;
-    const retryCrypto = this.deps.client.getCrypto();
-    const canAttemptDecryption = retryCrypto !== undefined && retryCrypto !== null;
-
     try {
-      if (canAttemptDecryption) {
-        await retryEvent.attemptDecryption(retryCrypto, {
-          isRetry: true,
-        });
-      } else {
-        await this.deps.client.decryptEventIfNeeded(state.event, {
-          isRetry: true,
-        });
-      }
+      await (this.retryDecryptionIfNeeded(state.event) ??
+        this.deps.client.decryptEventIfNeeded(state.event, { isRetry: true }));
     } catch {
       // Retry with backoff until we hit the configured retry cap.
     } finally {

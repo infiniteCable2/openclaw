@@ -271,6 +271,54 @@ describe("native detached greeting preparation", () => {
     },
   );
 
+  it.each(["provider_error", "context_overflow", "aborted"] as const)(
+    "retains native %s failure facts without speaking, leaking text, or losing cleanup",
+    async (kind) => {
+      const fixture = await setup(false);
+      const privateDetail = "synthetic-provider-detail-not-for-logs";
+      mocks.run.mockResolvedValue({
+        payloads:
+          kind === "provider_error"
+            ? [
+                setReplyPayloadMetadata(
+                  { text: "synthetic user-facing error", isError: true },
+                  {
+                    terminalProviderError: true,
+                    providerFailure: { reason: "rate_limit", rawError: privateDetail },
+                  },
+                ),
+              ]
+            : [],
+        meta: {
+          durationMs: 1,
+          ...(kind === "context_overflow" ? { error: { kind, message: privateDetail } } : {}),
+          ...(kind === "aborted" ? { aborted: true } : {}),
+        },
+      });
+      const error = await prepareConversationGreeting(fixture.params).catch(
+        (failure: unknown) => failure,
+      );
+      expect(error).toMatchObject({
+        message: "Native greeting generation did not complete",
+        cause: {
+          runId: expect.stringMatching(/^conversation-greeting-/),
+          phase: "greeting-generation",
+          kind,
+          ...(kind === "provider_error" ? { reason: "rate_limit" } : {}),
+          ...(kind !== "aborted" ? { rawErrorHash: expect.stringMatching(/^sha256:/) } : {}),
+        },
+      });
+      expect(fixture.params.speech.logger.warn).toHaveBeenCalledOnce();
+      const logged = JSON.stringify(fixture.params.speech.logger.warn.mock.calls);
+      expect(logged).not.toMatch(
+        /synthetic-provider-detail|synthetic user-facing error|Preview|payloads/,
+      );
+      expect(fixture.onSpeakableText).not.toHaveBeenCalled();
+      expect(fixture.close).toHaveBeenCalledOnce();
+      expect(fixture.release).toHaveBeenCalledOnce();
+    },
+  );
+
   it("captures a native expressive greeting without speaking or persisting it during preparation", async () => {
     const fixture = await setup(false);
     const assertExpressionCurrent = vi.fn();

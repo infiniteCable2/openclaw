@@ -7,11 +7,7 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/CryptoEvent.js";
 import { MatrixError } from "matrix-js-sdk/lib/http-api/errors.js";
-import {
-  type MatrixClient as MatrixJsSdkClient,
-  type MatrixEvent,
-  MsgType,
-} from "matrix-js-sdk/lib/matrix.js";
+import { type MatrixClient as MatrixJsSdkClient, MsgType } from "matrix-js-sdk/lib/matrix.js";
 import { EventStatus } from "matrix-js-sdk/lib/models/event-status.js";
 import { SyncApi, SyncState } from "matrix-js-sdk/lib/sync.js";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -30,8 +26,11 @@ import {
   registerCryptoPeriodicShutdownTest,
 } from "./sdk/crypto-persistence.test-support.js";
 import { createMatrixCryptoApi } from "./sdk/crypto.test-support.js";
-import { MatrixDecryptBridge } from "./sdk/decrypt-bridge.js";
-import { registerDecryptRetentionTests } from "./sdk/decrypt-retention.test-support.js";
+import {
+  registerCachedDecryptionReadTests,
+  registerDecryptRetentionTests,
+  registerExplicitDecryptRetryTests,
+} from "./sdk/decrypt-retention.test-support.js";
 import {
   FakeMatrixEvent,
   makeDecryptedMessageEvent,
@@ -452,7 +451,7 @@ function verificationApi(device: Record<string, unknown> = {}) {
   };
 }
 
-async function initializeCrypto(client: MatrixClient) {
+async function initializeCrypto(client: InstanceType<typeof BaseMatrixClient>) {
   await (
     client as unknown as { ensureCryptoSupportInitialized: () => Promise<void> }
   ).ensureCryptoSupportInitialized();
@@ -467,43 +466,6 @@ async function installBootstrapSpy(client: MatrixClient, bootstrap: ReturnType<t
 
 function bootstrapState(ready: boolean, ownDeviceVerified = ready) {
   return { crossSigningReady: ready, crossSigningPublished: ready, ownDeviceVerified };
-}
-
-function makeDecryptFixture(cryptoApi: unknown = {}) {
-  const emitMessage = vi.fn();
-  const emitFailedDecryption = vi.fn();
-  const bridge = new MatrixDecryptBridge({
-    client: { getCrypto: () => cryptoApi, decryptEventIfNeeded: vi.fn(async () => {}) },
-    toRaw: (event) => ({ event_id: event.getId() ?? "" }),
-    emitDecryptedEvent: vi.fn(),
-    emitMessage,
-    emitFailedDecryption,
-  });
-  type Retry = {
-    event: FakeMatrixEvent;
-    roomId: string;
-    eventId: string;
-    attempts: number;
-    inFlight: boolean;
-    timer: ReturnType<typeof setTimeout> | null;
-  };
-  const internals = bridge as unknown as {
-    decryptRetries: Map<string, Retry>;
-    exhaustedDecryptRetries: Map<string, Retry & { exhaustedAt: number }>;
-  };
-  function exhaust(event: FakeMatrixEvent) {
-    internals.exhaustedDecryptRetries.set(`!room:example.org|${event.getId()}`, {
-      event,
-      roomId: ROOM,
-      eventId: event.getId(),
-      attempts: 8,
-      inFlight: false,
-      timer: null,
-      exhaustedAt: Date.now(),
-    });
-  }
-  const { decryptRetries } = internals;
-  return { bridge, emitMessage, emitFailedDecryption, exhaust, decryptRetries };
 }
 
 function makeEncryptedFile(url: string, key = "key", iv = "iv", hash = "hash") {
@@ -969,6 +931,13 @@ describe("MatrixClient request hardening", () => {
     });
   });
 
+  registerCachedDecryptionReadTests({
+    createSdkClient,
+    initializeCrypto,
+    getMatrixJsClient: () => matrixJsClient,
+    captureReadAuthorityMock,
+  });
+
   it("orders messages and events within a room without blocking other rooms", async () => {
     const client = createSdkClient();
     const release = createDeferred<void>();
@@ -1057,7 +1026,7 @@ describe("MatrixClient request hardening", () => {
       return page;
     });
     await Promise.resolve();
-    expect(matrixJsClient.decryptEventIfNeeded).toHaveBeenCalledWith(encrypted);
+    expect(matrixJsClient.decryptEventIfNeeded).toHaveBeenCalledWith(encrypted, { isRetry: true });
     expect(finished).toBe(false);
     gate.resolve();
     const page = await result;
@@ -2390,68 +2359,11 @@ describe("MatrixClient crypto bootstrapping", () => {
     expect(result.error).toBeUndefined();
   });
 
-  it("bounds exhausted decrypt retry rehydration on crypto signals", async () => {
-    const { bridge, exhaust } = makeDecryptFixture();
-    const events = Array.from({ length: 513 }, (_, index) => {
-      const event = makeMatrixEvent({ eventId: "$event-" + index, decryptionFailure: true });
-      event.onAttemptDecryption(() => {});
-      exhaust(event);
-      return event;
-    });
-    bridge.retryPendingNow({ includeExhausted: true });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(events[0]?.attemptDecryption).not.toHaveBeenCalled();
-    expect(events.at(-1)?.attemptDecryption).toHaveBeenCalledTimes(1);
-  });
-
-  it("lets an in-flight retry finish during quiesce without rearming it", async () => {
-    const { bridge, emitFailedDecryption, emitMessage, decryptRetries } = makeDecryptFixture();
-    let release: (() => void) | undefined;
-    const event = makeMatrixEvent({ decryptionFailure: true });
-    event.onAttemptDecryption(
-      () =>
-        new Promise<void>((resolve) => {
-          release = () => {
-            event.emit("decrypted", event, new Error("still missing"));
-            resolve();
-          };
-        }),
-    );
-    decryptRetries.set("!room:example.org|$event", {
-      event,
-      roomId: ROOM,
-      eventId: "$event",
-      attempts: 1,
-      inFlight: false,
-      timer: null,
-    });
-    const drain = bridge.drainPendingDecryptions("test shutdown");
-    await Promise.resolve();
-    release?.();
-    await drain;
-    expect(emitFailedDecryption).not.toHaveBeenCalled();
-    expect(emitMessage).not.toHaveBeenCalled();
-    expect(decryptRetries.size).toBe(0);
-  });
-
-  it("blocks new encrypted events and crypto retry resurrection after quiescing", async () => {
-    const listeners = new Map<string, () => void>();
-    const cryptoApi = {
-      on: (event: string, listener: () => void) => listeners.set(event, listener),
-    };
-    const { bridge, emitMessage, exhaust } = makeDecryptFixture(cryptoApi);
-    const exhausted = makeMatrixEvent({ eventId: "$exhausted", decryptionFailure: true });
-    exhaust(exhausted);
-    bridge.bindCryptoRetrySignals(cryptoApi);
-    await bridge.drainPendingDecryptions("test shutdown");
-    listeners.get(CryptoEvent.KeyBackupDecryptionKeyCached)?.();
-    const late = makeMatrixEvent({ eventId: "$late" });
-    bridge.attachEncryptedEvent(late as unknown as MatrixEvent, ROOM);
-    late.emit("decrypted", late);
-    await Promise.resolve();
-    expect(exhausted.attemptDecryption).not.toHaveBeenCalled();
-    expect(emitMessage).not.toHaveBeenCalled();
+  registerExplicitDecryptRetryTests({
+    createSdkClient,
+    initializeCrypto,
+    getMatrixJsClient: () => matrixJsClient,
+    captureReadAuthorityMock,
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
