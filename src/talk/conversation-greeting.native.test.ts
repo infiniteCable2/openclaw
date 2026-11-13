@@ -232,45 +232,65 @@ it("isolates native greetings and publishes submitted speech once without overta
                 signal,
               ),
             ).not.toBeNull();
-            stage = `seed:${hasHistory}:open`;
+            stage = `seed:${hasHistory}:append`;
+            if (hasHistory) {
+              const seeded = await appendExpectedSessionTranscriptTurn(target, {
+                config: cfg,
+                keyFormat: "agent-qualified",
+                expectedSessionId: sessionId,
+                selectedSessionId: sessionId,
+                selectedLifecycleRevision: null,
+                sessionFile: sessionKey,
+                assertCurrent: assertLive,
+                messages: [
+                  {
+                    eventId: "fixture-user",
+                    message: {
+                      role: "user",
+                      content: "Read the synthetic note.",
+                      timestamp: 1,
+                    },
+                  },
+                  {
+                    eventId: "fixture-tool-call",
+                    message: assistant(
+                      [
+                        {
+                          type: "toolCall",
+                          id: "call_fixture",
+                          name: "read",
+                          arguments: { path: "synthetic-note.txt" },
+                        },
+                      ],
+                      "toolUse",
+                    ),
+                  },
+                  {
+                    eventId: "fixture-tool-result",
+                    message: {
+                      role: "toolResult",
+                      toolCallId: "call_fixture",
+                      toolName: "read",
+                      content: [{ type: "text", text: "Synthetic note: cobalt." }],
+                      isError: false,
+                      timestamp: 3,
+                    },
+                  },
+                  {
+                    eventId: "fixture-answer",
+                    message: assistant([{ type: "text", text: HISTORY }], "stop"),
+                  },
+                ],
+              });
+              expect(seeded.rejectedReason).toBeUndefined();
+              expect(seeded.appendedMessages).toHaveLength(4);
+            }
             const manager = await SessionManager.openAsync(
               target,
               state.workspaceDir,
               undefined,
               signal,
             );
-            stage = `seed:${hasHistory}:append`;
-            if (hasHistory) {
-              await manager.appendMessageAsync({
-                role: "user",
-                content: "Read the synthetic note.",
-                timestamp: 1,
-              });
-              await manager.appendMessageAsync(
-                assistant(
-                  [
-                    {
-                      type: "toolCall",
-                      id: "call_fixture",
-                      name: "read",
-                      arguments: { path: "synthetic-note.txt" },
-                    },
-                  ],
-                  "toolUse",
-                ),
-              );
-              await manager.appendMessageAsync({
-                role: "toolResult",
-                toolCallId: "call_fixture",
-                toolName: "read",
-                content: [{ type: "text", text: "Synthetic note: cobalt." }],
-                isError: false,
-                timestamp: 3,
-              });
-              await manager.appendMessageAsync(
-                assistant([{ type: "text", text: HISTORY }], "stop"),
-              );
-            }
             stage = `seed:${hasHistory}:projection`;
             await withinTest(projection.ensureMaterialized(), signal);
             const original = structuredClone(manager.getBranch());
@@ -419,7 +439,9 @@ it("isolates native greetings and publishes submitted speech once without overta
                 );
                 assert(witness.contextVersion);
                 stage = `greeting:${hasHistory}:intervening-user`;
-                await appendExpectedSessionTranscriptTurn(target, {
+                const userTurn = await appendExpectedSessionTranscriptTurn(target, {
+                  config: cfg,
+                  keyFormat: "agent-qualified",
                   expectedSessionId: target.sessionId,
                   selectedSessionId: target.sessionId,
                   selectedLifecycleRevision: greeting.target.lifecycleRevision,
@@ -436,6 +458,8 @@ it("isolates native greetings and publishes submitted speech once without overta
                     },
                   ],
                 });
+                expect(userTurn.rejectedReason).toBeUndefined();
+                expect(userTurn.appendedMessages).toHaveLength(1);
                 stage = `greeting:${hasHistory}:late-publication`;
                 await expect(
                   publishConversationGreeting({
