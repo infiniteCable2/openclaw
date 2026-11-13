@@ -76,11 +76,158 @@ describe("Matrix sync admission", () => {
     }
   });
 
-  it("retains failed decryption for a later successful retry and adopts only once", async () => {
+  it.each([
+    DecryptionFailureCode.MEGOLM_UNKNOWN_INBOUND_SESSION_ID,
+    DecryptionFailureCode.OLM_UNKNOWN_MESSAGE_INDEX,
+  ])(
+    "retains %s without blocking later readable events and adopts the recovery once",
+    async (reason) => {
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      const queue = createQueue();
+      const event = encryptedEvent("$retry-decryption", now);
+      const client = createClient();
+      client.crypto = createMatrixCryptoFacade({
+        client: { getCrypto: () => undefined, getUserId: () => null },
+        verificationManager: new MatrixVerificationManager(),
+        recoveryKeyStore: new MatrixRecoveryKeyStore(),
+        downloadContent: async () => Buffer.alloc(0),
+      });
+      const failed = new MatrixEvent({
+        ...event,
+        type: "m.room.message",
+        content: { msgtype: "m.bad.encrypted", body: "Synthetic missing room key" },
+      });
+      vi.spyOn(failed, "isDecryptionFailure").mockReturnValue(true);
+      vi.spyOn(failed, "decryptionFailureReason", "get").mockReturnValue(reason);
+      const later = ["$later-first", "$later-second"].map((id) => encryptedEvent(id, now + 1));
+      const clearLater = later.map((raw) =>
+        matrixEventToRaw(
+          new MatrixEvent({
+            ...raw,
+            type: "m.room.message",
+            content: { msgtype: "m.text", body: "Readable after the new device is ready" },
+          }),
+        ),
+      );
+      const hydrate = vi
+        .spyOn(client, "hydrateEvents")
+        .mockImplementation(async (_room, events) =>
+          events.map((raw) =>
+            raw.event_id === event.event_id
+              ? matrixEventToRaw(failed)
+              : clearLater.find((clear) => clear.event_id === raw.event_id)!,
+          ),
+        );
+      const dispatch = vi.fn(
+        async (
+          _room: string,
+          _event: MatrixRawEvent,
+          lifecycle: ChannelIngressMonitorLifecycle,
+        ) => {
+          await lifecycle.onAdopted();
+        },
+      );
+      const params = { accountId: "default", client, startupMs: now, queue, dispatch };
+      const first = createMatrixIngressMonitor(params);
+      try {
+        const sync = matrixSyncResponse("cursor", roomId, event, "previous");
+        sync.rooms.join[roomId]!.timeline!.events.push(...later);
+        await first.admitSync(sync, {
+          hasSavedSync: true,
+        });
+        first.start();
+        await first.waitForIdle();
+        expect(dispatch.mock.calls.map(([, raw]) => raw.event_id)).toEqual(
+          later.map((raw) => raw.event_id),
+        );
+        expect(await queue.listClaims()).toEqual([]);
+        expect(await queue.listPending()).toMatchObject([
+          {
+            id: event.event_id,
+            payload: { event },
+            attempts: 1,
+            lastError: expect.stringContaining(reason),
+          },
+        ]);
+      } finally {
+        await first.stop();
+      }
+
+      const clear = matrixEventToRaw(
+        new MatrixEvent({
+          ...event,
+          type: "m.room.message",
+          content: { msgtype: "m.text", body: "Decrypted fixture" },
+        }),
+      );
+      hydrate.mockResolvedValue([clear]);
+      clock.mockReturnValue(now + 2_000);
+      const retry = createMatrixIngressMonitor(params);
+      try {
+        retry.start();
+        await retry.waitForIdle();
+        await retry.admitSync(matrixSyncResponse("replay", roomId, event, "previous"), {
+          hasSavedSync: true,
+        });
+        await retry.waitForIdle();
+        expect(dispatch.mock.calls.map(([, raw]) => raw.event_id)).toEqual([
+          ...later.map((raw) => raw.event_id),
+          event.event_id,
+        ]);
+        expect(dispatch).toHaveBeenLastCalledWith(roomId, clear, expect.any(Object));
+        expect(hydrate).toHaveBeenCalledTimes(4);
+        expect(await queue.listPending()).toEqual([]);
+        expect(await queue.listClaims()).toEqual([]);
+      } finally {
+        await retry.stop();
+      }
+    },
+  );
+
+  it("keeps ordinary delivery failures ordered within their room", async () => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const queue = createQueue();
+    const head = {
+      event_id: "$dispatch-head",
+      type: "m.room.message",
+      origin_server_ts: now,
+      sender: "@alice:example.org",
+      content: { msgtype: "m.text", body: "First" },
+    };
+    const sync = matrixSyncResponse("ordinary-failure", roomId, head, "previous");
+    sync.rooms.join[roomId]!.timeline!.events.push({ ...head, event_id: "$dispatch-tail" });
+    const dispatch = vi.fn(async () => {
+      throw new Error("Synthetic delivery failure");
+    });
+    const monitor = createMatrixIngressMonitor({
+      accountId: "default",
+      client: createClient(),
+      startupMs: now,
+      queue,
+      dispatch,
+    });
+    try {
+      await monitor.admitSync(sync, { hasSavedSync: true });
+      monitor.start();
+      await monitor.waitForIdle();
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(await queue.listPending()).toMatchObject([
+        { id: "$dispatch-head", attempts: 1, lastError: "Synthetic delivery failure" },
+        { id: "$dispatch-tail", attempts: 0 },
+      ]);
+      expect(await queue.listClaims()).toEqual([]);
+    } finally {
+      await monitor.stop();
+    }
+  });
+
+  it("readmits recovered ciphertext behind an active room delivery", async () => {
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
     const queue = createQueue();
-    const event = encryptedEvent("$retry-decryption", now);
+    const event = encryptedEvent("$late-key", now);
     const client = createClient();
     client.crypto = createMatrixCryptoFacade({
       client: { getCrypto: () => undefined, getUserId: () => null },
@@ -88,66 +235,131 @@ describe("Matrix sync admission", () => {
       recoveryKeyStore: new MatrixRecoveryKeyStore(),
       downloadContent: async () => Buffer.alloc(0),
     });
-    const failed = new MatrixEvent({
-      ...event,
-      type: "m.room.message",
-      content: { msgtype: "m.bad.encrypted", body: "Synthetic missing room key" },
-    });
-    vi.spyOn(failed, "isDecryptionFailure").mockReturnValue(true);
-    vi.spyOn(failed, "decryptionFailureReason", "get").mockReturnValue(
-      DecryptionFailureCode.MEGOLM_UNKNOWN_INBOUND_SESSION_ID,
-    );
-    const hydrate = vi.spyOn(client, "hydrateEvents").mockResolvedValue([matrixEventToRaw(failed)]);
-    const dispatch = vi.fn(
-      async (_room: string, _event: MatrixRawEvent, lifecycle: ChannelIngressMonitorLifecycle) => {
-        await lifecycle.onAdopted();
-      },
-    );
-    const params = { accountId: "default", client, startupMs: now, queue, dispatch };
-    const first = createMatrixIngressMonitor(params);
-    try {
-      await first.admitSync(matrixSyncResponse("cursor", roomId, event, "previous"), {
-        hasSavedSync: true,
-      });
-      first.start();
-      await first.waitForIdle();
-      expect(dispatch).not.toHaveBeenCalled();
-      expect(await queue.listClaims()).toEqual([]);
-      expect(await queue.listPending()).toMatchObject([
-        {
-          id: event.event_id,
-          payload: { event },
-          attempts: 1,
-          lastError: expect.stringContaining("MEGOLM_UNKNOWN_INBOUND_SESSION_ID"),
-        },
-      ]);
-    } finally {
-      await first.stop();
-    }
-
-    const clear = matrixEventToRaw(
-      new MatrixEvent({
-        ...event,
-        type: "m.room.message",
-        content: { msgtype: "m.text", body: "Decrypted fixture" },
+    let readable = false;
+    const hydrate = vi.spyOn(client, "hydrateEvents").mockImplementation(async (_room, events) =>
+      events.map((raw) => {
+        if (raw.event_id !== event.event_id) {
+          return raw as MatrixRawEvent;
+        }
+        if (!readable) {
+          return event;
+        }
+        return {
+          ...event,
+          type: "m.room.message",
+          content: { msgtype: "m.text", body: "Recovered" },
+        };
       }),
     );
-    hydrate.mockResolvedValue([clear]);
-    clock.mockReturnValue(now + 2_000);
-    const retry = createMatrixIngressMonitor(params);
+    const initial = createMatrixIngressMonitor({
+      accountId: "default",
+      client,
+      startupMs: now,
+      queue,
+      dispatch: async () => {
+        throw new Error("No clear event exists yet");
+      },
+    });
+    await initial.admitSync(matrixSyncResponse("initial", roomId, event, "previous"), {
+      hasSavedSync: true,
+    });
+    initial.start();
+    await initial.waitForIdle();
+    await initial.stop();
+
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const delivered: string[] = [];
+    const monitor = createMatrixIngressMonitor({
+      accountId: "default",
+      client,
+      startupMs: now,
+      queue,
+      dispatch: async (_room, raw, lifecycle) => {
+        delivered.push(raw.event_id!);
+        if (raw.event_id === "$active") {
+          started.resolve();
+          await release.promise;
+        }
+        await lifecycle.onAdopted();
+      },
+    });
+    const plain = (id: string) => ({
+      ...event,
+      event_id: id,
+      type: "m.room.message",
+      content: { msgtype: "m.text", body: id },
+    });
     try {
-      retry.start();
-      await retry.waitForIdle();
-      await retry.admitSync(matrixSyncResponse("replay", roomId, event, "previous"), {
+      await monitor.admitSync(matrixSyncResponse("active", roomId, plain("$active"), "previous"), {
         hasSavedSync: true,
       });
-      await retry.waitForIdle();
-      expect(dispatch).toHaveBeenCalledExactlyOnceWith(roomId, clear, expect.any(Object));
-      expect(hydrate).toHaveBeenCalledTimes(2);
+      monitor.start();
+      await started.promise;
+      readable = true;
+      clock.mockReturnValue(now + 2_000);
+      await monitor.admitSync(matrixSyncResponse("tail", roomId, plain("$tail"), "previous"), {
+        hasSavedSync: true,
+      });
+      await vi.waitFor(async () => {
+        expect(await queue.listPending()).toMatchObject([
+          { id: "$late-key", payload: { event } },
+          { id: "$tail" },
+        ]);
+        expect(await queue.listClaims()).toMatchObject([{ id: "$active" }]);
+        expect(hydrate).toHaveBeenCalledTimes(3);
+      });
+      expect(delivered).toEqual(["$active"]);
+      release.resolve();
+      await monitor.waitForIdle();
+      expect(delivered).toEqual(["$active", "$late-key", "$tail"]);
       expect(await queue.listPending()).toEqual([]);
       expect(await queue.listClaims()).toEqual([]);
     } finally {
-      await retry.stop();
+      release.resolve();
+      await monitor.stop();
+    }
+  });
+
+  it("does not deliver a late SDK result after the monitor stops", async () => {
+    const now = Date.now();
+    const queue = createQueue();
+    const client = createClient();
+    const started = Promise.withResolvers<void>();
+    const hydrated = Promise.withResolvers<MatrixRawEvent[]>();
+    const event = {
+      ...encryptedEvent("$stopped-read", now),
+      type: "m.room.message",
+      content: { msgtype: "m.text", body: "Synthetic late SDK result" },
+    };
+    vi.spyOn(client, "hydrateEvents").mockImplementation(async () => {
+      started.resolve();
+      return await hydrated.promise;
+    });
+    const dispatch = vi.fn();
+    const monitor = createMatrixIngressMonitor({
+      accountId: "default",
+      client,
+      startupMs: now,
+      queue,
+      dispatch,
+    });
+    try {
+      await monitor.admitSync(matrixSyncResponse("stop", roomId, event, "previous"), {
+        hasSavedSync: true,
+      });
+      monitor.start();
+      await started.promise;
+      await monitor.stop();
+      hydrated.resolve([event]);
+      await monitor.waitForIdle();
+      expect(dispatch).not.toHaveBeenCalled();
+      const pending = await queue.listPending();
+      const claims = await queue.listClaims();
+      expect([...pending, ...claims]).toMatchObject([{ id: "$stopped-read", payload: { event } }]);
+    } finally {
+      hydrated.resolve([event]);
+      await monitor.stop();
     }
   });
 

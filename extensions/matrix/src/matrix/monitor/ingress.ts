@@ -21,6 +21,7 @@ type MatrixIngressEvent = {
 type MatrixIngressPayload = MatrixIngressEvent & { version: 1 };
 
 const MatrixIngressPayloadError = createChannelIngressError("MatrixIngressPayloadError");
+const MATRIX_DECRYPTION_WAIT_MESSAGE = "Matrix ingress event is waiting for decryption";
 
 function inspectMatrixIngressEvent(raw: MatrixIngressEvent) {
   if (
@@ -55,6 +56,7 @@ export function createMatrixIngressMonitor(params: {
     }));
   let lastReceivedAt = 0;
   let initializeOrder: Promise<void> | undefined;
+  const decryptedRetries = new Map<string, MatrixRawEvent>();
   const monitor = createChannelIngressMonitor<
     MatrixIngressEvent,
     MatrixIngressEvent,
@@ -78,7 +80,7 @@ export function createMatrixIngressMonitor(params: {
             : "Matrix event identity changed after durable admission",
         ),
     },
-    deliver: async ({ roomId, event, historical }, lifecycle) => {
+    deliver: async ({ roomId, event, historical }, lifecycle, claim) => {
       if (historical) {
         return;
       }
@@ -88,25 +90,44 @@ export function createMatrixIngressMonitor(params: {
       }
       // Persist ciphertext before the sync cursor, then decrypt from local SDK
       // state on every attempt so a late room key can recover a queued message.
-      const [hydrated] = await params.client.hydrateEvents(roomId, [event]);
+      const cached = decryptedRetries.get(claim.id);
+      const [hydrated] = cached ? [cached] : await params.client.hydrateEvents(roomId, [event]);
+      lifecycle.abortSignal.throwIfAborted();
       const projection = hydrated && getMatrixEventProjection(hydrated);
       if (
         !hydrated ||
         hydrated.type === EventType.RoomMessageEncrypted ||
         projection?.decryptionFailure
       ) {
+        decryptedRetries.delete(claim.id);
         const reason = projection?.decryptionFailureReason;
-        throw new Error(
-          `Matrix ingress event is waiting for decryption${reason ? ` (${reason})` : ""}`,
-        );
+        throw new Error(`${MATRIX_DECRYPTION_WAIT_MESSAGE}${reason ? ` (${reason})` : ""}`);
       }
-      return await params.dispatch(roomId, hydrated, lifecycle);
+      if (!cached && claim.lastError?.startsWith(MATRIX_DECRYPTION_WAIT_MESSAGE)) {
+        // Rejoin ordinary room admission before dispatching a recovered event.
+        // Keep the SDK result only across this native pending handoff.
+        decryptedRetries.set(claim.id, hydrated);
+        return { kind: "pending" };
+      }
+      try {
+        return await params.dispatch(roomId, hydrated, lifecycle);
+      } finally {
+        decryptedRetries.delete(claim.id);
+      }
     },
     pollIntervalMs: 1_000,
     retention: "standard",
     waitForDeliveryIdleOnStop: false,
     drain: {
       deferredLaneOccupancy: "release",
+      // The SDK retries missing keys per event. A key wait must not hold every
+      // later message in the room; keep the stored room identity for admission.
+      deriveLaneKey: (record) =>
+        record.lastError?.startsWith(MATRIX_DECRYPTION_WAIT_MESSAGE) &&
+        !decryptedRetries.has(record.id) &&
+        record.payload?.event?.type === EventType.RoomMessageEncrypted
+          ? `decryption:${record.id}`
+          : record.laneKey,
       onLog: params.onError,
       resolveNonRetryableFailure: (error) =>
         error instanceof MatrixIngressPayloadError
@@ -188,7 +209,13 @@ export function createMatrixIngressMonitor(params: {
   return {
     admitSync,
     start: monitor.start,
-    stop: monitor.stop,
+    stop: async () => {
+      try {
+        await monitor.stop();
+      } finally {
+        decryptedRetries.clear();
+      }
+    },
     waitForIdle: monitor.waitForIdle,
   };
 }

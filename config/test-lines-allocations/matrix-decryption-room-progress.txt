@@ -1,0 +1,7 @@
+# Matrix ingress: native SQLite queue retains both SDK key-wait errors while
+# later readable events progress, then adopts a recovered event only once across
+# restart. Ordinary delivery failures retain room ordering. Extends the existing
+# integration proof instead of adding a second fixture or changing retry policy.
+# Also covers recovered ciphertext behind active room work and an SDK read
+# resolving after monitor shutdown, using the existing SQLite/SDK fixture.
+212
