@@ -553,7 +553,7 @@ it("public STT/TTS greeting is natively prepared without tools and held until th
       turnEnded.resolve();
     }
   });
-  const { sessionId, readyMark } = await createSpeechRelayCall();
+  const { sessionId, readyMark, target } = await createSpeechRelayCall();
   expect(mocks.runEmbeddedAgent).toHaveBeenCalledOnce();
   expect(mocks.runEmbeddedAgent.mock.calls[0]![0]).toMatchObject({
     agentId: "voice",
@@ -592,6 +592,25 @@ it("public STT/TTS greeting is natively prepared without tools and held until th
       }),
     );
     expect(mocks.streamSpeech).toHaveBeenCalledOnce();
+    const stored = loadSessionEntry({
+      agentId: target.agentId,
+      sessionKey: target.canonicalKey,
+      storePath: target.storePath,
+    })!;
+    const transcript = readSessionTranscriptMessageEvents({
+      agentId: target.agentId,
+      sessionId: stored.sessionId,
+      storePath: target.storePath,
+    });
+    expect(
+      transcript.filter(
+        ({ event }) =>
+          isRecord(event) &&
+          isRecord(event.message) &&
+          event.message.role === "assistant" &&
+          JSON.stringify(event.message.content).includes("Hello, welcome to your call."),
+      ),
+    ).toHaveLength(1);
   } finally {
     vi.useRealTimers();
   }

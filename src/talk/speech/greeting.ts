@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { buildApiErrorObservationFields } from "../../agents/embedded-agent-error-observation.js";
+import { isSqliteTranscriptMutationConflict } from "../../config/sessions/session-mutation-conflict-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { formatErrorMessage } from "../../infra/errors.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import type { RealtimeVoiceAgentConsultResult } from "../agent-consult-runtime.js";
 import type { RealtimeVoiceSessionHarness } from "../realtime-session-harness.js";
@@ -14,7 +18,20 @@ import type { SpeechInputIdentity } from "./types.js";
 const MAX_GREETING_CHARS = 300;
 const MAX_GREETING_AUDIO_BYTES = 24_000 * 2 * 15;
 
-export type PreparedSpeechGreeting = { text: string; audio: Buffer };
+type GreetingSubmission = { audioDelivery: "submitted" | "interrupted" };
+export type PreparedSpeechGreeting = {
+  text: string;
+  audio: Buffer;
+  /** Original host re-admits the submitted output; generation retains no write grant. */
+  recordSubmitted?: (submission: GreetingSubmission) => Promise<void>;
+};
+const log = createSubsystemLogger("talk/greeting");
+
+function greetingFailureFields(error: unknown) {
+  const { rawErrorHash, rawErrorFingerprint, httpCode, providerRuntimeFailureKind } =
+    buildApiErrorObservationFields(formatErrorMessage(error));
+  return { rawErrorHash, rawErrorFingerprint, httpCode, providerRuntimeFailureKind };
+}
 
 /** Play prepared speech only after remote media is ready and this output is still current. */
 export async function playSpeechGreeting(params: {
@@ -56,9 +73,20 @@ export async function playSpeechGreeting(params: {
       payload: { sessionId: params.sessionId, text: params.greeting.text },
     });
     if (await params.writeOutputAudio(params.greeting.audio, true, isCurrent)) {
-      params.harness.recordTranscript("assistant", params.greeting.text).audioDelivery = isCurrent()
-        ? "submitted"
-        : "interrupted";
+      const audioDelivery = isCurrent() ? "submitted" : "interrupted";
+      params.harness.recordTranscript("assistant", params.greeting.text).audioDelivery =
+        audioDelivery;
+      try {
+        await params.greeting.recordSubmitted?.({ audioDelivery });
+      } catch (error) {
+        // An already submitted greeting must never be replayed or close healthy audio
+        // because its separate history publication failed.
+        if (isSqliteTranscriptMutationConflict(error)) {
+          log.debug("Submitted greeting history skipped because the conversation advanced");
+        } else {
+          log.warn("Submitted greeting history publication failed", greetingFailureFields(error));
+        }
+      }
       if (isCurrent()) {
         params.harness.finishOutputAudio("completed");
         params.harness.endTurn();
@@ -70,7 +98,7 @@ export async function playSpeechGreeting(params: {
 }
 
 /** Prepare speech before answering, but leave playback to the live audio engine. */
-export async function prepareSpeechGreeting(params: {
+type PrepareSpeechGreetingParams = {
   cfg: OpenClawConfig;
   runtime: PluginRuntime;
   consultAgent: (
@@ -94,7 +122,37 @@ export async function prepareSpeechGreeting(params: {
   /** Keep late acquisition and failed cleanup owned by the admitting call. */
   onPreparation?: (preparation: SpeechSessionPreparation) => void;
   now?: Date;
-}): Promise<PreparedSpeechGreeting> {
+  onSubmitted?: (
+    submission: GreetingSubmission & {
+      greeting: NonNullable<RealtimeVoiceAgentConsultResult["greeting"]>;
+      text: string;
+    },
+  ) => Promise<void>;
+};
+
+export async function prepareSpeechGreeting(
+  params: PrepareSpeechGreetingParams,
+): Promise<PreparedSpeechGreeting> {
+  const startedAt = performance.now();
+  let phase = "consult";
+  try {
+    return await prepareGreeting(params, (next) => {
+      phase = next;
+    });
+  } catch (error) {
+    log.warn("Speech greeting preparation failed", {
+      phase,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      ...greetingFailureFields(error),
+    });
+    throw error;
+  }
+}
+
+async function prepareGreeting(
+  params: PrepareSpeechGreetingParams,
+  onPhase: (phase: string) => void,
+): Promise<PreparedSpeechGreeting> {
   params.signal.throwIfAborted();
   const localTime = new Intl.DateTimeFormat("de-DE", {
     timeZone: params.timeZone,
@@ -198,6 +256,7 @@ export async function prepareSpeechGreeting(params: {
     },
   };
   let preparationPublished = false;
+  onPhase("tts-acquisition");
   const acquisition = Promise.resolve().then(() => {
     if (!preparationPublished) {
       throw new Error("Speech greeting cleanup ownership could not be published");
@@ -228,6 +287,7 @@ export async function prepareSpeechGreeting(params: {
     if (!tts.success || !tts.audioStream || !tts.sampleRate) {
       throw new Error(tts.error ?? "Meeting greeting TTS preparation failed");
     }
+    onPhase("tts-stream");
     reader = tts.audioStream.getReader();
     const converter = createSpeechTtsAudioStreamConverter(
       tts.sampleRate,
@@ -256,7 +316,18 @@ export async function prepareSpeechGreeting(params: {
     if (size === 0) {
       throw new Error("Meeting greeting TTS returned no audio");
     }
-    greeting = { text, audio: Buffer.concat(chunks, size) };
+    const publication = result.greeting;
+    const record = params.onSubmitted;
+    greeting = {
+      text,
+      audio: Buffer.concat(chunks, size),
+      ...(publication && record
+        ? {
+            recordSubmitted: (submission: GreetingSubmission) =>
+              record({ ...submission, greeting: publication, text }),
+          }
+        : {}),
+    };
   } catch (error) {
     failed = true;
     failure = error;
@@ -264,6 +335,9 @@ export async function prepareSpeechGreeting(params: {
   try {
     // Cleanup is independent of the expired greeting deadline. An admission
     // cannot claim readiness while its provider's release is still unknown.
+    if (!failed) {
+      onPhase("tts-cleanup");
+    }
     await preparation.release();
   } catch (error) {
     if (failed) {

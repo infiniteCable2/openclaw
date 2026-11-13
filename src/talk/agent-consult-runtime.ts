@@ -13,6 +13,7 @@ import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types
 import type { ProviderLocalServiceLease } from "../agents/provider-local-service-target.js";
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../agents/spawned-context.js";
 import { resolveLoadedSessionThreadInfo } from "../channels/plugins/session-thread-info-loaded.js";
+import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { AssistantDeliveryTtsFacts } from "../llm/types.js";
@@ -36,6 +37,7 @@ import {
   buildRealtimeVoiceAgentConsultPrompt,
   type RealtimeVoiceAgentConsultTranscriptEntry,
 } from "./agent-consult-tool.js";
+import type { GreetingPublicationTarget } from "./conversation-greeting-publication.js";
 
 export type RealtimeVoiceAgentConsultRuntime = PluginRuntimeCore["agent"];
 
@@ -57,6 +59,13 @@ export type RealtimeVoiceAgentConsultResult = {
   yielded?: true;
   /** Ordered admitted utterances for buffered playback; includes explicit commentary. */
   utterances?: RealtimeVoiceSpeechUtterance[];
+  /** Host-captured binding for later submitted greeting speech; never an admission grant. */
+  greeting?: {
+    target: GreetingPublicationTarget;
+    expectedTranscript: SessionTranscriptContextVersion;
+    eventId: string;
+    timestamp: number;
+  };
 };
 export type RealtimeVoiceSpeechExpressionContext = {
   guidance: string;

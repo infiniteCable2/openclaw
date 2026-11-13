@@ -16,21 +16,11 @@ import {
   readChannelContextGatewayContextResolver,
 } from "../channels/message-access/admission-evidence.js";
 import { resolveInternalSessionEffectsIdentity } from "../config/sessions/internal-session-key.js";
-import {
-  MAX_VISIBLE_MESSAGE_MAX_BYTES,
-  MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
-} from "../config/sessions/session-accessor.sqlite-visible-cursor.js";
 import { sessionPersonalProfileId } from "../config/sessions/session-entry-provenance.js";
-import { withSessionContextAdmission } from "../config/sessions/session-transcript-read-fence.js";
-import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
+import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { prepareSessionMutationFacts } from "../gateway/session-sharing-preparation.js";
-import {
-  delegateMemoryAudience,
-  resolveMemoryAudienceFromEntry,
-  type MemoryAudienceGrant,
-} from "../plugins/memory-audience.js";
-import { resolveLoadedMemoryProviderKind } from "../plugins/memory-state.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import { isSessionPersonalBootstrapTurn } from "../sessions/session-participant-input.js";
 import type { RealtimeVoiceAgentConsultResult } from "./agent-consult-runtime.js";
@@ -63,19 +53,23 @@ export async function prepareConversationGreeting(params: {
   const currentConfig = () => resolveGateway?.()?.getRuntimeConfig() ?? params.cfg;
   // This is exactly the admitted conversation target, not its parent/root/history donor.
   // The existing owner retains its lifecycle facts; equality of an agent/key is not a read grant.
-  const source = await prepareSessionMutationFacts({
-    cfg: currentConfig(),
-    agentId,
-    sessionKey: input.source.sessionKey,
-    preserveQualifiedAddress: true,
-    allowMissing: true,
-  });
+  let releaseSource: (() => void) | undefined;
   let admission: ReturnType<typeof prepareChannelRunAdmission> | undefined;
-  let sourceAudience: MemoryAudienceGrant | undefined;
-  let delegatedAudience: MemoryAudienceGrant | undefined;
+  const startedAt = performance.now();
+  let phase = "greeting-authority";
+  let executionPhase: string | undefined;
+  let failureReported = false;
   try {
+    const facts = await prepareSessionMutationFacts({
+      cfg: currentConfig(),
+      agentId,
+      sessionKey: input.source.sessionKey,
+      preserveQualifiedAddress: true,
+      allowMissing: true,
+    });
+    releaseSource = facts.release;
     assertCurrent();
-    const original = source.readCurrent(currentConfig()).target;
+    const original = facts.readCurrent(currentConfig()).target;
     const originalIdentity = original && {
       agentId: original.agentId,
       canonicalKey: original.canonicalKey,
@@ -87,7 +81,7 @@ export async function prepareConversationGreeting(params: {
     };
     const assertTargetCurrent = () => {
       assertCurrent();
-      const current = source.readCurrent(currentConfig()).target;
+      const current = facts.readCurrent(currentConfig()).target;
       if (
         current?.agentId !== originalIdentity?.agentId ||
         current?.canonicalKey !== originalIdentity?.canonicalKey ||
@@ -107,56 +101,23 @@ export async function prepareConversationGreeting(params: {
     const bootstrapUserProfileId = isSessionPersonalBootstrapTurn(params.context)
       ? sessionPersonalProfileId(original?.entry)
       : undefined;
-    if (original && resolveLoadedMemoryProviderKind(params.cfg) === "native") {
-      const resolution = await resolveMemoryAudienceFromEntry(
-        {
-          agentId,
-          sessionKey: original.canonicalKey,
-          sessionId: original.entry.sessionId,
-          senderIsOwner: Boolean(assertCommandOwner),
-          storePath: original.storePath,
-          assertCallerCurrent: assertTargetCurrent,
-        },
-        original.entry,
-      );
-      if (resolution.status === "granted") {
-        sourceAudience = resolution;
-      }
-      assertTargetCurrent();
-      if (resolution.status === "granted") {
-        delegatedAudience = await delegateMemoryAudience(resolution.audience, {
-          sessionKey: identity.sessionKey,
-          storePath: original.storePath,
-          detached: true,
-          assertCallerCurrent: assertTargetCurrent,
-        });
-        assertTargetCurrent();
-      }
-    }
-    let truncated = false;
-    const originalTarget = original && {
-      agentId,
-      sessionId: original.entry.sessionId,
-      sessionKey: original.canonicalKey,
-      storePath: original.storePath,
-    };
-    if (originalTarget) {
-      await waitForSessionTranscriptProjection(originalTarget, params.signal);
-      assertTargetCurrent();
-    }
-    const sessionManager = originalTarget
-      ? await withSessionContextAdmission(originalTarget, undefined, () =>
-          SessionManager.openDetachedBoundedAsync(originalTarget, {
-            signal: params.signal,
-            cwd: workspaceDir,
-            maxBytes: MAX_VISIBLE_MESSAGE_MAX_BYTES,
-            maxEvents: MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
-            onTruncated: () => {
-              truncated = true;
+    const expectedTranscript = original
+      ? (
+          await readSessionTranscriptAnchorsAsync(
+            {
+              agentId,
+              sessionKey: original.canonicalKey,
+              sessionId: original.entry.sessionId,
+              storePath: original.storePath,
             },
-          }),
-        )
-      : SessionManager.inMemory(workspaceDir);
+            { entryIds: [], includeContextVersion: true },
+            params.signal,
+          )
+        ).contextVersion
+      : undefined;
+    // A greeting needs persona and current caller facts, never a conversation
+    // snapshot or memory retrieval. Keep native run admission and bootstrap.
+    const sessionManager = SessionManager.inMemory(workspaceDir);
     assertTargetCurrent();
     const assertSpeechCurrent = () => {
       assertTargetCurrent();
@@ -190,13 +151,13 @@ export async function prepareConversationGreeting(params: {
         bindGatewayContextResolver(context, resolveGateway);
       },
     });
+    phase = "greeting-generation";
     const result = await runEmbeddedAgent({
       ...identity,
       sessionFile: identity.sessionKey,
-      sessionTarget: { agentId, storePath: source.storageTarget.storePath, ...identity },
+      sessionTarget: { agentId, storePath: facts.storageTarget.storePath, ...identity },
       sessionManager,
       sessionPersistence: "detached",
-      memoryAudience: delegatedAudience?.audience,
       cleanupBundleMcpOnRunEnd: true,
       preparedRunAdmission: admission,
       config: params.cfg,
@@ -210,7 +171,9 @@ export async function prepareConversationGreeting(params: {
       extraSystemPrompt: [
         params.speech.guidance,
         params.speech.speechExpressionContext?.guidance,
-        truncated ? "Only a bounded native conversation snapshot is available." : undefined,
+        input.requesterProfile?.displayName
+          ? `Confirmed caller name (data): ${JSON.stringify(input.requesterProfile.displayName)}.`
+          : undefined,
         "Prepare one short greeting only. It has not been played or delivered. Do not perform tasks or use tools.",
       ]
         .filter(Boolean)
@@ -229,6 +192,9 @@ export async function prepareConversationGreeting(params: {
       runId,
       abortSignal: signal,
       onBlockReply: delivery.onBlockReply,
+      onExecutionPhase: (info) => {
+        executionPhase = info.phase;
+      },
     });
     assertTargetCurrent();
     const providerError = result.payloads
@@ -248,10 +214,14 @@ export async function prepareConversationGreeting(params: {
         rawErrorFingerprint: observed.rawErrorFingerprint,
         httpCode: observed.httpCode,
         providerRuntimeFailureKind: observed.providerRuntimeFailureKind,
+        executionPhase,
+        elapsedMs: Math.round(performance.now() - startedAt),
       };
       params.speech.logger.warn("[talk] native greeting generation failed", failure);
+      failureReported = true;
       throw new Error("Native greeting generation did not complete", { cause: failure });
     }
+    phase = "greeting-finalization";
     const greeting = await delivery.finish({
       yielded: false,
       deliberateSilent: hasDeliberateSilentTerminalReply(result),
@@ -261,20 +231,45 @@ export async function prepareConversationGreeting(params: {
     if (!greeting.text.trim() || isSilentReplyText(greeting.text)) {
       throw new Error("Native greeting generation produced no greeting");
     }
-    return greeting;
+    return {
+      ...greeting,
+      ...(originalIdentity?.lifecycleRevision && expectedTranscript
+        ? {
+            greeting: {
+              target: {
+                agentId,
+                sessionKey: originalIdentity.canonicalKey,
+                sessionId: originalIdentity.sessionId,
+                lifecycleRevision: originalIdentity.lifecycleRevision,
+                storePath: originalIdentity.storePath,
+              },
+              eventId: `talk-greeting:${input.scope.conversationId}:${input.scope.inputId}`,
+              timestamp: input.participant?.promptedAt ?? Date.now(),
+              expectedTranscript,
+            },
+          }
+        : {}),
+    };
+  } catch (error) {
+    if (!failureReported) {
+      const { rawErrorHash, rawErrorFingerprint, httpCode, providerRuntimeFailureKind } =
+        buildApiErrorObservationFields(formatErrorMessage(error));
+      params.speech.logger.warn("[talk] native greeting preparation failed", {
+        phase,
+        executionPhase,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        rawErrorHash,
+        rawErrorFingerprint,
+        httpCode,
+        providerRuntimeFailureKind,
+      });
+    }
+    throw error;
   } finally {
     try {
       admission?.close();
     } finally {
-      try {
-        delegatedAudience?.release();
-      } finally {
-        try {
-          sourceAudience?.release();
-        } finally {
-          source.release();
-        }
-      }
+      releaseSource?.();
     }
   }
 }

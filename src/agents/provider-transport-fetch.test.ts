@@ -1,3 +1,4 @@
+import * as transportDiagnostics from "@openclaw/ai/diagnostics";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { Stream } from "openai/streaming";
 import type { Model } from "openclaw/plugin-sdk/llm";
@@ -102,6 +103,7 @@ describe("buildGuardedModelFetch", () => {
   installProviderTransportFetchTestHooks();
 
   it("waits for local reconciliation and releases its lease after consuming the body", async () => {
+    using errorLog = vi.spyOn(transportDiagnostics, "emitModelTransportError");
     vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
     vi.stubEnv("OPENCLAW_DEBUG_PROXY_URL", "http://127.0.0.1:7799");
     const entered = createDeferredCore();
@@ -119,6 +121,7 @@ describe("buildGuardedModelFetch", () => {
       const response = await pending;
       await expect(response.text()).resolves.toBe("ok");
       expect(release).toHaveBeenCalledOnce();
+      expect(errorLog).not.toHaveBeenCalled();
       expect(resolveProviderRequestPolicyConfigMock).toHaveBeenCalledWith(
         expect.objectContaining({ request: { proxy: undefined } }),
       );
@@ -126,6 +129,27 @@ describe("buildGuardedModelFetch", () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it.each(["local-service-preparation", "http-request"])(
+    "identifies %s failures without changing the thrown error",
+    async (phase) => {
+      using errorLog = vi.spyOn(transportDiagnostics, "emitModelTransportError");
+      const error = new Error("Synthetic provider preparation failure");
+      const failingOwner =
+        phase === "local-service-preparation"
+          ? ensureModelProviderLocalServiceMock
+          : fetchWithSsrFGuardMock;
+      failingOwner.mockRejectedValue(error);
+      await expect(request({}, localModel)).rejects.toBe(error);
+      expect(errorLog).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        "model-fetch",
+        expect.stringContaining(`phase=${phase} elapsedMs=`),
+        undefined,
+      );
+      expect(fetchWithSsrFGuardMock).toHaveBeenCalledTimes(phase === "http-request" ? 1 : 0);
+    },
+  );
 
   it.each(["guard cleanup", "fetch"])("releases the local lease on %s failure", async (stage) => {
     const release = vi.fn();

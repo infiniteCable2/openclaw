@@ -13,6 +13,7 @@ import {
   replyToConversationInput,
   type ConversationReplyParams,
 } from "../talk/conversation-reply.js";
+import type { prepareSpeechGreeting } from "../talk/speech/greeting.js";
 import { readAdmittedSpeechInput } from "../talk/speech/native-control.js";
 import { readSpeechRealtimeToolAbortSignal } from "../talk/speech/provider-continuity.js";
 import type { SpeechNativeInputParams, SpeechSessionStartParams } from "../talk/speech/types.js";
@@ -242,6 +243,32 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
     const result = await dispatch(consult);
     return result.kind === "reply" ? result.reply : { text: "", delivered: true };
   };
+  const onGreetingSubmitted: NonNullable<
+    Parameters<typeof prepareSpeechGreeting>[0]["onSubmitted"]
+  > = async (submission) => {
+    params.assertOutputCurrent();
+    const scope = {
+      agentId: params.agentId,
+      conversationId: params.conversationId,
+      inputId: submission.greeting.eventId,
+      purpose: "greeting" as const,
+    };
+    const { publishConversationGreeting } =
+      await import("../talk/conversation-greeting-publication.js");
+    params.assertOutputCurrent();
+    const admission = await params.inputSource.admitInput(scope);
+    await publishConversationGreeting({
+      cfg: params.fullConfig,
+      admission,
+      scope,
+      expectedTarget: submission.greeting.target,
+      expectedTranscript: submission.greeting.expectedTranscript,
+      eventId: submission.greeting.eventId,
+      timestamp: submission.greeting.timestamp,
+      text: submission.text,
+      audioDelivery: submission.audioDelivery,
+    });
+  };
   return {
     platform: {
       displayName: params.platform.displayName,
@@ -249,6 +276,7 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
       sessionIdPrefix: params.platform.id,
     },
     consultAgent,
+    onGreetingSubmitted,
     nativeInput: (input: SpeechNativeInputParams) => dispatch(input),
     connectionPresentation: params.connectionPresentation,
     connectionPreparation,

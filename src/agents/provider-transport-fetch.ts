@@ -362,12 +362,14 @@ export function buildGuardedModelFetch(
         `proxy=${dispatcherPolicy ? "configured" : useEnvProxy ? "env" : "none"} ` +
         `policy=${policy ? "custom" : "default"}${diagnosticContext}`,
     );
+    let requestPhase = "local-service-preparation";
     try {
       localServiceLease = await ensureModelProviderLocalService(
         model,
         rawHeaders,
         localServiceSignal,
       );
+      requestPhase = "http-request";
       result = await fetchWithProviderHttpGuard(
         useEnvProxy
           ? withTrustedEnvProxyGuardedFetchMode(guardedFetchOptions)
@@ -384,7 +386,7 @@ export function buildGuardedModelFetch(
         log,
         "model-fetch",
         `provider=${model.provider} api=${model.api} model=${model.id} ` +
-          `elapsedMs=${Date.now() - fetchStartedAt} ${summarizeProviderTransportError(remediatedError)}${diagnosticContext}`,
+          `phase=${requestPhase} elapsedMs=${Date.now() - fetchStartedAt} ${summarizeProviderTransportError(remediatedError)}${diagnosticContext}`,
         baseSignal,
       );
       localServiceLease?.release();

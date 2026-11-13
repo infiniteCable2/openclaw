@@ -4,10 +4,6 @@ import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run
 import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
-import {
-  MAX_VISIBLE_MESSAGE_MAX_BYTES,
-  MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
-} from "../config/sessions/session-accessor.sqlite-visible-cursor.js";
 import { prepareSessionParticipantInput } from "../sessions/session-participant-input.js";
 import { prepareConversationGreeting } from "./conversation-greeting.js";
 import {
@@ -24,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   detached: vi.fn(),
   inMemory: vi.fn(),
   projection: vi.fn(),
+  anchors: vi.fn(),
   prepareRun: vi.fn(),
   memoryKind: vi.fn(),
   resolveAudience: vi.fn(),
@@ -42,6 +39,10 @@ vi.mock("../gateway/session-sharing-preparation.js", () => ({
 // mock-isolation: Projection readiness is a worker boundary, not a fixture timer or data writer.
 vi.mock("../config/sessions/session-transcript-reconcile.js", () => ({
   waitForSessionTranscriptProjection: mocks.projection,
+}));
+// mock-isolation: Read only the native ordering witness; no transcript payload or worker needed here.
+vi.mock("../config/sessions/session-transcript-anchor-read.js", () => ({
+  readSessionTranscriptAnchorsAsync: mocks.anchors,
 }));
 // mock-isolation: The native admission owner is tested separately with original host evidence.
 vi.mock("../auto-reply/reply/channel-run-admission.js", () => ({
@@ -78,6 +79,11 @@ async function setup(existing = true) {
     assertCurrent,
     assertInputCurrent: assertCurrent,
     prepareContext: () => context,
+    requesterProfile: {
+      id: "assigned-person",
+      displayName: "Alex",
+      isCurrent: () => state.current,
+    },
   });
   const input = consumeConversationInputAdmission(cap, scope);
   claimConversationInputExecution(input);
@@ -111,6 +117,9 @@ async function setup(existing = true) {
   mocks.detached.mockResolvedValue(snapshot);
   mocks.inMemory.mockReturnValue(snapshot);
   mocks.projection.mockResolvedValue(undefined);
+  mocks.anchors.mockResolvedValue({
+    contextVersion: { generation: "original-generation", rawSeq: 1, updatedAt: 1 },
+  });
   mocks.prepareRun.mockReturnValue({ close });
   mocks.run.mockResolvedValue({ payloads: [{ text: "Good morning!" }], meta: { durationMs: 1 } });
   const onSpeakableText = vi.fn();
@@ -153,7 +162,7 @@ describe("native detached greeting preparation", () => {
     async (existing) => {
       const fixture = await setup(existing);
       const result = await prepareConversationGreeting(fixture.params);
-      expect(result).toEqual({ text: "Good morning!" });
+      expect(result).toMatchObject({ text: "Good morning!" });
       expect(mocks.prepareFacts).toHaveBeenCalledExactlyOnceWith({
         cfg: fixture.params.cfg,
         agentId: "example-agent",
@@ -161,23 +170,10 @@ describe("native detached greeting preparation", () => {
         preserveQualifiedAddress: true,
         allowMissing: true,
       });
-      expect(mocks.detached).toHaveBeenCalledTimes(existing ? 1 : 0);
-      expect(mocks.inMemory).toHaveBeenCalledTimes(existing ? 0 : 1);
-      expect(mocks.projection).toHaveBeenCalledTimes(existing ? 1 : 0);
-      if (existing) {
-        expect(mocks.detached).toHaveBeenCalledWith(
-          {
-            agentId: "example-agent",
-            sessionKey: fixture.target.canonicalKey,
-            sessionId: fixture.target.entry.sessionId,
-            storePath: fixture.target.storePath,
-          },
-          expect.objectContaining({
-            maxBytes: MAX_VISIBLE_MESSAGE_MAX_BYTES,
-            maxEvents: MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
-          }),
-        );
-      }
+      expect(mocks.detached).not.toHaveBeenCalled();
+      expect(mocks.inMemory).toHaveBeenCalledOnce();
+      expect(mocks.projection).not.toHaveBeenCalled();
+      expect(mocks.anchors).toHaveBeenCalledTimes(existing ? 1 : 0);
       const run = mocks.run.mock.calls[0]![0] as RunEmbeddedAgentParams;
       expect(run).toMatchObject({
         agentId: "example-agent",
@@ -207,26 +203,27 @@ describe("native detached greeting preparation", () => {
     },
   );
 
-  it("marks a bounded greeting snapshot without changing the source conversation", async () => {
+  it("uses confirmed caller facts without reading history or acquiring conversation memory", async () => {
     const fixture = await setup();
-    mocks.detached.mockImplementation(async (_target, options) => {
-      options.onTruncated();
-      return fixture.snapshot;
-    });
+    mocks.detached.mockRejectedValue(new Error("Greeting must not read history"));
+    mocks.projection.mockRejectedValue(new Error("Greeting must not wait for history"));
+    mocks.memoryKind.mockReturnValue("native");
     await prepareConversationGreeting(fixture.params);
     const run = mocks.run.mock.calls[0]![0] as RunEmbeddedAgentParams;
-    expect(run.extraSystemPrompt).toContain(
-      "Only a bounded native conversation snapshot is available.",
-    );
+    expect(run.extraSystemPrompt).toContain('Confirmed caller name (data): "Alex".');
+    expect(mocks.detached).not.toHaveBeenCalled();
+    expect(mocks.projection).not.toHaveBeenCalled();
+    expect(mocks.resolveAudience).not.toHaveBeenCalled();
+    expect(mocks.delegateAudience).not.toHaveBeenCalled();
     expect(run.sessionPersistence).toBe("detached");
     expect(run.sandboxSessionKey).toBe(fixture.target.canonicalKey);
     expect(run.sessionKey).not.toBe(fixture.target.canonicalKey);
     expect(fixture.release).toHaveBeenCalledOnce();
   });
 
-  it("rejects a replaced target after its native snapshot read before starting a model", async () => {
+  it("rejects a replaced target before starting a model", async () => {
     const fixture = await setup();
-    mocks.detached.mockImplementation(async () => {
+    mocks.inMemory.mockImplementation(() => {
       fixture.replaceTarget();
       return fixture.snapshot;
     });
@@ -357,7 +354,7 @@ describe("native detached greeting preparation", () => {
     expect(fixture.release).toHaveBeenCalledOnce();
   });
 
-  it("retains the native conversation audience and assigned human rather than the latest sender", async () => {
+  it("retains the assigned human without delegating conversation memory to the greeting", async () => {
     const fixture = await setup();
     prepareSessionParticipantInput(fixture.params.context, {
       type: "profile",
@@ -385,32 +382,23 @@ describe("native detached greeting preparation", () => {
     const run = mocks.run.mock.calls[0]![0] as RunEmbeddedAgentParams;
     expect(run.bootstrapUserProfileId).toBe("assigned-person");
     expect(run.chatType).toBe("group");
-    expect(run.memoryAudience).toBe(delegated);
-    expect(mocks.resolveAudience).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionKey: fixture.target.canonicalKey,
-        senderIsOwner: false,
-      }),
-      fixture.target.entry,
-    );
-    expect(mocks.delegateAudience).toHaveBeenCalledWith(
-      audience,
-      expect.objectContaining({ sessionKey: run.sessionKey, detached: true }),
-    );
-    expect(releaseSource).toHaveBeenCalledOnce();
-    expect(releaseDelegated).toHaveBeenCalledOnce();
+    expect(run.memoryAudience).toBeUndefined();
+    expect(mocks.resolveAudience).not.toHaveBeenCalled();
+    expect(mocks.delegateAudience).not.toHaveBeenCalled();
+    expect(releaseSource).not.toHaveBeenCalled();
+    expect(releaseDelegated).not.toHaveBeenCalled();
   });
 
-  it("releases a granted native audience if original authority expires during its preparation", async () => {
+  it("releases source authority if the original input expires before model execution", async () => {
     const fixture = await setup();
     const release = vi.fn();
     mocks.memoryKind.mockReturnValue("native");
-    mocks.resolveAudience.mockImplementation(async () => {
+    mocks.inMemory.mockImplementation(() => {
       fixture.state.current = false;
-      return { status: "granted", audience: {}, release };
+      return fixture.snapshot;
     });
     await expect(prepareConversationGreeting(fixture.params)).rejects.toThrow("revoked");
-    expect(release).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
     expect(mocks.delegateAudience).not.toHaveBeenCalled();
     expect(mocks.run).not.toHaveBeenCalled();
     expect(fixture.release).toHaveBeenCalledOnce();

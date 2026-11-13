@@ -388,6 +388,7 @@ export function registerMatrixRtcController(params: {
               timeZone: greeting.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
               audioFormat: "pcm16-24khz",
               ttsContext,
+              onSubmitted: bindings.onGreetingSubmitted,
               signal: greetingSignal,
               onPreparation: (preparation) => {
                 call.greetingPreparation = preparation;

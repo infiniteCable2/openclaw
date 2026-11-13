@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   getReplyFromConfig: vi.fn(),
   prepareExpression: vi.fn(),
   prepareGreeting: vi.fn(),
+  publishGreeting: vi.fn(),
 }));
 // mock-isolation: Native model/storage execution is the boundary, not part of this host adapter test.
 vi.mock("../auto-reply/reply/get-reply.js", () => ({
@@ -29,6 +30,10 @@ vi.mock("../tts/expression-preparation.js", () => ({
 // mock-isolation: Greeting model execution is outside this input-admission adapter.
 vi.mock("../talk/conversation-greeting.js", () => ({
   prepareConversationGreeting: mocks.prepareGreeting,
+}));
+// mock-isolation: The native guarded writer is verified through its real SQLite integration.
+vi.mock("../talk/conversation-greeting-publication.js", () => ({
+  publishConversationGreeting: mocks.publishGreeting,
 }));
 
 function fixture() {
@@ -99,9 +104,46 @@ function fixture() {
 
 describe("original speech binding to native reply", () => {
   beforeEach(() => {
+    mocks.publishGreeting
+      .mockReset()
+      .mockResolvedValue({ appended: true, audioDelivery: "submitted" });
     mocks.getReplyFromConfig.mockReset();
     mocks.prepareExpression.mockReset().mockResolvedValue(undefined);
     mocks.prepareGreeting.mockReset().mockResolvedValue({ text: "Hello." });
+  });
+
+  it("re-admits submitted greetings under their original host without another model call", async () => {
+    const f = fixture();
+    const bindings = createMeetingRealtimeEngineBindingsV2(f.params);
+    const greeting = {
+      eventId: "example-greeting",
+      expectedTranscript: { generation: "original-generation", rawSeq: 1, updatedAt: 1 },
+      timestamp: 1234,
+      target: {
+        agentId: "example",
+        sessionKey: "agent:example:call",
+        sessionId: "original",
+        lifecycleRevision: "revision",
+        storePath: "/example/sessions.sqlite",
+      },
+    };
+    await bindings.onGreetingSubmitted({ greeting, text: "Hello!", audioDelivery: "submitted" });
+    expect(f.params.inputSource.admitInput).toHaveBeenCalledExactlyOnceWith({
+      agentId: "example",
+      conversationId: "example-call",
+      inputId: greeting.eventId,
+      purpose: "greeting",
+    });
+    expect(mocks.publishGreeting).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedTarget: greeting.target,
+        eventId: greeting.eventId,
+        text: "Hello!",
+        audioDelivery: "submitted",
+      }),
+    );
+    expect(mocks.getReplyFromConfig).not.toHaveBeenCalled();
+    expect(mocks.prepareGreeting).not.toHaveBeenCalled();
   });
 
   it.each(["user", "greeting"] as const)(

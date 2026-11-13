@@ -10,6 +10,7 @@ import { createChannelAdmissionAudit } from "../channels/message-access/admissio
 import { createHostIngressFixture } from "../channels/message-access/host-ingress.test-support.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
+import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { bindSessionRowProjection } from "../gateway/session-row-projection-access.js";
 import { createSessionRowProjection } from "../gateway/session-row-projection.js";
@@ -20,6 +21,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { reserveTestPortListener } from "../test-utils/port-claims.js";
 import "../test-utils/prepare-compiled-subprocesses.js";
 import "./conversation-greeting.js"; // Preload the lazy owner outside the test deadline.
+import { publishConversationGreeting } from "./conversation-greeting-publication.js";
 import type { ConversationInputScopeV1 } from "./conversation-input.types.js";
 import { replyToConversationInput } from "./conversation-reply.js";
 
@@ -122,9 +124,9 @@ function configuration(baseUrl: string, workspace: string): OpenClawConfig {
   };
 }
 
-// Keep admission, snapshots and runner real; only the loopback model is synthetic.
-// This checks native greeting composition, not live Matrix/TTS playback.
-it("prepares native detached greetings from fresh and tool-bearing sources without delivery or writes", async ({
+// Keep admission, transcript writer and runner real; only the loopback model is synthetic.
+// Preparation writes nothing; submitted greeting publication is a separate native commit.
+it("isolates native greetings and publishes submitted speech once without overtaking a user turn", async ({
   signal,
 }) => {
   let stage = "listener";
@@ -294,40 +296,43 @@ it("prepares native detached greetings from fresh and tool-bearing sources witho
                   inboundEventKind: "user_request",
                 },
               } satisfies ChannelIngressAdmissionScope;
-              const ingress = await host.ingress.resolveStable({
-                channelId: scope.channelId,
-                accountId: scope.accountId,
-                identity: {
-                  authentication: "verified",
-                  resolveParticipant: () => ({
-                    domain: "example.test",
-                    idKind: "user-id",
-                    id: scope.rawPrincipalRef,
-                  }),
-                },
-                subject: { stableId: scope.rawPrincipalRef },
-                conversation: scope.conversation,
-                contextBinding: scope.binding,
-                dmPolicy: "allowlist",
-                allowFrom: [scope.rawPrincipalRef],
-                useDefaultPairingStore: false,
-              });
-              const admission = host.ingress.conversation.admitInput({
-                ingress,
-                scope,
-                input,
-                assertCurrent: assertLive,
-                signal,
-                context: {
-                  channel: "matrix",
-                  accountId: "default",
-                  from: "matrix:@caller:example.test",
-                  sender: { id: scope.rawPrincipalRef },
+              const freshAdmission = async () => {
+                const ingress = await host.ingress.resolveStable({
+                  channelId: scope.channelId,
+                  accountId: scope.accountId,
+                  identity: {
+                    authentication: "verified",
+                    resolveParticipant: () => ({
+                      domain: "example.test",
+                      idKind: "user-id",
+                      id: scope.rawPrincipalRef,
+                    }),
+                  },
+                  subject: { stableId: scope.rawPrincipalRef },
                   conversation: scope.conversation,
-                  route: { agentId: "main", routeSessionKey: sessionKey },
-                  reply: { to: scope.conversation.id, nativeChannelId: scope.conversation.id },
-                },
-              });
+                  contextBinding: scope.binding,
+                  dmPolicy: "allowlist",
+                  allowFrom: [scope.rawPrincipalRef],
+                  useDefaultPairingStore: false,
+                });
+                return host.ingress.conversation.admitInput({
+                  ingress,
+                  scope,
+                  input,
+                  assertCurrent: assertLive,
+                  signal,
+                  context: {
+                    channel: "matrix",
+                    accountId: "default",
+                    from: "matrix:@caller:example.test",
+                    sender: { id: scope.rawPrincipalRef },
+                    conversation: scope.conversation,
+                    route: { agentId: "main", routeSessionKey: sessionKey },
+                    reply: { to: scope.conversation.id, nativeChannelId: scope.conversation.id },
+                  },
+                });
+              };
+              const admission = await freshAdmission();
               let liveOutput = 0;
               stage = `greeting:${hasHistory}:${expression}:reply`;
               const result = await replyToConversationInput({
@@ -363,7 +368,7 @@ it("prepares native detached greetings from fresh and tool-bearing sources witho
               assert(result.kind === "reply");
               expect(result.reply.text.trim()).toBe("Hello.");
               expect(liveOutput).toBe(0);
-              expect(requests.slice(requestStart)).toEqual([{ tools: 0, hasHistory }]);
+              expect(requests.slice(requestStart)).toEqual([{ tools: 0, hasHistory: false }]);
               expect(providerFailures).toEqual([]);
               expect(warnings).toEqual([]);
               if (expression) {
@@ -377,6 +382,71 @@ it("prepares native detached greetings from fresh and tool-bearing sources witho
                 signal,
               );
               expect(reread.getBranch()).toEqual(original);
+              if (expression) {
+                const greeting = result.reply.greeting;
+                assert(greeting, "Native greeting must retain its original publication target");
+                for (const appended of [true, false]) {
+                  const publication = await publishConversationGreeting({
+                    cfg,
+                    admission: await freshAdmission(),
+                    scope: input,
+                    expectedTarget: greeting.target,
+                    expectedTranscript: greeting.expectedTranscript,
+                    eventId: greeting.eventId,
+                    timestamp: greeting.timestamp,
+                    text: result.reply.text,
+                    audioDelivery: "submitted",
+                  });
+                  expect(publication.appended).toBe(appended);
+                }
+                const published = await SessionManager.openAsync(
+                  target,
+                  state.workspaceDir,
+                  undefined,
+                  signal,
+                );
+                expect(published.getBranch()).toHaveLength(original.length + 1);
+                expect(published.getBranch().at(-1)).toMatchObject({
+                  type: "message",
+                  message: { role: "assistant", content: [{ type: "text", text: "Hello." }] },
+                });
+                const witness = await readSessionTranscriptAnchorsAsync(
+                  target,
+                  { entryIds: [], includeContextVersion: true },
+                  signal,
+                );
+                assert(witness.contextVersion);
+                await published.appendMessageAsync({
+                  role: "user",
+                  content: "A new real question.",
+                  timestamp: Date.now(),
+                });
+                await expect(
+                  publishConversationGreeting({
+                    cfg,
+                    admission: await freshAdmission(),
+                    scope: input,
+                    expectedTarget: greeting.target,
+                    expectedTranscript: witness.contextVersion,
+                    eventId: `${greeting.eventId}:late`,
+                    timestamp: greeting.timestamp,
+                    text: result.reply.text,
+                    audioDelivery: "submitted",
+                  }),
+                ).rejects.toMatchObject({ name: "SqliteTranscriptMutationConflictError" });
+                const afterUser = await SessionManager.openAsync(
+                  target,
+                  state.workspaceDir,
+                  undefined,
+                  signal,
+                );
+                expect(afterUser.getBranch()).toHaveLength(original.length + 2);
+                expect(afterUser.getBranch().at(-1)).toMatchObject({
+                  type: "message",
+                  message: { role: "user", content: "A new real question." },
+                });
+                expect(requests.length - requestStart).toBe(1);
+              }
             }
           }
         } finally {
