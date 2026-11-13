@@ -233,14 +233,14 @@ export async function prepareConversationGreeting(params: {
     }
     return {
       ...greeting,
-      ...(originalIdentity?.lifecycleRevision && expectedTranscript
+      ...(originalIdentity && expectedTranscript
         ? {
             greeting: {
               target: {
                 agentId,
                 sessionKey: originalIdentity.canonicalKey,
                 sessionId: originalIdentity.sessionId,
-                lifecycleRevision: originalIdentity.lifecycleRevision,
+                lifecycleRevision: originalIdentity.lifecycleRevision ?? null,
                 storePath: originalIdentity.storePath,
               },
               eventId: `talk-greeting:${input.scope.conversationId}:${input.scope.inputId}`,

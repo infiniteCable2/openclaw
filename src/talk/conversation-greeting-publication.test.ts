@@ -46,7 +46,7 @@ function fixture() {
   };
   const entry: InternalSessionEntry = {
     sessionId: expectedTarget.sessionId,
-    lifecycleRevision: expectedTarget.lifecycleRevision,
+    lifecycleRevision: expectedTarget.lifecycleRevision ?? undefined,
     updatedAt: 1,
     conversationTopology: {
       version: 1,

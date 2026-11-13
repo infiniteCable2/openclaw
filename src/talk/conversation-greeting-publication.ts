@@ -28,7 +28,7 @@ export type GreetingPublicationTarget = Readonly<{
   agentId: string;
   sessionKey: string;
   sessionId: string;
-  lifecycleRevision: string;
+  lifecycleRevision: string | null;
   storePath: string;
 }>;
 
@@ -80,7 +80,7 @@ export async function publishConversationGreeting(params: {
           target.canonicalKey !== expected.sessionKey ||
           target.storePath !== expected.storePath ||
           target.entry.sessionId !== expected.sessionId ||
-          target.entry.lifecycleRevision !== expected.lifecycleRevision
+          (target.entry.lifecycleRevision ?? null) !== expected.lifecycleRevision
         ) {
           throw new Error("Greeting publication target changed after generation");
         }
