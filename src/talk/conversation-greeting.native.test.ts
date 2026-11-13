@@ -10,6 +10,7 @@ import { createChannelAdmissionAudit } from "../channels/message-access/admissio
 import { createHostIngressFixture } from "../channels/message-access/host-ingress.test-support.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
+import { appendExpectedSessionTranscriptTurn } from "../config/sessions/session-accessor.sqlite-transcript-turn.js";
 import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { bindSessionRowProjection } from "../gateway/session-row-projection-access.js";
@@ -386,6 +387,7 @@ it("isolates native greetings and publishes submitted speech once without overta
                 const greeting = result.reply.greeting;
                 assert(greeting, "Native greeting must retain its original publication target");
                 for (const appended of [true, false]) {
+                  stage = `greeting:${hasHistory}:publication:${appended}`;
                   const publication = await publishConversationGreeting({
                     cfg,
                     admission: await freshAdmission(),
@@ -416,11 +418,25 @@ it("isolates native greetings and publishes submitted speech once without overta
                   signal,
                 );
                 assert(witness.contextVersion);
-                await published.appendMessageAsync({
-                  role: "user",
-                  content: "A new real question.",
-                  timestamp: Date.now(),
+                stage = `greeting:${hasHistory}:intervening-user`;
+                await appendExpectedSessionTranscriptTurn(target, {
+                  expectedSessionId: target.sessionId,
+                  selectedSessionId: target.sessionId,
+                  selectedLifecycleRevision: greeting.target.lifecycleRevision,
+                  sessionFile: sessionKey,
+                  assertCurrent: assertLive,
+                  messages: [
+                    {
+                      eventId: randomUUID(),
+                      message: {
+                        role: "user",
+                        content: "A new real question.",
+                        timestamp: Date.now(),
+                      },
+                    },
+                  ],
                 });
+                stage = `greeting:${hasHistory}:late-publication`;
                 await expect(
                   publishConversationGreeting({
                     cfg,

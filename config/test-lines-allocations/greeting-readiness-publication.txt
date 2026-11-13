@@ -1,4 +1,4 @@
 # Native greeting: no history or memory retrieval; guarded assistant-only submission
 # through original host admission and native SQLite idempotency, with interrupted
 # and refused output, publication failure isolation, and provider preparation phases.
-449
+465
