@@ -83,6 +83,7 @@ describe("session sharing policy", () => {
           cfg.gateway!.roles!.definitions.view!.scopes.push("operator.admin");
           owner.connect.scopes = ["operator.admin"];
         }
+        setRuntimeConfigSnapshot(cfg);
         const scope = { agentId: "main", sessionKey: "agent:main:talk-lifecycle" };
         await upsertSessionEntryCore(scope, {
           sessionId: "same-talk-session",
@@ -147,6 +148,7 @@ describe("session sharing policy", () => {
     async (method) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const cfg = rolePolicyConfig();
+        setRuntimeConfigSnapshot(cfg);
         const owner = roleClient("view", "talk-create-owner");
         const scope = { agentId: "main", sessionKey: "agent:main:new-talk" };
         const captured = await captureMutationAuthorization({
