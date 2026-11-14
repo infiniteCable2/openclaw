@@ -146,6 +146,8 @@ function diagnostics() {
         "saturated",
         "idleProgress",
         "manifestReused",
+        "coalesced",
+        "requestedDuringPreparation",
       ]) {
         if (new RegExp(`"${key}"\\s*:\\s*true`, "u").test(line)) {
           counts[`${label}:${key}`] = (counts[`${label}:${key}`] ?? 0) + 1;
@@ -158,6 +160,10 @@ function diagnostics() {
         "preparedRootBytes",
         "stagedBytes",
         "preparedTailCount",
+        "preparedPackets",
+        "admissionBytes",
+        "rawBytes",
+        "maxBytes",
       ]) {
         const value = new RegExp(`"${key}"\\s*:\\s*(\\d+)`, "u").exec(line)?.[1];
         if (value !== undefined) {
