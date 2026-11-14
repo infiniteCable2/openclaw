@@ -74,7 +74,7 @@ vi.mock("../../process/gateway-work-admission.js", async (importOriginal) => ({
 }));
 // mock-isolation: Capture content-free diagnostics without creating application log files.
 vi.mock("../../logging/subsystem.js", () => ({
-  createSubsystemLogger: () => ({ warn: boundary.warn }),
+  createSubsystemLogger: () => ({ warn: boundary.warn, isEnabled: () => false }),
 }));
 
 const target = {
