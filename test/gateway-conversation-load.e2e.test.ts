@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as measureWindow } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -8,6 +8,10 @@ import { gatewayBenchCpuProfileArgs } from "../scripts/lib/gateway-bench-runtime
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
 import { workshopPluginConfig } from "../src/skills/test-support/workshop-config.test-support.js";
+import { closeOpenClawStateDatabaseByPathAsync } from "../src/state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../src/state/openclaw-state-db.paths.js";
+import { setUserProfileRole } from "../src/state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../src/state/user-profiles.js";
 import {
   BRANCH_GATEWAY_ORIGIN,
   connectConversationOperator,
@@ -280,6 +284,10 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
       throw new Error("Source buckets must be 0 (original aliases) or 1–64");
     }
     const sourceMapping = sourceBucketCap === 0 ? "original-alias" : "bounded-new-sources";
+    const diagnosticDirectory = process.env.OPENCLAW_E2E_CONVERSATION_DIAGNOSTIC_PROFILE_DIR;
+    if (diagnosticDirectory && process.env.OPENCLAW_E2E_CONVERSATION_CPU_PROFILE_DIR) {
+      throw new Error("Native diagnostic profiling cannot run alongside startup CPU profiling");
+    }
     const cleanups: Array<() => Promise<void>> = [];
     await runQaGatewayTestFixture(
       context,
@@ -296,11 +304,24 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
         );
         const model = await startConversationModel(signal, () => "LOAD_REPLY.");
         cleanups.push(() => model.stop());
+        const selected = configuration(model.baseUrl);
+        if (diagnosticDirectory) {
+          expect(inputs.length).toBeGreaterThan(0);
+          selected.gateway!.roles!.definitions.observer = {
+            sessions: { others: "view" },
+            agents: "*",
+            scopes: ["operator.admin"],
+          };
+          selected.gateway!.auth!.trustedProxy!.deviceAutoApprove!.scopes = [
+            ...SCOPES,
+            "operator.admin",
+          ];
+        }
         const gateway = await createOpenClawTestInstance({
           name: "conversation-load",
           signal,
           verifyCleanup,
-          config: configuration(model.baseUrl),
+          config: selected,
           gatewayCommandPrefix: process.env.OPENCLAW_E2E_CONVERSATION_CPU_PROFILE_DIR
             ? [
                 process.execPath,
@@ -318,12 +339,27 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
         });
         cleanups.push(() => gateway.cleanup());
         isolateConversationGatewayEnvironment(gateway);
+        if (diagnosticDirectory) {
+          const observer = ensureProfileForEmail("load-observer@example.test", {
+            env: gateway.env,
+          });
+          setUserProfileRole(observer.id, "observer", { env: gateway.env });
+          await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(gateway.env));
+        }
         gateway.state.applyEnv();
         const meter = diagnostics();
         let diagnosticRecords = 0;
         let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
+        let observer: typeof operator;
+        let profile: Promise<void> | undefined;
         cleanups.push(async () => {
           await operator?.close();
+        });
+        cleanups.push(async () => {
+          await profile?.catch(() => {});
+        });
+        cleanups.push(async () => {
+          await observer?.close();
         });
         const live = new Set<string>();
         const available = new Set<string>();
@@ -510,6 +546,16 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           await gateway.startGateway();
           attach();
           operator = await connect();
+          if (diagnosticDirectory) {
+            observer = await connectConversationOperator(
+              gateway,
+              "load-observer@example.test",
+              signal,
+              {
+                scopes: ["operator.admin"],
+              },
+            );
+          }
           const sources = new Map<string, string>();
           await sample("corpus-new-authenticated-turns", async () => {
             const started = performance.now();
@@ -526,6 +572,19 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
               const turnStarted = performance.now();
               await chat(input.text, key);
               completedTurns++;
+              if (observer && completedTurns === Math.max(1, inputs.length - 64)) {
+                // Observe the main isolate natively without pausing input or elevating its sender.
+                profile = observer
+                  .call("diagnostics.cpuProfile", {}, { timeoutMs: 30_000 })
+                  .then(async (result) => {
+                    await writeFile(
+                      path.join(diagnosticDirectory!, "native-main-profile.json"),
+                      JSON.stringify(result) + "\n",
+                      { flag: "wx", mode: 0o600 },
+                    );
+                  });
+                void profile.catch(() => {});
+              }
               textBytes += Buffer.byteLength(input.text);
               maxTurnMs = Math.max(maxTurnMs, performance.now() - turnStarted);
               if (completedTurns % 16 === 0) {
@@ -545,6 +604,11 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
                   }),
                 );
               }
+            }
+            if (observer) {
+              await profile;
+              await observer.close();
+              observer = undefined;
             }
           });
           console.log(

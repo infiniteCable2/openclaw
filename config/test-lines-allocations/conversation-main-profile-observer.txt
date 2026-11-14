@@ -1,0 +1,3 @@
+64
+# Add one opt-in native main-isolate observation to the existing real Gateway
+# workload; keep its signed limited caller, original assertions and replay intact.
