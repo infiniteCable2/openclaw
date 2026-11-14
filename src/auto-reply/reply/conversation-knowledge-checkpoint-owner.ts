@@ -325,6 +325,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
                   });
                 }
                 loggedFrameRevision = tail.revision;
+                notify();
               }
             }
             return false;
@@ -464,13 +465,15 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             unavailableContributions,
           });
         }
+        // Existing recipients own their range checks; new-branch frame verification
+        // must not delay their independently prepared text.
+        if (tail.revision !== loggedProjectionRevision) {
+          notify();
+        }
         if (await retainFrame([...selectedContributions.values()])) {
           // Only a disproven, still-current cache value schedules one repair
           // quantum. Unavailable originals wait for native source notifications.
           return true;
-        }
-        if (tail.revision !== loggedProjectionRevision) {
-          notify();
         }
         if (requiredWorkerHelperError(broker.getRuntimeConfig())) {
           if (!reportedWorkerPolicy) {

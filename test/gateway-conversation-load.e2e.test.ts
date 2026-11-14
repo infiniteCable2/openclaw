@@ -15,7 +15,7 @@ import {
 } from "./helpers/conversation-branches-gateway.js";
 import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
 import { createDeferred, withinTest } from "./helpers/promise.js";
-import { runCleanups } from "./helpers/qa-gateway-cleanup.js";
+import { runCleanups, runQaGatewayFixture } from "./helpers/qa-gateway-cleanup.js";
 import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
 
 const SPEECH = "qa-conversation-speech";
@@ -364,26 +364,35 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           const startCpu = await cpuTicks(pid);
           const start = performance.now();
           const requests = model.requests.length;
-          await work();
-          expect(gateway.child?.pid).toBe(pid);
-          const observed = meter.take();
-          diagnosticRecords += Object.values(observed.counts).reduce(
-            (sum, value) => sum + value,
-            0,
-          );
-          console.log(
-            JSON.stringify({
-              kind: "native-gateway-load",
-              phase,
-              elapsedMs: performance.now() - start,
-              cpuTicks: (await cpuTicks(pid)) - startCpu,
-              modelRequests: model.requests.length - requests,
-              ...observed,
-              boundary: "signed-webchat-and-talk-gateway-relay",
-              corpusSeeded: false,
-              sourceMapping,
-              sourceBucketCap,
-            }),
+          let completed = false;
+          await runQaGatewayFixture(
+            async () => {
+              await work();
+              completed = true;
+            },
+            async () => {
+              expect(gateway.child?.pid).toBe(pid);
+              const observed = meter.take();
+              diagnosticRecords += Object.values(observed.counts).reduce(
+                (sum, value) => sum + value,
+                0,
+              );
+              console.log(
+                JSON.stringify({
+                  kind: "native-gateway-load",
+                  phase,
+                  outcome: completed ? "completed" : "failed",
+                  elapsedMs: performance.now() - start,
+                  cpuTicks: (await cpuTicks(pid)) - startCpu,
+                  modelRequests: model.requests.length - requests,
+                  ...observed,
+                  boundary: "signed-webchat-and-talk-gateway-relay",
+                  corpusSeeded: false,
+                  sourceMapping,
+                  sourceBucketCap,
+                }),
+              );
+            },
           );
         };
         const chatKey = `agent:main:load-chat-${randomUUID()}`;

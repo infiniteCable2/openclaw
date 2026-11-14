@@ -317,6 +317,38 @@ afterEach(async () => {
 });
 
 describe("shared root projection preparation", () => {
+  it("signals prepared text before pending frame verification and signals the completed frame", async () => {
+    const f = register();
+    const entered = createDeferredCore(),
+      finish = createDeferredCore();
+    const frame = nativeFrame();
+    boundary.frame.mockResolvedValue(nativeFrame());
+    boundary.frame.mockImplementationOnce(async () => {
+      entered.resolve();
+      await finish.promise;
+      return frame;
+    });
+    const preparing = quantum();
+    let borrowed: ReturnType<typeof f.registration.acquireInitialFrame>;
+    try {
+      await awaitGateBeforeSettlement(entered.promise, preparing, "Frame was not prepared");
+      expect(f.ready).toHaveBeenCalledOnce();
+      expect(f.registration.projection().tail[0]!.reference).toEqual(reference(1));
+      expect(f.registration.acquireInitialFrame()).toBeUndefined();
+      finish.resolve();
+      await expect(preparing).resolves.toBe(false);
+      expect(f.ready).toHaveBeenCalledTimes(2);
+      borrowed = f.registration.acquireInitialFrame();
+      expect(borrowed?.frame).toBe(frame);
+      await quantum();
+      expect(f.ready).toHaveBeenCalledTimes(2);
+    } finally {
+      finish.resolve();
+      await preparing.catch(() => {});
+      await borrowed?.release();
+    }
+  });
+
   it.each([false, true])(
     "retains source custody through an empty-tail frame (checkpoint=%s)",
     async (checkpoint) => {

@@ -1,0 +1,3 @@
+# Prepared text must notify independently of held initial-frame verification;
+# completed frames still notify once without waking unchanged preparation.
+32
