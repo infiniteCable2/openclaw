@@ -284,11 +284,12 @@ export async function prepareCheckpointGroupRead(params: {
         subset.manifest,
       );
     }
+    const currentGrant = grant;
     return {
-      source: grant.sources[0],
-      assertCurrent: grant.assertCurrent,
+      source: currentGrant.sources[0],
+      assertCurrent: currentGrant.assertCurrent,
       selectContribution: (reference: ConversationKnowledgeReference) =>
-        grant.selectContribution(reference),
+        currentGrant.selectContribution(reference),
       finish,
     };
   } catch (error) {
