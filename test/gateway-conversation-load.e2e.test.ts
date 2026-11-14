@@ -75,7 +75,9 @@ function configuration(baseUrl: string): OpenClawConfig {
           [provider.providerId]: {
             ...provider.config,
             request: { allowPrivateNetwork: true },
-            models: provider.config.models.map((model) => ({ ...model, input: [...model.input] })),
+            models: provider.config.models.map((model) =>
+              Object.assign({}, model, { input: [...model.input] }),
+            ),
           },
         },
       },
