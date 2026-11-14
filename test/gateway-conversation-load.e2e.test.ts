@@ -21,7 +21,7 @@ import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
 const SPEECH = "qa-conversation-speech";
 const SCOPES = ["operator.read", "operator.write", "operator.talk"] as const;
 
-function configuration(baseUrl: string): OpenClawConfig {
+function configuration(baseUrl: string, mode: "native" | "branches" = "branches"): OpenClawConfig {
   const provider = buildMockOpenAiResponsesProvider(baseUrl, "conversation-load");
   return workshopPluginConfig(
     { autonomous: { mode: "off" } },
@@ -50,7 +50,7 @@ function configuration(baseUrl: string): OpenClawConfig {
       },
       logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
       agents: {
-        entries: { main: { conversationMode: "branches", skills: [] } },
+        entries: { main: { conversationMode: mode, skills: [] } },
         defaults: {
           model: { primary: provider.modelRef, fallbacks: [] },
           modelPolicy: { allow: [provider.modelRef] },
@@ -98,8 +98,11 @@ function configuration(baseUrl: string): OpenClawConfig {
 
 // Linux process accounting includes all Gateway threads, not children or the test runner.
 // Report clock ticks, without assuming the host's CLK_TCK or calling this main-thread CPU.
-async function cpuTicks(pid: number) {
-  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+async function cpuTicks(pid: number, mainThread = false) {
+  const stat = await readFile(
+    mainThread ? `/proc/${pid}/task/${pid}/stat` : `/proc/${pid}/stat`,
+    "utf8",
+  );
   const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
   const user = Number(fields[11]);
   const system = Number(fields[12]);
@@ -590,4 +593,256 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
       () => runCleanups(cleanups, "Gateway load cleanup failed"),
     );
   },
+);
+
+// This measures the real relay/Core boundary, not Matrix RTP, hardware VAD or AEC.
+// The synthetic STT buffers PCM; closing without EOF discards silence without a transcript.
+it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
+  "measures continuous silent Talk relay input in native and branch conversations",
+  async (context) => {
+    if (process.platform !== "linux") {
+      throw new Error("Load accounting requires Linux /proc");
+    }
+    for (let repetition = 1; repetition <= 5; repetition++) {
+      const modes =
+        repetition % 2 ? (["native", "branches"] as const) : (["branches", "native"] as const);
+      for (const mode of modes) {
+        const cleanups: Array<() => Promise<void>> = [];
+        await runQaGatewayTestFixture(
+          context,
+          async ({ signal, verifyCleanup }) => {
+            const model = await startConversationModel(signal, () => "PCM_REPLY.");
+            cleanups.push(() => model.stop());
+            const gateway = await createOpenClawTestInstance({
+              name: "conversation-pcm-load",
+              signal,
+              verifyCleanup,
+              config: configuration(model.baseUrl, mode),
+              env: {
+                OPENCLAW_SKIP_PROVIDERS: undefined,
+                OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+                OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
+                OPENCLAW_LOG_LEVEL: "debug",
+              },
+            });
+            cleanups.push(() => gateway.cleanup());
+            isolateConversationGatewayEnvironment(gateway);
+            gateway.state.applyEnv();
+            await gateway.startGateway();
+            const child = gateway.child;
+            if (!child?.pid) {
+              throw new Error("Measured Gateway process absent");
+            }
+            const pid = child.pid,
+              meter = diagnostics();
+            child.stdout.on("data", meter.stdout);
+            child.stderr.on("data", meter.stderr);
+            cleanups.push(async () => {
+              child.stdout.off("data", meter.stdout);
+              child.stderr.off("data", meter.stderr);
+            });
+            const ended = createDeferred(),
+              audio = createDeferred();
+            const completed = Promise.all([ended.promise, audio.promise]);
+            void completed.catch(() => {});
+            let closing = false,
+              failure: Error | undefined;
+            let acceptedFrames = 0,
+              acceptedBytes = 0,
+              outputFrames = 0;
+            const fail = () => {
+              failure = new Error("Talk failed during a measured connection");
+              ended.reject(failure);
+              audio.reject(failure);
+            };
+            const operator = await connectConversationOperator(
+              gateway,
+              "pcm-person@example.test",
+              signal,
+              {
+                scopes: [...SCOPES],
+                onEvent(event, payload) {
+                  if (event !== "talk.event" || !isRecord(payload)) {
+                    return;
+                  }
+                  if (!closing && payload.type === "close") {
+                    fail();
+                  }
+                  if (payload.type === "audio" && typeof payload.audioBase64 === "string") {
+                    expect(Buffer.from(payload.audioBase64, "base64").length).toBeGreaterThan(0);
+                    outputFrames++;
+                  }
+                  if (!isRecord(payload.talkEvent)) {
+                    return;
+                  }
+                  const e = payload.talkEvent;
+                  if (e.type === "turn.ended") {
+                    ended.resolve();
+                  }
+                  if (e.type === "output.audio.done") {
+                    audio.resolve();
+                  }
+                  if (
+                    e.type === "input.audio.delta" &&
+                    isRecord(e.payload) &&
+                    typeof e.payload.bytes === "number"
+                  ) {
+                    acceptedFrames++;
+                    acceptedBytes += e.payload.bytes;
+                  }
+                  if (!closing && (e.type === "session.error" || e.type === "session.closed")) {
+                    fail();
+                  }
+                },
+              },
+            );
+            cleanups.push(() => operator.close());
+            const created = await operator.call<{ sessionId: string; readyMark: string }>(
+              "talk.session.create",
+              {
+                sessionKey: `agent:main:pcm-load-${randomUUID()}`,
+                mode: "stt-tts",
+                transport: "gateway-relay",
+                brain: "agent-consult",
+                provider: SPEECH,
+                capabilities: ["isolated-input", "output-gate"],
+              },
+            );
+            cleanups.push(async () => {
+              closing = true;
+              await operator.call("talk.session.close", { sessionId: created.sessionId });
+            });
+            await operator.call("talk.session.acknowledgeMark", {
+              sessionId: created.sessionId,
+              markName: created.readyMark,
+            });
+            const warmText = "PCM_WARM: Please reply briefly. ";
+            const warm = Buffer.from(warmText + (Buffer.byteLength(warmText) % 2 ? " " : ""));
+            const beforeWarm = model.requests.length;
+            await operator.call("talk.session.appendAudio", {
+              sessionId: created.sessionId,
+              audioBase64: warm.toString("base64"),
+              endOfInput: true,
+            });
+            await withinTest(completed, signal);
+            expect(outputFrames).toBeGreaterThan(0);
+            expect(
+              model.requests
+                .slice(beforeWarm)
+                .filter((request) => JSON.stringify(request.input).includes("PCM_WARM")),
+            ).toHaveLength(1);
+            expect(failure).toBeUndefined();
+            const requests = model.requests.length;
+            const sample = async <T extends Record<string, number>>(
+              phase: string,
+              work: () => Promise<T>,
+            ) => {
+              meter.take();
+              const frames = acceptedFrames,
+                bytes = acceptedBytes;
+              const processStart = await cpuTicks(pid),
+                mainStart = await cpuTicks(pid, true);
+              const start = performance.now();
+              let observed: Record<string, number> = {};
+              let completed = false;
+              const metrics = await runQaGatewayFixture(
+                async () => {
+                  const measured = await work();
+                  observed = measured;
+                  expect(gateway.child?.pid).toBe(pid);
+                  expect(failure).toBeUndefined();
+                  expect(model.requests).toHaveLength(requests);
+                  expect(model.errors).toEqual([]);
+                  completed = true;
+                  return measured;
+                },
+                async () => {
+                  console.log(
+                    JSON.stringify({
+                      kind: "native-gateway-pcm-load",
+                      mode,
+                      repetition,
+                      phase,
+                      outcome: completed ? "completed" : "failed",
+                      elapsedMs: performance.now() - start,
+                      processCpuTicks: (await cpuTicks(pid)) - processStart,
+                      mainCpuTicks: (await cpuTicks(pid, true)) - mainStart,
+                      acceptedFrames: acceptedFrames - frames,
+                      acceptedBytes: acceptedBytes - bytes,
+                      modelRequests: model.requests.length - requests,
+                      ...observed,
+                      ...meter.take(),
+                      boundary: "signed-talk-speech-relay",
+                      hardwareVadOrAecMeasured: false,
+                    }),
+                  );
+                },
+              );
+              return {
+                ...metrics,
+                acceptedFrames: acceptedFrames - frames,
+                acceptedBytes: acceptedBytes - bytes,
+              };
+            };
+            await sample("quiet-before-input", async () => {
+              await measureWindow(10_000, undefined, { signal });
+              return {};
+            });
+            const streamed = await sample("paced-silent-input", async () => {
+              const frame = Buffer.alloc(640).toString("base64"),
+                captureId = randomUUID();
+              const latency: number[] = [];
+              const start = performance.now(),
+                end = start + 10_000;
+              let due = start,
+                skippedSlots = 0,
+                maxLatenessMs = 0;
+              while (due < end) {
+                signal.throwIfAborted();
+                const delay = due - performance.now();
+                if (delay > 0) {
+                  await measureWindow(delay, undefined, { signal });
+                }
+                const sent = performance.now();
+                maxLatenessMs = Math.max(maxLatenessMs, sent - due);
+                await operator.call("talk.session.appendAudio", {
+                  sessionId: created.sessionId,
+                  audioBase64: frame,
+                  captureId,
+                });
+                latency.push(performance.now() - sent);
+                due += 20;
+                // Skip expired slots rather than fabricating a burst after a slow RPC.
+                if (due < performance.now()) {
+                  const missed = Math.ceil((performance.now() - due) / 20);
+                  skippedSlots += missed;
+                  due += missed * 20;
+                }
+              }
+              latency.sort((left, right) => left - right);
+              expect(latency.length).toBeGreaterThan(0);
+              return {
+                sentFrames: latency.length,
+                sentBytes: latency.length * 640,
+                targetHz: 50,
+                skippedSlots,
+                maxLatenessMs,
+                appendP50Ms: latency[Math.floor(latency.length * 0.5)]!,
+                appendP95Ms: latency[Math.floor(latency.length * 0.95)]!,
+                appendMaxMs: latency.at(-1)!,
+              };
+            });
+            expect(streamed.acceptedFrames).toBe(streamed.sentFrames);
+            expect(streamed.acceptedBytes).toBe(streamed.sentBytes);
+            await sample("quiet-after-input", async () => {
+              await measureWindow(5_000, undefined, { signal });
+              return {};
+            });
+          },
+          () => runCleanups(cleanups, "PCM Gateway cleanup failed"),
+        );
+      }
+    }
+  },
+  600_000,
 );

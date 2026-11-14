@@ -1,0 +1,4 @@
+255
+# Opt-in native Gateway relay CPU/admission measurement: five interleaved
+# native/branch pairs with paced PCM, exact accepted frame/byte counts,
+# persistent errors, process/main CPU, and deterministic external speech leaves.
