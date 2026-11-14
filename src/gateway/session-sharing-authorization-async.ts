@@ -333,6 +333,11 @@ export async function resolveSessionMutationAuthorizationAsync(
     return resolveSessionMutationAuthorization(params);
   }
   const cfg = params.context.getRuntimeConfig();
+  // Conversation admission depends on access, not writer or recipient bookkeeping.
+  const sessionAccessOnly =
+    params.method === "chat.send" ||
+    params.method === "talk.session.create" ||
+    params.method === "talk.client.create";
   using phases = observeDiagnosticsTimelinePhases("sessionAuthority.profiles");
   const preparedProfiles = await prepareSessionSharingProfiles(params.client);
   phases.mark("sessionAuthority.targets");
@@ -399,7 +404,7 @@ export async function resolveSessionMutationAuthorizationAsync(
         allowMissing: true,
         followLifecycle: params.method === "chat.send",
         followTranscript: params.method === "chat.send",
-        sessionAccessOnly: params.method === "chat.send",
+        sessionAccessOnly,
       });
       reads.push(retained);
       const initialFacts = retained.readCurrent(cfg);
@@ -529,7 +534,7 @@ export async function resolveSessionMutationAuthorizationAsync(
             membership: new Set(),
           });
           creationReleases.push(retained.release);
-          const readScope = params.method === "chat.send" ? "session-access" : "sharing";
+          const readScope = sessionAccessOnly ? "session-access" : "sharing";
           const read = () => {
             const current = retained.readCurrent(readScope);
             if (!active || !current?.entry) {

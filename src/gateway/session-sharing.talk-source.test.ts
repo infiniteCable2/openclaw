@@ -37,10 +37,12 @@ import {
   createContext,
   createOperatorClient,
 } from "./server-plugin-in-process-dispatch.test-support.js";
+import { resolveSessionMutationAuthorizationAsync } from "./session-sharing-authorization-async.js";
 import {
   prepareSessionMutationFacts,
   SessionMutationFactsUnavailableError,
 } from "./session-sharing-preparation.js";
+import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
 import { createGatewayTalkConversationInputSource } from "./talk/conversation-input-source.js";
 import { createTalkOperatorRunSource } from "./talk/operator-run-source.js";
 import { prepareTalkSessionTarget } from "./talk/session-target.js";
@@ -287,7 +289,13 @@ it.for(["continuous", "reset"] as const)(
     expect(isMainThread).toBe(true);
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const storePath = state.statePath("talk-source-sharing.sqlite");
-      const cfg = { agents: { entries: { main: {} } }, session: { store: storePath } };
+      const cfg = {
+        ...rolePolicyConfig(),
+        agents: { entries: { main: {} } },
+        session: { store: storePath },
+      };
+      const client = roleClient("view", "talk-source-owner");
+      const profileId = client.authenticatedUserProfile!.profileId;
       await state.writeConfig(cfg);
       setRuntimeConfigSnapshot(cfg);
       const target = { agentId: "main", sessionKey: "agent:main:talk-source", storePath };
@@ -298,11 +306,25 @@ it.for(["continuous", "reset"] as const)(
         updatedAt: 1,
         chatType: "direct" as const,
         visibility: "draft" as const,
-        createdActor: { type: "human" as const, source: "profile" as const, id: "speaker" },
+        createdActor: { type: "human" as const, source: "profile" as const, id: profileId },
       };
       replaceSessionEntrySync(target, entry);
       const database = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
       const gateway = createDirectChatContext({ getRuntimeConfig: () => cfg });
+      using authorizations = new DisposableStack();
+      const startups = [];
+      for (const method of ["talk.session.create", "talk.client.create"]) {
+        const admitted = await resolveSessionMutationAuthorizationAsync({
+          client,
+          context: gateway,
+          method,
+          requestParams: { sessionKey: target.sessionKey },
+        });
+        expect(admitted.error).toBeNull();
+        const authorization = admitted.authorization!;
+        authorizations.defer(() => authorization.release?.());
+        startups.push(authorization);
+      }
       let sourceReleased = false;
       const source = createGatewayTalkConversationInputSource({
         target: await prepareTalkSessionTarget(cfg, target.sessionKey, "settlement"),
@@ -312,7 +334,7 @@ it.for(["continuous", "reset"] as const)(
         // admission, retained sharing reads and writer publication are not mocked.
         captureOperatorAuthority: async (invocation) => ({
           authority: createAdmittedRunOperatorAuthority({
-            profileId: "speaker",
+            profileId,
             scopes: ["operator.read", "operator.write", "operator.talk"],
             gatewayAccessGrant: null,
             rolePolicy: { sessionAccessCap: "none", sandboxRequired: false, agents: ["main"] },
@@ -328,7 +350,7 @@ it.for(["continuous", "reset"] as const)(
           },
         }),
         authority: { senderIsOwner: false },
-        participant: { type: "profile", id: "speaker" },
+        participant: { type: "profile", id: profileId },
         assertInputCurrent() {},
         resolveGatewayContext: () => gateway,
       });
@@ -365,6 +387,10 @@ it.for(["continuous", "reset"] as const)(
         try {
           try {
             input.assertCurrent();
+            for (const authorization of startups) {
+              authorization.assertCurrent();
+              authorization.assertTargetCurrent({ ...target, ensuredSessionId: entry.sessionId });
+            }
           } catch (error) {
             failure = error;
           }
@@ -392,11 +418,7 @@ it.for(["continuous", "reset"] as const)(
         }
         admit(request, (beforeRelease) => {
           commitGrants++;
-          try {
-            input.assertCurrent();
-          } catch (error) {
-            pendingError = error;
-          }
+          pendingError = sourceOutcomeWithoutSql();
           return grant(beforeRelease);
         });
       });
@@ -453,7 +475,7 @@ it.for(["continuous", "reset"] as const)(
         expect(acknowledgedFailure, JSON.stringify(publications)).toBeUndefined();
         expect(
           recordSessionParticipant(target, {
-            identity: { type: "profile", id: "speaker" },
+            identity: { type: "profile", id: profileId },
             promptedAt: 2,
             expectedSession: entry,
           }),
@@ -466,6 +488,9 @@ it.for(["continuous", "reset"] as const)(
             lifecycleRevision: "replacement-generation",
           });
           expect(() => input.assertCurrent()).toThrow();
+          for (const authorization of startups) {
+            expect(() => authorization.assertCurrent()).toThrow();
+          }
         }
         releaseDelivery.resolve();
         await withinTest(mutation, signal);
