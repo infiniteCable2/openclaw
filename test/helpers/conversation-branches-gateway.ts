@@ -4,6 +4,7 @@ import path from "node:path";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { WebSocket } from "ws";
 import { buildDeviceAuthPayloadV3 } from "../../packages/gateway-client/src/device-auth.js";
+import { GatewayProtocolRequestError } from "../../packages/gateway-client/src/protocol-request.js";
 import { rawDataToString } from "../../packages/gateway-client/src/websocket-data.js";
 import type { ResponseFrame } from "../../packages/gateway-protocol/src/schema/frames.js";
 import { PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/version.js";
@@ -235,7 +236,10 @@ export async function connectConversationOperator(
       socket.send(JSON.stringify({ type: "req", id, method, params }));
       const frame = await result.promise;
       if (!frame.ok) {
-        throw new Error(`${method}: ${JSON.stringify(frame.error)}`);
+        const cause = new GatewayProtocolRequestError(frame.error ?? {});
+        throw new Error(`Gateway RPC ${method} rejected (${cause.code}) ${cause.message}`, {
+          cause,
+        });
       }
       return frame.payload as T;
     } finally {
