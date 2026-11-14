@@ -488,12 +488,20 @@ describe("conversation knowledge prefetch lifecycle", () => {
     sessionChanges.emit({ ...change, sessionKey: "agent:example:unrelated" });
     sessionChanges.emit({ ...change, agentId: "other" });
     sessionChanges.emit({ ...change, storePath: path.resolve("other.sqlite") });
+    sessionChanges.emit(sessionChanges.markFactsOnly({ ...change }));
+    sessionChanges.emit({
+      ...change,
+      facts: { kind: "participants", projectionChanged: false },
+    });
     await owner.wait();
     expect(prepare).toHaveBeenCalledTimes(2);
+    sessionChanges.invalidate({ ...change, factsInvalidated: true });
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(3);
     await owner.close();
     sessionChanges.emit(change);
     await owner.wait();
-    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(prepare).toHaveBeenCalledTimes(3);
   });
 
   it("continues source pages and preserves new root wakeups", async () => {

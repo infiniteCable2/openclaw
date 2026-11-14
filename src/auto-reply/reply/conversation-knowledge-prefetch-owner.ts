@@ -33,7 +33,11 @@ type RequestCause =
   | "recipient-runtime"
   | "recipient-entry"
   | "source-entry"
-  | "source-context"
+  | "source-context-invalidated"
+  | "source-context-unknown"
+  | "source-context-absent"
+  | "source-context-control"
+  | "source-context-rebuild"
   | "resume"
   | "root-ready"
   | "opening"
@@ -395,7 +399,17 @@ export function createConversationKnowledgePrefetchOwner(params: {
         request("source", "root-transcript");
       }
     });
-    unsubscribeRecipient = sessionChanges.subscribe((change) => {
+    unsubscribeRecipient = sessionChanges.subscribeProjection((change) => {
+      // Observe visible commits with their facts, plus native invalidations.
+      // Count-only participation changes neither audience nor prepared source bytes.
+      if (
+        "sessionKey" in change &&
+        change.factsInvalidated === undefined &&
+        change.facts?.kind === "participants" &&
+        change.facts.projectionChanged === false
+      ) {
+        return;
+      }
       if (
         params.watchRecipientRuntime === true &&
         "sessionKey" in change &&
@@ -443,7 +457,18 @@ export function createConversationKnowledgePrefetchOwner(params: {
       ) {
         // Native context controls can invalidate cached bytes without adding a
         // root receipt. Ordinary message/report appends must not cause another scan.
-        request("source", "source-context");
+        request(
+          "source",
+          change.factsInvalidated === true
+            ? "source-context-invalidated"
+            : fact?.kind === "unknown"
+              ? "source-context-unknown"
+              : fact?.kind === "absent"
+                ? "source-context-absent"
+                : fact?.kind === "postimage" && fact.value.contextChanged === true
+                  ? "source-context-control"
+                  : "source-context-rebuild",
+        );
       }
     });
   } catch (error) {

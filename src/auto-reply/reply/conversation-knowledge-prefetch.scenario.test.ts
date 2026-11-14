@@ -40,6 +40,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import { assertSessionEntryCohortScope } from "../../config/sessions/session-entry-cohort-scope.js";
+import { recordSessionParticipantInWorker } from "../../config/sessions/session-sharing-store.async.js";
 import { runWithSessionSourceScope } from "../../config/sessions/session-source-authority.js";
 import { readActiveTranscriptEntryAnchorAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
@@ -51,11 +52,13 @@ import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-eve
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { SettledAgentTurn } from "./agent-runner-execution.types.js";
+import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
 import { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
 import { createReplyConversationKnowledgeTurn } from "./conversation-knowledge-turn.js";
 import * as knowledgePreparation from "./conversation-knowledge.js";
 import {
   createConversationKnowledgeScenario,
+  otherPerson,
   person,
 } from "./conversation-knowledge.scenario.test-support.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
@@ -77,6 +80,57 @@ const {
 } = knowledgeStoreReads;
 
 describe("native branch prefetch and model-boundary composition", () => {
+  it("does not reprepare for count-only native participant commits", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "prefetch-participants" },
+      async (state) => {
+        const fixture = await createConversationKnowledgeScenario(state);
+        let owner: ReturnType<typeof createConversationKnowledgePrefetchOwner> | undefined;
+        try {
+          const source = await fixture.branch("participant-source");
+          const target = await fixture.branch("participant-recipient");
+          const admission = await fixture.claim(target);
+          const prepare = vi.fn(async (_signal: AbortSignal, _sources?: boolean) => {});
+          owner = createConversationKnowledgePrefetchOwner({
+            target: {
+              ...target,
+              root: {
+                ...fixture.root,
+                lifecycleRevision: loadSessionEntry(fixture.root)!.lifecycleRevision!,
+              },
+            },
+            assertCurrent: admission.assertCurrent,
+            clear() {},
+            watchesSource: (key) => key === source.sessionKey,
+            prepare,
+          });
+          await owner.wait();
+          const contribute = (selected: typeof target, identity = person) =>
+            recordSessionParticipantInWorker(selected, {
+              identity,
+              promptedAt: Date.now() + 10_000,
+              sessionAgentId: selected.agentId,
+              expectedSession: selected,
+            });
+          for (const selected of [source, target]) {
+            expect(await contribute(selected)).toBe("updated");
+            await owner.wait();
+            expect(prepare).toHaveBeenCalledOnce();
+          }
+          expect(await contribute(source, otherPerson)).toBe("inserted");
+          await owner.wait();
+          expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
+        } finally {
+          try {
+            await owner?.close();
+          } finally {
+            await fixture.close();
+          }
+        }
+      },
+    );
+  });
+
   it("prepares and admits committed live utterances before their conversation completes", async ({
     signal,
   }) => {
