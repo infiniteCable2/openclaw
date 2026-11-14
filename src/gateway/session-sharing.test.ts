@@ -144,7 +144,7 @@ describe("session sharing policy", () => {
   );
 
   it.each(["talk.client.create", "talk.session.create"] as const)(
-    "preserves guarded first materialization for $method",
+    "rejects unacknowledged first materialization for %s",
     async (method) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const cfg = rolePolicyConfig();
@@ -182,7 +182,7 @@ describe("session sharing policy", () => {
             ...scope,
             ensuredSessionId: "created-talk-session",
           }),
-        ).not.toThrow();
+        ).toThrow(SessionMutationAuthorizationChangedError);
       });
     },
   );
