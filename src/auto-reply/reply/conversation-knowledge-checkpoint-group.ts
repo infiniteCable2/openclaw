@@ -70,7 +70,7 @@ export async function prepareCheckpointOwnGroup(params: {
   contributions: readonly ConversationKnowledgeReference[];
   readSource(): Promise<CapturedSessionEntryReadSource>;
   assertCurrent: SessionSourceAssertion;
-  workCheck(): void;
+  workCheck: () => void;
   signal: AbortSignal;
 }) {
   const readSource = await params.readSource();
