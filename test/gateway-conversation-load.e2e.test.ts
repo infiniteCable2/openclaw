@@ -1,0 +1,532 @@
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { setTimeout as measureWindow } from "node:timers/promises";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { expect, it } from "vitest";
+import type { OpenClawConfig } from "../src/config/types.openclaw.js";
+import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
+import { workshopPluginConfig } from "../src/skills/test-support/workshop-config.test-support.js";
+import {
+  BRANCH_GATEWAY_ORIGIN,
+  connectConversationOperator,
+  isolateConversationGatewayEnvironment,
+  startConversationModel,
+} from "./helpers/conversation-branches-gateway.js";
+import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
+import { createDeferred, withinTest } from "./helpers/promise.js";
+import { runCleanups } from "./helpers/qa-gateway-cleanup.js";
+import { runQaGatewayTestFixture } from "./helpers/qa-gateway-test-lifetime.js";
+
+const SPEECH = "qa-conversation-speech";
+const SCOPES = ["operator.read", "operator.write", "operator.talk"] as const;
+
+function configuration(baseUrl: string): OpenClawConfig {
+  const provider = buildMockOpenAiResponsesProvider(baseUrl, "conversation-load");
+  return workshopPluginConfig(
+    { autonomous: { mode: "off" } },
+    {
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        trustedProxies: ["127.0.0.1", "::1"],
+        auth: {
+          mode: "trusted-proxy",
+          token: undefined,
+          trustedProxy: {
+            userHeader: "x-forwarded-user",
+            requiredHeaders: ["x-forwarded-proto"],
+            allowLoopback: true,
+            deviceAutoApprove: { enabled: true, scopes: [...SCOPES] },
+          },
+        },
+        controlUi: { enabled: false, allowedOrigins: [BRANCH_GATEWAY_ORIGIN] },
+        roles: {
+          default: "limited",
+          definitions: {
+            limited: { sessions: { others: "view" }, agents: "*", scopes: [...SCOPES] },
+          },
+        },
+      },
+      logging: { level: "debug", consoleLevel: "debug", consoleStyle: "json" },
+      agents: {
+        entries: { main: { conversationMode: "branches", skills: [] } },
+        defaults: {
+          model: { primary: provider.modelRef, fallbacks: [] },
+          modelPolicy: { allow: [provider.modelRef] },
+          models: {
+            [provider.modelRef]: {
+              agentRuntime: { id: "openclaw" },
+              params: { transport: "sse", openaiWsWarmup: false },
+            },
+          },
+          utilityModel: "",
+          workspace: "~/workspace",
+          skills: [],
+          skipBootstrap: true,
+          sandbox: { mode: "off" },
+        },
+      },
+      session: { scope: "per-sender" },
+      tools: { deny: ["*"] },
+      models: {
+        mode: "replace",
+        providers: {
+          [provider.providerId]: {
+            ...provider.config,
+            request: { allowPrivateNetwork: true },
+            models: provider.config.models.map((model) => ({ ...model, input: [...model.input] })),
+          },
+        },
+      },
+      talk: {
+        agentId: "main",
+        provider: SPEECH,
+        providers: { [SPEECH]: { modelId: "offline-pcm", voiceId: "fixture" } },
+      },
+      plugins: {
+        slots: { memory: "none" },
+        load: { paths: [path.resolve("test/fixtures/conversation-speech")] },
+        entries: { [SPEECH]: { enabled: true } },
+      },
+      messages: { queue: { mode: "steer", debounceMsByChannel: { webchat: 0 } } },
+    },
+  );
+}
+
+// Linux process accounting includes all Gateway threads, not children or the test runner.
+// Report clock ticks, without assuming the host's CLK_TCK or calling this main-thread CPU.
+async function cpuTicks(pid: number) {
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  const user = Number(fields[11]);
+  const system = Number(fields[12]);
+  if (!Number.isFinite(user + system)) {
+    throw new Error("Gateway process CPU accounting unavailable");
+  }
+  return user + system;
+}
+
+// No provider requests, manifests, IDs or log lines are retained by the observer.
+function diagnostics() {
+  let counts: Record<string, number> = {};
+  let maxima: Record<string, number> = {};
+  const buffers = new Map<string, string>();
+  const labels = [
+    "Related-history preparation input root",
+    "Related-history prepared selection",
+    "Related-history preparation work",
+    "Related-history source preparation settled",
+    "Related-history recipient quantum settled",
+    "Related-history root projection ready",
+    "Conversation knowledge transfer",
+  ];
+  const consume = (stream: string, chunk: Buffer) => {
+    const lines = ((buffers.get(stream) ?? "") + chunk.toString("utf8")).split("\n");
+    buffers.set(stream, lines.pop() ?? "");
+    for (const raw of lines) {
+      const line = raw.replaceAll('\\"', '"');
+      const label = labels.find((candidate) => line.includes(candidate));
+      if (!label) {
+        continue;
+      }
+      counts[label] = (counts[label] ?? 0) + 1;
+      for (const key of ["outcome", "cause", "phase", "owner"]) {
+        const value = new RegExp(`"${key}"\\s*:\\s*"([a-z-]+)"`, "u").exec(line)?.[1];
+        if (value) {
+          counts[`${label}:${key}:${value}`] = (counts[`${label}:${key}:${value}`] ?? 0) + 1;
+        }
+      }
+      for (const key of [
+        "preparingSources",
+        "more",
+        "sourcesRequested",
+        "saturated",
+        "idleProgress",
+        "manifestReused",
+      ]) {
+        if (new RegExp(`"${key}"\\s*:\\s*true`, "u").test(line)) {
+          counts[`${label}:${key}`] = (counts[`${label}:${key}`] ?? 0) + 1;
+        }
+      }
+      for (const key of [
+        "manifestBytes",
+        "inputRootBytes",
+        "inputProgressBytes",
+        "preparedRootBytes",
+        "stagedBytes",
+        "preparedTailCount",
+      ]) {
+        const value = new RegExp(`"${key}"\\s*:\\s*(\\d+)`, "u").exec(line)?.[1];
+        if (value !== undefined) {
+          maxima[key] = Math.max(maxima[key] ?? 0, Number(value));
+        }
+      }
+    }
+  };
+  return {
+    stdout: (chunk: Buffer) => consume("stdout", chunk),
+    stderr: (chunk: Buffer) => consume("stderr", chunk),
+    take() {
+      const result = { counts, maxima };
+      counts = {};
+      maxima = {};
+      return result;
+    },
+  };
+}
+
+async function workload() {
+  const file = process.env.OPENCLAW_E2E_CONVERSATION_LOAD_CORPUS;
+  if (!file) {
+    return { selected: [], totalUserRows: 0, totalSources: 0 };
+  }
+  const limit = Number(process.env.OPENCLAW_E2E_CONVERSATION_LOAD_TURNS ?? 64);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1024) {
+    throw new Error("Corpus workload must contain 1–1024 native turns");
+  }
+  const bytes = await readFile(file);
+  if (bytes.length > 32 * 1024 * 1024) {
+    throw new Error("Corpus workload too large");
+  }
+  const data: unknown = JSON.parse(bytes.toString("utf8"));
+  if (!isRecord(data) || data.version !== 1 || !Array.isArray(data.references)) {
+    throw new Error("Corpus workload contract unavailable");
+  }
+  const selected: Array<{ source: string; text: string }> = [];
+  let totalUserRows = 0;
+  const sources = new Set<string>();
+  for (const row of data.references) {
+    if (
+      !isRecord(row) ||
+      typeof row.source !== "string" ||
+      typeof row.text !== "string" ||
+      (row.role !== "user" && row.role !== "assistant")
+    ) {
+      throw new Error("Corpus workload reference invalid");
+    }
+    sources.add(row.source);
+    if (row.role === "user") {
+      totalUserRows++;
+      if (selected.length < limit) {
+        selected.push({ source: row.source, text: row.text });
+      }
+    }
+  }
+  if (!selected.length) {
+    throw new Error("Corpus workload has no user input");
+  }
+  return { selected, totalUserRows, totalSources: sources.size };
+}
+
+/** Opt-in measurement, not a replacement for Matrix, PSTN or physical Echo acceptance.
+ * Uses native default context/compaction budgets and native provider execution. Only the
+ * external model and speech hardware leaves are synthetic. No historical corpus is
+ * imported here: optional corpus USER text is replayed as NEW authenticated turns.
+ * Old assistant messages, receipts and remote/profile audiences are not impersonated.
+ */
+it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
+  "measures native Chat and connected Talk work across reuse and restart",
+  async (context) => {
+    if (process.platform !== "linux") {
+      throw new Error("Load accounting requires Linux /proc");
+    }
+    const quietMs = Number(process.env.OPENCLAW_E2E_CONVERSATION_LOAD_QUIET_MS ?? 10_000);
+    if (!Number.isSafeInteger(quietMs) || quietMs < 1_000 || quietMs > 60_000) {
+      throw new Error("Quiet measurement window must be 1–60 seconds");
+    }
+    const cleanups: Array<() => Promise<void>> = [];
+    await runQaGatewayTestFixture(
+      context,
+      async ({ signal, verifyCleanup }) => {
+        const corpus = await workload();
+        const inputs = corpus.selected;
+        const model = await startConversationModel(signal, () => "LOAD_REPLY.");
+        cleanups.push(() => model.stop());
+        const gateway = await createOpenClawTestInstance({
+          name: "conversation-load",
+          signal,
+          verifyCleanup,
+          config: configuration(model.baseUrl),
+          env: {
+            OPENCLAW_SKIP_PROVIDERS: undefined,
+            OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+            OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
+            OPENCLAW_LOG_LEVEL: "debug",
+          },
+        });
+        cleanups.push(() => gateway.cleanup());
+        isolateConversationGatewayEnvironment(gateway);
+        gateway.state.applyEnv();
+        const meter = diagnostics();
+        let diagnosticRecords = 0;
+        let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
+        cleanups.push(async () => {
+          await operator?.close();
+        });
+        const live = new Set<string>();
+        const available = new Set<string>();
+        const waiters = new Map<string, ReturnType<typeof createDeferred<void>>>();
+        let turn:
+          | {
+              id: string;
+              ended: ReturnType<typeof createDeferred<void>>;
+              audio: ReturnType<typeof createDeferred<void>>;
+              frames: number;
+            }
+          | undefined;
+        let child: typeof gateway.child;
+        const attach = () => {
+          child = gateway.child;
+          if (!child?.pid) {
+            throw new Error("Gateway process not started");
+          }
+          child.stdout.on("data", meter.stdout);
+          child.stderr.on("data", meter.stderr);
+        };
+        const detach = () => {
+          child?.stdout.off("data", meter.stdout);
+          child?.stderr.off("data", meter.stderr);
+        };
+        const connect = () =>
+          connectConversationOperator(gateway, "load-person@example.test", signal, {
+            scopes: [...SCOPES],
+            onEvent(event, payload) {
+              if (
+                event !== "talk.event" ||
+                !isRecord(payload) ||
+                typeof payload.sessionId !== "string"
+              ) {
+                return;
+              }
+              const current = turn?.id === payload.sessionId ? turn : undefined;
+              if (current && payload.type === "audio" && typeof payload.audioBase64 === "string") {
+                expect(Buffer.from(payload.audioBase64, "base64").length).toBeGreaterThan(0);
+                current.frames++;
+              }
+              const e = payload.talkEvent;
+              if (!isRecord(e)) {
+                return;
+              }
+              if (
+                e.type === "session.activity" &&
+                isRecord(e.payload) &&
+                isRecord(e.payload.input)
+              ) {
+                if (e.payload.input.available === true) {
+                  available.add(payload.sessionId);
+                  waiters.get(payload.sessionId)?.resolve();
+                } else {
+                  available.delete(payload.sessionId);
+                }
+              }
+              if (e.type === "turn.ended") {
+                current?.ended.resolve();
+              }
+              if (e.type === "output.audio.done") {
+                current?.audio.resolve();
+              }
+              if (e.type === "session.error" || e.type === "session.closed") {
+                const error = new Error("Talk ended before the measured operation completed");
+                current?.ended.reject(error);
+                current?.audio.reject(error);
+                waiters.get(payload.sessionId)?.reject(error);
+              }
+            },
+          });
+        const sample = async (phase: string, work: () => Promise<void>) => {
+          const pid = gateway.child?.pid;
+          if (!pid) {
+            throw new Error("Measured Gateway process absent");
+          }
+          meter.take();
+          const startCpu = await cpuTicks(pid);
+          const start = performance.now();
+          const requests = model.requests.length;
+          await work();
+          expect(gateway.child?.pid).toBe(pid);
+          const observed = meter.take();
+          diagnosticRecords += Object.values(observed.counts).reduce(
+            (sum, value) => sum + value,
+            0,
+          );
+          console.log(
+            JSON.stringify({
+              kind: "native-gateway-load",
+              phase,
+              elapsedMs: performance.now() - start,
+              cpuTicks: (await cpuTicks(pid)) - startCpu,
+              modelRequests: model.requests.length - requests,
+              ...observed,
+              boundary: "signed-webchat-and-talk-gateway-relay",
+              corpusSeeded: false,
+            }),
+          );
+        };
+        const chatKey = `agent:main:load-chat-${randomUUID()}`;
+        const assertInput = (before: number, current: string, foreign: string) => {
+          const matching = model.requests
+            .slice(before)
+            .filter((request) => JSON.stringify(request.input).includes(current));
+          // An ambiguous/background match is a failed witness, never pick an arbitrary request.
+          expect(matching).toHaveLength(1);
+          expect(JSON.stringify([matching[0]!.instructions, matching[0]!.input])).toContain(
+            foreign,
+          );
+        };
+        const chat = async (message: string, sessionKey = chatKey, foreign?: string) => {
+          const before = model.requests.length;
+          const reply = await operator!.call<{ runId: string }>("chat.send", {
+            sessionKey,
+            message,
+            deliver: false,
+            idempotencyKey: randomUUID(),
+          });
+          expect(
+            await operator!.call(
+              "agent.wait",
+              { runId: reply.runId, timeoutMs: 30_000 },
+              { timeoutMs: 31_000 },
+            ),
+          ).toMatchObject({ status: "ok" });
+          if (foreign) {
+            assertInput(before, message, foreign);
+          }
+        };
+        const close = async (id: string) => {
+          await operator!.call("talk.session.close", { sessionId: id });
+          live.delete(id);
+        };
+        const speak = async (id: string, activity: boolean, marker: string) => {
+          if (activity && !available.has(id)) {
+            const ready = createDeferred();
+            void ready.promise.catch(() => {});
+            waiters.set(id, ready);
+            try {
+              await withinTest(ready.promise, signal);
+            } finally {
+              waiters.delete(id);
+            }
+          }
+          const current = { id, ended: createDeferred(), audio: createDeferred(), frames: 0 };
+          turn = current;
+          const completed = Promise.all([current.ended.promise, current.audio.promise]);
+          void completed.catch(() => {});
+          const before = model.requests.length;
+          const text = `${marker}: Please reply briefly.`;
+          const pcm = Buffer.from(text + (Buffer.byteLength(text) % 2 ? " " : ""));
+          try {
+            await operator!.call("talk.session.appendAudio", {
+              sessionId: id,
+              audioBase64: pcm.toString("base64"),
+              ...(activity ? { captureId: randomUUID() } : {}),
+              endOfInput: true,
+            });
+            await withinTest(completed, signal);
+            expect(current.frames).toBeGreaterThan(0);
+            assertInput(before, marker, "COBALT_LOAD");
+          } finally {
+            turn = undefined;
+          }
+        };
+        const keys = new Map([
+          ["isolated-duplex", `agent:main:voice:load-${randomUUID()}`],
+          ["activity-v1", `agent:main:voice:load-${randomUUID()}`],
+        ]);
+        try {
+          await gateway.startGateway();
+          attach();
+          operator = await connect();
+          const sources = new Map<string, string>();
+          await sample("corpus-new-authenticated-turns", async () => {
+            for (const input of inputs) {
+              let key = sources.get(input.source);
+              if (!key) {
+                key = `agent:main:load-corpus-${randomUUID()}`;
+                sources.set(input.source, key);
+              }
+              await chat(input.text, key);
+            }
+          });
+          console.log(
+            JSON.stringify({
+              kind: "native-gateway-workload",
+              turns: inputs.length,
+              sources: sources.size,
+              selection: "first-user-rows-in-file-order",
+              totalUserRows: corpus.totalUserRows,
+              totalCorpusSources: corpus.totalSources,
+              textBytes: inputs.reduce((sum, input) => sum + Buffer.byteLength(input.text), 0),
+              historicalReceiptsImported: false,
+              originalAudienceEquivalenceClaimed: false,
+              exactRootReceiptCount: null,
+            }),
+          );
+          await sample("new-chat", () => chat("Remember the synthetic codeword COBALT_LOAD."));
+          for (const generation of ["initial", "restarted"]) {
+            if (generation === "restarted") {
+              await operator.close();
+              operator = undefined;
+              detach();
+              await gateway.stopGateway();
+              await gateway.startGateway();
+              attach();
+              operator = await connect();
+            }
+            for (const [profile, key] of keys) {
+              const activity = profile === "activity-v1";
+              for (const transport of ["open", "reopen"]) {
+                const marker = `LOAD_SPEECH_${generation}_${profile}_${transport}`;
+                let id = "";
+                await sample(`${generation}:${profile}:${transport}`, async () => {
+                  const created = await operator!.call<{ sessionId: string; readyMark: string }>(
+                    "talk.session.create",
+                    {
+                      sessionKey: key,
+                      mode: "stt-tts",
+                      transport: "gateway-relay",
+                      brain: "agent-consult",
+                      provider: SPEECH,
+                      capabilities: activity ? ["activity-v1"] : ["isolated-input", "output-gate"],
+                    },
+                  );
+                  id = created.sessionId;
+                  live.add(id);
+                  await operator!.call("talk.session.acknowledgeMark", {
+                    sessionId: id,
+                    markName: created.readyMark,
+                  });
+                  await speak(id, activity, marker);
+                });
+                // A real timed window measures quiet work, never substitutes for readiness.
+                await sample(`${generation}:${profile}:${transport}:quiet`, async () => {
+                  await measureWindow(quietMs, undefined, { signal });
+                });
+                await sample(`${generation}:${profile}:${transport}:active-chat`, () =>
+                  chat(`LOAD_CHAT_${generation}_${profile}_${transport}`, chatKey, marker),
+                );
+                await sample(`${generation}:${profile}:${transport}:follow-up`, () =>
+                  speak(id, activity, `${marker}_FOLLOWUP`),
+                );
+                await close(id);
+              }
+            }
+          }
+          expect(model.errors).toEqual([]);
+          expect(diagnosticRecords).toBeGreaterThan(0);
+          const history = await operator.call<{ messages: unknown[] }>("chat.history", {
+            sessionKey: chatKey,
+            limit: 100,
+          });
+          expect(JSON.stringify(history.messages)).toContain("COBALT_LOAD");
+        } finally {
+          detach();
+          for (const id of live) {
+            await operator?.call("talk.session.close", { sessionId: id }).catch(() => {});
+          }
+        }
+      },
+      () => runCleanups(cleanups, "Gateway load cleanup failed"),
+    );
+  },
+);
