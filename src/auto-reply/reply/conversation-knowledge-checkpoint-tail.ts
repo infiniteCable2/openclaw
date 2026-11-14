@@ -4,6 +4,7 @@ import {
 } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
+import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import type { PreparedRootKnowledgeContribution } from "./conversation-knowledge-checkpoint-range.js";
 
 /** Disposable text cache only; its contents never grant disclosure or replace native receipts. */
@@ -14,6 +15,9 @@ export function createConversationKnowledgeCheckpointTail() {
   >();
   let bytes = 0;
   let revision = 0;
+  let projection:
+    | readonly Pick<PreparedRootKnowledgeContribution, "reference" | "packet">[]
+    | undefined;
   const evict = (id: string) => {
     const entry = entries.get(id);
     if (!entry) {
@@ -21,6 +25,7 @@ export function createConversationKnowledgeCheckpointTail() {
     }
     bytes -= entry.bytes;
     entries.delete(id);
+    projection = undefined;
     revision++;
     return true;
   };
@@ -53,12 +58,16 @@ export function createConversationKnowledgeCheckpointTail() {
       return Array.from(entries.values(), ({ value }) => value);
     },
     projection() {
-      return [...entries.values()]
-        .toSorted((left, right) => left.order - right.order)
-        .map(({ value }) => ({
-          reference: structuredClone(value.reference),
-          packet: structuredClone(value.packet),
-        }));
+      // Carry one detached immutable projection until this owner changes its tail.
+      // Current native audience/range custody is still checked by every consumer.
+      return (projection ??= freezeJsonSnapshot(
+        [...entries.values()]
+          .toSorted((left, right) => left.order - right.order)
+          .map(({ value }) => ({
+            reference: structuredClone(value.reference),
+            packet: structuredClone(value.packet),
+          })),
+      ));
     },
     reconcile(
       references: readonly ConversationKnowledgeReference[],
@@ -76,6 +85,7 @@ export function createConversationKnowledgeCheckpointTail() {
           evict(id);
         } else if (entry.order !== order.get(id)) {
           entry.order = order.get(id)!;
+          projection = undefined;
           revision++;
         }
       }
@@ -90,6 +100,7 @@ export function createConversationKnowledgeCheckpointTail() {
       if (!entries.has(id) && bytes + size <= maxBytes) {
         entries.set(id, { referenceKey, value, bytes: size, order });
         bytes += size;
+        projection = undefined;
         revision++;
       }
     },
@@ -97,6 +108,7 @@ export function createConversationKnowledgeCheckpointTail() {
     clear() {
       entries.clear();
       bytes = 0;
+      projection = undefined;
     },
   };
 }

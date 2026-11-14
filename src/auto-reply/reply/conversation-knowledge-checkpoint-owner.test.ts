@@ -19,6 +19,7 @@ import type { ConversationPrivateAudience } from "../../sessions/conversation-pr
 import { createDeferredCore } from "../../shared/deferred.js";
 import { registerConversationKnowledgeCheckpointOwner } from "./conversation-knowledge-checkpoint-owner.js";
 import type { PreparedRootKnowledgeContribution } from "./conversation-knowledge-checkpoint-source.js";
+import { createConversationKnowledgeCheckpointTail } from "./conversation-knowledge-checkpoint-tail.js";
 
 type FrameInput = {
   tail: readonly PreparedRootKnowledgeContribution[];
@@ -741,6 +742,18 @@ describe("shared root projection preparation", () => {
     expect(boundary.acquire).toHaveBeenCalledOnce();
     expect(first.registration.projection().tail).toHaveLength(1);
     expect(first.ready).toHaveBeenCalledOnce();
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    try {
+      const projection = first.registration.projection().tail;
+      for (let index = 0; index < 5; index++) {
+        expect(first.registration.projection().tail).toEqual(projection);
+      }
+      // The already materialized tail needs no further packet/reference copies.
+      expect(clone).not.toHaveBeenCalled();
+      expect(first.registration.projection().tail).toBe(projection);
+    } finally {
+      clone.mockRestore();
+    }
     boundary.refs.push(reference(2));
     await quantum();
     expect(boundary.read).toHaveBeenCalledTimes(2);
@@ -752,6 +765,46 @@ describe("shared root projection preparation", () => {
     expect(boundary.plan).toHaveBeenCalledTimes(3);
     expect(boundary.summarize).not.toHaveBeenCalled();
     expect(boundary.modelRelease).toHaveBeenCalledOnce();
+  });
+  it("keeps detached immutable projections through reorder, remap, eviction and clear", async () => {
+    const f = register();
+    boundary.refs = [reference(1), reference(2)];
+    await quantum();
+    const original = f.registration.projection().tail;
+    const input = boundary.frame.mock.calls[0]![0] as FrameInput;
+    expect(original[0]!.packet).not.toBe(input.tail[0]!.packet);
+    expect(original[0]!.reference).not.toBe(input.tail[0]!.reference);
+    expect(Object.isFrozen(original)).toBe(true);
+    expect(Object.isFrozen(original[0]!.reference.through)).toBe(true);
+    expect(() => {
+      original[0]!.packet.part.text = "changed";
+    }).toThrow(TypeError);
+    boundary.refs.reverse();
+    await quantum();
+    expect(f.registration.projection().tail.map((item) => item.reference.through.rawSeq)).toEqual([
+      2, 1,
+    ]);
+    expect(original.map((item) => item.reference.through.rawSeq)).toEqual([1, 2]);
+    boundary.refs = [reference(1)];
+    await quantum();
+    expect(f.registration.projection().tail).toHaveLength(1);
+    boundary.refs = [
+      {
+        ...reference(1),
+        readRange: { through: reference(3).through, admission: reference(1).through },
+      },
+    ];
+    await quantum();
+    expect(f.registration.projection().tail[0]!.packet.through.rawSeq).toBe(3);
+    expect(original[0]!.packet.through.rawSeq).toBe(1);
+    const tail = createConversationKnowledgeCheckpointTail();
+    tail.put(input.tail[0]!, 0, 4_096);
+    const beforeClear = tail.projection();
+    tail.clear();
+    expect(tail.projection()).toEqual([]);
+    expect(beforeClear).toHaveLength(1);
+    f.expire();
+    expect(() => f.registration.projection()).toThrow("no current private broker");
   });
   it("invalidates remapped originals and retains another current broker after the first closes", async () => {
     const first = register();

@@ -221,7 +221,7 @@ describe("recipient preparation scheduling", () => {
       expect(preparation.owner.request).not.toHaveBeenCalled();
       f.reload();
       wakeConversationRecipientsAfterConfigChange({}, f.base);
-      expect(preparation.owner.request).toHaveBeenCalledExactlyOnceWith("recipient");
+      expect(preparation.owner.request).toHaveBeenCalledExactlyOnceWith("recipient", "config");
       await scheduled.prepare(signal, false);
       const next = preparation.idle.mock.calls[1]![0];
       expect(next.budget).toBeUndefined();

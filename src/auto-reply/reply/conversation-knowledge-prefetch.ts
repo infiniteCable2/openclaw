@@ -93,7 +93,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     if (current) {
       old.retainAudience(incomingAudience);
       // A new admitted input is also a retry opportunity after a transient read failure.
-      old.owner.request();
+      old.owner.request("source", "opening");
       return old;
     }
   }
@@ -191,7 +191,7 @@ export function prepareConversationKnowledgeRecipient(params: {
       // Native source identity deduplicates repeated turns from one endpoint.
       // Acquire before replacement so the original native source never drops.
       const previous = audiences.get(value.source);
-      const onAbort = () => recipients.get(key)?.owner.request();
+      const onAbort = () => recipients.get(key)?.owner.request("source", "audience");
       value.signal?.addEventListener("abort", onAbort, { once: true });
       const retained = Object.freeze({
         ...value,
@@ -249,7 +249,7 @@ export function prepareConversationKnowledgeRecipient(params: {
       ...params,
       participant: participant!,
       audience,
-      onReady: () => recipients.get(key)?.owner.request(),
+      onReady: () => recipients.get(key)?.owner.request("source", "root-ready"),
     });
     const rootCheckpoint = checkpoint;
     const owner = createConversationKnowledgePrefetchOwner({
@@ -275,6 +275,8 @@ export function prepareConversationKnowledgeRecipient(params: {
         cache.clear();
       },
       async prepare(signal, prepareSources = true) {
+        const pendingBefore = sourcePreparationPending;
+        const continuationBefore = sourceCursor !== undefined;
         sourcePreparationPending ||= prepareSources;
         cache.retryCleanup();
         const startedAt = performance.now();
@@ -360,6 +362,9 @@ export function prepareConversationKnowledgeRecipient(params: {
             log.debug("Related-history source preparation settled", {
               recipientHash: redactIdentifier(branch.sessionId),
               preparingSources,
+              prepareSources,
+              pendingBefore,
+              continuationBefore,
               preparedSourceFrontiers: cache.diagnosticPreparedFrontiers(),
               ...cache.diagnosticCapacity(),
               elapsedMs: Math.round(performance.now() - startedAt),
@@ -401,6 +406,16 @@ export function prepareConversationKnowledgeRecipient(params: {
               cache.invalidationRevision !== invalidationBefore ||
               (rootBefore !== undefined && cache.preparedRoot === undefined);
           }
+          if (log.isEnabled("debug")) {
+            log.debug("Related-history recipient quantum settled", {
+              recipientHash: redactIdentifier(branch.sessionId),
+              idleProgress: consumed,
+              sourcePreparationPending,
+              invalidated: cache.invalidationRevision !== invalidationBefore,
+              rootLost: rootBefore !== undefined && cache.preparedRoot === undefined,
+              continuesSources: sourceCursor !== undefined && !prepared?.preparationSaturated,
+            });
+          }
           return (
             consumed ||
             sourcePreparationPending ||
@@ -417,7 +432,7 @@ export function prepareConversationKnowledgeRecipient(params: {
       checkpoint: rootCheckpoint,
       wakeAfterConfigChange(previous: ReadonlySet<OpenClawConfig>) {
         if (previous.has(getRuntimeConfigCapture(maintenanceConfig)?.origin ?? maintenanceConfig)) {
-          owner.request("recipient");
+          owner.request("recipient", "config");
         }
       },
       retainAudience,
@@ -426,7 +441,7 @@ export function prepareConversationKnowledgeRecipient(params: {
     recipients.set(key, recipient);
     unsubscribeAvailability = onSessionMaintenanceAvailable(branch.sessionKey, () => {
       if (cache.preparedCheckpoint || cache.preparedPackets(1).length) {
-        owner.request("recipient");
+        owner.request("recipient", "availability");
       }
     });
     return recipient;

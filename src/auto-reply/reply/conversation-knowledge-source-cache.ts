@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { snapshotConversationKnowledgeProgress } from "../../config/sessions/conversation-knowledge-checkpoint-context.js";
 import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import type { ConversationKnowledgePacketProgress } from "../../config/sessions/conversation-knowledge-packets.js";
@@ -19,6 +18,7 @@ import type {
   ConversationKnowledgeCachedAdmission,
 } from "./conversation-knowledge-source-cache.types.js";
 import { validateConversationKnowledgeCachedContext } from "./conversation-knowledge-source-validation.js";
+import { summarizeConversationKnowledgePreparedFrontiers } from "./conversation-knowledge-status.js";
 export type {
   PreparedConversationKnowledgePacket,
   ConversationKnowledgeSourceSelection,
@@ -410,22 +410,19 @@ export function createConversationKnowledgeSourceCache<
       return invalidationRevision;
     },
     diagnosticCapacity() {
-      return { preparedPackets: staged.size, stagedBytes, admissionBytes, maxBytes };
+      return {
+        preparedPackets: staged.size,
+        stagedBytes,
+        admissionBytes,
+        maxBytes,
+        rawBytes: bytes,
+        preparedRootBytes: preparedRoot?.byteLength ?? 0,
+        inputRootBytes: inputRoot?.bytes ?? 0,
+        inputProgressBytes: inputProgress?.bytes ?? 0,
+      };
     },
     diagnosticPreparedFrontiers() {
-      const frontiers = new Map<string, number>();
-      for (const slot of staged.values()) {
-        if (slot.offset !== 0 || !slot.value.part.complete) {
-          continue;
-        }
-        const { sessionId, rawSeq } = slot.value.through;
-        const sourceHash = redactIdentifier(sessionId);
-        if (!frontiers.has(sourceHash) && frontiers.size >= 8) {
-          continue;
-        }
-        frontiers.set(sourceHash, Math.max(frontiers.get(sourceHash) ?? 0, rawSeq));
-      }
-      return [...frontiers].map(([sourceHash, throughSeq]) => ({ sourceHash, throughSeq }));
+      return summarizeConversationKnowledgePreparedFrontiers(staged.values());
     },
     get preparedRoot() {
       return preparedRoot;

@@ -2,10 +2,30 @@ import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.types.js";
 
 const log = createSubsystemLogger("auto-reply/conversation-knowledge");
 const reportedOutcomes = new Map<string, string>();
 const MAX_REPORTED_OUTCOMES = 256;
+
+/** Keep cache frontier diagnostics bounded and free of source identifiers. */
+export function summarizeConversationKnowledgePreparedFrontiers(
+  staged: Iterable<{ offset: number; value: PreparedConversationKnowledgePacket }>,
+) {
+  const frontiers = new Map<string, number>();
+  for (const slot of staged) {
+    if (slot.offset !== 0 || !slot.value.part.complete) {
+      continue;
+    }
+    const { sessionId, rawSeq } = slot.value.through;
+    const sourceHash = redactIdentifier(sessionId);
+    if (!frontiers.has(sourceHash) && frontiers.size >= 8) {
+      continue;
+    }
+    frontiers.set(sourceHash, Math.max(frontiers.get(sourceHash) ?? 0, rawSeq));
+  }
+  return [...frontiers].map(([sourceHash, throughSeq]) => ({ sourceHash, throughSeq }));
+}
 
 function failureCause(failure: unknown) {
   if (failure === undefined) {

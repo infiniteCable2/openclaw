@@ -26,6 +26,20 @@ type PrefetchTarget = {
   env?: NodeJS.ProcessEnv;
   root: { sessionKey: string; sessionId: string; lifecycleRevision: string };
 };
+type RequestCause =
+  | "explicit"
+  | "initial"
+  | "root-transcript"
+  | "recipient-runtime"
+  | "recipient-entry"
+  | "source-entry"
+  | "source-context"
+  | "resume"
+  | "root-ready"
+  | "opening"
+  | "audience"
+  | "availability"
+  | "config";
 
 /** Notifications schedule authorized reads; neither their publisher nor this owner writes history. */
 export function createConversationKnowledgePrefetchOwner(params: {
@@ -65,6 +79,17 @@ export function createConversationKnowledgePrefetchOwner(params: {
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let retryDelayMs = RETRY_MIN_MS;
   const reportedFailures = new Set<string>();
+  const debugWork = (phase: string, fields: Record<string, string | boolean>) => {
+    if (log.isEnabled("debug")) {
+      log.debug("Related-history preparation work", {
+        recipientHash: redactIdentifier(target.sessionId),
+        rootHash: redactIdentifier(root.sessionId),
+        owner: params.workLaneOwner === "conversation-knowledge-checkpoints" ? "root" : "recipient",
+        phase,
+        ...fields,
+      });
+    }
+  };
 
   const check = () => {
     lifetimeSignal.throwIfAborted();
@@ -196,6 +221,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
     // This owns one future wakeup, not accepted work that wait()/close() must join.
     retryTimer = setTimeout(() => {
       retryTimer = undefined;
+      debugWork("request", { cause: "retry", sourcesRequested });
       requested = true;
       schedule();
     }, retryDelayMs);
@@ -256,6 +282,12 @@ export function createConversationKnowledgePrefetchOwner(params: {
                 check();
                 reportedFailures.delete("preparation-deferred");
                 retryDelayMs = RETRY_MIN_MS;
+                debugWork("settled", {
+                  preparingSources,
+                  more: more === true,
+                  requestedDuringPreparation: requested,
+                  sourcesRequested,
+                });
                 requested ||= more === true;
               },
               { abortSignal: lifetimeSignal, priority: "background" },
@@ -303,7 +335,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
       stop();
     });
   };
-  const request = (kind: "source" | "recipient" = "source") => {
+  const request = (kind: "source" | "recipient" = "source", cause: RequestCause = "explicit") => {
     if (lifetimeSignal.aborted) {
       return;
     }
@@ -311,6 +343,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
     cancelRetry();
     requested = true;
     sourcesRequested ||= kind === "source";
+    debugWork("request", { cause, kind, sourcesRequested, coalesced: completion !== undefined });
     schedule();
   };
   const pausePreparation = () => {
@@ -330,7 +363,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
       if (preparationPauses === 0) {
         // Refresh recipient progress without inventing a donor change. Pending
         // source notifications and cancelled source work retain their own intent.
-        request("recipient");
+        request("recipient", "resume");
       }
     };
   };
@@ -359,7 +392,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
         changed.storePath &&
         path.resolve(changed.storePath) === target.storePath
       ) {
-        request();
+        request("source", "root-transcript");
       }
     });
     unsubscribeRecipient = sessionChanges.subscribe((change) => {
@@ -373,7 +406,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
       ) {
         // Runtime settlement omits the store path. This is only an exact-key
         // wakeup; native recipient reads and commit guards still decide authority.
-        request("recipient");
+        request("recipient", "recipient-runtime");
         return;
       }
       if (
@@ -384,7 +417,10 @@ export function createConversationKnowledgePrefetchOwner(params: {
         change.storePath &&
         path.resolve(change.storePath) === target.storePath
       ) {
-        request(change.sessionKey === target.sessionKey ? "recipient" : "source");
+        request(
+          change.sessionKey === target.sessionKey ? "recipient" : "source",
+          change.sessionKey === target.sessionKey ? "recipient-entry" : "source-entry",
+        );
       }
     });
     unsubscribeSource = sessionChanges.subscribeFacts((change) => {
@@ -407,7 +443,7 @@ export function createConversationKnowledgePrefetchOwner(params: {
       ) {
         // Native context controls can invalidate cached bytes without adding a
         // root receipt. Ordinary message/report appends must not cause another scan.
-        request();
+        request("source", "source-context");
       }
     });
   } catch (error) {
@@ -418,6 +454,6 @@ export function createConversationKnowledgePrefetchOwner(params: {
     }
     throw error;
   }
-  request();
+  request("source", "initial");
   return { request, pausePreparation, close, assertCurrent, wait };
 }

@@ -1,0 +1,3 @@
+# Immutable owner projection: warm reads do not recopy unchanged packets;
+# preserve detached snapshots through reorder, remap, eviction and owner expiry.
+53

@@ -1,6 +1,6 @@
 import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
+import { redactIdentifier, sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import type { PreparedConversationBranchCreation } from "../../config/sessions/conversation-branch-creation.js";
 import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import {
@@ -50,6 +50,7 @@ import { SessionTranscriptReadFenceError } from "../../config/sessions/session-t
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { preparePersonalConversationRead } from "../../gateway/session-transcript-personal-read.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import {
   prepareConversationKnowledgeBranchFacts,
@@ -62,6 +63,8 @@ import type {
 } from "./conversation-knowledge-source-cache.js";
 import { createConversationKnowledgeSourceCustody } from "./conversation-knowledge-source-custody.js";
 import { logConversationKnowledgePreparedRanges } from "./conversation-knowledge-status.js";
+
+const log = createSubsystemLogger("conversation-knowledge");
 
 export type ConversationKnowledgeHeldSource = {
   grant: Awaited<ReturnType<typeof preparePersonalConversationRead>>;
@@ -193,6 +196,17 @@ export async function readConversationKnowledgeInputs(params: {
   };
   const cache = params.preparationOnly ? params.sourceCache : undefined;
   const epoch = cache?.consumptionRevision ?? -1;
+  const logInputRoot = (outcome: string, manifestBytes?: number) => {
+    if (log.isEnabled("debug")) {
+      log.debug("Related-history preparation input root", {
+        recipientHash: redactIdentifier(params.branch.sessionId),
+        rootHash: redactIdentifier(params.branch.root.sessionId),
+        outcome,
+        manifestBytes,
+        ...cache?.diagnosticCapacity(),
+      });
+    }
+  };
   const readVersion = async (target: ConversationKnowledgeBranch) => {
     check();
     const { prepareSessionTranscriptHydration } =
@@ -233,30 +247,44 @@ export async function readConversationKnowledgeInputs(params: {
       const events = await rebind(cached);
       const current = await readVersion(target);
       if (isDeepStrictEqual(version, current)) {
+        logInputRoot("hit");
         return events;
       }
+      logInputRoot("version-changed");
       cache.preparationRoot(current);
       version = current;
+    } else {
+      logInputRoot("miss");
     }
     const events = await readConversationKnowledgeRoot(params);
     const current = await readVersion(target);
     if (isDeepStrictEqual(version, current)) {
       try {
-        cache.retainPreparationRoot(
-          current,
-          issuePreparedKnowledgeRootCandidates(
-            events.evidence,
-            selectConversationKnowledgeReceipts(events, ""),
-            { maxBytes: cache.maxPreparedRootBytes },
-          ),
-          epoch,
+        const manifest = issuePreparedKnowledgeRootCandidates(
+          events.evidence,
+          selectConversationKnowledgeReceipts(events, ""),
+          { maxBytes: cache.maxPreparedRootBytes },
         );
+        cache.retainPreparationRoot(current, manifest, epoch);
+        if (log.isEnabled("debug")) {
+          logInputRoot(
+            epoch !== cache.consumptionRevision
+              ? "consumption-changed"
+              : cache.diagnosticCapacity().inputRootBytes > 0
+                ? "retained"
+                : "capacity-refused",
+            manifest.byteLength,
+          );
+        }
       } catch (error) {
         if (!(error instanceof RangeError)) {
           throw error;
         }
         // An oversized snapshot still serves this read; it is never retained.
+        logInputRoot("manifest-budget-refused");
       }
+    } else {
+      logInputRoot("changed-during-read");
     }
     return events;
   };
@@ -414,6 +442,14 @@ export function publishPreparedConversationKnowledgeRoot(params: {
       manifest,
       maxBytes: params.cache.maxPreparedRootBytes,
     });
+    if (log.isEnabled("debug")) {
+      log.debug("Related-history prepared selection", {
+        recipientHash: redactIdentifier(params.branch.sessionId),
+        keyHit: manifest !== undefined,
+        manifestReused: sourceSelection.manifest === manifest,
+        manifestBytes: sourceSelection.manifest.byteLength,
+      });
+    }
     return { manifest: sourceSelection.manifest, sourceSelection };
   });
 }
