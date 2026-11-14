@@ -1,3 +1,0 @@
-4
-# Preserve the native structured RPC error in the existing Gateway fixture;
-# a colon after a session method made the credential reporter hide the whole JSON.
