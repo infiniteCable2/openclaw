@@ -33,6 +33,7 @@ import {
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { OperatorScope } from "./operator-scopes.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
+import type { SessionMutationAuthorization } from "./server-methods/types.js";
 import {
   createContext,
   createOperatorClient,
@@ -312,7 +313,7 @@ it.for(["continuous", "reset"] as const)(
       const database = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
       const gateway = createDirectChatContext({ getRuntimeConfig: () => cfg });
       using authorizations = new DisposableStack();
-      const startups = [];
+      const startups: SessionMutationAuthorization[] = [];
       for (const method of ["talk.session.create", "talk.client.create"]) {
         const admitted = await resolveSessionMutationAuthorizationAsync({
           client,
