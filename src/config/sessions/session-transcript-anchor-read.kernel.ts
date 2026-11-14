@@ -242,9 +242,6 @@ export function readSessionTranscriptAnchorFactsInDatabase(
             contextVersion: readTranscriptContextVersionInTransaction(database, resolved.sessionId),
           }
         : {}),
-      ...(selection.includeMessagePresence
-        ? { messagePresence: hasSessionTranscriptMessageInDatabase(database, resolved.sessionId) }
-        : {}),
       ...(selection.includeMetadata
         ? { metadata: readSessionTranscriptMetadataInDatabase(database, resolved.sessionId) }
         : {}),
