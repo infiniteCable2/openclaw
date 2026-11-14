@@ -350,22 +350,39 @@ export function prepareConversationKnowledgeSourceSelection(params: {
   receipts: readonly ConversationKnowledgeReference[];
   audienceIdentity: string | undefined;
   maxBytes: number;
-}): ConversationKnowledgeSourceSelection {
+  /** Private reuse hint from the cache's exact ordered receipt key. */
+  manifest?: PreparedKnowledgeRootCandidates;
+}): ConversationKnowledgeSourceSelection & { manifest: PreparedKnowledgeRootCandidates } {
   if (!params.audienceIdentity) {
     throw new Error("Prepared source selection requires a confirmed private audience");
   }
-  const scope = prepareConversationKnowledgeRootSubset({
+  let scope: ReturnType<typeof prepareConversationKnowledgeRootSubset> | undefined;
+  if (params.manifest) {
+    try {
+      scope = prepareConversationKnowledgeRootSubset({
+        evidence: params.evidence,
+        branch: params.branch,
+        manifest: params.manifest,
+      });
+    } catch {
+      // Only disposable provenance is reused. Changed physical/recipient scope
+      // needs a fresh selection; its native owner still refuses revoked evidence.
+    }
+  }
+  scope ??= prepareConversationKnowledgeRootSubset({
     evidence: params.evidence,
     branch: params.branch,
     references: params.receipts,
     maxBytes: params.maxBytes,
   });
+  const current = scope;
   return {
-    scopeKey: JSON.stringify([scope.scopeKey, params.audienceIdentity]),
+    manifest: current.manifest,
+    scopeKey: JSON.stringify([current.scopeKey, params.audienceIdentity]),
     contains(manifest) {
       try {
         prepareConversationKnowledgeRootSubset({
-          evidence: scope.evidence,
+          evidence: current.evidence,
           branch: params.branch,
           manifest,
         });
@@ -391,16 +408,14 @@ export function publishPreparedConversationKnowledgeRoot(params: {
   // Packet consumption never changes which original ranges a native group
   // selected. Keep canonical provenance whole; the existing byte cap still applies.
   const receipts = params.receipts;
-  params.cache.setPreparedRoot(
-    issuePreparedKnowledgeRootCandidates(params.evidence, receipts, {
-      maxBytes: params.cache.maxPreparedRootBytes,
-    }),
-    sha256Hex(JSON.stringify(receipts)),
-    prepareConversationKnowledgeSourceSelection({
+  return params.cache.prepareRootSelection(sha256Hex(JSON.stringify(receipts)), (manifest) => {
+    const sourceSelection = prepareConversationKnowledgeSourceSelection({
       ...params,
+      manifest,
       maxBytes: params.cache.maxPreparedRootBytes,
-    }),
-  );
+    });
+    return { manifest: sourceSelection.manifest, sourceSelection };
+  });
 }
 
 /** An old cached packet is not permission to resurrect native compacted history. */

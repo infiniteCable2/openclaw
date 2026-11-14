@@ -50,9 +50,7 @@ const native = vi.hoisted(() => ({
   groupRead: vi.fn(),
   releaseGroup: vi.fn(),
   inputs: vi.fn(),
-  publish: vi.fn(),
   subset: vi.fn(),
-  sourceSelection: vi.fn(),
 }));
 // mock-isolation: Exact native grouped range/ACL validation is covered by personal-read integration tests.
 vi.mock("../../gateway/session-transcript-personal-read.js", () => ({
@@ -79,11 +77,10 @@ vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   prepareConversationKnowledgeRootSubset: native.subset,
 }));
 // mock-isolation: Revocable donor grants exercise orchestration; native authorization has integration tests.
-vi.mock("./conversation-knowledge-source-reader.js", () => ({
+vi.mock("./conversation-knowledge-source-reader.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./conversation-knowledge-source-reader.js")>()),
   prepareConversationKnowledgeTarget: native.target,
   readConversationKnowledgeInputs: native.inputs,
-  publishPreparedConversationKnowledgeRoot: native.publish,
-  prepareConversationKnowledgeSourceSelection: native.sourceSelection,
 }));
 
 const person = { type: "profile", id: "example-person" } as const;
@@ -236,32 +233,30 @@ beforeEach(() => {
     events: await native.scan(),
     retained: new Map(),
   }));
-  native.publish.mockImplementation(({ evidence, receipts, cache }) => {
-    cache.setPreparedRoot(native.issue(evidence, receipts));
-  });
   native.issue.mockImplementation((_evidence, references) => ({
     references: structuredClone(references),
     byteLength: 100,
     ownedByteLength: 100,
   }));
-  native.subset.mockImplementation((input) => ({
-    manifest: input.manifest ?? {
-      references: structuredClone(input.references),
-      byteLength: 100,
-      ownedByteLength: 100,
-    },
-    evidence: preparedRootEvidence,
-    scopeKey: "synthetic-native-root",
-  }));
-  native.sourceSelection.mockImplementation((input) => {
+  // Model the existing native subset I/O boundary; the publisher and cache stay real.
+  const selections = new WeakMap<object, readonly ConversationKnowledgeReference[]>();
+  native.subset.mockImplementation((input) => {
+    const manifest = input.manifest ?? native.issue(input.evidence, input.references);
+    const selected = selections.get(input.evidence);
+    if (
+      selected &&
+      !manifest.references.every((reference: ConversationKnowledgeReference) =>
+        selected.some((current) => isDeepStrictEqual(current, reference)),
+      )
+    ) {
+      throw new Error("Synthetic selected root no longer contains the donor range");
+    }
+    const evidence = Object.freeze({ syntheticSelectedEvidence: true });
+    selections.set(evidence, manifest.references);
     return {
-      scopeKey: JSON.stringify([input.branch, input.audienceIdentity]),
-      contains: (manifest: { references: ConversationKnowledgeReference[] }) =>
-        manifest.references.every((selected) =>
-          input.receipts.some((current: ConversationKnowledgeReference) =>
-            isDeepStrictEqual(current, selected),
-          ),
-        ),
+      manifest,
+      evidence,
+      scopeKey: JSON.stringify(input.branch),
     };
   });
   native.evidence.mockResolvedValue({ syntheticEvidence: true });
@@ -549,11 +544,16 @@ describe("ready checkpoint recipient", () => {
           : Number(Boolean(cache.preparedCheckpoint)),
       ).toBe(outcome === "transfer" ? 1 : 0);
       for (const prepare of [native.group, native.groupRead]) {
-        expect(prepare).toHaveBeenCalledWith(
-          expect.objectContaining({
-            personal: expect.objectContaining({ rootEvidence: preparedRootEvidence }),
-          }),
-        );
+        const issuedEvidence =
+          kind === "projection"
+            ? native.subset.mock.results
+                .filter((result) => result.type === "return")
+                .map((result) => result.value.evidence)
+            : [preparedRootEvidence];
+        expect(prepare).toHaveBeenCalled();
+        for (const [request] of prepare.mock.calls) {
+          expect(issuedEvidence).toContain(request.personal.rootEvidence);
+        }
       }
       if (kind === "checkpoint" && outcome === "transfer") {
         expect(cache.preparedCheckpoint?.groups.map((group) => group.source)).toEqual([

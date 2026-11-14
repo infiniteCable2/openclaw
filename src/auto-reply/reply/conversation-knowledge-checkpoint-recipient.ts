@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import type { CustomMessage } from "../../agents/sessions/messages.js";
 import {
   prepareConversationKnowledgeBootstrap,
@@ -35,7 +34,7 @@ import { checkpointReadCustody } from "./conversation-knowledge-source-custody.j
 import {
   readConversationKnowledgeInputs,
   prepareConversationKnowledgeTarget,
-  prepareConversationKnowledgeSourceSelection,
+  publishPreparedConversationKnowledgeRoot,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
 import {
@@ -109,22 +108,15 @@ export async function prepareRecipientConversationProjection(
     );
     let manifest: PreparedKnowledgeRootCandidates;
     try {
-      const candidate = issuePreparedKnowledgeRootCandidates(events.evidence, current, {
-        maxBytes: cache.maxPreparedRootBytes,
-      });
       // Progress consumes packets, not the canonical native source selection.
       // Identical selection keeps its manifest and grouped custody across batches.
-      manifest = cache.setPreparedRoot(
-        candidate,
-        sha256Hex(JSON.stringify(current)),
-        prepareConversationKnowledgeSourceSelection({
-          evidence: events.evidence,
-          branch,
-          receipts: current,
-          audienceIdentity: targetFacts.audienceIdentity,
-          maxBytes: cache.maxPreparedRootBytes,
-        }),
-      );
+      manifest = publishPreparedConversationKnowledgeRoot({
+        cache,
+        evidence: events.evidence,
+        branch,
+        receipts: current,
+        audienceIdentity: targetFacts.audienceIdentity,
+      });
     } catch (error) {
       if (!(error instanceof RangeError)) {
         throw error;

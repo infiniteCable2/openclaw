@@ -1,0 +1,3 @@
+# Native strict-subset publication regression: avoid rebuilding unchanged payloads;
+# preserve ordering, audience, physical source, byte budgets, and live revocation.
+171

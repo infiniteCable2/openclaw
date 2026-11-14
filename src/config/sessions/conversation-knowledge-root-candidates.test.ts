@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createConversationKnowledgeSourceCache } from "../../auto-reply/reply/conversation-knowledge-source-cache.js";
-import { prepareConversationKnowledgeSourceSelection } from "../../auto-reply/reply/conversation-knowledge-source-reader.js";
+import {
+  prepareConversationKnowledgeSourceSelection,
+  publishPreparedConversationKnowledgeRoot,
+} from "../../auto-reply/reply/conversation-knowledge-source-reader.js";
 import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
 import { prepareConversationKnowledgeCheckpointSelection } from "./conversation-knowledge-checkpoint-admission.js";
 import {
@@ -8,6 +11,11 @@ import {
   prepareConversationKnowledgeCheckpointCoverage,
   PreparedConversationKnowledgeCheckpointCoverage,
 } from "./conversation-knowledge-checkpoint.js";
+import {
+  ConversationKnowledgeRootCache,
+  readConversationKnowledgeRootSnapshot,
+} from "./conversation-knowledge-root-cache.js";
+import { selectConversationKnowledgeReceipts } from "./conversation-knowledge-selection.js";
 import {
   assertNativeKnowledgeRootContribution,
   assertNativeKnowledgeRootContributionGroup,
@@ -37,8 +45,8 @@ vi.mock("./conversation-knowledge-history.js", () => ({
   readConversationKnowledgeRootReports: async (params: { revalidate(): Promise<void> }) => {
     const reports = await boundary.reports(params);
     await params.revalidate();
-    // Native reads return a fresh carrier for each evidence attachment.
-    return [...reports];
+    // Preserve real cache-issued provenance; ordinary fixtures need a fresh carrier.
+    return readConversationKnowledgeRootSnapshot(reports) ? reports : [...reports];
   },
 }));
 
@@ -192,6 +200,169 @@ function fixture() {
 beforeEach(() => boundary.reports.mockReset());
 
 describe("prepared native knowledge root candidates", () => {
+  it("rebinds repeated recipient subsets before payload construction while preserving scope and selection", async () => {
+    const f = fixture();
+    const references = Array.from({ length: 3 }, (_, index) => {
+      const source =
+        index === 0
+          ? {
+              agentId: f.branch.agentId,
+              sessionKey: f.branch.sessionKey,
+              sessionId: f.branch.sessionId,
+              lifecycleRevision: f.branch.lifecycleRevision,
+            }
+          : f.receipt.source;
+      const through = {
+        ...f.receipt.through,
+        agentId: source.agentId,
+        sessionKey: source.sessionKey,
+        sessionId: source.sessionId,
+        entryId: `answer-${index}`,
+        rawSeq: index * 2 + 3,
+      };
+      return {
+        ...f.receipt,
+        source,
+        through,
+        origin: conversationKnowledgeOrigin(source),
+        privateAudience: {
+          participant: f.receipt.privateAudience!.participant,
+          admission: { ...through, entryId: `question-${index}`, rawSeq: index * 2 + 2 },
+        },
+      };
+    });
+    const events = references.map((details, index) => ({
+      ...f.events[0],
+      id: `root-${index}`,
+      details,
+    }));
+    const cache = new ConversationKnowledgeRootCache();
+    const request: Parameters<ConversationKnowledgeRootCache["read"]>[0] = {
+      source: f.source,
+      agentId: f.branch.agentId,
+      ...f.branch.root,
+      customTypes: [CONVERSATION_KNOWLEDGE_REPORT],
+      watermark: async () => ({ generation: "root-generation", maxSeq: 3 }),
+      raw: async () => ({
+        kind: "page",
+        events: [{ seq: 3, event: events[2]! }],
+        cursor: "unused-boundary-cursor",
+        hasMore: false,
+        serializedBytes: 0,
+      }),
+      full: async () => events,
+      assertCurrent: f.reader.assertCurrent,
+      revalidate: async () => f.reader.assertCurrent(),
+    };
+    const native = await cache.read(request);
+    boundary.reports.mockResolvedValueOnce(native);
+    const read = () =>
+      readConversationKnowledgeRoot({ ...f, assertCurrent: f.reader.assertCurrent });
+    const root = await read();
+    const selected = selectConversationKnowledgeReceipts(
+      root,
+      f.branch.sessionId,
+      f.branch.sessionKey,
+    );
+    expect(selected).toHaveLength(2);
+    const sourceCache = createConversationKnowledgeSourceCache();
+    const publish = (
+      evidence: typeof root.evidence,
+      receipts = selected,
+      audienceIdentity = "profile:example",
+    ) => {
+      publishPreparedConversationKnowledgeRoot({
+        evidence,
+        receipts,
+        cache: sourceCache,
+        branch: f.branch,
+        audienceIdentity,
+      });
+      return sourceCache.preparedRoot!;
+    };
+    const serialize = vi.spyOn(JSON, "stringify");
+    const payloadSerializations = () =>
+      serialize.mock.calls.filter(
+        ([value]) =>
+          Array.isArray(value) &&
+          value.some((row) => row && typeof row === "object" && "customType" in row),
+      ).length;
+    try {
+      const manifest = publish(root.evidence);
+      expect.soft(payloadSerializations()).toBe(1);
+      let fresh = root;
+      serialize.mockClear();
+      const revision = sourceCache.revision;
+      for (let index = 0; index < 5; index++) {
+        boundary.reports.mockResolvedValueOnce(await cache.read(request));
+        fresh = await read();
+        expect(publish(fresh.evidence)).toBe(manifest);
+      }
+      expect.soft(payloadSerializations()).toBe(0);
+      expect(sourceCache.revision).toBe(revision);
+      const ordered = publish(fresh.evidence, selected.toReversed());
+      expect(ordered).not.toBe(manifest);
+      const orderedEvents = await readPreparedConversationKnowledgeRoot({
+        ...f,
+        manifest: ordered,
+        assertCurrent() {},
+      });
+      expect(orderedEvents.map((event) => event.id)).toEqual(["root-2", "root-1"]);
+      expect(ordered.byteLength).toBe(
+        ordered.ownedByteLength + Buffer.byteLength(JSON.stringify(orderedEvents)),
+      );
+      const added = {
+        ...f.receipt,
+        through: { ...f.receipt.through, entryId: "new-answer", rawSeq: 9 },
+      };
+      const grownEvents = [...events, { ...f.events[0], id: "root-new", details: added }];
+      boundary.reports.mockResolvedValueOnce(grownEvents);
+      const grown = await read();
+      const expandedReferences = selectConversationKnowledgeReceipts(
+        grown,
+        f.branch.sessionId,
+        f.branch.sessionKey,
+      );
+      const expanded = publish(grown.evidence, expandedReferences);
+      expect(expanded).not.toBe(ordered);
+      expect(
+        await readPreparedConversationKnowledgeRoot({
+          ...f,
+          manifest: expanded,
+          assertCurrent() {},
+        }),
+      ).toHaveLength(3);
+      const release = vi.fn();
+      const group = { release, byteLength: 64 } as unknown as Parameters<
+        typeof sourceCache.retainContributionGroup
+      >[2];
+      expect(
+        sourceCache.retainContributionGroup(
+          ["donor"],
+          { ...f.receipt.source, storePath: f.branch.storePath },
+          group,
+          expanded,
+        ),
+      ).toBe(true);
+      const beforeAudience = sourceCache.revision;
+      publish(grown.evidence, expandedReferences, "profile:other");
+      expect(sourceCache.revision).toBeGreaterThan(beforeAudience);
+      expect(release).toHaveBeenCalledOnce();
+      f.source.databaseIdentity = "replacement-native-owner";
+      boundary.reports.mockResolvedValueOnce(grownEvents);
+      const replacement = await read();
+      expect(publish(replacement.evidence, expandedReferences, "profile:other")).not.toBe(expanded);
+      f.releaseReader();
+      const beforeRevocation = sourceCache.revision;
+      expect(() => publish(replacement.evidence, expandedReferences, "profile:other")).toThrow(
+        "released",
+      );
+      expect(sourceCache.revision).toBe(beforeRevocation);
+    } finally {
+      serialize.mockRestore();
+      sourceCache.clear();
+    }
+  });
   it("keeps prepared donor custody while an appended range has not finished preparing", async () => {
     const f = fixture();
     const cache = createConversationKnowledgeSourceCache();

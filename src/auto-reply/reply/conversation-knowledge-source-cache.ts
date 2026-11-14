@@ -199,6 +199,46 @@ export function createConversationKnowledgeSourceCache<
     }
     return bytes + inputBytes() + (preparedRoot?.byteLength ?? 0) + additional <= maxBytes;
   };
+  const setPreparedRoot = (
+    value: PreparedKnowledgeRootCandidates,
+    selectionKey?: string,
+    sourceSelection?: ConversationKnowledgeSourceSelection,
+  ) => {
+    if (value.byteLength > maxBytes) {
+      throw new RangeError("Prepared conversation provenance exceeds its cache budget");
+    }
+    if (
+      selectionKey &&
+      selectionKey === preparedRootSelection &&
+      preparedRoot &&
+      preparedSourceScope === sourceSelection?.scopeKey
+    ) {
+      return preparedRoot;
+    }
+    // Provenance shares the disposable raw-byte budget; pending packets retain
+    // their independent budget so preparing a manifest cannot evict unsent text.
+    if (inputBytes() + value.byteLength > maxBytes) {
+      inputRoot = undefined;
+      inputProgress = undefined;
+    }
+    for (const key of entries.keys()) {
+      if (bytes + inputBytes() + value.byteLength <= maxBytes) {
+        break;
+      }
+      remove(key);
+    }
+    preparedRoot = value;
+    preparedRootSelection = selectionKey;
+    const retain = sourceSelection && sourceSelection.scopeKey === preparedSourceScope;
+    preparedSourceScope = sourceSelection?.scopeKey;
+    // A foreground read can observe staged bytes before this proof publishes.
+    // Publishing readiness must wake the next boundary even without new text.
+    revision++;
+    // New donor entries do not revoke already prepared exact ranges. Keep
+    // those groups until replacement is ready, even if preparation is paused.
+    retireGroups(retain ? sourceSelection : undefined);
+    return value;
+  };
   return {
     retainCleanup(release: () => void) {
       retiringCleanups.add(release);
@@ -450,45 +490,16 @@ export function createConversationKnowledgeSourceCache<
         };
       }
     },
-    setPreparedRoot(
-      value: PreparedKnowledgeRootCandidates,
-      selectionKey?: string,
-      sourceSelection?: ConversationKnowledgeSourceSelection,
+    setPreparedRoot,
+    prepareRootSelection(
+      selectionKey: string,
+      prepare: (previous: PreparedKnowledgeRootCandidates | undefined) => {
+        manifest: PreparedKnowledgeRootCandidates;
+        sourceSelection: ConversationKnowledgeSourceSelection;
+      },
     ) {
-      if (value.byteLength > maxBytes) {
-        throw new RangeError("Prepared conversation provenance exceeds its cache budget");
-      }
-      if (
-        selectionKey &&
-        selectionKey === preparedRootSelection &&
-        preparedRoot &&
-        preparedSourceScope === sourceSelection?.scopeKey
-      ) {
-        return preparedRoot;
-      }
-      // Provenance shares the disposable raw-byte budget; pending packets retain
-      // their independent budget so preparing a manifest cannot evict unsent text.
-      if (inputBytes() + value.byteLength > maxBytes) {
-        inputRoot = undefined;
-        inputProgress = undefined;
-      }
-      for (const key of entries.keys()) {
-        if (bytes + inputBytes() + value.byteLength <= maxBytes) {
-          break;
-        }
-        remove(key);
-      }
-      preparedRoot = value;
-      preparedRootSelection = selectionKey;
-      const retain = sourceSelection && sourceSelection.scopeKey === preparedSourceScope;
-      preparedSourceScope = sourceSelection?.scopeKey;
-      // A foreground read can observe staged bytes before this proof publishes.
-      // Publishing readiness must wake the next boundary even without new text.
-      revision++;
-      // New donor entries do not revoke already prepared exact ranges. Keep
-      // those groups until replacement is ready, even if preparation is paused.
-      retireGroups(retain ? sourceSelection : undefined);
-      return value;
+      const prepared = prepare(selectionKey === preparedRootSelection ? preparedRoot : undefined);
+      return setPreparedRoot(prepared.manifest, selectionKey, prepared.sourceSelection);
     },
     clearPreparedRoot(expected?: PreparedKnowledgeRootCandidates) {
       if (expected && expected !== preparedRoot) {
