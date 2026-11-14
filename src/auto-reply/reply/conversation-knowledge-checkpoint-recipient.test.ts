@@ -245,8 +245,8 @@ beforeEach(() => {
     const selected = selections.get(input.evidence);
     if (
       selected &&
-      !manifest.references.every((reference: ConversationKnowledgeReference) =>
-        selected.some((current) => isDeepStrictEqual(current, reference)),
+      !manifest.references.every((selectedReference: ConversationKnowledgeReference) =>
+        selected.some((current) => isDeepStrictEqual(current, selectedReference)),
       )
     ) {
       throw new Error("Synthetic selected root no longer contains the donor range");

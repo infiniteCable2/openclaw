@@ -231,11 +231,9 @@ describe("prepared native knowledge root candidates", () => {
         },
       };
     });
-    const events = references.map((details, index) => ({
-      ...f.events[0],
-      id: `root-${index}`,
-      details,
-    }));
+    const events = references.map((details, index) =>
+      Object.assign({}, f.events[0], { id: `root-${index}`, details }),
+    );
     const cache = new ConversationKnowledgeRootCache();
     const request: Parameters<ConversationKnowledgeRootCache["read"]>[0] = {
       source: f.source,
@@ -251,13 +249,13 @@ describe("prepared native knowledge root candidates", () => {
         serializedBytes: 0,
       }),
       full: async () => events,
-      assertCurrent: f.reader.assertCurrent,
+      assertCurrent: () => f.reader.assertCurrent(),
       revalidate: async () => f.reader.assertCurrent(),
     };
     const native = await cache.read(request);
     boundary.reports.mockResolvedValueOnce(native);
     const read = () =>
-      readConversationKnowledgeRoot({ ...f, assertCurrent: f.reader.assertCurrent });
+      readConversationKnowledgeRoot({ ...f, assertCurrent: () => f.reader.assertCurrent() });
     const root = await read();
     const selected = selectConversationKnowledgeReceipts(
       root,
