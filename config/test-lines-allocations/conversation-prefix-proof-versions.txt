@@ -1,0 +1,3 @@
+21
+# Extend the existing native SQLite report counter to interleaved donor versions;
+# keep its operation-clear, append, rollback, lifecycle and reset controls.

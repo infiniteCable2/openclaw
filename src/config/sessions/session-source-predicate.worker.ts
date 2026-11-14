@@ -191,7 +191,16 @@ function matchesTranscript(
   const current = proofs
     ? readTranscriptContextVersionInTransaction(database, source.transcript.sessionId)
     : undefined;
-  const proof = proofs?.get(source.transcript.sessionId);
+  // One operation can validate several packet versions of the same donor.
+  const proofKey = proofs
+    ? JSON.stringify([
+        source.transcript.sessionId,
+        source.transcript.version?.generation,
+        source.transcript.version?.rawSeq,
+        source.transcript.version?.updatedAt,
+      ])
+    : source.transcript.sessionId;
+  const proof = proofs?.get(proofKey);
   if (
     proof &&
     proof.identity === identity &&
@@ -202,7 +211,7 @@ function matchesTranscript(
   ) {
     return true;
   }
-  proofs?.delete(source.transcript.sessionId);
+  proofs?.delete(proofKey);
   try {
     validateSessionTranscriptContextInDatabase(
       { db: database.db, path: source.source.path },
@@ -216,7 +225,7 @@ function matchesTranscript(
       "prefix",
     );
     if (proofs && current) {
-      proofs.set(source.transcript.sessionId, {
+      proofs.set(proofKey, {
         identity,
         path: source.source.path,
         sessionKey: source.sessionKey,
