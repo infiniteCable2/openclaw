@@ -114,6 +114,12 @@ async function fixture(events: unknown[], entry: Partial<InternalSessionEntry> =
 }
 
 describe("memory actor history", () => {
+  it("refuses durable prefix batches without falling through the memory owner", async () => {
+    const { read } = await fixture([]);
+    await expect(read("anchors", { entryIds: [], contextPrefixVersions: [] })).rejects.toThrow(
+      "requires durable transcript history",
+    );
+  });
   it("selects retained message owners across memory branches and keeps an empty selection empty", async () => {
     const { read } = await fixture([
       message("root", null, "user", "Question"),

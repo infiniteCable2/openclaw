@@ -40,8 +40,13 @@ function validateContextVersion(
   sessionId: string,
   version: SessionTranscriptContextVersion | undefined,
   consistency: "exact" | "prefix",
+  prepared?: {
+    current: SessionTranscriptContextVersion;
+    navigation(): ReturnType<typeof readPrefixNavigation>;
+  },
 ): void {
-  const current = readTranscriptContextVersionInTransaction(database, sessionId);
+  const current =
+    prepared?.current ?? readTranscriptContextVersionInTransaction(database, sessionId);
   if (
     current.generation === version?.generation &&
     current.rawSeq === version?.rawSeq &&
@@ -62,6 +67,27 @@ function validateContextVersion(
     throw changed();
   }
   // Generation preserves prefix bytes; navigation must also preserve the original path.
+  const { entries, tree, path } =
+    prepared?.navigation() ?? readPrefixNavigation(database, sessionId);
+  const headSeq = version.rawSeq;
+  const prefix = scanSessionTranscriptTree(entries.filter((entry) => entry.seq <= headSeq));
+  const suffix = tree.nodes.filter(({ entry }) => entry.seq > headSeq);
+  const expected = [...selectSessionTranscriptTreePathNodes(prefix, prefix.leafId), ...suffix];
+  if (
+    entries.at(-1)?.seq !== current.rawSeq ||
+    suffix.some(({ entry }) =>
+      ["compaction", "reset", "leaf", "branch_summary"].includes(entry.type),
+    ) ||
+    expected.length !== path.length ||
+    expected.some(
+      (node, index) => node.id !== path[index]?.id || node.parentId !== path[index]?.parentId,
+    )
+  ) {
+    throw changed();
+  }
+}
+
+function readPrefixNavigation(database: Pick<OpenClawAgentDatabase, "db">, sessionId: string) {
   const entries = Array.from(
     iterateSqliteQuerySync(
       database.db,
@@ -78,24 +104,34 @@ function validateContextVersion(
       return entry;
     },
   );
-  const headSeq = version.rawSeq;
-  const prefix = scanSessionTranscriptTree(entries.filter((entry) => entry.seq <= headSeq));
   const tree = scanSessionTranscriptTree(entries);
-  const suffix = tree.nodes.filter(({ entry }) => entry.seq > headSeq);
-  const expected = [...selectSessionTranscriptTreePathNodes(prefix, prefix.leafId), ...suffix];
   const path = selectSessionTranscriptTreePathNodes(tree, tree.leafId);
-  if (
-    entries.at(-1)?.seq !== current.rawSeq ||
-    suffix.some(({ entry }) =>
-      ["compaction", "reset", "leaf", "branch_summary"].includes(entry.type),
-    ) ||
-    expected.length !== path.length ||
-    expected.some(
-      (node, index) => node.id !== path[index]?.id || node.parentId !== path[index]?.parentId,
-    )
-  ) {
-    throw changed();
-  }
+  return { entries, tree, path };
+}
+
+/** One native read snapshot shares navigation, never a permission or per-version verdict. */
+export function readSessionTranscriptPrefixMatchesInDatabase(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+  versions: readonly SessionTranscriptContextVersion[],
+) {
+  const current = readTranscriptContextVersionInTransaction(database, sessionId);
+  let navigation: ReturnType<typeof readPrefixNavigation> | undefined;
+  const prepared = {
+    current,
+    navigation: () => (navigation ??= readPrefixNavigation(database, sessionId)),
+  };
+  return versions.map((version) => {
+    try {
+      validateContextVersion(database, sessionId, version, "prefix", prepared);
+      return true;
+    } catch (error) {
+      if (!(error instanceof SessionTranscriptReadFenceError)) {
+        throw error;
+      }
+      return false;
+    }
+  });
 }
 
 /** Revalidate admission after an asynchronous read before accepting its detached result. */

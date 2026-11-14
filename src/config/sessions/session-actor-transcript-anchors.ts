@@ -30,6 +30,7 @@ export function readSessionActorTranscriptAnchors(
 ): SessionTranscriptAnchorFacts | undefined {
   if (
     selection.includeHeader ||
+    selection.contextPrefixVersions !== undefined ||
     selection.includeMetadata ||
     selection.activePathEntryId !== undefined
   ) {

@@ -611,11 +611,14 @@ describe("grouped checkpoint prefix validation", () => {
         version: current,
       }),
     });
-    boundary.anchors.mockResolvedValue({
+    boundary.anchors.mockImplementation(async (_target, selection) => ({
       anchors: [],
-      contextValidated: true,
+      contextValidated: true as const,
       contextVersion: current,
-    });
+      ...(selection.contextPrefixVersions
+        ? { contextPrefixMatches: selection.contextPrefixVersions.map(() => true) }
+        : {}),
+    }));
     return { references, packets, current, release };
   }
 
@@ -735,7 +738,7 @@ describe("grouped checkpoint prefix validation", () => {
   it.each([
     { versions: [200], anchorReads: 0, predicates: 1 },
     { versions: [100], anchorReads: 1, predicates: 2 },
-    { versions: [100, 120], anchorReads: 2, predicates: 3 },
+    { versions: [100, 120], anchorReads: 1, predicates: 3 },
   ])(
     "validates 80 originals once per donor and distinct prefix: %j",
     async ({ versions, anchorReads, predicates }) => {
@@ -760,17 +763,16 @@ describe("grouped checkpoint prefix validation", () => {
     },
   );
 
-  it("publishes no partial group on failed prefix validation and can retry under fresh custody", async () => {
+  it("publishes no partial group on incomplete prefix verdicts and can retry under fresh custody", async () => {
     const fixture = groupFixture(80, [100, 120]);
     const held = await sources();
     const verified = vi.fn();
-    boundary.anchors
-      .mockResolvedValueOnce({
-        anchors: [],
-        contextValidated: true,
-        contextVersion: fixture.current,
-      })
-      .mockResolvedValueOnce({ anchors: [] });
+    boundary.anchors.mockResolvedValueOnce({
+      anchors: [],
+      contextValidated: true,
+      contextVersion: fixture.current,
+      contextPrefixMatches: [true],
+    });
     expect(await held.verifyAll(fixture.references, verified, fixture.packets)).toBe(false);
     expect(verified).not.toHaveBeenCalled();
     expect((await prepareSessionSourceAuthority(held.source())).checks).toHaveLength(0);
@@ -808,11 +810,15 @@ describe("grouped checkpoint prefix validation", () => {
     const held = await sources(),
       verified = vi.fn(),
       invalid = vi.fn();
-    boundary.anchors.mockResolvedValue({ anchors: [], contextValidated: false });
+    boundary.anchors.mockResolvedValue({
+      anchors: [],
+      contextValidated: true,
+      contextPrefixMatches: [false, false],
+    });
     expect(
       await held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
     ).toBe(false);
-    expect(boundary.anchors).toHaveBeenCalledTimes(2);
+    expect(boundary.anchors).toHaveBeenCalledOnce();
     expect(invalid).toHaveBeenCalledTimes(80);
     expect(
       new Set(invalid.mock.calls.map(([value]) => conversationKnowledgeContributionId(value))).size,

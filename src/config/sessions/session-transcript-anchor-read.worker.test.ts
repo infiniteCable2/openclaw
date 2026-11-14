@@ -636,6 +636,12 @@ it("validates a through-anchor in one statement and observes later source writes
   ]) {
     writeEntry(changedEntry);
     expect(read).toThrow("changed lifecycle or permissions");
+    expect(() =>
+      readFacts(database, resolved, {
+        ...selection,
+        contextPrefixVersions: [],
+      }),
+    ).toThrow("changed lifecycle or permissions");
   }
   writeEntry(entry);
   expect(read().contextValidated).toBe(true);
@@ -679,6 +685,63 @@ it("reads a standalone watermark in one statement and observes committed appends
   const rewritten = read().watermark;
   expect(rewritten).toEqual({ generation: expect.any(String), maxSeq: 4 });
   expect(rewritten?.generation).not.toBe(initial.watermark?.generation);
+});
+
+it("shares one native navigation read across cached prefixes without sharing their verdicts", async ({
+  scope,
+}) => {
+  const { database, resolved, append } = await seedDatabase(scope);
+  const version = () =>
+    readFacts(database, resolved, { entryIds: [], includeContextVersion: true }).contextVersion!;
+  const first = version();
+  append(message("later-one", "answer", "one"));
+  const second = version();
+  append(message("later-two", "later-one", "two"));
+  const versions = [first, second];
+  const statements = trackSqliteStatementExecutions(
+    requireNativeSqliteDatabase(database.db),
+    ["navigation"],
+    (sql) =>
+      sql.startsWith('select "seq", ') &&
+      sql.includes('as "navigation_json" from "transcript_events"')
+        ? "navigation"
+        : null,
+  );
+  using _ = { [Symbol.dispose]: statements.restore };
+  for (const expected of versions) {
+    expect(
+      readFacts(database, resolved, { entryIds: [], contextValidation: { version: expected } })
+        .contextValidated,
+    ).toBe(true);
+  }
+  expect(statements.counts.navigation).toBe(2);
+  const selection = (selected = versions) => ({
+    entryIds: [],
+    contextValidation: { version: version() },
+    contextPrefixVersions: selected,
+  });
+  const read = (selected = versions) => readFacts(database, resolved, selection(selected));
+  expect(read().contextPrefixMatches).toEqual([true, true]);
+  expect(statements.counts.navigation).toBe(3);
+  expect(read([version(), version()]).contextPrefixMatches).toEqual([true, true]);
+  expect(statements.counts.navigation).toBe(3);
+  expect((await readAnchors(scope, selection())).contextPrefixMatches).toEqual([true, true]);
+
+  runSqliteImmediateTransactionSync(database.db, () =>
+    appendTranscriptEventsInTransaction(database, resolved, [
+      { type: "leaf", id: "later-leaf", parentId: "later-two", targetId: "answer" },
+    ]),
+  );
+  const afterControl = version();
+  append(message("after-control", "answer", "after"));
+  const before = statements.counts.navigation;
+  expect(
+    read([first, afterControl, { ...afterControl, generation: "wrong" }]).contextPrefixMatches,
+  ).toEqual([false, true, false]);
+  expect(statements.counts.navigation - before).toBe(1);
+  expect(() => read(Array.from({ length: 65 }, () => afterControl))).toThrow("at most 64 facts");
+  await replaceTranscriptEvents(scope, events);
+  expect(read(versions).contextPrefixMatches).toEqual([false, false]);
 });
 
 it("returns a reply tail and its current watermark from one projection snapshot", async ({

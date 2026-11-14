@@ -98,6 +98,7 @@ export function readSessionEntryCohort(
     input.sessionKeys.length +
     (input.replyInitializationSessionKey ? 1 : 0) +
     (transcript?.entryIds.length ?? 0) +
+    (transcript?.contextPrefixVersions?.length ?? 0) +
     (runtimeTarget ? 1 : 0);
   if (
     count > MAX_SESSION_ROW_FACTS_KEYS ||

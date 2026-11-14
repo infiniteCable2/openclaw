@@ -38,25 +38,39 @@ export type InvalidCheckpointCachedPacket = (
   packet: PreparedConversationKnowledgePacket,
 ) => void;
 
+type CachedCheckpointRange = {
+  reference: ConversationKnowledgeReference;
+  range: Pick<PreparedConversationKnowledgePacket, "through" | "from" | "version">;
+  packet?: PreparedConversationKnowledgePacket;
+};
+
+// Match the source owner's cooperative quantum rather than filling a long SQL snapshot.
+const PREFIX_VALIDATION_QUANTUM = 8;
+
 /** Current range custody must be proven before an obsolete cache value can trigger a reread. */
 export async function validateCheckpointCachedPackets(params: {
-  selected: readonly {
-    reference: ConversationKnowledgeReference;
-    range: Pick<PreparedConversationKnowledgePacket, "through" | "from" | "version">;
-    packet?: PreparedConversationKnowledgePacket;
-  }[];
+  selected: readonly CachedCheckpointRange[];
   target: SessionTranscriptRuntimeTarget;
   signal: AbortSignal;
   check: () => void;
   invalidCached?: InvalidCheckpointCachedPacket;
 }) {
   const prefixes = new Map<string, boolean>();
+  const candidates: (CachedCheckpointRange & { packet: PreparedConversationKnowledgePacket })[] =
+    [];
   const invalid: Array<{
     reference: ConversationKnowledgeReference;
     packet: PreparedConversationKnowledgePacket;
   }> = [];
+  const groups = new Map<
+    string,
+    {
+      current: PreparedConversationKnowledgePacket["version"];
+      versions: Map<string, PreparedConversationKnowledgePacket["version"]>;
+    }
+  >();
+  params.check();
   for (const { reference, range, packet } of params.selected) {
-    params.check();
     if (!packet) {
       continue;
     }
@@ -67,6 +81,57 @@ export async function validateCheckpointCachedPackets(params: {
       invalid.push({ reference, packet });
       continue;
     }
+    candidates.push({ reference, range, packet });
+    if (isDeepStrictEqual(packet.version, range.version)) {
+      continue;
+    }
+    const key = JSON.stringify(range.version);
+    let group = groups.get(key);
+    if (!group) {
+      group = { current: range.version, versions: new Map() };
+      groups.set(key, group);
+    }
+    group.versions.set(JSON.stringify(packet.version), packet.version);
+  }
+  for (const group of groups.values()) {
+    // A single prefix retains its native fast path. Multiple versions share a
+    // bounded read; today's granted prefix must pass before stale-cache verdicts.
+    const versions = [...group.versions];
+    if (versions.length < 2) {
+      continue;
+    }
+    const quantum = PREFIX_VALIDATION_QUANTUM;
+    for (let offset = 0; offset < versions.length; offset += quantum) {
+      params.check();
+      const page = versions.slice(offset, offset + quantum);
+      const facts = await readSessionTranscriptAnchorsAsync(
+        params.target,
+        {
+          entryIds: [],
+          contextValidation: { version: group.current },
+          contextPrefixVersions: page.map(([, version]) => version),
+        },
+        params.signal,
+      ).catch((error: unknown) => {
+        params.check();
+        throw error;
+      });
+      params.check();
+      const matches = facts.contextPrefixMatches;
+      if (
+        facts.contextValidated !== true ||
+        matches?.length !== page.length ||
+        !matches.every((match) => typeof match === "boolean")
+      ) {
+        return false;
+      }
+      for (const [index, [key]] of page.entries()) {
+        prefixes.set(key, (prefixes.get(key) ?? true) && matches[index]!);
+      }
+    }
+  }
+  for (const { reference, range, packet } of candidates) {
+    params.check();
     const key = JSON.stringify(packet.version);
     let valid = prefixes.get(key);
     if (valid === undefined) {

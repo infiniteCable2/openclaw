@@ -3,6 +3,7 @@ import { runSqliteReadSnapshotSync } from "../../infra/sqlite-transaction.js";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { readSessionTranscriptPrefixMatchesInDatabase } from "./session-accessor.sqlite-context-validation.js";
 import type { SessionTranscriptWriteScope } from "./session-accessor.sqlite-contract.js";
 import {
   readExactSessionEntryRow,
@@ -32,11 +33,13 @@ import type {
   SessionTranscriptAnchorEntry,
   SessionTranscriptAnchorFacts,
 } from "./session-transcript-anchor-read.types.js";
+import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import {
   resolveSqliteSessionTranscriptReadFence,
   runWithSessionTranscriptReadFence,
 } from "./session-transcript-read-fence.js";
+import { MAX_SESSION_ROW_FACTS_KEYS } from "./session-transcript-worker.types.js";
 import { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import type { InternalSessionEntry } from "./types.js";
@@ -55,6 +58,8 @@ export type SessionTranscriptAnchorSelection = {
   includeMessagePresence?: boolean;
   includeMetadata?: boolean;
   contextValidation?: Parameters<typeof validateSessionTranscriptContextInDatabase>[2];
+  /** Durable history only; independent cached-prefix verdicts in this same bounded snapshot. */
+  contextPrefixVersions?: readonly SessionTranscriptContextVersion[];
   contextAuthority?: true | { permissionMode: InternalSessionEntry["permissionMode"] };
   replayValidation?: Pick<
     SessionTranscriptWriteScope,
@@ -136,6 +141,14 @@ export function readSessionTranscriptAnchorFactsInDatabase(
   preparedEntry?: SessionTranscriptAnchorEntry,
   messagePresence?: true,
 ): SessionTranscriptAnchorFacts {
+  if (
+    selection.contextPrefixVersions !== undefined &&
+    selection.entryIds.length + selection.contextPrefixVersions.length > MAX_SESSION_ROW_FACTS_KEYS
+  ) {
+    throw new RangeError(
+      `Transcript anchor selections support at most ${MAX_SESSION_ROW_FACTS_KEYS} facts`,
+    );
+  }
   if (
     projection &&
     (!database.db.isTransaction ||
@@ -245,6 +258,15 @@ export function readSessionTranscriptAnchorFactsInDatabase(
         : {}),
       ...(contextAuthority ? { contextAuthority } : {}),
       ...(context ? { contextValidated: true as const } : {}),
+      ...(selection.contextPrefixVersions !== undefined
+        ? {
+            contextPrefixMatches: readSessionTranscriptPrefixMatchesInDatabase(
+              database,
+              resolved.sessionId,
+              selection.contextPrefixVersions,
+            ),
+          }
+        : {}),
       ...(replayValidated ? { replayValidated } : {}),
     };
     const entry = selection.includeSession

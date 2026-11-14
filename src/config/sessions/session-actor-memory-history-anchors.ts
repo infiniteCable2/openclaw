@@ -34,6 +34,9 @@ export function readSessionActorMemoryAnchors(
   scope: { agentId: string; path: string; currentEntry: InternalSessionEntry | undefined },
   selection: SessionTranscriptAnchorSelection,
 ): SessionTranscriptAnchorFacts {
+  if (selection.contextPrefixVersions !== undefined) {
+    throw new Error("Batched context-prefix validation requires durable transcript history");
+  }
   const current = scope.currentEntry;
   const watermark = window.hot.transcript.watermark;
   const contextAuthority = selection.contextAuthority

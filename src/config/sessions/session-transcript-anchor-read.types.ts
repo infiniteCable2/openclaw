@@ -24,6 +24,7 @@ export type SessionTranscriptAnchorFacts = {
   messagePresence?: boolean;
   metadata?: { present: boolean; observedAt: number | null; updatedAt: number | null };
   contextValidated?: true;
+  contextPrefixMatches?: boolean[];
   contextVersion?: SessionTranscriptContextVersion;
   contextAuthority?: {
     entry?: SessionTranscriptAnchorEntry;

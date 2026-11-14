@@ -76,6 +76,11 @@ it("returns the committed reply and user anchors from a complete suffix", () => 
   });
 });
 
+it("leaves cached prefix batches to the durable reader", () => {
+  const { hot, read } = fixture();
+  expect(read({ entryIds: [], contextPrefixVersions: [hot.transcript.version] })).toBeUndefined();
+});
+
 it("uses admitted user bounds while validating the current writer and context", () => {
   const { hot, user, read } = fixture();
   expect(

@@ -1,0 +1,3 @@
+80
+# One real SQLite counter proves shared navigation and distinct prefix verdicts;
+# retain the existing grant, reset and native worker boundaries, including memory.
