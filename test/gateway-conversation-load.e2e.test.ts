@@ -243,12 +243,25 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
     if (!Number.isSafeInteger(quietMs) || quietMs < 1_000 || quietMs > 60_000) {
       throw new Error("Quiet measurement window must be 1–60 seconds");
     }
+    const sourceBucketCap = Number(process.env.OPENCLAW_E2E_CONVERSATION_LOAD_SOURCE_BUCKETS ?? 0);
+    if (!Number.isSafeInteger(sourceBucketCap) || sourceBucketCap < 0 || sourceBucketCap > 64) {
+      throw new Error("Source buckets must be 0 (original aliases) or 1–64");
+    }
+    const sourceMapping = sourceBucketCap === 0 ? "original-alias" : "bounded-new-sources";
     const cleanups: Array<() => Promise<void>> = [];
     await runQaGatewayTestFixture(
       context,
       async ({ signal, verifyCleanup }) => {
         const corpus = await workload();
         const inputs = corpus.selected;
+        // Assign aliases by first appearance; preserve every selected input and its order.
+        // Buckets describe NEW authenticated histories, never historical identity equivalence.
+        const mappedSources = new Map(
+          [...new Set(inputs.map((input) => input.source))].map((alias, index) => [
+            alias,
+            sourceBucketCap === 0 ? alias : String(index % sourceBucketCap),
+          ]),
+        );
         const model = await startConversationModel(signal, () => "LOAD_REPLY.");
         cleanups.push(() => model.stop());
         const gateway = await createOpenClawTestInstance({
@@ -368,6 +381,8 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
               ...observed,
               boundary: "signed-webchat-and-talk-gateway-relay",
               corpusSeeded: false,
+              sourceMapping,
+              sourceBucketCap,
             }),
           );
         };
@@ -452,10 +467,11 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
             let textBytes = 0;
             let maxTurnMs = 0;
             for (const input of inputs) {
-              let key = sources.get(input.source);
+              const mappedSource = mappedSources.get(input.source)!;
+              let key = sources.get(mappedSource);
               if (!key) {
                 key = `agent:main:load-corpus-${randomUUID()}`;
-                sources.set(input.source, key);
+                sources.set(mappedSource, key);
               }
               const turnStarted = performance.now();
               await chat(input.text, key);
@@ -470,6 +486,9 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
                     completedTurns,
                     selectedTurns: inputs.length,
                     sources: sources.size,
+                    sourceMapping,
+                    sourceBucketCap,
+                    totalCorpusSources: corpus.totalSources,
                     textBytes,
                     elapsedMs: performance.now() - started,
                     maxTurnMs,
@@ -483,6 +502,9 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
               kind: "native-gateway-workload",
               turns: inputs.length,
               sources: sources.size,
+              sourceMapping,
+              sourceBucketCap,
+              selectedOriginalSources: mappedSources.size,
               selection: "first-user-rows-in-file-order",
               totalUserRows: corpus.totalUserRows,
               totalCorpusSources: corpus.totalSources,
