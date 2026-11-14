@@ -4,6 +4,7 @@ import path from "node:path";
 import { setTimeout as measureWindow } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it } from "vitest";
+import { gatewayBenchCpuProfileArgs } from "../scripts/lib/gateway-bench-runtime.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
 import { workshopPluginConfig } from "../src/skills/test-support/workshop-config.test-support.js";
@@ -187,6 +188,34 @@ function diagnostics() {
   };
 }
 
+// Explain extra provider calls without retaining prompts or adding an oracle to the model leaf.
+function modelRequestShape(request: Record<string, unknown>) {
+  const messages = Array.isArray(request.input) ? request.input.filter(isRecord) : [];
+  const systems = messages
+    .filter((message) => message.role === "system")
+    .flatMap((message) =>
+      Array.isArray(message.content)
+        ? message.content
+            .filter(isRecord)
+            .flatMap((part) => (typeof part.text === "string" ? [part.text] : []))
+        : [],
+    );
+  const system = [
+    typeof request.instructions === "string" ? request.instructions : "",
+    ...systems,
+  ].join("\n");
+  const context = JSON.stringify([request.instructions, request.input]);
+  return {
+    contextBytes: Buffer.byteLength(context),
+    systemBytes: Buffer.byteLength(system),
+    summarizationInstruction: system.includes("You are a context summarization assistant."),
+    foreignFactPresent: context.includes("COBALT_LOAD"),
+    speechMarkerPresent: context.includes("LOAD_SPEECH_"),
+    maxOutputTokens:
+      typeof request.max_output_tokens === "number" ? request.max_output_tokens : undefined,
+  };
+}
+
 async function workload() {
   const file = process.env.OPENCLAW_E2E_CONVERSATION_LOAD_CORPUS;
   if (!file) {
@@ -272,6 +301,14 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           signal,
           verifyCleanup,
           config: configuration(model.baseUrl),
+          gatewayCommandPrefix: process.env.OPENCLAW_E2E_CONVERSATION_CPU_PROFILE_DIR
+            ? [
+                process.execPath,
+                ...gatewayBenchCpuProfileArgs(
+                  process.env.OPENCLAW_E2E_CONVERSATION_CPU_PROFILE_DIR,
+                ),
+              ]
+            : undefined,
           env: {
             OPENCLAW_SKIP_PROVIDERS: undefined,
             OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
@@ -388,6 +425,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
                   elapsedMs: performance.now() - start,
                   cpuTicks: (await cpuTicks(pid)) - startCpu,
                   modelRequests: model.requests.length - requests,
+                  modelShapes: model.requests.slice(requests).slice(-4).map(modelRequestShape),
                   ...observed,
                   boundary: "signed-webchat-and-talk-gateway-relay",
                   corpusSeeded: false,
