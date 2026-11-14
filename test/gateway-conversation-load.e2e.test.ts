@@ -351,12 +351,12 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
         let diagnosticRecords = 0;
         let operator: Awaited<ReturnType<typeof connectConversationOperator>> | undefined;
         let observer: typeof operator;
-        let profile: Promise<void> | undefined;
+        let mainProfile: Promise<void> | undefined;
         cleanups.push(async () => {
           await operator?.close();
         });
         cleanups.push(async () => {
-          await profile?.catch(() => {});
+          await mainProfile?.catch(() => {});
         });
         cleanups.push(async () => {
           await observer?.close();
@@ -574,7 +574,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
               completedTurns++;
               if (observer && completedTurns === Math.max(1, inputs.length - 64)) {
                 // Observe the main isolate natively without pausing input or elevating its sender.
-                profile = observer
+                mainProfile = observer
                   .call("diagnostics.cpuProfile", {}, { timeoutMs: 30_000 })
                   .then(async (result) => {
                     await writeFile(
@@ -583,7 +583,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
                       { flag: "wx", mode: 0o600 },
                     );
                   });
-                void profile.catch(() => {});
+                void mainProfile.catch(() => {});
               }
               textBytes += Buffer.byteLength(input.text);
               maxTurnMs = Math.max(maxTurnMs, performance.now() - turnStarted);
@@ -606,7 +606,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
               }
             }
             if (observer) {
-              await profile;
+              await mainProfile;
               await observer.close();
               observer = undefined;
             }
