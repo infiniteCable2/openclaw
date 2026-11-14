@@ -1,2 +1,2 @@
-534
+556
 # Opt-in native child-Gateway load measurement across authenticated Chat, Talk relay reuse/restart, and bounded corpus-text workloads; no internal compaction mocks.

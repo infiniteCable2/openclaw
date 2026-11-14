@@ -441,13 +441,35 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           operator = await connect();
           const sources = new Map<string, string>();
           await sample("corpus-new-authenticated-turns", async () => {
+            const started = performance.now();
+            let completedTurns = 0;
+            let textBytes = 0;
+            let maxTurnMs = 0;
             for (const input of inputs) {
               let key = sources.get(input.source);
               if (!key) {
                 key = `agent:main:load-corpus-${randomUUID()}`;
                 sources.set(input.source, key);
               }
+              const turnStarted = performance.now();
               await chat(input.text, key);
+              completedTurns++;
+              textBytes += Buffer.byteLength(input.text);
+              maxTurnMs = Math.max(maxTurnMs, performance.now() - turnStarted);
+              if (completedTurns % 16 === 0) {
+                console.log(
+                  JSON.stringify({
+                    kind: "native-gateway-workload-progress",
+                    phase: "corpus-new-authenticated-turns",
+                    completedTurns,
+                    selectedTurns: inputs.length,
+                    sources: sources.size,
+                    textBytes,
+                    elapsedMs: performance.now() - started,
+                    maxTurnMs,
+                  }),
+                );
+              }
             }
           });
           console.log(
