@@ -744,7 +744,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                 mainStart = await cpuTicks(pid, true);
               const start = performance.now();
               let observed: Record<string, number> = {};
-              let completed = false;
+              let succeeded = false;
               const metrics = await runQaGatewayFixture(
                 async () => {
                   const measured = await work();
@@ -753,7 +753,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                   expect(failure).toBeUndefined();
                   expect(model.requests).toHaveLength(requests);
                   expect(model.errors).toEqual([]);
-                  completed = true;
+                  succeeded = true;
                   return measured;
                 },
                 async () => {
@@ -763,7 +763,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                       mode,
                       repetition,
                       phase,
-                      outcome: completed ? "completed" : "failed",
+                      outcome: succeeded ? "completed" : "failed",
                       elapsedMs: performance.now() - start,
                       processCpuTicks: (await cpuTicks(pid)) - processStart,
                       mainCpuTicks: (await cpuTicks(pid, true)) - mainStart,
