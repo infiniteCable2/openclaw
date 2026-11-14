@@ -305,7 +305,7 @@ describe("prepared native knowledge root candidates", () => {
         manifest: ordered,
         assertCurrent() {},
       });
-      expect(orderedEvents.map((event) => event.id)).toEqual(["root-2", "root-1"]);
+      expect(orderedEvents).toEqual([events[2], events[1]]);
       expect(ordered.byteLength).toBe(
         ordered.ownedByteLength + Buffer.byteLength(JSON.stringify(orderedEvents)),
       );
