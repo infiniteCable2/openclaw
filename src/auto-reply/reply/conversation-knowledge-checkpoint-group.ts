@@ -1,5 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
+import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import type { PreparedConversationBranchCreation } from "../../config/sessions/conversation-branch-creation.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
+import { selectConversationKnowledgeReceipts } from "../../config/sessions/conversation-knowledge-selection.js";
 import {
   prepareConversationKnowledgeRootSubset,
   type ConversationKnowledgeBranch,
@@ -7,12 +10,14 @@ import {
   type PreparedKnowledgeRootCandidates,
 } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
+import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
 import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
+import { validatePersonalContributionGroupAnchors } from "../../gateway/session-transcript-personal-contribution-anchors.js";
 import {
   preparePersonalConversationContributionGroup,
   preparePersonalConversationRead,
@@ -24,6 +29,75 @@ import {
   publishPreparedConversationKnowledgeRoot,
   type ConversationKnowledgeHeldSource,
 } from "./conversation-knowledge-source-reader.js";
+
+/** Candidate aliases still require the native personal read owner before disclosure. */
+export function selectCheckpointSourceReferences(params: {
+  events: Parameters<typeof selectConversationKnowledgeReceipts>[0];
+  branch: ConversationKnowledgeBranch;
+  participant: SessionParticipantIdentity;
+  audienceIdentity: string;
+}) {
+  const references = selectConversationKnowledgeReceipts(
+    params.events,
+    params.branch.root.sessionId,
+    params.branch.root.sessionKey,
+  ).filter(
+    (reference) =>
+      !reference.retirement &&
+      reference.source.agentId === params.branch.agentId &&
+      (conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) ===
+        params.audienceIdentity ||
+        (params.participant.type === "profile" &&
+          reference.privateAudience?.participant.type === "remote")),
+  );
+  const byId = new Map(
+    references.map((reference) => [conversationKnowledgeContributionId(reference), reference]),
+  );
+  return {
+    references,
+    currentOwn: (reference: ConversationKnowledgeReference) =>
+      reference.source.sessionKey === params.branch.sessionKey &&
+      reference.source.sessionId === params.branch.sessionId &&
+      reference.source.lifecycleRevision === params.branch.lifecycleRevision,
+    isAudienceCandidate: (reference: ConversationKnowledgeReference) =>
+      isDeepStrictEqual(byId.get(conversationKnowledgeContributionId(reference)), reference),
+  };
+}
+
+/** Current own history uses admitted custody and exact anchors, never a self grant. */
+export async function prepareCheckpointOwnGroup(params: {
+  branch: ConversationKnowledgeBranch;
+  contributions: readonly ConversationKnowledgeReference[];
+  readSource(): Promise<CapturedSessionEntryReadSource>;
+  assertCurrent: SessionSourceAssertion;
+  workCheck(): void;
+  signal: AbortSignal;
+}) {
+  const readSource = await params.readSource();
+  const source = {
+    agentId: params.branch.agentId,
+    canonicalKey: params.branch.sessionKey,
+    sessionId: params.branch.sessionId,
+    lifecycleRevision: params.branch.lifecycleRevision,
+    readSource,
+  };
+  const version = await validatePersonalContributionGroupAnchors({
+    contributions: params.contributions,
+    source,
+    assertCurrent: params.workCheck,
+    signal: params.signal,
+  });
+  return {
+    source,
+    assertCurrent: params.assertCurrent,
+    selectContribution: (reference: ConversationKnowledgeReference) => ({
+      through: reference.readRange?.through ?? reference.through,
+      from: reference.readRange?.admission ?? reference.privateAudience?.admission,
+      version,
+    }),
+    finish() {},
+  };
+}
 
 /** Capacity changes cache reuse only; native uncached preparation remains available. */
 export function prepareCheckpointGroupCache(params: {
@@ -210,7 +284,13 @@ export async function prepareCheckpointGroupRead(params: {
         subset.manifest,
       );
     }
-    return { grant, finish };
+    return {
+      source: grant.sources[0],
+      assertCurrent: grant.assertCurrent,
+      selectContribution: (reference: ConversationKnowledgeReference) =>
+        grant.selectContribution(reference),
+      finish,
+    };
   } catch (error) {
     if (read) {
       params.drop(read);

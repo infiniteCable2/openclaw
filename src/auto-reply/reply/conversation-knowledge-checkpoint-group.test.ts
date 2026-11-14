@@ -88,7 +88,13 @@ function fixture(maxBytes = 4096, groupBytes = 100) {
   });
   native.read.mockImplementation(async (request) => {
     request.personal.assertCurrent();
-    return { assertCurrent: request.personal.assertCurrent, release: vi.fn() };
+    return {
+      sources: [
+        { ...donor, canonicalKey: donor.sessionKey, readSource: { path: branch.storePath } },
+      ],
+      assertCurrent: request.personal.assertCurrent,
+      release: vi.fn(),
+    };
   });
   const params = {
     branch,
@@ -137,7 +143,7 @@ it("reuses a descriptor after its previous quantum ends but derives a fresh curr
   original = false;
   const current = vi.fn();
   const second = await prepareCheckpointGroupRead({ ...f.params, assertCurrent: current });
-  second.grant.assertCurrent();
+  second.assertCurrent();
   second.finish();
   expect(native.group).toHaveBeenCalledOnce();
   expect(native.read).toHaveBeenCalledTimes(2);
@@ -195,7 +201,7 @@ it("does not let an older failed reuse retire a newer cached donor group", async
 it("keeps current native preparation usable when the bounded cache refuses admission", async () => {
   const f = fixture(200, 500);
   const prepared = await prepareCheckpointGroupRead(f.params);
-  prepared.grant.assertCurrent();
+  prepared.assertCurrent();
   prepared.finish();
   expect(f.cache.preparedContributionGroup(f.donor, f.manifest)).toBeUndefined();
   expect(f.created[0]!.release).toHaveBeenCalledOnce();
@@ -221,7 +227,7 @@ it("falls back to uncached native groups when root provenance exceeds cache capa
   });
   expect(manifest).toBeUndefined();
   const prepared = await prepareCheckpointGroupRead({ ...f.params, manifest });
-  prepared.grant.assertCurrent();
+  prepared.assertCurrent();
   prepared.finish();
   expect(f.created[0]!.release).toHaveBeenCalledOnce();
   expect(f.groups).toHaveLength(0);

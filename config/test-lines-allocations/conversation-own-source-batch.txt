@@ -1,0 +1,4 @@
+74
+# Reuse native exact-anchor pages for current own originals without self grants.
+# Preserve selective stale-cache repair beside an unavailable original and cover
+# actual shared-frame creation/reuse with broker-owned native contributions.

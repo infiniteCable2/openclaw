@@ -328,6 +328,16 @@ it("warms an existing startup root before input and reuses its frame across fres
         }
         const broker = await fixture.branch("frame-broker");
         const brokerOwner = await fixture.claim(broker);
+        for (let index = 0; index < 2; index++) {
+          const terminal = await fixture.append(broker, `sealed-own-${index}`);
+          expect(
+            await recordConversationKnowledgeTurn({
+              ...brokerOwner,
+              ...terminal,
+              privateAudience: { participant: person, admission: terminal.admission! },
+            }),
+          ).toBe(true);
+        }
         const topology = loadSessionEntry(broker)?.conversationTopology;
         if (topology?.role !== "branch") {
           throw new Error("Expected the real private frame broker");
@@ -340,7 +350,7 @@ it("warms an existing startup root before input and reuses its frame across fres
             lifecycleRevision: topology.rootSessionLifecycleRevision,
           },
         };
-        let expectedOriginals = 3;
+        let expectedOriginals = 5;
         const donorVersionGate: { minimumRawSeq?: number } = {};
         const diagnose = (stage: string) => {
           if (donorVersionGate.minimumRawSeq !== undefined && stages.length < 180) {
@@ -603,6 +613,8 @@ it("warms an existing startup root before input and reuses its frame across fres
           for (let index = 0; index < Math.min(3, count); index++) {
             expect(content).toContain(`sealed-original-${index} answer`);
           }
+          expect(content).toContain("sealed-own-0 answer");
+          expect(content).toContain("sealed-own-1 answer");
           expect(content).not.toContain("First request after frame copy.");
           const progress = await readConversationKnowledgeImportProgress({
             branch: {
@@ -626,8 +638,8 @@ it("warms an existing startup root before input and reuses its frame across fres
           expect(new Set(packetIds).size).toBe(count);
           return { initialized, packetIds: packetIds.toSorted() };
         };
-        const first = await create("first", 3);
-        const second = await create("second", 3);
+        const first = await create("first", 5);
+        const second = await create("second", 5);
         expect(second.packetIds).toEqual(first.packetIds);
         expect(borrowing).toHaveBeenCalledTimes(2);
         expect(discovery).not.toHaveBeenCalled();
@@ -635,7 +647,7 @@ it("warms an existing startup root before input and reuses its frame across fres
         expect(bodies).not.toHaveBeenCalled();
 
         // A new original alone wakes the root; no target turn builds the successor.
-        expectedOriginals = 4;
+        expectedOriginals = 6;
         ready = createDeferredCore();
         await publish("sealed-later-delta");
         resumes.shift()!();
@@ -646,7 +658,7 @@ it("warms an existing startup root before input and reuses its frame across fres
         groups.mockClear();
         bodies.mockClear();
         borrowing.mockClear();
-        const third = await create("updated", 4);
+        const third = await create("updated", 6);
         expect(third.packetIds.filter((id) => !first.packetIds.includes(id))).toHaveLength(1);
         expect(first.packetIds.every((id) => third.packetIds.includes(id))).toBe(true);
         expect(JSON.stringify(await loadTranscriptEvents(third.initialized))).toContain(
@@ -656,7 +668,7 @@ it("warms an existing startup root before input and reuses its frame across fres
         expect(discovery).not.toHaveBeenCalled();
         expect(groups).not.toHaveBeenCalled();
         expect(bodies).not.toHaveBeenCalled();
-        expect((await fixture.receipts()).length).toBe(4);
+        expect((await fixture.receipts()).length).toBe(6);
 
         // Native source compaction alone must refresh retained custody and bytes.
         // Keep every original active; the root receives no new publication or turn.
@@ -703,13 +715,13 @@ it("warms an existing startup root before input and reuses its frame across fres
         groups.mockClear();
         bodies.mockClear();
         borrowing.mockClear();
-        const fourth = await create("compacted-source", 4);
+        const fourth = await create("compacted-source", 6);
         expect(fourth.packetIds).toEqual(third.packetIds);
         expect(borrowing).toHaveBeenCalledOnce();
         expect(discovery).not.toHaveBeenCalled();
         expect(groups).not.toHaveBeenCalled();
         expect(bodies).not.toHaveBeenCalled();
-        expect((await fixture.receipts()).length).toBe(4);
+        expect((await fixture.receipts()).length).toBe(6);
       } finally {
         console.log(JSON.stringify({ scenario: "native-shared-initial-frame", stages }));
         for (const spy of spies.toReversed()) {

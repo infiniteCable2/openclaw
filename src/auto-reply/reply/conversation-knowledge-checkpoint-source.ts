@@ -1,5 +1,4 @@
 import { setImmediate } from "node:timers/promises";
-import { isDeepStrictEqual } from "node:util";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import {
@@ -8,7 +7,6 @@ import {
 } from "../../config/sessions/conversation-branch-creation.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeRootContinuation } from "../../config/sessions/conversation-knowledge-root-cache.js";
-import { selectConversationKnowledgeReceipts } from "../../config/sessions/conversation-knowledge-selection.js";
 import {
   assertNativeKnowledgeRootContribution,
   readConversationKnowledgeRoot,
@@ -38,6 +36,8 @@ import type { ConversationPrivateAudience } from "../../sessions/conversation-pr
 import {
   prepareCheckpointGroupCache,
   prepareCheckpointGroupRead,
+  prepareCheckpointOwnGroup,
+  selectCheckpointSourceReferences,
 } from "./conversation-knowledge-checkpoint-group.js";
 import {
   createCheckpointRangeRecorder,
@@ -205,25 +205,13 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       creation: params.targetCreation,
     });
     check();
-    const rootReferences = selectConversationKnowledgeReceipts(
+    const selection = selectCheckpointSourceReferences({
       events,
-      branch.root.sessionId,
-      branch.root.sessionKey,
-    ).filter(
-      (reference) =>
-        !reference.retirement &&
-        reference.source.agentId === branch.agentId &&
-        (conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) ===
-          audienceKey ||
-          (params.participant.type === "profile" &&
-            reference.privateAudience?.participant.type === "remote")),
-    );
-    const candidateById = new Map(
-      rootReferences.map((reference) => [
-        conversationKnowledgeContributionId(reference),
-        reference,
-      ]),
-    );
+      branch,
+      participant: params.participant,
+      audienceIdentity: audienceKey,
+    });
+    const rootReferences = selection.references;
     const groupManifest = prepareCheckpointGroupCache({
       cache: params.sourceCache,
       evidence: events.evidence,
@@ -485,13 +473,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
     const result = {
       audienceKey,
       references: rootReferences,
-      // Raw channel aliases are candidates only. Exact account-scoped native
-      // personal reads below decide whether they belong to this profile.
-      isAudienceCandidate: (reference: ConversationKnowledgeReference) =>
-        isDeepStrictEqual(
-          candidateById.get(conversationKnowledgeContributionId(reference)),
-          reference,
-        ),
+      isAudienceCandidate: selection.isAudienceCandidate,
       read: (reference: ConversationKnowledgeReference, retainText = true) =>
         readAvailableSource(reference, () => read(reference, retainText)),
       validate: (
@@ -512,6 +494,21 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         invalidCached?: InvalidCheckpointCachedPacket,
       ) {
         let complete = true;
+        const ownCount = references.filter(selection.currentOwn).length;
+        const verifyOwn = async (reference: ConversationKnowledgeReference) => {
+          const range = await readAvailableSource(reference, () =>
+            validate(
+              reference,
+              cachedPackets?.get(conversationKnowledgeContributionId(reference)),
+              retainProof,
+              invalidCached,
+            ),
+          );
+          if (range) {
+            verified(reference, range);
+          }
+          return Boolean(range);
+        };
         const bySource = new Map<string, ConversationKnowledgeReference[]>();
         for (const [index, reference] of references.entries()) {
           if (index > 0 && index % 8 === 0) {
@@ -519,24 +516,8 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           }
           workCheck();
           assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
-          if (
-            reference.source.sessionKey === branch.sessionKey &&
-            reference.source.sessionId === branch.sessionId &&
-            reference.source.lifecycleRevision === branch.lifecycleRevision
-          ) {
-            const range = await readAvailableSource(reference, () =>
-              validate(
-                reference,
-                cachedPackets?.get(conversationKnowledgeContributionId(reference)),
-                retainProof,
-                invalidCached,
-              ),
-            );
-            if (!range) {
-              complete = false;
-              continue;
-            }
-            verified(reference, range);
+          if (ownCount === 1 && selection.currentOwn(reference)) {
+            complete = (await verifyOwn(reference)) && complete;
             continue;
           }
           const key = JSON.stringify(reference.source);
@@ -551,28 +532,40 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           }
           checkedGroups++;
           workCheck();
+          let ownGroupFailure = false;
           const available = await readAvailableSource(contributions[0]!, async () => {
-            const selectedGroup = await prepareCheckpointGroupRead({
-              branch,
-              participant: params.participant,
-              audience: params.audience,
-              contributions,
-              evidence: events.evidence,
-              cache: params.sourceCache,
-              manifest: groupManifest,
-              targetCreation: params.targetCreation,
-              signal: authority.signal,
-              assertCurrent: custody,
-              workCheck,
-              getRuntimeConfig: () => params.getRuntimeConfig(),
-              groups,
-              reads,
-              drop,
-            });
-            const { grant } = selectedGroup;
-            proofs.push(grant.assertCurrent);
-            retainProof?.(grant.assertCurrent);
-            const source = grant.sources[0];
+            const selectedGroup = selection.currentOwn(contributions[0]!)
+              ? await prepareCheckpointOwnGroup({
+                  branch,
+                  contributions,
+                  readSource: () => ownSource(contributions[0]!),
+                  assertCurrent: targetFacts.assertCurrent,
+                  workCheck,
+                  signal: params.signal,
+                }).catch((error: unknown) => {
+                  ownGroupFailure = true;
+                  throw error;
+                })
+              : await prepareCheckpointGroupRead({
+                  branch,
+                  participant: params.participant,
+                  audience: params.audience,
+                  contributions,
+                  evidence: events.evidence,
+                  cache: params.sourceCache,
+                  manifest: groupManifest,
+                  targetCreation: params.targetCreation,
+                  signal: authority.signal,
+                  assertCurrent: custody,
+                  workCheck,
+                  getRuntimeConfig: () => params.getRuntimeConfig(),
+                  groups,
+                  reads,
+                  drop,
+                });
+            const { source, assertCurrent: assertSource } = selectedGroup;
+            proofs.push(assertSource);
+            retainProof?.(assertSource);
             if (!source?.lifecycleRevision) {
               throw new SessionTranscriptReadFenceError(
                 "Checkpoint grouped source lifecycle is unavailable",
@@ -584,7 +577,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                 await setImmediate(undefined, { signal: params.signal });
                 workCheck();
               }
-              const range = grant.selectContribution(reference);
+              const range = selectedGroup.selectContribution(reference);
               if (!range?.version) {
                 throw new SessionTranscriptReadFenceError(
                   "Checkpoint grouped source range is unavailable",
@@ -608,7 +601,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                 signal: params.signal,
                 check: () => {
                   workCheck();
-                  grant.assertCurrent();
+                  assertSource();
                 },
                 invalidCached,
               }))
@@ -629,7 +622,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                   source.readSource,
                   packet.version,
                   source.lifecycleRevision,
-                  grant.assertCurrent,
+                  assertSource,
                   range,
                   retainProof,
                 );
@@ -639,15 +632,15 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
                 source.readSource,
                 range.version,
                 source.lifecycleRevision,
-                grant.assertCurrent,
+                assertSource,
                 range,
                 retainProof,
               );
               selected.push({ reference, range: { ...range, claim } });
             }
-            grant.assertCurrent();
+            assertSource();
             selectedGroup.finish();
-            grant.assertCurrent();
+            assertSource();
             for (const value of selected) {
               verified(value.reference, value.range);
             }
@@ -655,6 +648,17 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           });
           if (!available) {
             complete = false;
+            if (ownGroupFailure) {
+              // One unavailable original must not hide another packet's stale
+              // cached prefix from the existing selective repair path.
+              for (const [index, reference] of contributions.entries()) {
+                if (index > 0 && index % 8 === 0) {
+                  await setImmediate(undefined, { signal: params.signal });
+                  workCheck();
+                }
+                await verifyOwn(reference);
+              }
+            }
           }
         }
         return complete;

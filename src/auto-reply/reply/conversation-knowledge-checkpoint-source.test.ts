@@ -544,12 +544,14 @@ describe("checkpoint unavailable source custody", () => {
 });
 
 describe("grouped checkpoint prefix validation", () => {
-  function groupFixture(count: number, cachedVersions: number[]) {
-    const donor = {
-      ...reference().source,
-      sessionKey: "agent:example:donor",
-      sessionId: "donor-instance",
-    };
+  function groupFixture(count: number, cachedVersions: number[], own = false) {
+    const donor = own
+      ? reference().source
+      : {
+          ...reference().source,
+          sessionKey: "agent:example:donor",
+          sessionId: "donor-instance",
+        };
     const references: ConversationKnowledgeReference[] = Array.from(
       { length: count },
       (_, index) => {
@@ -616,6 +618,62 @@ describe("grouped checkpoint prefix validation", () => {
     });
     return { references, packets, current, release };
   }
+
+  it("validates 80 current own originals in two native anchor pages without self grants", async () => {
+    const fixture = groupFixture(80, [200], true);
+    boundary.anchors.mockImplementation(async (_target, selection, _signal, consume) => {
+      const facts = {
+        anchors: fixture.references
+          .map((value) => value.through)
+          .filter((anchor) => selection.entryIds.includes(anchor.entryId)),
+        contextValidated: true as const,
+        contextVersion: fixture.current,
+        session: { sessionId: branch.sessionId, lifecycleRevision: branch.lifecycleRevision },
+      };
+      consume?.(facts);
+      return facts;
+    });
+    const reads = vi.fn(),
+      verified = vi.fn();
+    const held = await sources(() => {}, { onReadRequest: reads });
+    reads.mockClear();
+    expect(await held.verifyAll(fixture.references, verified, fixture.packets)).toBe(true);
+    expect(verified).toHaveBeenCalledTimes(80);
+    expect(reads).toHaveBeenCalledOnce();
+    expect(boundary.anchors).toHaveBeenCalledTimes(2);
+    expect(boundary.personal).not.toHaveBeenCalled();
+    const authority = await prepareSessionSourceAuthority(held.source());
+    expect(authority.checks.filter(({ predicate }) => predicate.transcript)).toHaveLength(1);
+  });
+
+  it("still repairs another own cached prefix when one original anchor is unavailable", async () => {
+    const fixture = groupFixture(2, [100], true);
+    const [missing, readable] = fixture.references;
+    boundary.anchors.mockImplementation(async (_target, selection, _signal, consume) => {
+      if (selection.contextValidation?.through?.entryId === missing!.through.entryId) {
+        throw new SessionTranscriptReadFenceError("Original anchor unavailable");
+      }
+      const facts = {
+        anchors: [readable!.through],
+        contextValidated: selection.contextValidation?.version ? undefined : (true as const),
+        contextVersion: fixture.current,
+        session: { sessionId: branch.sessionId, lifecycleRevision: branch.lifecycleRevision },
+      };
+      consume?.(facts);
+      return facts;
+    });
+    const held = await sources(),
+      invalid = vi.fn(),
+      verified = vi.fn();
+    expect(
+      await held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
+    ).toBe(false);
+    expect(verified).not.toHaveBeenCalled();
+    expect(invalid).toHaveBeenCalledExactlyOnceWith(
+      readable,
+      fixture.packets.get(conversationKnowledgeContributionId(readable!)),
+    );
+  });
 
   it("prepares only 37 fresh donor grants for a 505-original frame after individual hydration", async () => {
     const fixture = groupFixture(505, [200]);
