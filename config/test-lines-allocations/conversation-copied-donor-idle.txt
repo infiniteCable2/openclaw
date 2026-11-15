@@ -1,0 +1,4 @@
+58
+# Extend the existing native cold/idle scenario with a genuinely initialized
+# copied donor; verify its first original contribution reaches an idle sibling
+# without another user or model turn, alongside existing-source updates.

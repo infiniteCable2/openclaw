@@ -35,7 +35,10 @@ import type { SessionSourceAssertion } from "../../config/sessions/session-sourc
 import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
-import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import {
+  bindConversationPrivateAudience,
+  type ConversationPrivateAudience,
+} from "../../sessions/conversation-private-audience.js";
 import { lifecycleAdmissionByOperation } from "../../sessions/session-controller.state.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -49,6 +52,8 @@ import {
   createConversationKnowledgeScenario,
   person,
 } from "./conversation-knowledge.scenario.test-support.js";
+import { finalizeInboundContext } from "./inbound-context.js";
+import { initSessionState } from "./session.js";
 import { createMockFollowupRun, createMockReplyOperation } from "./test-helpers.js";
 
 const model = vi.hoisted(() => ({ summarize: vi.fn(), compact: vi.fn() }));
@@ -125,7 +130,11 @@ it.for([
         { scenario: "minimal", label: "knowledge-cold-history-simulation" },
         async (state) => {
           const fixture = await createConversationKnowledgeScenario(state);
-          fixture.cfg.agents!.defaults = { model: { primary: "synthetic/cold-model" } };
+          fixture.cfg.agents!.defaults = {
+            workspace: state.workspaceDir,
+            model: { primary: "synthetic/cold-model" },
+          };
+          fixture.cfg.session = { store: fixture.root.storePath, dmScope: "per-channel-peer" };
           fixture.cfg.models = {
             providers: {
               synthetic: {
@@ -519,6 +528,55 @@ it.for([
             await withinTest(recipient.owner.wait(), signal);
             mark("idle-baseline-settled", { admitted: (await packets()).length });
 
+            // A newly copied branch is a new donor, not another incarnation of
+            // an existing source. Its imported carriers must not hide its first
+            // original observation from the already idle recipient.
+            const freshKey = "agent:main:matrix:direct:cold-new-donor";
+            const ctx = finalizeInboundContext({
+              Body: "Initialize a separate private conversation.",
+              ChatType: "direct",
+              SessionKey: freshKey,
+              Provider: "matrix",
+              Surface: "matrix",
+              From: `matrix:${person.id}`,
+              To: "room:cold-new-donor",
+              SenderId: person.id,
+              SessionCreation: {
+                via: "channel",
+                actor: { type: "human", source: "channel", id: person.id },
+              },
+            });
+            bindConversationPrivateAudience(ctx, {
+              agentId: "main",
+              sessionKey: freshKey,
+              channelId: "matrix",
+              accountId: "default",
+              nativeChannelId: "cold-new-donor",
+              participant: person,
+              assertCurrent: owner.assertCurrent,
+            });
+            const fresh = await initSessionState({
+              cfg: fixture.cfg,
+              ctx,
+              commandAuthorized: true,
+              assertSourceCurrent: owner.assertCurrent,
+              signal,
+            });
+            if (!fresh.sessionEntry.lifecycleRevision) {
+              throw new Error("Expected the newly copied donor's native incarnation");
+            }
+            const freshTarget = {
+              ...target,
+              sessionKey: fresh.sessionKey,
+              sessionId: fresh.sessionId,
+              lifecycleRevision: fresh.sessionEntry.lifecycleRevision,
+            };
+            expect(countMarkers(await loadTranscriptEvents(freshTarget))).toBe(originalCount);
+            const liveDonors = [
+              ...donors.slice(0, 2),
+              { target: freshTarget, owner: await fixture.claim(freshTarget) },
+            ];
+
             // The small case also races a real SDK append against the first idle
             // COMMIT. Recovery must restage itself without a new user/model turn.
             let idleVersionRaced = false;
@@ -566,7 +624,7 @@ it.for([
             // trigger its existing background owners; no synthetic user turn runs.
             const liveIds: string[] = [];
             resumeRecipient = recipient.owner.pausePreparation();
-            for (const [index, donor] of donors.slice(0, 2).entries()) {
+            for (const [index, donor] of liveDonors.entries()) {
               signal.throwIfAborted();
               const saved = await appendTranscriptMessage(donor.target, {
                 message: {
@@ -611,13 +669,13 @@ it.for([
             mark("reused-idle-recipient", {
               prepared: preparedLive,
               admitted: admittedLive,
-              expected: 2,
+              expected: liveDonors.length,
               mixedInvalidationAndConsumption,
             });
             expect(preparedLive).toBe(0);
             // Desired regression: existing silent recipients need an idle native
             // admission point; readiness alone is not completed synchronization.
-            expect.soft(admittedLive).toBe(2);
+            expect.soft(admittedLive).toBe(liveDonors.length);
             if (settledWriter) {
               expect(mixedInvalidationAndConsumption).toBe(true);
             } else if (donorCount === 3) {
