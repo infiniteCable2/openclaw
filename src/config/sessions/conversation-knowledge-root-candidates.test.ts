@@ -540,6 +540,7 @@ describe("prepared native knowledge root candidates", () => {
   });
   it("shares an exact immutable checkpoint scope while retaining native recipient custody", async () => {
     const f = fixture();
+    const sourceCheck = vi.fn();
     const references = Array.from({ length: 33 }, (_, index) => ({
       ...f.receipt,
       through: { ...f.receipt.through, entryId: `answer-${index}`, rawSeq: index + 3 },
@@ -560,9 +561,33 @@ describe("prepared native knowledge root candidates", () => {
     const first = await readPreparedConversationKnowledgeRoot({
       ...f,
       manifest,
-      assertCurrent() {},
+      assertCurrent: sourceCheck,
     });
+    sourceCheck.mockClear();
+    assertNativeKnowledgeRootContribution(first.evidence, f.branch, references[0]!);
+    const singleChecks = sourceCheck.mock.calls.length;
+    expect(singleChecks).toBeGreaterThan(0);
+    sourceCheck.mockClear();
     const proof = prepareNativeKnowledgeRootContributionGroup(first.evidence, f.branch, references);
+    expect(sourceCheck.mock.calls.length).toBeLessThanOrEqual(2 * singleChecks);
+    const changed = references.map((reference, index) =>
+      index === 16 ? { ...reference, runId: "changed-original" } : reference,
+    );
+    expect(() =>
+      prepareNativeKnowledgeRootContributionGroup(first.evidence, f.branch, changed),
+    ).toThrow("no matching native root evidence");
+    sourceCheck
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error("Synthetic root custody revoked");
+      });
+    expect(() =>
+      prepareNativeKnowledgeRootContributionGroup(first.evidence, f.branch, references),
+    ).toThrow("root custody revoked");
+    const empty = prepareNativeKnowledgeRootContributionGroup(first.evidence, f.branch, []);
+    expect(() =>
+      assertNativeKnowledgeRootContributionGroup(first.evidence, f.branch, empty),
+    ).not.toThrow();
     const secondManifest = issuePreparedKnowledgeRootCandidates(root.evidence, references, {
       maxBytes: 2_048,
       sharedMetadata: true,

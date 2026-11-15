@@ -183,11 +183,24 @@ class NativeKnowledgeRootEvidence {
     target: ConversationKnowledgeBranch,
     references: readonly ConversationKnowledgeReference[],
   ) {
-    for (const reference of references) {
-      NativeKnowledgeRootEvidence.assertContribution(evidence, target, reference);
+    if (references.length) {
+      NativeKnowledgeRootEvidence.assertContribution(evidence, target, references[0]!);
     }
     if (!(evidence instanceof NativeKnowledgeRootEvidence)) {
       throw new Error("Contribution group requires native root evidence");
+    }
+    // Native reference data is checked synchronously; shared root custody is
+    // checked at both ends rather than repeated for every middle reference.
+    for (let index = 1; index < references.length - 1; index++) {
+      const reference = references[index]!;
+      if (
+        !isDeepStrictEqual(evidence.#payload.references.get(evidence.#key(reference)), reference)
+      ) {
+        throw new Error("Personal contribution has no matching native root evidence");
+      }
+    }
+    if (references.length > 1) {
+      NativeKnowledgeRootEvidence.assertContribution(evidence, target, references.at(-1)!);
     }
     return new NativeKnowledgeRootContributionGroup(
       contributionGroupProofIssuer,
