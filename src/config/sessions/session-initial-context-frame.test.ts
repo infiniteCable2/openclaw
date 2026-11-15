@@ -19,6 +19,7 @@ import {
 } from "./session-initial-context-frame.js";
 import { assertInitialSessionContextReadSource } from "./session-initial-context.js";
 import {
+  composeSessionSourceAssertion,
   prepareSessionSourceAuthority,
   type SessionSourcePredicate,
 } from "./session-source-authority.js";
@@ -278,7 +279,12 @@ it("requires real root evidence and a branded selected range before issuing a fr
 
 it("borrows independently for two destinations without preparing donor authority again", async () => {
   const f = fixture();
-  const frame = await prepareConversationKnowledgeInitialFrame(f.params);
+  const callback = vi.fn();
+  const source = composeSessionSourceAssertion([f.params.source, callback]);
+  const frame = await prepareConversationKnowledgeInitialFrame({ ...f.params, source });
+  callback.mockClear();
+  frame.assertCurrent();
+  expect(callback).toHaveBeenCalledOnce();
   const firstTarget = f.destination("first");
   const secondTarget = f.destination("second");
   const first = await borrowPreparedConversationKnowledgeInitialFrame({ frame, ...firstTarget });
@@ -304,9 +310,35 @@ it("borrows independently for two destinations without preparing donor authority
   firstTarget.revoke();
   expect(() => first.source()).toThrow("Destination revoked");
   expect(() => second.source()).not.toThrow();
+  callback.mockImplementation(() => {
+    throw new Error("Plain callback revoked");
+  });
+  expect(() => frame.assertCurrent()).toThrow("Plain callback revoked");
   await frame.release();
   await frame.release();
   expect(f.release).toHaveBeenCalledOnce();
+  expect(() => frame.assertCurrent()).toThrow("released");
+});
+
+it("keeps the full retained source authority current independently of prepared-only checks", async () => {
+  const f = fixture();
+  const held = await f.prepare();
+  let active = true;
+  const source = Object.assign(() => f.params.source(), {
+    prepareSessionSource: async () => ({
+      ...held,
+      assertCurrent() {
+        held.assertCurrent();
+        if (!active) {
+          throw new Error("Retained authority revoked");
+        }
+      },
+    }),
+  });
+  const frame = await prepareConversationKnowledgeInitialFrame({ ...f.params, source });
+  active = false;
+  expect(() => frame.assertCurrent()).toThrow("Retained authority revoked");
+  await frame.release();
 });
 
 it("preserves remote provenance while borrowing its natively admitted profile frame", async () => {
@@ -386,4 +418,9 @@ it("refuses another person, a revoked original broker and configuration replacem
   next.changeConfig();
   expect(() => nextFrame.assertCurrent()).toThrow("configuration changed");
   await nextFrame.release();
+  const mutable = fixture();
+  const mutableFrame = await prepareConversationKnowledgeInitialFrame(mutable.params);
+  mutable.params.getRuntimeConfig().agents!.entries!.example!.conversationMode = "native";
+  expect(() => mutableFrame.assertCurrent()).toThrow("configuration changed");
+  await mutableFrame.release();
 });

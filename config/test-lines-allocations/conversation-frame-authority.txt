@@ -1,0 +1,3 @@
+37
+# Extend native frame sealing coverage: one delegated guard invocation, plain and
+# retained-owner revocation, released frame, and in-place configuration mutation.

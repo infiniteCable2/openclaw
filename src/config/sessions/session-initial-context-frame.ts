@@ -100,8 +100,8 @@ class PreparedConversationKnowledgeInitialFrame {
         throw new Error("Initial root frame has been released");
       }
       params.audience.assertCurrent();
-      params.source();
-      prepared.assertPreparedCurrent?.();
+      // The full retained owner includes original and opaque source checks.
+      prepared.assertCurrent();
       if (
         !matchesConfig(params.getRuntimeConfig()) ||
         conversationKnowledgeParticipantIdentity(params.audience.participant) !== this.#participant
