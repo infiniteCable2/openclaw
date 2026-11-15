@@ -6,7 +6,7 @@ import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   conversationKnowledgeContributionId,
 } from "../../config/sessions/conversation-knowledge-packets.js";
-import { recordConversationUtteranceObservation } from "../../config/sessions/conversation-knowledge-store.js";
+import * as knowledgeStore from "../../config/sessions/conversation-knowledge-store.js";
 import {
   CONVERSATION_UTTERANCE_REPORT,
   readConversationUtteranceObservation,
@@ -103,7 +103,7 @@ it.for([
           expect(anchors.anchors).toHaveLength(perDonor);
           for (const anchor of anchors.anchors) {
             expect(
-              await recordConversationUtteranceObservation({
+              await knowledgeStore.recordConversationUtteranceObservation({
                 ...owner,
                 role: "user",
                 anchor,
@@ -173,6 +173,13 @@ it.for([
         };
         await prepare();
         expect(cache.preparedPackets(MAX_TRANSCRIPT_REPORT_BATCH_SIZE + 1)).toHaveLength(count);
+        const donorManifests = new Set(
+          donors.map((donor) =>
+            cache.preparedContributionGroupManifest(donor, cache.preparedRoot!),
+          ),
+        );
+        const subsets = vi.spyOn(knowledgeStore, "prepareConversationKnowledgeRootSubset");
+        onTestFinished(() => subsets.mockRestore());
         const readPackets = async () =>
           (await loadTranscriptEvents(target)).flatMap((event) => {
             const row = asOptionalRecord(event);
@@ -372,6 +379,13 @@ it.for([
           return;
         }
         const first = await consume();
+        if (race === "donor") {
+          expect(
+            subsets.mock.calls.filter(
+              ([params]) => "manifest" in params && donorManifests.has(params.manifest),
+            ),
+          ).toHaveLength(donorCount);
+        }
         if (race === "tail") {
           expect(selectionChecks).toBe(1);
           expect(changed).toBe(true);

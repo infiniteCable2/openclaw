@@ -194,13 +194,13 @@ export function createConversationKnowledgeSourceCustody(
           if (!manifest) {
             throw new SessionTranscriptReadFenceError("Prepared donor subset is unavailable");
           }
-          const subset = prepareConversationKnowledgeRootSubset({
-            evidence: params.rootEvidence,
-            branch,
-            manifest,
-          });
-          const selected = await leaseGroup(group, () =>
-            prepareTranscriptReadAuthority({
+          const selected = await leaseGroup(group, () => {
+            const subset = prepareConversationKnowledgeRootSubset({
+              evidence: params.rootEvidence,
+              branch,
+              manifest,
+            });
+            return prepareTranscriptReadAuthority({
               ...request,
               personal: {
                 originalParticipant,
@@ -211,8 +211,8 @@ export function createConversationKnowledgeSourceCustody(
                 rootEvidence: subset.evidence,
                 contributionGroup: group,
               },
-            }),
-          );
+            });
+          });
           grant = selected.grant;
           groupedSourceAssertion = selected.sourceAssertion;
         } else {
