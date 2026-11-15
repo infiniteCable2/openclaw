@@ -1,2 +1,2 @@
-66
+67
 # Mutable interleaved comparison allocation regression and exact serialization/provenance fallback controls.
