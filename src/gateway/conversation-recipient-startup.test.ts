@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { beforeEach, expect, it, vi } from "vitest";
 import { beginForegroundSessionMaintenance } from "../agents/session-maintenance/coordinator.js";
 import type { ConversationRecipientEnrollment } from "../config/sessions/conversation-recipient-enrollment.js";
@@ -15,6 +16,11 @@ const mocks = vi.hoisted(() => ({
   projection: vi.fn(),
   wake: vi.fn(),
 }));
+// mock-isolation: Count pure comparisons without replacing their native result.
+vi.mock("node:util", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:util")>();
+  return { ...actual, isDeepStrictEqual: vi.fn(actual.isDeepStrictEqual) };
+});
 // mock-isolation: This scheduler test owns signals; native authority and SQLite have separate proofs.
 vi.mock("../auto-reply/reply/conversation-knowledge-open.js", () => ({
   openConversationKnowledgeRoot: mocks.open,
@@ -108,7 +114,12 @@ beforeEach(() => {
   }));
 });
 
-function start(rows: ReturnType<typeof row>[]) {
+function start(
+  rows: ReturnType<typeof row>[],
+  projectSharing: (
+    entry: InternalSessionEntry,
+  ) => InternalSessionEntry = projectSessionSharingEntry,
+) {
   let onFacts: (change: { kind: "row"; key: string } | { kind: "reset" }) => void = () => {};
   mocks.projection.mockReturnValue({
     ensureMaterialized: async () => {},
@@ -116,7 +127,7 @@ function start(rows: ReturnType<typeof row>[]) {
       rows.filter((value) => !query || query.key === value.key),
     sharingTarget: ({ key }: { key: string }) => {
       const selected = rows.find((value) => value.key === key);
-      return selected && { ...selected, entry: projectSessionSharingEntry(selected.entry) };
+      return selected && { ...selected, entry: projectSharing(selected.entry) };
     },
     onFactsChange: (listener: typeof onFacts) => {
       onFacts = listener;
@@ -141,6 +152,59 @@ function start(rows: ReturnType<typeof row>[]) {
     },
   };
 }
+
+it("reuses immutable enrollment comparisons while checking live privacy and incarnation", async () => {
+  const target = row("immutable-device");
+  let sharing = projectSessionSharingEntry(target.entry);
+  const owner = start([target], () => sharing);
+  try {
+    await owner.settled();
+    const audience = mocks.open.mock.calls[0]![0].audience as ConversationPrivateAudience;
+    vi.mocked(isDeepStrictEqual).mockClear();
+    for (let index = 0; index < 100; index++) {
+      audience.assertCurrent();
+    }
+    expect(isDeepStrictEqual).not.toHaveBeenCalled();
+    expect(Object.isFrozen(sharing.conversationRecipientEnrollment?.source.snapshot)).toBe(true);
+    sharing.chatType = "group";
+    expect(() => audience.assertCurrent()).toThrow();
+    sharing.chatType = "direct";
+    sharing.lifecycleRevision = "replaced";
+    expect(() => audience.assertCurrent()).toThrow();
+    sharing.lifecycleRevision = target.entry.lifecycleRevision;
+    target.entry.conversationRecipientEnrollment!.source.snapshot.aliasBindingIds.push("changed");
+    expect(sharing.conversationRecipientEnrollment?.source.snapshot.aliasBindingIds).toEqual([]);
+    audience.assertCurrent();
+    sharing = projectSessionSharingEntry(target.entry);
+    expect(() => audience.assertCurrent()).toThrow();
+  } finally {
+    await owner.close();
+  }
+});
+
+it.each([false, true])(
+  "rechecks a mutable enrollment under a shallow freeze: %s",
+  async (shallow) => {
+    const target = row("mutable-device");
+    const sharing = structuredClone(projectSessionSharingEntry(target.entry));
+    if (shallow) {
+      Object.freeze(sharing.conversationRecipientEnrollment);
+    }
+    const owner = start([target], () => sharing);
+    try {
+      await owner.settled();
+      const audience = mocks.open.mock.calls[0]![0].audience as ConversationPrivateAudience;
+      vi.mocked(isDeepStrictEqual).mockClear();
+      audience.assertCurrent();
+      audience.assertCurrent();
+      expect(isDeepStrictEqual).toHaveBeenCalled();
+      sharing.conversationRecipientEnrollment!.source.snapshot.localOperator = true;
+      expect(() => audience.assertCurrent()).toThrow();
+    } finally {
+      await owner.close();
+    }
+  },
+);
 
 it("restores independent reusable paths without connections or turns; excludes old calls and private mismatches", async () => {
   const rows = [

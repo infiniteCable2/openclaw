@@ -2,6 +2,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { PostgresPhysicalFacts } from "../../infra/database-engine/physical-facts.js";
 import type { EngineConnection } from "../../infra/sql-connection.js";
+import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { SessionEntryMaintenanceAgeChange } from "./session-accessor.sqlite-maintenance-age.js";
@@ -106,7 +107,10 @@ function selectSessionSharingEntry(entry: InternalSessionEntry) {
 }
 
 export function projectSessionSharingEntry(entry: InternalSessionEntry) {
-  return structuredClone(selectSessionSharingEntry(entry));
+  const sharing = structuredClone(selectSessionSharingEntry(entry));
+  // Retained enrollment is read-only metadata; callers still own their mutable entry.
+  freezeJsonSnapshot(sharing.conversationRecipientEnrollment);
+  return sharing;
 }
 
 export type SessionEntryPlaceholder = Readonly<{ sessionId: string }>;

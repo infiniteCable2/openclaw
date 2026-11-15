@@ -12,6 +12,7 @@ import { enqueueCommandInLane } from "../process/command-queue.js";
 import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
+import { freezeJsonSnapshot, memoizeFrozenPlainDataProjection } from "../shared/immutable-data.js";
 import { onOperatorRolePolicyChanged } from "./operator-role-policy.js";
 import { prepareGatewayOperatorSourceCustody } from "./operator-source-custody.js";
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
@@ -92,6 +93,10 @@ export function startGatewayConversationRecipients(params: {
     if (!enrollment) {
       return;
     }
+    const expectedEnrollment = freezeJsonSnapshot(structuredClone(stored));
+    const matchesEnrollment = memoizeFrozenPlainDataProjection((current: object) =>
+      isDeepStrictEqual(current, expectedEnrollment),
+    );
     const recipientController = new AbortController();
     const lifetime = AbortSignal.any([signal, workSignal, recipientController.signal]);
     const target = {
@@ -120,7 +125,8 @@ export function startGatewayConversationRecipients(params: {
         topology.rootSessionKey !== enrollment.branch.root.sessionKey ||
         topology.rootSessionId !== enrollment.branch.root.sessionId ||
         topology.rootSessionLifecycleRevision !== enrollment.branch.root.lifecycleRevision ||
-        !isDeepStrictEqual(current.entry.conversationRecipientEnrollment, stored) ||
+        !current.entry.conversationRecipientEnrollment ||
+        !matchesEnrollment(current.entry.conversationRecipientEnrollment) ||
         resolveAgentConversationMode(getConfig(), row.agentId) !== "branches"
       ) {
         throw new Error("Reusable conversation recipient changed before preparation");

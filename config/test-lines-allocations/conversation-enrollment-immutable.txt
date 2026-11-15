@@ -1,0 +1,4 @@
+64
+# Prove repeated native enrollment checks reuse a pure immutable comparison,
+# retain caller independence and still refuse mutable/shallow changes,
+# replacement enrollment, privacy changes and lifecycle replacement.
