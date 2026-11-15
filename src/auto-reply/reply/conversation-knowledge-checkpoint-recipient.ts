@@ -143,8 +143,8 @@ export async function prepareRecipientConversationProjection(
       { offset: number; packet: PreparedConversationKnowledgePacket; alreadyStaged: boolean }
     >();
     let complete = true;
+    check(); // Selection does not yield; recheck after the read, not per retained receipt.
     for (const reference of current) {
-      check();
       params.signal?.throwIfAborted();
       if (cache.consumptionRevision !== epoch) {
         return false;
