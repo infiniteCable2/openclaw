@@ -80,13 +80,13 @@ for (const { name, config } of workloads) {
       const hostLoad = loadavg();
       const cpu = process.cpuUsage();
       const start = performance.now();
-      let result = "";
       for (let index = 0; index < iterations; index++) {
-        result = serialize(config);
+        // Consume every result as the snapshot matcher does, including any
+        // string flattening deferred by V8's concatenation representation.
+        assert.equal(serialize(config), expected);
       }
       const wallMs = performance.now() - start;
       const elapsedCpu = process.cpuUsage(cpu);
-      assert.equal(result, expected);
       records.push({
         workload: name,
         pair,
