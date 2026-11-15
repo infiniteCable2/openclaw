@@ -1,4 +1,5 @@
 import { setImmediate } from "node:timers/promises";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { PreparedAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
@@ -20,6 +21,7 @@ import {
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getReplyOperationSessionReader } from "../../sessions/session-controller.state.js";
 import type { AgentTurnInternalResult, AgentTurnParams } from "./agent-runner-execution.types.js";
 import type { prepareConversationKnowledgeRecipient } from "./conversation-knowledge-prefetch.js";
@@ -34,6 +36,8 @@ import {
   recordReplyConversationPublication,
 } from "./conversation-publication.js";
 import { resolveReplyRunTrigger } from "./reply-turn-kind.js";
+
+const log = createSubsystemLogger("auto-reply/conversation-knowledge");
 
 /** One actual native turn retains its knowledge and publishes original committed dialogue. */
 export function createReplyConversationKnowledgeTurn(params: {
@@ -65,6 +69,31 @@ export function createReplyConversationKnowledgeTurn(params: {
   let preparedRun: RunEmbeddedAgentParams | undefined;
   let consumedRevision = -1;
   let morePreparedPackets = false;
+  const handoff = (
+    outcome:
+      | "no-run"
+      | "reacquired"
+      | "unchanged"
+      | "receipts-unavailable"
+      | "capacity-deferred"
+      | "returned",
+    returnedPackets = 0,
+    cacheRevision?: number,
+  ) => {
+    if (log.isEnabled("debug")) {
+      log.debug("Related-history request handoff", {
+        recipientHash: redactIdentifier(sessionId),
+        outcome,
+        seedPending,
+        runPrepared: preparedRun !== undefined,
+        recipientAvailable: recipient !== undefined,
+        cacheRevision,
+        consumedRevision,
+        morePreparedPackets,
+        returnedPackets,
+      });
+    }
+  };
   // These are receipts accepted by this logical turn, not another durable cursor
   // or a copy of source history. Native carrier observation owns replay eligibility.
   const acceptedPackets = new Map<string, { timestamp: number; customType: string }>();
@@ -384,6 +413,7 @@ export function createReplyConversationKnowledgeTurn(params: {
       assertCurrent();
       const run = preparedRun;
       if (!run || !execution || phase === "released") {
+        handoff("no-run");
         return [];
       }
       const retainContextBudget = () =>
@@ -421,6 +451,7 @@ export function createReplyConversationKnowledgeTurn(params: {
             // A closed connection/cache cannot cancel already accepted work.
           }
         }
+        handoff("reacquired");
         return [];
       }
       const revision = recipient.cache.revision;
@@ -430,6 +461,7 @@ export function createReplyConversationKnowledgeTurn(params: {
         replayPending = [...acceptedPackets.keys()];
       }
       if (revision === consumedRevision && !morePreparedPackets && replayPending.length === 0) {
+        handoff("unchanged", 0, revision);
         return [];
       }
       const messages: CustomMessage[] = [];
@@ -460,6 +492,7 @@ export function createReplyConversationKnowledgeTurn(params: {
           assertCurrent();
           signal.throwIfAborted();
           if (!observed.ok || !observed.value.length) {
+            handoff("receipts-unavailable", messages.length, revision);
             return messages;
           }
           for (const carrier of observed.value) {
@@ -475,6 +508,7 @@ export function createReplyConversationKnowledgeTurn(params: {
                 timestamp: acceptedPackets.get(id)?.timestamp ?? Date.now(),
               };
               if (!input.canAdmit(message)) {
+                handoff("capacity-deferred", messages.length, revision);
                 return messages;
               }
               messages.push(message);
@@ -557,9 +591,11 @@ export function createReplyConversationKnowledgeTurn(params: {
       } finally {
         resumePreparation();
       }
-      if (messages.length || recipient.cache.revision !== revision) {
+      const currentRevision = recipient.cache.revision;
+      if (messages.length || currentRevision !== revision) {
         recipient.owner.request();
       }
+      handoff("returned", messages.length, currentRevision);
       return messages;
     },
     async record(result: AgentTurnInternalResult) {

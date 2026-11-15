@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   readConversationKnowledgeBranch,
   recordConversationKnowledgeReference,
@@ -7,6 +9,8 @@ import { ConversationPublicationBlockedError } from "./conversation-publication-
 import type { ConversationPublicationRow } from "./conversation-publication.types.js";
 import { loadSessionEntryForAdmission } from "./session-accessor.sqlite-entry-admission.js";
 import { readActiveTranscriptEntryAnchorAsync } from "./session-transcript-anchor-read.js";
+
+const log = createSubsystemLogger("conversation-knowledge");
 
 /** Recovery obtains fresh native custody; persisted provenance is never a live read grant. */
 export async function publishConversationPublication(params: {
@@ -106,6 +110,15 @@ export async function publishConversationPublication(params: {
     check();
     if (!published) {
       throw new ConversationPublicationBlockedError("endpoint-unavailable");
+    }
+    // This confirms an inserted or already-present root reference, not journal acknowledgement.
+    if (log.isEnabled("debug")) {
+      log.debug("Conversation knowledge root reference confirmed", {
+        sourceHash: redactIdentifier(branch.sessionId),
+        rootHash: redactIdentifier(branch.root.sessionId),
+        throughSeq: row.anchor.rawSeq,
+        kind: row.intent.kind,
+      });
     }
   } finally {
     await held.databaseClaim.release();

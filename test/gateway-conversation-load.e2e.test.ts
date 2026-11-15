@@ -117,10 +117,12 @@ async function cpuTicks(pid: number, mainThread = false) {
   return user + system;
 }
 
-// No provider requests, manifests, IDs or log lines are retained by the observer.
+// Only bounded scalar diagnostics and opaque hashes; no prompts, raw IDs or log lines.
 function diagnostics() {
   let counts: Record<string, number> = {};
   let maxima: Record<string, number> = {};
+  let handoffs: Array<Record<string, string | number | boolean | null>> = [];
+  let omittedHandoffs = 0;
   const buffers = new Map<string, string>();
   const labels = [
     "Related-history preparation input root",
@@ -129,6 +131,11 @@ function diagnostics() {
     "Related-history source preparation settled",
     "Related-history recipient quantum settled",
     "Related-history root projection ready",
+    "Related-history root initial frame ready",
+    "Related-history initial context selected",
+    "Related-history request handoff",
+    "Supplementary conversation catch-up deferred",
+    "Conversation knowledge root reference confirmed",
     "Conversation knowledge transfer",
   ];
   const consume = (stream: string, chunk: Buffer) => {
@@ -141,10 +148,35 @@ function diagnostics() {
         continue;
       }
       counts[label] = (counts[label] ?? 0) + 1;
-      for (const key of ["outcome", "cause", "phase", "owner"]) {
+      for (const key of ["outcome", "cause", "phase", "owner", "reason", "pending"]) {
         const value = new RegExp(`"${key}"\\s*:\\s*"([a-z-]+)"`, "u").exec(line)?.[1];
         if (value) {
           counts[`${label}:${key}:${value}`] = (counts[`${label}:${key}:${value}`] ?? 0) + 1;
+        }
+      }
+      if (
+        label.includes("handoff") ||
+        label.includes("context selected") ||
+        label.includes("reference confirmed")
+      ) {
+        const event: Record<string, string | number | boolean | null> = { event: label };
+        for (const field of line.matchAll(
+          /"(recipientHash|sourceHash|rootHash|outcome|kind|rootSnapshotSeq|throughSeq|packetCount|returnedPackets|cacheRevision|consumedRevision|seedPending|recipientAvailable|runPrepared|morePreparedPackets)"\s*:\s*("[a-zA-Z0-9:_-]+"|-?\d+|null|true|false)/gu,
+        )) {
+          const value: unknown = JSON.parse(field[2]!);
+          if (
+            value === null ||
+            typeof value === "string" ||
+            typeof value === "number" ||
+            typeof value === "boolean"
+          ) {
+            event[field[1]!] = value;
+          }
+        }
+        handoffs.push(event);
+        if (handoffs.length > 32) {
+          handoffs.shift();
+          omittedHandoffs++;
         }
       }
       for (const key of [
@@ -184,9 +216,11 @@ function diagnostics() {
     stdout: (chunk: Buffer) => consume("stdout", chunk),
     stderr: (chunk: Buffer) => consume("stderr", chunk),
     take() {
-      const result = { counts, maxima };
+      const result = { counts, maxima, handoffs, omittedHandoffs };
       counts = {};
       maxima = {};
+      handoffs = [];
+      omittedHandoffs = 0;
       return result;
     },
   };

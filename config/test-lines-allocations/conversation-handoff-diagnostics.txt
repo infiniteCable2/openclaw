@@ -1,0 +1,3 @@
+34
+# Extend the existing real Gateway workload observer with bounded scalar handoffs:
+# distinguish root acknowledgement, copied frame and actual first-request returns.

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import { createRuntimeConfigSnapshotMatcher } from "../../config/runtime-config-snapshot-match.js";
 import { isConversationBranchCreationAudienceConfirmed } from "../../config/sessions/conversation-branch-creation-audience.js";
@@ -26,6 +27,7 @@ import {
 } from "../../config/sessions/session-source-authority.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { isIncognitoSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
@@ -37,6 +39,8 @@ import {
   prepareConversationKnowledgeCheckpointSources,
   type PreparedRootKnowledgeRange,
 } from "./conversation-knowledge-checkpoint-source.js";
+
+const log = createSubsystemLogger("conversation-knowledge");
 
 /** The absent recipient has no read grant; its native creation capability owns this disclosure. */
 export async function prepareConversationKnowledgeInitialContext(params: {
@@ -170,6 +174,14 @@ export async function prepareConversationKnowledgeInitialContext(params: {
         assertCurrent: check,
       });
       check();
+      if (log.isEnabled("debug")) {
+        log.debug("Related-history initial context selected", {
+          recipientHash: redactIdentifier(branch.sessionId),
+          kind: prepared.context.kind,
+          rootSnapshotSeq: prepared.context.sourceVersion.rawSeq,
+          packetCount: prepared.context.projection.packets.length,
+        });
+      }
       return {
         ...prepared,
         bindCreation: (operation) => creation.bindCreation(operation),
@@ -380,6 +392,14 @@ export async function prepareConversationKnowledgeInitialContext(params: {
       },
     );
     source();
+    if (log.isEnabled("debug")) {
+      log.debug("Related-history initial context selected", {
+        recipientHash: redactIdentifier(branch.sessionId),
+        kind: context.kind,
+        rootSnapshotSeq: context.sourceVersion.rawSeq,
+        packetCount: context.projection.packets.length,
+      });
+    }
     return {
       context,
       source,
