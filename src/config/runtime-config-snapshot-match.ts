@@ -1,6 +1,6 @@
 // Config-snapshot comparison: byte-stable serialization plus resolution provenance.
 import { isDeepStrictEqual } from "node:util";
-import { isDeeplyFrozenPlainData } from "../shared/immutable-data.js";
+import { freezeJsonSnapshot, isDeeplyFrozenPlainData } from "../shared/immutable-data.js";
 import {
   cloneConfigWithResolutionFacts,
   getConfigResolutionFacts,
@@ -46,7 +46,7 @@ export function configSnapshotsMatch(left: OpenClawConfig, right: OpenClawConfig
 
 /** One preparation lifetime may reuse only a proven deeply immutable runtime capture. */
 export function createRuntimeConfigSnapshotMatcher(expected: OpenClawConfig) {
-  const snapshot = cloneConfigWithResolutionFacts(expected);
+  const snapshot = freezeJsonSnapshot(cloneConfigWithResolutionFacts(expected));
   let matchedCapture: OpenClawConfig | undefined;
   return (current: OpenClawConfig): boolean => {
     if (current === matchedCapture) {

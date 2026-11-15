@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { createConfigResolutionFacts, setConfigResolutionFacts } from "./resolution-facts.js";
 import { captureRuntimeConfigWithSource } from "./runtime-config-capture-state.js";
 import { createRuntimeConfigSnapshotMatcher } from "./runtime-config-snapshot-match.js";
@@ -28,12 +28,20 @@ it("follows native publications as immutable captures while preserving scoped co
   expect(scopedReader()).toBe(scoped);
 });
 
-it("retains successful immutable native captures and compares each replacement", () => {
+it("reuses immutable bytes across interleaved captures and compares each replacement", () => {
   const cfg = { gateway: { port: 19001 } };
   const matches = createRuntimeConfigSnapshotMatcher(cfg);
   const capture = captureRuntimeConfigWithSource(cfg, cfg);
   expect(matches(capture)).toBe(true);
   expect(matches(capture)).toBe(true);
+  const equivalent = captureRuntimeConfigWithSource(cfg, cfg);
+  expect(matches(equivalent)).toBe(true);
+  const serialize = vi.spyOn(JSON, "stringify");
+  onTestFinished(() => serialize.mockRestore());
+  expect(matches(capture)).toBe(true);
+  expect(matches(equivalent)).toBe(true);
+  expect(serialize).not.toHaveBeenCalled();
+  serialize.mockRestore();
   const changed = { gateway: { port: 19002 } };
   expect(matches(captureRuntimeConfigWithSource(changed, changed))).toBe(false);
   expect(matches(capture)).toBe(true);
