@@ -39,7 +39,7 @@ it("does not multiply live authority checks by already consumed receipts", async
   };
   const source = { ...branch, sessionKey: "agent:example:donor", sessionId: "donor" };
   const checks: number[] = [];
-  for (const size of [4, 64]) {
+  for (const size of [0, 4, 64]) {
     const references = Array.from({ length: size }, (_, index) => {
       const through = {
         agentId: source.agentId,
@@ -97,7 +97,8 @@ it("does not multiply live authority checks by already consumed receipts", async
     expect(native.publish.mock.lastCall?.[0].receipts).toHaveLength(size);
     checks.push(assertCurrent.mock.calls.length);
   }
-  expect(checks[0]).toBeGreaterThan(0);
-  expect(checks[1]).toBe(checks[0]);
+  expect(checks[0]).toBe(2);
+  expect(checks[1]).toBeGreaterThan(0);
+  expect(checks[2]).toBe(checks[1]);
   expect(native.group).not.toHaveBeenCalled();
 });
