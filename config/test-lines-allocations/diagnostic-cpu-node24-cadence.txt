@@ -1,0 +1,3 @@
+5
+# Extend the existing real fresh-runtime profile proof to enforce its requested
+# sampling cadence; retain the native Node26 disposal contract and fixture restore.

@@ -143,8 +143,9 @@ export function captureDiagnosticCpuProfile(options: {
     captureDiagnosticProfile({
       ...options,
       durationMs: DURATION_MS,
+      // Node 24 ignores native sampling options; honor the bounded cadence via inspector.
       create: (inspector) =>
-        process.versions.bun
+        process.versions.bun || Number(process.versions.node.split(".")[0]) < 26
           ? createInspectorProfileCapture(inspector, {
               setup: async (session) => {
                 await session.post("Profiler.enable");

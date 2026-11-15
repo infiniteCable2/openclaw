@@ -19,6 +19,7 @@ const native = vi.hoisted(() => ({
   dispose: vi.fn(),
 }));
 const bunVersion = Object.getOwnPropertyDescriptor(process.versions, "bun");
+const nodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
 vi.mock("node:v8", async (original) => ({
   ...(await original<typeof import("node:v8")>()),
   startCpuProfile: native.start,
@@ -127,6 +128,7 @@ beforeEach(() => {
   native.wait.mockResolvedValue(undefined);
 });
 afterEach(() => {
+  Object.defineProperty(process.versions, "node", nodeVersion);
   if (bunVersion) {
     Object.defineProperty(process.versions, "bun", bunVersion);
   } else {
@@ -173,6 +175,7 @@ describe("diagnostic CPU profile owner", () => {
 
   it("reports disposal failure and allows a later native capture", async () => {
     Object.defineProperty(process.versions, "bun", { configurable: true, value: undefined });
+    Object.defineProperty(process.versions, "node", { configurable: true, value: "26.0.0" });
     native.dispose.mockImplementationOnce(() => {
       throw new Error("private native failure");
     });
@@ -681,6 +684,8 @@ assert.equal(outcome.status, 'complete', JSON.stringify(outcome));
 const result = outcome.result;
 assert.ok(result.actualDurationMs >= result.requestedDurationMs - 1_000);
 assert.ok(result.profile.samples.length > 0);
+// The requested 10 ms cadence permits timing jitter, not an ignored default sampler.
+assert.ok(result.profile.samples.length <= Math.ceil(result.actualDurationMs / 10) * 2);
 assert.equal(result.profile.samples.length, result.profile.timeDeltas.length);
 assert.ok(result.profile.timeDeltas.every(delta => Number.isFinite(delta)));
 const ids = new Set(result.profile.nodes.map(node => node.id));
