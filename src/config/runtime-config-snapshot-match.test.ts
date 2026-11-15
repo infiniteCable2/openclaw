@@ -134,7 +134,9 @@ it("reads mutable accessors only through the existing serialization fallback", (
 });
 
 it("preserves sorted escaped keys and sparse array bytes", () => {
-  expect(stableConfigStringify({ z: [, undefined], 'a"': { b: undefined, a: [] } })).toBe(
+  const sparse = new Array<unknown>(2);
+  sparse[1] = undefined;
+  expect(stableConfigStringify({ z: sparse, 'a"': { b: undefined, a: [] } })).toBe(
     '{"a\\\"":{"a":[],"b":null},"z":[,null]}',
   );
 });
