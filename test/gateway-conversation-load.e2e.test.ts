@@ -137,6 +137,7 @@ function diagnostics() {
     "Supplementary conversation catch-up deferred",
     "Conversation knowledge root reference confirmed",
     "Conversation knowledge transfer",
+    "Session access facts unavailable",
   ];
   const consume = (stream: string, chunk: Buffer) => {
     const lines = ((buffers.get(stream) ?? "") + chunk.toString("utf8")).split("\n");
@@ -157,11 +158,12 @@ function diagnostics() {
       if (
         label.includes("handoff") ||
         label.includes("context selected") ||
-        label.includes("reference confirmed")
+        label.includes("reference confirmed") ||
+        label.includes("facts unavailable")
       ) {
         const event: Record<string, string | number | boolean | null> = { event: label };
         for (const field of line.matchAll(
-          /"(recipientHash|sourceHash|rootHash|outcome|kind|rootSnapshotSeq|throughSeq|packetCount|returnedPackets|cacheRevision|consumedRevision|seedPending|recipientAvailable|runPrepared|morePreparedPackets)"\s*:\s*("[a-zA-Z0-9:_-]+"|-?\d+|null|true|false)/gu,
+          /"(recipientHash|sourceHash|rootHash|outcome|kind|rootSnapshotSeq|throughSeq|packetCount|returnedPackets|cacheRevision|consumedRevision|seedPending|recipientAvailable|runPrepared|morePreparedPackets|phase|reason|publicationPending|origin)"\s*:\s*("[a-zA-Z0-9:_.-]+"|-?\d+|null|true|false)/gu,
         )) {
           const value: unknown = JSON.parse(field[2]!);
           if (
@@ -170,7 +172,7 @@ function diagnostics() {
             typeof value === "number" ||
             typeof value === "boolean"
           ) {
-            event[field[1]!] = value;
+            event[field[1]!] ??= value;
           }
         }
         handoffs.push(event);
@@ -390,10 +392,10 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           await operator?.close();
         });
         cleanups.push(async () => {
-          await mainProfile?.catch(() => {});
+          await observer?.close();
         });
         cleanups.push(async () => {
-          await observer?.close();
+          await mainProfile;
         });
         const live = new Set<string>();
         const available = new Set<string>();
@@ -474,6 +476,19 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           const startCpu = await cpuTicks(pid);
           const start = performance.now();
           const requests = model.requests.length;
+          if (observer && phase === "initial:isolated-duplex:open") {
+            // Observe first-Talk creation natively without pausing or elevating its sender.
+            mainProfile = observer
+              .call("diagnostics.cpuProfile", {}, { timeoutMs: 30_000 })
+              .then(async (result) =>
+                writeFile(
+                  path.join(diagnosticDirectory!, "native-first-talk-profile.json"),
+                  JSON.stringify(result) + "\n",
+                  { flag: "wx", mode: 0o600 },
+                ),
+              );
+            void mainProfile.catch(() => {});
+          }
           let completed = false;
           await runQaGatewayFixture(
             async () => {
@@ -606,19 +621,6 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
               const turnStarted = performance.now();
               await chat(input.text, key);
               completedTurns++;
-              if (observer && completedTurns === Math.max(1, inputs.length - 64)) {
-                // Observe the main isolate natively without pausing input or elevating its sender.
-                mainProfile = observer
-                  .call("diagnostics.cpuProfile", {}, { timeoutMs: 30_000 })
-                  .then(async (result) => {
-                    await writeFile(
-                      path.join(diagnosticDirectory!, "native-main-profile.json"),
-                      JSON.stringify(result) + "\n",
-                      { flag: "wx", mode: 0o600 },
-                    );
-                  });
-                void mainProfile.catch(() => {});
-              }
               textBytes += Buffer.byteLength(input.text);
               maxTurnMs = Math.max(maxTurnMs, performance.now() - turnStarted);
               if (completedTurns % 16 === 0) {
@@ -638,11 +640,6 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
                   }),
                 );
               }
-            }
-            if (observer) {
-              await mainProfile;
-              await observer.close();
-              observer = undefined;
             }
           });
           console.log(
