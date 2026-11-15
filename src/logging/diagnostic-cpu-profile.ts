@@ -133,7 +133,7 @@ export function sanitizeDiagnosticCpuProfile(
   return summary;
 }
 
-/** Captures CPU samples through Node's shared native profiler or Bun's inspector. */
+/** Captures CPU samples through the runtime's supported profiler backend. */
 export function captureDiagnosticCpuProfile(options: {
   signal: AbortSignal;
   hasAuthority: () => boolean;

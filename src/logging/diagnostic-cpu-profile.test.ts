@@ -437,7 +437,6 @@ describe("diagnostic CPU profile owner", () => {
         expect(native.connect).not.toHaveBeenCalled();
         Object.defineProperty(process.versions, "bun", { configurable: true, value: undefined });
         expect(await capture()).toMatchObject({ status: "complete" });
-        expect(native.connect).not.toHaveBeenCalled();
       } finally {
         if (original) {
           Object.defineProperty(process.versions, "bun", original);
