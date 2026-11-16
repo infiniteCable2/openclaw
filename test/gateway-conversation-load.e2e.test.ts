@@ -757,6 +757,14 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
               signal,
               verifyCleanup,
               config: configuration(model.baseUrl, mode),
+              gatewayCommandPrefix: process.env.OPENCLAW_E2E_CONVERSATION_CPU_PROFILE_DIR
+                ? [
+                    process.execPath,
+                    ...gatewayBenchCpuProfileArgs(
+                      process.env.OPENCLAW_E2E_CONVERSATION_CPU_PROFILE_DIR,
+                    ),
+                  ]
+                : undefined,
               env: {
                 OPENCLAW_SKIP_PROVIDERS: undefined,
                 OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
@@ -919,6 +927,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
               const processStart = await cpuTicks(pid),
                 mainStart = await cpuTicks(pid, true);
               const start = performance.now();
+              const startedHrTimeUs = Number(process.hrtime.bigint() / 1000n);
               let observed: Record<string, number> = {};
               let succeeded = false;
               const metrics = await runQaGatewayFixture(
@@ -940,6 +949,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                       repetition,
                       phase,
                       outcome: succeeded ? "completed" : "failed",
+                      startedHrTimeUs,
                       elapsedMs: performance.now() - start,
                       processCpuTicks: (await cpuTicks(pid)) - processStart,
                       mainCpuTicks: (await cpuTicks(pid, true)) - mainStart,
