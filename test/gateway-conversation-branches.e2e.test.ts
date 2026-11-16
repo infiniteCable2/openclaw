@@ -213,6 +213,7 @@ describe("isolated full Gateway conversation continuity", () => {
         await gateway.startGateway();
         owner = await connectConversationOperator(gateway, "alex@example.test", signal);
         const source = `agent:main:checkpoint-source-${randomUUID()}`;
+        const secondSource = `${source}-second`;
         const destination = `agent:main:checkpoint-new-${randomUUID()}`;
         const reusable = `agent:main:checkpoint-reusable-${randomUUID()}`;
         const send = async (key: string, message: string) => {
@@ -274,7 +275,10 @@ describe("isolated full Gateway conversation continuity", () => {
         const initialReuse = JSON.stringify(await send(reusable, "REUSABLE_FIRST_IMPORT_PROBE_73"));
         expect(initialReuse.split(markers[0]!).length - 1).toBe(1);
         expect(initialReuse).not.toContain("Summary of related conversations");
-        const rootCheckpointIds = (throughSequence?: number) =>
+        const rootCheckpointIds = (
+          throughSequence?: number,
+          sourceId = sourceDescription.session.sessionId,
+        ) =>
           new Set(
             gateway!
               .logs()
@@ -283,11 +287,7 @@ describe("isolated full Gateway conversation continuity", () => {
                 (line) =>
                   line.includes("Related-history root projection ready") &&
                   (throughSequence === undefined ||
-                    sourceFrontierReached(
-                      line,
-                      sourceDescription.session.sessionId,
-                      throughSequence,
-                    )),
+                    sourceFrontierReached(line, sourceId, throughSequence)),
               )
               .flatMap((line) =>
                 Array.from(
@@ -296,6 +296,36 @@ describe("isolated full Gateway conversation continuity", () => {
                 ),
               ),
           );
+        const originalSequences = (
+          history: { messages: NativeHistoryMessage[] },
+          phaseMarkers: readonly string[],
+          sourceId: string,
+        ) =>
+          phaseMarkers.map((marker) => {
+            const sequence = history.messages.find(
+              (message) =>
+                message.role === "user" && JSON.stringify(message.content).includes(marker),
+            )?.__openclaw?.transcriptPosition?.rawSeq;
+            if (typeof sequence !== "number") {
+              throw new Error(`Native source sequence is missing for ${marker}`);
+            }
+            return { sourceId, sequence };
+          });
+        const waitForAdmissions = (sequences: ReturnType<typeof originalSequences>) =>
+          vi.waitFor(() => {
+            expect(
+              sequences.filter(
+                ({ sourceId, sequence }) =>
+                  !preparedSourceReached(
+                    gateway!,
+                    reusableDescription.session.sessionId,
+                    sourceId,
+                    sequence,
+                    "admitted",
+                  ),
+              ),
+            ).toEqual([]);
+          }, WAIT);
         // Background work may coalesce inputs and choose its commit time after
         // foreground activity. Require one committed pressure phase before the
         // next, rather than expecting two checkpoints from one final large tail.
@@ -306,45 +336,51 @@ describe("isolated full Gateway conversation continuity", () => {
           "chat.history",
           { sessionKey: source, limit: 100 },
         );
-        const firstPhaseSequence = firstPhaseHistory.messages.find(
-          (message) =>
-            message.role === "user" && JSON.stringify(message.content).includes(markers[4]!),
-        )?.["__openclaw"]?.transcriptPosition?.rawSeq;
-        if (typeof firstPhaseSequence !== "number") {
-          throw new Error("Native first pressure phase sequence is missing");
-        }
+        const firstPhaseSequences = originalSequences(
+          firstPhaseHistory,
+          markers.slice(0, 5),
+          sourceDescription.session.sessionId,
+        );
+        const firstPhaseSequence = firstPhaseSequences.at(-1)!.sequence;
         await vi.waitFor(
           () => expect(rootCheckpointIds(firstPhaseSequence).size).toBeGreaterThan(0),
           { timeout: 60_000, interval: 100 },
         );
         const firstPhaseCheckpointIds = rootCheckpointIds();
+        // A0 was observed in initialReuse. Capture A's other admissions before
+        // B's work can evict their diagnostics from the bounded Gateway log.
+        await waitForAdmissions(firstPhaseSequences.slice(1));
         for (const marker of markers.slice(5)) {
-          await send(source, `${marker}. ${filler}`);
+          await send(secondSource, `${marker}. ${filler}`);
         }
+        const secondSourceDescription = await owner.call<Description>("sessions.describe", {
+          key: secondSource,
+        });
         const history = await owner.call<{
           messages: NativeHistoryMessage[];
-        }>("chat.history", { sessionKey: source, limit: 100 });
-        const originalInputs = history.messages.filter((message) => message.role === "user");
-        const lastOriginal = originalInputs.find((message) =>
-          JSON.stringify(message.content).includes(markers.at(-1)!),
+        }>("chat.history", { sessionKey: secondSource, limit: 100 });
+        const originalInputs = [
+          { history: firstPhaseHistory, ownMarkers: markers.slice(0, 5) },
+          { history, ownMarkers: markers.slice(5) },
+        ].flatMap(({ history, ownMarkers }) =>
+          history.messages.filter(
+            (message) =>
+              message.role === "user" &&
+              ownMarkers.some((marker) => JSON.stringify(message.content).includes(marker)),
+          ),
         );
-        const lastSequence = lastOriginal?.["__openclaw"]?.transcriptPosition?.rawSeq;
-        if (typeof lastSequence !== "number") {
-          throw new Error("Native source sequence is missing");
-        }
-        const sourceSequences = markers.map((marker) => {
-          const sequence = originalInputs.find((message) =>
-            JSON.stringify(message.content).includes(marker),
-          )?.["__openclaw"]?.transcriptPosition?.rawSeq;
-          if (typeof sequence !== "number") {
-            throw new Error(`Native source sequence is missing for ${marker}`);
-          }
-          return sequence;
-        });
+        const secondPhaseSequences = originalSequences(
+          history,
+          markers.slice(5),
+          secondSourceDescription.session.sessionId,
+        );
+        const lastSequence = secondPhaseSequences.at(-1)!.sequence;
         console.info("checkpoint fixture source coverage", {
           source: redactIdentifier(sourceDescription.session.sessionId),
           recipient: redactIdentifier(reusableDescription.session.sessionId),
-          sourceSequences,
+          sourceSequences: [...firstPhaseSequences, ...secondPhaseSequences].map(
+            ({ sourceId, sequence }) => ({ source: redactIdentifier(sourceId), sequence }),
+          ),
           lastSequence,
         });
         await vi
@@ -352,9 +388,13 @@ describe("isolated full Gateway conversation continuity", () => {
             () => {
               // Cross two native generations. A nearly full quoted tail alone can
               // fit the root yet exceed a recipient's additional system/tool costs.
-              expect(rootCheckpointIds().size).toBeGreaterThanOrEqual(2);
               expect(
-                [...rootCheckpointIds(lastSequence)].some((id) => !firstPhaseCheckpointIds.has(id)),
+                new Set([...firstPhaseCheckpointIds, ...rootCheckpointIds()]).size,
+              ).toBeGreaterThanOrEqual(2);
+              expect(
+                [
+                  ...rootCheckpointIds(lastSequence, secondSourceDescription.session.sessionId),
+                ].some((id) => !firstPhaseCheckpointIds.has(id)),
               ).toBe(true);
             },
             { timeout: 60_000, interval: 100 },
@@ -363,22 +403,10 @@ describe("isolated full Gateway conversation continuity", () => {
             console.error(diagnostics.logs());
             throw error;
           });
-        // Warm recipients retain their own committed originals. Finish that copy
-        // before removing the donor; the new branch must instead use the checkpoint.
-        await vi.waitFor(() => {
-          expect(
-            sourceSequences.filter(
-              (sequence) =>
-                !preparedSourceReached(
-                  gateway!,
-                  reusableDescription.session.sessionId,
-                  sourceDescription.session.sessionId,
-                  sequence,
-                  "admitted",
-                ),
-            ),
-          ).toEqual([]);
-        }, WAIT);
+        // B supplies the recent retained tail. The second whole-prefix checkpoint
+        // covers older A; remove only A, leaving every uncovered B original live.
+        // Warm recipients retain their own committed originals before donor removal.
+        await waitForAdmissions(secondPhaseSequences);
         expect(await owner.call("sessions.patch", { key: source, archived: true })).toMatchObject({
           ok: true,
         });

@@ -1,2 +1,2 @@
-55
+83
 # Native persisted-checkpoint creation, donor retirement, uncovered-tail admission, forged-artifact refusal and restart coverage; includes the shared native fixture in the test-line total.
