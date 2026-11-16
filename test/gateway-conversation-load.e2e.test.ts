@@ -968,12 +968,10 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
               const frame = Buffer.alloc(640).toString("base64"),
                 captureId = randomUUID();
               const latency: number[] = [];
-              const start = performance.now(),
-                end = start + 10_000;
-              let due = start,
+              let due = performance.now(),
                 skippedSlots = 0,
                 maxLatenessMs = 0;
-              while (due < end) {
+              for (let frameIndex = 0; frameIndex < 500; frameIndex++) {
                 signal.throwIfAborted();
                 const delay = due - performance.now();
                 if (delay > 0) {
@@ -988,7 +986,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                 });
                 latency.push(performance.now() - sent);
                 due += 20;
-                // Skip expired slots rather than fabricating a burst after a slow RPC.
+                // Keep all frames; expired clock slots delay the stream without a catch-up burst.
                 if (due < performance.now()) {
                   const missed = Math.ceil((performance.now() - due) / 20);
                   skippedSlots += missed;
