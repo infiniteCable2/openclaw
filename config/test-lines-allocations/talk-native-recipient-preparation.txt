@@ -1,2 +1,0 @@
-# Prove native opening does no recipient work while actual input keeps authority, revocation and abort handling.
-48

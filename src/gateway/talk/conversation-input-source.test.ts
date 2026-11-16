@@ -5,7 +5,6 @@ import type { ChatType } from "../../channels/chat-type.js";
 import { deriveSessionMetaPatch } from "../../config/sessions/metadata.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
 import { applyInputProvenanceToUserMessage } from "../../sessions/input-provenance.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
@@ -43,17 +42,13 @@ const scope = {
   inputId: "original-spoken-input",
   purpose: "user" as const,
 };
-const branchConfig: OpenClawConfig = {
-  agents: { entries: { researcher: { conversationMode: "branches" } } },
-};
 
 function fixture(
   participant?: SessionParticipantIdentity,
   chatType?: ChatType,
   profileId = "operator-alpha",
-  cfg: OpenClawConfig = {},
 ) {
-  const gateway = createDirectChatContext({ getRuntimeConfig: () => cfg });
+  const gateway = createDirectChatContext({ getRuntimeConfig: () => ({}) });
   const release = vi.fn();
   const releaseFacts = vi.fn();
   const connection = new AbortController();
@@ -91,7 +86,7 @@ function fixture(
   const source = createGatewayTalkConversationInputSource({
     target,
     conversationId: scope.conversationId,
-    getRuntimeConfig: () => cfg,
+    getRuntimeConfig: () => ({}),
     captureOperatorAuthority,
     authority: { senderIsOwner: false },
     participant,
@@ -188,47 +183,8 @@ describe("native Gateway speech participant", () => {
     },
   );
 
-  it("skips native recipient preparation while retaining fresh authority for actual input", async () => {
-    const cfg: OpenClawConfig = {
-      agents: { entries: { researcher: { conversationMode: "native" } } },
-    };
-    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct", undefined, cfg);
-    await f.source.prepareConnection?.();
-    await f.source.prepareConnection?.();
-    expect(mocks.prepareFacts).not.toHaveBeenCalled();
-    expect(f.captureOperatorAuthority).not.toHaveBeenCalled();
-    expect(mocks.openRecipient).not.toHaveBeenCalled();
-    const input = consumeConversationInputAdmission(await f.source.admitInput(scope), scope);
-    try {
-      claimConversationInputExecution(input);
-      const context = await prepareConversationReplyContext(input, { text: "Original request." });
-      expect(context.SessionKey).toBe(target.canonicalKey);
-      expect(mocks.prepareFacts).toHaveBeenCalledOnce();
-      expect(f.captureOperatorAuthority).toHaveBeenCalledOnce();
-      const audience = readConversationPrivateAudience(context);
-      expect(audience).toBeDefined();
-      f.revoke();
-      expect(() => audience?.assertCurrent()).toThrow("Original operator revoked");
-    } finally {
-      input.release?.();
-      await f.source.closeConnection?.();
-    }
-    expect(f.release).toHaveBeenCalledOnce();
-    expect(f.releaseFacts).toHaveBeenCalledOnce();
-  });
-
-  it("refuses an aborted native opening without acquiring recipient custody", async () => {
-    const f = fixture();
-    f.closeConnection();
-    await expect(f.source.prepareConnection?.()).rejects.toMatchObject({ name: "AbortError" });
-    await f.source.closeConnection?.();
-    expect(mocks.prepareFacts).not.toHaveBeenCalled();
-    expect(f.captureOperatorAuthority).not.toHaveBeenCalled();
-    expect(mocks.openRecipient).not.toHaveBeenCalled();
-  });
-
   it("opens a private recipient before input and retains dedicated custody until connection close", async () => {
-    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct", undefined, branchConfig);
+    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct");
     await f.source.prepareConnection?.();
     await f.source.prepareConnection?.();
     expect(f.captureOperatorAuthority).toHaveBeenCalledOnce();
@@ -255,7 +211,7 @@ describe("native Gateway speech participant", () => {
   });
 
   it("does not reuse the connection hold as an accepted input's authority", async () => {
-    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct", undefined, branchConfig);
+    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct");
     await f.source.prepareConnection?.();
     const input = consumeConversationInputAdmission(await f.source.admitInput(scope), scope);
     try {
@@ -281,8 +237,6 @@ describe("native Gateway speech participant", () => {
       const f = fixture(
         { type: "profile", id: kind === "wrong-person" ? "operator-beta" : "operator-alpha" },
         "direct",
-        undefined,
-        branchConfig,
       );
       if (kind === "expired") {
         f.revoke();
@@ -302,8 +256,6 @@ describe("native Gateway speech participant", () => {
       const f = fixture(
         { type: "profile", id: "operator-alpha" },
         kind === "unknown" ? undefined : kind === "group" ? "group" : "direct",
-        undefined,
-        branchConfig,
       );
       if (kind === "public") {
         f.entry.publicShare = { id: "public", sessionId: f.entry.sessionId, createdAt: 1 };
@@ -318,7 +270,7 @@ describe("native Gateway speech participant", () => {
   );
 
   it("releases and refuses an opening closed while native recipient preparation awaits", async () => {
-    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct", undefined, branchConfig);
+    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct");
     const entered = createDeferredCore();
     const finish = createDeferredCore();
     mocks.openRecipient.mockImplementation(async () => {
@@ -336,7 +288,7 @@ describe("native Gateway speech participant", () => {
   });
 
   it("retains failed connection source cleanup and retries only unsettled native holds", async () => {
-    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct", undefined, branchConfig);
+    const f = fixture({ type: "profile", id: "operator-alpha" }, "direct");
     await f.source.prepareConnection?.();
     f.release.mockImplementationOnce(() => {
       throw new Error("Source still owned");
